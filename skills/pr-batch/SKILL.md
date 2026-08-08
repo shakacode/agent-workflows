@@ -33,6 +33,31 @@ Run a Codex batch
 Run a Claude batch
 ```
 
+## Prompt Host Classification Gate
+
+For a complete pasteable batch, goal, or direct pr-batch prompt, classify the
+prompt against the explicit active host before worker launch, repository
+mutation, or any GitHub write. Resolve `PR_BATCH_SKILL_DIR` as described below,
+then pass the prompt on standard input to
+`bin/prompt-host-adapter --active-host codex|claude`. The helper only classifies
+or converts text and emits JSON; it never launches, executes, mutates, or writes.
+
+- `compatible` and `portable` may proceed only through every ordinary security,
+  coordination, dependency, QA, review, and authority gate. Preserve the input
+  prompt byte-for-byte.
+- `conversion-required` is inert relaunch-only text. Do not execute it. Re-run
+  planning when `replanning_required` is true, then relaunch and classify the
+  resulting prompt again.
+- `ambiguous` is fail-closed: do not rewrite or execute it. Stop on an unknown
+  active host, partial, duplicate, malformed, contradictory, or non-advisory
+  headers, incidental syntax, an unsupported host mechanic, or semantic loss.
+
+Legacy recognition is intentionally limited to a leading Codex `/goal` wrapper <!-- host-allow: codex-only -->
+or leading Claude `/pr-batch` invocation. This gate does not reinterpret bare
+skill-picker invocations or generic pause/resume-only prompts. The normative
+header, classification, conversion, and semantic-preservation contract is
+`../../docs/host-adapter/contract.md`.
+
 ## Single-Target Mode
 
 Use this mode for one direct-prompt task, GitHub issue, or pull request. It keeps
@@ -381,7 +406,8 @@ Before implementation or worker launch, produce:
 13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
-After any target-specific invocation line, each pasteable batch prompt must put
+After the prompt-host header and any target-specific invocation line, each
+pasteable batch prompt must put
 `Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>` near the top.
 Derive `<PROJECT>` with the abbreviation rule in **Required Interview** above,
 and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
@@ -534,10 +560,19 @@ paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
 `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-Use this template when creating Codex goal text:
+Use this portable template for generated batch text. For Codex, prepend `/goal`, <!-- host-allow: codex-only -->
+set `Prompt host` to `codex` and `Prompt mode` to `goal`, and render every
+`pr-batch` and `pr-walkthrough` mechanic with the `$` sigil. For Claude, set
+`Prompt host` to `claude`, keep `Prompt mode` as `batch`, and render every such
+mechanic with the `/` sigil. Keep the portable form unchanged for a generic
+destination.
 
 ```text
-Use $pr-batch to complete this batch with subagents.
+Prompt host: portable
+Prompt mode: batch
+Preferred route: <model/class>/<effort>
+Route requirement: advisory
+Use the pr-batch skill to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
@@ -546,7 +581,6 @@ Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
@@ -562,16 +596,16 @@ Items:
   Notes:scope/branch/dependency
   Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
-Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
-- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
+Base:repo/AGENTS;fetch/prune origin;verify pr-batch+workflow;unresolved=>UNKNOWN
+- Resolve pr-batch; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+- Checker independent/evidenced.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 
 ```

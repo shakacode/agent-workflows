@@ -156,6 +156,14 @@ lifecycle state. Model/effort values are advisory preferences, while any
 host/model/effort observations are optional, host-exposed metadata with
 field-granular `UNKNOWN` for unavailable values.
 
+Flat installs deliver `skills/pr-batch/bin/prompt-host-adapter`, its deterministic
+fixtures, and `docs/host-adapter/contract.md`. Companion installs deliver the
+contract with the other non-skill assets; the native `scw` plugin supplies the
+helper and fixtures. Before worker launch, repository mutation, or a GitHub
+write, a coordinator classifies every complete pasteable batch/goal prompt
+against the explicit active host. Converted output is inert relaunch text, not
+permission to continue the old session.
+
 Install companion assets for an already-enabled native plugin:
 
 ```bash
@@ -584,6 +592,14 @@ Do not stop healthy in-flight batches just because the shared pack changed.
 Long-running agents usually keep the skill text they already loaded. Use the new
 pack for new batches and canary runs. Restart only lanes that are blocked by
 stale workflow instructions or that explicitly need the new process.
+
+An already-running lane may finish under its loaded contract. A generated but
+not-yet-launched prompt is different: after installing or upgrading, classify
+it with the newly installed prompt adapter before any launch or mutation. If it
+is `conversion-required`, stop the old launch path, use the returned text only
+as inert input, replan when reported, and relaunch in a fresh host-compatible
+task that classifies cleanly. If it is `ambiguous`, do not hand-edit around the
+gate; resolve the exact missing or contradictory fact first.
 
 ## Network And Privacy
 

@@ -186,13 +186,28 @@ class ModelRoutingContractTest < Minitest::Test
     }
 
     prompts.each do |label, prompt|
-      assert_includes prompt, "Coordinator model/effort preference:", label
+      assert_includes prompt, "Preferred route: <model/class>/<effort>", label
       assert_includes prompt, "Worker model/effort preferences:", label
       assert_includes prompt, "Observed host/model/effort:", label
       assert_includes prompt, "ordinary pending/active lifecycle", label
       refute_includes prompt, "Launch assurance:", label
       refute_includes prompt, "exact-policy", label
     end
+  end
+
+  def test_model_routing_recovery_uses_one_canonical_coordinator_route_field
+    workflow = read_repo_file("workflows/pr-processing.md")
+    heading = "### Model-Routing Recovery Prompt"
+    section_start = workflow.index(heading)
+    refute_nil section_start
+    section_end = workflow.match(/^###\s+/, section_start + heading.length)
+    section = workflow[section_start...(section_end ? section_end.begin(0) : workflow.length)]
+    prompt = extract_prompt(workflow, heading)
+
+    assert_includes section, "compact `Preferred route:`"
+    refute_includes section, "Coordinator model/effort preference:"
+    assert_equal 1, prompt.scan(/^Preferred route:/).length
+    assert_includes prompt, "Preferred route: <coordinator model/class>/<effort>"
   end
 
   def test_dispatcher_helper_is_portable_unsigned_and_preserves_dispatcher_fencing

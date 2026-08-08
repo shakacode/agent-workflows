@@ -22,6 +22,23 @@ For an interactive human-oriented explanation of a PR, use
 one conceptual change at a time, explains why it exists, and pauses for
 questions before continuing.
 
+## Prompt Host Gate
+
+Before a complete pasteable batch, goal, or direct pr-batch prompt can launch a
+worker, mutate a repository, or write to GitHub, classify it against the
+explicit active host with the resolved pr-batch skill's
+`bin/prompt-host-adapter --active-host codex|claude`, passing prompt text on
+standard input. A `compatible` or `portable` result only admits the prompt to
+the ordinary gates below. A `conversion-required` result is inert relaunch-only
+text: do not execute it, replan when requested, and classify the relaunched
+prompt again. An `ambiguous` result stops without rewrite or execution.
+
+The normative header, legacy-recognition, mechanics-only conversion, semantic
+preservation, and fail-closed ambiguity rules are in
+`docs/host-adapter/contract.md`. This gate adds no signing, receipt, waiver,
+route, QA, review, merge, or other authority. It does not apply to a bare skill
+picker invocation or generic pause/resume-only text.
+
 ## Default Operating Model
 
 1. Resolve the work item:
@@ -1142,6 +1159,12 @@ If the user is using `/plan`, or asks to prepare a Codex goal, stop after produc
 Keep this goal prompt aligned with `.agents/skills/pr-batch/SKILL.md`,
 including the review/audit gate paragraphs.
 
+The fenced template is portable. For Codex, prepend `/goal`, set `Prompt host` <!-- host-allow: codex-only -->
+to `codex` and `Prompt mode` to `goal`, and render every `pr-batch` and
+`pr-walkthrough` mechanic with the `$` sigil. For Claude, set `Prompt host` to
+`claude`, keep `Prompt mode` as `batch`, and render every such mechanic with the
+`/` sigil. Keep the portable form unchanged for a generic destination.
+
 The `$pr-batch` skill links to this canonical `Coordination:` paragraph instead
 of duplicating it.
 
@@ -1172,7 +1195,11 @@ coordinator-chosen session word. The coordinator records the handle before
 dispatch; workers copy it unchanged.
 
 ```text
-Use $pr-batch to complete this batch with subagents.
+Prompt host: portable
+Prompt mode: batch
+Preferred route: <model/class>/<effort>
+Route requirement: advisory
+Use the pr-batch skill to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
@@ -1181,7 +1208,6 @@ Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
@@ -1197,16 +1223,16 @@ Items:
   Notes:scope/branch/dependency
   Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
-Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
-- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
+Base:repo/AGENTS;fetch/prune origin;verify pr-batch+workflow;unresolved=>UNKNOWN
+- Resolve pr-batch; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+- Checker independent/evidenced.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 
 ```
@@ -1945,7 +1971,7 @@ too-expensive route. This is distinct from the closeout-only generic
 continuation prompt below.
 
 Before resuming, keep the current goal. Near its top, replace any conflicting
-static model-group line with the compact `Coordinator model/effort preference:`
+static model-group line with the compact `Preferred route:`
 and `Worker model/effort preferences:` fields from the Plan To Goal template. Do not clear the
 goal; its objective, targets, `merge_authority`, QA decision, and completion
 contract remain authoritative.
@@ -1958,12 +1984,17 @@ escalated work on Sol/xhigh. Shared workflow text stays portable: exact names
 always come from the operator or verified runtime roster.
 
 Use this prompt after filling the route placeholders:
+On Claude, classify this Codex-form recovery prompt first; any converted result
+is inert and must be relaunched before recovery can resume.
 
 ```text
+Prompt host: codex
+Prompt mode: direct
+Preferred route: <coordinator model/class>/<effort>
+Route requirement: advisory
 Use $pr-batch to recover and continue this in-flight batch.
 Continue the existing goal; do not clear it or start a new batch.
 
-Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Treat model/effort as advisory during recovery. Preserve unavailable observations
 as UNKNOWN and continue with the same ownership, fencing, validation, and review
@@ -2069,8 +2100,12 @@ Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule 
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
 
 ```text
+Prompt host: portable
+Prompt mode: direct
+Preferred route: <model/class>/<effort>
+Route requirement: advisory
+Use the pr-batch skill to continue PR-batch closeout, not to start a new implementation batch.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>.
-Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
 
 First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
 
@@ -2098,7 +2133,7 @@ Goal completion contract:
 - When the overall goal is genuinely blocked by a condition that can clear without user input, treat the host's recurring automation/wakeup capability as supported only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; reuse or create one 15-minute current-thread monitor before handoff and do not create a duplicate. On each wake, refresh live blocker evidence and resume if a blocker clears. Stop the monitor when the goal unblocks or before completion. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.
 - Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
-- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
+- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use the pr-walkthrough skill when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
 
 Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```

@@ -1,19 +1,31 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "json"
+require "open3"
 require "stringio"
+require "tmpdir"
 
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
 GOAL_PROMPT_MIN_HEADROOM = 300
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
+PROMPT_HOST_ADAPTER = File.expand_path("../../pr-batch/bin/prompt-host-adapter", __dir__)
 TEXT_FENCE = "```text\n"
 GOAL_LINE = "/goal"
-INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
+CODEX_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
+CLAUDE_INVOCATION_LINE = "Use /pr-batch to complete this batch with subagents."
+PORTABLE_INVOCATION_LINE = "Use the pr-batch skill to complete this batch with subagents."
+PORTABLE_PROMPT_HEADER = <<~TEXT.chomp
+  Prompt host: portable
+  Prompt mode: batch
+  Preferred route: <model/class>/<effort>
+  Route requirement: advisory
+TEXT
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
-COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
+PREFERRED_ROUTE_PROMPT_LINE = "Preferred route: <model/class>/<effort>"
 OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
@@ -35,7 +47,7 @@ CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
-MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory."
+CHECKER_INDEPENDENCE_PROMPT_LINE = "- Checker independent/evidenced."
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle."
 COORDINATION_DEPENDENCY_PROMPT_LINE =
@@ -135,26 +147,57 @@ TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 TEXT
 GOAL_PROMPT_BASE_RESOLUTION_LINE =
-  "Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN"
+  "Base:repo/AGENTS;fetch/prune origin;verify pr-batch+workflow;unresolved=>UNKNOWN"
 TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
-  "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
+  "verify pr-batch+workflow; unresolved=>UNKNOWN."
+TRIAGE_TARGET_RENDERING_RULE =
+  "Render the exact Base and `ask` mechanics for the selected target: " \
+  "`$pr-batch` and `$pr-walkthrough` for Codex, `/pr-batch` and `/pr-walkthrough` for Claude, " \
+  "or neutral `pr-batch` and `pr-walkthrough` names for portable."
 GOAL_PROMPT_FALLBACK_LINE =
-  "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
+  "- Resolve pr-batch; autoload/self-contained: load persisted state before preflight; " \
   "persist output before resume/launch; preflight issue/PR only."
-ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
+ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>pr-walkthrough;large/complex full;refresh;" \
                               "chg=>redo/stop;gate fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
 READY_ITEM_DONE_WHEN_LINE =
   "Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale."
-CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
-SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
+CODEX_PROMPT_START = <<~TEXT.freeze
+  #{GOAL_LINE}
+  Prompt host: codex
+  Prompt mode: goal
+  #{PREFERRED_ROUTE_PROMPT_LINE}
+  Route requirement: advisory
+  #{CODEX_INVOCATION_LINE}
+TEXT
+SHARED_PROMPT_START = "#{PORTABLE_PROMPT_HEADER}\n#{PORTABLE_INVOCATION_LINE}\n".freeze
+CLAUDE_PROMPT_START = PORTABLE_PROMPT_HEADER
+                      .sub("Prompt host: portable", "Prompt host: claude")
+                      .then { |header| "#{header}\n#{CLAUDE_INVOCATION_LINE}\n" }
+                      .freeze
+TRIAGE_PORTABLE_PROMPT_TEMPLATE = <<~TEXT.freeze
+  Prompt host: portable
+  Prompt mode: batch
+  Preferred route: default
+  Route requirement: advisory
+  #{PORTABLE_INVOCATION_LINE}
+  #{TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE}
+  #{ASK_WALKTHROUGH_PROMPT_LINE}
+TEXT
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
+CONTINUATION_PROMPT_START = <<~TEXT.freeze
+  Prompt host: portable
+  Prompt mode: direct
+  Preferred route: <model/class>/<effort>
+  Route requirement: advisory
+  Use the pr-batch skill to continue PR-batch closeout, not to start a new implementation batch.
+  #{CONTINUATION_BATCH_TITLE_LINE}
+TEXT
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
-  #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{OBSERVED_HOST_PROMPT_LINE}
   #{MANIFEST_PROVENANCE_PROMPT_LINE}
   #{WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE}
@@ -172,8 +215,7 @@ TEXT
 # Pinned to workflows/pr-processing.md -> "Generic PR-Batch Continuation Prompt".
 # Keep phrase checks here in sync when that source prompt changes.
 CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
-  CONTINUATION_BATCH_TITLE_LINE,
-  "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
+  CONTINUATION_PROMPT_START,
   "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
   "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries.",
   "If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear.",
@@ -371,18 +413,206 @@ end
 def prompt_for_target(prompt_template, target)
   case target
   when :codex
-    "#{GOAL_LINE}\n#{prompt_template}"
-  when :claude, :generic
+    rendered_prompt = prompt_template
+                      .sub(/^Prompt host: portable$/, "Prompt host: codex")
+                      .sub(/^Prompt mode: batch$/, "Prompt mode: goal")
+    "#{GOAL_LINE}\n#{render_prompt_mechanics(rendered_prompt, '$')}"
+  when :claude
+    rendered_prompt = prompt_template
+                      .sub(/^Prompt host: portable$/, "Prompt host: claude")
+    render_prompt_mechanics(rendered_prompt, "/")
+  when :generic
     prompt_template
   else
     abort_with_failure("unknown prompt target: #{target.inspect}")
   end
 end
 
-def assert_prompt_budget(label, prompt_template, codex_prefix:)
-  codex_prompt = "#{codex_prefix}#{prompt_template}"
-  claude_prompt = prompt_template
-  generic_prompt = prompt_template
+def render_prompt_mechanics(prompt, sigil)
+  prompt
+    .sub(/^Use the pr-batch skill\b/, "Use #{sigil}pr-batch")
+    .sub(/^Base:(.*;)verify pr-batch\+workflow;/, "Base:\\1verify #{sigil}pr-batch+workflow;")
+    .sub(/^(- Resolve .*; verify )pr-batch(\+workflow;)/, "\\1#{sigil}pr-batch\\2")
+    .sub(/^- Resolve pr-batch;/, "- Resolve #{sigil}pr-batch;")
+    .sub(/^- ask=>pr-walkthrough;/, "- ask=>#{sigil}pr-walkthrough;")
+end
+
+def prompt_for_adapter(prompt_template, target)
+  batch_size_target = { codex: "codex", claude: "claude", generic: "generic" }.fetch(target)
+  prompt_for_target(prompt_template, target)
+    .sub(PREFERRED_ROUTE_PROMPT_LINE, "Preferred route: default")
+    .sub(/^Batch size target: <codex\|claude\|generic>;/,
+         "Batch size target: #{batch_size_target};")
+end
+
+def classify_prompt(prompt, active_host, label, adapter_path: PROMPT_HOST_ADAPTER)
+  stdout, stderr, status = Open3.capture3(
+    adapter_path,
+    "--active-host",
+    active_host,
+    stdin_data: prompt
+  )
+  abort_with_failure("#{label} adapter invocation failed: #{stderr}") unless status.success?
+
+  JSON.parse(stdout)
+rescue Errno::EACCES, Errno::ENOENT
+  abort(
+    "BLOCKED: goal prompt validation requires the sibling pr-batch " \
+    "prompt-host-adapter from the same Agent Workflows pack revision; " \
+    "missing companion: #{adapter_path}"
+  )
+rescue JSON::ParserError => e
+  abort_with_failure("#{label} adapter returned invalid JSON: #{e.message}")
+end
+
+def assert_unavailable_prompt_host_adapter_is_precisely_blocked
+  Dir.mktmpdir("prompt-host-adapter-companion") do |directory|
+    missing_adapter = File.join(directory, "missing-prompt-host-adapter")
+    non_executable_adapter = File.join(directory, "non-executable-prompt-host-adapter")
+    File.write(non_executable_adapter, "#!/bin/sh\n")
+    File.chmod(0o644, non_executable_adapter)
+
+    [missing_adapter, non_executable_adapter].each do |adapter_path|
+      original_stderr = $stderr
+      stderr = StringIO.new
+      status = nil
+      unexpected_error = nil
+      begin
+        $stderr = stderr
+        classify_prompt("", "codex", "adapter companion self-test", adapter_path: adapter_path)
+      rescue SystemExit => e
+        status = e.status
+      rescue StandardError => e
+        unexpected_error = e
+      ensure
+        $stderr = original_stderr
+      end
+
+      expected = "BLOCKED: goal prompt validation requires the sibling pr-batch " \
+                 "prompt-host-adapter from the same Agent Workflows pack revision; " \
+                 "missing companion: #{adapter_path}\n"
+      next if unexpected_error.nil? && status == 1 && stderr.string == expected
+
+      abort_with_failure(
+        "unavailable prompt-host adapter did not emit the precise blocker: " \
+        "error=#{unexpected_error&.class} status=#{status.inspect} stderr=#{stderr.string.inspect}"
+      )
+    end
+  end
+end
+
+assert_unavailable_prompt_host_adapter_is_precisely_blocked
+
+def normalized_prompt_semantics(prompt)
+  prompt
+    .delete_prefix("/goal\n")
+    .sub(/^Prompt host: (?:codex|claude|portable)$/, "Prompt host: portable")
+    .sub(/^Prompt mode: (?:goal|batch)$/, "Prompt mode: batch")
+    .sub(%r{^Use (?:the pr-batch skill|[/$]pr-batch) to complete this batch with subagents\.$},
+         PORTABLE_INVOCATION_LINE.chomp)
+    .sub(/^Batch size target: (?:codex|claude|generic);/,
+         "Batch size target: <codex|claude|generic>;")
+    .gsub(%r{[/$]pr-batch\b}, "pr-batch")
+    .gsub(%r{[/$]pr-walkthrough\b}, "pr-walkthrough")
+end
+
+def assert_canonical_prompt_adapter_contract(label, prompt_template)
+  prompts = %i[codex claude generic].to_h do |target|
+    [target, prompt_for_adapter(prompt_template, target)]
+  end
+  expected = {
+    codex: %w[codex compatible],
+    claude: %w[claude compatible]
+  }
+
+  { codex: "$", claude: "/", generic: nil }.each do |target, sigil|
+    expected_mechanics = [
+      GOAL_PROMPT_BASE_RESOLUTION_LINE,
+      GOAL_PROMPT_FALLBACK_LINE,
+      ASK_WALKTHROUGH_PROMPT_LINE
+    ].map { |line| sigil ? render_prompt_mechanics(line, sigil) : line }
+    expected_mechanics.each do |mechanic|
+      count = prompts.fetch(target).scan(mechanic).length
+      abort_with_failure("#{label} #{target} must render mechanic exactly once: #{mechanic}") unless count == 1
+    end
+  end
+
+  expected.each do |target, (active_host, classification)|
+    result = classify_prompt(prompts.fetch(target), active_host, "#{label} #{target}")
+    unless result["classification"] == classification && result["execute_allowed"] == true &&
+           result["prompt"] == prompts.fetch(target)
+      abort_with_failure("#{label} #{target} prompt is not byte-exact executable #{classification}: #{result.inspect}")
+    end
+  end
+
+  %w[codex claude].each do |active_host|
+    result = classify_prompt(prompts.fetch(:generic), active_host, "#{label} generic on #{active_host}")
+    unless result["classification"] == "portable" && result["execute_allowed"] == true &&
+           result["prompt"] == prompts.fetch(:generic)
+      abort_with_failure("#{label} generic prompt is not byte-exact portable on #{active_host}: #{result.inspect}")
+    end
+  end
+
+  semantics = prompts.transform_values { |prompt| normalized_prompt_semantics(prompt) }
+  unless semantics.values.uniq.one?
+    abort_with_failure("#{label} target rendering changed non-host semantics")
+  end
+
+  { codex: ["claude", :claude], claude: ["codex", :codex] }.each do |source, (active_host, target)|
+    result = classify_prompt(prompts.fetch(source), active_host, "#{label} #{source} to #{target}")
+    unless result["classification"] == "conversion-required" && result["execute_allowed"] == false &&
+           result["semantic_payload_preserved"] == true && result["prompt"] == prompts.fetch(target)
+      abort_with_failure("#{label} #{source} to #{target} conversion is not byte exact: #{result.inspect}")
+    end
+  end
+end
+
+def assert_triage_prompt_adapter_contract
+  prompts = {
+    codex: prompt_for_target(TRIAGE_PORTABLE_PROMPT_TEMPLATE, :codex),
+    claude: prompt_for_target(TRIAGE_PORTABLE_PROMPT_TEMPLATE, :claude),
+    portable: prompt_for_target(TRIAGE_PORTABLE_PROMPT_TEMPLATE, :generic)
+  }
+  mechanics = {
+    codex: [
+      TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE.sub("verify pr-batch", "verify $pr-batch"),
+      ASK_WALKTHROUGH_PROMPT_LINE.sub("ask=>pr-walkthrough", "ask=>$pr-walkthrough")
+    ],
+    claude: [
+      TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE.sub("verify pr-batch", "verify /pr-batch"),
+      ASK_WALKTHROUGH_PROMPT_LINE.sub("ask=>pr-walkthrough", "ask=>/pr-walkthrough")
+    ],
+    portable: [TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE, ASK_WALKTHROUGH_PROMPT_LINE]
+  }
+
+  mechanics.each do |target, expected_lines|
+    expected_lines.each do |line|
+      count = prompts.fetch(target).scan(line).length
+      abort_with_failure("triage #{target} must render mechanic exactly once: #{line}") unless count == 1
+    end
+  end
+
+  [
+    [:codex, "codex", "compatible"],
+    [:claude, "claude", "compatible"],
+    [:portable, "codex", "portable"],
+    [:portable, "claude", "portable"]
+  ].each do |target, active_host, expected_classification|
+    prompt = prompts.fetch(target)
+    result = classify_prompt(prompt, active_host, "triage #{target} on #{active_host}")
+    next if result["classification"] == expected_classification && result["execute_allowed"] == true &&
+            result["prompt"] == prompt
+
+    abort_with_failure(
+      "triage #{target} on #{active_host} is not byte-exact #{expected_classification}: #{result.inspect}"
+    )
+  end
+end
+
+def assert_prompt_budget(label, prompt_template)
+  codex_prompt = prompt_for_target(prompt_template, :codex)
+  claude_prompt = prompt_for_target(prompt_template, :claude)
+  generic_prompt = prompt_for_target(prompt_template, :generic)
 
   codex_chars = codex_prompt.length
   if codex_chars >= CODEX_GOAL_PROMPT_CHAR_LIMIT
@@ -477,7 +707,7 @@ required_skill_rule_phrases = [
   "destination wins over host detection",
   "Codex prompt or Codex goal",
   "Claude prompt/chat",
-  "After the target-specific invocation line",
+  "After the prompt-host header and target-specific invocation line",
   "Batch title:",
   "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
   "optional `repo_prefix`",
@@ -503,8 +733,9 @@ required_skill_rule_phrases = [
   "inherits or defaults to the coordinator route",
   "target-specific prompt",
   "including the `/goal` line",
-  "prepend only the `/goal` line",
-  "keep the shared `$pr-batch` invocation",
+  "set `Prompt host` to `codex`",
+  "render every such mechanic with the `/` sigil",
+  "portable form unchanged",
   "apply Codex's strict 4000-character limit",
   GOAL_PROMPT_HEADROOM_RULE_PHRASE,
   "under 8000 characters",
@@ -535,18 +766,18 @@ required_all_prompt_phrases = [
   GOAL_MODE_COMPACT_CONTRACT,
   "merge_authority:",
   BATCH_SIZE_TARGET_PROMPT_PHRASE,
-  COORDINATOR_MODEL_EFFORT_PROMPT_LINE,
+  PREFERRED_ROUTE_PROMPT_LINE,
+  "Route requirement: advisory",
   OBSERVED_HOST_PROMPT_LINE,
   MANIFEST_PROVENANCE_PROMPT_LINE,
   BATCH_QA_PROMPT_LINE,
   CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE,
   WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE,
-  MODEL_EFFORT_DISPATCH_LINE,
+  CHECKER_INDEPENDENCE_PROMPT_LINE,
   DISPATCHER_PREFLIGHT_PROMPT_LINE,
   DISPATCH_PLAN_PROMPT_LINE,
   STAGE_DEPENDENCY_PROMPT_LINE,
   STAGE_DEPENDENCY_SCOPE_LINE,
-  ASK_WALKTHROUGH_PROMPT_LINE,
   "merge iff `merge_authority` is `auto_merge_when_gates_pass`",
   "explicit merge approval",
   "ready-no-merge-authority",
@@ -585,7 +816,10 @@ host_aware_batch_sizing_phrase_checks = {
     ["`claude` or `generic`: up to 5 independent file-disjoint items, or 3", 1],
     ["current-wave item cap applies across all generated groups in aggregate", 1],
     ["Each generated prompt must include `Batch size target: <codex|claude|generic>; wave:", 1],
-    ["`Coordinator model/effort preference: <model/class>/<effort>.`", 1],
+    ["`Prompt host: <codex|claude|portable>`", 1],
+    ["`Prompt mode: <goal|batch>`", 1],
+    ["`Preferred route: <model/class>/<effort>`", 1],
+    ["`Route requirement: advisory`", 1],
     ["`Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.`", 1],
     ["`Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`", 1],
     ["`Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.`", 1],
@@ -727,6 +961,18 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
+  ASK_WALKTHROUGH_PROMPT_LINE,
+  1,
+  "triage generated-prompt ask-walkthrough contract"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
+  TRIAGE_TARGET_RENDERING_RULE,
+  1,
+  "triage generated-prompt target rendering contract"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
   GOAL_MODE_COMPACT_CONTRACT,
   1,
   "triage generated-prompt compact completion contract"
@@ -815,8 +1061,8 @@ require_phrases(
   "canonical parent release-or-archive pressure scenarios"
 )
 
-unless continuation_prompt.start_with?("#{CONTINUATION_BATCH_TITLE_LINE}\n")
-  abort_with_failure("canonical workflow continuation prompt must start with the batch title line")
+unless continuation_prompt.start_with?(CONTINUATION_PROMPT_START)
+  abort_with_failure("canonical workflow continuation prompt must start with portable headers, invocation, and batch title")
 end
 
 unexpected_pressure_refs = pressure_scenario_text.scan(/#\d+/).uniq - ALLOWED_PRESSURE_SCENARIO_REFS
@@ -829,20 +1075,26 @@ end
 budget_checks = {
   "plan_pr_batch" => assert_prompt_budget(
     "plan-pr-batch",
-    prompt_template,
-    codex_prefix: "#{GOAL_LINE}\n"
+    prompt_template
   ),
   "pr_batch" => assert_prompt_budget(
     "pr-batch",
-    pr_batch_prompt_template,
-    codex_prefix: "#{GOAL_LINE}\n"
+    pr_batch_prompt_template
   ),
   "workflow_plan_to_goal" => assert_prompt_budget(
     "workflow plan-to-goal",
-    workflow_prompt_template,
-    codex_prefix: "#{GOAL_LINE}\n"
+    workflow_prompt_template
   )
 }
+
+{
+  "plan-pr-batch" => prompt_template,
+  "pr-batch" => pr_batch_prompt_template,
+  "workflow plan-to-goal" => workflow_prompt_template
+}.each do |label, template|
+  assert_canonical_prompt_adapter_contract(label, template)
+end
+assert_triage_prompt_adapter_contract
 
 codex_prompt_template = prompt_for_target(prompt_template, :codex)
 claude_prompt_template = prompt_for_target(prompt_template, :claude)
@@ -852,6 +1104,37 @@ prompt_templates_by_target = {
   claude: claude_prompt_template,
   generic: generic_prompt_template
 }
+
+expected_prompt_starts = {
+  codex: <<~TEXT,
+    /goal
+    Prompt host: codex
+    Prompt mode: goal
+    Preferred route: <model/class>/<effort>
+    Route requirement: advisory
+    Use $pr-batch to complete this batch with subagents.
+  TEXT
+  claude: <<~TEXT,
+    Prompt host: claude
+    Prompt mode: batch
+    Preferred route: <model/class>/<effort>
+    Route requirement: advisory
+    Use /pr-batch to complete this batch with subagents.
+  TEXT
+  generic: <<~TEXT
+    Prompt host: portable
+    Prompt mode: batch
+    Preferred route: <model/class>/<effort>
+    Route requirement: advisory
+    Use the pr-batch skill to complete this batch with subagents.
+  TEXT
+}
+
+expected_prompt_starts.each do |target, expected_start|
+  next if prompt_templates_by_target.fetch(target).start_with?(expected_start)
+
+  abort_with_failure("#{target} goal prompt template is missing the exact prompt-host header block")
+end
 
 require_phrases(codex_prompt_template, required_codex_prompt_phrases, "Codex goal prompt template")
 
@@ -864,19 +1147,19 @@ required_all_prompt_phrases.each do |phrase|
 end
 
 unless codex_prompt_template.start_with?(CODEX_PROMPT_START)
-  abort_with_failure("Goal prompt template must start with /goal followed by the $pr-batch invocation")
+  abort_with_failure("Codex goal prompt template must start with /goal, the exact host header, and $pr-batch")
 end
 
 unless prompt_template.start_with?(SHARED_PROMPT_START)
-  abort_with_failure("Shared goal prompt template must start with the $pr-batch invocation")
+  abort_with_failure("Portable goal prompt template must start with the exact portable header and invocation")
 end
 
-unless claude_prompt_template.start_with?(SHARED_PROMPT_START)
-  abort_with_failure("Claude goal prompt template must omit /goal and start with the $pr-batch invocation")
+unless claude_prompt_template.start_with?(CLAUDE_PROMPT_START)
+  abort_with_failure("Claude goal prompt template must omit /goal and start with the exact Claude header and /pr-batch")
 end
 
 unless generic_prompt_template.start_with?(SHARED_PROMPT_START)
-  abort_with_failure("Generic goal prompt template must omit /goal and start with the $pr-batch invocation")
+  abort_with_failure("Generic goal prompt template must omit /goal and keep the portable header and invocation")
 end
 
 if claude_prompt_template.include?(GOAL_LINE) || generic_prompt_template.include?(GOAL_LINE)

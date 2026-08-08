@@ -405,8 +405,8 @@ Plan a PR batch
      is heuristic: prefer host-exposed runtime signals over installed-home
      auto-detection, and choose `generic` when both Codex and Claude are
      plausible.
-   - After the target-specific invocation line, put a short `Batch title:` near
-     the top of every pasteable batch prompt:
+   - After the prompt-host header and target-specific invocation line, put a
+     short `Batch title:` near the top of every pasteable batch prompt:
      `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
      Resolve `<PROJECT>` from the optional `repo_prefix` in
      `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
@@ -437,8 +437,12 @@ Plan a PR batch
      may use the verified GitHub PR URL from PR-open/current PR state.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
      total with at least 300 characters of headroom, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
-     For the `claude` or `generic` target, do not prepend the Codex-only
-     `/goal` wrapper; keep the shared `$pr-batch` invocation and do not apply Codex's strict 4000-character limit. <!-- host-allow: codex-only -->
+     For that target, set `Prompt host` to `codex`, set `Prompt mode` to `goal`,
+     and render every `pr-batch` and `pr-walkthrough` mechanic with the `$` <!-- host-allow: codex-only -->
+     sigil. For the `claude` target, omit `/goal`, set `Prompt host` to `claude`, <!-- host-allow: codex-only -->
+     keep `Prompt mode` as `batch`, and render every such mechanic with the `/` sigil. For the
+     `generic` target, omit `/goal` and keep the portable form unchanged. Do <!-- host-allow: codex-only -->
+     not apply Codex's strict 4000-character limit to Claude or generic prompts. <!-- host-allow: codex-only -->
      Still keep the prompt compact, measured, under 8000 characters, and free of
      bulky evidence.
    - Measure the actual target-specific prompt, do not eyeball it: use the guard
@@ -566,11 +570,23 @@ backend must say so in the declaration.
 ## Goal Prompt for pr-batch
 
 Use this template and fill it with the verified items. The fenced template below
-is the shared prompt body. For the `codex` target, prepend only the `/goal` line <!-- host-allow: codex-only -->
-before this body. For the `claude` or `generic` target, use the body as-is so the
-prompt starts with `Use $pr-batch to complete this batch with subagents.`
+is the portable form. For the `codex` target, prepend `/goal`, set `Prompt host` <!-- host-allow: codex-only -->
+to `codex` and `Prompt mode` to `goal`, and render every `pr-batch` and <!-- host-allow: codex-only -->
+`pr-walkthrough` mechanic with the `$` sigil. For the `claude` target, set
+`Prompt host` to `claude`, keep `Prompt mode` as `batch`, and render every such
+mechanic with the `/` sigil. For the `generic` target, use the portable form
+unchanged. Keep every other line identical across target forms.
 Keep bulky evidence and long validation notes outside the prompt.
 `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+
+Generated text is a handoff, not launch authority. If the user requests a
+same-chat launch, classify the complete filled prompt with the resolved
+pr-batch skill's `bin/prompt-host-adapter` against the explicit active host
+before worker launch, repository mutation, or a GitHub write. Execute only a
+`compatible` or `portable` result through the ordinary gates;
+`conversion-required` is inert relaunch-only text and may require replanning,
+while `ambiguous` stops without rewrite or execution. See
+`../../docs/host-adapter/contract.md`.
 
 Before generating the prompt, preserve this merge-planning contract:
 Ordinary readiness is necessary but not sufficient for autonomous merge;
@@ -582,7 +598,11 @@ evidence failure, trusted-base policy provenance, and repair action. `UNKNOWN`
 is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
-Use $pr-batch to complete this batch with subagents.
+Prompt host: portable
+Prompt mode: batch
+Preferred route: <model/class>/<effort>
+Route requirement: advisory
+Use the pr-batch skill to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
@@ -591,7 +611,6 @@ Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
@@ -607,16 +626,16 @@ Items:
   Notes:scope/branch/dependency
   Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
-Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
-- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
+Base:repo/AGENTS;fetch/prune origin;verify pr-batch+workflow;unresolved=>UNKNOWN
+- Resolve pr-batch; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+- Checker independent/evidenced.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 ```
 

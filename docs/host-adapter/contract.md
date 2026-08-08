@@ -76,9 +76,120 @@ host adapter may report observed host, model, and effort only from runtime state
 it actually exposes; every unavailable field is `UNKNOWN`, and absence or
 mismatch never alone blocks workflow progress. The host owns any route-exposure
 mechanism. Agent Workflows does not provision or require signing keys, fixed
-trust anchors, launch-confirmation receipts, or human waivers. Prompt conversion
-for incompatible runtime instructions is tracked separately in
-[issue #372](https://github.com/shakacode/agent-workflows/issues/372).
+trust anchors, launch-confirmation receipts, or human waivers.
+
+## Runtime Prompt Adaptation
+
+Every pasteable batch, goal, or direct pr-batch prompt must declare its runtime
+contract before the invocation:
+
+```text
+Prompt host: codex|claude|portable
+Prompt mode: goal|batch|direct
+Preferred route: default|<model-or-class>/<effort>
+Route requirement: advisory
+```
+
+Codex goal prompts put `/goal` before the header and use `$pr-batch` after it.
+Codex direct prompts omit `/goal` and use `$pr-batch`. Claude prompts omit
+`/goal` and use `/pr-batch`. Portable prompts use neutral prose such as
+`Use the pr-batch skill ...`; every embedded `pr-batch` and `pr-walkthrough`
+mechanic remains unsigiled. A target renderer applies the host's sigil to every
+supported mechanic, including the Base verification, Resolve, and walkthrough
+lines; portable output stays neutral. Portable prompts resolve through this
+contract at runtime.
+The `Preferred route` value is metadata only. It cannot create a hard route,
+weaken a gate, or turn unavailable model/effort data into a blocker.
+
+Before worker launch, repository mutation, or a GitHub write, classify the
+complete prompt against an explicitly known active host. Resolve
+`PR_BATCH_SKILL_DIR` in the normal installed-skill order: explicit environment
+variable, loaded skill base, repo-local `.agents/skills/pr-batch`, then stop if
+none is available. Invoke the resolved installed or pinned helper:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/prompt-host-adapter" --active-host codex < prompt.txt
+"${PR_BATCH_SKILL_DIR}/bin/prompt-host-adapter" --active-host claude < prompt.txt
+```
+
+The helper reads prompt text only from standard input and emits a structured
+JSON result. It does not launch a worker, execute the prompt, mutate a
+repository, or write to GitHub. Callers must honor these classifications:
+
+| Classification | Meaning | Allowed next action |
+| --- | --- | --- |
+| `compatible` | Complete matching host headers and mechanics, or an unmistakable matching legacy wrapper | Execute only under the ordinary workflow gates; preserve the prompt byte-for-byte. |
+| `portable` | Complete portable headers plus this installed contract | Resolve host mechanics through this contract, then execute only under the ordinary workflow gates; preserve the portable prompt byte-for-byte. |
+| `conversion-required` | Complete known opposite-host prompt, or unmistakable opposite-host legacy wrapper | Do not execute. Return the converted text as inert relaunch input. Re-run planning when the result reports `replanning_required`, then classify the relaunched prompt again. |
+| `ambiguous` | Unknown active host, invalid encoding, partial/duplicate/malformed/contradictory headers, non-advisory routing, unsupported syntax, or semantic-preservation failure | Do not rewrite or execute. Report the stable `reason_code` and stop for user or coordinator resolution. |
+
+An ambiguous result never includes raw prompt text. Its stable `reason_code`
+identifies the fail-closed category, such as `invalid-encoding`,
+`partial-headers`, `duplicate-headers`, `non-advisory-route`,
+`invalid-preferred-route`, `invalid-host-mode-wrapper`,
+`contradictory-host-mechanic`, `contradictory-source-mechanic`,
+`invalid-batch-size-target`, `duplicate-batch-size-target`,
+`contradictory-batch-size-target`,
+`unsupported-host-mechanic`, or
+`unrecognized-prompt`.
+
+Mechanic detection is token-based rather than verb-based: a bare lowercase
+`$name` or `/name` token counts as a host mechanic even after words such as
+"execute", "trigger", "launch", or "apply", or in a bare list item. URL and
+path continuations are not command tokens. The leading Codex `/goal` wrapper
+is structural. A whole line of the exact form
+`Document $name and /name as literal names only.` is explicitly literal; adding
+an invocation or contradictory phrase to that line removes the exemption.
+Portable prompts cannot contain any detected host mechanic. Codex and Claude
+prompts, including conversion sources, cannot contain a mechanic for the other
+host. They also cannot contain a partially rendered neutral form of a supported
+canonical mechanic: the Base verification, generated-triage Base resolution,
+Resolve, and walkthrough authority lines must use the declared host's sigil.
+Those exact neutral forms remain valid in portable prompts; incidental prose,
+literal names, and paths containing workflow names are not mechanics.
+
+Legacy detection is deliberately narrow: only a leading Codex `/goal` wrapper
+or a leading Claude `/pr-batch` invocation is unmistakable. Incidental host or
+skill names in prose do not qualify. Generic pause/resume-only text is outside
+this adapter contract unless it is itself a complete pr-batch prompt.
+
+Conversion translates mechanics only: the header host/mode, `/goal` wrapper,
+pr-batch invocation, target-specific batch-size field, exact Base verification
+and Resolve mechanics, and exact pr-walkthrough authority invocation.
+Before execution or conversion, a prompt may omit the batch-size field. When
+`Batch size target:` is present, it must occur exactly once and contain one
+canonical allowed target followed by a semicolon: `codex` for Codex, `claude`
+for Claude, and `generic` for portable. Unsupported values or malformed field
+syntax fail closed as `invalid-batch-size-target`; duplicate fields, whether
+identical or conflicting, fail closed as `duplicate-batch-size-target`. A
+well-formed target that disagrees with the declared host fails closed as
+`contradictory-batch-size-target`. None of these invalid inputs is executed,
+rewritten, or returned as relaunch text.
+The field may begin at column zero or after zero to three spaces and one common
+Markdown list marker (`-`, `*`, or `+`); conversion preserves that exact prefix.
+Other prose that merely mentions `Batch size target:` is not a declaration.
+The same checks apply to an unmistakable legacy prompt using its inferred
+Codex or Claude host. Cross-host legacy conversion rewrites one valid
+source-matching target to the target host before returning inert relaunch text.
+Objectives, targets, scope, dependencies,
+permissions, safety, QA, review, merge authority, advisory route preference,
+and all ordinary workflow gates must remain semantically identical. The helper
+normalizes those approved mechanical differences and compares the remaining
+payload; any difference or untranslated host mechanic fails closed as
+`ambiguous`. Conversion never splits or repacks lanes. A converted batch-size
+prompt reports `replanning_required` because the target host's capacity may
+differ.
+
+The helper reads stdin as deterministic UTF-8 independent of locale. Valid
+non-ASCII semantic text is preserved through classification and conversion;
+invalid byte sequences return `ambiguous` with `reason_code: invalid-encoding`
+instead of raising or echoing input.
+
+This runtime adapter adds no signing keys, trust anchors, launch receipts,
+waivers, or new authority. It cannot bypass security preflight, coordination,
+stage dependencies, QA, current-head review, merge assurance, or issue #299's
+human-approval boundary. A conversion result is always inert; a caller must
+relaunch and reclassify it before ordinary execution can begin.
 
 ## Host-Owned Fact Rollout
 

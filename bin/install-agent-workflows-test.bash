@@ -83,6 +83,47 @@ assert_unsigned_launch_helpers() {
   ' "$batch_output" || fail "$label clean install could not accept unsigned lifecycle state"
 }
 
+assert_prompt_host_adapter() {
+  local target="$1"
+  local label="$2"
+  local codex_to_claude claude_to_codex
+
+  assert_file "$target/skills/pr-batch/bin/prompt-host-adapter"
+  assert_file "$target/skills/pr-batch/fixtures/prompt-host-codex.txt"
+  assert_file "$target/skills/pr-batch/fixtures/prompt-host-claude.txt"
+  assert_file "$target/docs/host-adapter/contract.md"
+
+  codex_to_claude="$("$target/skills/pr-batch/bin/prompt-host-adapter" --active-host claude \
+    < "$target/skills/pr-batch/fixtures/prompt-host-codex.txt")"
+  ruby -rjson -e '
+    result = JSON.parse(ARGV.fetch(0))
+    expected = File.read(ARGV.fetch(1), encoding: "UTF-8")
+    abort result.inspect unless result["classification"] == "conversion-required" &&
+                                result["execute_allowed"] == false &&
+                                result["relaunch_required"] == true &&
+                                result["replanning_required"] == true &&
+                                result["semantic_payload_preserved"] == true &&
+                                result["prompt"] == expected
+  ' "$codex_to_claude" \
+    "$target/skills/pr-batch/fixtures/prompt-host-codex-to-claude.expected.txt" || \
+    fail "$label install could not convert Codex prompt mechanics to Claude"
+
+  claude_to_codex="$("$target/skills/pr-batch/bin/prompt-host-adapter" --active-host codex \
+    < "$target/skills/pr-batch/fixtures/prompt-host-claude.txt")"
+  ruby -rjson -e '
+    result = JSON.parse(ARGV.fetch(0))
+    expected = File.read(ARGV.fetch(1), encoding: "UTF-8")
+    abort result.inspect unless result["classification"] == "conversion-required" &&
+                                result["execute_allowed"] == false &&
+                                result["relaunch_required"] == true &&
+                                result["replanning_required"] == true &&
+                                result["semantic_payload_preserved"] == true &&
+                                result["prompt"] == expected
+  ' "$claude_to_codex" \
+    "$target/skills/pr-batch/fixtures/prompt-host-claude-to-codex.expected.txt" || \
+    fail "$label install could not convert Claude prompt mechanics to Codex"
+}
+
 write_native_scw_state() {
   local host="$1"
   local target="$2"
@@ -203,6 +244,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/docs/coordination-backend.md"
   assert_file "$target/docs/review-finding-schema.md"
   assert_file "$target/docs/agent-workflows-model-routing.md"
+  assert_file "$target/docs/host-adapter/contract.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflows-status"
@@ -220,6 +262,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/bin/upgrade-agent-workflows"
   assert_file "$target/.agent-workflows-install.json"
   assert_unsigned_launch_helpers "$target" "Codex"
+  assert_prompt_host_adapter "$target" "Codex"
   [[ ! -e "$target/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
@@ -1226,11 +1269,13 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/docs/coordination-backend.md"
   assert_file "$tmp/.claude/docs/review-finding-schema.md"
   assert_file "$tmp/.claude/docs/agent-workflows-model-routing.md"
+  assert_file "$tmp/.claude/docs/host-adapter/contract.md"
   assert_file "$tmp/.claude/docs/solutions/README.md"
   assert_file "$tmp/.claude/bin/agent-workflows-status"
   assert_file "$tmp/.claude/bin/agent-workflows-doctor"
   assert_file "$tmp/.claude/bin/agent-workflows-trust-audit"
   assert_unsigned_launch_helpers "$tmp/.claude" "Claude"
+  assert_prompt_host_adapter "$tmp/.claude" "Claude"
   [[ ! -e "$tmp/.claude/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   [[ ! -e "$tmp/.claude/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest must not be installed into Claude home metadata"
   [[ ! -e "$tmp/.claude/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata must not be installed into Claude home metadata"
@@ -1296,11 +1341,13 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/docs/coordination-backend.md"
   assert_symlink "$target/docs/review-finding-schema.md"
   assert_symlink "$target/docs/agent-workflows-model-routing.md"
+  assert_symlink "$target/docs/host-adapter/contract.md"
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
   assert_symlink "$target/bin/agent_doctor"
   assert_symlink "$target/bin/agent-workflows-trust-audit"
+  assert_prompt_host_adapter "$target" "Codex symlink"
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not symlink stack-specific helper"
   assert_file "$target/.agent-workflows-install.json"
 }

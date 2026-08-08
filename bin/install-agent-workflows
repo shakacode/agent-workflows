@@ -19,6 +19,7 @@ Installed paths:
   <target>/docs/coordination-backend.md
   <target>/docs/review-finding-schema.md
   <target>/docs/agent-workflows-model-routing.md
+  <target>/docs/host-adapter/*
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-doctor
@@ -399,6 +400,7 @@ copy_pack_docs() {
   local docs_target="$1"
   local doc_name destination
   ensure_real_directory "$docs_target"
+  ensure_real_directory "$docs_target/host-adapter"
   ensure_real_directory "$docs_target/solutions"
   remove_legacy_managed_model_routing_path "$docs_target"
 
@@ -414,6 +416,7 @@ copy_pack_docs() {
     install -m 0644 "$repo_root/docs/$doc_name" "$destination"
   done
 
+  copy_children_preserving_unrelated "$repo_root/docs/host-adapter" "$docs_target/host-adapter"
   copy_children_preserving_unrelated "$repo_root/docs/solutions" "$docs_target/solutions"
 }
 
@@ -421,6 +424,7 @@ link_pack_docs() {
   local docs_target="$1"
   local destination doc_name source_path
   ensure_real_directory "$docs_target"
+  ensure_real_directory "$docs_target/host-adapter"
   ensure_real_directory "$docs_target/solutions"
   remove_legacy_managed_model_routing_path "$docs_target"
 
@@ -431,6 +435,16 @@ link_pack_docs() {
       exit 1
     fi
     ln -sfn "$repo_root/docs/$doc_name" "$destination"
+  done
+
+  for source_path in "$repo_root"/docs/host-adapter/*; do
+    [[ -e "$source_path" ]] || continue
+    destination="$docs_target/host-adapter/$(basename "$source_path")"
+    if [[ -e "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-symlink path: $destination" >&2
+      exit 1
+    fi
+    ln -sfn "$source_path" "$destination"
   done
 
   for source_path in "$repo_root"/docs/solutions/*; do
