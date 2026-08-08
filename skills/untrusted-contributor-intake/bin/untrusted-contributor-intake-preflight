@@ -1,0 +1,311 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Metadata-only intake preflight for the untrusted-contributor-intake skill.
+#
+# Resolves and validates, in this fixed order:
+#   1. the trusted origin policy the invoker read from a trusted base checkout
+#      (`.agents/agent-workflow.yml` -> `untrusted_contributor_intake`),
+#   2. the raw PR reference (exact all-digit number or exact HTTPS PR URL),
+#   3. one metadata-only `gh pr view --json number,url` lookup, and
+#   4. the server-returned canonical pull request URL.
+#
+# Security boundary: metadata only, and fail closed. This helper never checks
+# out, executes, sources, or installs fork content, and never reads PR bodies,
+# issue text, comments, or review text. Its only network call is the single
+# `gh pr view --json number,url` lookup above. Host/tooling must enforce the
+# read-only, no-execution, no-secrets, and no-writes boundaries documented in
+# SKILL.md; this helper is a validator, not a sandbox.
+#
+# Usage (run from a trusted base checkout):
+#   UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST=github.com \
+#   UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME=https \
+#   UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO=owner/repo \
+#   untrusted-contributor-intake-preflight --pr-ref <exact PR URL or number>
+#
+# The reference may also be supplied as the PR_REF environment variable.
+#
+# On success prints one `KEY=value` line per resolved value, in a fixed order,
+# to stdout. Otherwise prints a single `BLOCKED: ...` line to stderr and exits 1.
+
+require "open3"
+
+module UntrustedContributorIntakePreflight
+  class Blocked < StandardError; end
+
+  TRUSTED_ORIGIN_BLOCKED =
+    "BLOCKED: trusted origin is invalid; complete explicit HTTPS TRUSTED_GH_HOST, " \
+    "TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO are required"
+  PR_REF_BLOCKED = "BLOCKED: exact PR reference is invalid"
+  METADATA_BLOCKED = "BLOCKED: metadata resolution is invalid"
+  CANONICAL_BLOCKED = "BLOCKED: canonical authority absent or invalid"
+  CANONICAL_UNTRUSTED = "BLOCKED: canonical authority is not trusted"
+
+  TRUSTED_HOST_KEY = "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST"
+  TRUSTED_SCHEME_KEY = "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME"
+  TRUSTED_REPO_KEY = "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO"
+  POLICY_KEYS = [TRUSTED_HOST_KEY, TRUSTED_SCHEME_KEY, TRUSTED_REPO_KEY].freeze
+
+  TRUSTED_SCHEME = "https"
+  URL_PREFIX = "https://"
+  DEFAULT_PORT = "443"
+  MAX_PORT = 65_535
+  MAX_PORT_DIGITS = 5
+  MAX_LABEL_LENGTH = 63
+  PULL_SEGMENT = "pull"
+  PULL_PATH_SEGMENTS = 4
+  RECORD_SEPARATOR = "|"
+
+  DIGITS = /\A[0-9]+\z/
+  HOST_CHARACTERS = /\A[a-z0-9.-]+\z/
+  REPOSITORY_SEGMENT_CHARACTERS = /\A[0-9A-Za-z._-]+\z/
+  AUTHORITY_FORBIDDEN_CHARACTERS = %r{[@/?\#\[\] ]}
+  RESERVED_REPOSITORY_SEGMENTS = [".", ".."].freeze
+
+  OUTPUT_KEYS = %w[
+    TRUSTED_GH_SCHEME
+    TRUSTED_GH_HOST
+    TRUSTED_GH_REPO
+    PR_INPUT_KIND
+    PR_NUMBER
+    PR_REF_NUMBER
+    REPO
+    GH_HOST
+    CANONICAL_URL
+  ].freeze
+
+  module_function
+
+  def blocked(message)
+    raise Blocked, message
+  end
+
+  # Every externally supplied value passes this gate before any further parsing,
+  # so control characters, encoded separators, and non-ASCII bytes fail closed.
+  def printable?(value)
+    value.each_byte.all? { |byte| byte >= 0x20 && byte <= 0x7E }
+  end
+
+  def require_printable(value, message)
+    text = value.to_s
+    blocked(message) unless printable?(text)
+
+    text
+  end
+
+  # Single shared authority validator. Trusted origin host, PR_REF URL
+  # authority, and canonical URL authority all normalize through this one
+  # implementation, so host, port, and DNS-label rules cannot drift apart.
+  def normalize_authority(authority, scheme, message)
+    value = require_printable(authority, message).downcase
+    blocked(message) if value.empty?
+    blocked(message) if value.match?(AUTHORITY_FORBIDDEN_CHARACTERS)
+
+    host, port = split_host_port(value, message)
+    validate_host(host, message)
+    port = nil if scheme == TRUSTED_SCHEME && port == DEFAULT_PORT
+
+    port.nil? ? host : "#{host}:#{port}"
+  end
+
+  def split_host_port(value, message)
+    return [value, nil] unless value.include?(":")
+
+    host, _separator, port = value.rpartition(":")
+    blocked(message) if host.empty? || host.include?(":")
+    blocked(message) unless port.match?(DIGITS)
+    blocked(message) if port.length > MAX_PORT_DIGITS
+    blocked(message) unless (1..MAX_PORT).cover?(Integer(port, 10))
+
+    [host, port]
+  end
+
+  def validate_host(host, message)
+    blocked(message) if host.empty?
+    blocked(message) unless host.match?(HOST_CHARACTERS)
+    blocked(message) if host.start_with?(".") || host.end_with?(".") || host.include?("..")
+
+    host.split(".", -1).each do |label|
+      blocked(message) if label.empty? || label.start_with?("-") || label.end_with?("-")
+      blocked(message) if label.length > MAX_LABEL_LENGTH
+    end
+  end
+
+  # Single shared repository validator, used for the trusted policy repository,
+  # the PR_REF URL target, and the canonical URL target.
+  def normalize_repository(repository, message)
+    value = require_printable(repository, message)
+    owner, separator, name = value.partition("/")
+    blocked(message) if separator.empty?
+    blocked(message) if name.include?("/")
+
+    [owner, name].each do |segment|
+      blocked(message) if segment.empty?
+      blocked(message) if RESERVED_REPOSITORY_SEGMENTS.include?(segment)
+      blocked(message) unless segment.match?(REPOSITORY_SEGMENT_CHARACTERS)
+    end
+
+    "#{owner}/#{name}".downcase
+  end
+
+  # Single shared exact-PR-URL parser, used for the raw PR_REF URL form and for
+  # the server-returned canonical URL.
+  def parse_pull_request_url(url, message)
+    value = require_printable(url, message)
+    blocked(message) unless value.start_with?(URL_PREFIX)
+
+    authority, separator, path = value.delete_prefix(URL_PREFIX).partition("/")
+    blocked(message) if separator.empty?
+
+    segments = path.split("/", -1)
+    blocked(message) unless segments.length == PULL_PATH_SEGMENTS
+
+    owner, name, kind, number = segments
+    blocked(message) unless kind == PULL_SEGMENT
+    blocked(message) unless number.match?(DIGITS)
+
+    {
+      authority: authority,
+      repository: normalize_repository("#{owner}/#{name}", message),
+      number: number
+    }
+  end
+
+  def trusted_policy(environment)
+    host, scheme, repository = POLICY_KEYS.map { |key| environment[key].to_s }
+    blocked(TRUSTED_ORIGIN_BLOCKED) if [host, scheme, repository].any?(&:empty?)
+    blocked(TRUSTED_ORIGIN_BLOCKED) unless scheme == TRUSTED_SCHEME
+
+    {
+      scheme: scheme,
+      host: normalize_authority(host, scheme, TRUSTED_ORIGIN_BLOCKED),
+      repository: normalize_repository(repository, TRUSTED_ORIGIN_BLOCKED)
+    }
+  end
+
+  def classify_pr_ref(pr_ref)
+    value = require_printable(pr_ref, PR_REF_BLOCKED)
+    blocked(PR_REF_BLOCKED) if value.empty?
+    return { kind: "number", number: value } if value.match?(DIGITS)
+
+    parsed = parse_pull_request_url(value, PR_REF_BLOCKED)
+
+    {
+      kind: "url",
+      number: parsed.fetch(:number),
+      authority: normalize_authority(parsed.fetch(:authority), TRUSTED_SCHEME, PR_REF_BLOCKED),
+      repository: parsed.fetch(:repository)
+    }
+  end
+
+  def split_metadata_record(record)
+    value = require_printable(record.b.sub(/\n+\z/, ""), METADATA_BLOCKED)
+    blocked(METADATA_BLOCKED) if value.empty?
+
+    left, separator, right = value.partition(RECORD_SEPARATOR)
+    blocked(METADATA_BLOCKED) if separator.empty?
+    blocked(METADATA_BLOCKED) if right.include?(RECORD_SEPARATOR)
+    blocked(METADATA_BLOCKED) if left.empty? || right.empty?
+
+    [left, right]
+  end
+
+  # The one and only network call: metadata fields `number` and `url`, pinned to
+  # the trusted host and the trusted repository. No body, comment, review, or
+  # diff text is requested.
+  def gh_pr_view_number_and_url(policy, number)
+    stdout, _stderr, status = Open3.capture3(
+      { "GH_REPO" => nil, "GH_HOST" => policy.fetch(:host) },
+      "gh",
+      "pr",
+      "view",
+      number,
+      "--repo",
+      policy.fetch(:repository),
+      "--json",
+      "number,url",
+      "--jq",
+      '"\(.number)|\(.url)"'
+    )
+    blocked(METADATA_BLOCKED) unless status.success?
+
+    stdout
+  rescue SystemCallError
+    blocked(METADATA_BLOCKED)
+  end
+
+  def resolve_metadata(policy, classified)
+    if classified.fetch(:kind) == "url"
+      blocked(METADATA_BLOCKED) unless classified.fetch(:authority) == policy.fetch(:host)
+      blocked(METADATA_BLOCKED) unless classified.fetch(:repository) == policy.fetch(:repository)
+    end
+
+    number, canonical_url = split_metadata_record(
+      gh_pr_view_number_and_url(policy, classified.fetch(:number))
+    )
+    blocked(METADATA_BLOCKED) unless number.match?(DIGITS)
+    blocked(METADATA_BLOCKED) unless number == classified.fetch(:number)
+    blocked(METADATA_BLOCKED) unless canonical_url.start_with?(URL_PREFIX)
+
+    { number: number, canonical_url: canonical_url }
+  end
+
+  def validate_canonical_url(policy, classified, metadata)
+    canonical_url = metadata.fetch(:canonical_url)
+    canonical = parse_pull_request_url(canonical_url, CANONICAL_BLOCKED)
+    gh_host = normalize_authority(canonical.fetch(:authority), TRUSTED_SCHEME, CANONICAL_BLOCKED)
+    blocked(CANONICAL_UNTRUSTED) unless gh_host == policy.fetch(:host)
+    blocked(CANONICAL_BLOCKED) unless canonical.fetch(:repository) == policy.fetch(:repository)
+    blocked(CANONICAL_BLOCKED) unless canonical.fetch(:number) == metadata.fetch(:number)
+
+    if classified.fetch(:kind) == "url" && canonical.fetch(:number) != classified.fetch(:number)
+      blocked(CANONICAL_BLOCKED)
+    end
+
+    gh_host
+  end
+
+  def preflight(environment, pr_ref)
+    policy = trusted_policy(environment)
+    classified = classify_pr_ref(pr_ref)
+    metadata = resolve_metadata(policy, classified)
+    gh_host = validate_canonical_url(policy, classified, metadata)
+
+    {
+      "TRUSTED_GH_SCHEME" => policy.fetch(:scheme),
+      "TRUSTED_GH_HOST" => policy.fetch(:host),
+      "TRUSTED_GH_REPO" => policy.fetch(:repository),
+      "PR_INPUT_KIND" => classified.fetch(:kind),
+      "PR_NUMBER" => metadata.fetch(:number),
+      "PR_REF_NUMBER" => classified.fetch(:kind) == "url" ? classified.fetch(:number) : "",
+      "REPO" => policy.fetch(:repository),
+      "GH_HOST" => gh_host,
+      "CANONICAL_URL" => metadata.fetch(:canonical_url)
+    }
+  end
+
+  def pr_ref_argument(argv, environment)
+    return environment["PR_REF"].to_s if argv.empty?
+
+    blocked(PR_REF_BLOCKED) unless argv.length == 2 && argv.first == "--pr-ref"
+
+    argv.last
+  end
+
+  def render(result)
+    OUTPUT_KEYS.map { |key| "#{key}=#{result.fetch(key)}" }.join("\n")
+  end
+
+  def main(argv, environment, stdout, stderr)
+    result = preflight(environment, pr_ref_argument(argv, environment))
+    stdout.puts(render(result))
+    0
+  rescue Blocked => e
+    stderr.puts(e.message)
+    1
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  exit UntrustedContributorIntakePreflight.main(ARGV, ENV, $stdout, $stderr)
+end
