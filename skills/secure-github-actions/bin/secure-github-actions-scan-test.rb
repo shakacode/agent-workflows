@@ -608,10 +608,11 @@ class SecureGitHubActionsScanTest < Minitest::Test
       assert_equal 1, status.exitstatus
       assert_empty stderr
       document = JSON.parse(stdout)
+      finding_files = document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
       assert_equal [
         "actions/tracked/action.yml",
         "actions/untracked/action.yml"
-      ], document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      ], finding_files
       refute_includes document.dig("scan", "files_scanned"), "node_modules/pkg/action.yml"
     end
   end
@@ -675,8 +676,8 @@ class SecureGitHubActionsScanTest < Minitest::Test
       assert_equal 1, status.exitstatus
       assert_empty stderr
       document = JSON.parse(stdout)
-      assert_equal ["source/ACTION.YML"],
-                   document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      finding_files = document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      assert_equal ["source/ACTION.YML"], finding_files
       assert_includes document.dig("scan", "files_scanned"), "source/ACTION.YML"
     end
   end
@@ -1127,8 +1128,8 @@ class SecureGitHubActionsScanTest < Minitest::Test
       assert_equal 1, status.exitstatus
       assert_empty stderr
       document = JSON.parse(stdout)
-      assert_equal ["source/action.yml"],
-                   document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      finding_files = document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      assert_equal ["source/action.yml"], finding_files
       assert_includes document.dig("scan", "files_scanned"), "source/action.yml"
       refute_includes document.dig("scan", "files_scanned"), "ambient/action.yml"
       refute_includes document.dig("scan", "files_scanned"), "linked/action.yml"
@@ -1156,8 +1157,8 @@ class SecureGitHubActionsScanTest < Minitest::Test
       assert_equal 1, status.exitstatus
       assert_empty stderr
       document = JSON.parse(stdout)
-      assert_equal ["source/action.yml"],
-                   document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      finding_files = document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      assert_equal ["source/action.yml"], finding_files
       refute_includes document.dig("scan", "files_scanned"), "source/action.yaml"
     end
   end

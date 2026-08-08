@@ -429,8 +429,9 @@ class PushDownstreamSecurityAuditFleetTest < Minitest::Test
 
     with_security_audit_config(yaml) do |config|
       repos = PushDownstream.load_security_audit_fleet(config, "workflow-security").fetch(:repos)
+      repo_names = repos.map { |repo| repo.fetch(:nwo) }
 
-      assert_equal ["shakacode-2/.github", "OpenAI/agent_workflows.v2"], repos.map { |repo| repo.fetch(:nwo) }
+      assert_equal ["shakacode-2/.github", "OpenAI/agent_workflows.v2"], repo_names
     end
   end
 

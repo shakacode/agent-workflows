@@ -208,14 +208,12 @@ module SecureGitHubActions
       descriptor_names_by_parent = Hash.new { |entries, identity| entries[identity] = [] }
       identity_errors = []
       directories.each_key do |relative|
-        begin
-          stat = reviewable_path_lstat(relative)
-          directory_identities[[stat.dev, stat.ino]] = true if stat
-        rescue Errno::ENOENT, Errno::ENOTDIR
-          next
-        rescue SystemCallError
-          identity_errors << relative
-        end
+        stat = reviewable_path_lstat(relative)
+        directory_identities[[stat.dev, stat.ino]] = true if stat
+      rescue Errno::ENOENT, Errno::ENOTDIR
+        next
+      rescue SystemCallError
+        identity_errors << relative
       end
       descriptors.each_key do |relative|
         basename = File.basename(relative)
@@ -725,9 +723,8 @@ module SecureGitHubActions
     def policy_indirection?(node)
       return true if node.is_a?(Psych::Nodes::Alias)
 
-      if node.is_a?(Psych::Nodes::Mapping)
-        return true if node.children.each_slice(2).any? { |key, _value| yaml_merge_key?(key) }
-      end
+      return true if node.is_a?(Psych::Nodes::Mapping) &&
+                     node.children.each_slice(2).any? { |key, _value| yaml_merge_key?(key) }
 
       node.respond_to?(:children) && node.children&.any? { |child| policy_indirection?(child) }
     end
