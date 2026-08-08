@@ -274,6 +274,56 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_merge_alias_sequences_cannot_hide_jobs
+    workflows = [
+      <<~'YAML',
+        hidden: &root
+          jobs:
+            build:
+              steps:
+                - run: echo "${{ github.event.issue.title }}"
+        <<: [*root]
+      YAML
+      <<~'YAML'
+        hidden: &jobs
+          build:
+            steps:
+              - run: echo "${{ github.event.issue.title }}"
+        jobs: { <<: [*jobs] }
+      YAML
+    ]
+
+    actual = workflows.map do |workflow|
+      with_repository(workflow) do |root|
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+        [status.exitstatus, stderr, rule_ids(JSON.parse(stdout))]
+      end
+    end
+
+    assert_equal [
+      [1, "", ["secure-github-actions/unsupported-yaml-alias"]],
+      [1, "", ["secure-github-actions/unsupported-yaml-alias"]]
+    ], actual
+  end
+
+  def test_direct_merge_mapping_cannot_hide_jobs
+    with_repository(<<~'YAML') do |root|
+      <<:
+        jobs:
+          build:
+            steps:
+              - run: echo "${{ github.event.issue.title }}"
+    YAML
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      finding = JSON.parse(stdout).fetch("review_findings").first
+      assert_equal "secure-github-actions/unsupported-yaml-alias", finding.fetch("rule_id")
+      assert_equal "<<", finding.dig("location", "symbol")
+    end
+  end
+
   def test_unknown_and_cyclic_aliases_fail_closed_at_step_boundaries
     with_repository(<<~YAML) do |root|
       jobs:
@@ -482,6 +532,37 @@ class SecureGitHubActionsScanTest < Minitest::Test
       assert_equal ["secure-github-actions/unsafe-file"], rule_ids(document)
       assert_equal ".github", document.fetch("review_findings").first.dig("location", "file")
     end
+  end
+
+  def test_workflows_directory_requires_list_and_traverse_permissions
+    workflow = <<~'YAML'
+      jobs:
+        build:
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+    YAML
+    expected_rules = {
+      0o111 => ["secure-github-actions/unsafe-file"],
+      0o311 => ["secure-github-actions/unsafe-file"],
+      0o511 => ["secure-github-actions/expression-in-run"]
+    }
+
+    actual = expected_rules.keys.to_h do |mode|
+      with_repository(workflow) do |root|
+        workflows_path = File.join(root, ".github/workflows")
+        File.chmod(mode, workflows_path)
+
+        begin
+          stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+        ensure
+          File.chmod(0o755, workflows_path)
+        end
+
+        [mode, [status.exitstatus, stderr, rule_ids(JSON.parse(stdout))]]
+      end
+    end
+
+    assert_equal expected_rules.transform_values { |rules| [1, "", rules] }, actual
   end
 
   def test_symlinked_trusted_actions_policy_is_invalid_and_not_read

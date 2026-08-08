@@ -28,6 +28,7 @@ module SecureGitHubActions
     EXPRESSION_PATTERN = /\$\{\{.*?\}\}/m
     EXCLUDED_ACTION_ROOTS = %w[.codex .git .tmp tmp].freeze
     ACTION_DESCRIPTORS = %w[action.yml action.yaml].freeze
+    DIRECTORY_ENUMERATION_PERMISSIONS = [0o500, 0o050, 0o005].freeze
 
     def initialize(root)
       @root = File.realpath(root)
@@ -55,7 +56,14 @@ module SecureGitHubActions
         next unless File.exist?(path) || File.symlink?(path)
 
         stat = File.lstat(path)
-        next if stat.directory? && !stat.symlink? && File.executable?(path)
+        if stat.directory? && !stat.symlink?
+          safe_permissions = if relative == ".github/workflows"
+                               directory_enumerable?(path, stat)
+                             else
+                               File.executable?(path)
+                             end
+          next if safe_permissions
+        end
 
         return [finding(
           rule_id: "secure-github-actions/unsafe-file",
@@ -77,6 +85,14 @@ module SecureGitHubActions
       end
 
       []
+    end
+
+    def directory_enumerable?(path, stat)
+      permission_bits = stat.mode
+      explicit_enumeration_permission = DIRECTORY_ENUMERATION_PERMISSIONS.any? do |permission|
+        (permission_bits & permission) == permission
+      end
+      explicit_enumeration_permission && File.readable?(path) && File.executable?(path)
     end
 
     def scan_workflow(path)
@@ -135,7 +151,7 @@ module SecureGitHubActions
     def scan_node(node, path, keys, lines)
       case node
       when Psych::Nodes::Alias
-        alias_findings(node, path, keys)
+        yaml_indirection_findings(node, path, keys)
       when Psych::Nodes::Mapping
         node.children.each_slice(2).flat_map do |key, value|
           unless key.is_a?(Psych::Nodes::Scalar)
@@ -147,6 +163,10 @@ module SecureGitHubActions
 
           key_name = key.value
           symbol = (keys + [key_name]).join(".")
+          if sensitive_yaml_merge?(key_name, keys)
+            next yaml_indirection_findings(key, path, keys + [key_name])
+          end
+
           findings = if sensitive_position?(key_name, keys)
                        shape_findings(key_name, value, path, symbol) +
                          scalar_findings(key_name, value, path, symbol, lines, keys)
@@ -179,7 +199,7 @@ module SecureGitHubActions
       )]
     end
 
-    def alias_findings(node, path, keys)
+    def yaml_indirection_findings(node, path, keys)
       return [] unless sensitive_alias_destination?(keys)
 
       [finding(
@@ -187,16 +207,21 @@ module SecureGitHubActions
         path: path,
         symbol: keys.join("."),
         line: node.start_line + 1,
-        title: "YAML alias enters a security-sensitive GitHub Actions boundary",
-        body: "Expand the aliased job or step mapping explicitly so run, uses, and secrets checks remain destination-bound."
+        title: "YAML indirection enters a security-sensitive GitHub Actions boundary",
+        body: "Expand the aliased or merged job or step mapping explicitly so run, uses, and secrets checks remain destination-bound."
       )]
     end
 
+    def sensitive_yaml_merge?(key_name, keys)
+      key_name == "<<" && sensitive_alias_destination?(keys + [key_name])
+    end
+
     def sensitive_alias_destination?(keys)
-      return true if keys == ["<<"]
+      return true if keys.first == "<<"
       return true if [["jobs"], ["runs"]].include?(keys)
 
       if keys.first == "jobs"
+        return true if keys[1] == "<<"
         return true if keys.length == 2
         return true if keys.length >= 3 && keys[2] == "<<"
         return true if keys.length == 3 && keys[2] == "steps"
@@ -205,6 +230,7 @@ module SecureGitHubActions
       end
 
       return false unless keys.first == "runs"
+      return true if keys[1] == "<<"
       return true if keys.length == 2 && keys[1] == "steps"
       return true if keys.length == 3 && keys[1] == "steps" && keys[2].is_a?(Integer)
 
