@@ -30,8 +30,15 @@ end
 def invoked_host_mechanics(prompt)
   literal_names = %r{\A\s*Document [/$][a-z][a-z0-9-]*(?: and [/$][a-z][a-z0-9-]*)* as literal names only\.\s*\z}
   candidate_text = prompt.delete_prefix("/goal\n").lines.reject { |line| line.match?(literal_names) }.join
+  token_pattern = %r{(?<![[:alnum:]_/$])[$/][a-z][a-z0-9-]*\b(?!/|\.[a-z0-9])}
 
-  candidate_text.scan(%r{(?<![[:alnum:]_./:$-])[$/][a-z][a-z0-9-]*\b(?!/|\.[a-z0-9])}).uniq
+  candidate_text.to_enum(:scan, token_pattern).filter_map do
+    match = Regexp.last_match
+    prefix = candidate_text[0...match.begin(0)]
+    relative_path = match[0].start_with?("/") &&
+                    prefix.match?(/(?:\A|[[:space:]("'`])(?:\.{1,2}|~)\z/)
+    match[0] unless relative_path
+  end.uniq
 end
 
 def host_mechanics_supported?(prompt, active_host)

@@ -342,6 +342,47 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
+  def test_punctuation_delimited_sigiled_commands_fail_closed
+    cases = [
+      ["codex", "codex", "Execute:/address-review before closeout."],
+      ["claude", "claude", "Execute:$address-review before closeout."],
+      ["codex", "codex", "Trigger./address-review before closeout."],
+      ["claude", "claude", "Launch-$address-review before closeout."],
+      ["portable", "codex", "Apply:/address-review before closeout."],
+      ["portable", "claude", "Apply:$address-review before closeout."],
+      ["portable", "codex", "Trigger./address-review before closeout."],
+      ["portable", "claude", "Launch-$address-review before closeout."]
+    ]
+
+    cases.each do |declared_host, active_host, mechanic|
+      result, stderr, status = run_adapter(
+        direct_prompt(host: declared_host, body: mechanic),
+        active_host: active_host
+      )
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), mechanic
+      assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), mechanic
+      assert_equal false, result.fetch("execute_allowed"), mechanic
+      assert_nil result.fetch("prompt"), mechanic
+    end
+  end
+
+  def test_conversion_rejects_punctuation_delimited_residual_target_mechanics_before_relaunch
+    prompt = direct_prompt(
+      host: "codex",
+      body: "Execute:$address-review before closeout."
+    )
+    result, stderr, status = run_adapter(prompt, active_host: "claude")
+
+    assert status.success?, stderr
+    assert_equal "ambiguous", result.fetch("classification")
+    assert_equal "unsupported-host-mechanic", result.fetch("reason_code")
+    assert_equal false, result.fetch("execute_allowed")
+    assert_equal false, result.fetch("relaunch_required")
+    assert_nil result.fetch("prompt")
+  end
+
   def test_explicit_conversion_rejects_mechanics_contradicting_the_declared_source_host
     cases = [
       ["codex", "claude", "Before closeout, run /address-review now."],
@@ -380,12 +421,14 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
-  def test_absolute_filesystem_paths_are_not_slash_command_mechanics
+  def test_filesystem_paths_and_urls_are_not_slash_command_mechanics
     cases = [
       ["codex", "codex", "Inspect /tmp/work/file before closeout.", "compatible"],
       ["codex", "codex", "Inspect /tmp.json before closeout.", "compatible"],
       ["portable", "codex", "Read /var/data.json as evidence.", "portable"],
-      ["portable", "claude", "Compare /tmp/work/file with /var/data.json.", "portable"]
+      ["portable", "claude", "Compare /tmp/work/file with /var/data.json.", "portable"],
+      ["portable", "codex", "Review https://example.com/address-review as evidence.", "portable"],
+      ["portable", "claude", "Inspect ./address-review, ../address-review, and ~/address-review.", "portable"]
     ]
 
     cases.each do |declared_host, active_host, prose, expected_classification|
