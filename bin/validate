@@ -4,6 +4,24 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 RUBOCOP_VERSION=$(tr -d '[:space:]' < .rubocop-version)
 
+echo "== working tree cleanliness (skills/) =="
+dirty_skills="$(git status --porcelain -- skills)"
+if [[ -n "$dirty_skills" ]]; then
+  {
+    echo "FAIL: skills/ has uncommitted changes."
+    echo
+    echo "The installer and delivery-state suites below install from this checkout"
+    echo "and stamp source_revision from git HEAD (git rev-parse HEAD). An uncommitted"
+    echo "change under skills/ makes the working tree disagree with HEAD, and that"
+    echo "surfaces several suites later as an unrelated installer delivery-mode"
+    echo "conflict on a skill path instead of naming the real cause (#240)."
+    echo
+    echo "Commit or stash the changes below under skills/, then rerun bin/validate:"
+    echo "$dirty_skills"
+  } >&2
+  exit 1
+fi
+
 echo "== license =="
 test -f LICENSE
 grep -q "MIT License" LICENSE
