@@ -681,6 +681,97 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_git_descriptor_alias_replacement_during_membership_check_fails_closed
+    skip "filesystem is case-sensitive" unless filesystem_case_insensitive?
+
+    with_repository("jobs: {}\n") do |root|
+      indexed_action = File.join(root, "source/action.yml")
+      FileUtils.mkdir_p(File.dirname(indexed_action))
+      File.write(indexed_action, "runs: { using: composite, steps: [] }\n")
+      git!(root, "init", "-b", "main")
+      git!(root, "add", ".github/workflows/test.yml", "source/action.yml")
+      git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture")
+
+      intermediate = File.join(root, "source/action-case-rename")
+      aliased_action = File.join(root, "source/ACTION.YML")
+      File.rename(indexed_action, intermediate)
+      File.rename(intermediate, aliased_action)
+      assert_empty git!(root, "status", "--short")
+
+      scanner = SecureGitHubActions::Scanner.new(root)
+      original_membership_check = scanner.method(:reviewable_descriptor_state)
+      replaced = false
+      scanner.define_singleton_method(:reviewable_descriptor_state) do |*arguments|
+        relative, directory, entry = arguments.values_at(1, 2, 5)
+        if !replaced && relative == "source/ACTION.YML"
+          replacement = File.join(directory, ".replacement-action.yml")
+          File.write(replacement, <<~'YAML')
+            runs:
+              using: composite
+              steps:
+                - run: echo "${{ github.event.issue.title }}"
+          YAML
+          File.rename(replacement, File.join(directory, entry))
+          replaced = true
+        end
+        original_membership_check.call(*arguments)
+      end
+
+      result = scanner.scan
+
+      assert replaced
+      assert_includes File.read(aliased_action), "github.event.issue.title"
+      refute_predicate result, :clean?
+      assert_equal ["secure-github-actions/unsafe-file"],
+                   result.findings.map { |finding| finding.fetch("rule_id") }.uniq
+      assert_equal ["source/ACTION.YML"],
+                   result.findings.map { |finding| finding.dig("location", "file") }.uniq
+    end
+  end
+
+  def test_git_descriptor_alias_disappearance_during_membership_check_is_not_a_false_boundary
+    skip "filesystem is case-sensitive" unless filesystem_case_insensitive?
+
+    actual = %i[delete rename].map do |operation|
+      with_repository("jobs: {}\n") do |root|
+        indexed_action = File.join(root, "source/action.yml")
+        FileUtils.mkdir_p(File.dirname(indexed_action))
+        File.write(indexed_action, "runs: { using: composite, steps: [] }\n")
+        git!(root, "init", "-b", "main")
+        git!(root, "add", ".github/workflows/test.yml", "source/action.yml")
+        git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture")
+
+        intermediate = File.join(root, "source/action-case-rename")
+        aliased_action = File.join(root, "source/ACTION.YML")
+        File.rename(indexed_action, intermediate)
+        File.rename(intermediate, aliased_action)
+        assert_empty git!(root, "status", "--short")
+
+        scanner = SecureGitHubActions::Scanner.new(root)
+        original_membership_check = scanner.method(:reviewable_descriptor_state)
+        changed = false
+        scanner.define_singleton_method(:reviewable_descriptor_state) do |*arguments|
+          relative, directory, entry = arguments.values_at(1, 2, 5)
+          if !changed && relative == "source/ACTION.YML"
+            path = File.join(directory, entry)
+            if operation == :delete
+              File.unlink(path)
+            else
+              File.rename(path, File.join(directory, "renamed.yml"))
+            end
+            changed = true
+          end
+          original_membership_check.call(*arguments)
+        end
+
+        result = scanner.scan
+        [changed, result.clean?, result.findings]
+      end
+    end
+
+    assert_equal [[true, true, []], [true, true, []]], actual
+  end
+
   def test_explicitly_referenced_ignored_untracked_action_is_still_scanned
     with_repository(<<~YAML) do |root|
       jobs:

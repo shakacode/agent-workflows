@@ -30,6 +30,9 @@ module SecureGitHubActions
     EXCLUDED_ACTION_ROOTS = %w[.codex .git .tmp tmp].freeze
     ACTION_DESCRIPTORS = %w[action.yml action.yaml].freeze
     DIRECTORY_ENUMERATION_PERMISSIONS = [0o500, 0o050, 0o005].freeze
+    DESCRIPTOR_REVIEWABLE = :reviewable
+    DESCRIPTOR_NOT_REVIEWABLE = :not_reviewable
+    DESCRIPTOR_MEMBERSHIP_UNSTABLE = :membership_unstable
 
     def initialize(root)
       @root = File.realpath(root)
@@ -147,9 +150,14 @@ module SecureGitHubActions
 
                 directories << path
               else
-                reviewable_descriptor = reviewable_descriptor_path?(
+                descriptor_state = reviewable_descriptor_state(
                   reviewable_paths, child_relative, directory, stat, entries, entry, child_stat
                 )
+                if descriptor_state == DESCRIPTOR_MEMBERSHIP_UNSTABLE
+                  findings << unsafe_action_descriptor_finding(path)
+                  next
+                end
+                reviewable_descriptor = descriptor_state == DESCRIPTOR_REVIEWABLE
                 next unless ACTION_DESCRIPTORS.include?(entry) || reviewable_descriptor
                 next if reviewable_paths && !reviewable_descriptor && git_ignored_path?(child_relative)
 
@@ -248,22 +256,25 @@ module SecureGitHubActions
       reviewable_paths.fetch(:directory_identities)[[stat.dev, stat.ino]]
     end
 
-    def reviewable_descriptor_path?(reviewable_paths, relative, directory, directory_stat, entries, entry, stat)
-      return false unless reviewable_paths
-      return true if reviewable_paths.fetch(:descriptors)[relative]
+    def reviewable_descriptor_state(reviewable_paths, relative, directory, directory_stat, entries, entry, stat)
+      return DESCRIPTOR_NOT_REVIEWABLE unless reviewable_paths
+      return DESCRIPTOR_REVIEWABLE if reviewable_paths.fetch(:descriptors)[relative]
 
       names = reviewable_paths.fetch(:descriptor_names_by_parent)[[directory_stat.dev, directory_stat.ino]]
-      return false unless names
+      return DESCRIPTOR_NOT_REVIEWABLE unless names
 
-      names.any? do |name|
-        next true if name == entry
-        next false if entries.include?(name)
+      names.each do |name|
+        return DESCRIPTOR_REVIEWABLE if name == entry
+        next if entries.include?(name)
 
         listed_stat = File.lstat(File.join(directory, name))
-        [listed_stat.dev, listed_stat.ino] == [stat.dev, stat.ino]
+        return DESCRIPTOR_REVIEWABLE if [listed_stat.dev, listed_stat.ino] == [stat.dev, stat.ino]
+
+        return DESCRIPTOR_MEMBERSHIP_UNSTABLE
       rescue Errno::ENOENT, Errno::ENOTDIR
-        false
+        next
       end
+      DESCRIPTOR_NOT_REVIEWABLE
     end
 
     def ignored_unreviewable_directory?(reviewable_paths, relative, stat)
