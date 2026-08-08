@@ -134,7 +134,15 @@ class SecureGitHubActionsScanTest < Minitest::Test
             steps:
               - { uses: owner/action@#{sha} } # v1.2.3
       YAML
-      "jobs: { build: { runs-on: ubuntu-latest, steps: [{ uses: owner/action@#{sha} }] } } # v1.2.3\n"
+      "jobs: { build: { runs-on: ubuntu-latest, steps: [{ uses: owner/action@#{sha} }] } } # v1.2.3\n",
+      <<~YAML,
+        jobs:
+          build:
+            runs-on: ubuntu-latest
+            steps:
+              - { uses: owner/action@#{sha}, } # v1.2.3
+      YAML
+      "jobs: { build: { runs-on: ubuntu-latest, steps: [{ uses: owner/action@#{sha}, },] } } # v1.2.3\n"
     ]
 
     actual = workflows.map do |workflow|
@@ -144,7 +152,7 @@ class SecureGitHubActionsScanTest < Minitest::Test
       end
     end
 
-    assert_equal [[0, "", []], [0, "", []]], actual
+    assert_equal [[0, "", []], [0, "", []], [0, "", []], [0, "", []]], actual
   end
 
   def test_cli_rejects_flow_style_pinned_uses_with_unrelated_or_later_comments
@@ -206,6 +214,30 @@ class SecureGitHubActionsScanTest < Minitest::Test
       assert_equal 1, status.exitstatus
       assert_empty stderr
       assert_equal ["secure-github-actions/unsafe-local-use"], rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_repo_root_local_action_is_accepted_and_scanned
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: ./
+    YAML
+      File.write(File.join(root, "action.yml"), <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal ["secure-github-actions/expression-in-run"], rule_ids(document)
+      assert_includes document.dig("scan", "files_scanned"), "action.yml"
     end
   end
 
@@ -552,6 +584,92 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_git_action_discovery_scans_tracked_and_unignored_but_not_ignored_descriptors
+    with_repository("jobs: {}\n") do |root|
+      tracked_action = File.join(root, "actions/tracked/action.yml")
+      untracked_action = File.join(root, "actions/untracked/action.yml")
+      ignored_action = File.join(root, "node_modules/pkg/action.yml")
+      [tracked_action, untracked_action, ignored_action].each do |path|
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, <<~'YAML')
+          runs:
+            using: composite
+            steps:
+              - run: echo "${{ github.event.issue.title }}"
+        YAML
+      end
+      File.write(File.join(root, ".gitignore"), "actions/tracked/\nnode_modules/\n")
+      git!(root, "init", "-b", "main")
+      git!(root, "add", ".github/workflows/test.yml", ".gitignore")
+      git!(root, "add", "--force", "actions/tracked/action.yml")
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal [
+        "actions/tracked/action.yml",
+        "actions/untracked/action.yml"
+      ], document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      refute_includes document.dig("scan", "files_scanned"), "node_modules/pkg/action.yml"
+    end
+  end
+
+  def test_explicitly_referenced_ignored_untracked_action_is_still_scanned
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: ./node_modules/pkg
+    YAML
+      action_path = File.join(root, "node_modules/pkg/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+      File.write(File.join(root, ".gitignore"), "node_modules/\n")
+      git!(root, "init", "-b", "main")
+      git!(root, "add", ".github/workflows/test.yml", ".gitignore")
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal ["secure-github-actions/expression-in-run"], rule_ids(document)
+      assert_includes document.dig("scan", "files_scanned"), "node_modules/pkg/action.yml"
+    end
+  end
+
+  def test_git_action_discovery_keeps_unignored_directory_boundary_findings
+    with_repository("jobs: {}\n") do |root|
+      action_dir = File.join(root, "opaque-action")
+      FileUtils.mkdir_p(action_dir)
+      File.write(File.join(action_dir, "action.yml"), <<~'YAML')
+        runs:
+          using: composite
+          steps: []
+      YAML
+      git!(root, "init", "-b", "main")
+      git!(root, "add", ".github/workflows/test.yml")
+      File.chmod(0o111, action_dir)
+
+      begin
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+      ensure
+        File.chmod(0o755, action_dir)
+      end
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_equal ["secure-github-actions/unsafe-file"], rule_ids(JSON.parse(stdout))
+    end
+  end
+
   def test_action_discovery_requires_list_and_traverse_permissions
     expected_rules = {
       0o111 => ["secure-github-actions/unsafe-file"],
@@ -794,6 +912,40 @@ class SecureGitHubActionsScanTest < Minitest::Test
       ]
     ]
     assert_equal [expected, expected, expected], actual
+  end
+
+  def test_alias_and_non_scalar_trusted_actions_keys_fail_closed_as_structured_findings
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    policies = [
+      "policy_key: &policy_key trusted_actions\n*policy_key:\n  - owner/action\n",
+      "? [trusted_actions]\n: [owner/action]\n"
+    ]
+
+    actual = policies.map do |policy|
+      with_repository(<<~YAML) do |root|
+        jobs:
+          build:
+            steps:
+              - uses: owner/action@#{sha} # v1.2.3
+      YAML
+        policy_path = File.join(root, ".agents/agent-workflow.yml")
+        FileUtils.mkdir_p(File.dirname(policy_path))
+        File.write(policy_path, policy)
+
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+        [status.exitstatus, stderr, rule_ids(JSON.parse(stdout))]
+      end
+    end
+
+    expected = [
+      1,
+      "",
+      [
+        "secure-github-actions/invalid-trusted-actions-policy",
+        "secure-github-actions/untrusted-external-use"
+      ]
+    ]
+    assert_equal [expected, expected], actual
   end
 
   def test_multiple_policy_documents_are_invalid_and_do_not_trust_action
@@ -1223,6 +1375,13 @@ class SecureGitHubActionsScanTest < Minitest::Test
   end
 
   private
+
+  def git!(root, *arguments)
+    output, status = Open3.capture2e("git", "-C", root, *arguments)
+    raise "git fixture failed: #{output}" unless status.success?
+
+    output
+  end
 
   def filesystem_case_insensitive?
     Dir.mktmpdir("secure-github-actions-case-probe") do |root|

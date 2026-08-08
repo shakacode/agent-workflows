@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "open3"
 require "psych"
 
 module SecureGitHubActions
@@ -105,6 +106,7 @@ module SecureGitHubActions
     def discover_action_paths
       paths = []
       findings = []
+      reviewable_paths = git_reviewable_paths
       directories = [@root]
       until directories.empty?
         directory = directories.shift
@@ -128,8 +130,12 @@ module SecureGitHubActions
 
               child_stat = File.lstat(path)
               if child_stat.directory? && !child_stat.symlink?
+                next if ignored_unreviewable_path?(reviewable_paths, child_relative, :directories)
+
                 directories << path
               elsif ACTION_DESCRIPTORS.include?(entry)
+                next if ignored_unreviewable_path?(reviewable_paths, child_relative, :files)
+
                 if child_stat.file? && !child_stat.symlink?
                   paths << path
                 else
@@ -145,6 +151,46 @@ module SecureGitHubActions
         end
       end
       [paths, findings]
+    end
+
+    def git_reviewable_paths
+      stdout, _stderr, status = Open3.capture3(
+        "git", "-C", @root, "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--",
+        binmode: true
+      )
+      return nil unless status.success?
+
+      files = {}
+      directories = {}
+      stdout.split("\0").each do |relative|
+        next if relative.empty? || relative.start_with?("../") || relative.start_with?("/")
+
+        files[relative] = true
+        directory = File.dirname(relative)
+        until directory == "."
+          directories[directory] = true
+          parent = File.dirname(directory)
+          break if parent == directory
+
+          directory = parent
+        end
+      end
+      { files: files, directories: directories }
+    rescue SystemCallError
+      nil
+    end
+
+    def ignored_unreviewable_path?(reviewable_paths, relative, collection)
+      return false unless reviewable_paths
+      return false if reviewable_paths.fetch(collection)[relative]
+
+      _stdout, _stderr, status = Open3.capture3(
+        "git", "-C", @root, "check-ignore", "--quiet", "--", relative,
+        binmode: true
+      )
+      status.success?
+    rescue SystemCallError
+      false
     end
 
     def unsafe_action_discovery_finding(path)
@@ -425,6 +471,7 @@ module SecureGitHubActions
     end
 
     def safe_local_use?(reference)
+      return true if reference == "./"
       return false unless reference.match?(%r{\A\./[^\s@\\]+\z})
 
       reference.split("/").drop(1).none? { |segment| segment.empty? || %w[. ..].include?(segment) }
@@ -492,6 +539,8 @@ module SecureGitHubActions
     end
 
     def excluded_action_root?(relative)
+      return false if relative.empty?
+
       root_segment = relative.split("/", 2).first
       return true if EXCLUDED_ACTION_ROOTS.include?(root_segment)
 
@@ -524,7 +573,7 @@ module SecureGitHubActions
 
     def readable_version_comment?(node, lines)
       suffix = lines.fetch(node.end_line, "")[node.end_column..].to_s
-      suffix.match?(/\A[ \t]+(?:(?:[}\]][ \t]*)*[}\]][ \t]+)?#[ \t]*[A-Za-z0-9][^\r\n]*\z/)
+      suffix.match?(/\A(?:[ \t]*[},\]])*[ \t]+#[ \t]*[A-Za-z0-9][^\r\n]*\z/)
     end
 
     def trusted_use?(reference)
@@ -541,6 +590,9 @@ module SecureGitHubActions
 
       root = stream.children.first&.children&.first
       return invalid_trusted_actions(path) unless root.is_a?(Psych::Nodes::Mapping)
+      return invalid_trusted_actions(path) unless root.children.each_slice(2).all? do |key, _value|
+        key.is_a?(Psych::Nodes::Scalar)
+      end
 
       values = root.children.each_slice(2).filter_map do |key, value|
         value if key.is_a?(Psych::Nodes::Scalar) && key.value == "trusted_actions"

@@ -186,9 +186,11 @@ module PushDownstream
       repo = entry["repo"]
       base_branch = entry["base_branch"]
       remote_url = entry["remote_url"]
-      unless [owner, repo, base_branch].all? { |value| value.is_a?(String) && !value.empty? && !value.match?(/[\0\r\n]/) }
+      unless base_branch.is_a?(String) && !base_branch.empty? && !base_branch.match?(/[\0\r\n]/)
         raise "invalid security audit fleet entry"
       end
+      raise "invalid security audit fleet owner" unless valid_github_owner?(owner)
+      raise "invalid security audit fleet repo" unless valid_github_repo?(repo)
       if !remote_url.nil? && !valid_security_audit_remote_url?(remote_url)
         raise "invalid security audit fleet remote_url for #{owner}/#{repo}"
       end
@@ -213,6 +215,16 @@ module PushDownstream
     remote_url.is_a?(String) &&
       remote_url.match?(/\A[^\s\0]+\z/) &&
       !remote_url.start_with?("-")
+  end
+
+  def valid_github_owner?(owner)
+    owner.is_a?(String) && owner.bytesize <= 39 &&
+      owner.match?(/\A(?!.*--)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\z/)
+  end
+
+  def valid_github_repo?(repo)
+    repo.is_a?(String) && repo.bytesize <= 100 &&
+      repo.match?(/\A(?!-)[A-Za-z0-9_.-]+\z/) && !%w[. ..].include?(repo)
   end
 
   def validate_policy_fleet_values!(fleet_name, repos, keys)

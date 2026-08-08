@@ -381,6 +381,59 @@ class PushDownstreamSecurityAuditFleetTest < Minitest::Test
     end
   end
 
+  def test_security_audit_rejects_unsafe_owner_and_repo_components_before_clone
+    invalid_components = [
+      "../escaped",
+      "nested/name",
+      "nested\\name",
+      ".",
+      "..",
+      "-option",
+      "bad\0name",
+      "bad\nname"
+    ]
+
+    %w[owner repo].product(invalid_components).each do |field, invalid|
+      entry = {
+        "owner" => "shakacode",
+        "repo" => "consumer",
+        "base_branch" => "main"
+      }
+      entry[field] = invalid
+      yaml = YAML.dump(
+        "security_audit_fleets" => {
+          "workflow-security" => { "repos" => [entry] }
+        }
+      )
+
+      with_security_audit_config(yaml) do |config|
+        error = assert_raises(RuntimeError) do
+          PushDownstream.load_security_audit_fleet(config, "workflow-security")
+        end
+        assert_includes error.message, "invalid security audit fleet #{field}"
+      end
+    end
+  end
+
+  def test_security_audit_accepts_legitimate_github_owner_and_repo_components
+    yaml = YAML.dump(
+      "security_audit_fleets" => {
+        "workflow-security" => {
+          "repos" => [
+            { "owner" => "shakacode-2", "repo" => ".github", "base_branch" => "main" },
+            { "owner" => "OpenAI", "repo" => "agent_workflows.v2", "base_branch" => "main" }
+          ]
+        }
+      }
+    )
+
+    with_security_audit_config(yaml) do |config|
+      repos = PushDownstream.load_security_audit_fleet(config, "workflow-security").fetch(:repos)
+
+      assert_equal ["shakacode-2/.github", "OpenAI/agent_workflows.v2"], repos.map { |repo| repo.fetch(:nwo) }
+    end
+  end
+
   def test_security_audit_cli_rejects_apply
     Dir.mktmpdir("push-downstream-security-audit") do |dir|
       config = File.join(dir, "downstream.yml")
