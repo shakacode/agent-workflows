@@ -681,6 +681,38 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_git_action_discovery_matches_each_case_variant_when_both_descriptor_names_are_tracked
+    skip "filesystem is case-sensitive" unless filesystem_case_insensitive?
+
+    with_repository("jobs: {}\n") do |root|
+      source = File.join(root, "source")
+      FileUtils.mkdir_p(source)
+      %w[action.yml action.yaml].each do |name|
+        File.write(File.join(source, name), "runs: { using: composite, steps: [] }\n")
+      end
+      git!(root, "init", "-b", "main")
+      git!(root, "add", ".github/workflows/test.yml", "source/action.yml", "source/action.yaml")
+      git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture")
+
+      { "action.yml" => "ACTION.YML", "action.yaml" => "ACTION.YAML" }.each do |indexed, aliased|
+        intermediate = File.join(source, "#{indexed}-case-rename")
+        File.rename(File.join(source, indexed), intermediate)
+        File.rename(intermediate, File.join(source, aliased))
+      end
+      assert_empty git!(root, "status", "--short")
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+      document = JSON.parse(stdout)
+
+      assert_equal [
+        0,
+        "",
+        [],
+        [".github/workflows/test.yml", "source/ACTION.YAML", "source/ACTION.YML"]
+      ], [status.exitstatus, stderr, rule_ids(document), document.dig("scan", "files_scanned")]
+    end
+  end
+
   def test_git_descriptor_alias_replacement_during_membership_check_fails_closed
     skip "filesystem is case-sensitive" unless filesystem_case_insensitive?
 
@@ -824,6 +856,57 @@ class SecureGitHubActionsScanTest < Minitest::Test
       assert_empty stderr
       assert_equal ["secure-github-actions/unsafe-file"], rule_ids(JSON.parse(stdout))
     end
+  end
+
+  def test_action_discovery_fails_closed_when_a_queued_directory_is_replaced
+    actual = %i[symlink regular_file fifo].map do |replacement|
+      with_repository("jobs: {}\n") do |root|
+        action_root = File.join(root, "source")
+        action_path = File.join(action_root, "action.yml")
+        FileUtils.mkdir_p(action_root)
+        File.write(action_path, "runs: { using: composite, steps: [] }\n")
+        git!(root, "init", "-b", "main")
+        git!(root, "add", ".github/workflows/test.yml", "source/action.yml")
+
+        scanner = SecureGitHubActions::Scanner.new(root)
+        original_ignore_check = scanner.method(:ignored_unreviewable_directory?)
+        replaced = false
+        scanner.define_singleton_method(:ignored_unreviewable_directory?) do |*arguments|
+          relative = arguments.fetch(1)
+          ignored = original_ignore_check.call(*arguments)
+          if !replaced && !ignored && relative == "source"
+            FileUtils.remove_entry(action_root)
+            case replacement
+            when :symlink
+              File.symlink(root, action_root)
+            when :regular_file
+              File.write(action_root, "not a directory\n")
+            when :fifo
+              File.mkfifo(action_root)
+            end
+            replaced = true
+          end
+          ignored
+        end
+
+        result = scanner.scan
+        [
+          replaced,
+          File.lstat(action_root).ftype,
+          result.clean?,
+          result.files,
+          result.findings.map { |finding| finding.fetch("rule_id") }.uniq,
+          result.findings.map { |finding| finding.dig("location", "file") }.uniq
+        ]
+      end
+    end
+
+    expected = [
+      [true, "link", false, [".github/workflows/test.yml"], ["secure-github-actions/unsafe-file"], ["source"]],
+      [true, "file", false, [".github/workflows/test.yml"], ["secure-github-actions/unsafe-file"], ["source"]],
+      [true, "fifo", false, [".github/workflows/test.yml"], ["secure-github-actions/unsafe-file"], ["source"]]
+    ]
+    assert_equal expected, actual
   end
 
   def test_git_action_discovery_rejects_tracked_action_ancestors_replaced_by_non_directories

@@ -124,7 +124,10 @@ module SecureGitHubActions
           next if directory != @root && excluded_action_root?(relative)
 
           stat = File.lstat(directory)
-          next unless stat.directory? && !stat.symlink?
+          unless stat.directory? && !stat.symlink?
+            findings << unsafe_action_discovery_finding(directory) if directory != @root
+            next
+          end
 
           unless directory_enumerable?(directory, stat)
             findings << unsafe_action_discovery_finding(directory)
@@ -263,6 +266,7 @@ module SecureGitHubActions
       names = reviewable_paths.fetch(:descriptor_names_by_parent)[[directory_stat.dev, directory_stat.ino]]
       return DESCRIPTOR_NOT_REVIEWABLE unless names
 
+      mismatched_candidate = false
       names.each do |name|
         return DESCRIPTOR_REVIEWABLE if name == entry
         next if entries.include?(name)
@@ -270,11 +274,11 @@ module SecureGitHubActions
         listed_stat = File.lstat(File.join(directory, name))
         return DESCRIPTOR_REVIEWABLE if [listed_stat.dev, listed_stat.ino] == [stat.dev, stat.ino]
 
-        return DESCRIPTOR_MEMBERSHIP_UNSTABLE
+        mismatched_candidate = true
       rescue Errno::ENOENT, Errno::ENOTDIR
         next
       end
-      DESCRIPTOR_NOT_REVIEWABLE
+      mismatched_candidate ? DESCRIPTOR_MEMBERSHIP_UNSTABLE : DESCRIPTOR_NOT_REVIEWABLE
     end
 
     def ignored_unreviewable_directory?(reviewable_paths, relative, stat)
