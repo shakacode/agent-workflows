@@ -96,15 +96,38 @@ script means that capability is n/a in that repo.
 - `merge_ledger`
 - `ci_parity_environment`
 - `hosted_ci_trigger`
-- `hosted_qa_gate`
 - `ci_change_detector`
 
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
-`hosted_qa_gate` states which changes require an exact-head deployed runtime,
-the acceptance criteria and unhappy paths that must be exercised there, and
-whether maintainers may waive the gate. A non-waivable value is fail-closed:
-deployment success without runtime exercise is not a QA pass.
+
+`hosted_qa_gate` is an optional closed mapping during first-phase adoption.
+Omission or the exact string `n/a` means that no hosted runtime gate is
+configured. A mapping has exactly these fields:
+
+```yaml
+hosted_qa_gate:
+  version: 1
+  change_paths:
+    - "app/**"
+    - "config/runtime/**"
+  target: "production"
+  deployment_verifier: ".agents/bin/verify-hosted-deployment"
+  acceptance_criteria:
+    - "sign-in"
+    - "checkout"
+  waiver_mode: "forbidden" # or maintainer
+```
+
+`change_paths` uses the same validated repository-relative glob grammar as the
+autonomous-merge policy. The target and criterion IDs are closed scalar IDs;
+criterion IDs and path patterns are unique. `deployment_verifier` names one
+tracked executable under `.agents/bin`. Unknown keys, wrong types, unsafe
+paths or globs, duplicates, unsupported versions, and any waiver mode other
+than `forbidden` or `maintainer` fail closed. The verifier and policy used for
+runtime readiness always come from the trusted base. The two-phase bootstrap
+and exact verifier receipt contracts are canonical in
+[`workflows/pr-processing.md`](../workflows/pr-processing.md).
 
 `autonomous_merge` is an optional closed mapping. When absent, the shared
 workflow uses its portable thresholds and common hard-risk categories. When

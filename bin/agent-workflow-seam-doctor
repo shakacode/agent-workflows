@@ -11,6 +11,7 @@ require "optparse"
 require "shellwords"
 require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
+require_relative "agent_doctor/hosted_qa_policy"
 
 module AgentWorkflowSeamDoctor
   SECTION = "Agent Workflow Configuration"
@@ -124,7 +125,6 @@ module AgentWorkflowSeamDoctor
     merge_ledger
     ci_parity_environment
     hosted_ci_trigger
-    hosted_qa_gate
     ci_change_detector
   ].freeze
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
@@ -1707,6 +1707,7 @@ module AgentWorkflowSeamDoctor
 
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
+    issues.concat(hosted_qa_policy_issues(root, File.read(path, encoding: "UTF-8")))
     if config.key?("autonomous_merge")
       autonomous_policy = AutonomousMergePolicy.parse(File.read(path, encoding: "UTF-8"))
       autonomous_policy.errors.each do |error|
@@ -1717,6 +1718,20 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def hosted_qa_policy_issues(root, yaml)
+    result = HostedQaPolicy.parse(yaml)
+    issues = result.errors.map { |error| "invalid hosted_qa_gate policy: #{error}" }
+    return issues unless result.state == :configured
+
+    verifier = result.policy.fetch("deployment_verifier")
+    verifier_issues = guarded_direct_file_issues(root, verifier).map do |issue|
+      issue
+        .sub("invalid merge_submission policy: guarded_direct.executable", "invalid hosted_qa_gate policy: deployment_verifier")
+        .sub("guarded_direct.executable", "deployment_verifier")
+    end
+    issues.concat(verifier_issues)
   end
 
   def untrusted_contributor_intake_policy_issues(config)

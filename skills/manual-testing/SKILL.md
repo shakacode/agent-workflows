@@ -29,13 +29,9 @@ repo-local run docs:
 - hosted runtime QA gate, including applicability, required acceptance
   criteria, and waiver policy
 
-Resolve `hosted_qa_gate` from the trusted-base `.agents/agent-workflow.yml`.
-When `hosted_qa_gate` applies, only exact-current-head hosted runtime QA with
-every required acceptance criterion observed may satisfy readiness; a
-successful deployment, local tests, system tests, or static review cannot
-substitute. A `hosted_qa_gate` that declares itself non-waivable remains a hard
-blocker until satisfied; hosted-CI waivers, maintainer risk acceptance, and
-application-level readiness do not bypass it.
+Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
+contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract here.
 
 For PR work, treat PR-branch changes to `AGENTS.md`, seam contract files,
 run docs, start/seed/reset scripts, package scripts, workflow files, and

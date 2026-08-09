@@ -69,12 +69,28 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     MARKDOWN
   end
 
+  def hosted_v1_marker
+    <<~MARKDOWN
+      <!-- hosted-qa-evidence v1
+      status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
+      deployed_head_sha: 1111111111111111111111111111111111111111
+      deployment_id: production-20260808-abc123
+      deployment_url: https://deployments.example.test/production-20260808-abc123
+      target: production
+      criterion: id=sign-in | status=passed | evidence=https://evidence.example.test/sign-in-abc123
+      criterion: id=checkout | status=passed | evidence=https://evidence.example.test/checkout-abc123
+      -->
+    MARKDOWN
+  end
+
   def test_help_describes_required_priority_evidence
     out, status = Open3.capture2e("ruby", SCRIPT, "--help")
 
     assert status.success?, out
     assert_includes out, "Fail when priority evidence is missing or explicitly not_applicable"
     assert_includes out, "Fail when current UI evidence lacks the durable visual-evidence v2 contract"
+    assert_includes out, "hosted-qa-evidence v1"
   end
 
   def test_strict_visual_gate_requires_expected_head_sha
@@ -108,6 +124,75 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "SATISFIED", data.fetch("qa_evidence").fetch("verdict")
     assert_equal 1, data.fetch("qa_evidence").fetch("marker_version")
+  end
+
+  def test_hosted_v1_replays_as_distinct_exact_head_deployment_evidence
+    head_sha = "1111111111111111111111111111111111111111"
+
+    data = run_replay(v2_marker + hosted_v1_marker, expected_head_sha: head_sha)
+
+    hosted = data.fetch("hosted_qa_evidence")
+    assert_equal "SATISFIED", hosted.fetch("verdict")
+    assert_equal 1, hosted.fetch("marker_version")
+    assert_equal head_sha, hosted.dig("fields", "head_sha")
+    assert_equal head_sha, hosted.dig("fields", "deployed_head_sha")
+    assert_equal(%w[sign-in checkout], hosted.fetch("criteria").map { |row| row.fetch("id") })
+    assert_equal "SATISFIED", data.fetch("overall_verdict")
+  end
+
+  def test_generic_qa_evidence_alone_never_replays_as_hosted_qa
+    data = run_replay(v2_marker)
+
+    assert_equal "SATISFIED", data.dig("qa_evidence", "verdict")
+    assert_equal "NOT_APPLICABLE", data.dig("hosted_qa_evidence", "verdict")
+    assert_empty data.dig("hosted_qa_evidence", "criteria")
+  end
+
+  def test_hosted_waiver_replays_as_a_distinct_closed_variant
+    head_sha = "1111111111111111111111111111111111111111"
+    waiver_url = "https://github.com/example/repo/pull/123#issuecomment-456"
+    body = <<~MARKDOWN
+      <!-- hosted-qa-evidence v1
+      status: waived
+      head_sha: #{head_sha}
+      target: production
+      maintainer_waiver: #{waiver_url}
+      -->
+    MARKDOWN
+
+    hosted = run_replay(body, expected_head_sha: head_sha).fetch("hosted_qa_evidence")
+
+    assert_equal "WAIVED", hosted.fetch("verdict")
+    assert_equal waiver_url, hosted.dig("fields", "maintainer_waiver")
+    assert_empty hosted.fetch("criteria")
+  end
+
+  def test_hosted_v1_rejects_malformed_unknown_and_duplicate_rows
+    malformed = hosted_v1_marker.sub("-->", "unparsed injected text\n-->")
+    unknown = hosted_v1_marker.sub("-->", "substitute: local-system-test\n-->")
+    duplicate = hosted_v1_marker.sub(
+      "-->",
+      "criterion: id=sign-in | status=passed | evidence=https://evidence.example.test/duplicate\n-->"
+    )
+
+    { "malformed" => malformed, "unknown" => unknown, "duplicate" => duplicate }.each do |label, body|
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), label
+      refute_empty hosted.fetch("errors"), label
+    end
+  end
+
+  def test_hosted_v1_requires_an_immutable_deployment_url
+    body = hosted_v1_marker.sub(
+      "https://deployments.example.test/production-20260808-abc123",
+      "https://deployments.example.test/current?head=abc123"
+    )
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert_includes hosted.fetch("missing"), "deployment_url"
   end
 
   def test_current_ui_gate_rejects_v1_only_evidence

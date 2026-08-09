@@ -18,6 +18,21 @@ hosted_ci_trigger: "n/a"
 hosted_qa_gate: "n/a"
 ci_change_detector: "n/a"
 
+# Optional first-phase hosted runtime QA policy. Adoption is two-phase: land
+# this policy and its executable verifier first, then runtime PRs are governed
+# by the trusted-base copy.
+# hosted_qa_gate:
+#   version: 1
+#   change_paths:
+#     - "app/**"
+#     - "config/runtime/**"
+#   target: "production"
+#   deployment_verifier: ".agents/bin/verify-hosted-deployment"
+#   acceptance_criteria:
+#     - "sign-in"
+#     - "checkout"
+#   waiver_mode: "forbidden"
+
 # Optional: configure stricter repo-owned autonomous-merge gates and bounded
 # safe path groups. Omission uses the portable defaults. The seam doctor
 # rejects unknown keys, duplicate keys, unsupported globs, and relaxed

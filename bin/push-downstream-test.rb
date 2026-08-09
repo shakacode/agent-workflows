@@ -362,7 +362,6 @@ class PushDownstreamScaffoldTest < Minitest::Test
       "merge_ledger" => "n/a",
       "ci_parity_environment" => "n/a",
       "hosted_ci_trigger" => "n/a",
-      "hosted_qa_gate" => "n/a",
       "ci_change_detector" => "n/a"
     }
   }.freeze

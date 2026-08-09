@@ -978,14 +978,96 @@ the QA Evidence `Scope checked` field and, when the coordination backend has a
 supported lane note or metadata field, in final lane state. Do not invent new
 backend schema.
 
-Resolve `hosted_qa_gate` from the trusted-base `.agents/agent-workflow.yml`
-before selecting QA depth or reporting readiness. When `hosted_qa_gate`
-applies, only exact-current-head hosted runtime QA with every required
-acceptance criterion observed may satisfy readiness; a successful deployment,
-local tests, system tests, or static review cannot substitute. A
-`hosted_qa_gate` that declares itself non-waivable remains a hard blocker until
-satisfied; hosted-CI waivers, maintainer risk acceptance, and application-level
-readiness do not bypass it.
+### Hosted Runtime QA Gate
+
+Use the resolved pr-batch `bin/hosted-qa-readiness` helper as the sole portable
+decision seam for `hosted_qa_gate`. Supply the repository, full trusted-base
+and current-head SHAs, and the file or stdin text containing closeout evidence.
+Supply `--review-target-url` with the exact PR or issue URL only for a
+maintainer waiver:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" \
+  --repo "${REPO_ROOT}" \
+  --base-sha "${TRUSTED_BASE_SHA}" \
+  --head-sha "${CURRENT_HEAD_SHA}" \
+  --evidence "${QA_EVIDENCE_PATH}" \
+  --review-target-url "${PR_URL}"
+```
+
+The optional trusted-base policy is either absent, the exact scalar `n/a`, or
+a closed mapping with exactly `version: 1`, nonempty unique `change_paths`, one
+safe `target` ID, one tracked executable `deployment_verifier` under
+`.agents/bin`, nonempty unique `acceptance_criteria` IDs, and `waiver_mode:
+forbidden|maintainer`. Unknown, missing, duplicate, malformed, or unsafe policy
+state blocks. The helper binds full SHAs, requires its `--head-sha` to equal the
+checkout's current `HEAD`, verifies that base is an ancestor, and computes
+applicability from the exact base/head changed paths with rename detection
+disabled so both sides of a move remain visible.
+
+The helper extracts both policy and verifier bytes from trusted base. It never
+executes the head/worktree copy. For satisfied evidence it invokes the
+trusted-base verifier as an explicit argument vector, never through a shell:
+
+```text
+<trusted verifier> --deployment-id <id> --deployment-url <url> --expected-head-sha <head> --target <target>
+```
+
+The verifier returns exactly one JSON object with `version: 1`, `verified:
+true`, and the identical `deployment_id`, `deployment_url`,
+`deployed_head_sha`, and `target`. Nonzero exit, timeout, extra or missing output
+keys, or any identity/head/target mismatch blocks. Deployment success by itself
+is not QA evidence.
+
+A satisfied receipt uses exactly one marker and exactly one passed row with
+nonempty evidence for each configured criterion, with no missing, duplicate,
+or extra IDs:
+
+```text
+<!-- hosted-qa-evidence v1
+status: satisfied
+head_sha: <full current head SHA>
+deployed_head_sha: <same full current head SHA>
+deployment_id: <immutable deployment ID>
+deployment_url: <immutable HTTPS deployment URL>
+target: <configured target ID>
+criterion: id=<configured-id> | status=passed | evidence=<nonempty evidence>
+-->
+```
+
+Generic `qa-evidence v2` never proves a hosted deployment and cannot satisfy
+this gate. Keep it when the ordinary/manual QA contract also applies; the
+distinct `hosted-qa-evidence v1` receipt composes beside it and is replayed
+separately by `closeout-evidence-replay`.
+
+A waiver receipt is a separate closed marker variant:
+
+```text
+<!-- hosted-qa-evidence v1
+status: waived
+head_sha: <full current head SHA>
+target: <configured target ID>
+maintainer_waiver: <exact same-target #issuecomment-ID URL>
+-->
+```
+
+`waived` blocks when trusted-base `waiver_mode` is `forbidden`. With
+`maintainer`, the helper delegates to the existing authenticated exact-head
+`qa-maintainer-waiver v1` machinery: it fetches the comment and author
+permission through authenticated `gh api`, binds the same target and head,
+requires a human trusted association with write permission, and snapshots the
+comment identity, body digest, author, and timestamps. No receipt text,
+application-level risk acceptance, or hosted-CI waiver substitutes for that
+authentication.
+
+First adoption is deliberately two-phase. When trusted base omits the key or
+sets `n/a`, a head mapping cannot govern its own runtime changes. The helper
+returns `BOOTSTRAP_ALLOWED` only when the diff is limited to
+`.agents/agent-workflow.yml` and that mapping's exact verifier path. Any
+configured runtime path in the same diff blocks as mixed bootstrap/runtime;
+any other path blocks as unmanaged bootstrap scope. Land that bootstrap first,
+then evaluate runtime PRs against the now-trusted base policy. Do not promote
+`hosted_qa_gate` into the globally required seam keys during this phase.
 
 Coordinate QA with the same primitives as other batch lanes:
 
@@ -2877,10 +2959,11 @@ Also verify:
 - No AI reviewer finding remains untriaged as a confirmed blocker; do not wait for AI approval objects or positive AI issue comments as special gates.
 - No requested adversarial review has unresolved `BLOCKING` or `DISCUSS` findings.
 - Required checks are green, or the user has explicitly accepted an auditable waiver for hosted CI.
-- The trusted-base `hosted_qa_gate` is resolved. When applicable, its exact-head
-  hosted acceptance criteria have replayable `qa-evidence v2` with status
-  `satisfied`; `blocked`, `waived`, `in_progress`, `unknown`, missing, or stale
-  hosted evidence blocks readiness when the gate is non-waivable.
+- The trusted-base `hosted_qa_gate` has an eligible `hosted-qa-readiness`
+  result: `READY`, authenticated policy-authorized `WAIVED`,
+  `BOOTSTRAP_ALLOWED`, or `NOT_APPLICABLE`. `BLOCKED`, missing, malformed,
+  generic-only, stale-head, unauthenticated, or deployment-mismatched evidence
+  blocks readiness.
 - The PR body or latest agent comment includes exact local validation commands and results.
 - The merge ledger has no `UNKNOWN` fields and reports `complete_allowed: true`.
 
