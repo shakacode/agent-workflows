@@ -192,18 +192,20 @@ prepare_metadata() {
     directory_fingerprint = lambda do |root|
       entries = []
       Find.find(root) do |entry|
-        next if entry == root || File.directory?(entry) && !File.symlink?(entry)
+        next if entry == root
 
         relative = entry.delete_prefix("#{root}/")
         if File.symlink?(entry)
           entries << ["symlink", relative, File.readlink(entry)]
+        elsif File.directory?(entry)
+          entries << ["directory", relative]
         elsif File.file?(entry)
           entries << ["file", relative, (File.stat(entry).mode & 0o111).positive?, Digest::SHA256.file(entry).hexdigest]
         else
           abort "unsupported skill entry while preparing install metadata: #{entry}"
         end
       end
-      Digest::SHA256.hexdigest(JSON.generate(entries.sort))
+      Digest::SHA256.hexdigest(JSON.generate(entries.sort_by { |fingerprint_entry| fingerprint_entry.fetch(1) }))
     end
     skill_fingerprints = if mode == "copy" && delivery_mode == "flat"
                            Dir.children(File.join(source, "skills")).sort.filter_map do |name|
@@ -440,16 +442,19 @@ remove_legacy_managed_model_routing_path() {
   fi
 }
 
-recorded_revision_contains_pack_doc() {
+recorded_revision_pack_doc_matches() {
   local doc_name="$1"
+  local destination="$2"
   local previous_revision previous_source source_root
+  [[ -f "$destination" && ! -L "$destination" ]] || return 1
   previous_revision="$(installed_metadata_value source_revision 2>/dev/null || true)"
   [[ "$previous_revision" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
   previous_source="$(installed_metadata_value source 2>/dev/null || true)"
 
   for source_root in "$repo_root" "$previous_source"; do
     [[ -n "$source_root" && -d "$source_root" ]] || continue
-    if git -C "$source_root" cat-file -e "$previous_revision:docs/$doc_name" 2>/dev/null; then
+    if git -C "$source_root" cat-file -e "$previous_revision:docs/$doc_name" 2>/dev/null &&
+       cmp -s "$destination" <(git -C "$source_root" show "$previous_revision:docs/$doc_name"); then
       return 0
     fi
   done
@@ -478,8 +483,8 @@ pack_doc_destination_owned() {
   local source_path="$3"
 
   if [[ "$mode" = "copy" ]]; then
-    recorded_revision_contains_pack_doc "$doc_name" ||
-      recorded_pack_doc_copy_fingerprint_matches "$doc_name" "$destination" ||
+    recorded_pack_doc_copy_fingerprint_matches "$doc_name" "$destination" ||
+      recorded_revision_pack_doc_matches "$doc_name" "$destination" ||
       { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
       pack_doc_symlink_matches_recorded_source "$doc_name" "$destination"
   else

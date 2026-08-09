@@ -309,7 +309,7 @@ module AgentWorkflowsDeliveryState
 
     entries = {}
     Find.find(root) do |path|
-      next if path == root || File.directory?(path) && !File.symlink?(path)
+      next if path == root
 
       entries[path.delete_prefix("#{root}/")] = path
     end
@@ -323,6 +323,8 @@ module AgentWorkflowsDeliveryState
     payload = entries.sort.map do |relative, path|
       if File.symlink?(path)
         ["symlink", relative, File.readlink(path)]
+      elsif File.directory?(path)
+        ["directory", relative]
       elsif File.file?(path)
         ["file", relative, (File.stat(path).mode & 0o111).positive?, Digest::SHA256.file(path).hexdigest]
       else
@@ -345,6 +347,8 @@ module AgentWorkflowsDeliveryState
         other = expected.fetch(relative)
         if File.symlink?(path) || File.symlink?(other)
           File.symlink?(path) && File.symlink?(other) && File.readlink(path) == File.readlink(other)
+        elsif File.directory?(path) || File.directory?(other)
+          File.directory?(path) && File.directory?(other)
         else
           File.file?(path) && File.file?(other) && File.binread(path) == File.binread(other) &&
           (File.stat(path).mode & 0o111).positive? == (File.stat(other).mode & 0o111).positive?
@@ -353,26 +357,37 @@ module AgentWorkflowsDeliveryState
     end
 
     revision = snapshot.fetch(:revision)
-    output, status = Open3.capture2e("git", "-C", snapshot.fetch(:root), "ls-tree", "-r", revision, "--", "skills/#{skill_name}")
+    skill_root = "skills/#{skill_name}"
+    output, status = Open3.capture2e(
+      "git", "-C", snapshot.fetch(:root), "ls-tree", "-r", "-t", revision, "--", skill_root
+    )
     return false unless status.success?
 
-    expected = output.lines.to_h do |line|
+    expected = output.lines.filter_map do |line|
       metadata, path = line.chomp.split("\t", 2)
       mode, type, = metadata.split
-      [path.delete_prefix("skills/#{skill_name}/"), [mode, type, path]]
-    end
+      next unless path.start_with?("#{skill_root}/")
+
+      [path.delete_prefix("#{skill_root}/"), [mode, type, path]]
+    end.to_h
     return false unless actual.keys.sort == expected.keys.sort
 
     actual.all? do |relative, path|
       mode, type, git_path = expected.fetch(relative)
-      blob, blob_status = Open3.capture2("git", "-C", snapshot.fetch(:root), "show", "#{revision}:#{git_path}")
-      next false unless blob_status.success?
-
-      if mode == "120000"
-        File.symlink?(path) && File.readlink(path) == blob
+      if type == "tree"
+        File.directory?(path) && !File.symlink?(path)
       else
-        type == "blob" && File.file?(path) && !File.symlink?(path) && File.binread(path) == blob.b &&
-          (File.stat(path).mode & 0o111).positive? == (mode == "100755")
+        blob, blob_status = Open3.capture2(
+          "git", "-C", snapshot.fetch(:root), "show", "#{revision}:#{git_path}"
+        )
+        next false unless blob_status.success?
+
+        if mode == "120000"
+          File.symlink?(path) && File.readlink(path) == blob
+        else
+          type == "blob" && File.file?(path) && !File.symlink?(path) && File.binread(path) == blob.b &&
+            (File.stat(path).mode & 0o111).positive? == (mode == "100755")
+        end
       end
     end
   end
@@ -406,17 +421,19 @@ module AgentWorkflowsDeliveryState
     expected.is_a?(String) && directory_fingerprint(path) == expected
   end
 
-  def flat_skill_ownership_conflict(target:, source:, metadata:, names:, present:, revision:)
-    recorded_names, snapshot = skill_names(source, metadata)
+  def flat_skill_path_owned?(path:, source:, snapshot:, metadata:)
+    skill_name = File.basename(path)
+    recorded_skill_copy_fingerprint_matches?(path, metadata, skill_name) ||
+      recorded_flat_skill_path?(path, snapshot, metadata) ||
+      current_source_skill_path?(path, source, skill_name)
+  end
+
+  def flat_skill_ownership_conflict(source:, metadata:, present:, revision:)
+    _recorded_names, snapshot = skill_names(source, metadata)
     case snapshot&.fetch(:type)
     when :git
-      blocking = (names - recorded_names).filter_map do |name|
-        path = File.join(target, "skills", name)
-        next unless File.exist?(path) || File.symlink?(path)
-        next if recorded_skill_copy_fingerprint_matches?(path, metadata, name)
-        next if current_source_skill_path?(path, source, name)
-
-        path
+      blocking = present.reject do |path|
+        flat_skill_path_owned?(path:, source:, snapshot:, metadata:)
       end
       return if blocking.empty?
 
@@ -425,7 +442,9 @@ module AgentWorkflowsDeliveryState
         "removable" => [], "blocking" => blocking.sort
       }
     when :directory
-      blocking = present.reject { |path| recorded_flat_skill_path?(path, snapshot, metadata) }
+      blocking = present.reject do |path|
+        flat_skill_path_owned?(path:, source:, snapshot:, metadata:)
+      end
       return if blocking.empty?
 
       {
@@ -491,8 +510,7 @@ module AgentWorkflowsDeliveryState
 
       if present.any? && metadata && prior_delivery_mode == "flat"
         conflict = flat_skill_ownership_conflict(
-          target: target, source: source, metadata: metadata,
-          names: names, present: present, revision: revision
+          source: source, metadata: metadata, present: present, revision: revision
         )
         return conflict if conflict
       end

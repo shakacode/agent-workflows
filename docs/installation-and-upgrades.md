@@ -400,6 +400,7 @@ The installer writes:
 - `<target>/docs/coordination-backend.md`
 - `<target>/docs/review-finding-schema.md`
 - `<target>/docs/agent-workflows-model-routing.md`
+- `<target>/docs/user-facing-coordination.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
@@ -417,9 +418,17 @@ the target agent home, including generic consumer-owned docs under
 `<target>/docs`.
 
 The metadata file records host, artifact mode, skill delivery mode, source
-clone, pack version, source revision, branch, remote, and install time. The
-status and upgrade helpers use that metadata so they can run from either the
-source clone or the installed host.
+clone, pack version, source revision, branch, remote, and install time. Copy
+installs also record `managed_skill_copy_fingerprints` and
+`managed_pack_doc_copy_fingerprints`. On repeat installation, these fingerprints
+prove that an installed managed copy has not been edited even when the recorded
+Git object is unavailable; an exact recorded-revision or current-source match is
+the backward-compatible fallback for older metadata. The installer refuses to
+replace a modified, symlinked-to-an-unowned-target, or otherwise ambiguous
+managed copy, including unexpected files nested inside a managed skill. Restore
+the original installed content or move personal content to a distinct path
+before retrying. The status and upgrade helpers use the metadata so they can run
+from either the source clone or the installed host.
 
 ## Status Checks
 

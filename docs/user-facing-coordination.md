@@ -103,7 +103,9 @@ no user-visible notification. Notify only for a material state change, a
 required decision, a durable blocker, or completion. Automatically delete the
 heartbeat after its gate clears or becomes durably terminal. The automation
 never owns the PR, task, decision, or next action, and its output must not imply
-that ownership moved.
+that ownership moved. For `blocked-user-input`, do not create or retain a
+heartbeat or monitor; preserve one exact question and manual resume
+instructions.
 
 ## Ambiguity Guard
 

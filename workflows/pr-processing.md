@@ -1478,6 +1478,8 @@ notification wording.
   gate clears or becomes durably terminal; retain it on a no-change wake.
   Cleanup itself does not imply a user notification. The current task remains
   the owner, and automation output must not imply that ownership changed.
+- For `blocked-user-input`, do not create or retain a heartbeat or monitor;
+  preserve one exact question and manual resume instructions.
 - This boundary changes presentation only. It does not alter machine evidence or
   any security, ownership, retry, scope, continuous integration (CI), review, or
   merge gates.

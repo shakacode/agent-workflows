@@ -173,6 +173,14 @@ class UserFacingCoordinationContractTest < Minitest::Test
       assert_includes text, "gate clears or becomes durably terminal", path
       assert_includes text, "automation never owns", path
     end
+
+    [DOC, WORKFLOW].each do |path|
+      text = normalized(path)
+      assert_includes text, "`blocked-user-input`", path
+      assert_includes text, "do not create or retain a heartbeat or monitor", path
+      assert_includes text, "one exact question", path
+      assert_includes text, "manual resume instructions", path
+    end
   end
 
   def test_ambiguity_guard_synthesizes_ownership_without_raw_events
