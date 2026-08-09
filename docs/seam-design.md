@@ -172,9 +172,11 @@ untrusted_contributor_intake:
 ```
 
 `merge_submission` is an optional closed mapping. Its portable default is
-queue-only whether the mapping is absent or explicitly selects
-`merge_queue_only`. The sole direct-submit exception is an explicit
-`merge_queue_or_guarded_direct` opt-in whose executable is one fixed
+`direct` when the mapping is absent or explicitly selects `direct`. A
+queue-enabled repository must explicitly select `merge_queue_only`; live queue
+control under direct mode fails before mutation with a configuration error.
+Repositories that need both queue submission and a repository-owned direct
+guard may select `merge_queue_or_guarded_direct`, whose executable is one fixed
 repository-root-relative file under `.agents/bin`:
 
 ```yaml
@@ -232,9 +234,11 @@ do not prove a merge: the portable helper re-fetches GitHub and succeeds only
 when the authorized head is an exact terminal merge on the expected base. This
 exception explicitly acknowledges that GitHub direct merge has no atomic
 expected-base OID; it does not make direct merge equivalent to the merge queue.
-Queue-enabled PRs always use canonical enqueue and never invoke the guard.
-On a queue-disabled base, an absent or queue-only seam is a deterministic
-configuration error (exit 1), not an `UNKNOWN` mutation outcome.
+Queue-enabled PRs use canonical enqueue only in a queue-capable mode and never
+invoke the guard; direct mode instead reports the required seam opt-in before
+mutation. On a queue-disabled base, only explicit `merge_queue_only` is a
+deterministic configuration error (exit 1), not an `UNKNOWN` mutation outcome.
+An absent seam uses the portable direct path.
 
 ## AGENTS Pointer
 
@@ -273,7 +277,7 @@ and `env --split-string` commands are likewise caller-controlled because their
 split payload owns argument placement. Missing
 policy or trust keys are appended to existing block mappings so comments and
 formatting remain intact. Initialization also adds an explicit
-`merge_submission.mode: merge_queue_only` default. It fails closed before
+`merge_submission.mode: direct` default. It fails closed before
 writing when a safe append is not possible.
 
 The init marker is the ownership boundary for generated wrappers. Explicit
@@ -294,7 +298,7 @@ remove the marker deliberately before taking direct ownership.
   resolved values
 - an optional `autonomous_merge` mapping conforms to the shared closed schema;
   malformed policy is reported instead of silently falling back
-- an optional `merge_submission` mapping uses the closed queue-only or
+- an optional `merge_submission` mapping uses the closed direct, queue-only, or
   guarded-direct schema, and any configured guard is a present executable
   regular file under `.agents/bin`
 - an optional `.agents/trusted-github-actors.yml` parses as a mapping and has no

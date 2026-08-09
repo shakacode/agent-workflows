@@ -50,10 +50,13 @@ class PrMergeSubmitTest < Minitest::Test
   # Attempts allowed for a mutation-timeout scenario whose setup query raced.
   MUTATION_TIMEOUT_ATTEMPTS = 3
   QUEUE_DISABLED_ERROR = "queue-disabled submission is unsupported by the trusted-base " \
-                         "merge_submission policy; configure an explicit repository-owned " \
-                         "guarded-direct exception or use a merge queue"
+                         "merge_submission policy; configure mode: direct, configure an explicit " \
+                         "repository-owned guarded-direct exception, or enable the repository merge queue"
+  DIRECT_QUEUE_ERROR = "live repository merge queue is enabled but merge_submission mode is direct; " \
+                       "configure merge_submission.mode: merge_queue_only (or " \
+                       "merge_queue_or_guarded_direct) to opt into Merge Queue"
 
-  def test_queue_disabled_pr_without_merge_submission_fails_closed_before_mutation
+  def test_queue_disabled_pr_without_merge_submission_uses_portable_direct_default
     trusted_policy = nil
     result, log, guard_log = run_cli(
       mode: "direct",
@@ -61,13 +64,17 @@ class PrMergeSubmitTest < Minitest::Test
       trusted_policy_observer: ->(policy) { trusted_policy = policy }
     )
 
-    assert_equal 1, result.fetch(:status).exitstatus
-    assert_equal "Error: #{QUEUE_DISABLED_ERROR}\n", result.fetch(:stderr)
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "direct", payload.fetch("submission")
+    assert_equal "squash", payload.fetch("method")
+    assert_equal false, payload.fetch("atomic_expected_base_oid")
     assert_equal({ "base_branch" => "main" }, trusted_policy)
     refute trusted_policy.key?("merge_submission")
     refute_includes log, "enqueuePullRequest"
+    assert_includes log, "mergePullRequest"
+    assert_includes log, "expectedHeadOid="
     assert_empty guard_log
-    refute_includes File.read(SCRIPT), "mergePullRequest"
   end
 
   def test_explicit_queue_only_policy_also_refuses_queue_disabled_submission
@@ -86,9 +93,9 @@ class PrMergeSubmitTest < Minitest::Test
     missing_result, missing_log, = run_cli(
       mode: "direct", merge_submission: nil, policy_fixture: :missing
     )
-    assert_equal 1, missing_result.fetch(:status).exitstatus
-    assert_equal "Error: #{QUEUE_DISABLED_ERROR}\n", missing_result.fetch(:stderr)
-    refute_empty missing_log
+    assert missing_result.fetch(:status).success?, missing_result.fetch(:stderr)
+    assert_equal "direct", JSON.parse(missing_result.fetch(:stdout)).fetch("submission")
+    assert_includes missing_log, "mergePullRequest"
 
     malformed_result, malformed_log, = run_cli(
       mode: "direct", merge_submission: nil, policy_fixture: :malformed
@@ -105,6 +112,44 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes invalid_base_result.fetch(:stderr),
                     "Error: trusted-base merge-submission policy is unavailable:"
     assert_empty invalid_base_log
+  end
+
+  def test_direct_mode_rejects_a_queue_enabled_repository_before_mutation
+    result, log, guard_log = run_cli(
+      mode: "queue", merge_submission: { "mode" => "direct" }
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal "Error: #{DIRECT_QUEUE_ERROR}\n", result.fetch(:stderr)
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_direct_mode_rechecks_queue_control_immediately_before_mutation
+    result, log, = run_cli(mode: "direct_queue_race")
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal "Error: #{DIRECT_QUEUE_ERROR}\n", result.fetch(:stderr)
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_ambiguous_direct_transport_reconciles_only_an_exact_merge
+    merged_result, merged_log, = run_cli(mode: "direct_transport_merged")
+
+    assert merged_result.fetch(:status).success?, merged_result.fetch(:stderr)
+    merged_payload = JSON.parse(merged_result.fetch(:stdout))
+    assert_equal "already_merged", merged_payload.fetch("submission")
+    assert_equal "direct", merged_payload.fetch("attempted_submission")
+    assert_equal true, merged_payload.fetch("reconciled_after_failure")
+    assert_includes merged_log, "mergePullRequest"
+
+    unknown_result, unknown_log, = run_cli(mode: "direct_transport_unknown")
+    assert_equal 2, unknown_result.fetch(:status).exitstatus
+    assert_includes unknown_result.fetch(:stderr), "do not retry blindly"
+    assert_includes unknown_log, "mergePullRequest"
   end
 
   def test_guarded_direct_delegates_with_fixed_argv_and_reconciles_exact_merge
@@ -298,7 +343,7 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_malformed_or_untrusted_base_guard_configuration_stops_before_github
     cases = {
-      "unknown mode" => [{ "mode" => "direct" }, :executable],
+      "unknown mode" => [{ "mode" => "unknown" }, :executable],
       "missing guard" => [guarded_direct_policy, :missing],
       "non-executable guard" => [guarded_direct_policy, :non_executable]
     }
@@ -1358,6 +1403,11 @@ class PrMergeSubmitTest < Minitest::Test
     interrupt_guard: false
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
+      if merge_submission.equal?(SOURCE_REPO_POLICY)
+        merge_submission = {
+          "mode" => queue_submission_mode?(mode) ? "merge_queue_only" : "direct"
+        }
+      end
       repo_root, base_sha, fixture_head = if merge_submission.equal?(SOURCE_REPO_POLICY)
                                             [File.expand_path("../../..", __dir__), BASE_SHA, HEAD_SHA]
                                           else
@@ -1431,6 +1481,12 @@ class PrMergeSubmitTest < Minitest::Test
       attacker_log = File.exist?(attacker_log_path) ? File.read(attacker_log_path) : ""
       [result, log, guard_log, attacker_log, fixture_head]
     end
+  end
+
+  def queue_submission_mode?(mode)
+    mode == "already_queued" || mode == "already_queued_base_advanced" ||
+      mode == "already_queued_with_commit" || mode.start_with?("queue") ||
+      mode.start_with?("enqueue")
   end
 
   def capture_with_interrupt(environment, arguments, chdir:, wait_path:)
@@ -2031,6 +2087,7 @@ class PrMergeSubmitTest < Minitest::Test
                              "queue_post_queued_with_commit",
                              "enqueue_non_object_response_queued", "queue_base_race",
                              "queue_entry_replaced", "queue_entry_replaced_same_target" then true
+                        when "direct_queue_race" then query_count.positive?
                         else false
                         end
         queued = case current_mode
@@ -2057,8 +2114,10 @@ class PrMergeSubmitTest < Minitest::Test
           guard_success guard_path_swap hichee_replay guard_failure_merged
         ].include?(current_mode) &&
                                 guard_called
+        direct_attempted = File.read(ENV.fetch("GH_LOG")).include?("mergePullRequest")
+        directly_merged = current_mode == "direct_transport_merged" && direct_attempted
         merged = ["already_merged", "already_merged_base_advanced"].include?(current_mode) ||
-                 (merged_after_mutation && query_count.positive?) || guarded_direct_merged
+                 (merged_after_mutation && query_count.positive?) || guarded_direct_merged || directly_merged
         base_race_modes = [
           "queue_base_race", "queue_entry_replaced", "enqueue_transport_base_race",
           "enqueue_graphql_error_base_race"
@@ -2160,6 +2219,31 @@ class PrMergeSubmitTest < Minitest::Test
           exit 0
         end
         puts #{JSON.generate(queue_payload).inspect}
+        exit 0
+      end
+
+
+      if ARGV.any? { |arg| arg.include?("mergePullRequest") }
+        if ["direct_transport_merged", "direct_transport_unknown"].include?(#{mode.inspect})
+          warn "connection reset after direct merge request"
+          exit 1
+        end
+        puts JSON.generate(
+          "data" => {
+            "mergePullRequest" => {
+              "pullRequest" => {
+                "headRefOid" => #{head.inspect},
+                "baseRefName" => #{base.inspect},
+                "baseRefOid" => #{base_sha.inspect},
+                "state" => "MERGED",
+                "merged" => true,
+                "mergedAt" => "2026-07-20T15:00:00Z",
+                "url" => "https://#{url_host}/#{repo}/pull/42",
+                "mergeCommit" => { "oid" => #{merge_commit_oid.inspect} }
+              }
+            }
+          }
+        )
         exit 0
       end
 
