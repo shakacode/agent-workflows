@@ -64,6 +64,55 @@
   conflicting `RUBYGEMS_HOST`.
 - The source-pack installer does not switch to remote gem resolution merely because a gem is published.
 
+### Shared package-release authorization handoff
+
+The canonical contract ID for this section is
+`AW-RELEASE-AUTHORIZATION-HANDOFF-V1`. It applies to both RubyGems releases and
+the npm bootstrap/release path. Approval names immutable state that already
+exists; the authorization JSON is then produced after approval and therefore is
+never expected to exist in the approved commit.
+
+Each repository adds
+`.github/workflows/capture-package-release-authorization.yml`, a read-only
+`workflow_dispatch` capture with `contents: read` and `actions: read`, no release
+environment, persisted checkout credential, OIDC permission, registry
+credential, or repository write permission. It runs at the exact approved
+commit and accepts the durable approval source URL, approver identity, package,
+version, registry, tag, commit, artifact digest, workflow path/ref/file digest,
+grant-manifest path/digest, expiry, and rollback disposition. A reviewed writer
+creates canonical JSON in `RUNNER_TEMP`, binds the capture run ID and immutable
+capture-workflow path/ref/file digest, and validates it against the repository's
+fixed package-release-authorization schema.
+
+The capture uploads exactly that JSON under a package/version/run-specific
+artifact name. A separate read-only verification job queries the complete
+artifact inventory for the exact capture run, requires one expected artifact,
+records its artifact ID and service-reported digest, downloads it into a fresh
+directory, and revalidates the file SHA-256, schema, approval source, capture
+workflow, and target bindings. The only publication handoff is the tuple of
+capture producer run ID, artifact ID, service digest, and authorization-file
+SHA-256. A checkout-relative authorization file, artifact-name lookup, workflow
+output containing JSON, branch commit made after approval, or latest-run lookup
+is forbidden.
+
+Every release or human-bootstrap preparation receives those four selectors,
+proves through the GitHub API that the producer run succeeded at the approved
+commit under the bound capture workflow, downloads the artifact by exact ID and
+service digest, and validates the authorization only from that fresh directory.
+The unprivileged release job binds the verified authorization file digest and
+capture selectors into its same-run build receipt. The minimal protected job
+uses immutable-SHA-pinned generic artifact/digest validation, never repository
+code, to compare that receipt and the freshly retrieved authorization bytes
+before tag or registry mutation. For the interactive npm bootstrap, the human
+performs the same exact-selector download and validation before login. Tests
+cover missing, expired, cross-run, name-selected, substituted, wrong-head,
+wrong-workflow, digest-mismatched, and checkout-relative authorizations.
+
+The captured JSON's canonical eventual repository path remains
+`release/authorizations/<package>-<version>.v1.json`, but a later reviewed
+release-evidence PR may commit only the byte-identical captured file. Neither
+publication nor bootstrap trusts that later checkout copy.
+
 ### Shared RubyGems release contract
 
 The canonical contract ID for this section is `AW-RELEASE-RUBYGEMS-V1`. Both
@@ -97,32 +146,37 @@ immediately before and after its one tag push because workflow serialization
 does not replace registry read-back.
 
 Each first-release workflow is protected `workflow_dispatch` only and requires
-exact package, version, release branch, commit, artifact SHA-256, workflow path,
-workflow ref, workflow-file SHA-256, and grant-manifest path/SHA-256
-authorization inputs. Dispatch only
-from that exact authorized branch ref. Configure the protected `release`
+the exact authorization-capture producer run, artifact ID, service digest, and
+file SHA-256 from `AW-RELEASE-AUTHORIZATION-HANDOFF-V1`. The freshly verified
+authorization supplies the exact package, version, release branch, commit,
+artifact SHA-256, workflow path/ref/file SHA-256, and grant-manifest
+path/SHA-256. Dispatch only from that exact authorized branch ref. Configure the
+protected `release`
 environment with a deployment-branch rule admitting only that branch and
 required human review. Before approving the environment deployment, the
 reviewer reads the run metadata and independently verifies its workflow path,
 `github.workflow_ref`, and `head_sha` against the authorization; a mismatch is
 rejected before any job with `id-token: write` can start.
 
-Split verification from publication. The first job has only `contents: read`,
-checks out with persisted credentials disabled, and has no environment,
-`id-token: write`, or `contents: write`. It verifies the authorization inputs,
-full attached-branch state, workflow path/ref/digest, toolchain, tests, package
-contents, tag preconditions, and reproducible build; then it uploads the exact
-gem plus a machine-readable receipt binding package, version, commit, workflow
-digest, artifact SHA-256, and toolchain versions. All Bundler, Rake, gemspec,
-dependency, repository-script, and package-hook execution ends in this
-unprivileged job.
+Split verification from publication. The first job has only `contents: read`
+and `actions: read`, checks out with persisted credentials disabled, and has no
+environment, `id-token: write`, or `contents: write`. It freshly retrieves and
+verifies the authorization by exact capture selectors, then verifies the full attached-
+branch state, workflow path/ref/digest, toolchain, tests, package contents, tag
+preconditions, and reproducible build. It uploads the exact gem plus a machine-
+readable receipt binding package, version, commit, workflow digest, artifact
+SHA-256, toolchain versions, authorization-file digest, and all capture
+selectors. All Bundler, Rake, gemspec, dependency, repository-script, and
+package-hook execution ends in this unprivileged job.
 
 Only the second, minimal job uses the protected `release` environment and
-job-scoped `id-token: write` plus `contents: write`. It downloads the artifact
-and receipt from the same workflow run through pinned actions, compares both to
-the pre-recorded authorization without executing repository code, verifies the
-checked-out workflow digest independently, fetches the remote tag, and performs
-only the exact tag push, tag read-back, and OIDC registry upload. It does not
+job-scoped `id-token: write`, `contents: write`, and `actions: read`. It
+downloads the artifact and receipt from the same workflow run through pinned
+actions, compares both to
+the freshly retrieved exact authorization artifact through the shared handoff
+without executing repository code, verifies the checked-out workflow digest
+independently, fetches the remote tag, and performs only the exact tag push, tag
+read-back, and OIDC registry upload. It does not
 run Bundler, Rake, tests, gemspec evaluation, dependency installation, build
 hooks, or a rebuild. The checkout credential remains unpersisted and is passed
 only to the explicit tag push. Configure OIDC only after every receipt,
@@ -189,9 +243,14 @@ actually taken.
 - Create in each repository:
   `release/grants/<package>-<version>.v1.json`.
 - Create after exact approval in each repository:
+  a capture artifact whose sole file has canonical eventual path
   `release/authorizations/<package>-<version>.v1.json`, containing the approved
-  package, version, commit, tag, artifact digest, workflow binding, grant-manifest
-  digest, actor, source URL, timestamp, and rollback/remediation disposition.
+  package, version, commit, tag, artifact digest, workflow binding,
+  grant-manifest digest, actor, source URL, timestamp, expiry, capture identity,
+  and rollback/remediation disposition.
+- Create in each repository:
+  `.github/workflows/capture-package-release-authorization.yml`, the reviewed
+  authorization writer and tests, and a fixed v1 authorization schema.
 - Modify in each repository: package metadata only when a check below reveals a real gap.
 
 **Interfaces:**
@@ -363,11 +422,16 @@ Run the repository's configured validate/test wrappers, packaging test, RuboCop,
 Present exact package `agent-coordination`, version `0.1.0`, attached release
 branch, commit SHA, artifact SHA-256, workflow path/ref and file digest, owners,
 grant-manifest path and SHA-256, and rollback/disposition. No tag or registry mutation occurs before
-authorization.
+authorization. After durable approval, run
+`AW-RELEASE-AUTHORIZATION-HANDOFF-V1` at the approved commit and record the
+verified capture producer run, artifact ID, service digest, and authorization-
+file SHA-256. A branch commit containing the new authorization is neither
+required nor accepted as the publication handoff.
 
 - [ ] **Step 8: Publish and verify only after authorization**
 
-Create/push the signed or protected release tag through the authorized workflow;
+Dispatch with the four exact authorization-capture selectors. Create/push the
+signed or protected release tag through the authorized workflow;
 the workflow must verify that tag before it permits the gem-push hook. Verify
 RubyGems metadata, the checksum of the bytes actually published, owners, MFA
 status, and install from RubyGems into a clean gem home. For a first
@@ -451,10 +515,13 @@ checksum, workflow path/ref and file digest, executables, owners, grant-manifest
 path and SHA-256, and evidence. The workflow and release receipt must bind that
 exact digest.
 Publication approval for `agent-coordination` does not authorize
-`agent-workflows`.
+`agent-workflows`. After this package's durable approval, run and verify
+`AW-RELEASE-AUTHORIZATION-HANDOFF-V1`; only its exact producer run, artifact ID,
+service digest, and authorization-file SHA-256 may launch publication.
 
 - [ ] **Step 6: Publish and verify only after authorization**
 
+Dispatch the release workflow with those four exact authorization selectors.
 After the workflow reports success, independently query RubyGems, install the
 public gem, run each executable, verify tag/release SHA, and confirm the
 source-pack installer still uses its own pinned library bytes. For a first
@@ -515,7 +582,8 @@ shasum -a 256 release/artifacts/agent-coordination-dashboard-0.1.0.tgz \
 ```
 
 The reviewed `npm-pack.json` integrity, SHA-256 file, tarball bytes, commit, and
-tag must exactly match
+tag must exactly match the freshly downloaded, selector-verified package-release
+authorization whose canonical eventual path is
 `release/authorizations/agent-coordination-dashboard-0.1.0.v1.json`.
 
 - [ ] **Step 2: Install the tarball into a disposable project**
@@ -559,7 +627,11 @@ Present exact npm name, version, commit, tarball integrity/checksum, Node floor,
 bootstrap method, future workflow path/ref and file digest, pinned publication
 Node/npm pair, owners, grant-manifest path and SHA-256, and smoke evidence.
 RubyGems approvals do not authorize
-npm publication.
+npm publication. After durable npm approval, run
+`AW-RELEASE-AUTHORIZATION-HANDOFF-V1`, freshly retrieve the exact authorization
+artifact by its verified producer run, artifact ID, and service digest, and
+record its file SHA-256. The human bootstrap must validate those selectors and
+bytes before opening the interactive session.
 
 - [ ] **Step 5: Bootstrap, secure, and verify only after authorization**
 
@@ -611,14 +683,14 @@ inputs:
 ```bash
 node --test scripts/npm-postpublish-receipt.test.mjs
 node scripts/write-npm-postpublish-receipt.mjs \
-  --authorization release/authorizations/agent-coordination-dashboard-0.1.0.v1.json \
+  --authorization "$VERIFIED_PACKAGE_AUTHORIZATION_PATH" \
   --grant-manifest release/grants/agent-coordination-dashboard-0.1.0.v1.json \
   --tarball release/artifacts/agent-coordination-dashboard-0.1.0.tgz \
   --evidence release/evidence/agent-coordination-dashboard-0.1.0-publishing-access.v1.json \
   --output release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json
 node scripts/verify-npm-postpublish-receipt.mjs \
   --receipt release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json \
-  --authorization release/authorizations/agent-coordination-dashboard-0.1.0.v1.json \
+  --authorization "$VERIFIED_PACKAGE_AUTHORIZATION_PATH" \
   --grant-manifest release/grants/agent-coordination-dashboard-0.1.0.v1.json \
   --tarball release/artifacts/agent-coordination-dashboard-0.1.0.tgz
 ```
@@ -693,8 +765,8 @@ release for the distinct standalone tag. Neither tag may be moved or reused.
   `release/evidence/standalone/closeouts/<closeout-key>/` with either the exact
   verified authorization/receipts or denial/stale decision, terminal
   evaluation, and closed manifest. An adopted or stale-authorization closeout
-  uses `tag-<authorization-tag>`; an initial denial uses the full evaluation
-  digest form defined in Step 6.
+  uses `tag-<authorization-tag>`; an initial denial or threshold failure uses
+  the full evaluation-digest form defined below.
 - Create before protected release mutation:
   `release/evidence/standalone-github-publication-instruction-v1.json`.
 - Create: `docs/standalone-installation.md` only if the evaluation passes.
@@ -902,8 +974,10 @@ The standalone path passes only if:
 If every threshold passes, record `ADOPTED_PENDING_RELEASE_AUTHORIZATION` and
 prepare the optional-download documentation without publishing it. If any
 security, behavior, platform, or maintenance threshold fails, record
-`NOT_ADOPTED` with the exact failed criteria; retain gem/source-pack
-distribution and do not begin a Rust rewrite automatically.
+candidate `NOT_ADOPTED` with the exact failed criteria; retain gem/source-pack
+distribution and do not begin a Rust rewrite automatically. The candidate JSON
+status does not become a terminal reported outcome until the threshold-failure
+closeout below is committed and revalidated from `main`.
 Both outcomes are written to `release/evidence/standalone-evaluation-v1.json`
 with every platform artifact, test result, sanitized network observation,
 threshold measurement, failure, and evidence digest required by
@@ -923,6 +997,29 @@ ruby test/packaging/standalone_evaluation_validator_test.rb
 ruby packaging/tebako/validate-evaluation.rb \
   release/evidence/standalone-evaluation-v1.json
 ```
+
+For a threshold failure, the aggregation job packages the four exact verified
+platform-run records, candidate `NOT_ADOPTED` evaluation, and a closed SHA-256
+manifest as one
+`standalone-threshold-failure-closeout-evaluation-<full-evaluation-sha256>-<aggregation-run>`
+artifact. It queries that artifact's exact ID and service digest, downloads it
+into a fresh directory, and revalidates every byte and schema. The artifact is
+retention-bounded input, never terminal evidence.
+
+Invoke the `threshold-failure-evidence` mode of
+`.github/workflows/standalone-closeout-pr.yml` with that exact producer run,
+artifact ID, and service digest. This mode uses the same unprivileged payload,
+no-checkout opener, committed instruction/binding, post-push operation result,
+human review, and exact-merge verification contract as the other closeout
+modes. Its fixed directory is
+`release/evidence/standalone/closeouts/evaluation-<full-evaluation-sha256>/`
+and contains only the four platform runs, candidate evaluation, and closed
+manifest; an authorization, authorization decision, or release receipt is
+forbidden. `finalize-standalone-closeout.yml` accepts and reports terminal
+`NOT_ADOPTED` only after it revalidates those files from the exact merged commit
+on `main` and proves no public standalone release or asset exists. Until then,
+the workflow reports `NOT_ADOPTED_CLOSEOUT_PENDING` with the PR URL and named
+maintainer owner.
 
 - [ ] **Step 6: Require separate release authorization for binaries**
 
@@ -1481,7 +1578,12 @@ head does not contain the named binding digest, and missing or mismatched schema
 path/version/digest ownership. Apply the same cases to negative-decision
 closeouts, including expired decision artifacts, omission or forbidden inclusion
 of the stale authorization, a public release on the negative path, and refusal
-to report `NOT_ADOPTED` before the exact evidence PR merge is revalidated.
+to report `NOT_ADOPTED` before the exact evidence PR merge is revalidated. Apply
+them also to threshold-failure closeouts, including a missing or substituted
+platform record, a passing evaluation routed through the failure mode,
+authorization/decision/release evidence on that mode, a mismatched evaluation-
+digest directory, and any terminal report before the exact merged candidate is
+revalidated.
 
 Before assembling the closeout artifact, the candidate terminal writer receives
 only the freshly downloaded preparation evaluation/authorization and the
@@ -1508,9 +1610,10 @@ ruby packaging/tebako/validate-evaluation.rb \
   "$VERIFIED_MERGED_CLOSEOUT_EVALUATION_PATH"
 ```
 
-If authorization is denied or stale before upload, record terminal
-`NOT_ADOPTED` from the Step 6 decision receipt and retain the evaluation evidence
-without public artifacts:
+If authorization is denied or stale before upload, write the candidate terminal
+`NOT_ADOPTED` bytes from the Step 6 decision receipt and retain the evaluation
+evidence without public artifacts; do not report the outcome as terminal before
+the reviewed closeout below:
 
 ```bash
 ruby packaging/tebako/write-evaluation.rb \
@@ -1534,11 +1637,13 @@ ruby packaging/tebako/validate-evaluation.rb \
 `authorization-denied` and `authorization-stale`. Both finalization modes are
 allowed only from `ADOPTED_PENDING_RELEASE_AUTHORIZATION` whose complete
 platform matrix passes every threshold and has no failed criterion. A
-threshold-derived `NOT_ADOPTED` from Step 5 is already terminal and is never
-passed to finalization. The writer rejects any transition from `ADOPTED` or
-`NOT_ADOPTED`, never removes or overwrites prior failure evidence, and forbids
-release evidence on the authorization-failure path. Tests cover the complete
-allowed transition table and every rejected cross-state transition.
+threshold-derived candidate `NOT_ADOPTED` from Step 5 is never passed to this
+authorization-decision finalization; it becomes terminal only through the
+`threshold-failure-evidence` closeout and exact merged-commit validation defined
+there. The writer rejects any transition from `ADOPTED` or `NOT_ADOPTED`, never
+removes or overwrites prior failure evidence, and forbids release evidence on
+the authorization-failure path. Tests cover the complete allowed transition
+table and every rejected cross-state transition.
 `ADOPTED_PENDING_RELEASE_AUTHORIZATION` is never a completion state. In both
 terminal paths the writer uses a same-directory temporary file plus atomic
 rename so input and output may be the same path without truncating the prior
@@ -1570,8 +1675,10 @@ matching `release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.jso
 Accept an unsupported disposition only with authenticated live capability
 evidence for that exact operation; unscoped naming alone is not such evidence.
 Download the registry artifact rather than trusting the prepublication copy,
-then replay the verifier with the fresh setting observation and exact expected
-commit/tag from the authorization:
+freshly retrieve the authorization capture by its durable producer-run,
+artifact-ID, service-digest, and file-digest receipt, then replay the verifier
+with the fresh setting observation and exact expected commit/tag from that
+verified artifact path:
 
 ```bash
 NPM_AUDIT_DIR="$(mktemp -d)"
@@ -1580,11 +1687,11 @@ npm pack agent-coordination-dashboard@0.1.0 --json \
 NPM_AUDIT_TARBALL="$NPM_AUDIT_DIR/agent-coordination-dashboard-0.1.0.tgz"
 node scripts/verify-npm-postpublish-receipt.mjs \
   --receipt release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json \
-  --authorization release/authorizations/agent-coordination-dashboard-0.1.0.v1.json \
+  --authorization "$VERIFIED_PACKAGE_AUTHORIZATION_PATH" \
   --grant-manifest release/grants/agent-coordination-dashboard-0.1.0.v1.json \
   --tarball "$NPM_AUDIT_TARBALL" \
   --fresh-observation release/evidence/agent-coordination-dashboard-0.1.0-publishing-access-closeout.v1.json \
-  --expected-commit "$(node -p 'require("./release/authorizations/agent-coordination-dashboard-0.1.0.v1.json").commit')" \
+  --expected-commit "$(node -p 'require(process.env.VERIFIED_PACKAGE_AUTHORIZATION_PATH).commit')" \
   --expected-tag v0.1.0
 ```
 

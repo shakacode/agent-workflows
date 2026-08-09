@@ -431,6 +431,7 @@ git commit -m "test: add Ruby CLI characterization harness"
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `lib/agent_workflows.rb`
 - Modify: `agent-workflows.gemspec`
+- Modify: `config/ruby-production-boundaries.yml`
 
 **Interfaces:**
 
@@ -541,6 +542,7 @@ git rm -- bin/agent_doctor/autonomous_merge_policy.rb \
   bin/agent_doctor/autonomous_merge_policy_globs.rb \
   bin/agent_doctor/autonomous_merge_policy_yaml.rb
 git add -- agent-workflows.gem-manifest agent-workflows.runtime-manifest \
+  config/ruby-production-boundaries.yml \
   lib/agent_workflows.rb \
   lib/agent_workflows/policy/autonomous_merge_policy.rb \
   lib/agent_workflows/policy/autonomous_merge_policy_globs.rb \
@@ -582,6 +584,7 @@ printf '%s\t%s\n' \
   A test/gem/policy/autonomous_merge_policy_test.rb \
   M agent-workflows.gem-manifest \
   M agent-workflows.runtime-manifest \
+  M config/ruby-production-boundaries.yml \
   M lib/agent_workflows.rb \
   M test/packaging/public_entrypoints_test.rb \
   M bin/agent-workflow-seam-doctor \
