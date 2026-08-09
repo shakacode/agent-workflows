@@ -473,6 +473,61 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_task_handoffs_supersede_unsupported_dependency_terminal_handoff_and_stay_sticky
+    {
+      "terminal" => %w[stop-task-terminal stopped already-stopped],
+      "not-resumable" => %w[stop-task-not-resumable stopped already-stopped],
+      "blocked-user-input" => %w[pause-user-input paused manual-resume-required]
+    }.each do |task_status, (expected_action, expected_monitor_status, expected_restart_action)|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        unsupported_stop, unsupported_stderr, unsupported_status = run_helper(
+          state_path,
+          observation("capability" => "unsupported", "dependency_status" => "terminal")
+        )
+        assert unsupported_status.success?, unsupported_stderr
+        assert_equal "dependency-terminal-while-unsupported", unsupported_stop.dig("handoff", "reason")
+
+        blocker_state = if task_status == "blocked-user-input"
+                          { "question" => "Which terminal outcome should be recorded?" }
+                        else
+                          { "head" => "b" * 40, "pending" => [] }
+                        end
+        resume_instruction = "Resume task thread-393 after #{task_status}."
+        current, current_stderr, current_status = run_helper(
+          state_path,
+          observation(
+            "task_status" => task_status,
+            "dependency_status" => "terminal",
+            "blocker_state" => blocker_state,
+            "resume_instruction" => resume_instruction,
+            "probe_sequence" => 1,
+            "observed_at" => "2026-08-09T00:15:00Z"
+          )
+        )
+
+        assert current_status.success?, current_stderr
+        assert_equal expected_action, current.fetch("action")
+        assert_equal expected_monitor_status, current.fetch("monitor_status")
+        refute current.fetch("wake_parent")
+        expected_reason = task_status == "blocked-user-input" ? task_status : "task-#{task_status}"
+        assert_equal expected_reason, current.dig("handoff", "reason")
+        assert_equal blocker_state, current.dig("handoff", "blocker_state")
+        assert_equal resume_instruction, current.dig("handoff", "resume_instruction")
+        assert_equal current.fetch("handoff"), JSON.parse(File.read(state_path)).dig("last_decision", "handoff")
+
+        restarted, restarted_stderr, restarted_status = run_helper(
+          state_path,
+          observation("probe_sequence" => 2, "observed_at" => "2026-08-09T00:30:00Z")
+        )
+        assert restarted_status.success?, restarted_stderr
+        assert_equal expected_restart_action, restarted.fetch("action")
+        assert_equal current.fetch("handoff"), restarted.fetch("handoff")
+        assert_equal restarted.fetch("handoff"), JSON.parse(File.read(state_path)).dig("last_decision", "handoff")
+      end
+    end
+  end
+
   def test_nonresumable_task_states_stop_or_pause_without_a_parent_wake
     {
       "terminal" => %w[stop-task-terminal stopped],
@@ -949,6 +1004,60 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_unsupported_terminal_dependency_preserves_every_budget_ceiling_context
+    cases = {
+      "unchanged-runs-ceiling" => {
+        "limits" => { "max_unchanged_runs" => 1, "max_model_calls" => 5, "max_tokens" => 1_000 },
+        "usage_delta" => { "model_calls" => 0, "tokens" => 0 },
+        "baseline" => true
+      },
+      "model-calls-ceiling" => {
+        "limits" => { "max_unchanged_runs" => 5, "max_model_calls" => 1, "max_tokens" => 1_000 },
+        "usage_delta" => { "model_calls" => 1, "tokens" => 100 }
+      },
+      "token-ceiling" => {
+        "limits" => { "max_unchanged_runs" => 5, "max_model_calls" => 5, "max_tokens" => 100 },
+        "usage_delta" => { "model_calls" => 0, "tokens" => 100 }
+      }
+    }
+
+    cases.each do |expected_reason, values|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        if values["baseline"]
+          _baseline, baseline_stderr, baseline_status = run_helper(
+            state_path,
+            observation("limits" => values.fetch("limits"))
+          )
+          assert baseline_status.success?, baseline_stderr
+        end
+
+        sequence = values["baseline"] ? 1 : 0
+        decision, stderr, status = run_helper(
+          state_path,
+          observation(
+            "capability" => "unsupported",
+            "dependency_status" => "terminal",
+            "limits" => values.fetch("limits"),
+            "usage_delta" => values.fetch("usage_delta"),
+            "probe_sequence" => sequence,
+            "observed_at" => "2026-08-09T00:#{format('%02d', sequence * 15)}:00Z"
+          )
+        )
+
+        assert status.success?, stderr
+        assert_equal "manual-resume-required", decision.fetch("action")
+        assert_equal "stopped", decision.fetch("monitor_status")
+        refute decision.fetch("wake_parent")
+        refute decision.key?("wake_id")
+        assert_equal "dependency-terminal-while-unsupported", decision.dig("handoff", "reason")
+        assert_equal expected_reason, decision.dig("handoff", "budget_reason")
+        assert_equal values.fetch("limits"), decision.dig("handoff", "limits")
+        assert_equal values.fetch("usage_delta"), decision.dig("handoff", "usage")
+      end
+    end
+  end
+
   def test_capability_loss_preserves_changed_and_terminal_transitions_in_the_handoff
     {
       "state-change-while-unsupported" => {
@@ -975,7 +1084,9 @@ class GoalStateChangeMonitorTest < Minitest::Test
           )
         )
         assert status.success?, stderr
+        assert_equal "manual-resume-required", decision.fetch("action")
         refute decision.fetch("wake_parent")
+        refute decision.key?("wake_id")
         assert_equal "manual-resume-required", decision.dig("handoff", "resume")
         assert_equal expected_reason, decision.dig("handoff", "reason")
         assert_equal transition.fetch("dependency_status"), decision.dig("handoff", "dependency_status")

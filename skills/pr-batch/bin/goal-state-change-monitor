@@ -389,7 +389,10 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   task_action = TASK_ACTIONS[task_status]
   sticky_monitor_status = previous&.fetch("monitor_status", nil)
   previous_handoff = previous&.dig("last_decision", "handoff")
-  task_handoff_supersedes_dependency_stop = task_action && sticky_monitor_status == "stopped" && !previous_handoff
+  dependency_stopped_without_wake = previous_handoff&.fetch("reason", nil) ==
+                                    "dependency-terminal-while-unsupported"
+  task_handoff_supersedes_dependency_stop = task_action && sticky_monitor_status == "stopped" &&
+                                            (!previous_handoff || dependency_stopped_without_wake)
   if previous && ((sticky_monitor_status == "stopped" && !task_handoff_supersedes_dependency_stop &&
                     !terminal_observation_supersedes_pending) ||
                   (sticky_monitor_status == "paused" && !terminal_observation))
@@ -478,10 +481,10 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     "monitor_id" => monitor_id,
     "action" => if task_action
                   task_action
-                elsif dependency_terminal
-                  "stop-dependency-terminal"
                 elsif capability == "unsupported"
                   "manual-resume-required"
+                elsif dependency_terminal
+                  "stop-dependency-terminal"
                 elsif changed
                   "wake-state-change"
                 elsif budget_pause
@@ -563,7 +566,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
       "resume_instruction" => resume_instruction,
       "resume" => "manual-resume-required"
     }
-    if budget_pause
+    if budget_reason
       decision["handoff"]["budget_reason"] = budget_reason
       decision["handoff"]["usage"] = usage
       decision["handoff"]["limits"] = limits
