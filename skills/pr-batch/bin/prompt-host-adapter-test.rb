@@ -642,6 +642,56 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
+  def test_atx_heading_reserved_declarations_fail_closed_without_echo
+    heading_declarations = [
+      "# Prompt host: claude %<marker>s",
+      "######\tPrompt mode: batch %<marker>s",
+      "   ## Preferred route: default %<marker>s ##",
+      "### Route requirement: advisory %<marker>s ###",
+      "> #### Prompt host: claude %<marker>s ####",
+      "- #####\tPrompt mode: batch %<marker>s"
+    ]
+    prompt_builders = {
+      "complete Codex headers" => ->(body) { direct_prompt(host: "codex", body:) },
+      "legacy Codex wrapper" => ->(body) { legacy_prompt(host: "codex", body:) }
+    }
+
+    prompt_builders.each do |surface, build_prompt|
+      heading_declarations.each_with_index do |template, index|
+        marker = "SECRET_ATX_HEADER_#{surface.upcase.gsub(/\W+/, '_')}_#{index}"
+        line = format(template, marker:)
+        prompt = build_prompt.call(line)
+        result, stderr, status, stdout = run_adapter(prompt, active_host: "codex")
+
+        assert status.success?, stderr
+        assert_equal "ambiguous", result.fetch("classification"), "#{surface}: #{line.inspect}"
+        assert_equal "malformed-headers", result.fetch("reason_code"), "#{surface}: #{line.inspect}"
+        assert_equal false, result.fetch("execute_allowed"), "#{surface}: #{line.inspect}"
+        assert_equal false, result.fetch("relaunch_required"), "#{surface}: #{line.inspect}"
+        assert_nil result.fetch("prompt"), "#{surface}: #{line.inspect}"
+        refute_includes stdout, marker
+      end
+    end
+
+    incidental_headings = [
+      "# Prompt host considerations",
+      "## Discuss Prompt host: claude as literal prose.",
+      "### Release notes ###",
+      "#Prompt host: claude"
+    ]
+    prompt_builders.each do |surface, build_prompt|
+      incidental_headings.each do |line|
+        prompt = build_prompt.call(line)
+        result, stderr, status = run_adapter(prompt, active_host: "codex")
+
+        assert status.success?, stderr
+        assert_equal "compatible", result.fetch("classification"), "#{surface}: #{line.inspect}"
+        assert_equal true, result.fetch("execute_allowed"), "#{surface}: #{line.inspect}"
+        assert_equal prompt, result.fetch("prompt"), "#{surface}: #{line.inspect}"
+      end
+    end
+  end
+
   def test_tab_separated_reserved_labels_fail_closed_without_echo
     tabbed_labels = %W[Prompt\thost Prompt\tmode Preferred\troute Route\trequirement]
     prompt_builders = {

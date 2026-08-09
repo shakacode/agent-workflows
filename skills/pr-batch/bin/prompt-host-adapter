@@ -20,7 +20,7 @@ BATCH_SIZE_TARGET_VALUE = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target: (codex
 RESERVED_HEADER_LABEL =
   "(?:prompt[ ._\t-]*(?:host|mode)|preferred[ ._\t-]*route|route[ ._\t-]*requirement)"
 RESERVED_HEADER_MARKDOWN_PREFIX =
-  "(?:(?:>[ \t]*|(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)+(?:\\[[ xX]\\][ \t]+)?)?"
+  "(?:(?:>[ \t]*|(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)+(?:\\[[ xX]\\][ \t]+)?)?(?:[#]{1,6}[ \t]+)?"
 RESERVED_HEADER_LIKE_DECLARATION =
   /\A[ \t]*#{RESERVED_HEADER_MARKDOWN_PREFIX}#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)/i
 CANONICAL_RESERVED_HEADER_DECLARATION =
