@@ -1038,6 +1038,52 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_pending_wake_acknowledgement_rejects_unrelated_newer_evidence_before_mutation
+    [
+      {},
+      {
+        "limits" => { "max_unchanged_runs" => 9, "max_model_calls" => 8, "max_tokens" => 7_000 },
+        "polling_policy" => {
+          "fast_interval_seconds" => 60,
+          "fast_attempts" => 2,
+          "max_interval_seconds" => 600
+        }
+      }
+    ].each do |newer_overrides|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+        assert baseline_status.success?, baseline_stderr
+        changed_observation = observation(
+          "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+          "probe_sequence" => 1,
+          "observed_at" => "2026-08-09T00:15:00Z"
+        )
+        pending, pending_stderr, pending_status = run_helper(state_path, changed_observation)
+        assert pending_status.success?, pending_stderr
+        assert_equal "wake-state-change", pending.fetch("action")
+        persisted_before = File.binread(state_path)
+
+        unrelated, unrelated_stderr, unrelated_status = run_helper(
+          state_path,
+          observation(
+            **newer_overrides,
+            "blocker_state" => { "head" => "c" * 40, "pending" => ["new-check"] },
+            "probe_sequence" => 2,
+            "observed_at" => "2026-08-09T00:30:00Z",
+            "acknowledged_wake_id" => pending.fetch("wake_id")
+          )
+        )
+
+        assert_nil unrelated
+        refute unrelated_status.success?
+        assert_includes unrelated_stderr, '"reason":"invalid-wake-acknowledgement"'
+        assert_equal persisted_before, File.binread(state_path)
+        assert_equal pending.fetch("wake_id"), JSON.parse(File.read(state_path)).dig("pending_wake", "wake_id")
+      end
+    end
+  end
+
   def test_repeated_changed_wake_ack_cycles_keep_restart_state_bounded
     Dir.mktmpdir do |directory|
       state_path = File.join(directory, "monitor.json")
@@ -1181,6 +1227,34 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert timestamp_status.success?, timestamp_stderr
       assert_equal "suppress-replayed-probe", timestamp_retry.fetch("action")
       refute timestamp_retry.fetch("wake_parent")
+    end
+  end
+
+  def test_invalid_acknowledgement_does_not_persist_a_legacy_digest_migration
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      first_observation = observation
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, first_observation)
+      assert baseline_status.success?, baseline_stderr
+      legacy_state = JSON.parse(File.read(state_path))
+      legacy_state.delete("observation_digest_version")
+      legacy_state["last_observation_digest"] = observation_digest(
+        first_observation,
+        include_observed_at: true
+      )
+      legacy_state["acknowledged_wake_ids"] = ["f" * 64]
+      File.write(state_path, JSON.generate(legacy_state))
+      persisted_before = File.binread(state_path)
+
+      decision, stderr, status = run_helper(
+        state_path,
+        first_observation.merge("acknowledged_wake_id" => "e" * 64)
+      )
+
+      assert_nil decision
+      refute status.success?
+      assert_includes stderr, '"reason":"invalid-wake-acknowledgement"'
+      assert_equal persisted_before, File.binread(state_path)
     end
   end
 

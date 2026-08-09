@@ -439,6 +439,21 @@ def followups_disposition_records(value)
   CompletedBatchAuditReceipt.disposition_records(value)
 end
 
+def validated_minitest_summary(output)
+  summary_pattern = /\A(?<runs>\d+) runs, (?<assertions>\d+) assertions, (?<failures>\d+) failures, (?<errors>\d+) errors, (?<skips>\d+) skips\z/
+  summaries = output.lines.filter_map do |line|
+    match = summary_pattern.match(line.strip)
+    match&.named_captures&.transform_values(&:to_i)
+  end
+  return unless summaries.one?
+
+  summary = summaries.first
+  return unless summary.fetch("runs").positive? && summary.fetch("assertions").positive?
+  return unless %w[failures errors skips].all? { |key| summary.fetch(key).zero? }
+
+  summary
+end
+
 class GoalCompletionContractTest < Minitest::Test
   def setup
     @workflow = read_repo_file(WORKFLOW_PATH)
@@ -602,7 +617,26 @@ class GoalCompletionContractTest < Minitest::Test
     stdout, stderr, status = Open3.capture3("ruby", STATE_CHANGE_MONITOR_TEST_PATH, chdir: ROOT)
 
     assert status.success?, "state-change monitor regressions failed:\n#{stdout}\n#{stderr}"
-    assert_includes stdout, "0 failures, 0 errors"
+    refute_nil validated_minitest_summary(stdout),
+               "state-change monitor regressions returned an invalid or empty summary:\n#{stdout}\n#{stderr}"
+  end
+
+  def test_state_change_monitor_contract_gate_rejects_an_empty_child_suite
+    assert_nil validated_minitest_summary("0 runs, 0 assertions, 0 failures, 0 errors, 0 skips\n")
+  end
+
+  def test_state_change_monitor_contract_gate_requires_one_complete_clean_summary
+    valid_summary = "2 runs, 3 assertions, 0 failures, 0 errors, 0 skips\n"
+    assert_equal 2, validated_minitest_summary(valid_summary).fetch("runs")
+
+    [
+      "1 runs, 0 assertions, 0 failures, 0 errors, 0 skips\n",
+      "1 runs, 1 assertions, 0 failures, 0 errors, 1 skips\n",
+      "1 runs, 1 assertions, 0 failures, 0 errors\n",
+      valid_summary * 2
+    ].each do |invalid_summary|
+      assert_nil validated_minitest_summary(invalid_summary)
+    end
   end
 
   def test_continuation_prompt_preserves_blocked_goal_monitor_semantics

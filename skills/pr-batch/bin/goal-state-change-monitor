@@ -266,6 +266,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   fail_json("corrupt-persisted-state") if previous && !persisted_state?(previous)
   fail_json("monitor-id-collision") if previous && previous["monitor_id"] != monitor_id
 
+  legacy_digest_migrated = false
   validate_same_sequence_replay = lambda do
     if previous["observation_digest_version"] == OBSERVATION_DIGEST_VERSION
       fail_json("probe-replay-mismatch") if previous["last_observation_digest"] != observation_digest
@@ -277,7 +278,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
         "last_observation_digest" => observation_digest,
         "observation_digest_version" => OBSERVATION_DIGEST_VERSION
       )
-      persist_state(state_path, previous)
+      legacy_digest_migrated = true
     end
   end
 
@@ -288,8 +289,12 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   if acknowledged_wake_id
     validate_same_sequence_replay.call if previous && probe_sequence == previous.fetch("probe_sequence")
     if pending_wake.is_a?(Hash) && pending_wake["wake_id"] == acknowledged_wake_id
+      fail_json("invalid-wake-acknowledgement") unless previous &&
+                                                       probe_sequence == previous.fetch("probe_sequence")
+
       previous = previous.reject { |key, _value| %w[pending_wake acknowledged_wake_ids].include?(key) }
       persist_state(state_path, previous)
+      legacy_digest_migrated = false
       recognized_acknowledgement = true
     elsif previous && probe_sequence <= previous.fetch("probe_sequence") &&
           previous.dig("last_decision", "wake_parent") == true &&
@@ -336,6 +341,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   end
 
   if recognized_acknowledgement && previous && probe_sequence <= previous.fetch("probe_sequence")
+    persist_state(state_path, previous) if legacy_digest_migrated
     puts JSON.generate(
       "contract" => "goal-state-change-decision",
       "version" => 1,
@@ -353,6 +359,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   if previous && probe_sequence <= previous.fetch("probe_sequence")
     if probe_sequence == previous.fetch("probe_sequence")
       validate_same_sequence_replay.call
+      persist_state(state_path, previous) if legacy_digest_migrated
 
       previous_decision = previous.fetch("last_decision")
       decision = previous_decision.merge(
