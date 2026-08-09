@@ -574,9 +574,11 @@ At the human-editable input boundary, accept `none`, `ask`, `auto`, and the
 compatible canonical value `auto_merge_when_gates_pass`. Immediately after
 resolving the visible value, normalize `auto` to
 `auto_merge_when_gates_pass` and preserve the other canonical values unchanged.
-A missing value, an unresolved placeholder, or any other value is invalid and
-fails closed before batch-plan preflight, dispatcher selection, or worker
-launch.
+A missing execution value, an unresolved placeholder, or any other value is
+invalid and fails closed before batch-plan preflight, dispatcher selection, or
+worker launch. In prompt-generation mode only, no supplied authority emits the
+editable `merge_authority: <none|ask|auto>` placeholder; the executor must
+resolve it before worker launch.
 
 The short alias exists only in editable prompt input. Before constructing any
 worker prompt or writing manifests, handoffs, merge-assurance contexts or
@@ -603,7 +605,9 @@ The user should not need to write a long launch prompt. If the request is short,
   accepting `auto_merge_when_gates_pass` for compatibility and apply **Merge
   Authority Input Normalization** before preflight or dispatch. `ask`
   automatically walks through the exact-diff PR one conceptual change at a
-  time before its one final merge decision.
+  time before its one final merge decision. In prompt-generation mode only, no
+  supplied authority emits the editable `merge_authority: <none|ask|auto>`
+  placeholder; the executor must resolve it before worker launch.
 - Concurrency: one machine, multiple machines, or single-threaded.
 - Batch size target: `codex`, `claude`, or `generic`; explicit paste
   destination or runner wins, otherwise use reliable host detection or

@@ -513,6 +513,7 @@ required_skill_rule_phrases = [
   "including the `/goal` line",
   "prepend only the `/goal` line",
   "keep the shared `$pr-batch` invocation",
+  INVOCATION_LINE,
   "apply Codex's strict 4000-character limit",
   GOAL_PROMPT_HEADROOM_RULE_PHRASE,
   "under 8000 characters",
@@ -525,6 +526,12 @@ required_skill_rule_phrases = [
   "outside the prompt",
   "AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb"
 ]
+
+reject_phrases(
+  skill_text,
+  ["prompt starts with `Use $pr-batch to complete this batch with subagents.`"],
+  "SKILL.md shared invocation guidance"
+)
 
 required_codex_prompt_phrases = [
   CODEX_PROMPT_START

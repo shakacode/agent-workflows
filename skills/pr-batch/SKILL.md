@@ -109,8 +109,10 @@ facts remain fail-closed and stop before mutation.
   Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
   A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
-  visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
-  for `none`, `ask`, or `auto`; continue accepting
+  visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction.
+  In prompt-generation mode with no visible value, emit
+  the editable placeholder defined in **Required Interview**; otherwise ask for
+  `none`, `ask`, or `auto`. Continue accepting
   `auto_merge_when_gates_pass` for compatibility. Apply the fail-closed
   normalization contract in **Required Interview** before preflight or dispatch.
   `ask` includes an automatic interactive exact-diff walkthrough before the one
@@ -201,8 +203,11 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    resolving the visible value, normalize `auto` to
    `auto_merge_when_gates_pass`; preserve the other canonical values unchanged.
    A missing value, an unresolved placeholder, or any other value is invalid:
-   stop before dispatcher selection or worker launch. Only the editable prompt
-   may carry `auto`; worker prompts, manifests, handoffs, merge-assurance
+   stop before dispatcher selection or worker launch. In prompt-generation mode
+   only, no supplied authority emits the editable
+   `merge_authority: <none|ask|auto>` placeholder; the executor must resolve it
+   before worker launch. Only the editable prompt may carry `auto`; worker
+   prompts, manifests, handoffs, merge-assurance
    contexts or receipts, audits, helper inputs, and every other durable record
    carry the canonical value. Explain that `ask` automatically walks through the
    exact-diff PR one conceptual change at a time before the one final merge

@@ -577,7 +577,8 @@ backend must say so in the declaration.
 Use this template and fill it with the verified items. The fenced template below
 is the shared prompt body. For the `codex` target, prepend only the `/goal` line <!-- host-allow: codex-only -->
 before this body. For the `claude` or `generic` target, use the body as-is so the
-prompt starts with `Use $pr-batch to complete this batch with subagents.`
+prompt starts with
+`Use $pr-batch to complete or continue the exact requested batch with subagents.`
 Keep bulky evidence and long validation notes outside the prompt.
 `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 

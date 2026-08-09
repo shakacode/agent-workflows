@@ -145,9 +145,12 @@ EDITABLE_CONTROL_BLOCK = [
 MERGE_AUTHORITY_NORMALIZATION_RULE =
   "Immediately after resolving the visible value, normalize `auto` to `auto_merge_when_gates_pass`"
 MERGE_AUTHORITY_FAIL_CLOSED_RULE =
-  "A missing value, an unresolved placeholder, or any other value is invalid"
+  "an unresolved placeholder, or any other value is invalid"
 MERGE_AUTHORITY_DURABLE_RULE =
   "worker prompts, manifests, handoffs, merge-assurance contexts or receipts, audits, helper inputs"
+PROMPT_GENERATION_AUTHORITY_EXCEPTION =
+  "In prompt-generation mode only, no supplied authority emits the editable " \
+  "`merge_authority: <none|ask|auto>` placeholder; the executor must resolve it before worker launch."
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
                       "`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII " \
@@ -785,6 +788,12 @@ class GoalCompletionContractTest < Minitest::Test
     assert_squished_includes @workflow,
                              "preserve the other canonical values unchanged",
                              "workflows/pr-processing.md"
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill
+    }.each do |label, text|
+      assert_squished_includes text, PROMPT_GENERATION_AUTHORITY_EXCEPTION, label
+    end
 
     assert_squished_includes @pr_batch_skill, MERGE_AUTHORITY_DURABLE_RULE, "skills/pr-batch/SKILL.md"
     assert_squished_includes @workflow,
@@ -813,6 +822,15 @@ class GoalCompletionContractTest < Minitest::Test
 
     assert_text_includes @changelog, "Put editable PR-batch controls", "CHANGELOG.md"
     assert_text_includes @changelog, "[issue 386]", "CHANGELOG.md"
+  end
+
+  def test_plan_prompt_target_guidance_uses_the_synchronized_invocation
+    invocation = "Use $pr-batch to complete or continue the exact requested batch with subagents."
+    assert_text_includes @plan_pr_batch_skill,
+                         "prompt starts with\n`#{invocation}`",
+                         "skills/plan-pr-batch/SKILL.md"
+    refute_includes @plan_pr_batch_skill,
+                    "prompt starts with `Use $pr-batch to complete this batch with subagents.`"
   end
 
   def test_batch_title_instructions_pin_local_date_source
