@@ -996,21 +996,29 @@ therefore cannot interleave between selection and lease publication. The
 bootstrap releases its lease after the command exits. `live_source` never enters
 generation retention or lease cleanup; the editable checkout lifecycle remains
 operator-owned.
-Lease records bind PID, process-start identity, and generation. A matching live
-process identity is an unconditional hard pin regardless of lease age. A dead
-or reused process identity becomes reclaimable only after a bounded stale-lease
-grace period; an unknown liveness result retains the generation and fails
-closed. Tests force cleanup at the selector/lease boundary, keep a launcher
+Each invocation creates an installer-owned per-lease lock file, acquires an
+exclusive advisory `File#flock`, and holds that open descriptor for the full
+lease lifetime. The canonical lease record binds the lock-file identity,
+generation, random lease UUID, PID, and timestamps; PID is diagnostic only and
+is never used as liveness authority. Retention opens the no-follow validated
+lock file and attempts `LOCK_EX | LOCK_NB`: failure to acquire is an
+unconditional live hard pin regardless of age, while successful acquisition
+proves that no process holds the lease and makes it reclaimable only after the
+bounded stale-lease grace period. Unsupported or uncertain locking retains the
+generation and fails closed. This stdlib-only protocol uses the same local
+filesystem as the generation store and does not depend on `/proc`, `ps`, native
+extensions, or platform-specific process start-time discovery. Tests force
+cleanup at the selector/lease boundary, keep a launcher and its lock descriptor
 alive beyond the stale-lease grace period, and prove both generations remain.
-They then prove a released lease and a dead or reused process identity become
-eligible for reclamation after the grace period.
+They then prove a released descriptor and an orphaned unlocked record become
+eligible for reclamation after the grace period on both macOS and Linux.
 
-`RuntimeBootstrap` is also the only implementation of lease parsing, live
-process-identity comparison, and the retention lock protocol used by
+`RuntimeBootstrap` is also the only implementation of lease parsing,
+per-lease advisory locking, and the retention lock protocol used by
 `GenerationTransaction`; the transaction requires this canonical file directly
 while running from the trusted source checkout and never reimplements those
-rules. Direct tests run the same corrupt-node, selector race, live/stale/unknown
-identity, and lease cleanup corpus against both the installed immutable bootstrap
+rules. Direct tests run the same corrupt-node, selector race,
+held/released/unknown-lock, and lease cleanup corpus against both the installed immutable bootstrap
 and the transaction caller. Tests also tamper with the bootstrap path, node type,
 mode, ownership fixture, and bytes and prove the launcher exits `64` before any
 generation code loads.

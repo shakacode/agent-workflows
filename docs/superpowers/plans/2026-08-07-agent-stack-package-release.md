@@ -54,6 +54,11 @@
   in a pinned Linux build environment for the authorization build and
   unprivileged workflow build. The workflow verifies all three versions before
   building; a mismatch stops before the protected publication job begins.
+  Bundler `4.0.10` is an existing RubyGems.org release (published 2026-04-08),
+  requires Ruby `>= 3.2.0` and RubyGems `>= 3.4.1`, and is therefore compatible
+  with these pins. The implementation preflight still resolves this exact
+  version from RubyGems.org before building so a typo or unavailable artifact
+  fails before authorization.
 - Both gemspecs set `allowed_push_host` to exactly
   `https://rubygems.org`, packaging tests assert it, and release jobs reject any
   conflicting `RUBYGEMS_HOST`.
@@ -626,6 +631,15 @@ disposition. Do not publish another version merely to test OIDC.
 
 ### Task 5: Evaluate self-contained Agent Workflows executables
 
+The standalone GitHub Release uses the distinct immutable tag
+`agent-workflows-standalone-v0.2.0`; `AUTHORIZED_BINARY_TAG` is fixed to that
+value throughout this task. It is not the gem/source release tag `v0.2.0`.
+Build and verify the `agent-workflows` gem first, then evaluate the standalone
+artifacts, obtain the separate binary authorization, and only then create or
+resume the draft standalone release. A public GitHub Release for `v0.2.0` does
+not conflict with `prepare-publication`'s rejection of a public or unowned
+release for the distinct standalone tag. Neither tag may be moved or reused.
+
 **Files in `shakacode/agent-workflows`:**
 
 - Create: `packaging/tebako/entrypoint.rb`
@@ -676,9 +690,11 @@ disposition. Do not publish another version merely to test OIDC.
 - Create after an ambiguous toggle or public read-back:
   `release/evidence/standalone-github-publication-recovery-v1.json`.
 - Commit through reviewed closeout PRs:
-  `release/evidence/standalone/closeouts/<tag>/` with either the exact verified
-  authorization/receipts or denial/stale decision, terminal evaluation, and
-  closed manifest.
+  `release/evidence/standalone/closeouts/<closeout-key>/` with either the exact
+  verified authorization/receipts or denial/stale decision, terminal
+  evaluation, and closed manifest. An adopted or stale-authorization closeout
+  uses `tag-<authorization-tag>`; an initial denial uses the full evaluation
+  digest form defined in Step 6.
 - Create before protected release mutation:
   `release/evidence/standalone-github-publication-instruction-v1.json`.
 - Create: `docs/standalone-installation.md` only if the evaluation passes.
@@ -1011,6 +1027,15 @@ principal, decision timestamp, source URL, source-evaluation producer
 run/artifact ID/artifact digest/file digest, and either the explicit denial or
 the authorization expiry plus its producer-run/artifact identity.
 
+The decision writer also derives and binds an immutable `closeout_key`; callers
+cannot supply it. For `authorization-stale`, it is
+`tag-<authorization-tag>` from the verified authorization. For an initial
+`authorization-denied`, it is
+`evaluation-<full-source-evaluation-file-sha256>`. This gives the denial path a
+deterministic namespace without inventing or accepting an unauthorized release
+tag. The schema binds the closeout key and its derivation inputs, and rejects a
+caller-selected, truncated, or mismatched key.
+
 Run this path only through
 `.github/workflows/record-standalone-release-decision.yml`, a read-only workflow
 with separate `capture-decision` and `finalize-decision` jobs. Exact dispatch
@@ -1019,7 +1044,8 @@ selectors name the source-evaluation run/artifact ID/service digest and, only fo
 digest. `capture-decision` proves those selectors through the GitHub API,
 downloads each artifact into a separate fresh directory, verifies its bytes and
 schema, runs the writer with only those verified paths, and uploads the single
-decision JSON as an artifact named by tag and capture run. It queries and records
+decision JSON as an artifact named by the derived closeout key and capture run.
+It queries and records
 that artifact's exact ID/service digest, freshly downloads it, and verifies its
 file digest and schema before exposing those values to `finalize-decision` as
 selectors. A name lookup, checkout evidence path, or workflow output containing
@@ -1032,7 +1058,8 @@ the candidate terminal `NOT_ADOPTED` evaluation into `RUNNER_TEMP`. For
 expired authorization named by the decision. It packages the source evaluation,
 decision, terminal evaluation, conditionally required-or-forbidden expired
 authorization, and a closed SHA-256 manifest as one
-`standalone-release-decision-closeout-<tag>-<capture-run>` artifact, queries its
+`standalone-release-decision-closeout-<closeout-key>-<capture-run>` artifact,
+queries its
 exact ID/service digest, downloads it into a new directory, and revalidates the
 manifest and every applicable schema. Evaluation and decision schemas are always
 required; the authorization schema and file are required for
@@ -1045,7 +1072,8 @@ terminal evidence.
 The negative mode uses the same unprivileged preparation, exact PR-payload
 artifact, limited no-checkout opener, committed instruction/binding, post-push
 operation-result, human PR review, and split-contract verification defined below.
-Its fixed tag directory contains the source evaluation, denial/stale decision,
+Its fixed closeout-key directory contains the source evaluation,
+denial/stale decision,
 candidate terminal `NOT_ADOPTED` evaluation, closed manifest, and—only for
 `authorization-stale`—the exact expired authorization. After merge,
 `finalize-standalone-closeout.yml` revalidates those files from the exact commit,
@@ -1254,8 +1282,8 @@ bounded Actions storage alone never accepts or reports terminal `ADOPTED`.
 Invoke the `release-evidence` mode of `standalone-closeout-pr.yml` with that
 exact closeout-artifact producer run, ID, and service digest. Its unprivileged
 preparation job freshly downloads and revalidates the bundle, then writes a
-closed PR instruction for the tag-specific directory
-`release/evidence/standalone/closeouts/<tag>/`. The path set is fixed to the
+closed PR instruction for the derived closeout-key directory
+`release/evidence/standalone/closeouts/tag-<tag>/`. The path set is fixed to the
 verified authorization, draft and public receipts, candidate terminal
 evaluation, closed manifest, original PR instruction, and PR-binding record; each
 prepared content digest, fixed binding/result schema paths, versions, digests,
@@ -1581,8 +1609,9 @@ Confirm no `agent_workflows`, `agent_coordination`, dashboard Ruby gem, or other
 Record package URLs, exact versions, commits, checksums/integrities, owners, trusted publishers, smoke evidence, known limitations, standalone decision, and rollback instructions in the repositories' release notes.
 For an adopted standalone release, link the exact merged installation-docs and
 release-evidence PRs plus the immutable merge commit containing
-`release/evidence/standalone/closeouts/<tag>/`. A release-note summary or expired
-Actions artifact is never a substitute for those committed evidence bytes.
+`release/evidence/standalone/closeouts/tag-<tag>/`. A release-note summary or
+expired Actions artifact is never a substitute for those committed evidence
+bytes.
 
 ## Plan Completion Gate
 

@@ -35,6 +35,10 @@ single-skill helper boundary, and safety contract.
   only `spec.files`; the runtime manifest drives only source-pack completeness
   and may additionally contain source-pack wrappers/resources. Each consumer
   fails for an omitted, duplicate, missing, absolute, or parent-traversing entry.
+- No extraction task begins until Task 1 creates and reviews
+  `config/ruby-production-boundaries.yml`. Later references to the reviewed
+  production-boundary manifest consume that committed classification; Task 8
+  completes and ratchets it rather than creating it for the first time.
 - Every task that adds a canonical class or CLI modifies
   `lib/agent_workflows.rb` in the same change, registers each public entrypoint
   explicitly, and updates `test/packaging/public_entrypoints_test.rb`. That test
@@ -304,7 +308,7 @@ exporter, plus exporter-only tests for helper-set transitions.
   domain PR that cuts over a skill-relative helper. No later domain task may
   defer this prerequisite.
 
-### Task 1: Build the reusable characterization harness
+### Task 1: Freeze production boundaries and build the reusable characterization harness
 
 **Files:**
 
@@ -313,6 +317,8 @@ exporter, plus exporter-only tests for helper-set transitions.
 - Create: `test/support/differential_contract.rb`
 - Create: `test/gem/support/cli_contract_test.rb`
 - Create: `test/gem/support/differential_contract_test.rb`
+- Create: `config/ruby-production-boundaries.yml` with the initial reviewed
+  retained single-skill helpers and repository-only entrypoints.
 - Modify: `Rakefile`
 
 **Interfaces:**
@@ -327,7 +333,16 @@ CliContract.run(command:, argv: [], env: {}, stdin: "", chdir:, timeout: 10)
 DifferentialContract.assert_same(test_case, legacy:, extracted:, normalize:)
 ```
 
-- [ ] **Step 1: Write harness tests**
+- [ ] **Step 1: Commit the initial production-boundary classification**
+
+Inventory every tracked production Ruby file outside `lib` and `exe`. Record
+each retained file as a thin launcher, genuinely single-skill helper, or
+repository-only entrypoint, with its owner, rationale, and direct test. Reject a
+helper with a second caller or a repo-wide responsibility. Review and commit
+`config/ruby-production-boundaries.yml` before beginning Task 2; all later
+domain tasks update this same manifest in the commit that changes a boundary.
+
+- [ ] **Step 2: Write harness tests**
 
 ```ruby
 run = CliContract.run(
@@ -343,21 +358,21 @@ refute run.timed_out
 
 Add a timeout case whose child traps `TERM`; assert the harness terminates the process group, reports `timed_out`, and leaves no sentinel child alive. Add a differential mismatch case that reports stdout, stderr, and exit-status differences together.
 
-- [ ] **Step 2: Run tests and verify missing constants**
+- [ ] **Step 3: Run tests and verify missing constants**
 
 Run: `ruby -Itest test/gem/support/cli_contract_test.rb && ruby -Itest test/gem/support/differential_contract_test.rb`
 
 Expected: failure because the support classes do not exist.
 
-- [ ] **Step 3: Implement bounded execution**
+- [ ] **Step 4: Implement bounded execution**
 
 Use `Process.spawn(..., pgroup: true)`, nonblocking pipe reads, a monotonic deadline, `TERM` followed by bounded `KILL`, and `Process.waitpid2`. The run result never raises merely because the child exits nonzero. It raises `ArgumentError` only for invalid harness input.
 
-- [ ] **Step 4: Implement fake commands and differential assertions**
+- [ ] **Step 5: Implement fake commands and differential assertions**
 
 `FakeCommand.write(dir:, name:, body:)` writes an executable file with a fixed Ruby shebang from `RbConfig.ruby`. `DifferentialContract` runs both commands with separately cloned fixture roots and compares normalized strings plus exit status.
 
-- [ ] **Step 5: Run support tests and lint**
+- [ ] **Step 6: Run support tests and lint**
 
 Run:
 
@@ -369,7 +384,7 @@ rubocop "_$(tr -d '[:space:]' < .rubocop-version)_" test/support test/gem/suppor
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the harness**
+- [ ] **Step 7: Commit the harness**
 
 ```bash
 git add -- Rakefile test/support/cli_contract.rb \
@@ -379,7 +394,7 @@ git add -- Rakefile test/support/cli_contract.rb \
 git commit -m "test: add Ruby CLI characterization harness"
 ```
 
-### Task 2: Extract the seam doctor in three review slices
+### Task 2: Extract the seam doctor in four atomic review slices
 
 **Files:**
 
@@ -948,17 +963,18 @@ Do not combine fleet mutation code with unrelated validators.
 - Modify: `.rubocop.yml`, `agent-workflows.gemspec`, `Rakefile`, `bin/validate`, docs, and changelog.
 - Modify/split: legacy test files whose subject is now a canonical class.
 - Create: `test/packaging/require_boundary_test.rb`.
-- Create: `config/ruby-production-boundaries.yml` with reviewed retained
-  single-skill helpers and repository-only entrypoints.
+- Modify: `config/ruby-production-boundaries.yml` to complete the reviewed
+  retained single-skill helpers and repository-only entrypoints.
 
 **Interfaces:**
 
 - Consumes: all extracted domains.
 - Produces: one production implementation tree and enforced reviewability limits.
 
-- [ ] **Step 1: Inventory every tracked Ruby production file**
+- [ ] **Step 1: Re-run and complete the tracked Ruby production inventory**
 
-Run the same tracked-file classifier used in the design evidence. Every
+Re-run the same tracked-file classifier used to create the Task 1 manifest and
+compare the result with the committed classification. Every
 production Ruby file outside canonical `lib` and `exe` must be classified as a
 launcher below 30 lines, a genuinely single-skill helper owned by its invoking
 skill, or a repository-only validation entrypoint. Require a short ownership
