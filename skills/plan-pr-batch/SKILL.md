@@ -275,8 +275,8 @@ Plan a PR batch
      prompt or wave. Items with `UNKNOWN` path evidence remain serial discovery
      lanes and are not counted in parallel wave limits.
      - `codex`: up to 10 independent items, or 8 when any lane touches shared/risky
-       files, workflow/build/dependency/release surfaces, needs substantial QA,
-       or would exceed the Codex prompt limit.
+       files, workflow/build/dependency/release surfaces, or needs substantial QA.
+       Only the ordinary 8000-character Codex batch limit, evaluated after any explicit Goal fallback, may reduce the lane count for prompt size.
      - `claude`: up to 5 independent items, or 3 under the same risky/shared
        conditions, because in-process Claude Code subagents share more of the
        current runner's context, permission, and rate budget.

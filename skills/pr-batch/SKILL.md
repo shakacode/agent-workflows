@@ -418,7 +418,7 @@ lane id or owner slug in the file-touch map, and `<word>` from a short
 coordinator-chosen session word. Record the handle before dispatch so workers
 copy it unchanged.
 
-If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the Codex goal prompt. Do not begin implementation from plan approval unless the user explicitly says to launch now.
+If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the exact selected Codex prompt. Do not begin implementation from plan approval unless the user explicitly says to launch now.
 
 ## Handoff Contract
 

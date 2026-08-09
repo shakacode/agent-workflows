@@ -160,6 +160,13 @@ LEGACY_CODEX_GOAL_RERENDER_RULE =
   "do not hand-edit or split it merely to preserve `/goal`."
 IN_FLIGHT_GOAL_RECOVERY_RULE =
   "Existing in-flight Goal recovery remains direct and does not start a new Goal."
+CODEX_POST_FALLBACK_PACKING_RULE =
+  "Only the ordinary 8000-character Codex batch limit, evaluated after any explicit Goal fallback, " \
+  "may reduce the lane count for prompt size."
+STALE_CODEX_PROMPT_PACKING_RULE = "or would exceed the Codex prompt limit."
+SELECTED_CODEX_HANDOFF_RULE =
+  "If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the exact selected Codex prompt."
+STALE_CODEX_GOAL_HANDOFF_RULE = "stop after the Codex goal prompt."
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
@@ -497,6 +504,18 @@ class GoalCompletionContractTest < Minitest::Test
                          "docs/installation-and-upgrades.md"
     assert_text_includes @installation_guidance, LEGACY_CODEX_GOAL_RERENDER_RULE,
                          "docs/installation-and-upgrades.md"
+  end
+
+  def test_codex_prompt_size_affects_lane_packing_only_after_goal_fallback
+    assert @plan_pr_batch_skill.include?(CODEX_POST_FALLBACK_PACKING_RULE) &&
+           !@plan_pr_batch_skill.include?(STALE_CODEX_PROMPT_PACKING_RULE),
+           "skills/plan-pr-batch/SKILL.md must apply only the ordinary batch limit after Goal fallback"
+  end
+
+  def test_plan_handoff_names_the_selected_codex_prompt_without_implying_goal_mode
+    assert @pr_batch_skill.include?(SELECTED_CODEX_HANDOFF_RULE) &&
+           !@pr_batch_skill.include?(STALE_CODEX_GOAL_HANDOFF_RULE),
+           "skills/pr-batch/SKILL.md must keep /plan handoff mode-neutral"
   end
 
   def test_issue_372_changelog_entry_is_extended_without_duplication
