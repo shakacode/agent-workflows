@@ -1,6 +1,12 @@
 {
   "schema_version": "human-status-translation-replay-v1",
   "stable_dont_notify_payload": "DONT_NOTIFY: No user action is needed. Monitoring will continue.",
+  "automation_lifecycle": {
+    "no_change": "retain_without_user_notification",
+    "gate_cleared": "delete_obsolete_automation",
+    "durably_terminal": "delete_obsolete_automation",
+    "owner": "current_task"
+  },
   "cases": [
     {
       "id": "routine-success-opaque-telemetry",

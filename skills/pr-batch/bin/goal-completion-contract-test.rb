@@ -93,6 +93,10 @@ HUMAN_STATUS_ACTIONABLE_CATEGORY_RULE = "Send an actionable notification only wh
                                         "exhausted its bounded retries and needs intervention, or closeout/archive completed."
 HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE = "Expand identifiers on first use, retain exact values, and mark unavailable " \
                                        "meanings `UNKNOWN` rather than translating them speculatively."
+HUMAN_STATUS_AUTOMATION_CLEANUP_RULE = "After each refresh, automatically delete an obsolete heartbeat or monitor " \
+                                       "when its gate clears or becomes durably terminal; retain it on a no-change wake."
+HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE = "The current task remains the owner, and automation output must not imply " \
+                                         "that ownership changed."
 HUMAN_STATUS_REQUIRED_PHRASES = [
   "internal telemetry",
   "routine successful, intermediate, repeated, or unchanged wake",
@@ -102,6 +106,8 @@ HUMAN_STATUS_REQUIRED_PHRASES = [
   "Next:",
   "explicit technical or diagnostic status",
   HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE,
+  HUMAN_STATUS_AUTOMATION_CLEANUP_RULE,
+  HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE,
   "security, ownership, retry, scope, continuous integration (CI), review, or merge gates"
 ].freeze
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
@@ -481,6 +487,11 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal "human-status-translation-replay-v1", @human_status_replay.fetch("schema_version")
     stable_payload = @human_status_replay.fetch("stable_dont_notify_payload")
     assert_equal HUMAN_STATUS_STABLE_PAYLOAD, stable_payload
+    lifecycle = @human_status_replay.fetch("automation_lifecycle")
+    assert_equal "retain_without_user_notification", lifecycle.fetch("no_change")
+    assert_equal "delete_obsolete_automation", lifecycle.fetch("gate_cleared")
+    assert_equal "delete_obsolete_automation", lifecycle.fetch("durably_terminal")
+    assert_equal "current_task", lifecycle.fetch("owner")
 
     cases = @human_status_replay.fetch("cases")
     assert_equal cases.length, cases.map { |replay_case| replay_case.fetch("id") }.uniq.length
@@ -585,6 +596,24 @@ class GoalCompletionContractTest < Minitest::Test
                  "unknown-diagnostic mutation must delete the production rule"
     assert_includes human_status_contract_drift_errors(unknown_diagnostic_deletion),
                     HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE
+
+    cleanup_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_AUTOMATION_CLEANUP_RULE
+    )
+    refute_equal @human_status_contract_section, cleanup_deletion,
+                 "automation-cleanup mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(cleanup_deletion),
+                    HUMAN_STATUS_AUTOMATION_CLEANUP_RULE
+
+    ownership_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE
+    )
+    refute_equal @human_status_contract_section, ownership_deletion,
+                 "automation-ownership mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(ownership_deletion),
+                    HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE
   end
 
   def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces

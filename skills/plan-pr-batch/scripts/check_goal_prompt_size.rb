@@ -119,6 +119,10 @@ HUMAN_STATUS_CONTRACT_PHRASES = [
   "explicit technical or diagnostic status",
   "Expand identifiers on first use, retain exact values, and mark unavailable",
   "meanings `UNKNOWN` rather than translating them speculatively.",
+  "automatically delete an obsolete heartbeat or monitor when its",
+  "gate clears or becomes durably terminal; retain it on a no-change wake.",
+  "The current task remains",
+  "the owner, and automation output must not imply that ownership changed.",
   "security, ownership, retry, scope, continuous integration (CI), review, or",
   "merge gates"
 ].freeze

@@ -26,6 +26,18 @@ class UserFacingCoordinationContractTest < Minitest::Test
     File.read(full_path, encoding: "UTF-8").gsub(/\s+/, " ").strip
   end
 
+  def normalized_section(path, heading, end_heading:)
+    source = File.read(File.join(ROOT, path), encoding: "UTF-8")
+    start = source.index(heading)
+    raise "missing #{heading.inspect} in #{path}" unless start
+
+    tail = source[start..]
+    lines = tail.lines
+    body = [lines.shift]
+    body.concat(lines.take_while { |line| !line.match?(end_heading) })
+    body.join.gsub(/\s+/, " ").strip
+  end
+
   def assert_ordered(text, *phrases)
     positions = phrases.map do |phrase|
       position = text.index(phrase)
@@ -161,8 +173,14 @@ class UserFacingCoordinationContractTest < Minitest::Test
   end
 
   def test_ambiguity_guard_synthesizes_ownership_without_raw_events
-    [DOC, WORKFLOW, PR_BATCH, CLOSE_SESSION].each do |path|
-      text = normalized(path)
+    sections = {
+      DOC => ["## Ambiguity Guard", /^##\s+/],
+      WORKFLOW => ["### Coordinator Closeout Lane", /^###\s+/],
+      PR_BATCH => ["## Coordinator Closeout Lane", /^##\s+/],
+      CLOSE_SESSION => ["## User-Facing Coordination Contract", /^##\s+/]
+    }
+    sections.each do |path, (heading, end_heading)|
+      text = normalized_section(path, heading, end_heading:)
       assert_ordered(text, "Current task:", "Internal workers:", "External tasks:", "Next:")
       assert_includes text, "Do not append raw cross-task messages", path
       assert_includes text, "backend events", path

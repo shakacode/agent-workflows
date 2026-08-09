@@ -1469,6 +1469,11 @@ notification wording.
 - An explicit technical or diagnostic status request may return exact telemetry.
   Expand identifiers on first use, retain exact values, and mark unavailable
   meanings `UNKNOWN` rather than translating them speculatively.
+- Treat automation lifecycle as separate from notification rendering. After
+  each refresh, automatically delete an obsolete heartbeat or monitor when its
+  gate clears or becomes durably terminal; retain it on a no-change wake.
+  Cleanup itself does not imply a user notification. The current task remains
+  the owner, and automation output must not imply that ownership changed.
 - This boundary changes presentation only. It does not alter machine evidence or
   any security, ownership, retry, scope, continuous integration (CI), review, or
   merge gates.
