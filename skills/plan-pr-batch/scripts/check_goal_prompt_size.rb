@@ -110,10 +110,15 @@ HUMAN_STATUS_CONTRACT_PHRASES = [
   "internal telemetry",
   "successful, intermediate, repeated, or unchanged wake is silent",
   "DONT_NOTIFY: No user action is needed. Monitoring will continue.",
+  "Send an actionable notification only when a decision or action is required,",
+  "a target is ready for walkthrough or approval, a blocker exhausted its bounded",
+  "retries and needs intervention, or closeout/archive completed.",
   "What changed:",
   "Action needed:",
   "Next:",
   "explicit technical or diagnostic status",
+  "Expand identifiers on first use, retain exact values, and mark unavailable",
+  "meanings `UNKNOWN` rather than translating them speculatively.",
   "security, ownership, retry, scope, continuous integration (CI), review, or",
   "merge gates"
 ].freeze

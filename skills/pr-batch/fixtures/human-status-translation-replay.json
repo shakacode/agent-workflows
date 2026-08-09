@@ -61,12 +61,46 @@
       "id": "actionable-decision",
       "input": {
         "kind": "action_required",
+        "trigger": "decision_or_action_required",
         "what_changed": "The implementation reached a compatibility choice that cannot be made safely without you.",
         "action_needed": "Choose whether to preserve the legacy behavior.",
         "next": "After you decide, implementation will resume with that choice.",
         "telemetry": "functional B2 stopped before B3; holder aw-runner-7"
       },
       "expected_user_output": "What changed: The implementation reached a compatibility choice that cannot be made safely without you. Action needed: Choose whether to preserve the legacy behavior. Next: After you decide, implementation will resume with that choice."
+    },
+    {
+      "id": "actionable-walkthrough-or-approval-ready",
+      "input": {
+        "kind": "action_required",
+        "trigger": "walkthrough_or_approval_ready",
+        "what_changed": "The target passed its gates and is ready for walkthrough or approval.",
+        "action_needed": "Review the exact diff and approve it if it matches your intent.",
+        "next": "After approval, the coordinator will refresh the current head and continue closeout."
+      },
+      "expected_user_output": "What changed: The target passed its gates and is ready for walkthrough or approval. Action needed: Review the exact diff and approve it if it matches your intent. Next: After approval, the coordinator will refresh the current head and continue closeout."
+    },
+    {
+      "id": "actionable-bounded-retries-exhausted",
+      "input": {
+        "kind": "action_required",
+        "trigger": "bounded_retries_exhausted",
+        "what_changed": "The blocker remained after every bounded retry and now needs intervention.",
+        "action_needed": "Resolve the external check failure or provide direction.",
+        "next": "After intervention, the coordinator will refresh the evidence and resume closeout."
+      },
+      "expected_user_output": "What changed: The blocker remained after every bounded retry and now needs intervention. Action needed: Resolve the external check failure or provide direction. Next: After intervention, the coordinator will refresh the evidence and resume closeout."
+    },
+    {
+      "id": "actionable-closeout-archive-completed",
+      "input": {
+        "kind": "action_required",
+        "trigger": "closeout_or_archive_completed",
+        "what_changed": "Closeout and archive preparation completed.",
+        "action_needed": "none.",
+        "next": "You may archive this conversation."
+      },
+      "expected_user_output": "What changed: Closeout and archive preparation completed. Action needed: none. Next: You may archive this conversation."
     },
     {
       "id": "explicit-diagnostics",
@@ -87,6 +121,19 @@
         ]
       },
       "expected_user_output": "What changed: You requested the exact coordination evidence. Action needed: none. Next: Monitoring will continue under the existing gates. Diagnostic details: functional B2 (functional workflow phase B2); B3 (workflow phase B3); B+C (combined workflow phases B and C); c6 (coordination checkpoint 6); raw load 4.82/8.13/8.94 (one-, five-, and fifteen-minute system load averages); PID 4312 (process identifier 4312); holder aw-runner-7 (coordination claim holder aw-runner-7); lease heartbeat-385-9 (coordination lease heartbeat-385-9)."
+    },
+    {
+      "id": "explicit-diagnostic-unknown-meaning",
+      "input": {
+        "kind": "explicit_diagnostic",
+        "what_changed": "You requested an internal phase whose meaning is unavailable in the evidence.",
+        "action_needed": "none.",
+        "next": "The exact value will remain in diagnostics without a speculative translation.",
+        "expanded_telemetry": [
+          "B3 (internal workflow phase code; meaning UNKNOWN)"
+        ]
+      },
+      "expected_user_output": "What changed: You requested an internal phase whose meaning is unavailable in the evidence. Action needed: none. Next: The exact value will remain in diagnostics without a speculative translation. Diagnostic details: B3 (internal workflow phase code; meaning UNKNOWN)."
     }
   ]
 }

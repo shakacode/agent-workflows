@@ -88,13 +88,20 @@ HUMAN_STATUS_SKILL_REFERENCE = "Use `HST-v1` from the canonical " \
                                "[Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) " \
                                "for every recurring wake or workflow-owned heartbeat."
 HUMAN_STATUS_STABLE_PAYLOAD = "DONT_NOTIFY: No user action is needed. Monitoring will continue."
+HUMAN_STATUS_ACTIONABLE_CATEGORY_RULE = "Send an actionable notification only when a decision or action is " \
+                                        "required, a target is ready for walkthrough or approval, a blocker " \
+                                        "exhausted its bounded retries and needs intervention, or closeout/archive completed."
+HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE = "Expand identifiers on first use, retain exact values, and mark unavailable " \
+                                       "meanings `UNKNOWN` rather than translating them speculatively."
 HUMAN_STATUS_REQUIRED_PHRASES = [
   "internal telemetry",
   "routine successful, intermediate, repeated, or unchanged wake",
+  HUMAN_STATUS_ACTIONABLE_CATEGORY_RULE,
   "What changed:",
   "Action needed:",
   "Next:",
   "explicit technical or diagnostic status",
+  HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE,
   "security, ownership, retry, scope, continuous integration (CI), review, or merge gates"
 ].freeze
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
@@ -262,6 +269,15 @@ end
 
 def assert_squished_includes(text, phrase, label)
   assert_text_includes(squish(text), squish(phrase), label)
+end
+
+def human_status_contract_drift_errors(text)
+  HUMAN_STATUS_REQUIRED_PHRASES.reject { |phrase| squish(text).include?(squish(phrase)) }
+end
+
+def delete_squished_phrase(text, phrase)
+  pattern = Regexp.new(squish(phrase).split.map { |token| Regexp.escape(token) }.join("\\s+"))
+  text.sub(pattern, "")
 end
 
 def invalid_readiness_marker_values(text)
@@ -499,9 +515,26 @@ class GoalCompletionContractTest < Minitest::Test
     ["What changed:", "Action needed:", "Next:"].each { |label| assert_includes actionable_output, label }
     refute_match(/functional B2|\bB3\b|B\+C|\bc6\b|raw load|\bPID\b|\bholder\b|\blease\b/,
                  actionable_output)
+
+    actionable_triggers = cases.filter_map do |replay_case|
+      replay_case.dig("input", "trigger") if replay_case.dig("input", "kind") == "action_required"
+    end
+    assert_equal %w[
+      bounded_retries_exhausted
+      closeout_or_archive_completed
+      decision_or_action_required
+      walkthrough_or_approval_ready
+    ], actionable_triggers.sort
+
+    unknown_diagnostic = cases.find do |replay_case|
+      replay_case.fetch("id") == "explicit-diagnostic-unknown-meaning"
+    end
+    assert_includes unknown_diagnostic.fetch("expected_user_output"), "meaning UNKNOWN"
+    refute_includes unknown_diagnostic.fetch("expected_user_output"), "meaning B3"
   end
 
   def test_human_status_contract_and_mirrored_surfaces_do_not_drift
+    assert_empty human_status_contract_drift_errors(@human_status_contract_section)
     HUMAN_STATUS_REQUIRED_PHRASES.each do |phrase|
       assert_squished_includes @human_status_contract_section, phrase, "canonical human-status contract"
     end
@@ -532,6 +565,26 @@ class GoalCompletionContractTest < Minitest::Test
                  "continuation monitor prompt must reference #{HUMAN_STATUS_VERSION_KEY} exactly once"
     assert_text_includes @human_attention_section, "[`HST-v1`](#human-status-translation-contract)",
                          "human-attention notification surface"
+  end
+
+  def test_human_status_contract_rejects_actionable_category_and_unknown_diagnostic_deletions
+    actionable_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_ACTIONABLE_CATEGORY_RULE
+    )
+    refute_equal @human_status_contract_section, actionable_deletion,
+                 "actionable-category mutation must delete the production sentence"
+    assert_includes human_status_contract_drift_errors(actionable_deletion),
+                    HUMAN_STATUS_ACTIONABLE_CATEGORY_RULE
+
+    unknown_diagnostic_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE
+    )
+    refute_equal @human_status_contract_section, unknown_diagnostic_deletion,
+                 "unknown-diagnostic mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(unknown_diagnostic_deletion),
+                    HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE
   end
 
   def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces
