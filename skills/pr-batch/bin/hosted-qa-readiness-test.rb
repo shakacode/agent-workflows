@@ -495,6 +495,118 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_rejects_a_trusted_verifier_interpreter_inside_the_candidate_repository
+    with_repo do |root|
+      interpreter_path = File.join(root, "tools", "repo-ruby")
+      execution_log = File.join(root, "untrusted-interpreter-executed")
+      verifier = <<~RUBY
+        #!#{interpreter_path}
+        deployment_id=""
+        deployment_url=""
+        expected_head_sha=""
+        target=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --deployment-id) deployment_id="$2" ;;
+            --deployment-url) deployment_url="$2" ;;
+            --expected-head-sha) expected_head_sha="$2" ;;
+            --target) target="$2" ;;
+          esac
+          shift 2
+        done
+        printf 'executed\n' > #{execution_log.dump}
+        printf '{"version":1,"verified":true,"deployment_id":"%s","deployment_url":"%s","deployed_head_sha":"%s","target":"%s"}\n' \
+          "$deployment_id" "$deployment_url" "$expected_head_sha" "$target"
+      RUBY
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", verifier, executable: true)
+      FileUtils.mkdir_p(File.join(root, "tools"))
+      File.symlink(RbConfig.ruby, interpreter_path)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with repository-local verifier interpreter")
+
+      FileUtils.rm_f(interpreter_path)
+      File.symlink("/bin/sh", interpreter_path)
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "replace repository-local interpreter")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "trusted-base deployment verifier interpreter must resolve outside the candidate repository"
+      refute_path_exists execution_log
+    end
+  end
+
+  def test_accepts_a_trusted_absolute_interpreter_outside_the_candidate_repository
+    with_repo do |root|
+      verifier = <<~RUBY
+        #!#{File.realpath(RbConfig.ruby)}
+        require "json"
+        arguments = ARGV.each_slice(2).to_h
+        puts JSON.generate(
+          "version" => 1,
+          "verified" => true,
+          "deployment_id" => arguments.fetch("--deployment-id"),
+          "deployment_url" => arguments.fetch("--deployment-url"),
+          "deployed_head_sha" => arguments.fetch("--expected-head-sha"),
+          "target" => arguments.fetch("--target")
+        )
+      RUBY
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", verifier, executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with absolute trusted interpreter")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      assert status.success?, result
+      assert_equal "READY", result.fetch("verdict")
+    end
+  end
+
+  def test_rejects_missing_relative_ambiguous_and_options_bearing_verifier_shebangs
+    with_repo do |root|
+      malformed = {
+        "missing" => "puts 'missing shebang'\n",
+        "relative" => "#!ruby\n",
+        "env without program" => "#!/usr/bin/env\n",
+        "env with options" => "#!/usr/bin/env -S ruby\n",
+        "env with multiple arguments" => "#!/usr/bin/env ruby -w\n",
+        "absolute with arguments" => "#!#{File.realpath(RbConfig.ruby)} -w\n",
+        "alternate env path" => "#!/bin/env ruby\n"
+      }
+
+      errors = malformed.to_h do |label, blob|
+        interpreter, error = HostedQaReadiness.trusted_verifier_interpreter(root, blob)
+        assert_nil interpreter, label
+        [label, error]
+      end
+
+      assert_includes errors.fetch("missing"), "supported explicit shebang"
+      ["relative", "env with options", "env with multiple arguments"].each do |label|
+        assert_includes errors.fetch(label), "unsupported shebang", label
+      end
+      assert_includes errors.fetch("env without program"), "must name one fixed program"
+      assert_includes errors.fetch("absolute with arguments"), "must not include arguments"
+      assert_includes errors.fetch("alternate env path"), "must not include arguments"
+    end
+  end
+
   def test_closes_the_verifier_tempfile_before_process_invocation
     head_sha = "1" * 40
     fields = {
@@ -515,7 +627,8 @@ class HostedQaReadinessTest < Minitest::Test
     success_status.define_singleton_method(:success?) { true }
     test_case = self
     capture = lambda do |command, input:, timeout:, **_options|
-      test_case.assert_equal observed_tempfile.path, command.first
+      test_case.assert_equal File.realpath(RbConfig.ruby), command.first
+      test_case.assert_equal observed_tempfile.path, command[1]
       test_case.assert observed_tempfile.closed?, "verifier tempfile must be closed before execution"
       test_case.assert_equal "", input
       test_case.assert_equal 30, timeout

@@ -1006,11 +1006,19 @@ applicability from the exact base/head changed paths with rename detection
 disabled so both sides of a move remain visible.
 
 The helper extracts both policy and verifier bytes from trusted base. It never
-executes the head/worktree copy. For satisfied evidence it invokes the
-trusted-base verifier as an explicit argument vector, never through a shell:
+executes the head/worktree copy. The trusted verifier must use either the exact
+`#!/usr/bin/env PROGRAM` shebang form, where `PROGRAM` is one fixed portable
+program name, or one absolute interpreter path with no arguments. The helper
+resolves the fixed program from its repository-excluded trusted interpreter
+path. An absolute interpreter's requested path and resolved executable regular
+file must both be outside the candidate repository. Missing, relative,
+ambiguous, and options-bearing shebangs block. The helper invokes the resolved
+interpreter and materialized trusted-base verifier bytes as an explicit argument
+vector; neither the kernel nor `/usr/bin/env` resolves an interpreter from
+candidate state, and no shell interpolation is used:
 
 ```text
-<trusted verifier> --deployment-id <id> --deployment-url <url> --expected-head-sha <head> --target <target>
+<resolved interpreter> <trusted verifier> --deployment-id <id> --deployment-url <url> --expected-head-sha <head> --target <target>
 ```
 
 The verifier returns exactly one JSON object with `version: 1`, `verified:

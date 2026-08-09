@@ -16,6 +16,8 @@ load File.expand_path("../../post-merge-audit/bin/completed-batch-publication-pr
 module HostedQaReadiness
   POLICY_PATH = ".agents/agent-workflow.yml"
   SHA_PATTERN = /\A[0-9a-f]{40}\z/i
+  ENV_INTERPRETER = "/usr/bin/env"
+  ENV_PROGRAM = /\A[A-Za-z0-9][A-Za-z0-9_.+-]*\z/
   SYSTEM_TOOL_DIRS = %w[/opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin].freeze
   TRUSTED_INTERPRETER_DIRS = [File.dirname(File.realpath(RbConfig.ruby)), *SYSTEM_TOOL_DIRS].uniq.freeze
   SYSTEM_TEMP_ROOTS = %w[/tmp /var/tmp].freeze
@@ -260,6 +262,9 @@ module HostedQaReadiness
     blob, error = trusted_executable_blob(repo, base_sha, verifier_path)
     return [nil, error] if error
 
+    interpreter, interpreter_error = trusted_verifier_interpreter(repo, blob)
+    return [nil, interpreter_error] if interpreter_error
+
     arguments = [
       "--deployment-id", fields.fetch("deployment_id"),
       "--deployment-url", fields.fetch("deployment_url"),
@@ -276,7 +281,7 @@ module HostedQaReadiness
         File.chmod(0o700, file.path)
         file.close
         stdout, stderr, status = CompletedBatchPublicationPreflight.capture_process(
-          [file.path, *arguments],
+          [interpreter, file.path, *arguments],
           input: "",
           timeout: 30,
           environment: verifier_environment(repo, directory),
@@ -312,6 +317,89 @@ module HostedQaReadiness
     [payload.merge("verifier_source" => "trusted_base", "verifier_path" => verifier_path), nil]
   rescue JSON::ParserError, KeyError, SystemCallError, Timeout::Error => e
     [nil, "trusted-base deployment verifier could not be replayed: #{e.message.lines.first.to_s.strip}"]
+  end
+
+  def trusted_verifier_interpreter(repo, blob)
+    shebang = blob.lines.first
+    unless shebang&.start_with?("#!")
+      return [nil, "trusted-base deployment verifier must have a supported explicit shebang"]
+    end
+
+    match = shebang.match(%r{\A#!(?<interpreter>/\S+?)(?:[ \t]+(?<argument>\S+))?\r?\n?\z})
+    return [nil, "trusted-base deployment verifier has an unsupported shebang"] unless match
+
+    requested_interpreter = match[:interpreter]
+    argument = match[:argument]
+    unless requested_interpreter == ENV_INTERPRETER
+      return [nil, "trusted-base deployment verifier absolute shebang must not include arguments"] if argument
+
+      if path_within_repository?(repo, requested_interpreter)
+        return [nil, "trusted-base deployment verifier interpreter must resolve outside the candidate repository"]
+      end
+
+      interpreter, resolution_error = resolve_interpreter(repo, requested_interpreter)
+      return [interpreter, nil] if interpreter
+
+      detail = case resolution_error
+               when :inside_repository
+                 "must resolve outside the candidate repository"
+               when :not_executable
+                 "must be an executable regular file: #{requested_interpreter}"
+               else
+                 "is unavailable: #{requested_interpreter}"
+               end
+      return [nil, "trusted-base deployment verifier interpreter #{detail}"]
+    end
+    unless argument&.match?(ENV_PROGRAM)
+      return [nil, "trusted-base deployment verifier /usr/bin/env shebang must name one fixed program"]
+    end
+
+    resolve_env_interpreter(repo, argument)
+  end
+
+  def resolve_env_interpreter(repo, program)
+    candidates = if program == File.basename(RbConfig.ruby)
+                   [RbConfig.ruby]
+                 else
+                   trusted_path_directories(repo, TRUSTED_INTERPRETER_DIRS).map do |directory|
+                     File.join(directory, program)
+                   end
+                 end
+    candidates.each do |candidate|
+      interpreter, _error = resolve_interpreter(repo, candidate)
+      return [interpreter, nil] if interpreter
+    end
+
+    [nil, "trusted-base deployment verifier interpreter is unavailable: #{program}"]
+  end
+
+  def resolve_interpreter(repo, path)
+    return [nil, :inside_repository] if path_within_repository?(repo, path)
+
+    realpath = File.realpath(path)
+    return [nil, :inside_repository] if path_within_repository?(repo, realpath)
+
+    stat = File.stat(realpath)
+    return [nil, :not_executable] unless stat.file? && File.executable?(realpath)
+
+    [realpath, nil]
+  rescue Errno::ENOENT, Errno::EACCES
+    [nil, :unavailable]
+  end
+
+  def path_within_repository?(repo, path)
+    repository_paths = [File.expand_path(repo), File.realpath(repo)].uniq
+    candidate_paths = [File.expand_path(path)]
+    candidate_paths << File.realpath(path)
+    candidate_paths.uniq.any? do |candidate_path|
+      repository_paths.any? do |repository_path|
+        candidate_path == repository_path || candidate_path.start_with?("#{repository_path}#{File::SEPARATOR}")
+      end
+    end
+  rescue Errno::ENOENT, Errno::EACCES
+    expanded_path = File.expand_path(path)
+    repository_path = File.expand_path(repo)
+    expanded_path == repository_path || expanded_path.start_with?("#{repository_path}#{File::SEPARATOR}")
   end
 
   def trusted_executable_blob(repo, base_sha, verifier_path)
