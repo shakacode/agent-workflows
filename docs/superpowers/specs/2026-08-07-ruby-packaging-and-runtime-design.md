@@ -161,14 +161,15 @@ lib/agent_workflows/
   errors.rb
   result.rb
   process/
-  configuration/
   git/
   github/
   trust/
+  policy/
   doctor/
   seam/
   security/
   batch/
+  readiness/
   merge/
   audit/
   distribution/
@@ -179,9 +180,11 @@ lib/agent_workflows/
 `AgentCoordination` is the canonical public namespace for the
 `agent-coordination` gem entrypoint and version. Its `0.x` compatibility release
 does not claim that existing implementation classes have already moved from the
-legacy `AgentCoord` namespace. The agent-coordination release task owns its CLI
-construction, dependencies, cutover tests, and staged namespace migration; the
-package-release implementation plan is the source of truth for that boundary.
+legacy `AgentCoord` namespace. The package-release implementation plan owns only
+that conventional entrypoint, compatibility constant, dependency/package
+contract, and installed CLI smoke for `0.1.0`. Any later implementation-class
+or CLI-construction migration out of `AgentCoord` requires a separately reviewed
+design in that repository and is not a prerequisite for this release.
 
 The boundaries mean:
 
@@ -190,8 +193,12 @@ The boundaries mean:
 - `process`: bounded subprocess execution, process-group cleanup, and closed
   environment construction;
 - `git` and `GitHub`: transport adapters and typed transport errors;
-- `configuration`: safe file loading and validated policy values;
-- domain folders: policy, parsing, state transitions, and domain-specific
+- configuration remains owned by the domain that validates it (`doctor`,
+  `trust`, `policy`, and so on) until two real consumers justify a shared
+  top-level abstraction;
+- `policy`: shared closed-schema policy parsing; `readiness`: typed check/review
+  evaluation and fail-closed decisions;
+- other domain folders own their parsing, state transitions, and domain-specific
   results;
 - `distribution`: source-pack installation, status, ownership, and drift;
 - `maintainer`: ShakaCode fleet and repository-maintenance commands that are
@@ -352,8 +359,12 @@ The program uses branch-by-abstraction and review-sized PRs:
 12. Optional self-contained executable evaluation and release decision.
 
 No PR should move multiple security-critical domains merely to reduce PR
-count. Tests move with their behavior rather than accumulating in a final
-cleanup PR.
+count. An atomic domain move may mechanically update callers in other domains
+only when leaving either path would create a dual-source or partial-cutover
+state; those touches may change require paths, manifests, provenance identities,
+and fixtures but must not move or redesign the callers' domain behavior. Tests
+must prove behavioral equivalence across every touched caller. Tests otherwise
+move with their behavior rather than accumulating in a final cleanup PR.
 
 ## Alternatives Rejected
 

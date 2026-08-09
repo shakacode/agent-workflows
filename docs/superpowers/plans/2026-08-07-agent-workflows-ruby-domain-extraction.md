@@ -476,6 +476,13 @@ and merge callers use the package and the legacy-vs-canonical policy corpus is
 byte-for-byte equivalent in decisions, errors, and glob matches. No
 compatibility lookup may search both old and new policy locations.
 
+The listed merge-eligibility, assurance, and submission files are mechanical
+caller/provenance rewrites required to make this one policy-domain move atomic;
+they do not move or redesign those merge domains. Their staged diff is limited
+to require paths, manifest/provenance identities, fixtures, and assertions that
+prove the same decisions and errors. Any merge-domain implementation change is
+deferred to Task 5 and requires its own review slice.
+
 Perform that package-policy cutover as the first substep of Step 4. Immediately
 after the packaged parser, existing callers, provenance paths, manifests,
 fixtures, isolation coverage, and legacy deletions pass their focused tests,

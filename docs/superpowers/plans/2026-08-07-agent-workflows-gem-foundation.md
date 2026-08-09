@@ -651,16 +651,25 @@ Move the current option parsing and rendering entry logic from
 `AgentDoctor::WorkflowsCLI` and `AgentDoctor::StackCLI` into the two canonical
 CLI classes. Keep domain calls delegated to doctor objects. Require both CLI
 adapter files from `lib/agent_workflows.rb` so a cold
-`require "agent_workflows"` defines both constants. Each `.start` rescues only
-`OptionParser::ParseError`, `AgentWorkflows::UsageError`, and
-`AgentWorkflows::UnableToRunError`, writes a concise diagnostic to `error`, and
-returns `64`. Make every doctor configuration/input error subclass the matching
+`require "agent_workflows"` defines both constants. Each `.start` rescues
+`OptionParser::ParseError` and `AgentWorkflows::UsageError`, writes one concise
+diagnostic to `error`, and returns `64`. Rescue
+`AgentWorkflows::UnableToRunError` separately, write one concise diagnostic
+without a backtrace, and return `78`. This error is narrowly a pre-dispatch
+runtime/package configuration inability raised while constructing or invoking
+the injected application boundary; it is not invalid argv and does not replace
+characterized domain results.
+Make every doctor configuration/input error subclass the matching
 top-level error (or normalize it to that error at the domain boundary); do not
 define a parallel `AgentWorkflows::Doctor::Configuration::UsageError` that the
 CLI rescue cannot catch. Add malformed dashboard URL, host, and path cases that
-prove one diagnostic, no backtrace, and exit `64` (`EX_USAGE`). Exit `78`
-remains reserved for launcher/runtime package configuration failures outside
-this preserved CLI usage surface.
+prove one diagnostic, no backtrace, and exit `64` (`EX_USAGE`). Inject a
+pre-dispatch runtime/package inability and prove `UnableToRunError` yields one
+diagnostic, no backtrace, and exit `78` (`EX_CONFIG`). Preserve the existing
+child-process spawn-error characterization: the runner returns its failure
+result, the doctor renders the domain diagnostic, and the CLI returns `2`, not
+`78`. Exit `78` also covers launcher/runtime package configuration failures
+outside this preserved CLI usage surface.
 
 Keep the two old CLI implementation files unchanged. Canonical adapters must
 match their behavior through differential tests, but no installed legacy path
@@ -867,6 +876,10 @@ live-source mode omits only `generation_promoted` and starts
 `committed`. `selector_promoted` journals the exact canonical bytes, digest,
 path, ownership/mode evidence, and runtime identity for both the prior and
 desired immutable descriptors before the pointer can select the desired one.
+`generation_promoted` may be journaled only after every staged-file fsync,
+bottom-up staged-directory fsync, same-filesystem generation rename, and
+generations-parent fsync succeeds. Fault-inject before and after each durability
+boundary and prove no digest-named partial generation can become selectable.
 The `launchers_migrated` phase journals a complete prior and desired node
 descriptor for both fixed launchers: node type, regular-file bytes or symlink
 target, file mode including executable bits, and the surrounding ownership
@@ -940,8 +953,11 @@ In copy mode, stage the complete runtime manifest, library tree, executable wrap
 resources, and generation-local receipt under a temporary directory. The
 receipt records `ruby_package_name`, `ruby_package_version`, the full source
 revision, and sorted path/mode/SHA-256 entries; its digest names the immutable
-generation. Validate every entry, then atomically rename the complete directory
-to `.agent-workflows-generations/<runtime-digest>`. Build canonical selector
+generation. Validate every entry, fsync every staged regular file and directory
+bottom-up including the temporary generation root, then atomically rename the
+complete directory to `.agent-workflows-generations/<runtime-digest>` and fsync
+the `.agent-workflows-generations` parent before any selector may reference it.
+Build canonical selector
 data containing `schema_version`, `runtime_kind: immutable_generation`, and the
 validated relative generation identity; its digest names an installer-owned,
 non-writable directory under `.agent-workflows-selectors/`. Fsync and promote

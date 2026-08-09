@@ -88,6 +88,16 @@ creates canonical JSON in `RUNNER_TEMP`, binds the capture run ID and immutable
 capture-workflow path/ref/file digest, and validates it against the repository's
 fixed package-release-authorization schema.
 
+For npm only, the approval presentation and capture also require the exact
+GitHub login `npm_closeout_reviewer_login`. The schema requires that field when
+`registry` is `npm`, forbids it for RubyGems, and validates canonical GitHub
+login syntax. The writer copies it only from the approved capture input into the
+immutable authorization bytes; the verifier rejects a missing, extra, malformed,
+or changed value. Observation-closeout verification later requires the live
+approving review to match that login and requires the observation actor to be a
+different identity. Tests cover missing npm reviewer, reviewer substitution,
+self-review, and an npm-only field smuggled into a RubyGems authorization.
+
 The capture uploads exactly that JSON under a package/version/run-specific
 artifact name. A separate read-only verification job queries the complete
 artifact inventory for the exact capture run, requires one expected artifact,
@@ -105,12 +115,14 @@ commit under the bound capture workflow, downloads the artifact by exact ID and
 service digest, and validates the authorization only from that fresh directory.
 The unprivileged release job binds the verified authorization file digest and
 capture selectors into its same-run build receipt. The minimal protected job
-uses immutable-SHA-pinned generic artifact/digest validation, never repository
-code, to compare that receipt and the freshly retrieved authorization bytes
+uses full immutable commit-SHA-pinned generic artifact/digest actions, never
+repository code, to compare that receipt and the freshly retrieved authorization bytes
 before tag or registry mutation. For the interactive npm bootstrap, the human
 performs the same exact-selector download and validation before login. Tests
 cover missing, expired, cross-run, name-selected, substituted, wrong-head,
-wrong-workflow, digest-mismatched, and checkout-relative authorizations.
+wrong-workflow, digest-mismatched, and checkout-relative authorizations. Static
+workflow tests reject action references pinned by tag, branch, or floating major
+version in every privileged job.
 
 The captured JSON's canonical eventual repository path remains
 `release/authorizations/<package>-<version>.v1.json`, but a later reviewed
@@ -175,8 +187,8 @@ package-hook execution ends in this unprivileged job.
 
 Only the second, minimal job uses the protected `release` environment and
 job-scoped `id-token: write`, `contents: write`, and `actions: read`. It
-downloads the artifact and receipt from the same workflow run through pinned
-actions, compares both to
+downloads the artifact and receipt from the same workflow run through
+full immutable commit-SHA-pinned actions, compares both to
 the freshly retrieved exact authorization artifact through the shared handoff
 without executing repository code, verifies the checked-out workflow digest
 independently, fetches the remote tag, and performs only the exact tag push, tag
@@ -253,14 +265,54 @@ downloads the public exact-version tarball; and compares public metadata,
 integrity, owners, provenance disposition, authorization, grants, and evidence
 digests without using a reusable publish credential. It also queries the exact
 GitHub Release ID and rejects a tag, target commit, attachment digest, or
-metadata-digest mismatch. After merge, a trusted-base finalizer reads the exact
-merged evidence, freshly revalidates that same GitHub Release identity, requires a fresh authenticated
-publishing-access observation produced by the non-secret read-back procedure,
-downloads the public tarball again, and replays the verifier. Only it may report
+metadata-digest mismatch.
+
+The first evidence PR merge does not itself make the release terminal. After
+that merge, a maintainer performs the checked-in fresh-login authenticated
+read-back again and opens a second, observation-only PR containing exactly
+`release/evidence/agent-coordination-dashboard-0.1.0-publishing-access-closeout.v1.json`.
+That non-secret record binds the package/version, required setting, observing
+actor's GitHub login and npm owner handle, observation timestamp, exact control
+label/value, `fresh_login_interactive_2fa` authentication-method identifier,
+and the exact first evidence-PR merge commit and manifest digest. The JSON is
+the complete durable reviewed attestation; it does not refer to a local or
+external evidence object. Its base must contain that exact merge commit. The
+PR workflow runs the reviewed observation verifier and rejects every other
+changed path, unknown or secret-shaped field, stale timestamp, wrong actor,
+wrong authentication method/control/value, manifest mismatch, or
+missing/non-ancestor first merge. A distinct approving reviewer named by the
+release authorization confirms the runbook ceremony and observed value; the
+PR workflow requires that approval's `commit_id` to equal the observation PR's
+exact final head SHA. Any commit after approval invalidates the review even when
+repository settings would otherwise retain it. The finalizer queries GitHub's
+exact merged PR and requires its recorded final head SHA to equal the approved
+review `commit_id`, then binds the PR number, final head, review ID, reviewer,
+and submission timestamp. This merged file plus its exact-head-bound review is the only
+handoff for the post-merge observation; workflow inputs, comments, local paths,
+screenshots, and retention-limited artifacts are not accepted.
+
+Both the observation PR verification job and trusted-base finalizer declare a
+closed job-level permission block containing only `contents: read` and
+`pull-requests: read`. Add `actions: read` only to a separate job that actually
+downloads an exact artifact; neither of these two jobs does so. They have no
+write permission, `id-token: write`, release environment, registry credential,
+or persisted checkout credential. Static workflow tests assert the exact
+permission blocks and reject inherited/broader permissions, OIDC, write scopes,
+registry credentials, or an unnecessary `actions: read` grant.
+
+After the observation-only PR merges, a trusted-base finalizer checks out its
+exact merge commit with no caller-supplied evidence, reads the observation only
+from that canonical path, revalidates its schema, freshness, observer/reviewer
+identities, authenticated-read-back method, and first-merge binding, freshly
+revalidates the same GitHub Release identity,
+downloads the public tarball again, and replays the verifier. Its result binds
+both merge commits and the exact observation-file SHA-256. Only it may report
 `RELEASE_COMPLETE`. Tests cover lost or local-only receipts, wrong authorization
-or tarball, stale setting observation, failed cleanup, wrong or changed GitHub
-Release identity, extra files, unmerged evidence, and premature terminal
-reporting.
+or tarball, missing/mutable/stale setting observations, missing, self-approved,
+stale, or wrong-head review, a commit after approval, wrong
+observer/reviewer/authentication method/control/value, failed
+cleanup, wrong or changed GitHub Release identity, extra files, either unmerged PR,
+caller-supplied observation bytes, and premature terminal reporting.
 
 Human owners are recovery principals, not an alternate routine publication
 path. The authorization explicitly forbids local `gem push` and token-based npm
@@ -639,6 +691,10 @@ and its trusted-base finalizer reports `RELEASE_COMPLETE`.
 - Create/modify: `.github/workflows/release-npm.yml`.
 - Create: `docs/npm-publishing-access-runbook.md`.
 - Create: `release/schemas/npm-postpublish-receipt-v1.schema.json`.
+- Create: `release/schemas/npm-publishing-access-observation-v1.schema.json`.
+- Create: `scripts/write-npm-publishing-access-observation.mjs` and
+  `scripts/verify-npm-publishing-access-observation.mjs`.
+- Create: `scripts/npm-publishing-access-observation.test.mjs`.
 - Create: `scripts/write-npm-postpublish-receipt.mjs` and
   `scripts/verify-npm-postpublish-receipt.mjs`.
 - Create: `scripts/npm-postpublish-receipt.test.mjs`.
@@ -650,6 +706,8 @@ and its trusted-base finalizer reports `RELEASE_COMPLETE`.
 - Create after publication: `release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json`.
 - Create after publication through the reviewed evidence-only PR:
   `release/evidence/npm/agent-coordination-dashboard/0.1.0/*`.
+- Create after that PR merges through the reviewed observation-only PR:
+  `release/evidence/agent-coordination-dashboard-0.1.0-publishing-access-closeout.v1.json`.
 
 **Interfaces:**
 
@@ -702,8 +760,8 @@ long-lived npm token. Use the same package-keyed non-cancelling concurrency and
 two-job privilege split as `AW-RELEASE-RUBYGEMS-V1`. The unprivileged job
 runs install, test, typecheck, build, package-content checks, and tarball smoke,
 then uploads the exact tarball and bound receipt. The minimal OIDC job downloads
-those same-run artifacts with pinned actions, verifies their authorization and
-integrity without installing dependencies or running repository/package hooks,
+those same-run artifacts with full immutable commit-SHA-pinned actions, verifies their
+authorization and integrity without installing dependencies or running repository/package hooks,
 and publishes the exact tarball with scripts disabled; it never rebuilds.
 Pin actions, exact Node `24.8.0`, and exact npm `11.5.1` for publication; assert
 those versions before requesting an OIDC token. This deliberately exceeds npm
@@ -730,7 +788,10 @@ that version for trusted publication.
 
 Present exact npm name, version, commit, tarball integrity/checksum, Node floor,
 bootstrap method, future workflow path/ref and file digest, pinned publication
-Node/npm pair, owners, grant-manifest path and SHA-256, and smoke evidence.
+Node/npm pair, owners, exact `npm_closeout_reviewer_login`, grant-manifest path
+and SHA-256, and smoke evidence. The named closeout reviewer must be a GitHub
+identity distinct from the maintainer who will perform the later authenticated
+publishing-access observation.
 RubyGems approvals do not authorize
 npm publication. After durable npm approval, run
 `AW-RELEASE-AUTHORIZATION-HANDOFF-V1`, freshly retrieve the exact authorization
@@ -810,8 +871,9 @@ After the cleanup trap has removed the interactive session and its absence is
 read back, and after the GitHub Release read-back passes, run
 `AW-RELEASE-NPM-BOOTSTRAP-CLOSEOUT-V1`. Do not treat the receipt left in the
 maintainer checkout as durable. The dashboard release remains
-`PUBLISHED_CLOSEOUT_PENDING` until the exact evidence-only PR is merged and the
-trusted-base finalizer reports `RELEASE_COMPLETE` against a fresh authenticated
+`PUBLISHED_CLOSEOUT_PENDING` until the exact evidence-only PR and subsequent
+observation-only PR are merged and the trusted-base finalizer reports
+`RELEASE_COMPLETE` against the canonical post-first-merge authenticated
 publishing-access observation.
 
 ### Task 5: Evaluate self-contained Agent Workflows executables
@@ -1840,11 +1902,12 @@ manifest path under `release/evidence/rubygems/<package>/<version>/`; freshly
 rerun the trusted-base finalizer and require `RELEASE_COMPLETE`. A release-note
 summary or expired publication-run artifact is never a substitute for those
 committed evidence bytes.
-For the dashboard, link the exact merged npm bootstrap closeout PR and commit,
-the durable postpublish receipt and manifest paths, and the fresh authenticated
-publishing-access observation used by the trusted-base finalizer. Require its
-`RELEASE_COMPLETE`; a maintainer-checkout receipt or expired candidate artifact
-is not terminal evidence.
+For the dashboard, link both the exact merged npm bootstrap closeout PR/commit
+and subsequent observation-only PR/commit, the durable postpublish receipt and
+manifest paths, and the canonical fresh authenticated publishing-access
+observation used by the trusted-base finalizer. Require its `RELEASE_COMPLETE`;
+a maintainer-checkout receipt, workflow input, comment, or expired candidate
+artifact is not terminal evidence.
 For an adopted standalone release, link the exact merged installation-docs and
 release-evidence PRs plus the immutable merge commit containing
 `release/evidence/standalone/closeouts/tag-<tag>/`. A release-note summary or
