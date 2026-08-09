@@ -128,8 +128,11 @@ write_native_scw_state() {
   local host="$1"
   local target="$2"
   local plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
-  mkdir -p "$plugin_root/skills/example"
+  mkdir -p "$plugin_root/skills/example" "$plugin_root/skills/pr-batch/bin"
   printf 'example\n' > "$plugin_root/skills/example/SKILL.md"
+  printf 'pr-batch\n' > "$plugin_root/skills/pr-batch/SKILL.md"
+  install -m 0755 "$ROOT/skills/pr-batch/bin/prompt-host-adapter" \
+    "$plugin_root/skills/pr-batch/bin/prompt-host-adapter"
   if [[ "$host" = "codex" ]]; then
     mkdir -p "$plugin_root/.codex-plugin"
     printf '[plugins."scw@agent-workflows"]\nenabled = true\n' > "$target/config.toml"
@@ -565,6 +568,87 @@ RUBY
   done
   ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' \
     "$target/.agent-workflows-install.json"
+}
+
+test_plugin_companion_missing_adapter_fails_before_mutation() {
+  local tmp target plugin_root output status metadata_before host skill
+
+  for host in codex claude; do
+    tmp="$(mktemp -d)"
+    target="$tmp/$host-home"
+    "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode flat \
+      >"$tmp/flat.out"
+    write_native_scw_state "$host" "$target"
+    plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+    rm "$plugin_root/skills/pr-batch/bin/prompt-host-adapter"
+    cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+    metadata_before="$tmp/metadata.before"
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" \
+      --delivery-mode plugin-companion 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "$host companion install accepted a plugin without the prompt host adapter"
+    assert_contains "$output" "required prompt host adapter"
+    for skill in "$ROOT"/skills/*; do
+      [[ -d "$skill" ]] || continue
+      assert_file "$target/skills/$(basename "$skill")/SKILL.md"
+    done
+    cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+      fail "$host missing-adapter failure changed install metadata"
+    [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "$host missing-adapter failure retained the install lock"
+    [[ ! -e "$target/.agent-workflows-migration-staging" ]] || \
+      fail "$host missing-adapter failure created a staging receipt"
+  done
+}
+
+test_final_adapter_verification_race_rolls_back_before_metadata_commit() {
+  local tmp target plugin_root injection counter output status skill
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+  injection="$tmp/final-adapter-race.rb"
+  counter="$tmp/check-count"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+require "fileutils"
+
+if ARGV.first == "check" && ENV["QA_CHECK_COUNTER"]
+  counter = ENV.fetch("QA_CHECK_COUNTER")
+  count = File.file?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count.to_s)
+  if count == 3
+    target = ARGV[ARGV.index("--target") + 1]
+    FileUtils.rm_f(File.join(target, "plugins/cache/agent-workflows/scw/0.1.0/skills/pr-batch/bin/prompt-host-adapter"))
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_CHECK_COUNTER="$counter" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+      --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "final adapter verification race unexpectedly committed migration"
+  assert_contains "$output" "final delivery verification failed"
+  assert_contains "$output" "required prompt host adapter"
+  [[ ! -e "$plugin_root/skills/pr-batch/bin/prompt-host-adapter" ]] || \
+    fail "adapter race fixture did not remove the plugin adapter"
+  for skill in "$ROOT"/skills/*; do
+    [[ -d "$skill" ]] || continue
+    assert_file "$target/skills/$(basename "$skill")/SKILL.md"
+  done
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' \
+    "$target/.agent-workflows-install.json"
+  [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "adapter race rollback retained a staging receipt"
+  if compgen -G "$target/.agent-workflows-flat-migration-*" >/dev/null; then
+    fail "adapter race rollback retained a migration quarantine"
+  fi
 }
 
 test_staging_json_extraction_failure_uses_receipt_to_roll_back() {
@@ -1809,6 +1893,8 @@ main() {
     test_metadata_temp_failure_preserves_flat_tree_and_prior_mode
     test_staging_race_blocks_installer_and_preserves_flat_tree
     test_final_verification_race_rolls_back_before_metadata_commit
+    test_plugin_companion_missing_adapter_fails_before_mutation
+    test_final_adapter_verification_race_rolls_back_before_metadata_commit
     test_staging_json_extraction_failure_uses_receipt_to_roll_back
     test_failed_partial_rollback_preserves_receipt_for_retry
     test_recovery_normalization_failure_releases_install_lock

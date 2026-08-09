@@ -78,7 +78,12 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     manifest_dir = File.join(root, host == "codex" ? ".codex-plugin" : ".claude-plugin")
     FileUtils.mkdir_p(manifest_dir)
     FileUtils.mkdir_p(File.join(root, "skills/example"))
+    FileUtils.mkdir_p(File.join(root, "skills/pr-batch/bin"))
     File.write(File.join(root, "skills/example/SKILL.md"), "example\n")
+    File.write(File.join(root, "skills/pr-batch/SKILL.md"), "pr-batch\n")
+    adapter = File.join(root, "skills/pr-batch/bin/prompt-host-adapter")
+    File.write(adapter, "#!/bin/sh\n")
+    FileUtils.chmod(0o755, adapter)
     manifest = {
       "name" => "scw",
       "version" => File.basename(root),
@@ -169,6 +174,25 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
       refute status.success?, out
       assert_equal "unknown", JSON.parse(out).dig("native", "state")
+    end
+  end
+
+  def test_plugin_companion_requires_executable_prompt_host_adapter
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+      write_codex_native_state(target)
+      FileUtils.rm(File.join(plugin_root, "skills/pr-batch/bin/prompt-host-adapter"))
+
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      refute status.success?
+      refute payload.fetch("compatible")
+      assert_equal "enabled native scw plugin does not provide the required prompt host adapter", payload.fetch("reason")
     end
   end
 

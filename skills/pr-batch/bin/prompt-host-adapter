@@ -20,10 +20,29 @@ RESERVED_HEADER_LABEL =
 RESERVED_HEADER_LIKE_DECLARATION = /\A[ \t]*#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)/i
 CANONICAL_RESERVED_HEADER_DECLARATION =
   /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): /
+GOAL_WRAPPER = %r{\A/goal\r?\n}
+LEGACY_CODEX_INVOCATION = %r{\A/goal\r?\nUse \$pr-batch(?:\s|\z)}
+
+def without_goal_wrapper(prompt)
+  prompt.sub(GOAL_WRAPPER, "")
+end
+
+def prompt_line_ending(prompt)
+  prompt.include?("\r\n") ? "\r\n" : "\n"
+end
+
+def render_headers(host, mode, line_ending)
+  [
+    "Prompt host: #{host}",
+    "Prompt mode: #{mode}",
+    "Preferred route: default",
+    "Route requirement: advisory"
+  ].join(line_ending) + line_ending
+end
 
 def normalized_semantic_payload(prompt)
-  text = prompt.delete_prefix("/goal\n")
-  header_prefix = /\APrompt host: (?:codex|claude|portable)\nPrompt mode: (?:goal|direct|batch)\nPreferred route: [^\n]+\nRoute requirement: advisory\n/
+  text = without_goal_wrapper(prompt)
+  header_prefix = /\APrompt host: (?:codex|claude|portable)\r?\nPrompt mode: (?:goal|direct|batch)\r?\nPreferred route: [^\r\n]+\r?\nRoute requirement: advisory\r?\n/
   text
     .sub(header_prefix, "")
     .sub(%r{\A/pr-batch\b}, "Use pr-batch")
@@ -57,7 +76,7 @@ end
 def invoked_host_mechanics(prompt)
   command_name = "[A-Za-z][A-Za-z0-9_-]*"
   literal_names = %r{\A\s*Document [/$]#{command_name}(?: and [/$]#{command_name})* as literal names only\.\s*\z}
-  candidate_text = prompt.delete_prefix("/goal\n").lines.reject { |line| line.match?(literal_names) }.join
+  candidate_text = without_goal_wrapper(prompt).lines.reject { |line| line.match?(literal_names) }.join
   token_pattern = %r{(?<![[:alnum:]_/$])[$/]#{command_name}\b(?!/|\.[A-Za-z0-9])}
 
   candidate_text.to_enum(:scan, token_pattern).filter_map do
@@ -112,8 +131,8 @@ unless prompt.valid_encoding?
 end
 
 active_host_known = %w[codex claude].include?(options.fetch(:active_host))
-has_goal_wrapper = prompt.start_with?("/goal\n")
-header_text = has_goal_wrapper ? prompt.delete_prefix("/goal\n") : prompt
+has_goal_wrapper = prompt.match?(GOAL_WRAPPER)
+header_text = has_goal_wrapper ? without_goal_wrapper(prompt) : prompt
 header_lines = header_text.lines.first(4).map(&:chomp)
 prompt_body = header_text.lines.drop(4).join
 headers = header_lines.to_h do |line|
@@ -156,7 +175,7 @@ complete_valid_headers = !malformed_reserved_headers && valid_header_counts &&
                          valid_host_mode_wrapper && valid_preferred_route &&
                          ordered_headers && valid_declared_invocation &&
                          headers["Route requirement"] == "advisory"
-legacy_host = if no_headers && !malformed_reserved_headers && prompt.start_with?("/goal\n")
+legacy_host = if no_headers && !malformed_reserved_headers && prompt.match?(LEGACY_CODEX_INVOCATION)
                 "codex"
               elsif no_headers && !malformed_reserved_headers && prompt.match?(%r{\A/pr-batch(?:\s|\z)})
                 "claude"
@@ -201,26 +220,24 @@ converted_prompt = if explicit_conversion
                                    when "goal" then target_host == "claude" ? "batch" : "goal"
                                    end
                      converted_body = prompt
-                                      .delete_prefix("/goal\n")
-                                      .sub(/^Prompt host: (?:codex|claude)$/, "Prompt host: #{target_host}")
-                                      .sub(/^Prompt mode: (?:goal|direct|batch)$/, "Prompt mode: #{target_mode}")
+                                      .sub(GOAL_WRAPPER, "")
+                                      .sub(/^Prompt host: (?:codex|claude)(?=\r?$)/, "Prompt host: #{target_host}")
+                                      .sub(/^Prompt mode: (?:goal|direct|batch)(?=\r?$)/, "Prompt mode: #{target_mode}")
                      converted_body = rewrite_batch_size_target(converted_body, target_host)
                      converted_body = render_host_mechanics(converted_body, target_host)
-                     target_mode == "goal" ? "/goal\n#{converted_body}" : converted_body
+                     target_mode == "goal" ? "/goal#{prompt_line_ending(prompt)}#{converted_body}" : converted_body
                    elsif legacy_conversion && options.fetch(:active_host) == "claude"
                      converted_body = prompt
-                                      .delete_prefix("/goal\n")
+                                      .sub(GOAL_WRAPPER, "")
                      converted_body = rewrite_batch_size_target(converted_body, "claude")
                      converted_body = render_host_mechanics(converted_body, "claude")
-                     "Prompt host: claude\nPrompt mode: batch\nPreferred route: default\n" \
-                       "Route requirement: advisory\n#{converted_body}"
+                     render_headers("claude", "batch", prompt_line_ending(prompt)) + converted_body
                    elsif legacy_conversion && options.fetch(:active_host) == "codex"
                      converted_body = prompt
                                       .sub(%r{\A/pr-batch\b}, "Use $pr-batch")
                      converted_body = rewrite_batch_size_target(converted_body, "codex")
                      converted_body = render_host_mechanics(converted_body, "codex")
-                     "Prompt host: codex\nPrompt mode: batch\nPreferred route: default\n" \
-                       "Route requirement: advisory\n#{converted_body}"
+                     render_headers("codex", "batch", prompt_line_ending(prompt)) + converted_body
                    end
 semantic_payload_preserved = converted_prompt &&
                              normalized_semantic_payload(prompt) == normalized_semantic_payload(converted_prompt)

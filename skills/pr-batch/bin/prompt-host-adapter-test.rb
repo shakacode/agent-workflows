@@ -148,6 +148,78 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal true, relaunched.fetch("execute_allowed")
   end
 
+  def test_explicit_crlf_prompts_convert_and_relaunch_while_matching_input_stays_byte_exact
+    cases = [
+      {
+        source_host: "codex",
+        target_host: "claude",
+        source: <<~PROMPT.gsub("\n", "\r\n"),
+          /goal
+          Prompt host: codex
+          Prompt mode: goal
+          Preferred route: default
+          Route requirement: advisory
+          Use $pr-batch to complete this batch.
+          Batch size target: codex; wave: 1/1.
+        PROMPT
+        expected: <<~PROMPT.gsub("\n", "\r\n")
+          Prompt host: claude
+          Prompt mode: batch
+          Preferred route: default
+          Route requirement: advisory
+          Use /pr-batch to complete this batch.
+          Batch size target: claude; wave: 1/1.
+        PROMPT
+      },
+      {
+        source_host: "claude",
+        target_host: "codex",
+        source: <<~PROMPT.gsub("\n", "\r\n"),
+          Prompt host: claude
+          Prompt mode: direct
+          Preferred route: default
+          Route requirement: advisory
+          Use /pr-batch to complete this batch.
+          Batch size target: claude; wave: 1/1.
+        PROMPT
+        expected: <<~PROMPT.gsub("\n", "\r\n")
+          Prompt host: codex
+          Prompt mode: direct
+          Preferred route: default
+          Route requirement: advisory
+          Use $pr-batch to complete this batch.
+          Batch size target: codex; wave: 1/1.
+        PROMPT
+      }
+    ]
+
+    cases.each do |entry|
+      matching, matching_stderr, matching_status = run_adapter(
+        entry.fetch(:source),
+        active_host: entry.fetch(:source_host)
+      )
+      assert matching_status.success?, matching_stderr
+      assert_equal "compatible", matching.fetch("classification"), entry.inspect
+      assert_equal entry.fetch(:source).b, matching.fetch("prompt").b, entry.inspect
+
+      converted, converted_stderr, converted_status = run_adapter(
+        entry.fetch(:source),
+        active_host: entry.fetch(:target_host)
+      )
+      assert converted_status.success?, converted_stderr
+      assert_equal "conversion-required", converted.fetch("classification"), entry.inspect
+      assert_equal entry.fetch(:expected).b, converted.fetch("prompt").b, entry.inspect
+
+      relaunched, relaunch_stderr, relaunch_status = run_adapter(
+        converted.fetch("prompt"),
+        active_host: entry.fetch(:target_host)
+      )
+      assert relaunch_status.success?, relaunch_stderr
+      assert_equal "compatible", relaunched.fetch("classification"), entry.inspect
+      assert_equal entry.fetch(:expected).b, relaunched.fetch("prompt").b, entry.inspect
+    end
+  end
+
   def test_generated_triage_prompt_converts_every_canonical_mechanic_in_both_directions
     cases = [
       {
@@ -273,6 +345,47 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal "codex", result.fetch("declared_host")
     assert_equal true, result.fetch("execute_allowed")
     assert_equal prompt, result.fetch("prompt")
+  end
+
+  def test_legacy_goal_requires_the_canonical_invocation_immediately_after_the_wrapper
+    prompt = <<~PROMPT
+      /goal
+      Objective: Preserve batch semantics.
+      Use $pr-batch to complete the batch.
+    PROMPT
+
+    %w[codex claude].each do |active_host|
+      result, stderr, status = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), active_host
+      assert_equal false, result.fetch("execute_allowed"), active_host
+      assert_equal false, result.fetch("relaunch_required"), active_host
+      assert_nil result.fetch("prompt"), active_host
+    end
+  end
+
+  def test_every_supported_conversion_output_reclassifies_as_compatible
+    cases = [
+      [direct_prompt(host: "codex", body: "Objective: explicit Codex."), "claude"],
+      [direct_prompt(host: "claude", body: "Objective: explicit Claude."), "codex"],
+      [legacy_prompt(host: "codex", body: "Objective: legacy Codex."), "claude"],
+      [legacy_prompt(host: "claude", body: "Objective: legacy Claude."), "codex"]
+    ]
+
+    cases.each do |prompt, active_host|
+      converted, converted_stderr, converted_status = run_adapter(prompt, active_host: active_host)
+      assert converted_status.success?, converted_stderr
+      assert_equal "conversion-required", converted.fetch("classification"), [prompt, active_host].inspect
+
+      relaunched, relaunch_stderr, relaunch_status = run_adapter(
+        converted.fetch("prompt"),
+        active_host: active_host
+      )
+      assert relaunch_status.success?, relaunch_stderr
+      assert_equal "compatible", relaunched.fetch("classification"), [prompt, active_host].inspect
+      assert_equal true, relaunched.fetch("execute_allowed"), [prompt, active_host].inspect
+    end
   end
 
   def test_legacy_codex_prompt_converts_to_inert_claude_prompt

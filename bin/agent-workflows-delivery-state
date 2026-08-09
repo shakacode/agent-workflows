@@ -238,6 +238,18 @@ module AgentWorkflowsDeliveryState
     host == "codex" ? codex_native_state(target) : claude_native_state(target)
   end
 
+  def native_prompt_host_adapter_available?(native)
+    roots = native["roots"]
+    return false unless roots.is_a?(Array) && !roots.empty?
+
+    roots.all? do |root|
+      adapter = File.join(root, "skills/pr-batch/bin/prompt-host-adapter")
+      File.file?(adapter) && File.executable?(adapter)
+    end
+  rescue SystemCallError, TypeError
+    false
+  end
+
   def symlinked_target_component(target)
     current = File::SEPARATOR
     File.expand_path(target).split(File::SEPARATOR).reject(&:empty?).each_with_index do |component, index|
@@ -464,7 +476,9 @@ module AgentWorkflowsDeliveryState
       delivery_mode: delivery_mode,
       collision_names: collision_names
     )
-    native_compatible = native["state"] == (delivery_mode == "plugin-companion" ? "active" : "inactive")
+    companion_adapter_available = delivery_mode != "plugin-companion" || native_prompt_host_adapter_available?(native)
+    native_compatible = native["state"] == (delivery_mode == "plugin-companion" ? "active" : "inactive") &&
+                        companion_adapter_available
     compatible = native_compatible && flat["state"] != "unknown" && flat["blocking"].empty?
     reason =
       if compatible
@@ -475,6 +489,8 @@ module AgentWorkflowsDeliveryState
         "refusing to remove modified, ambiguous, or unowned skill paths: #{flat['blocking'].join(', ')}"
       elsif native["state"] == "unknown"
         native["reason"]
+      elsif delivery_mode == "plugin-companion" && !companion_adapter_available
+        "enabled native scw plugin does not provide the required prompt host adapter"
       elsif delivery_mode == "flat"
         "native scw and installer-managed flat skills cannot be active in one host/profile"
       else
@@ -487,6 +503,8 @@ module AgentWorkflowsDeliveryState
         "Remove agent-workflows@agent-workflows, install and enable scw@agent-workflows, then rerun."
       elsif native["state"] == "unknown"
         "Inspect the Codex or Claude native plugin state and repair its configuration or install receipt before rerunning."
+      elsif delivery_mode == "plugin-companion" && !companion_adapter_available
+        "Upgrade scw@agent-workflows to a version that provides skills/pr-batch/bin/prompt-host-adapter, then rerun."
       elsif delivery_mode == "flat"
         "Disable or remove scw@agent-workflows, or rerun with --delivery-mode plugin-companion."
       else
