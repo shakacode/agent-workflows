@@ -737,6 +737,8 @@ git commit -m "feat: expose doctor commands through agent workflows gem"
 - Modify: `bin/agent-stack-doctor`
 - Modify: `bin/agent_stack/installers.bash`
 - Modify: `bin/agent_stack/module_install.bash`
+- Create: `lib/agent_workflows/distribution/generation_transaction.rb`
+- Create: `test/gem/distribution/generation_transaction_test.rb`
 - Create: `agent-workflows.runtime-manifest`
 - Modify: `test/agent_doctor/launcher_test.rb`
 - Modify: `test/agent_stack/module_install_test.bash`
@@ -752,6 +754,13 @@ git commit -m "feat: expose doctor commands through agent workflows gem"
   paths. Produces in symlink mode: fixed launchers plus one atomically installed
   pointer to the live source clone, preserving the documented edit-in-place
   development workflow.
+- Produces a reusable
+  `AgentWorkflows::Distribution::GenerationTransaction` primitive for immutable
+  staging, manifest/receipt validation, no-follow locking, atomic generation
+  promotion and selector replacement, durable phase journals, idempotent
+  resume/rollback, and quiescence-gated retention. The source-pack installer is
+  its first consumer; the pinned-copy exporter in the domain-extraction plan is
+  its second.
 
 - [ ] **Step 1: Add failing copy and symlink layout tests**
 
@@ -770,6 +779,12 @@ the prior complete live-source pointer or select the new complete source root;
 editing files inside the selected developer clone is intentionally outside the
 installer transaction. Every installer failure preserves or restores the prior
 pointer, launchers, ownership markers, and metadata.
+
+Drive these cases through `GenerationTransaction`, with a small source-pack
+phase graph (`prepared`, `generation_promoted`, `pointer_selected`,
+`committed`). Test the primitive directly with injected filesystem failures;
+installer tests assert delegation to the same implementation instead of a
+second installer-specific atomic-write state machine.
 
 - [ ] **Step 2: Add failing partial-install and version-mismatch tests**
 
@@ -810,6 +825,14 @@ resolve `.agent-workflows-current` exactly once to an immutable generation,
 validate that generation's receipt and full library-tree digest before
 requiring Ruby, and never fall back to a gem or source checkout. Retain the
 prior generation while any invocation can still use it.
+
+`GenerationTransaction` owns the staging directory, canonical receipt and
+digest calculation, atomic rename, journal writes, current-pointer replacement,
+startup reconciliation, and retention rules. Its consumers provide only an
+explicit phase graph plus domain callbacks for validating desired entries and
+stable paths. It rejects unknown phases, unsafe paths, symlink traversal,
+ambiguous prior receipts, or callbacks that cannot prove their postcondition.
+Do not duplicate these mechanisms in shell helpers.
 
 Installer and stack-sync ownership checks now invoke
 `AgentWorkflows::Distribution::InstallOwnership` from the selected complete
@@ -860,7 +883,10 @@ Expected: copy, symlink, flat, plugin-companion, relocated-source, partial-insta
 git add -- agent-workflows.runtime-manifest bin/install-agent-workflows \
   bin/install-agent-workflows-test.bash bin/agent-workflows-doctor \
   bin/agent-stack-doctor bin/agent_stack/installers.bash \
-  bin/agent_stack/module_install.bash test/agent_doctor/launcher_test.rb \
+  bin/agent_stack/module_install.bash \
+  lib/agent_workflows/distribution/generation_transaction.rb \
+  test/gem/distribution/generation_transaction_test.rb \
+  test/agent_doctor/launcher_test.rb \
   test/agent_stack/module_install_test.bash \
   test/agent_stack/doctor_install_test.bash \
   docs/installation-and-upgrades.md
@@ -946,6 +972,13 @@ Run `ruby -Ilib` gem tests, package tests, `gem build`, and an isolated local in
 On Linux, use a matrix with explicit `3.2` and the repository's pinned `3.4.6`
 target. Both run `bin/validate`; lint may remain on `3.4.6` because syntax and
 package compatibility are proven by validate on both versions.
+
+Add a separately required `ruby31-launcher-guard` Linux job that explicitly
+provisions Ruby 3.1 and runs only the source-pack launcher compatibility corpus.
+It must prove that each launcher detects the unsupported interpreter before
+requiring gem code, writes the one documented diagnostic to stderr, emits no
+backtrace, and exits `64`. This job does not build or install the Ruby-3.2-floor
+gem; its sole purpose is to exercise the pre-floor guard under a real runtime.
 
 Add a required `macos-packaging-smoke` job on the current supported macOS runner
 and Ruby 3.4.6. It builds and installs the gem into an isolated gem home, runs both

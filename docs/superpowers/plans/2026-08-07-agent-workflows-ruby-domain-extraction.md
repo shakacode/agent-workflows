@@ -92,6 +92,16 @@ launch paths, not aliases for `plugin-companion`.
 
 ### Repo-local pinned-copy bundle
 
+This exporter is the second consumer of the foundation plan's
+`AgentWorkflows::Distribution::GenerationTransaction`. Reuse that primitive for
+immutable staging, receipt/digest verification, no-follow locking, atomic
+promotion and stable-path replacement, durable journals, recovery, and
+retention. The exporter supplies its richer union/compact phase graph and
+helper-specific stable-path callbacks; it must not implement another generation
+store, pointer writer, journal parser, or rollback engine. Add shared contract
+tests that run the same fault corpus through both the source-pack installer and
+the pinned-copy exporter, plus exporter-only tests for helper-set transitions.
+
 - Create `bin/export-agent-workflows-pinned-copy` as the only supported producer
   of repo-local `.agents` pins. It accepts an explicit target, helper allowlist,
   and mutually exclusive delivery mode and refuses a dirty or
@@ -356,7 +366,12 @@ foundation plan and must be added here, not treated as a pre-existing file.
 Add it to `agent-workflows.gem-manifest` and
 `agent-workflows.runtime-manifest`, and add an isolated temporary-gem-home test
 that builds and installs the gem, runs `agent-workflow-seam-doctor --help`, and
-exercises one validation fixture without the source checkout on `$LOAD_PATH`.
+exercises validation and `--init` from a temporary working directory outside
+the checkout. Give the child a controlled `PATH`, `RUBYLIB`, `RUBYOPT`,
+`GEM_HOME`, and `GEM_PATH`; reject every checkout path in those values and the
+resolved executable/load paths, and assert the loaded gem path is beneath the
+temporary `GEM_HOME`. Removing only the checkout from `$LOAD_PATH` is not
+sufficient isolation.
 Keep `bin/agent-workflow-seam-doctor` as the source-pack compatibility launcher
 and prove both launchers produce the same output and exit status for the shared
 corpus.
@@ -398,6 +413,8 @@ Commit pure parsing, initializer/writes, and validator/CLI cutover separately wi
 - Create: `bin/export-agent-workflows-pinned-copy`
 - Create: `test/pinned_copy/export_test.bash`
 - Create: `test/fixtures/pinned-copy-consumer/.agents/*`
+- Modify: `lib/agent_workflows/distribution/generation_transaction.rb`
+- Modify: `test/gem/distribution/generation_transaction_test.rb`
 - Modify: `skills/pr-batch/bin/pr-security-preflight`
 - Modify: `skills/pr-batch/bin/pr-security-preflight-test.rb`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
@@ -446,7 +463,10 @@ result. The CLI owns option parsing, finding order, formatting, and established
 exit status. Before replacing this first skill-relative wrapper, implement the
 pinned-copy exporter and all atomicity, collision, partial-library,
 version-mismatch, source-absent, and rollback cases from the pinned-copy bundle
-contract. Run the entire existing 3,000-plus-line test suite plus direct tests
+contract by extending the shared `GenerationTransaction` phase graph and
+callbacks. No exporter-specific copy of its staging, journal, selector,
+recovery, or retention implementation is permitted. Run the entire existing
+3,000-plus-line test suite plus direct tests
 and a differential non-mutating corpus in source, installed-source-pack,
 installed-gem, exported repo-local-pin, Codex native-plugin-cache, and Claude
 native-plugin-cache layouts. Each native fixture contains a host-shaped cache

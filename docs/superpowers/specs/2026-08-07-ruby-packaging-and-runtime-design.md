@@ -209,8 +209,11 @@ The initial gem declares Ruby `>= 3.2`, matching the existing package-ready
 Agent Coordination gem. CI tests the lowest supported Ruby and the current
 project Ruby. Raising the floor requires a documented compatibility decision.
 
-The initial runtime dependency set is the Ruby standard library only. A new
-runtime gem dependency requires a security, license, installation, and
+The new `agent-workflows` gem initially uses only the Ruby standard library.
+The existing `agent-coordination` package retains its separately reviewed
+`base64` and `sqlite3` runtime dependencies and version bounds from the package
+release plan; this rule does not remove or forbid them. Any new runtime gem
+dependency in either package requires a security, license, installation, and
 portability justification. Development-only dependencies may include Bundler,
 Rake, Minitest, RuboCop, and coverage tooling.
 
