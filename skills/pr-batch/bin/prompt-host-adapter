@@ -19,7 +19,9 @@ BATCH_SIZE_TARGET_FIELD = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target:/
 BATCH_SIZE_TARGET_VALUE = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target: (codex|claude|generic);/
 RESERVED_HEADER_LABEL =
   "(?:prompt[ ._\t-]*(?:host|mode)|preferred[ ._\t-]*route|route[ ._\t-]*requirement)"
-RESERVED_HEADER_LIKE_DECLARATION = /\A[ \t]*#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)/i
+RESERVED_HEADER_MARKDOWN_PREFIX = "(?:(?:[-*+]|[0-9]{1,9}[.)]|>)[ \t]+)?"
+RESERVED_HEADER_LIKE_DECLARATION =
+  /\A[ \t]*#{RESERVED_HEADER_MARKDOWN_PREFIX}#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)/i
 CANONICAL_RESERVED_HEADER_DECLARATION =
   /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): /
 GOAL_WRAPPER = %r{\A/goal\r?\n}

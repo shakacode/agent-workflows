@@ -467,6 +467,51 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
+  def test_list_prefixed_reserved_declarations_block_legacy_inference_without_echo
+    list_declarations = [
+      "- Prompt host: claude",
+      "* Prompt mode: batch",
+      "+ Preferred route: default",
+      "   -\tRoute requirement: advisory",
+      "> Prompt host: claude",
+      "  >\tPrompt mode: batch",
+      "1. Preferred route: default",
+      "  23) Route requirement: advisory"
+    ]
+
+    %w[codex claude].each do |legacy_host|
+      list_declarations.each_with_index do |line, index|
+        marker = "SECRET_LIST_HEADER_#{legacy_host.upcase}_#{index}"
+        prompt = legacy_prompt(host: legacy_host, body: "#{line} #{marker}")
+        result, stderr, status, stdout = run_adapter(prompt, active_host: legacy_host)
+
+        assert status.success?, stderr
+        assert_equal "ambiguous", result.fetch("classification"), line
+        assert_equal "malformed-headers", result.fetch("reason_code"), line
+        assert_nil result.fetch("declared_host"), line
+        assert_equal false, result.fetch("execute_allowed"), line
+        assert_equal false, result.fetch("relaunch_required"), line
+        assert_nil result.fetch("prompt"), line
+        refute_includes stdout, marker
+      end
+    end
+
+    incidental_list_prose = [
+      "- Document Prompt host: claude as literal prose.",
+      "1. Discuss the Prompt mode: batch example.",
+      "> Describe Route requirement: advisory without declaring a header."
+    ]
+    incidental_list_prose.each do |prose|
+      prompt = legacy_prompt(host: "codex", body: prose)
+      result, stderr, status = run_adapter(prompt, active_host: "codex")
+
+      assert status.success?, stderr
+      assert_equal "compatible", result.fetch("classification"), prose
+      assert_equal true, result.fetch("execute_allowed"), prose
+      assert_equal prompt, result.fetch("prompt"), prose
+    end
+  end
+
   def test_tab_separated_reserved_labels_fail_closed_without_echo
     tabbed_labels = %W[Prompt\thost Prompt\tmode Preferred\troute Route\trequirement]
     prompt_builders = {
