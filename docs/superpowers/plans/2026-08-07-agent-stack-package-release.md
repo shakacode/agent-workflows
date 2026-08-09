@@ -183,6 +183,10 @@ actually taken.
 - Create in each repository: `docs/package-release-checklist.md`.
 - Create in each repository:
   `release/grants/<package>-<version>.v1.json`.
+- Create after exact approval in each repository:
+  `release/authorizations/<package>-<version>.v1.json`, containing the approved
+  package, version, commit, tag, artifact digest, workflow binding, grant-manifest
+  digest, actor, source URL, timestamp, and rollback/remediation disposition.
 - Modify in each repository: package metadata only when a check below reveals a real gap.
 
 **Interfaces:**
@@ -461,6 +465,14 @@ RubyGems publication under this name, execute and read back the global
 - Create: `CHANGELOG.md` with `Unreleased` and `0.1.0` entries.
 - Modify: `.github/workflows/ci.yml` for the supported Node matrix.
 - Create/modify: `.github/workflows/release-npm.yml`.
+- Create: `docs/npm-publishing-access-runbook.md`.
+- Create: `release/schemas/npm-postpublish-receipt-v1.schema.json`.
+- Create: `scripts/write-npm-postpublish-receipt.mjs` and
+  `scripts/verify-npm-postpublish-receipt.mjs`.
+- Create: `scripts/npm-postpublish-receipt.test.mjs`.
+- Create after publication:
+  `release/evidence/agent-coordination-dashboard-0.1.0-publishing-access.v1.json`.
+- Create after publication: `release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json`.
 
 **Interfaces:**
 
@@ -483,6 +495,23 @@ sources, license, package metadata, README, and changelog. Add `CHANGELOG.md` to
 the explicit package file list. Reject tests, local environment files, logs,
 state, source maps not intended for release, and secrets. Preserve the existing
 installed `--demo` contract.
+
+After the dry-run passes, create the one reviewed artifact and bind its npm
+integrity plus SHA-256 into the authorization before any tag or publication:
+
+```bash
+mkdir -p release/artifacts
+npm pack --json --pack-destination release/artifacts \
+  > release/artifacts/npm-pack.json
+test "$(node -e 'const p=require("./release/artifacts/npm-pack.json");process.stdout.write(p[0].filename)')" = \
+  "agent-coordination-dashboard-0.1.0.tgz"
+shasum -a 256 release/artifacts/agent-coordination-dashboard-0.1.0.tgz \
+  > release/artifacts/agent-coordination-dashboard-0.1.0.tgz.sha256
+```
+
+The reviewed `npm-pack.json` integrity, SHA-256 file, tarball bytes, commit, and
+tag must exactly match
+`release/authorizations/agent-coordination-dashboard-0.1.0.v1.json`.
 
 - [ ] **Step 2: Install the tarball into a disposable project**
 
@@ -546,14 +575,49 @@ authenticated registry interfaces. Record an organization/team row as
 unsupported only when the live preflight proved that exact operation unavailable
 for this package and preserved the capability evidence in the manifest.
 Immediately attach the protected release workflow as
-the package's trusted publisher, restrict token-based publishing, and read the
-publisher configuration back. The release is incomplete until that attachment
-is verified. The cleanup trap logs out or revokes the interactive session before
+the package's trusted publisher. Through an authenticated npm interface, set
+the package Settings > Publishing access value to **Require two-factor
+authentication and disallow tokens** using npm's documented authenticated web
+procedure and an interactive 2FA challenge. The checked-in runbook pins the
+package URL, exact Settings > Publishing access navigation and control label,
+the required selection, save/2FA confirmation, logout, and fresh-login read-back
+steps. Capture only a non-secret evidence reference plus its digest.
+`write-npm-postpublish-receipt.mjs` consumes the exact release authorization,
+grant manifest, reviewed tarball integrity/SHA-256, commit, tag, observed setting,
+trusted-publisher identity, actor handle, timestamp, and evidence reference/digest
+to write `release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json`.
+`verify-npm-postpublish-receipt.mjs` validates it against
+`npm-postpublish-receipt-v1.schema.json`, independently supplied expected
+authorization/artifact/commit values, and the exact token-disallowing setting;
+it rejects credential values, cookies, headers, query strings, response bodies,
+wrong artifacts, stale observations, and mismatched actors or publishers. Test
+every rejection plus a fresh-login matching receipt. The release is incomplete if either
+the trusted-publisher attachment, setting write/read-back, or validated
+postpublication receipt fails. The cleanup trap logs out or revokes the interactive session before
 Step 5 returns on either success or failure; read back the absence of reusable
 local credentials without printing values. Record every grant-manifest row's
 result and manifest digest in the release receipt. Record that OIDC provenance
 starts with the next release because the bootstrap version was not
 workflow-published.
+
+Run the receipt test, writer, and independent verifier against the exact reviewed
+inputs:
+
+```bash
+node --test scripts/npm-postpublish-receipt.test.mjs
+node scripts/write-npm-postpublish-receipt.mjs \
+  --authorization release/authorizations/agent-coordination-dashboard-0.1.0.v1.json \
+  --grant-manifest release/grants/agent-coordination-dashboard-0.1.0.v1.json \
+  --tarball release/artifacts/agent-coordination-dashboard-0.1.0.tgz \
+  --evidence release/evidence/agent-coordination-dashboard-0.1.0-publishing-access.v1.json \
+  --output release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json
+node scripts/verify-npm-postpublish-receipt.mjs \
+  --receipt release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json \
+  --authorization release/authorizations/agent-coordination-dashboard-0.1.0.v1.json \
+  --grant-manifest release/grants/agent-coordination-dashboard-0.1.0.v1.json \
+  --tarball release/artifacts/agent-coordination-dashboard-0.1.0.tgz
+```
+
 Create the GitHub Release explicitly from the already verified tag with tarball
 integrity, checksum, and `0.1.0` changelog notes, then read back the tag and
 release. If publication fails after the tag is created, do not move or reuse the
@@ -566,8 +630,35 @@ disposition. Do not publish another version merely to test OIDC.
 
 - Create: `packaging/tebako/entrypoint.rb`
 - Create: `packaging/tebako/commands.yml`
+- Create: `packaging/tebako/network-allowlist.yml`
+- Create: `packaging/tebako/build-platform.rb`
+- Create: `packaging/tebako/measure-platform.rb`
+- Create: `packaging/tebako/write-release-authorization.rb`
+- Create: `packaging/tebako/write-release-decision.rb`
+- Create: `packaging/tebako/write-github-release-receipt.rb`
+- Create: `packaging/tebako/validate-evaluation.rb`
+- Create: `packaging/tebako/write-evaluation.rb`
+- Create: `packaging/tebako/write-platform-run.rb`
 - Create: `test/packaging/standalone_executable_test.rb`
+- Create: `test/packaging/standalone_real_network_test.rb`
+- Create: `test/packaging/standalone_evaluation_validator_test.rb`
+- Create: `test/packaging/standalone_release_evidence_test.rb`
 - Create: `.github/workflows/package-standalone.yml`
+- Create: `release/schemas/standalone-platform-input-v1.schema.json`
+- Create: `release/schemas/standalone-platform-run-v1.schema.json`
+- Create: `release/schemas/standalone-evaluation-v1.schema.json`
+- Create: `release/schemas/standalone-release-authorization-v1.schema.json`
+- Create: `release/schemas/standalone-release-decision-v1.schema.json`
+- Create: `release/schemas/standalone-github-release-receipt-v1.schema.json`
+- Create from matrix jobs: four
+  `release/evidence/standalone/runs/<platform>-<architecture>.v1.json` records.
+- Create: `release/evidence/standalone-evaluation-v1.json` for either verdict.
+- Create after human approval:
+  `release/authorizations/agent-workflows-standalone-v1.json`.
+- Create after denial or expiry:
+  `release/evidence/standalone-release-decision-v1.json`.
+- Create after uploaded-asset read-back:
+  `release/evidence/standalone-github-release-receipt-v1.json`.
 - Create: `docs/standalone-installation.md` only if the evaluation passes.
 
 **Interfaces:**
@@ -617,7 +708,27 @@ silently diverge from the packaged dispatch table.
 
 - [ ] **Step 2: Build a pinned Tebako artifact matrix**
 
-Pin Tebako and Ruby versions. Build fat, no-runtime-dependency executables on macOS arm64/x86_64 and Linux arm64/x86_64 runners. Record build inputs, artifact SHA-256, size, and build logs. Do not claim cross-platform support for a platform without a native smoke result.
+Pin Tebako and Ruby versions. Build fat, no-runtime-dependency executables on
+macOS arm64/x86_64 and Linux arm64/x86_64 runners. The workflow matrix is a
+closed four-row mapping from platform/architecture to a runner image pinned by
+immutable image identifier. Its build step runs:
+
+```bash
+ruby packaging/tebako/build-platform.rb \
+  --platform "$STANDALONE_PLATFORM" \
+  --architecture "$STANDALONE_ARCH" \
+  --runner-image "$STANDALONE_RUNNER_IMAGE" \
+  --gem "$VERIFIED_AGENT_WORKFLOWS_GEM" \
+  --artifact "$STANDALONE_ARTIFACT" \
+  --provenance "$RUNNER_TEMP/standalone-build-provenance.v1.json"
+```
+
+The builder rejects an unpinned runner identity or wrong gem digest and writes
+a schema-validated build-provenance input containing the exact Ruby/Tebako and
+native toolchain versions, runner image identifier, gem and source digests,
+commands registry digest, build arguments and environment allowlist, artifact
+SHA-256 and size, and stdout/stderr log digests. It records no credential values.
+Do not claim cross-platform support for a platform without a native smoke result.
 
 - [ ] **Step 3: Run compatibility and portability tests**
 
@@ -628,8 +739,92 @@ offline execution. In the offline contract suite, block network access and put
 deterministic fake `git` and `gh` executables first on `PATH`; assert argv,
 environment, channels, exit codes, and absence of network access. Separately run
 a real-child-command integration suite with installed `git` and `gh`, bounded
-credentials, and explicitly documented network requirements. A fake-command
-pass proves wiring, while the real-command pass proves integration.
+credentials, and only endpoints declared in `network-allowlist.yml`.
+`standalone_real_network_test.rb` records a sanitized network-observation
+fragment required by the acceptance gate and fails on an undeclared endpoint or operation. A
+fake-command pass proves wiring, while the real-command pass proves integration.
+Each native matrix job writes that fragment without credentials or request
+bodies:
+
+```bash
+ruby test/packaging/standalone_real_network_test.rb \
+  --artifact "$STANDALONE_ARTIFACT" \
+  --allowlist packaging/tebako/network-allowlist.yml \
+  --output "$RUNNER_TEMP/standalone-network-observations.v1.json"
+```
+
+After Step 4 has produced every other measurement, the same matrix job creates
+one complete schema-validated platform receipt. Each named input is a
+machine-readable result from that job, and the writer binds the artifact,
+platform/architecture, complete CLI corpus, sanitized network observations,
+cold-start samples and cache reset, compressed size, path/locale results,
+signing/notarization result, Linux baseline result, reproducibility manifests
+and section diff, and vulnerability/license scans. Every input, including the
+network fragment and build provenance, validates against its closed `kind`
+variant in `standalone-platform-input-v1.schema.json`; the final receipt
+validates against `standalone-platform-run-v1.schema.json`.
+
+Step 4 creates the eight non-network measurement inputs with one explicit
+producer. The producer runs the contract/path-locale cases and pinned scanning
+tools itself, records the five cold-start samples and cache-reset command, and
+consumes the two clean builds needed for the reproducibility comparison:
+
+```bash
+ruby packaging/tebako/measure-platform.rb \
+  --platform "$STANDALONE_PLATFORM" \
+  --architecture "$STANDALONE_ARCH" \
+  --runner-image "$STANDALONE_RUNNER_IMAGE" \
+  --artifact "$STANDALONE_ARTIFACT" \
+  --build-provenance "$RUNNER_TEMP/standalone-build-provenance.v1.json" \
+  --output-dir "$RUNNER_TEMP"
+```
+
+It writes exactly `standalone-contract-results.v1.json`,
+`standalone-cold-start.v1.json`, `standalone-compressed-size.v1.json`,
+`standalone-path-locale.v1.json`, `standalone-signing.v1.json`,
+`standalone-linux-baseline.v1.json`, `standalone-reproducibility.v1.json`, and
+`standalone-scans.v1.json`. The macOS signing input contains a schema-valid
+`passed` or `failed` result while its Linux-baseline input is `not_applicable`
+with the platform criterion; Linux records the inverse. The schema forbids
+`not_applicable` for any other input or platform combination.
+
+A missing, duplicate, malformed, wrong-platform, wrong-artifact, wrong-runner,
+or provenance-invalid input stops receipt creation. A schema-valid `failed`
+measurement does not: the writer preserves it and derives the exact failed
+criterion so Step 5 can produce a durable `NOT_ADOPTED` evaluation:
+
+```bash
+ruby packaging/tebako/write-platform-run.rb \
+  --platform "$STANDALONE_PLATFORM" \
+  --architecture "$STANDALONE_ARCH" \
+  --artifact "$STANDALONE_ARTIFACT" \
+  --build-provenance "$RUNNER_TEMP/standalone-build-provenance.v1.json" \
+  --contract-results "$RUNNER_TEMP/standalone-contract-results.v1.json" \
+  --network-results "$RUNNER_TEMP/standalone-network-observations.v1.json" \
+  --cold-start-results "$RUNNER_TEMP/standalone-cold-start.v1.json" \
+  --size-results "$RUNNER_TEMP/standalone-compressed-size.v1.json" \
+  --path-locale-results "$RUNNER_TEMP/standalone-path-locale.v1.json" \
+  --signing-results "$RUNNER_TEMP/standalone-signing.v1.json" \
+  --baseline-results "$RUNNER_TEMP/standalone-linux-baseline.v1.json" \
+  --reproducibility-results "$RUNNER_TEMP/standalone-reproducibility.v1.json" \
+  --scan-results "$RUNNER_TEMP/standalone-scans.v1.json" \
+  --output "release/evidence/standalone/runs/${STANDALONE_PLATFORM}-${STANDALONE_ARCH}.v1.json"
+```
+
+The workflow supplies `STANDALONE_PLATFORM` and `STANDALONE_ARCH` from a closed
+four-row matrix and uploads the four complete receipts as same-run artifacts.
+Its aggregation job downloads those exact artifacts, rejects duplicate or
+missing platform/architecture identities, verifies every embedded evidence
+digest, and writes the single evaluation input:
+
+```bash
+ruby packaging/tebako/write-evaluation.rb \
+  --run release/evidence/standalone/runs/macos-arm64.v1.json \
+  --run release/evidence/standalone/runs/macos-x86_64.v1.json \
+  --run release/evidence/standalone/runs/linux-arm64.v1.json \
+  --run release/evidence/standalone/runs/linux-x86_64.v1.json \
+  --output release/evidence/standalone-evaluation-v1.json
+```
 
 - [ ] **Step 4: Measure acceptance thresholds**
 
@@ -641,7 +836,15 @@ The standalone path passes only if:
   cache have a median at or below 1.5 seconds; record every duration and the
   cache-reset command;
 - each compressed download is at most 100 MiB;
-- no runtime network access occurs;
+- the offline contract corpus performs no runtime/bootstrap dependency fetches
+  or other network access; command-requested network traffic is permitted only
+  in the separately bounded real-child integration suite. For every artifact,
+  that suite must pass the expected operations against an explicit endpoint
+  allowlist, produce gem-equivalent results, and fail on any unexpected request.
+  Record only redacted credential metadata (principal, scope, expiry, and opaque
+  identifier) plus sanitized request method, host, path, and status; omit all
+  credential values, headers, secret-bearing query parameters, and request or
+  response bodies;
 - the artifact runs from a path containing spaces and non-ASCII characters;
 - macOS artifacts are signed/notarizable under the project's release identity;
 - Linux artifacts run in an Ubuntu 20.04/glibc 2.31 baseline container without
@@ -663,24 +866,161 @@ prepare the optional-download documentation without publishing it. If any
 security, behavior, platform, or maintenance threshold fails, record
 `NOT_ADOPTED` with the exact failed criteria; retain gem/source-pack
 distribution and do not begin a Rust rewrite automatically.
+Both outcomes are written to `release/evidence/standalone-evaluation-v1.json`
+with every platform artifact, test result, sanitized network observation,
+threshold measurement, failure, and evidence digest required by
+`standalone-evaluation-v1.schema.json`. Validate the durable result before any
+adoption or rejection handoff:
+
+`standalone_real_network_test.rb --unit` is a separately tested, network-disabled
+mode that exercises argument validation, credential redaction, allowlist
+matching, and unexpected-request rejection with fake child commands. It never
+substitutes for the four native real-network fragments already bound into the
+evaluation.
+
+```bash
+ruby test/packaging/standalone_executable_test.rb
+ruby test/packaging/standalone_real_network_test.rb --unit
+ruby test/packaging/standalone_evaluation_validator_test.rb
+ruby packaging/tebako/validate-evaluation.rb \
+  release/evidence/standalone-evaluation-v1.json
+```
 
 - [ ] **Step 6: Require separate release authorization for binaries**
 
-Binary release approval names platforms, architectures, checksums, signing state, Ruby/Tebako versions, and rollback. Gem publication approval does not authorize binary artifacts.
+Binary release approval names platforms, architectures, checksums, signing
+state, Ruby/Tebako versions, immutable GitHub repository/tag target, expiry, and
+rollback. Gem publication approval does not authorize binary artifacts. Create
+the authorization only from durable human approval that names the exact source
+evaluation digest:
+
+```bash
+ruby packaging/tebako/write-release-authorization.rb \
+  --evaluation release/evidence/standalone-evaluation-v1.json \
+  --approval-source-url "$BINARY_APPROVAL_SOURCE_URL" \
+  --approved-by "$BINARY_APPROVER" \
+  --repository shakacode/agent-workflows \
+  --tag "$AUTHORIZED_BINARY_TAG" \
+  --expires-at "$BINARY_AUTHORIZATION_EXPIRY" \
+  --rollback-disposition "$BINARY_ROLLBACK_DISPOSITION" \
+  --rollback-evidence "$BINARY_ROLLBACK_EVIDENCE" \
+  --output release/authorizations/agent-workflows-standalone-v1.json
+ruby test/packaging/standalone_release_evidence_test.rb
+```
+
+The writer requires the input state to be
+`ADOPTED_PENDING_RELEASE_AUTHORIZATION`, copies the closed four-platform asset
+bindings from that evaluation, and validates the result against
+`standalone-release-authorization-v1.schema.json`. It rejects a threshold
+failure, failed criterion, terminal input, ambiguous approver, mutable target,
+missing rollback, or stale authorization. For denial, or when a previously
+valid authorization expires before upload, create a separate decision receipt.
+For an initial denial, no authorization exists and the argument is forbidden:
+
+```bash
+ruby packaging/tebako/write-release-decision.rb \
+  --evaluation release/evidence/standalone-evaluation-v1.json \
+  --decision authorization-denied \
+  --decision-source-url "$BINARY_DECISION_SOURCE_URL" \
+  --decided-by "$BINARY_DECISION_PRINCIPAL" \
+  --output release/evidence/standalone-release-decision-v1.json
+```
+
+For an authorization that became stale before upload, bind the exact expired
+authorization:
+
+```bash
+ruby packaging/tebako/write-release-decision.rb \
+  --evaluation release/evidence/standalone-evaluation-v1.json \
+  --decision authorization-stale \
+  --decision-source-url "$BINARY_DECISION_SOURCE_URL" \
+  --decided-by "$BINARY_DECISION_PRINCIPAL" \
+  --authorization release/authorizations/agent-workflows-standalone-v1.json \
+  --output release/evidence/standalone-release-decision-v1.json
+```
+
+The authorization is required for `authorization-stale` and forbidden for an
+initial `authorization-denied` decision. The authorization schema binds the
+human-approved rollback disposition and evidence; neither may be synthesized or
+defaulted by the writer. The decision writer validates the decision
+against `standalone-release-decision-v1.schema.json`, including deciding
+principal, decision timestamp, source URL, source-evaluation digest, and either
+the explicit denial or the authorization expiry. These schemas and their tests
+are the only accepted terminal evidence contracts.
 
 - [ ] **Step 7: Publish binaries only after authorization**
 
 Publish only the authorized artifacts as optional GitHub Release downloads,
-verify uploaded checksums and signatures against the reviewed matrix, and then
-publish `docs/standalone-installation.md` and record the terminal `ADOPTED`
-verdict with release URLs. If authorization is denied or stale, retain the
-evaluation evidence without public artifacts.
+then query the immutable release and asset IDs, download every uploaded asset to
+a new temporary directory, and verify its checksum and signature against the
+authorization and reviewed matrix. The receipt writer performs those API reads
+and downloads and rejects a mutable/mismatched tag, missing or extra asset,
+redirect to another repository, digest/signature mismatch, or evaluation and
+authorization digest mismatch:
+
+```bash
+ruby packaging/tebako/write-github-release-receipt.rb \
+  --evaluation release/evidence/standalone-evaluation-v1.json \
+  --authorization release/authorizations/agent-workflows-standalone-v1.json \
+  --repository shakacode/agent-workflows \
+  --tag "$AUTHORIZED_BINARY_TAG" \
+  --output release/evidence/standalone-github-release-receipt-v1.json
+```
+
+The schema-validated receipt binds the immutable repository, release, tag, and
+asset IDs; API and download timestamps; canonical asset URLs; downloaded
+digests; verified signatures; platform/architecture; authorization digest; and
+source-evaluation digest. Only after that read-back passes, publish
+`docs/standalone-installation.md` and record terminal `ADOPTED`. The terminal
+writer receives the receipt rather than unverified URL strings:
+
+```bash
+ruby packaging/tebako/write-evaluation.rb \
+  --finalize-status ADOPTED \
+  --input release/evidence/standalone-evaluation-v1.json \
+  --authorization-evidence release/authorizations/agent-workflows-standalone-v1.json \
+  --release-receipt release/evidence/standalone-github-release-receipt-v1.json \
+  --output release/evidence/standalone-evaluation-v1.json
+ruby packaging/tebako/validate-evaluation.rb \
+  release/evidence/standalone-evaluation-v1.json
+```
+
+If authorization is denied or stale before upload, record terminal
+`NOT_ADOPTED` from the Step 6 decision receipt and retain the evaluation evidence
+without public artifacts:
+
+```bash
+ruby packaging/tebako/write-evaluation.rb \
+  --finalize-status NOT_ADOPTED \
+  --failed-criterion "$AUTHORIZATION_FAILURE" \
+  --authorization-decision release/evidence/standalone-release-decision-v1.json \
+  --input release/evidence/standalone-evaluation-v1.json \
+  --output release/evidence/standalone-evaluation-v1.json
+ruby packaging/tebako/validate-evaluation.rb \
+  release/evidence/standalone-evaluation-v1.json
+```
+
+`AUTHORIZATION_FAILURE` is a closed enum containing only
+`authorization-denied` and `authorization-stale`. Both finalization modes are
+allowed only from `ADOPTED_PENDING_RELEASE_AUTHORIZATION` whose complete
+platform matrix passes every threshold and has no failed criterion. A
+threshold-derived `NOT_ADOPTED` from Step 5 is already terminal and is never
+passed to finalization. The writer rejects any transition from `ADOPTED` or
+`NOT_ADOPTED`, never removes or overwrites prior failure evidence, and forbids
+release evidence on the authorization-failure path. Tests cover the complete
+allowed transition table and every rejected cross-state transition.
+`ADOPTED_PENDING_RELEASE_AUTHORIZATION` is never a completion state. In both
+terminal paths the writer uses a same-directory temporary file plus atomic
+rename so input and output may be the same path without truncating the prior
+evidence.
 
 ### Task 6: Complete package ownership and post-release audit
 
 **Files:**
 
 - Update release runbooks and changelogs in each repository.
+- Create:
+  `release/evidence/agent-coordination-dashboard-0.1.0-publishing-access-closeout.v1.json`.
 - Create no new alias package.
 
 **Interfaces:**
@@ -694,9 +1034,29 @@ Verify at least two confirmed human owners, MFA requirements, protected release
 environments, and exact repository/workflow bindings on each registry. Verify
 supported organization roles for both RubyGems packages. For the unscoped npm
 package, verify the trusted publisher and read back every supported ShakaCode
-team access row. Accept an unsupported disposition only with authenticated live
-capability evidence for that exact operation; unscoped naming alone is not such
-evidence.
+team access row. In a fresh authenticated npm package-settings view, also read
+back **Require two-factor authentication and disallow tokens** and validate the
+matching `release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json`.
+Accept an unsupported disposition only with authenticated live capability
+evidence for that exact operation; unscoped naming alone is not such evidence.
+Download the registry artifact rather than trusting the prepublication copy,
+then replay the verifier with the fresh setting observation and exact expected
+commit/tag from the authorization:
+
+```bash
+NPM_AUDIT_DIR="$(mktemp -d)"
+npm pack agent-coordination-dashboard@0.1.0 --json \
+  --pack-destination "$NPM_AUDIT_DIR" > "$NPM_AUDIT_DIR/npm-pack.json"
+NPM_AUDIT_TARBALL="$NPM_AUDIT_DIR/agent-coordination-dashboard-0.1.0.tgz"
+node scripts/verify-npm-postpublish-receipt.mjs \
+  --receipt release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json \
+  --authorization release/authorizations/agent-coordination-dashboard-0.1.0.v1.json \
+  --grant-manifest release/grants/agent-coordination-dashboard-0.1.0.v1.json \
+  --tarball "$NPM_AUDIT_TARBALL" \
+  --fresh-observation release/evidence/agent-coordination-dashboard-0.1.0-publishing-access-closeout.v1.json \
+  --expected-commit "$(node -p 'require("./release/authorizations/agent-coordination-dashboard-0.1.0.v1.json").commit')" \
+  --expected-tag v0.1.0
+```
 
 - [ ] **Step 2: Verify clean-machine installation**
 

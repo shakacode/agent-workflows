@@ -355,12 +355,29 @@ git commit -m "test: add Ruby CLI characterization harness"
 - Create: `lib/agent_workflows/seam/validator.rb`
 - Create: `lib/agent_workflows/seam/policy.rb`
 - Create: `lib/agent_workflows/seam/renderer.rb`
+- Move: `bin/agent_doctor/autonomous_merge_policy.rb` to
+  `lib/agent_workflows/policy/autonomous_merge_policy.rb`.
+- Move: `bin/agent_doctor/autonomous_merge_policy_globs.rb` to
+  `lib/agent_workflows/policy/autonomous_merge_policy_globs.rb`.
+- Move: `bin/agent_doctor/autonomous_merge_policy_yaml.rb` to
+  `lib/agent_workflows/policy/autonomous_merge_policy_yaml.rb`.
 - Create: `lib/agent_workflows/cli/seam_doctor.rb`
 - Create: `test/gem/seam/*_test.rb`
+- Create: `test/gem/policy/autonomous_merge_policy_test.rb`
 - Create: `test/packaging/installed_seam_doctor_test.rb`
 - Modify: `test/packaging/public_entrypoints_test.rb`
 - Modify: `bin/agent-workflow-seam-doctor`
 - Modify: `bin/agent-workflow-seam-doctor-test.rb`
+- Modify: `skills/pr-batch/lib/autonomous_merge_decision.rb`
+- Modify: `skills/pr-batch/lib/autonomous_merge_runtime_trust.rb`
+- Modify: `skills/pr-batch/bin/autonomous-merge-eligibility`
+- Modify: `skills/pr-batch/bin/autonomous-merge-contract-test.rb`
+- Modify: `skills/pr-batch/bin/autonomous-merge-eligibility-test.rb`
+- Modify: `skills/pr-batch/bin/merge-assurance-test.rb`
+- Modify: `skills/pr-batch/bin/pr-merge-submit-test.rb`
+- Modify: `skills/pr-batch/fixtures/autonomous-merge-policy-sources.json`
+- Modify: `workflows/pr-processing.md`
+- Modify: `bin/install-agent-workflows-test.bash` for source-pack policy loading.
 - Create: `exe/agent-workflow-seam-doctor`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `lib/agent_workflows.rb`
@@ -390,6 +407,29 @@ Characterize exact created bytes, file modes, preservation of unmanaged files, p
 - [ ] **Step 4: Implement initializer, validator, policy, and renderer**
 
 `Initializer` owns writes and accepts a filesystem collaborator. `Validator` returns an array of typed findings and performs no writes. `Renderer.text(findings)` and `Renderer.json(findings)` preserve current output. `Policy` owns `.agents/agent-workflow.yml` and trust mapping validation.
+
+Move the complete pure `bin/agent_doctor/autonomous_merge_policy*.rb` parser
+trio into `AgentWorkflows::Policy` in this task, because seam validation already
+depends on its closed-schema `autonomous_merge` checks. `Seam::Policy` delegates
+to that packaged parser; it must not reach back into `bin/agent_doctor`, weaken
+the schema, or defer this dependency until the later merge-submission task.
+Characterize its YAML, glob, and policy errors directly and include all three
+canonical files in both manifests and the installed-gem isolation corpus.
+Atomically update every current merge caller, trusted-base tree path,
+installed-pack digest role, source-pack/pinned-copy manifest, and fixture to the
+canonical package paths. Delete the legacy trio only after `rg` proves both seam
+and merge callers use the package and the legacy-vs-canonical policy corpus is
+byte-for-byte equivalent in decisions, errors, and glob matches. No
+compatibility lookup may search both old and new policy locations.
+
+Perform that package-policy cutover as the first substep of Step 4. Immediately
+after the packaged parser, existing callers, provenance paths, manifests,
+fixtures, isolation coverage, and legacy deletions pass their focused tests,
+create the first commit defined in Step 7. Do this before creating
+`Seam::Policy`, rewriting the seam launchers, or modifying their shared package
+entrypoint for the seam cutover. The later seam work may then build only on the
+committed canonical policy API and cannot leave an intermediate commit whose
+launcher references an unstaged seam implementation.
 
 - [ ] **Step 5: Add both installed and source-pack CLIs and the differential corpus**
 
@@ -422,6 +462,11 @@ ruby bin/agent-workflow-seam-doctor-test.rb
 ruby -Ilib test/gem/seam/shell_command_test.rb
 ruby -Ilib test/gem/seam/initializer_test.rb
 ruby -Ilib test/gem/seam/validator_test.rb
+ruby -Ilib test/gem/policy/autonomous_merge_policy_test.rb
+ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
+ruby skills/pr-batch/bin/autonomous-merge-eligibility-test.rb
+ruby skills/pr-batch/bin/merge-assurance-test.rb
+ruby skills/pr-batch/bin/pr-merge-submit-test.rb
 ruby -Ilib test/packaging/installed_seam_doctor_test.rb
 ruby -Ilib test/packaging/public_entrypoints_test.rb
 bin/agent-workflow-seam-doctor --root test/fixtures/consumer-repo --shared .
@@ -430,9 +475,86 @@ bin/validate
 
 Expected: all established assertions and full validation pass.
 
-- [ ] **Step 7: Commit as three PR-sized commits**
+- [ ] **Step 7: Preserve four atomic PR-sized commit boundaries**
 
-Commit pure parsing, initializer/writes, and validator/CLI cutover separately with messages `refactor: extract seam command parsing`, `refactor: extract seam initialization`, and `refactor: extract seam validation`.
+As required in Step 4, the policy-parser move, every existing
+caller/provenance/fixture rewrite, and all three legacy deletions form the first
+atomic commit before any seam implementation or launcher cutover. Before
+committing, require this exact search to return exit 1 (no legacy reference)
+across every tracked text file except the historical implementation plans. The
+focused policy/runtime-trust/installer tests must also enumerate every computed
+runtime tree path and installed file and reject a path assembled from components
+that reaches the legacy directory. Exit 0 means a forbidden match; exit 2 or any
+other status is a search failure and must also stop the commit:
+
+```bash
+git rm -- bin/agent_doctor/autonomous_merge_policy.rb \
+  bin/agent_doctor/autonomous_merge_policy_globs.rb \
+  bin/agent_doctor/autonomous_merge_policy_yaml.rb
+git add -- agent-workflows.gem-manifest agent-workflows.runtime-manifest \
+  lib/agent_workflows.rb \
+  lib/agent_workflows/policy/autonomous_merge_policy.rb \
+  lib/agent_workflows/policy/autonomous_merge_policy_globs.rb \
+  lib/agent_workflows/policy/autonomous_merge_policy_yaml.rb \
+  test/gem/policy/autonomous_merge_policy_test.rb \
+  test/packaging/public_entrypoints_test.rb \
+  bin/agent-workflow-seam-doctor bin/agent-workflow-seam-doctor-test.rb \
+  bin/install-agent-workflows-test.bash \
+  skills/pr-batch/lib/autonomous_merge_decision.rb \
+  skills/pr-batch/lib/autonomous_merge_runtime_trust.rb \
+  skills/pr-batch/bin/autonomous-merge-eligibility \
+  skills/pr-batch/bin/autonomous-merge-contract-test.rb \
+  skills/pr-batch/bin/autonomous-merge-eligibility-test.rb \
+  skills/pr-batch/bin/merge-assurance-test.rb \
+  skills/pr-batch/bin/pr-merge-submit-test.rb \
+  skills/pr-batch/fixtures/autonomous-merge-policy-sources.json \
+  workflows/pr-processing.md
+set +e
+git grep --cached -n -I -e 'agent_doctor/autonomous_merge_policy' -- . \
+  ':!docs/superpowers/plans/**'
+legacy_reference_status=$?
+set -e
+if [ "$legacy_reference_status" -eq 0 ]; then
+  exit 1
+fi
+if [ "$legacy_reference_status" -ne 1 ]; then
+  exit "$legacy_reference_status"
+fi
+policy_commit_expected="$(mktemp)"
+policy_commit_actual="$(mktemp)"
+trap 'rm -f "$policy_commit_expected" "$policy_commit_actual"' EXIT
+printf '%s\t%s\n' \
+  D bin/agent_doctor/autonomous_merge_policy.rb \
+  D bin/agent_doctor/autonomous_merge_policy_globs.rb \
+  D bin/agent_doctor/autonomous_merge_policy_yaml.rb \
+  A lib/agent_workflows/policy/autonomous_merge_policy.rb \
+  A lib/agent_workflows/policy/autonomous_merge_policy_globs.rb \
+  A lib/agent_workflows/policy/autonomous_merge_policy_yaml.rb \
+  A test/gem/policy/autonomous_merge_policy_test.rb \
+  M agent-workflows.gem-manifest \
+  M agent-workflows.runtime-manifest \
+  M lib/agent_workflows.rb \
+  M test/packaging/public_entrypoints_test.rb \
+  M bin/agent-workflow-seam-doctor \
+  M bin/agent-workflow-seam-doctor-test.rb \
+  M bin/install-agent-workflows-test.bash \
+  M skills/pr-batch/lib/autonomous_merge_decision.rb \
+  M skills/pr-batch/lib/autonomous_merge_runtime_trust.rb \
+  M skills/pr-batch/bin/autonomous-merge-eligibility \
+  M skills/pr-batch/bin/autonomous-merge-contract-test.rb \
+  M skills/pr-batch/bin/autonomous-merge-eligibility-test.rb \
+  M skills/pr-batch/bin/merge-assurance-test.rb \
+  M skills/pr-batch/bin/pr-merge-submit-test.rb \
+  M skills/pr-batch/fixtures/autonomous-merge-policy-sources.json \
+  M workflows/pr-processing.md | sort > "$policy_commit_expected"
+git diff --cached --name-status --no-renames | sort > "$policy_commit_actual"
+diff -u "$policy_commit_expected" "$policy_commit_actual"
+git commit -m "refactor: package autonomous merge policy parser"
+```
+
+Commit the remaining pure seam parsing, initializer/writes, and validator/CLI
+cutover separately with messages `refactor: extract seam command parsing`,
+`refactor: extract seam initialization`, and `refactor: extract seam validation`.
 
 ### Task 3: Extract GitHub trust and security preflight
 
@@ -610,7 +732,8 @@ Use separate commits for route/assignment, dependency graph, coordination bounds
 **Files:**
 
 - Move: `skills/pr-batch/lib/autonomous_merge_*.rb` into `lib/agent_workflows/merge/`.
-- Move: `bin/agent_doctor/autonomous_merge_policy*.rb` into `lib/agent_workflows/merge/`.
+- Reuse: the packaged `AgentWorkflows::Policy` parser extracted by Task 2;
+  Task 5 composes it and must not create a second merge-local parser.
 - Create: `lib/agent_workflows/merge/{policy,evidence,eligibility,calibration,assurance,submission,trusted_snapshot}.rb`
 - Create: `lib/agent_workflows/cli/{autonomous_merge_calibrate,autonomous_merge_eligibility,merge_assurance,pr_merge_submit}.rb`
 - Create: `test/gem/merge/*_test.rb`
@@ -633,9 +756,10 @@ AgentWorkflows::Merge::TrustedSnapshot.materialize(repository:, base_sha:, execu
 
 Convert namespaces and require paths, preserve calibration dataset and digest
 behavior, and run every autonomous-merge test before deleting the skill-local
-library files and the three deferred `bin/agent_doctor` policy files. Update the
-runtime-trust manifest, workflow documentation, seam doctor, and installed-copy
-fixtures in the same cutover; no compatibility lookup searches both locations.
+library files. Reuse the canonical `AgentWorkflows::Policy` paths and
+runtime-trust entries established by Task 2; do not relocate, duplicate, or
+reintroduce a legacy-policy compatibility lookup. Update the remaining workflow
+documentation and installed-copy fixtures in the same cutover.
 
 - [ ] **Step 2: Extract assurance parsing and semantic validation**
 

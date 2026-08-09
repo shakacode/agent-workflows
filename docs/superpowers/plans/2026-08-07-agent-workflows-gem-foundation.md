@@ -75,7 +75,7 @@
 - `bin/agent_doctor/*.rb`: during the pilot, moved doctor files become thin
   compatibility bodies until Task 5 makes the canonical library installable;
   Task 6 removes those bodies, while the three autonomous-merge policy files
-  remain until the later merge-domain task.
+  remain until Task 2 of the later domain-extraction plan.
 - `bin/install-agent-workflows`: selects `lib/agent_workflows` atomically with wrappers.
 - `bin/install-agent-workflows-test.bash`: tests all delivery layouts and failure cases.
 - `bin/agent_stack/installers.bash`: installs the shared library for colocated stack commands.
@@ -113,9 +113,9 @@ AgentWorkflows::CLI::StackDoctor.start(
 ) # => Integer
 ```
 
-Ruby 3.3 provides `Data`. Every `Result` instance validates `exit_status` as an
-integer and freezes the diagnostics collection supplied by package code before
-return.
+Ruby 3.2 introduced `Data`; the selected Ruby 3.3 floor therefore provides it.
+Every `Result` instance validates `exit_status` as an integer and freezes the
+diagnostics collection supplied by package code before return.
 
 ### Task 1: Add the gem skeleton and package identity
 
@@ -540,9 +540,9 @@ depend on a required file's `$PROGRAM_NAME == __FILE__` guard.
 Convert sibling `require_relative` calls to the new sibling paths and inject the
 shared process runner. Leave
 `autonomous_merge_policy.rb`, `autonomous_merge_policy_globs.rb`, and
-`autonomous_merge_policy_yaml.rb` in `bin/agent_doctor` until the later merge
-domain task moves them atomically with their runtime-trust manifests and
-callers. Preserve every old implementation body, including `workflows_cli.rb`,
+`autonomous_merge_policy_yaml.rb` in `bin/agent_doctor` until Task 2 of the
+domain-extraction plan moves them atomically with the seam doctor plus their
+existing merge/runtime-trust callers and manifests. Preserve every old implementation body, including `workflows_cli.rb`,
 `stack_cli.rb`, and the executable behavior in `install_ownership.rb`, through
 Task 4. Replacing them with shims here would break existing copy,
 plugin-companion, and stack installations because their installer does not ship
@@ -657,14 +657,38 @@ code, a stdlib-free launcher check parses `RUBY_VERSION` and rejects anything
 older than 3.3 with one actionable diagnostic and exit `64`. Unit-test the
 predicate with 2.7, 3.2, 3.3, and 4.0 strings, and run a negative launcher
 contract under an available pre-3.3 Ruby in CI so the no-backtrace behavior is
-proved in the real interpreter. The source-pack launchers verify the receipt's
-expected package version against the manifest-selected `version.rb`, prepend
-only the selected runtime root's exact `lib` to `$LOAD_PATH`, require
-`agent_workflows`, explicitly verify the expected version and relevant CLI
-constant are defined, and call `.start`. Manifest, `LoadError`, Ruby-version,
-missing-constant, and package-version failures produce one diagnostic and exit
-`64` without a backtrace. Syntax errors and unrelated runtime exceptions are not
-broadly rescued. The launchers do not search GEM paths or another checkout.
+proved in the real interpreter. Define two explicit source-pack modes rather
+than a receipt-optional fallback. Mode selection is encoded in the launcher
+artifact, never inferred from a missing receipt: the checked-in full root
+launcher always uses `mode: checkout`, while the installer writes a distinct
+sub-30-line trampoline that always uses `mode: current`. Checkout mode resolves
+the launcher's real path, binds the runtime root to that file's canonical
+repository root, requires the checked-in runtime manifest and `version.rb`,
+rejects unsafe manifest paths and symlinked required files, and verifies every
+listed file before loading Ruby. It does not require or invent a generation
+receipt because checkout bytes are intentionally editable. Current mode's
+pinned bootstrap first validates the installed selector's ownership and explicit
+runtime kind. `immutable_generation` requires the generation receipt;
+`live_source` requires installer-owned selector metadata that binds the chosen
+canonical checkout root and uses the live-source manifest contract described in
+Task 5. Runtime kind is never inferred from receipt presence or absence. Current
+mode never falls back to checkout mode when its selector, required metadata,
+receipt, or tree is missing or invalid.
+
+Checkout mode and current mode with `live_source` verify the runtime manifest's
+declared package name/version against the manifest-selected `version.rb`;
+current mode with `immutable_generation` verifies the receipt's expected package
+name/version against that same file. All paths prepend only the selected runtime
+root's exact `lib` to `$LOAD_PATH`, require `agent_workflows`, explicitly verify
+the expected version and relevant CLI constant are defined, and call `.start`.
+Manifest, receipt/selector, `LoadError`, Ruby-version, missing-constant, and
+package-version failures produce one diagnostic and exit `64` without a
+backtrace. Syntax errors and unrelated runtime exceptions are not broadly
+rescued. The launchers do not search GEM paths or another checkout. Add
+post-cutover tests that invoke both root launchers directly from a checkout,
+including missing/malformed manifest and version-mismatch cases, and prove a
+broken installed selector, selector-kind record, or receipt cannot escape into
+checkout or live-source mode.
 
 Both `exe/*` files use:
 
@@ -859,11 +883,15 @@ Expected: new library-layout cases fail before installer changes.
 
 - [ ] **Step 4: Extend installer staging and ownership**
 
-Create `agent-workflows.runtime-manifest` as the sorted, explicit source-pack
+Create `agent-workflows.runtime-manifest` as canonical data containing its
+schema version, exact package name/version, and the sorted explicit source-pack
 allowlist for the canonical library, source-pack wrappers, and required runtime
-resources. It is separate from `agent-workflows.gem-manifest`; source-pack-only
-paths never enter `spec.files`, and the gem manifest never substitutes for
-source-pack completeness validation. In the same change, add
+resources. Checkout mode treats that checked-in package identity as its expected
+identity and verifies it against `version.rb`; generation receipts copy and bind
+the same identity independently. The runtime manifest is separate from
+`agent-workflows.gem-manifest`; source-pack-only paths never enter `spec.files`,
+and the gem manifest never substitutes for source-pack completeness validation.
+In the same change, add
 `agent-workflows.bootstrap-compatibility.json`,
 `lib/agent_workflows/distribution/runtime_bootstrap.rb` and
 `lib/agent_workflows/distribution/generation_transaction.rb` to the sorted gem
@@ -925,16 +953,24 @@ those same bytes and digest through the stable API above. Thus neither a mutable
 matrix, a path reopened by the bootstrap, nor package version alone can authorize
 a pairing.
 
-The trusted bootstrap resolves `.agent-workflows-current` exactly once to an
-immutable generation, validates that generation's receipt and full library-tree
-digest before requiring any generation Ruby, and never falls back to a gem or
-source checkout. Retain the prior generation while any invocation can still use
-it. The bootstrap resolves the selector and publishes a durable generation lease
-while holding the same no-follow lock that retention uses to enumerate leases
-and delete generations; it releases that lock only after validating the selected
-generation and making the lease visible. Cleanup therefore cannot interleave
-between selection and lease publication. The bootstrap releases its lease after
-the command exits.
+The trusted bootstrap resolves `.agent-workflows-current` exactly once and
+requires its installer-owned metadata to declare and bind the selected runtime
+kind. For `immutable_generation`, it validates the generation receipt and full
+library-tree digest before requiring any generation Ruby. For `live_source`, it
+requires the pointer and metadata to name the same canonical editable root, then
+uses the checked-in manifest identity and completeness contract without a
+generation receipt or frozen tree digest. Neither branch falls back to a gem,
+checkout mode, or an unbound source checkout.
+
+For `immutable_generation`, retain the prior generation while any invocation can
+still use it. The bootstrap resolves the selector and publishes a durable
+generation lease while holding the same no-follow lock that retention uses to
+enumerate leases and delete generations; it releases that lock only after
+validating the selected generation and making the lease visible. Cleanup
+therefore cannot interleave between selection and lease publication. The
+bootstrap releases its lease after the command exits. `live_source` never enters
+generation retention or lease cleanup; the editable checkout lifecycle remains
+operator-owned.
 Lease records bind PID, process-start identity, and generation. A matching live
 process identity is an unconditional hard pin regardless of lease age. A dead
 or reused process identity becomes reclaimable only after a bounded stale-lease
@@ -999,9 +1035,14 @@ paths.
 
 In symlink mode, preserve the existing live-development contract: atomically
 point `.agent-workflows-current` at the canonical root of the explicitly chosen
-editable clone. Fixed launchers resolve that root once, validate safe manifest
-paths, required-file presence, and package/Ruby compatibility, then load the
-live files; they do not compare content against a frozen install digest. Record
+editable clone. Publish installer-owned selector metadata with
+`runtime_kind: live_source` and that exact canonical root before selecting it;
+fixed launchers require the metadata, pointer, and resolved root to agree before
+choosing the manifest-identity contract. Fixed launchers then validate safe
+manifest paths, required-file presence, and package/Ruby compatibility before
+loading the live files; they do not compare content against a frozen install
+digest. Missing or inconsistent live-source metadata fails closed and never
+falls through to generation, checkout, or receipt-free current behavior. Record
 the observed revision for status only and report later source edits as a dirty
 development checkout, not corruption. Refuse unmanaged conflicts, unsafe links,
 and destination ownership mismatches using the current no-follow checks.
@@ -1056,8 +1097,8 @@ git commit -m "feat: install agent workflows Ruby library atomically"
 **Files:**
 
 - Delete: migrated doctor and CLI files under `bin/agent_doctor/`.
-- Retain: `bin/agent_doctor/autonomous_merge_policy*.rb` for the later
-  merge-domain cutover.
+- Retain: `bin/agent_doctor/autonomous_merge_policy*.rb` for Task 2 of the
+  later domain-extraction plan.
 - Modify: every remaining `require_relative` reference returned by the discovery command below.
 - Modify: installer ownership and migration tests that refer to the old directory.
 - Modify: `README.md`, `docs/installation-and-upgrades.md`.
@@ -1066,8 +1107,8 @@ git commit -m "feat: install agent workflows Ruby library atomically"
 
 - Consumes: canonical doctor library and installed layouts from Tasks 3-5.
 - Produces: one doctor implementation tree with no runtime fallback; the three
-  autonomous-merge policy files remain temporarily for the later merge-domain
-  cutover.
+  autonomous-merge policy files remain temporarily for domain-extraction Task 2,
+  where the seam and existing merge callers move atomically.
 
 - [ ] **Step 1: Prove all remaining callers before deletion**
 
@@ -1083,10 +1124,12 @@ Classify every hit as canonical library use, compatibility test fixture, documen
 
 Remove the migrated doctor and CLI files from `bin/agent_doctor`, but retain the
 three `autonomous_merge_policy*.rb` files until the domain-extraction plan's
-merge task. Run doctor, installer, stack, autonomous-merge policy, and
-seam-doctor tests. Expected: doctor and CLI callers have no `require_relative`
-references into the retained policy location; merge callers and runtime-trust
-fixtures still use the reviewed legacy policy paths.
+Task 2 seam/policy cutover. Run doctor, installer, stack, autonomous-merge policy, and
+seam-doctor tests. Expected: migrated doctor implementation and stack CLI callers
+have no `require_relative` references into the retained policy location;
+`bin/agent-workflow-seam-doctor`, its tests, merge callers, and runtime-trust
+fixtures still use the reviewed legacy policy paths until the later atomic
+domain-extraction Task 2 cutover.
 
 - [ ] **Step 3: Verify packaged and installed independence**
 
@@ -1211,7 +1254,8 @@ The foundation is complete only when:
 - copy, symlink, flat, plugin-companion, and stack-sync layouts pass;
 - the exact-head macOS packaging-smoke job passes and records its receipt;
 - only the three explicitly deferred autonomous-merge policy files remain under
-  `bin/agent_doctor`, with their removal owned by the merge-domain task;
+  `bin/agent_doctor`, with their atomic caller/provenance cutover and removal
+  owned by Task 2 of the domain-extraction plan;
 - Ruby 3.3 and 3.4.6 validation pass;
 - no package was published;
 - current-head independent review and full `bin/validate` pass.
