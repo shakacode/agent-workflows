@@ -739,6 +739,7 @@ git commit -m "feat: expose doctor commands through agent workflows gem"
 - Modify: `bin/agent_stack/module_install.bash`
 - Create: `lib/agent_workflows/distribution/generation_transaction.rb`
 - Create: `test/gem/distribution/generation_transaction_test.rb`
+- Modify: `agent-workflows.gem-manifest`
 - Create: `agent-workflows.runtime-manifest`
 - Modify: `test/agent_doctor/launcher_test.rb`
 - Modify: `test/agent_stack/module_install_test.bash`
@@ -813,7 +814,9 @@ Create `agent-workflows.runtime-manifest` as the sorted, explicit source-pack
 allowlist for the canonical library, source-pack wrappers, and required runtime
 resources. It is separate from `agent-workflows.gem-manifest`; source-pack-only
 paths never enter `spec.files`, and the gem manifest never substitutes for
-source-pack completeness validation.
+source-pack completeness validation. In the same change, add
+`lib/agent_workflows/distribution/generation_transaction.rb` to the sorted gem
+manifest so the built gem and source pack ship the same canonical primitive.
 
 In copy mode, stage the complete runtime manifest, library tree, executable wrappers,
 resources, and generation-local receipt under a temporary directory. The
@@ -880,7 +883,8 @@ Expected: copy, symlink, flat, plugin-companion, relocated-source, partial-insta
 - [ ] **Step 7: Commit atomic distribution support**
 
 ```bash
-git add -- agent-workflows.runtime-manifest bin/install-agent-workflows \
+git add -- agent-workflows.gem-manifest agent-workflows.runtime-manifest \
+  bin/install-agent-workflows \
   bin/install-agent-workflows-test.bash bin/agent-workflows-doctor \
   bin/agent-stack-doctor bin/agent_stack/installers.bash \
   bin/agent_stack/module_install.bash \
