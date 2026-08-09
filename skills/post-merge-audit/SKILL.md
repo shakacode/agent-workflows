@@ -599,7 +599,9 @@ every waived fact/path and each accepted deferral's exact target, owner, and
 evidence URL. Its compact line uses this distinct canonical form, with those
 facts listed from the bound publication snapshot:
 
+```text
 Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
+```
 
 Give this local receipt to the helper. It publishes one concise header, one
 blank line, and exactly one canonical v1 wrapper; the helper injects the
