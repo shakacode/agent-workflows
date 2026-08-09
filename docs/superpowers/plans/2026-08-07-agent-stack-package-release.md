@@ -645,6 +645,7 @@ disposition. Do not publish another version merely to test OIDC.
 - Create: `test/packaging/standalone_real_network_test.rb`
 - Create: `test/packaging/standalone_evaluation_validator_test.rb`
 - Create: `test/packaging/standalone_release_evidence_test.rb`
+- Create: `.github/workflows/authorize-standalone.yml`
 - Create: `.github/workflows/package-standalone.yml`
 - Create: `release/schemas/standalone-platform-input-v1.schema.json`
 - Create: `release/schemas/standalone-platform-run-v1.schema.json`
@@ -916,6 +917,10 @@ ruby packaging/tebako/write-release-authorization.rb \
   --workflow-path .github/workflows/package-standalone.yml \
   --workflow-ref "$STANDALONE_WORKFLOW_REF" \
   --workflow-digest "$STANDALONE_WORKFLOW_DIGEST" \
+  --authorization-run-id "$GITHUB_RUN_ID" \
+  --authorization-workflow-path .github/workflows/authorize-standalone.yml \
+  --authorization-workflow-ref "$GITHUB_WORKFLOW_REF" \
+  --authorization-workflow-digest "$AUTHORIZATION_WORKFLOW_DIGEST" \
   --mutator-action "$STANDALONE_MUTATOR_ACTION" \
   --mutator-action-digest "$STANDALONE_MUTATOR_ACTION_DIGEST" \
   --mutator-result-schema \
@@ -935,9 +940,32 @@ content digest, binds the result schema's fixed path, version, and SHA-256, and
 validates the result against
 `standalone-release-authorization-v1.schema.json`. It rejects a threshold
 failure, failed criterion, terminal input, ambiguous approver, mutable target,
-missing rollback, or stale authorization. For denial, or when a previously
-valid authorization expires before upload, create a separate decision receipt.
-For an initial denial, no authorization exists and the argument is forbidden:
+missing rollback, or stale authorization.
+
+Run the writer only in `authorize-standalone.yml`, after the named human approval
+has been durably recorded. This capture workflow checks out the authorized source
+commit with persisted credentials disabled, has only `contents: read` and
+`actions: read`, downloads and verifies the exact source-evaluation artifact,
+requires the capture run's head SHA to equal that commit, and receives no
+release-write permission. The authorization binds its own producer run ID and
+immutable capture-workflow path/ref/digest. Upload the single authorization JSON
+as a retention-bounded artifact named by tag and capture run. A separate
+read-only verification job queries the complete artifact inventory for that
+exact producer run, requires exactly one expected authorization artifact,
+records its ID and service-reported digest, downloads it to a fresh directory,
+checks its SHA-256 and schema, and confirms every approval, evaluation, target,
+workflow, mutator, expiry, and rollback binding. Those exact producer-run,
+artifact-ID, and artifact-digest values are the only publication handoff; a
+workspace file, workflow output containing JSON, branch commit made after
+approval, publication-time artifact-name lookup, or "latest" run is forbidden.
+Launch `package-standalone.yml` with those three exact values as explicit
+dispatch inputs. The inputs are selectors, not trust: `prepare-publication` must
+prove all of them against GitHub API and authorization-content evidence before
+proceeding.
+
+For denial, or when a previously valid authorization expires before upload,
+create a separate decision receipt. For an initial denial, no authorization
+exists and the argument is forbidden:
 
 ```bash
 ruby packaging/tebako/write-release-decision.rb \
@@ -980,27 +1008,40 @@ aggregation, verification, or recovery job receives `contents: write`.
 `prepare-publication` is unprivileged: `contents: read`, `actions: read`, no
 environment, persisted checkout credential, or write permission. All repository
 Ruby, Bundler, tests, schemas, and preflight logic end in this job. It checks out
-the exact authorized commit, downloads only the bound source-run artifacts,
-verifies every workflow/evaluation/authorization/tag/commit/expiry binding and
-asset checksum/signature, rejects a public or unowned release for the tag, and
-writes a closed publication instruction:
+the exact authorized commit, downloads the bound source-run artifacts, and
+requires exact workflow-dispatch inputs for the authorization producer run,
+artifact ID, and service-reported digest. It queries that producer run and
+capture workflow, downloads the authorization artifact by ID into a fresh
+directory, verifies the artifact and file digests plus the authorization schema,
+and requires the file's producer-run/workflow bindings to match the API evidence.
+It then verifies every workflow/evaluation/authorization/tag/commit/expiry
+binding and asset checksum/signature, rejects a public or unowned release for
+the tag, and writes a closed publication instruction:
 
 ```bash
 ruby packaging/tebako/write-publication-instruction.rb \
   --evaluation release/evidence/standalone-evaluation-v1.json \
-  --authorization release/authorizations/agent-workflows-standalone-v1.json \
+  --authorization "$VERIFIED_AUTHORIZATION_PATH" \
+  --authorization-producer-run-id "$AUTHORIZATION_PRODUCER_RUN_ID" \
+  --authorization-artifact-id "$AUTHORIZATION_ARTIFACT_ID" \
+  --authorization-artifact-digest "$AUTHORIZATION_ARTIFACT_DIGEST" \
   --repository shakacode/agent-workflows \
   --tag "$AUTHORIZED_BINARY_TAG" \
   --output release/evidence/standalone-github-publication-instruction-v1.json
 ```
 
 The instruction schema binds the authorization/evaluation/workflow digests,
-source run, repository, immutable tag and target commit, closed four-asset
-name/digest/signature matrix, expiry, and the independently reviewed mutator
-action's repository, immutable commit, and content digest plus the mutator-result
-schema path, version, and digest. Upload the instruction plus exact asset bundle
+source run, authorization producer run/artifact ID/artifact digest/file digest,
+authorization capture-workflow path/ref/digest, repository, immutable tag and
+target commit, closed four-asset name/digest/signature matrix, expiry, and the
+independently reviewed mutator action's repository, immutable commit, and content
+digest plus the mutator-result schema path, version, and digest. Upload the
+instruction, freshly downloaded verified authorization, and exact asset bundle
 as one same-run workflow artifact; read back and record its artifact ID and
-SHA-256. Any mismatch stops before a write-capable job starts.
+SHA-256. `VERIFIED_AUTHORIZATION_PATH` must resolve inside that fresh artifact
+download directory, never the checkout. Any missing, expired, cross-run,
+name-selected, substituted, or digest-mismatched authorization artifact stops
+before a write-capable job starts.
 
 `stage-draft` is the first protected write job. It has only job-scoped
 `contents: write` and `actions: read`, performs no checkout, and runs no shell,
@@ -1198,7 +1239,10 @@ inconclusive, draft, missing, extra, mismatched, or non-durable state preserves
 `PUBLICATION_UNKNOWN` and executes the
 authorization's incident/remediation disposition when the attempt or deadline
 bound is reached. Tests cover stale authorization, wrong workflow
-or run binding, substituted local bytes, pre-existing public/unowned releases,
+or run binding, missing/expired/name-selected/cross-run/substituted authorization
+artifacts, mismatched authorization producer workflow or artifact/file digest,
+authorization bytes committed only after the target commit, substituted local
+bytes, pre-existing public/unowned releases,
 draft-state loss, loss or substitution of the durable draft artifact, missing,
 substituted, skipped, repeated, and over-limit recovery records, caller-selected,
 extended, or recomputed recovery deadlines, asset replacement between draft
