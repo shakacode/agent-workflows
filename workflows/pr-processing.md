@@ -1469,6 +1469,10 @@ notification wording.
 - An explicit technical or diagnostic status request may return exact telemetry.
   Expand identifiers on first use, retain exact values, and mark unavailable
   meanings `UNKNOWN` rather than translating them speculatively.
+- At closeout/archive completion, place the three labeled parts before, not
+  instead of, the existing mandatory closeout handoff. Preserve every item of
+  required handoff evidence and exact `Conversation status:` line, which remains
+  the final user-visible line.
 - Treat automation lifecycle as separate from notification rendering. After
   each refresh, automatically delete an obsolete heartbeat or monitor when its
   gate clears or becomes durably terminal; retain it on a no-change wake.

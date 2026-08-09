@@ -104,9 +104,10 @@
         "trigger": "closeout_or_archive_completed",
         "what_changed": "Closeout and archive preparation completed.",
         "action_needed": "none.",
-        "next": "You may archive this conversation."
+        "next": "You may archive this conversation.",
+        "existing_closeout_handoff": "PR: https://github.com/acme/widgets/pull/42 at head 0123456789abcdef0123456789abcdef01234567.\nValidation: focused and full gates passed.\nBlockers: none.\nConversation status: Ready for archiving."
       },
-      "expected_user_output": "What changed: Closeout and archive preparation completed. Action needed: none. Next: You may archive this conversation."
+      "expected_user_output": "What changed: Closeout and archive preparation completed. Action needed: none. Next: You may archive this conversation.\n\nPR: https://github.com/acme/widgets/pull/42 at head 0123456789abcdef0123456789abcdef01234567.\nValidation: focused and full gates passed.\nBlockers: none.\nConversation status: Ready for archiving."
     },
     {
       "id": "explicit-diagnostics",

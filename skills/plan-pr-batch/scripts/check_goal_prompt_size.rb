@@ -123,6 +123,9 @@ HUMAN_STATUS_CONTRACT_PHRASES = [
   "gate clears or becomes durably terminal; retain it on a no-change wake.",
   "The current task remains",
   "the owner, and automation output must not imply that ownership changed.",
+  "At closeout/archive completion, place the three labeled parts before, not",
+  "instead of, the existing mandatory closeout handoff.",
+  "required handoff evidence and exact `Conversation status:` line",
   "security, ownership, retry, scope, continuous integration (CI), review, or",
   "merge gates"
 ].freeze

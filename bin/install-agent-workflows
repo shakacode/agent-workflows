@@ -19,6 +19,7 @@ Installed paths:
   <target>/docs/coordination-backend.md
   <target>/docs/review-finding-schema.md
   <target>/docs/agent-workflows-model-routing.md
+  <target>/docs/user-facing-coordination.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-doctor
@@ -46,6 +47,12 @@ bin_helpers=(
   agent-workflows-trust-audit
   install-agent-workflows
   upgrade-agent-workflows
+)
+pack_docs=(
+  coordination-backend.md
+  review-finding-schema.md
+  agent-workflows-model-routing.md
+  user-facing-coordination.md
 )
 
 default_target_for_host() {
@@ -402,7 +409,7 @@ copy_pack_docs() {
   ensure_real_directory "$docs_target/solutions"
   remove_legacy_managed_model_routing_path "$docs_target"
 
-  for doc_name in coordination-backend.md review-finding-schema.md agent-workflows-model-routing.md; do
+  for doc_name in "${pack_docs[@]}"; do
     destination="$docs_target/$doc_name"
     if [[ -L "$destination" ]]; then
       rm -f "$destination"
@@ -424,7 +431,7 @@ link_pack_docs() {
   ensure_real_directory "$docs_target/solutions"
   remove_legacy_managed_model_routing_path "$docs_target"
 
-  for doc_name in coordination-backend.md review-finding-schema.md agent-workflows-model-routing.md; do
+  for doc_name in "${pack_docs[@]}"; do
     destination="$docs_target/$doc_name"
     if [[ -e "$destination" && ! -L "$destination" ]]; then
       echo "Refusing to replace non-symlink path: $destination" >&2

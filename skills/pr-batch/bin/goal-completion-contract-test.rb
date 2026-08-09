@@ -97,6 +97,8 @@ HUMAN_STATUS_AUTOMATION_CLEANUP_RULE = "After each refresh, automatically delete
                                        "when its gate clears or becomes durably terminal; retain it on a no-change wake."
 HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE = "The current task remains the owner, and automation output must not imply " \
                                          "that ownership changed."
+HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE = "At closeout/archive completion, place the three labeled parts before, not " \
+                                       "instead of, the existing mandatory closeout handoff."
 HUMAN_STATUS_REQUIRED_PHRASES = [
   "internal telemetry",
   "routine successful, intermediate, repeated, or unchanged wake",
@@ -108,6 +110,8 @@ HUMAN_STATUS_REQUIRED_PHRASES = [
   HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE,
   HUMAN_STATUS_AUTOMATION_CLEANUP_RULE,
   HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE,
+  HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE,
+  "required handoff evidence and exact `Conversation status:` line",
   "security, ownership, retry, scope, continuous integration (CI), review, or merge gates"
 ].freeze
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
@@ -253,8 +257,13 @@ def render_human_status(replay_case, stable_payload:)
   when "routine_success", "intermediate", "unchanged"
     input.fetch("host_requires_payload") ? stable_payload : nil
   when "action_required"
-    "What changed: #{input.fetch('what_changed')} " \
-      "Action needed: #{input.fetch('action_needed')} Next: #{input.fetch('next')}"
+    summary = "What changed: #{input.fetch('what_changed')} " \
+              "Action needed: #{input.fetch('action_needed')} Next: #{input.fetch('next')}"
+    if input["trigger"] == "closeout_or_archive_completed"
+      "#{summary}\n\n#{input.fetch('existing_closeout_handoff')}"
+    else
+      summary
+    end
   when "explicit_diagnostic"
     "What changed: #{input.fetch('what_changed')} " \
       "Action needed: #{input.fetch('action_needed')} Next: #{input.fetch('next')} " \
@@ -537,6 +546,14 @@ class GoalCompletionContractTest < Minitest::Test
       walkthrough_or_approval_ready
     ], actionable_triggers.sort
 
+    closeout = cases.find { |replay_case| replay_case.dig("input", "trigger") == "closeout_or_archive_completed" }
+    closeout_output = closeout.fetch("expected_user_output")
+    assert_includes closeout_output, closeout.dig("input", "existing_closeout_handoff")
+    assert_includes closeout_output, "PR:"
+    assert_includes closeout_output, "Validation:"
+    assert_includes closeout_output, "Blockers:"
+    assert_equal "Conversation status: Ready for archiving.", closeout_output.lines.last.chomp
+
     unknown_diagnostic = cases.find do |replay_case|
       replay_case.fetch("id") == "explicit-diagnostic-unknown-meaning"
     end
@@ -614,6 +631,15 @@ class GoalCompletionContractTest < Minitest::Test
                  "automation-ownership mutation must delete the production rule"
     assert_includes human_status_contract_drift_errors(ownership_deletion),
                     HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE
+
+    closeout_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE
+    )
+    refute_equal @human_status_contract_section, closeout_deletion,
+                 "closeout-additive mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(closeout_deletion),
+                    HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE
   end
 
   def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces

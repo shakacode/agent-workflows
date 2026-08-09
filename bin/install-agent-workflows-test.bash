@@ -203,6 +203,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/docs/coordination-backend.md"
   assert_file "$target/docs/review-finding-schema.md"
   assert_file "$target/docs/agent-workflows-model-routing.md"
+  assert_file "$target/docs/user-facing-coordination.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflows-status"
@@ -814,6 +815,42 @@ test_repeat_install_replays_recorded_companion_delivery_mode() {
   ' "$target/.agent-workflows-install.json"
 }
 
+test_flat_upgrade_refuses_newly_packaged_skill_collision() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  git -C "$source" rm -r --quiet skills/close-session
+  git -C "$source" commit --quiet -m "simulate source before close-session"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/legacy-install.out"
+
+  mkdir -p "$target/skills/close-session"
+  printf 'personal close-session sentinel\n' > "$target/skills/close-session/SKILL.md"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  rsync -a "$ROOT/skills/close-session" "$source/skills/"
+  git -C "$source" add skills/close-session
+  git -C "$source" commit --quiet -m "add packaged close-session"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat upgrade replaced a newly colliding personal skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "$target/skills/close-session"
+  grep -qxF 'personal close-session sentinel' "$target/skills/close-session/SKILL.md" || \
+    fail "flat upgrade changed the personal close-session skill"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "flat collision changed install metadata"
+}
+
 test_repeat_companion_install_blocks_new_current_native_skill_collision() {
   local tmp source target plugin_root metadata_before output status
   tmp="$(mktemp -d)"
@@ -1296,6 +1333,7 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/docs/coordination-backend.md"
   assert_symlink "$target/docs/review-finding-schema.md"
   assert_symlink "$target/docs/agent-workflows-model-routing.md"
+  assert_symlink "$target/docs/user-facing-coordination.md"
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
@@ -1772,6 +1810,7 @@ main() {
     test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
+    test_flat_upgrade_refuses_newly_packaged_skill_collision
     test_repeat_companion_install_blocks_new_current_native_skill_collision
     test_repeat_companion_install_blocks_native_skill_removed_from_current_source
     test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots
