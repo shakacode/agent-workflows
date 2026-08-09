@@ -127,9 +127,12 @@ writer, journal parser, or rollback engine. Add shared contract tests that run
 the same fault corpus through both the source-pack installer and the pinned-copy
 exporter, plus exporter-only tests for helper-set transitions.
 
-- Create `bin/export-agent-workflows-pinned-copy` as the only supported producer
-  of repo-local `.agents` pins. It accepts an explicit target, helper allowlist,
-  and mutually exclusive delivery mode and refuses a dirty or
+- Create `AgentWorkflows::Distribution::PinnedCopyExporter` as the canonical
+  application and `AgentWorkflows::CLI::ExportPinnedCopy` as its injectable
+  option/rendering adapter. Create `bin/export-agent-workflows-pinned-copy` as a
+  sub-30-line launcher and the only supported entrypoint for producing
+  repo-local `.agents` pins. The CLI accepts an explicit target, helper
+  allowlist, and mutually exclusive delivery mode; the application refuses a dirty or
   revision-ambiguous source. Before loading canonical Ruby, acquiring its lock,
   creating staging state, or changing the target, its stdlib-only pre-floor
   guard rejects Ruby older than 3.3 with the source pack's single diagnostic and
@@ -631,8 +634,12 @@ cutover separately with messages `refactor: extract seam command parsing`,
 - Create: `lib/agent_workflows/security/content_scanner.rb`
 - Create: `lib/agent_workflows/security/participant_scanner.rb`
 - Create: `lib/agent_workflows/security/preflight.rb`
+- Create: `lib/agent_workflows/distribution/pinned_copy_exporter.rb`
 - Create: `lib/agent_workflows/cli/security_preflight.rb`
+- Create: `lib/agent_workflows/cli/export_pinned_copy.rb`
 - Create: `test/gem/{github,git,trust,security}/*_test.rb`
+- Create: `test/gem/distribution/pinned_copy_exporter_test.rb`
+- Create: `test/gem/cli/export_pinned_copy_test.rb`
 - Modify: `test/packaging/public_entrypoints_test.rb`
 - Create: `bin/export-agent-workflows-pinned-copy`
 - Create: `test/pinned_copy/export_test.bash`
@@ -690,10 +697,19 @@ Move suspicious added-line location, issue/review/comment text, reaction, source
 `Security::Preflight` coordinates fetch, trust, and scanners and returns a
 result. The CLI owns option parsing, finding order, formatting, and established
 exit status. Before replacing this first skill-relative wrapper, implement the
-pinned-copy exporter and all atomicity, collision, partial-library,
+pinned-copy exporter application/CLI and all atomicity, collision, partial-library,
 version-mismatch, source-absent, and rollback cases from the pinned-copy bundle
 contract by extending the shared `GenerationTransaction` phase graph and
-callbacks. Extend
+callbacks. `CLI::ExportPinnedCopy.start(argv, env:, input:, output:, error:)`
+owns only option validation/rendering and invokes the injected exporter.
+`Distribution::PinnedCopyExporter` owns delivery-mode/helper-set policy and the
+union/compact transaction callbacks; it delegates all staging, journaling,
+promotion, rollback, recovery, and retention mechanics to
+`GenerationTransaction`. The bin launcher owns only the stdlib Ruby-floor guard,
+loads `agent_workflows`, verifies the two canonical constants, and calls the CLI.
+Add both canonical files to `lib/agent_workflows.rb`, the gem manifest, and the
+runtime manifest; direct tests and the production-boundary ratchet reject option
+parsing, delivery policy, or transaction callbacks in `bin`. Extend
 `RuntimeBootstrap.run(request:, compatibility_json:, argv:, env:)` and its direct
 tests for the foundation's version-1 `mode: pinned_generation` request: the trampoline passes
 its already-open embedded generation identity, helper name, manifest digest,
@@ -723,6 +739,8 @@ ruby -Ilib test/gem/github/client_test.rb
 ruby -Ilib test/gem/github/paginator_test.rb
 ruby -Ilib test/gem/trust/resolver_test.rb
 ruby -Ilib test/gem/security/preflight_test.rb
+ruby -Ilib test/gem/distribution/pinned_copy_exporter_test.rb
+ruby -Ilib test/gem/cli/export_pinned_copy_test.rb
 ruby -Ilib test/packaging/public_entrypoints_test.rb
 bash test/pinned_copy/export_test.bash
 bin/validate
@@ -730,12 +748,20 @@ bin/validate
 
 Then perform independent adversarial review focused on trust-source precedence, partial API coverage, path binding, timeout cleanup, and fail-closed results.
 
-- [ ] **Step 7: Commit transport, trust, scanners, and CLI cutover separately**
+- [ ] **Step 7: Commit transport, trust, scanners, exporter, and CLI cutover separately**
 
-Use four review-sized commits. Delete `git_probe_env.rb` only in the final
-cutover commit after `rg` proves no caller remains. The security-preflight
+Use five review-sized commits in this order: transport, trust, scanners,
+pinned-copy exporter, then security-preflight CLI cutover. The exporter commit
+contains its canonical distribution application and CLI, transaction/bootstrap
+extensions, thin bin launcher, `lib/agent_workflows.rb` require registration,
+both manifests, public-entrypoint coverage,
+production-boundary classification, fixtures, and direct/integration tests. It
+must pass the two direct exporter tests, public-entrypoint test, and pinned-copy
+integration test before the security wrapper changes. Delete `git_probe_env.rb` only in the final
+security-preflight cutover commit after `rg` proves no caller remains. That final
 wrapper cutover stages `config/ruby-production-boundaries.yml` with the wrapper
-and requires it in the exact staged name-status set.
+and requires it in the exact staged name-status set; it does not absorb exporter
+implementation changes.
 
 ### Task 4: Extract batch planning, routing, dependency, and readiness domains
 

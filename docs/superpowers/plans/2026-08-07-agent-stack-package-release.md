@@ -257,6 +257,9 @@ observation reference/digest, cleanup result, and canonical manifest.
 The manifest also binds the closed GitHub Release read-back record: numeric
 release ID, exact tag, target commit, observation timestamp, tarball/checksum
 attachment digests, and release-metadata digest.
+Within the committed bundle, the byte-identical receipt's canonical relative
+name is `postpublish-receipt.v1.json`; no checkout-level `release/receipts/*`
+copy is required after the maintainer checkout is discarded.
 
 A separate evidence-only PR commits that bundle beneath
 `release/evidence/npm/agent-coordination-dashboard/0.1.0/`. Its workflow rejects
@@ -1852,7 +1855,8 @@ supported organization roles for both RubyGems packages. For the unscoped npm
 package, verify the trusted publisher and read back every supported ShakaCode
 team access row. In a fresh authenticated npm package-settings view, also read
 back **Require two-factor authentication and disallow tokens** and validate the
-matching `release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json`.
+matching merged
+`release/evidence/npm/agent-coordination-dashboard/0.1.0/postpublish-receipt.v1.json`.
 Accept an unsupported disposition only with authenticated live capability
 evidence for that exact operation; unscoped naming alone is not such evidence.
 Download the registry artifact rather than trusting the prepublication copy,
@@ -1867,7 +1871,7 @@ npm pack agent-coordination-dashboard@0.1.0 --json \
   --pack-destination "$NPM_AUDIT_DIR" > "$NPM_AUDIT_DIR/npm-pack.json"
 NPM_AUDIT_TARBALL="$NPM_AUDIT_DIR/agent-coordination-dashboard-0.1.0.tgz"
 node scripts/verify-npm-postpublish-receipt.mjs \
-  --receipt release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json \
+  --receipt release/evidence/npm/agent-coordination-dashboard/0.1.0/postpublish-receipt.v1.json \
   --authorization "$VERIFIED_PACKAGE_AUTHORIZATION_PATH" \
   --grant-manifest release/grants/agent-coordination-dashboard-0.1.0.v1.json \
   --tarball "$NPM_AUDIT_TARBALL" \
