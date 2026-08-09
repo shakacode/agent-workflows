@@ -1098,12 +1098,28 @@ executing repository code. The subsequent read-only `verify-public` or recovery
 job freshly downloads that exact artifact, verifies its bytes against the
 authorization-bound schema path/version/digest, requires the closed ambiguity
 variant, and turns it into a schema-validated `publication_unknown` record. A
-later recovery dispatch may also create the record for an interrupted expose job
-only after retrieving and digesting the original run's durable draft receipt
-and mutator-result artifact. The record binds the expose run and mutator
-identity/digest, workflow digest, authorization, draft-receipt and mutator-result
-artifact IDs/digests, release ID, exact asset IDs, first ambiguous timestamp,
-recovery deadline, and attempt count.
+later recovery dispatch has two mutually exclusive bootstrap origins. An
+artifact-backed origin requires the exact mutator-result artifact above. An
+`interrupted_without_result` origin is allowed only when the exact protected
+run/job entered the bound mutator step but terminated before emitting a result,
+the run is terminal, two fresh complete artifact inventories after termination
+separated by a writer-owned fixed propagation grace find no expose-result
+artifact, and no terminal receipt or recovery artifact exists. That variant
+retrieves and digests the original run's durable draft
+receipt, queries the protected run/job and step evidence through the GitHub API,
+and captures a fresh read-only release observation; it forbids mutator-result
+path and artifact fields. The record binds its closed origin variant, expose
+run/job and mutator identity/digest, workflow digest, authorization,
+draft-receipt artifact ID/digest, conditionally required-or-forbidden
+mutator-result artifact ID/digest, release ID, exact asset IDs, first ambiguous
+timestamp, recovery deadline, and attempt count. For
+`interrupted_without_result`, it additionally binds the mutator step's name,
+number, status, start/completion timestamps, and API response digest; both
+complete paginated artifact-inventory snapshot digests, query timestamps,
+artifact counts, and absent name; the fixed grace duration and its start/end
+timestamps; and the terminal-receipt/recovery-artifact absence query's response
+digest, timestamp, pagination-completeness flag, and counts. Successor records
+preserve that entire origin proof byte-for-byte.
 
 ```bash
 ruby packaging/tebako/write-publication-recovery.rb \
@@ -1121,32 +1137,60 @@ ruby packaging/tebako/write-publication-recovery.rb \
   --output release/evidence/standalone-github-publication-recovery-v1.json
 ```
 
+For the narrowly proven interrupted-job origin, omit every mutator-result
+argument and let the writer query and bind the exact terminal evidence:
+
+```bash
+ruby packaging/tebako/write-publication-recovery.rb \
+  --authorization release/authorizations/agent-workflows-standalone-v1.json \
+  --draft-receipt "$RUNNER_TEMP/standalone-github-draft-release-receipt-v1.json" \
+  --draft-artifact-id "$DRAFT_RECEIPT_ARTIFACT_ID" \
+  --draft-artifact-digest "$DRAFT_RECEIPT_ARTIFACT_DIGEST" \
+  --original-run-id "$EXPOSE_RUN_ID" \
+  --interrupted-job-id "$EXPOSE_JOB_ID" \
+  --current-run-id "$RECOVERY_RUN_ID" \
+  --repository shakacode/agent-workflows \
+  --tag "$AUTHORIZED_BINARY_TAG" \
+  --reason interrupted_without_result \
+  --attempt-count 0 \
+  --output release/evidence/standalone-github-publication-recovery-v1.json
+```
+
 The writer, not the caller, derives the immutable recovery deadline as exactly
-30 minutes after `first_ambiguous_at`. For an interrupted protected job that
-could not emit attempt 0, bootstrap obtains `first_ambiguous_at` from that bound
-job's terminal/interruption timestamp through the GitHub API and applies the
-same derivation.
+30 minutes after `first_ambiguous_at`. Artifact-backed bootstrap receives the
+mutator timestamp; interrupted bootstrap obtains `first_ambiguous_at` from the
+bound job's terminal/interruption timestamp through the GitHub API and applies
+the same derivation. The caller cannot supply that timestamp for the interrupted
+variant.
 
 Recovery is a separate read-only job with explicit `contents: read` and
 `actions: read`, the same tag concurrency group, and no environment or write
 permission. It always downloads the draft receipt from the bound original run;
-it also downloads the exact mutator-result artifact by its bound ID/digest and
-validates the authorization-bound schema and closed ambiguity variant before
-using it. It downloads a prior recovery record from that record's bound producer
-run, verifies every run/artifact digest and identity, and re-queries only the
-exact release and asset IDs without uploading or toggling. Attempt 1 may omit
-`--prior-recovery` only when bootstrapping from a validated original draft
-receipt whose interrupted protected run has neither a terminal release receipt
-nor any recovery artifact. That bootstrap invokes the writer with the original
-draft artifact plus `--current-run-id` and the new live observation. Every later
-attempt additionally supplies `--prior-recovery` and its producer
+for an artifact-backed origin it also downloads the exact mutator-result artifact
+by its bound ID/digest and validates the authorization-bound schema and closed
+ambiguity variant before using it. For an interrupted origin it instead
+revalidates the exact run/job/step terminal evidence, complete absent-artifact
+inventories, and fresh live observation bound by attempt 0. It downloads a prior
+recovery record from that record's bound producer run, verifies every
+run/artifact digest and identity, and re-queries only the exact release and asset
+IDs without uploading or toggling. Attempt 0 may omit `--prior-recovery` only
+for either a fully validated artifact-backed ambiguity result or an
+`interrupted_without_result` origin whose protected run has neither a terminal
+release receipt nor any recovery or expose-result artifact. Interrupted
+bootstrap invokes the writer with the original draft artifact, exact interrupted
+job, `--current-run-id`, repository, and tag; the writer queries and binds the
+new live observation itself. Every later attempt additionally supplies
+`--prior-recovery` and its producer
 run/artifact ID/digest. The writer requires a contiguous chain, increments the
 prior count itself, preserves the original deadline and immutable bindings, and
 emits an append-only successor. Upload and read back that successor as an
-artifact bound to the current recovery run before the attempt ends; the next
-attempt must name it exactly.
+artifact named by the current recovery run and zero-based attempt ordinal before
+the attempt ends; the next attempt must name it exactly.
 
-Allow at most three attempts before that immutable deadline. A matching public
+Allow exactly the zero-based ordinals `0`, `1`, and `2`—at most three attempts
+total—before that immutable deadline. Bootstrap emits attempt 0; each successor
+derives its ordinal by incrementing the prior record, and attempt 3 is forbidden.
+A matching public
 read-back may generate `published_verified` and a candidate terminal evaluation,
 but recovery accepts and reports `ADOPTED` only after packaging them into and
 freshly reading back the same final closeout artifact required above. Any
@@ -1163,8 +1207,11 @@ a crash after toggle request, public read-back or final-closeout persistence
 failure, bounded `PUBLICATION_UNKNOWN` recovery, privileged-job attempts to
 execute checkout/repository code or arbitrary mutator inputs, missing or
 substituted successful expose-result artifacts, wrong result-schema bindings or
-variants, missing or substituted stage/ambiguity result artifacts, and refusal
-to publish before receipt verification.
+variants, missing or substituted stage/ambiguity result artifacts, false or
+racing interrupted-result absence, a job that never entered the mutator step,
+caller-supplied interrupted timestamps, altered or missing interrupted-origin
+proof in successor records, skipped/repeated/over-limit attempt ordinals, and
+refusal to publish before receipt verification.
 
 Only after the public and closeout-artifact read-backs pass, accept and report
 the candidate evaluation as terminal `ADOPTED`, then publish
