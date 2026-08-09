@@ -815,6 +815,36 @@ test_repeat_install_replays_recorded_companion_delivery_mode() {
   ' "$target/.agent-workflows-install.json"
 }
 
+test_repeat_flat_install_accepts_installer_created_uncommitted_skill() {
+  local tmp source target mode
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/uncommitted-local"
+  printf '%s\n' '---' 'name: uncommitted-local' \
+    'description: Exercise repeat installs from a dirty development checkout.' \
+    '---' '' '# Uncommitted Local' > "$source/skills/uncommitted-local/SKILL.md"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-home-$mode"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" --delivery-mode flat >"$tmp/first-$mode.out"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" --delivery-mode flat >"$tmp/repeat-$mode.out"
+
+    if [[ "$mode" = copy ]]; then
+      cmp -s "$source/skills/uncommitted-local/SKILL.md" \
+        "$target/skills/uncommitted-local/SKILL.md" || \
+        fail "repeat copy install changed the installer-created uncommitted skill"
+    else
+      [[ "$(readlink "$target/skills/uncommitted-local")" = \
+         "$source/skills/uncommitted-local" ]] || \
+        fail "repeat symlink install changed the installer-created uncommitted skill link"
+    fi
+  done
+}
+
 test_flat_upgrade_refuses_newly_packaged_skill_collision() {
   local tmp source target output status metadata_before
   tmp="$(mktemp -d)"
@@ -1563,6 +1593,36 @@ test_symlink_mode_replaces_docs_directory_symlink() {
   [[ ! -e "$external_docs/agent-workflows-model-routing.md" ]] || fail "should not write through pre-existing docs symlink"
 }
 
+test_install_replaces_docs_directory_symlink_without_following_pack_named_children() {
+  local tmp target external_docs mode
+  tmp="$(mktemp -d)"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-home-$mode"
+    external_docs="$tmp/external-docs-$mode"
+    mkdir -p "$target" "$external_docs"
+    printf 'personal external coordination sentinel\n' > \
+      "$external_docs/user-facing-coordination.md"
+    ln -s "$external_docs" "$target/docs"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" >"$tmp/install-$mode.out"
+
+    [[ -d "$target/docs" && ! -L "$target/docs" ]] || \
+      fail "$mode install did not replace the docs parent symlink"
+    grep -qxF 'personal external coordination sentinel' \
+      "$external_docs/user-facing-coordination.md" || \
+      fail "$mode install changed the external pack-named document"
+    if [[ "$mode" = copy ]]; then
+      [[ -f "$target/docs/user-facing-coordination.md" && \
+         ! -L "$target/docs/user-facing-coordination.md" ]] || \
+        fail "copy install did not create a real coordination document"
+    else
+      assert_symlink "$target/docs/user-facing-coordination.md"
+    fi
+  done
+}
+
 test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
   local tmp target source_doc
   tmp="$(mktemp -d)"
@@ -2011,6 +2071,7 @@ main() {
     test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
+    test_repeat_flat_install_accepts_installer_created_uncommitted_skill
     test_flat_upgrade_refuses_newly_packaged_skill_collision
     test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill
     test_flat_copy_upgrade_refuses_newly_packaged_doc_collision
@@ -2038,6 +2099,7 @@ main() {
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers
     test_symlink_mode_replaces_docs_directory_symlink
+    test_install_replaces_docs_directory_symlink_without_following_pack_named_children
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
     test_symlink_mode_refuses_unmanaged_live_and_dangling_doctor_links_before_mutation
     test_symlink_mode_replaces_recorded_prior_source_doctor_link

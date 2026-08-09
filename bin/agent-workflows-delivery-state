@@ -370,13 +370,25 @@ module AgentWorkflowsDeliveryState
     File.expand_path(File.readlink(path), File.dirname(path)) == recorded_target
   end
 
+  def current_source_skill_path?(path, source, skill_name)
+    expected = File.expand_path(File.join(source, "skills", skill_name))
+    if File.symlink?(path)
+      return File.expand_path(File.readlink(path), File.dirname(path)) == expected
+    end
+
+    matches_directory_snapshot?(path, { type: :directory, root: source }, skill_name)
+  end
+
   def flat_skill_ownership_conflict(target:, source:, metadata:, names:, present:, revision:)
     recorded_names, snapshot = skill_names(source, metadata)
     case snapshot&.fetch(:type)
     when :git
       blocking = (names - recorded_names).filter_map do |name|
         path = File.join(target, "skills", name)
-        path if File.exist?(path) || File.symlink?(path)
+        next unless File.exist?(path) || File.symlink?(path)
+        next if current_source_skill_path?(path, source, name)
+
+        path
       end
       return if blocking.empty?
 

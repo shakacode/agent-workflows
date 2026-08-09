@@ -450,6 +450,7 @@ pack_doc_destination_owned() {
 
 verify_pack_doc_destinations() {
   local doc_name destination source_path
+  [[ ! -L "$target/docs" ]] || return 0
 
   for doc_name in "${pack_docs[@]}"; do
     destination="$target/docs/$doc_name"
