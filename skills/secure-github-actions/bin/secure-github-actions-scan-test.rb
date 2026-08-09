@@ -1030,8 +1030,8 @@ class SecureGitHubActionsScanTest < Minitest::Test
 
   def test_action_discovery_fails_closed_when_the_repository_root_is_replaced
     expected = []
-    expected_file_types = { symlink: "link", regular_file: "file", fifo: "fifo" }
-    actual = %i[symlink regular_file fifo].map do |replacement|
+    expected_file_types = { symlink: "link", regular_file: "file", fifo: "fifo", directory: "directory" }
+    actual = %i[symlink regular_file fifo directory].map do |replacement|
       Dir.mktmpdir("secure-github-actions-root-replacement") do |outer|
         root = File.join(outer, "repository")
         moved_root = File.join(outer, "repository-moved")
@@ -1058,6 +1058,8 @@ class SecureGitHubActionsScanTest < Minitest::Test
           File.write(root, "not a directory\n")
         when :fifo
           File.mkfifo(root)
+        when :directory
+          Dir.mkdir(root)
         end
 
         result = scanner.scan

@@ -72,9 +72,18 @@ module SecureGitHubActions
       @root = File.realpath(root).dup.force_encoding(PATH_ENCODING)
       raise ArgumentError, "consumer root path has invalid encoding" unless @root.valid_encoding?
       raise ArgumentError, "consumer root must be a directory" unless File.directory?(@root)
+
+      @root_parent = File.realpath(File.dirname(@root))
+      @root_name = File.basename(@root)
+      root_stat = File.lstat(File.join(@root_parent, @root_name))
+      @root_identity = [root_stat.dev, root_stat.ino]
     end
 
     def scan
+      unless root_entry_bound?
+        return Result.new(root: @root, files: [], findings: [unsafe_action_discovery_finding(@root)])
+      end
+
       workflow_boundary_findings = input_boundary_findings
       workflow_paths = if workflow_boundary_findings.empty?
                          Dir.glob(
@@ -100,6 +109,20 @@ module SecureGitHubActions
     end
 
     private
+
+    def root_entry_bound?
+      resolved_parent = File.realpath(File.dirname(@root))
+      return false unless resolved_parent == @root_parent
+
+      entry_path = File.join(resolved_parent, @root_name)
+      resolved_entry = File.realpath(entry_path)
+      return false unless File.dirname(resolved_entry) == resolved_parent
+
+      stat = File.lstat(entry_path)
+      stat.directory? && !stat.symlink? && [stat.dev, stat.ino] == @root_identity
+    rescue SystemCallError
+      false
+    end
 
     def input_boundary_findings
       [".github", ".github/workflows"].each do |relative|

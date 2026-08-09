@@ -84,9 +84,10 @@ notes.
    override the deterministic repository-name abbreviation used in batch titles
    and thread handles. The initializer does not add this optional key.
 
-   Repositories that use external Actions or reusable workflows must also add a
-   closed, exact `trusted_actions` allowlist. Its entries are case-insensitive
-   `owner/repository` identities, with no refs, subpaths, or wildcards:
+   Repositories that use repository-based GitHub Actions and reusable workflows
+   must also add a closed, exact `trusted_actions` allowlist. Its entries are
+   case-insensitive `owner/repository` identities, with no refs, subpaths, or
+   wildcards:
 
    ```yaml
    trusted_actions:
@@ -97,6 +98,10 @@ notes.
    A missing or invalid allowlist trusts no external action. Adding an identity
    never waives the independent full-SHA and readable-version-comment rules.
    Maintainers must review the action before adding it.
+
+   For `docker://` references, the scanner enforces digest immutability, but
+   `trusted_actions` does not mechanically approve the container. Maintainers
+   must manually review the exact registry, image, and digest.
 
    Initialization adds the optional merge-submission seam in its portable,
    fail-closed form:
@@ -366,6 +371,8 @@ malformed schema.
 - `/path/to/trusted/agent-workflows/skills/secure-github-actions/bin/secure-github-actions-scan <path-to-consumer>`
   passes, and a human reviews
   GitHub Actions permissions, triggers, checkout trust, and credentials.
+- Every `docker://` reference is digest-pinned, and a human reviews its exact
+  registry, image, and digest.
 - Every generated wrapper's underlying command exists in the target repo.
 - `pr-security-preflight --repo OWNER/REPO --trust-config .agents/trusted-github-actors.yml --strict-trust <exact-targets>`
   reports `SECURITY_PREFLIGHT_OK` for maintainer-approved exact targets.

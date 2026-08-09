@@ -51,8 +51,11 @@ default.
   cannot quietly become agent instructions.
 - A `secure-github-actions` skill and executable seam-doctor gate that reject
   shell-interpolated expressions, inherited secrets, mutable external action
-  refs, missing version comments, and actions outside a repo-owned closed
-  `trusted_actions` allowlist.
+  refs, missing version comments, and repository-based GitHub Actions and
+  reusable workflows outside a repo-owned closed `trusted_actions` allowlist.
+  For `docker://` references, the scanner enforces digest immutability, but
+  `trusted_actions` does not mechanically approve the container. Maintainers
+  must manually review the exact registry, image, and digest.
 - Full-SHA GitHub Action pins, automated update proposals, and an explicit
   development-versus-stable trust model. See
   [Repository Supply-Chain Policy](docs/repository-supply-chain.md).
@@ -316,7 +319,7 @@ This project is available under the MIT License.
 | `qa-stress` | Run destructive QA stress campaigns against repo-owned targets. |
 | `replicate-ci` | Reproduce hosted-CI/local parity gaps. |
 | `run-ci` | Choose and run repo-local CI checks. |
-| `secure-github-actions` | Audit workflows and composite actions with a fail-closed mechanical policy gate. |
+| `secure-github-actions` | Audit repository-based workflows and composite actions mechanically; enforce `docker://` digest immutability for manual container review. |
 | `spec` | Turn vague implementation intent into requirements, design, and tasks. |
 | `status` | Report tight progress (done/in-progress/blocked/next) without starting new work. |
 | `task-observer` | Optionally capture sanitized observations for later skill or workflow improvement review. |

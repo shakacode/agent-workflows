@@ -44,7 +44,8 @@ unattended marketplace updates when you require human-reviewed provenance.
 ## GitHub Actions
 
 `skills/secure-github-actions/bin/secure-github-actions-scan` mechanically
-enforces the repository policy for workflows and nested composite actions:
+enforces the repository policy for repository-based GitHub Actions and reusable
+workflows, including nested composite actions:
 
 - no `${{ ... }}` expression appears inside any `run:` scalar;
 - YAML aliases cannot enter job or step boundaries where they could hide
@@ -60,8 +61,10 @@ are not entries, and allowlisting an action never weakens the SHA or comment
 rules. Job-level local reusable workflows must be regular non-symlink files
 under `.github/workflows`. Step-level local actions must be regular non-symlink
 directories with regular `action.yml` / `action.yaml` descriptors, and excluded
-temporary or metadata roots cannot be referenced. Digest-pinned containers keep
-their distinct immutable form. Recursive discovery scans tracked and unignored
+temporary or metadata roots cannot be referenced. For `docker://` references,
+the scanner enforces digest immutability, but `trusted_actions` does not
+mechanically approve the container. Maintainers must manually review the exact
+registry, image, and digest. Recursive discovery scans tracked and unignored
 regular descriptors, omits unreferenced ignored descriptors and excluded roots,
 and separately resolves explicitly referenced ignored local actions.
 `agent-workflow-seam-doctor` and `bin/validate` run this gate.

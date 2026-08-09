@@ -21,8 +21,12 @@ a scanner supplied by the consumer under review.
 
 The scanner reads the repository's `.agents/agent-workflow.yml`
 `trusted_actions` sequence. A missing sequence is a closed empty allowlist; an
-invalid or wildcard entry fails closed. Every external action still needs a
-full commit SHA and readable version comment.
+invalid or wildcard entry fails closed. The allowlist applies to
+repository-based GitHub Actions and reusable workflows, which still need a full
+commit SHA and readable version comment.
+For `docker://` references, the scanner enforces digest immutability, but
+`trusted_actions` does not mechanically approve the container. Maintainers must
+manually review the exact registry, image, and digest.
 
 For a replayable snapshot, bind the report to immutable Git state without
 changing the consumer:

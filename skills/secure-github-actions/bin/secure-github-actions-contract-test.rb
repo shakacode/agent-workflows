@@ -210,6 +210,14 @@ class SecureGitHubActionsContractTest < Minitest::Test
   def test_docs_define_digest_pinned_container_trust_boundary
     skill = File.read(File.join(ROOT, "SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
     public_rules = File.read(File.join(ROOT, "references/public-repo-rules.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+    user_docs = {
+      "README.md" => read_project("README.md"),
+      "docs/adoption.md" => read_project("docs/adoption.md"),
+      "docs/repository-supply-chain.md" => read_project("docs/repository-supply-chain.md"),
+      "references/audit-commands.md" => File.read(
+        File.join(ROOT, "references/audit-commands.md"), encoding: "UTF-8"
+      )
+    }
 
     assert_includes skill, "A digest establishes container-image immutability, not image trust"
     assert_includes skill,
@@ -218,6 +226,19 @@ class SecureGitHubActionsContractTest < Minitest::Test
                     "A mechanical `trusted_container_images` seam or a Docker ban is separate product-policy scope"
     assert_includes public_rules,
                     "manually review the exact registry, image, and digest for every `docker://` use"
+
+    required_clauses = [
+      "repository-based GitHub Actions and reusable workflows",
+      "`docker://`",
+      "digest immutability",
+      "`trusted_actions` does not mechanically approve",
+      "exact registry, image, and digest"
+    ]
+    missing_clauses = user_docs.flat_map do |path, content|
+      normalized = content.gsub(/\s+/, " ")
+      required_clauses.filter_map { |clause| "#{path}: #{clause}" unless normalized.include?(clause) }
+    end
+    assert_empty missing_clauses
   end
 
   private

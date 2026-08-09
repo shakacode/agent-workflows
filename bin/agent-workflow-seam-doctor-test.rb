@@ -378,36 +378,94 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
-  def test_explicit_shared_scanner_precedes_installed_companion
+  def test_explicit_shared_scanner_supported_layouts_precede_installed_companion
+    layouts = {
+      "pack root" => {
+        scanner: "skills/secure-github-actions/lib/secure_github_actions_scanner.rb",
+        skill: "skills/secure-github-actions/SKILL.md"
+      },
+      "direct skill root" => {
+        scanner: "lib/secure_github_actions_scanner.rb",
+        skill: "SKILL.md"
+      },
+      "skills container" => {
+        scanner: "secure-github-actions/lib/secure_github_actions_scanner.rb",
+        skill: "secure-github-actions/SKILL.md"
+      }
+    }
+
+    layouts.each do |label, layout|
+      { "relative" => true, "absolute" => false }.each do |form, relative|
+        with_repo do |root|
+          write_valid_binstub_contract(root)
+          write_skill(root, "No commands here.\n")
+
+          Dir.mktmpdir("agent-workflow-seam-doctor-installed") do |installed_root|
+            Dir.mktmpdir("agent-workflow-seam-doctor-shared") do |shared_root|
+              installed_script = File.join(installed_root, "bin/agent-workflow-seam-doctor")
+              companion_scanner = File.join(installed_root, "lib/agent-workflows/secure_github_actions_scanner.rb")
+              shared_scanner = File.join(shared_root, layout.fetch(:scanner))
+              shared_skill = File.join(shared_root, layout.fetch(:skill))
+              [installed_script, companion_scanner, shared_scanner, shared_skill].each do |path|
+                FileUtils.mkdir_p(File.dirname(path))
+              end
+              FileUtils.cp_r(File.join(__dir__, "agent_doctor"), File.dirname(installed_script))
+              FileUtils.cp(SCRIPT, installed_script)
+              File.write(companion_scanner, fake_scanner_source([]))
+              File.write(shared_scanner, fake_scanner_source([scanner_finding("explicit-shared-scanner")]))
+              File.write(shared_skill, "# Secure GitHub Actions\n")
+
+              shared_argument = relative ? File.basename(shared_root) : shared_root
+              out, status = Open3.capture2e(
+                "ruby", installed_script, "--root", root, "--shared", shared_argument,
+                chdir: File.dirname(shared_root)
+              )
+
+              assertion_label = "#{form} #{label}"
+              refute status.success?, "#{assertion_label}: #{out}"
+              assert_includes out, "explicit-shared-scanner", assertion_label
+            end
+          end
+        end
+      end
+    end
+  end
+
+  def test_multiple_explicit_shared_scanners_use_caller_order_before_fallbacks
     with_repo do |root|
       write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
 
       Dir.mktmpdir("agent-workflow-seam-doctor-installed") do |installed_root|
-        Dir.mktmpdir("agent-workflow-seam-doctor-shared") do |shared_root|
-          installed_script = File.join(installed_root, "bin/agent-workflow-seam-doctor")
-          companion_scanner = File.join(installed_root, "lib/agent-workflows/secure_github_actions_scanner.rb")
-          shared_scanner = File.join(
-            shared_root, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb"
-          )
-          shared_skill = File.join(shared_root, "skills/secure-github-actions/SKILL.md")
-          [installed_script, companion_scanner, shared_scanner, shared_skill].each do |path|
-            FileUtils.mkdir_p(File.dirname(path))
+        Dir.mktmpdir("agent-workflow-seam-doctor-shared-first") do |first_root|
+          Dir.mktmpdir("agent-workflow-seam-doctor-shared-second") do |second_root|
+            installed_script = File.join(installed_root, "bin/agent-workflow-seam-doctor")
+            companion_scanner = File.join(installed_root, "lib/agent-workflows/secure_github_actions_scanner.rb")
+            first_scanner = File.join(first_root, "lib/secure_github_actions_scanner.rb")
+            second_scanner = File.join(
+              second_root, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb"
+            )
+            skill_paths = [File.join(first_root, "SKILL.md"),
+                           File.join(second_root, "skills/secure-github-actions/SKILL.md")]
+            [installed_script, companion_scanner, first_scanner, second_scanner, *skill_paths].each do |path|
+              FileUtils.mkdir_p(File.dirname(path))
+            end
+            FileUtils.cp_r(File.join(__dir__, "agent_doctor"), File.dirname(installed_script))
+            FileUtils.cp(SCRIPT, installed_script)
+            File.write(companion_scanner, fake_scanner_source([]))
+            File.write(first_scanner, fake_scanner_source([scanner_finding("first-explicit-scanner")]))
+            File.write(second_scanner, fake_scanner_source([scanner_finding("second-explicit-scanner")]))
+            skill_paths.each { |path| File.write(path, "# Secure GitHub Actions\n") }
+
+            out, status = Open3.capture2e(
+              "ruby", installed_script, "--root", root,
+              "--shared", first_root, "--shared", second_root
+            )
+
+            refute status.success?, out
+            assert_includes out, "first-explicit-scanner"
+            refute_includes out, "second-explicit-scanner"
           end
-          FileUtils.cp_r(File.join(__dir__, "agent_doctor"), File.dirname(installed_script))
-          FileUtils.cp(SCRIPT, installed_script)
-          File.write(companion_scanner, fake_scanner_source([]))
-          File.write(shared_scanner, fake_scanner_source([scanner_finding("explicit-shared-scanner")]))
-          File.write(shared_skill, "# Secure GitHub Actions\n")
-
-          shared_argument = File.basename(shared_root)
-          out, status = Open3.capture2e(
-            "ruby", installed_script, "--root", root, "--shared", shared_argument,
-            chdir: File.dirname(shared_root)
-          )
-
-          refute status.success?, out
-          assert_includes out, "explicit-shared-scanner"
         end
       end
     end

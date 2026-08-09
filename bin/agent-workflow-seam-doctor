@@ -1587,8 +1587,13 @@ module AgentWorkflowSeamDoctor
   def load_secure_github_actions_scanner(shared_roots)
     return true if defined?(SecureGitHubActions::Scanner)
 
-    candidates = shared_roots.map do |shared_root|
-      File.join(File.expand_path(shared_root), "skills/secure-github-actions/lib/secure_github_actions_scanner.rb")
+    candidates = shared_roots.flat_map do |shared_root|
+      expanded = File.expand_path(shared_root)
+      [
+        File.join(expanded, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb"),
+        File.join(expanded, "secure-github-actions/lib/secure_github_actions_scanner.rb"),
+        File.join(expanded, "lib/secure_github_actions_scanner.rb")
+      ]
     end
     fallbacks = [
       File.expand_path("../skills/secure-github-actions/lib/secure_github_actions_scanner.rb", __dir__),
