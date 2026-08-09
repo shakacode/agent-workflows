@@ -19,10 +19,11 @@ changing runtime behavior.
 
 ## Evidence
 
-At `origin/main` commit `ee4729c`, this repository contains 118 Ruby files and
-75,064 lines of Ruby. Runtime code accounts for 23,737 lines in 35 command
-files, while 48,257 test lines remain in 63 files. The largest production
-commands include:
+At `origin/main` commit `ee4729c`, the tracked-file classifier finds 118 Ruby
+files and 75,064 lines: 84 `.rb` files with 52,444 lines plus 34 executable or
+configuration files selected by a Ruby shebang or Ruby filename convention with
+22,620 lines. These categories are disjoint and reconcile to the headline
+totals. The largest production commands include:
 
 - `bin/agent-workflow-seam-doctor`: 2,161 lines;
 - `bin/push-downstream`: 2,117 lines;
@@ -72,10 +73,11 @@ require "agent_coordination"
 AgentCoordination
 ```
 
-The project will not publish underscore aliases such as `agent_workflows` or
-`agent_coordination`. It will not publish a dashboard Ruby gem. Alias and
-placeholder packages would split documentation, create permanent security and
-ownership surface, and conflict with the registries' anti-squatting intent.
+The project will not publish RubyGems packages with underscore names such as
+`agent_workflows` or `agent_coordination`; those remain the required Ruby
+`require` paths. It will not publish a dashboard Ruby gem. Alias and placeholder
+packages would split documentation, create permanent security and ownership
+surface, and conflict with the registries' anti-squatting intent.
 
 ### D3. Package ownership
 
@@ -157,13 +159,20 @@ lib/agent_workflows/
   cli/
 ```
 
+`AgentCoordination` is the canonical public namespace for the
+`agent-coordination` gem entrypoint and version. Its `0.x` compatibility release
+does not claim that existing implementation classes have already moved from the
+legacy `AgentCoord` namespace. The agent-coordination release task owns its CLI
+construction, dependencies, cutover tests, and staged namespace migration; the
+package-release implementation plan is the source of truth for that boundary.
+
 The boundaries mean:
 
 - `cli`: parse options, invoke an application object, render a result, return an
   integer; never own domain policy;
 - `process`: bounded subprocess execution, process-group cleanup, and closed
   environment construction;
-- `git` and `github`: transport adapters and typed transport errors;
+- `git` and `GitHub`: transport adapters and typed transport errors;
 - `configuration`: safe file loading and validated policy values;
 - domain folders: policy, parsing, state transitions, and domain-specific
   results;
@@ -278,13 +287,21 @@ concise actionable diagnostic.
 2. Unit tests exercise parsers, policies, and state transitions directly.
 3. CLI contract tests cover argv, environment, channels, and exit status.
 4. Integration tests use bounded fake `git`, `gh`, and child processes.
-5. Packaging tests build and install the gem into an isolated gem home.
+5. Packaging tests build and install the gem into an isolated gem home, then
+   execute every installed command outside the source checkout.
 6. Installer tests cover source, copy, symlink, flat, plugin-companion, missing
    library, partial library, rollback, and offline cases.
 7. Differential tests run legacy and extracted implementations against the
    same non-mutating corpus until each cutover.
-8. Linux CI and a recorded macOS smoke validate platform-specific packaging.
-9. The repository's `bin/validate` remains the canonical aggregate gate.
+8. Linux CI runs required, separately named jobs on the Ruby 3.2 floor and the
+   current project Ruby; both run the package and installer suites. A recorded
+   macOS smoke validates platform-specific packaging.
+9. The repository's `bin/validate` remains the canonical aggregate local gate
+   and invokes isolated gem build/install tests plus source, copy, symlink,
+   flat, plugin-companion, missing/partial-library, rollback, and offline
+   installer scenarios. Release readiness additionally requires both exact-head
+   Linux Ruby-matrix jobs and the macOS packaging smoke; a single Ruby 3.4 job
+   cannot substitute for that matrix.
 
 ## Migration Program
 

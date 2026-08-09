@@ -21,13 +21,18 @@ single-skill helper boundary, and safety contract.
 - No domain task starts until its current executable passes its focused legacy suite at the task's base commit.
 - Tests move with behavior; there is no final mass test rewrite.
 - `bin/validate` and independent review pass at each review-sized PR boundary.
+- Before every commit, expand the task's final changed-file inventory to literal
+  file and deletion paths and compare it with `git diff --cached --name-only`.
+  Directory pathspecs, globs, and `git add -A` are never valid staging shortcuts.
 - The gem-foundation change to `AGENTS.md` is a prerequisite: shared production
   Ruby belongs in `lib/agent_workflows`, while invoking skill folders retain
   thin launchers and genuinely skill-local helpers.
 - Every task that creates or moves a canonical `lib/agent_workflows` or `exe`
-  file modifies and stages `agent-workflows.manifest` in the same commit. The
-  package build fails for an omitted, duplicate, missing, absolute, or
-  parent-traversing entry.
+  file modifies and stages both `agent-workflows.gem-manifest` and
+  `agent-workflows.runtime-manifest` in the same commit. The gem manifest drives
+  only `spec.files`; the runtime manifest drives only source-pack completeness
+  and may additionally contain source-pack wrappers/resources. Each consumer
+  fails for an omitted, duplicate, missing, absolute, or parent-traversing entry.
 - Before each wrapper cutover, inventory every runtime file read relative to the
   checkout. Package required schemas, templates, datasets, and other resources
   under a canonical data path or inject them explicitly; never leave a gem
@@ -78,7 +83,7 @@ The generation wrapper validates its bundle manifest before loading its `lib`.
 A skill-relative launcher running from a source checkout, a flat source-pack
 install, or a Codex/Claude native-plugin cache derives one candidate package
 root from its own real path using a fixed reviewed ancestry. It requires the
-matching source/plugin manifest and `agent-workflows.manifest` at that root,
+  matching source/plugin manifest and `agent-workflows.runtime-manifest` at that root,
 validates the canonical library there, and never searches a companion install,
 RubyGems, or another checkout. Native-plugin cache layouts are first-class
 launch paths, not aliases for `plugin-companion`.
@@ -104,7 +109,7 @@ launch paths, not aliases for `plugin-companion`.
   every wrapper, library file, and resource with relative path, file mode, and
   SHA-256. Thus two helper sets from the same revision are distinct immutable
   generations. This generated binding is distinct from the gem's source
-  allowlist `agent-workflows.manifest`.
+  allowlist `agent-workflows.gem-manifest`.
 - The two modes must never coexist for the same skill and consumer. `full-skill`
   is one complete, version-bound, invocable skill-delivery route and must reject
   an installed/native route that would make the skill auto-invocable twice.
@@ -177,10 +182,13 @@ launch paths, not aliases for `plugin-companion`.
   live current pointer: an invocation bound to the old complete generation
   before an atomic update is allowed to finish while new invocations select the
   new one. Package version alone is never accepted as a generation binding.
-- Before migration, inventory every tracked path under each consumer's pinned
-  shared-helper directories and compare it with its recorded source revision.
-  Refuse any directory containing repo-specific skills, deliberate overrides,
-  or unclassified edits; those require an explicit consumer-owned disposition.
+- Before migration, inventory every directory entry under each consumer's pinned
+  shared-helper directories, including tracked, untracked, ignored, and
+  no-follow symlink entries, and compare tracked paths with the recorded source
+  revision. Refuse any directory containing repo-specific skills, deliberate
+  overrides, locally generated files, or other non-tracked entries without
+  explicit exporter ownership or a consumer-owned disposition; no replacement
+  begins while any entry is unclassified.
   Classify each consumer as `full-skill` or `helper-companion` and prove that its
   selected mode leaves exactly one invocable skill route. Migrate one canary
   consumer first, then update every supported pinned consumer
@@ -285,7 +293,10 @@ Expected: PASS.
 - [ ] **Step 6: Commit the harness**
 
 ```bash
-git add Rakefile test/support test/gem/support
+git add -- Rakefile test/support/cli_contract.rb \
+  test/support/fake_command.rb test/support/differential_contract.rb \
+  test/gem/support/cli_contract_test.rb \
+  test/gem/support/differential_contract_test.rb
 git commit -m "test: add Ruby CLI characterization harness"
 ```
 
@@ -304,7 +315,7 @@ git commit -m "test: add Ruby CLI characterization harness"
 - Modify: `bin/agent-workflow-seam-doctor`
 - Modify: `bin/agent-workflow-seam-doctor-test.rb`
 - Modify: `exe/agent-workflow-seam-doctor`
-- Modify: `agent-workflows.manifest`
+- Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `agent-workflows.gemspec`
 
 **Interfaces:**
@@ -374,7 +385,7 @@ Commit pure parsing, initializer/writes, and validator/CLI cutover separately wi
 - Create: `test/fixtures/pinned-copy-consumer/.agents/*`
 - Modify: `skills/pr-batch/bin/pr-security-preflight`
 - Modify: `skills/pr-batch/bin/pr-security-preflight-test.rb`
-- Modify: `agent-workflows.manifest`
+- Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: pinned-copy installation and adoption documentation.
 - Delete after cutover: `skills/pr-batch/lib/git_probe_env.rb`
 
@@ -457,7 +468,7 @@ Use four review-sized commits. Delete `git_probe_env.rb` only in the final cutov
 - Create: `lib/agent_workflows/readiness/{check_run,decision,evaluator}.rb`
 - Create: corresponding `lib/agent_workflows/cli/*.rb`
 - Create: `test/gem/batch/*_test.rb`, `test/gem/readiness/*_test.rb`
-- Modify: `agent-workflows.manifest`
+- Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify wrappers and legacy tests for `batch-plan-preflight`, `dispatcher-capability-preflight`, `stage-dependency-gate`, `stale-assignment-sweep`, `agent-coord-bounded`, and `pr-ci-readiness`.
 
 **Interfaces:**
@@ -506,7 +517,7 @@ Use separate commits for route/assignment, dependency graph, coordination bounds
 - Create: `lib/agent_workflows/merge/{policy,evidence,eligibility,calibration,assurance,submission,trusted_snapshot}.rb`
 - Create: `lib/agent_workflows/cli/{autonomous_merge_calibrate,autonomous_merge_eligibility,merge_assurance,pr_merge_submit}.rb`
 - Create: `test/gem/merge/*_test.rb`
-- Modify: `agent-workflows.manifest`
+- Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify current merge wrappers and focused tests.
 - Modify runtime-trust fixture paths and provenance tests.
 
@@ -558,7 +569,7 @@ Delete old skill-local libraries only after `rg` and packaging tests prove all i
 - Create: `lib/agent_workflows/audit/{marker,follow_up,publication_snapshot,publication_preflight,replay,check_timing,renderer}.rb`
 - Create: CLI adapters for every `skills/post-merge-audit/bin/*` Ruby command.
 - Create: `test/gem/audit/*_test.rb`
-- Modify: `agent-workflows.manifest`
+- Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify post-merge wrappers, tests, fixtures, and package manifest.
 
 **Interfaces:**
@@ -603,7 +614,7 @@ Each commit leaves all command paths operational.
   foundation already removed every legacy doctor-ownership caller.
 - Create: `lib/agent_workflows/maintainer/{downstream_registry,downstream_sync,changelog,review_data,task_observer}.rb`
 - Create corresponding CLI adapters and direct tests.
-- Modify: `agent-workflows.manifest`
+- Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify root and skill-relative wrappers and legacy tests.
 
 **Interfaces:**
@@ -677,20 +688,23 @@ used by multiple skills or repo-wide commands into the gem.
 Run:
 
 ```bash
-rg -n 'require_relative.*bin/agent_doctor' --glob '*.rb' --glob 'bin/*' --glob 'skills/*/bin/*'
-rg -n 'require_relative.*(?:\.\./)+lib/' --glob '*.rb' --glob 'bin/*' --glob 'skills/*/bin/*'
+rg -n '(require|require_relative|load|autoload).*bin/agent_doctor' --glob '*.rb' --glob 'bin/*' --glob 'skills/*/bin/*'
+rg -n '(require|require_relative|load|autoload).*(?:\.\./)+lib/' --glob '*.rb' --glob 'bin/*' --glob 'skills/*/bin/*'
 ruby test/packaging/require_boundary_test.rb
 ```
 
 The boundary test enumerates tracked production Ruby files and Ruby-shebang
-launchers, parses every literal `require_relative` with `Ripper`, resolves the
-target with Ruby's optional `.rb` rule, and fails on a missing target or a
-resolved target under `bin/agent_doctor`. A target under `skills/*/lib` is
-accepted only when the boundary manifest classifies it as genuinely local to
-that same invoking skill and no tracked caller outside that skill resolves it.
-It also fails closed on dynamic `require_relative` arguments until explicitly
-classified. Expected: searches and resolver report no obsolete or cross-skill
-production dependency.
+launchers, parses every literal `require`, `require_relative`, `load`, and
+`autoload` call with `Ripper`, resolves the target using the applicable Ruby
+load-path and optional `.rb` rules, and fails on a missing target or a resolved
+target under `bin/agent_doctor`. Include generated launcher/load-path inputs in
+the analysis rather than scanning only checked-in source literals. A target
+under `skills/*/lib` is accepted only when the boundary manifest classifies it
+as genuinely local to that same invoking skill and no tracked caller outside
+that skill resolves it. Dynamic load expressions of any of the four forms fail
+closed until the boundary manifest explicitly classifies the callsite and its
+allowed target set. Expected: searches and resolver report no obsolete or
+cross-skill production dependency.
 
 - [ ] **Step 3: Enable gem metrics without blanket exclusions**
 
@@ -710,10 +724,11 @@ Use `plan-review` against the approved design for scope completion, `autoreview`
 
 - [ ] **Step 7: Commit legacy removal and quality ratchet**
 
-```bash
-git add -A
-git commit -m "refactor: complete agent workflows Ruby domain extraction"
-```
+Turn the Task 8 inventory and final diff into a reviewed list of literal changed
+and deleted paths. Stage each with `git add -- <exact-file>` or
+`git rm -- <exact-file>`; directory pathspecs, globs, and `-A` are invalid.
+Require `git diff --cached --name-only` to equal that reviewed list, then commit
+with message `refactor: complete agent workflows Ruby domain extraction`.
 
 ## Plan Completion Gate
 

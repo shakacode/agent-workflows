@@ -64,7 +64,9 @@ rejected before any job with `id-token: write` can start.
 
 The OIDC-capable release job declares permissions at job scope, uses the
 protected `release` environment, and begins by hashing its checked-out workflow
-file and matching every workflow binding. Fetch full history, check out the
+file and comparing that hash with the pre-recorded authorization digest captured
+independently from the reviewed workflow before the run. It never derives the
+expected digest from its own checkout. Fetch full history, check out the
 authorized release branch as an attached local branch rather than the raw SHA,
 and verify both `HEAD` and `origin/<authorized-release-branch>` equal the
 authorized commit. Branch movement stops the workflow and requires fresh
@@ -268,7 +270,8 @@ before retrying.
 - Consume: outputs of the gem-foundation plan.
 - Modify: `VERSION`, `lib/agent_workflows/version.rb`, `.codex-plugin/plugin.json`,
   `.claude-plugin/plugin.json`, `test/packaging/*`,
-  `agent-workflows.gemspec`, `agent-workflows.manifest`, release docs,
+  `agent-workflows.gemspec`, `agent-workflows.gem-manifest`,
+  `agent-workflows.runtime-manifest`, release docs,
   `CHANGELOG.md`.
 - Create: `.github/workflows/release-gem.yml`.
 
@@ -383,9 +386,12 @@ typecheck, build, package-content, and tarball smoke before publication. Because
 the trusted publisher cannot be attached until the package exists, the exact
 reviewed `0.1.0` tarball is bootstrapped by a human maintainer using interactive
 2FA only after Step 4 authorization; the OIDC-capable job must not publish the
-bootstrap version. Do not create a reusable automation token. If the registry
-or organization cannot support trusted publication immediately after
-bootstrap, stop before publication.
+bootstrap version. Before Step 4, use authenticated npm account/organization
+capability checks and the current registry trusted-publisher contract to prove
+that this package type and GitHub organization can attach the reviewed workflow
+immediately after first publication; record the exact attachment and read-back
+procedure. If that capability cannot be established before the irreversible
+bootstrap upload, stop. Do not create a reusable automation token.
 
 Add CI and release-preflight jobs for both exact Node `22.12.0` and the current
 `.nvmrc` release. Run package tests and installed-tarball CLI/lifecycle smoke on
@@ -406,11 +412,14 @@ Fetch tags, require `v0.1.0` to be absent or already dereference to the
 authorized commit, then create/push and read back the protected tag before npm
 publication. A tag at another commit is a terminal collision. Publish the exact
 reviewed tarball interactively with 2FA only after the tag is verified. Verify
-npm registry metadata, owners, tarball integrity, clean
-`npx agent-coordination-dashboard --help`, and lifecycle smoke. Then immediately
-attach the protected release workflow as the package's trusted publisher,
-restrict token-based publishing, and record that OIDC provenance starts with
-the next release because the bootstrap version was not workflow-published.
+npm registry metadata, owners, and tarball integrity; install the downloaded
+`agent-coordination-dashboard@0.1.0` tarball whose integrity matches the reviewed
+artifact, then run its installed `--help` and lifecycle smoke without resolving
+an unversioned `latest`. Immediately attach the protected release workflow as
+the package's trusted publisher, restrict token-based publishing, and read the
+publisher configuration back. The release is incomplete until that attachment
+is verified. Record that OIDC provenance starts with the next release because
+the bootstrap version was not workflow-published.
 Create the GitHub Release explicitly from the already verified tag with tarball
 integrity, checksum, and `0.1.0` changelog notes, then read back the tag and
 release. If publication fails after the tag is created, do not move or reuse the
@@ -461,20 +470,39 @@ Pin Tebako and Ruby versions. Build fat, no-runtime-dependency executables on ma
 
 - [ ] **Step 3: Run compatibility and portability tests**
 
-For every artifact, run help, JSON doctor, malformed input, filesystem reads from host paths, child `git`/`gh` invocation, timeout/process-group cleanup, temporary-file creation, non-ASCII locale, relocated executable, read-only executable directory, and offline execution. Compare channels and exit codes to the gem command.
+For every artifact, run help, JSON doctor, malformed input, filesystem reads
+from host paths, timeout/process-group cleanup, temporary-file creation,
+non-ASCII locale, relocated executable, read-only executable directory, and
+offline execution. In the offline contract suite, block network access and put
+deterministic fake `git` and `gh` executables first on `PATH`; assert argv,
+environment, channels, exit codes, and absence of network access. Separately run
+a real-child-command integration suite with installed `git` and `gh`, bounded
+credentials, and explicitly documented network requirements. A fake-command
+pass proves wiring, while the real-command pass proves integration.
 
 - [ ] **Step 4: Measure acceptance thresholds**
 
 The standalone path passes only if:
 
 - all CLI contract cases match the gem;
-- cold help starts within 1.5 seconds on the test host;
+- on each named native runner image and architecture in the evidence report,
+  five isolated cold `--help` runs after clearing only the artifact's disposable
+  cache have a median at or below 1.5 seconds; record every duration and the
+  cache-reset command;
 - each compressed download is at most 100 MiB;
 - no runtime network access occurs;
 - the artifact runs from a path containing spaces and non-ASCII characters;
 - macOS artifacts are signed/notarizable under the project's release identity;
-- Linux artifacts run on the documented minimum glibc baseline;
-- the build is repeatable enough that two clean builds have identical packaged application content and any binary nondeterminism is documented and bounded;
+- Linux artifacts run in an Ubuntu 20.04/glibc 2.31 baseline container without
+  loading libraries from the build host;
+- two clean unsigned builds in the same pinned environment produce identical
+  sorted application-payload manifests of path, mode, size, and SHA-256, and
+  byte-identical payload files. Compare the outer executable by section and
+  permit differences only in toolchain-generated build-id, timestamp, or
+  signature-reservation fields named in the report with exact offsets, lengths,
+  and decoded values; every other byte must match. Store both manifests,
+  executable checksums, and the machine-readable section-diff report before an
+  adoption verdict;
 - vulnerability and license scanning covers bundled Ruby, standard library, Tebako, and native libraries.
 
 - [ ] **Step 5: Make an explicit adoption decision**

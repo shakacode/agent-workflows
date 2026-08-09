@@ -26,11 +26,14 @@
   and stop on any failure. The focused commands explain the changed behavior;
   they do not replace the repository gate required by `AGENTS.md`.
 - Whenever a task adds or changes a manifest-listed file, stage the intended
-  package files and manifest before running the final package tests or
+  files and the owning gem or source-pack runtime manifest before running the
+  final package tests or
   `bin/validate`. The tracked-file package gate inspects the index, so the
   sequence is: red test, implementation, `git add` exact intended paths,
   package tests, `bin/validate`, inspect `git diff --cached`, then commit. Never
-  stage generated artifacts or unrelated worktree changes.
+  stage generated artifacts or unrelated worktree changes. Every staging recipe
+  must expand to literal file or deletion paths; directory pathspecs, globs, and
+  `git add -A` are invalid even when the worktree appears clean.
 
 ---
 
@@ -39,7 +42,9 @@
 ### New package files
 
 - `agent-workflows.gemspec`: package identity, file manifest, metadata, Ruby floor, and executables.
-- `agent-workflows.manifest`: explicit, reviewed allowlist of files shipped in the gem and source-pack application bundle.
+- `agent-workflows.gem-manifest`: explicit, reviewed allowlist assigned to the
+  gemspec's `spec.files`; it excludes source-pack-only wrappers and application
+  files.
 - `.ruby-version`: exact `3.4.6` development and release build interpreter; it does not change the gem's Ruby 3.2 floor.
 - `Gemfile`: development dependencies through `gemspec`.
 - `Rakefile`: focused unit, package, and aggregate test tasks.
@@ -60,9 +65,11 @@
 
 - `bin/agent-workflows-doctor`: thin source-pack launcher.
 - `bin/agent-stack-doctor`: thin source-pack launcher.
-- `agent-workflows.manifest`: read from the selected copy generation or live
+- `agent-workflows.runtime-manifest`: created with the Task 5 cutover and read
+  only by source-pack installers and launchers from the selected copy generation or live
   symlink source so partial application-library installs fail before Ruby loads
-  them.
+  them. It includes the canonical library plus source-pack wrappers and resources
+  that are intentionally absent from the gem.
 - `bin/agent_doctor/*.rb`: during the pilot, moved doctor files become thin
   compatibility bodies until Task 5 makes the canonical library installable;
   Task 6 removes those bodies, while the three autonomous-merge policy files
@@ -113,7 +120,7 @@ return.
 **Files:**
 
 - Create: `agent-workflows.gemspec`
-- Create: `agent-workflows.manifest`
+- Create: `agent-workflows.gem-manifest`
 - Create: `Gemfile`
 - Create: `Gemfile.lock`
 - Create: `Rakefile`
@@ -163,7 +170,7 @@ class AgentWorkflowsGemspecTest < Minitest::Test
 
   def test_manifest_has_no_repository_only_tests
     assert_includes SPEC.files, "lib/agent_workflows.rb"
-    expected = File.readlines(File.join(ROOT, "agent-workflows.manifest"), chomp: true, encoding: "UTF-8")
+    expected = File.readlines(File.join(ROOT, "agent-workflows.gem-manifest"), chomp: true, encoding: "UTF-8")
     assert_equal expected.reject(&:empty?).sort, SPEC.files.sort
     refute expected.any? { |path| path.start_with?("/", "../") || path.include?("/../") }
     assert_equal expected.uniq, expected
@@ -212,7 +219,7 @@ Create `agent-workflows.gemspec` with:
 require_relative "lib/agent_workflows/version"
 
 root = __dir__
-manifest = File.join(root, "agent-workflows.manifest")
+manifest = File.join(root, "agent-workflows.gem-manifest")
 package_files = File.readlines(manifest, chomp: true, encoding: "UTF-8").reject(&:empty?)
 raise "Unsafe agent-workflows manifest" unless package_files == package_files.sort &&
                                                package_files.uniq == package_files &&
@@ -262,7 +269,7 @@ Gem::Specification.new do |spec|
 end
 ```
 
-Create `agent-workflows.manifest` with the exact initial package contents,
+Create `agent-workflows.gem-manifest` with the exact initial gem contents,
 including the manifest itself, `LICENSE`, `README.md`, `CHANGELOG.md`, and every
 library or packaging file introduced by this task. Every later task updates this
 checked-in allowlist in the same commit as new package files. Never generate the
@@ -286,8 +293,11 @@ gemspec
 Create `.ruby-version` containing exact `3.4.6`. Generate `Gemfile.lock` with
 Ruby 3.4.6, RubyGems 3.6.9, and Bundler 4.0.10, and require the lockfile's
 `BUNDLED WITH` value to equal `4.0.10`. Add packaging assertions for the exact
-development builder while retaining `required_ruby_version >= 3.2`. CI later
-proves runtime behavior on the floor independently.
+development builder while retaining `required_ruby_version >= 3.2`. Before the
+build and again in the release job, independently assert `ruby --version` is
+3.4.6, `gem --version` is 3.6.9, and `bundle --version` is 4.0.10; do not infer
+the RubyGems version from `Gemfile.lock`. CI later proves runtime behavior on the
+floor independently.
 
 Create `Rakefile` with `require "bundler/gem_tasks"`, named `test:gem` and
 `test:packaging` Minitest file-list tasks, and an aggregate `test` task. Add a
@@ -302,7 +312,10 @@ Stage the exact files listed for this task before invoking the tracked-file
 package assertion:
 
 ```bash
-git add .gitignore .ruby-version Gemfile Gemfile.lock Rakefile agent-workflows.gemspec agent-workflows.manifest lib test/gem test/packaging
+git add -- .gitignore .ruby-version Gemfile Gemfile.lock Rakefile \
+  agent-workflows.gemspec agent-workflows.gem-manifest \
+  lib/agent_workflows.rb lib/agent_workflows/version.rb \
+  test/gem/version_test.rb test/packaging/gemspec_test.rb
 ```
 
 Run:
@@ -334,7 +347,7 @@ git commit -m "build: add agent-workflows gem skeleton"
 - Create: `test/gem/result_test.rb`
 - Create: `test/gem/process/runner_test.rb`
 - Modify: `lib/agent_workflows.rb`
-- Modify: `agent-workflows.manifest`
+- Modify: `agent-workflows.gem-manifest`
 - Create: `.rubocop-gem.yml`
 - Modify: `bin/lint`
 - Modify: `bin/lint-test.rb`
@@ -411,7 +424,7 @@ Move the reusable implementation behavior, not its doctor namespace, into
 `AgentWorkflows::Process::Runner`. It accepts argv arrays only and preserves the
 characterized timeout, output ceilings, signal escalation, process-group, and
 descendant-cleanup contracts. Require all three files from
-`lib/agent_workflows.rb` and add them to `agent-workflows.manifest` in
+`lib/agent_workflows.rb` and add them to `agent-workflows.gem-manifest` in
 deterministic sorted order. The legacy doctor runner body remains unchanged
 until the source-pack cutover.
 
@@ -442,7 +455,10 @@ Expected: PASS with no offenses.
 - [ ] **Step 6: Commit the package primitives**
 
 ```bash
-git add .rubocop-gem.yml agent-workflows.manifest bin/lint bin/lint-test.rb lib/agent_workflows.rb lib/agent_workflows test/gem/result_test.rb test/gem/process
+git add -- .rubocop-gem.yml agent-workflows.gem-manifest bin/lint \
+  bin/lint-test.rb lib/agent_workflows.rb lib/agent_workflows/errors.rb \
+  lib/agent_workflows/result.rb lib/agent_workflows/process/runner.rb \
+  test/gem/result_test.rb test/gem/process/runner_test.rb
 git commit -m "refactor: add typed agent workflows command results"
 ```
 
@@ -455,7 +471,7 @@ git commit -m "refactor: add typed agent workflows command results"
 - Create: `test/gem/doctor/*_test.rb`
 - Create: `test/gem/distribution/install_ownership_test.rb`
 - Modify: `lib/agent_workflows.rb`
-- Modify: `agent-workflows.manifest`
+- Modify: `agent-workflows.gem-manifest`
 - Retain unchanged temporarily: every existing `bin/agent_doctor/*.rb` body and
   its legacy tests until the atomic source-pack cutover in Task 5.
 
@@ -519,7 +535,7 @@ callers. Preserve every old implementation body, including `workflows_cli.rb`,
 Task 4. Replacing them with shims here would break existing copy,
 plugin-companion, and stack installations because their installer does not ship
 `lib` yet. Add every new canonical library file to
-`agent-workflows.manifest` in the same commit.
+`agent-workflows.gem-manifest` in the same commit.
 
 - [ ] **Step 4: Update all doctor tests to canonical requires**
 
@@ -543,7 +559,22 @@ Expected: all tests pass with unchanged assertions.
 - [ ] **Step 6: Commit the doctor library move**
 
 ```bash
-git add agent-workflows.manifest lib/agent_workflows test/gem/doctor test/gem/distribution
+git add -- agent-workflows.gem-manifest lib/agent_workflows.rb \
+  lib/agent_workflows/doctor/configuration.rb \
+  lib/agent_workflows/doctor/contract.rb \
+  lib/agent_workflows/doctor/orchestrator.rb \
+  lib/agent_workflows/doctor/renderer.rb \
+  lib/agent_workflows/doctor/sanitizer.rb \
+  lib/agent_workflows/doctor/source_checks.rb \
+  lib/agent_workflows/doctor/timeout_budget.rb \
+  lib/agent_workflows/doctor/workflows_component.rb \
+  lib/agent_workflows/distribution/install_ownership.rb \
+  test/gem/doctor/configuration_test.rb test/gem/doctor/contract_test.rb \
+  test/gem/doctor/orchestrator_test.rb test/gem/doctor/renderer_test.rb \
+  test/gem/doctor/sanitizer_test.rb test/gem/doctor/source_checks_test.rb \
+  test/gem/doctor/timeout_budget_test.rb \
+  test/gem/doctor/workflows_component_test.rb \
+  test/gem/distribution/install_ownership_test.rb
 git commit -m "refactor: add canonical agent workflows doctor library"
 ```
 
@@ -559,7 +590,7 @@ git commit -m "refactor: add canonical agent workflows doctor library"
   `bin/agent-stack-doctor`, `bin/agent_doctor/workflows_cli.rb`, and
   `bin/agent_doctor/stack_cli.rb`.
 - Modify: `lib/agent_workflows.rb`
-- Modify: `agent-workflows.manifest`
+- Modify: `agent-workflows.gem-manifest`
 - Create: `test/packaging/executable_test.rb`
 
 **Interfaces:**
@@ -606,18 +637,22 @@ may require the uninstalled canonical library before Task 5.
 - [ ] **Step 4: Add gem executables and specify the later source-pack launcher**
 
 Defer changing both root launchers to Task 5. Specify their cutover contract
-now: they read the selected runtime root's exact `agent-workflows.manifest`, reject
+now: they read the selected runtime root's exact
+`agent-workflows.runtime-manifest`, reject
 absolute or parent-traversing entries, and verify every listed `lib/` file is a
 regular file before loading Ruby. Before touching `Data` or requiring any gem
 code, a stdlib-free launcher check parses `RUBY_VERSION` and rejects anything
 older than 3.2 with one actionable diagnostic and exit `64`. Unit-test the
 predicate with 2.7, 3.1, 3.2, and 4.0 strings, and run a negative launcher
 contract under an available pre-3.2 Ruby in CI so the no-backtrace behavior is
-proved in the real interpreter. The launchers then prepend only the selected
-runtime root's exact `lib` to `$LOAD_PATH`, require `agent_workflows`, and call the relevant
-`.start`. Manifest, load, Ruby-version, and package-version failures produce one
-diagnostic and exit `64` without a backtrace. They do not search GEM paths or
-another checkout.
+proved in the real interpreter. The source-pack launchers verify the receipt's
+expected package version against the manifest-selected `version.rb`, prepend
+only the selected runtime root's exact `lib` to `$LOAD_PATH`, require
+`agent_workflows`, explicitly verify the expected version and relevant CLI
+constant are defined, and call `.start`. Manifest, `LoadError`, Ruby-version,
+missing-constant, and package-version failures produce one diagnostic and exit
+`64` without a backtrace. Syntax errors and unrelated runtime exceptions are not
+broadly rescued. The launchers do not search GEM paths or another checkout.
 
 Both `exe/*` files use:
 
@@ -638,6 +673,12 @@ rescue LoadError => error
   exit 64
 end
 
+unless defined?(AgentWorkflows::VERSION) &&
+    defined?(AgentWorkflows::CLI::WorkflowsDoctor)
+  warn "agent-workflows installation has incompatible package bytes"
+  exit 64
+end
+
 exit AgentWorkflows::CLI::WorkflowsDoctor.start(
   ARGV, env: ENV, input: $stdin, output: $stdout, error: $stderr
 )
@@ -645,9 +686,15 @@ exit AgentWorkflows::CLI::WorkflowsDoctor.start(
 
 Use `StackDoctor` for the second executable. Keep this guard free of package
 syntax or constants so it runs before any partial or too-new library is parsed.
-Tests remove the root require and each nested required file in turn and require
-one actionable diagnostic, no backtrace, and exit `64`. Add both executables
-and all new CLI library files to `agent-workflows.manifest` in deterministic
+RubyGems selects the installed package version for `exe/*`; the independent
+package-version check belongs to the source-pack receipt/manifest boundary
+rather than being inferred from a gem executable's own loaded constants. Tests
+remove the root require and each nested required file in turn, remove the
+expected CLI and version constants, and inject a source-pack package-version
+mismatch; each documented compatibility failure requires one actionable
+diagnostic, no backtrace, and exit `64`. A syntax-error fixture proves unrelated
+parse failures are not converted into compatibility errors. Add both executables
+and all new CLI library files to `agent-workflows.gem-manifest` in deterministic
 sorted order.
 
 - [ ] **Step 5: Test all launch paths**
@@ -668,7 +715,11 @@ text and exit successfully; isolated gem missing-library cases fail cleanly.
 - [ ] **Step 6: Commit the launchers**
 
 ```bash
-git add agent-workflows.gemspec agent-workflows.manifest exe lib/agent_workflows.rb lib/agent_workflows/cli test/packaging/executable_test.rb
+git add -- agent-workflows.gemspec agent-workflows.gem-manifest \
+  exe/agent-workflows-doctor exe/agent-stack-doctor \
+  lib/agent_workflows.rb lib/agent_workflows/cli/workflows_doctor.rb \
+  lib/agent_workflows/cli/stack_doctor.rb \
+  test/packaging/executable_test.rb
 git commit -m "feat: expose doctor commands through agent workflows gem"
 ```
 
@@ -682,6 +733,7 @@ git commit -m "feat: expose doctor commands through agent workflows gem"
 - Modify: `bin/agent-stack-doctor`
 - Modify: `bin/agent_stack/installers.bash`
 - Modify: `bin/agent_stack/module_install.bash`
+- Create: `agent-workflows.runtime-manifest`
 - Modify: `test/agent_doctor/launcher_test.rb`
 - Modify: `test/agent_stack/module_install_test.bash`
 - Modify: `test/agent_stack/doctor_install_test.bash`
@@ -738,7 +790,13 @@ Expected: new library-layout cases fail before installer changes.
 
 - [ ] **Step 4: Extend installer staging and ownership**
 
-In copy mode, stage the complete manifest, library tree, executable wrappers,
+Create `agent-workflows.runtime-manifest` as the sorted, explicit source-pack
+allowlist for the canonical library, source-pack wrappers, and required runtime
+resources. It is separate from `agent-workflows.gem-manifest`; source-pack-only
+paths never enter `spec.files`, and the gem manifest never substitutes for
+source-pack completeness validation.
+
+In copy mode, stage the complete runtime manifest, library tree, executable wrappers,
 resources, and generation-local receipt under a temporary directory. The
 receipt records `ruby_package_name`, `ruby_package_version`, the full source
 revision, and sorted path/mode/SHA-256 entries; its digest names the immutable
@@ -795,7 +853,13 @@ Expected: copy, symlink, flat, plugin-companion, relocated-source, partial-insta
 - [ ] **Step 7: Commit atomic distribution support**
 
 ```bash
-git add bin/install-agent-workflows bin/install-agent-workflows-test.bash bin/agent-workflows-doctor bin/agent-stack-doctor bin/agent_stack test/agent_doctor/launcher_test.rb test/agent_stack docs/installation-and-upgrades.md
+git add -- agent-workflows.runtime-manifest bin/install-agent-workflows \
+  bin/install-agent-workflows-test.bash bin/agent-workflows-doctor \
+  bin/agent-stack-doctor bin/agent_stack/installers.bash \
+  bin/agent_stack/module_install.bash test/agent_doctor/launcher_test.rb \
+  test/agent_stack/module_install_test.bash \
+  test/agent_stack/doctor_install_test.bash \
+  docs/installation-and-upgrades.md
 git commit -m "feat: install agent workflows Ruby library atomically"
 ```
 
@@ -844,10 +908,11 @@ Expected: gem and source-pack commands work independently from their installed b
 
 - [ ] **Step 4: Commit legacy removal**
 
-```bash
-git add -A bin/agent_doctor bin test README.md docs/installation-and-upgrades.md
-git commit -m "refactor: remove legacy doctor implementation tree"
-```
+Turn the classified Step 1 result into a reviewed list of literal changed and
+deleted file paths. Stage each changed path with `git add -- <exact-file>` and
+each deletion with `git rm -- <exact-file>`; do not pass a directory, glob, or
+`-A`. Require `git diff --cached --name-only` to equal that reviewed list, then
+commit with message `refactor: remove legacy doctor implementation tree`.
 
 ### Task 7: Integrate validation, CI matrix, and documentation
 
@@ -924,7 +989,10 @@ Use the repository `autoreview` skill on the complete branch diff. Verify every 
 - [ ] **Step 6: Commit foundation documentation and CI**
 
 ```bash
-git add .github AGENTS.md bin/validate README.md CONTRIBUTING.md docs CHANGELOG.md
+git add -- .github/workflows/validate.yml .github/workflows/lint.yml \
+  AGENTS.md bin/validate README.md CONTRIBUTING.md \
+  docs/installation-and-upgrades.md \
+  docs/adr/0004-agent-workflows-ruby-package-boundary.md CHANGELOG.md
 git commit -m "docs: define agent workflows gem distribution"
 ```
 
