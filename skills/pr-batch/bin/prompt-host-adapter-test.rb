@@ -692,6 +692,57 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
+  def test_emphasized_reserved_declarations_fail_closed_without_echo
+    emphasized_declarations = [
+      "**Prompt host:** claude %<marker>s",
+      "__Prompt mode:__ batch %<marker>s",
+      "*Preferred route:* default %<marker>s",
+      "_Route requirement:_ advisory %<marker>s",
+      "## **Prompt host:** claude %<marker>s",
+      "> ### __Prompt mode:__ batch %<marker>s",
+      "- *Preferred route:* default %<marker>s",
+      "> - [ ] _Route requirement:_ advisory %<marker>s"
+    ]
+    prompt_builders = {
+      "complete Codex headers" => ->(body) { direct_prompt(host: "codex", body:) },
+      "legacy Codex wrapper" => ->(body) { legacy_prompt(host: "codex", body:) }
+    }
+
+    prompt_builders.each do |surface, build_prompt|
+      emphasized_declarations.each_with_index do |template, index|
+        marker = "SECRET_EMPHASIZED_HEADER_#{surface.upcase.gsub(/\W+/, '_')}_#{index}"
+        line = format(template, marker:)
+        result, stderr, status, stdout = run_adapter(build_prompt.call(line), active_host: "codex")
+
+        assert status.success?, stderr
+        assert_equal "ambiguous", result.fetch("classification"), "#{surface}: #{line.inspect}"
+        assert_equal "malformed-headers", result.fetch("reason_code"), "#{surface}: #{line.inspect}"
+        assert_equal false, result.fetch("execute_allowed"), "#{surface}: #{line.inspect}"
+        assert_equal false, result.fetch("relaunch_required"), "#{surface}: #{line.inspect}"
+        assert_nil result.fetch("prompt"), "#{surface}: #{line.inspect}"
+        refute_includes stdout, marker
+      end
+    end
+
+    incidental_emphasis = [
+      "## **Prompt host considerations**",
+      "> *Discuss Prompt host:* claude as literal prose.",
+      "Emphasize **Prompt host:** only as literal prose.",
+      "- __Release notes:__ no host declaration here."
+    ]
+    prompt_builders.each do |surface, build_prompt|
+      incidental_emphasis.each do |line|
+        prompt = build_prompt.call(line)
+        result, stderr, status = run_adapter(prompt, active_host: "codex")
+
+        assert status.success?, stderr
+        assert_equal "compatible", result.fetch("classification"), "#{surface}: #{line.inspect}"
+        assert_equal true, result.fetch("execute_allowed"), "#{surface}: #{line.inspect}"
+        assert_equal prompt, result.fetch("prompt"), "#{surface}: #{line.inspect}"
+      end
+    end
+  end
+
   def test_tab_separated_reserved_labels_fail_closed_without_echo
     tabbed_labels = %W[Prompt\thost Prompt\tmode Preferred\troute Route\trequirement]
     prompt_builders = {
@@ -1715,6 +1766,43 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal false, result.fetch("execute_allowed")
     assert_nil result.fetch("prompt")
     refute_includes stdout, marker
+  end
+
+  def test_assignment_url_values_are_not_slash_command_mechanics
+    url_cases = [
+      ["codex", "codex", "CALLBACK=https://example.test/redirect?next=/address-review", "compatible"],
+      ["portable", "codex", "REDIRECT=http://example.test/redirect#target=/pr-batch", "portable"],
+      ["portable", "claude", "callback:https://example.test/#/address-review", "portable"]
+    ]
+
+    url_cases.each do |declared_host, active_host, prose, expected_classification|
+      prompt = direct_prompt(host: declared_host, body: prose)
+      result, stderr, status = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal expected_classification, result.fetch("classification"), prose
+      assert_equal true, result.fetch("execute_allowed"), prose
+      assert_equal prompt, result.fetch("prompt"), prose
+    end
+
+    command_cases = [
+      ["codex", "CALLBACK=https://example.test/redirect?next=/pr-batch; run /address-review"],
+      ["claude", "CALLBACK=http://example.test/#/address-review; run $pr-batch"]
+    ]
+    command_cases.each do |active_host, body|
+      marker = "SECRET_ASSIGNMENT_URL_COMMAND_#{active_host.upcase}"
+      result, stderr, status, stdout = run_adapter(
+        direct_prompt(host: active_host, body: "#{body} #{marker}"),
+        active_host:
+      )
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), body
+      assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), body
+      assert_equal false, result.fetch("execute_allowed"), body
+      assert_nil result.fetch("prompt"), body
+      refute_includes stdout, marker
+    end
   end
 
   def test_nested_relative_path_segments_are_not_slash_command_mechanics

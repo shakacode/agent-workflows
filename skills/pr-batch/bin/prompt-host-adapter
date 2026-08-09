@@ -21,8 +21,9 @@ RESERVED_HEADER_LABEL =
   "(?:prompt[ ._\t-]*(?:host|mode)|preferred[ ._\t-]*route|route[ ._\t-]*requirement)"
 RESERVED_HEADER_MARKDOWN_PREFIX =
   "(?:(?:>[ \t]*|(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)+(?:\\[[ xX]\\][ \t]+)?)?(?:[#]{1,6}[ \t]+)?"
+RESERVED_HEADER_EMPHASIS = "(?<reserved_header_emphasis>\\*\\*|__|\\*|_)"
 RESERVED_HEADER_LIKE_DECLARATION =
-  /\A[ \t]*#{RESERVED_HEADER_MARKDOWN_PREFIX}#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)/i
+  /\A[ \t]*#{RESERVED_HEADER_MARKDOWN_PREFIX}(?:#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)|#{RESERVED_HEADER_EMPHASIS}#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)\k<reserved_header_emphasis>)/i
 CANONICAL_RESERVED_HEADER_DECLARATION =
   /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): /
 GOAL_WRAPPER = %r{\A/goal\r?\n}
@@ -91,9 +92,9 @@ def invoked_host_mechanics(prompt)
                     (prefix.match?(/(?:\A|[[:space:]("'`])(?:\.{1,2}|~)\z/) ||
                      prefix.match?(%r{[^[:space:]]/\.{1,2}\z}))
     url_query_or_fragment_value = match[0].start_with?("/") &&
-                                  prefix.match?(%r{(?:\A|[[:space:]("'`<])https?://[^[:space:]]*[?#][^[:space:]]*=\z}i)
+                                  prefix.match?(%r{(?:\A|[[:space:]("'`<=:])https?://[^[:space:]]*[?#][^[:space:]]*=\z}i)
     url_hash_route = match[0].start_with?("/") &&
-                     prefix.match?(%r{(?:\A|[[:space:]("'`<])https?://[^[:space:]]*#\z}i)
+                     prefix.match?(%r{(?:\A|[[:space:]("'`<=:])https?://[^[:space:]]*#\z}i)
     match[0] unless relative_path || url_query_or_fragment_value || url_hash_route
   end.uniq
 end
