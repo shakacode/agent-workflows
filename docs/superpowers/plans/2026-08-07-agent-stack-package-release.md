@@ -18,11 +18,16 @@
 - Do not publish an empty, placeholder, alias-only, or name-squatting package.
 - For every previously unclaimed package, a successful first publication is
   immediately followed by authenticated owner grants from the bootstrap owner
-  to every approved backup human and organization/team role. Read the registry
-  owner list back and require at least two confirmed human owners before the
-  release is complete. If any grant or read-back fails, stop with publication
+  to every approved backup human and every organization/team role the registry
+  supports for that package type. Use the registry's distinct access operation
+  and read-back when organization/team access is not represented in its owner
+  list. If the registry does not support such a role, record the authenticated
+  capability evidence and the registry-specific disposition instead of
+  requiring an impossible grant. Always read the human owner list back and
+  require at least two confirmed human owners before the release is complete.
+  If any supported grant or required read-back fails, stop with publication
   recorded but release completion blocked; verification alone never substitutes
-  for the grant operation.
+  for a supported grant operation.
 - Do not publish without explicit release authorization naming the package,
   version, commit, registry, workflow path and ref, workflow-file digest, and
   rollback/disposition.
