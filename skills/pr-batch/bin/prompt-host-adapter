@@ -96,7 +96,7 @@ def invoked_host_mechanics(prompt)
     url_continuation = match[0].start_with?("/") &&
                        prefix.match?(%r{(?:\A|[[:space:]("'`<=:])https?://[^[:space:]]*\z}i)
     assigned_path_value = match[0].start_with?("/") &&
-                          prefix.match?(/(?:\A|\r?\n)[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(?:\.{1,2}|~)?\z/)
+                          prefix.match?(/(?:\A|\r?\n)[ \t]*(?:export[ \t]+)?PATH[ \t]*=[ \t]*(?:\.{1,2}|~)?\z/)
     match[0] unless relative_path || url_continuation || assigned_path_value
   end.uniq
 end
@@ -300,8 +300,17 @@ reason_code = if classification != "ambiguous"
               elsif some_headers && !valid_host_mode_wrapper
                 "invalid-host-mode-wrapper"
               elsif some_headers && !valid_declared_invocation
-                expected_prefix = headers["Prompt host"] == "codex" ? "Use /pr-batch" : "Use $pr-batch"
-                prompt_body.start_with?(expected_prefix) ? "contradictory-host-mechanic" : "invalid-host-invocation"
+                contradictory_prefixes = case headers["Prompt host"]
+                                         when "codex" then ["Use /pr-batch"]
+                                         when "claude" then ["Use $pr-batch"]
+                                         when "portable" then ["Use /pr-batch", "Use $pr-batch"]
+                                         else []
+                                         end
+                if contradictory_prefixes.any? { |prefix| prompt_body.start_with?(prefix) }
+                  "contradictory-host-mechanic"
+                else
+                  "invalid-host-invocation"
+                end
               elsif (complete_valid_headers || legacy_host) && !batch_size_target_unique
                 "duplicate-batch-size-target"
               elsif (complete_valid_headers || legacy_host) && !batch_size_target_format_valid

@@ -615,36 +615,45 @@ RUBY
 }
 
 test_plugin_companion_missing_adapter_fails_before_mutation() {
-  local tmp target plugin_root output status metadata_before host skill
+  local tmp target plugin_root adapter output status metadata_before host adapter_state skill
 
   for host in codex claude; do
-    tmp="$(mktemp -d)"
-    target="$tmp/$host-home"
-    "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode flat \
-      >"$tmp/flat.out"
-    write_native_scw_state "$host" "$target"
-    plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
-    rm "$plugin_root/skills/pr-batch/bin/prompt-host-adapter"
-    cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
-    metadata_before="$tmp/metadata.before"
+    for adapter_state in missing non-executable; do
+      tmp="$(mktemp -d)"
+      target="$tmp/$host-home"
+      "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode flat \
+        >"$tmp/flat.out"
+      write_native_scw_state "$host" "$target"
+      plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+      adapter="$plugin_root/skills/pr-batch/bin/prompt-host-adapter"
+      if [[ "$adapter_state" = "missing" ]]; then
+        rm "$adapter"
+      else
+        chmod 0644 "$adapter"
+      fi
+      cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+      metadata_before="$tmp/metadata.before"
 
-    set +e
-    output="$("$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" \
-      --delivery-mode plugin-companion 2>&1)"
-    status=$?
-    set -e
+      set +e
+      output="$("$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" \
+        --delivery-mode plugin-companion 2>&1)"
+      status=$?
+      set -e
 
-    [[ "$status" -ne 0 ]] || fail "$host companion install accepted a plugin without the prompt host adapter"
-    assert_contains "$output" "required prompt host adapter"
-    for skill in "$ROOT"/skills/*; do
-      [[ -d "$skill" ]] || continue
-      assert_file "$target/skills/$(basename "$skill")/SKILL.md"
+      [[ "$status" -ne 0 ]] || \
+        fail "$host companion install accepted a plugin with a $adapter_state prompt host adapter"
+      assert_contains "$output" "required prompt host adapter"
+      for skill in "$ROOT"/skills/*; do
+        [[ -d "$skill" ]] || continue
+        assert_file "$target/skills/$(basename "$skill")/SKILL.md"
+      done
+      cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+        fail "$host $adapter_state-adapter failure changed install metadata"
+      [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+        fail "$host $adapter_state-adapter failure retained the install lock"
+      [[ ! -e "$target/.agent-workflows-migration-staging" ]] || \
+        fail "$host $adapter_state-adapter failure created a staging receipt"
     done
-    cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
-      fail "$host missing-adapter failure changed install metadata"
-    [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "$host missing-adapter failure retained the install lock"
-    [[ ! -e "$target/.agent-workflows-migration-staging" ]] || \
-      fail "$host missing-adapter failure created a staging receipt"
   done
 }
 

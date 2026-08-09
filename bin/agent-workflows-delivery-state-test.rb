@@ -103,6 +103,22 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     write_manifest(plugin_root, host: "codex")
   end
 
+  def write_claude_native_state(target)
+    plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+    FileUtils.mkdir_p(File.join(target, "plugins"))
+    File.write(
+      File.join(target, "settings.json"),
+      "#{JSON.generate('enabledPlugins' => { 'scw@agent-workflows' => true })}\n"
+    )
+    File.write(
+      File.join(target, "plugins/installed_plugins.json"),
+      "#{JSON.generate('version' => 2, 'plugins' => {
+                         'scw@agent-workflows' => [{ 'installPath' => plugin_root }]
+                       })}\n"
+    )
+    write_manifest(plugin_root, host: "claude")
+  end
+
   def create_source(root)
     FileUtils.mkdir_p(File.join(root, "skills/alpha"))
     FileUtils.mkdir_p(File.join(root, "skills/beta/bin"))
@@ -182,20 +198,24 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
   def test_plugin_companion_requires_executable_prompt_host_adapter
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
-      target = File.join(tmp, "codex")
-      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
-      write_codex_native_state(target)
-      FileUtils.rm(File.join(plugin_root, "skills/pr-batch/bin/prompt-host-adapter"))
+      %w[codex claude].product(%w[missing non-executable]).each do |host, adapter_state|
+        target = File.join(tmp, "#{host}-#{adapter_state}")
+        plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+        host == "codex" ? write_codex_native_state(target) : write_claude_native_state(target)
+        adapter = File.join(plugin_root, "skills/pr-batch/bin/prompt-host-adapter")
+        adapter_state == "missing" ? FileUtils.rm(adapter) : FileUtils.chmod(0o644, adapter)
 
-      out, _err, status = run_state(
-        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
-        "--delivery-mode", "plugin-companion", "--json"
-      )
-      payload = JSON.parse(out)
+        out, _err, status = run_state(
+          "check", "--host", host, "--target", target, "--source", File.expand_path("..", __dir__),
+          "--delivery-mode", "plugin-companion", "--json"
+        )
+        payload = JSON.parse(out)
 
-      refute status.success?
-      refute payload.fetch("compatible")
-      assert_equal "enabled native scw plugin does not provide the required prompt host adapter", payload.fetch("reason")
+        refute status.success?, "#{host} #{adapter_state}"
+        refute payload.fetch("compatible"), "#{host} #{adapter_state}"
+        assert_equal "enabled native scw plugin does not provide the required prompt host adapter",
+                     payload.fetch("reason"), "#{host} #{adapter_state}"
+      end
     end
   end
 

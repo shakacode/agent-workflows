@@ -9,8 +9,20 @@ require "tmpdir"
 
 class PromptHostAdapterTest < Minitest::Test
   ADAPTER = File.expand_path("prompt-host-adapter", __dir__)
+  CONTRACT = File.expand_path("../../../docs/host-adapter/contract.md", __dir__)
   FIXTURES = File.expand_path("../fixtures", __dir__)
   WORKFLOW = File.expand_path("../../../workflows/pr-processing.md", __dir__)
+  RESULT_FIELDS = %w[
+    contract version classification reason_code active_host declared_host execute_allowed adapter_contract
+    relaunch_required replanning_required semantic_payload_preserved prompt
+  ].freeze
+  STABLE_REASON_CODES = %w[
+    unknown-active-host invalid-encoding malformed-headers duplicate-headers partial-headers
+    unsupported-declared-host non-advisory-route invalid-preferred-route invalid-host-mode-wrapper
+    invalid-host-invocation contradictory-host-mechanic duplicate-batch-size-target invalid-batch-size-target
+    contradictory-batch-size-target unsupported-host-mechanic contradictory-source-mechanic
+    semantic-payload-changed adapter-contract-missing unrecognized-prompt
+  ].freeze
 
   def run_adapter(prompt, active_host: "codex", env: {}, adapter: ADAPTER)
     stdout, stderr, status = Open3.capture3(
@@ -91,6 +103,34 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal true, result.fetch("execute_allowed")
     assert_equal "docs/host-adapter/contract.md", result.fetch("adapter_contract")
     assert_equal prompt, result.fetch("prompt")
+  end
+
+  def test_contract_documents_complete_json_schema_and_stable_reason_codes
+    contract = File.read(CONTRACT, encoding: "UTF-8")
+
+    RESULT_FIELDS.each do |field|
+      assert_match(/^\| `#{Regexp.escape(field)}` \|/, contract, field)
+    end
+
+    reason_section = contract[/Complete stable `reason_code` values:\n\n(?<codes>.*?)\n\n/m, :codes]
+    refute_nil reason_section
+    assert_equal STABLE_REASON_CODES.sort, reason_section.scan(/`([a-z][a-z0-9-]+)`/).flatten.sort
+  end
+
+  def test_portable_host_specific_invocations_are_diagnosed_as_contradictory_without_echo
+    %w[/ $].product(%w[codex claude]).each_with_index do |(sigil, active_host), index|
+      marker = "SECRET_PORTABLE_INVOCATION_#{index}"
+      prompt = direct_prompt(host: "portable", body: "Objective: #{marker}.")
+               .sub("Use the pr-batch skill", "Use #{sigil}pr-batch")
+      result, stderr, status, stdout = run_adapter(prompt, active_host:)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), [sigil, active_host].inspect
+      assert_equal "contradictory-host-mechanic", result.fetch("reason_code"), [sigil, active_host].inspect
+      assert_equal false, result.fetch("execute_allowed"), [sigil, active_host].inspect
+      assert_nil result.fetch("prompt"), [sigil, active_host].inspect
+      refute_includes stdout, marker, [sigil, active_host].inspect
+    end
   end
 
   def test_missing_portable_contract_precedes_neutral_mechanic_diagnostics_without_weakening_real_commands
@@ -1854,6 +1894,45 @@ class PromptHostAdapterTest < Minitest::Test
       assert_equal false, result.fetch("execute_allowed"), body
       assert_nil result.fetch("prompt"), body
       refute_includes stdout, marker
+    end
+  end
+
+  def test_only_path_semantic_assignments_exempt_absolute_slash_values
+    path_assignments = [
+      "PATH=/address-review",
+      "export PATH = /address-review"
+    ]
+
+    path_assignments.each do |body|
+      prompt = direct_prompt(host: "portable", body:)
+      result, stderr, status = run_adapter(prompt, active_host: "codex")
+
+      assert status.success?, stderr
+      assert_equal "portable", result.fetch("classification"), body
+      assert_equal true, result.fetch("execute_allowed"), body
+      assert_equal prompt, result.fetch("prompt"), body
+    end
+
+    command_assignments = [
+      "COMMAND=/pr-walkthrough; execute it",
+      "SKILL=/address-review",
+      "PATH=/address-review; execute /pr-walkthrough",
+      "PATH=/address-review /pr-batch",
+      "PATH=/address-review;$pr-batch"
+    ]
+    command_assignments.each_with_index do |body, index|
+      marker = "SECRET_ASSIGNED_COMMAND_#{index}"
+      result, stderr, status, stdout = run_adapter(
+        direct_prompt(host: "portable", body: "#{body} #{marker}"),
+        active_host: "codex"
+      )
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), body
+      assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), body
+      assert_equal false, result.fetch("execute_allowed"), body
+      assert_nil result.fetch("prompt"), body
+      refute_includes stdout, marker, body
     end
   end
 

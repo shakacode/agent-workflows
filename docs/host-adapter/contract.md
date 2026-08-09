@@ -141,15 +141,34 @@ repository, or write to GitHub. Callers must honor these classifications:
 | `conversion-required` | Complete known opposite-host prompt, or unmistakable opposite-host legacy wrapper | Do not execute. Return the converted text as inert relaunch input. Re-run planning when the result reports `replanning_required`, then classify the relaunched prompt again. |
 | `ambiguous` | Unknown active host, invalid encoding, partial/duplicate/malformed/contradictory headers, non-advisory routing, unsupported syntax, or semantic-preservation failure | Do not rewrite or execute. Report the stable `reason_code` and stop for user or coordinator resolution. |
 
-An ambiguous result never includes raw prompt text. Its stable `reason_code`
-identifies the fail-closed category, such as `invalid-encoding`,
-`partial-headers`, `duplicate-headers`, `non-advisory-route`,
-`invalid-preferred-route`, `invalid-host-mode-wrapper`,
-`contradictory-host-mechanic`, `contradictory-source-mechanic`,
-`invalid-batch-size-target`, `duplicate-batch-size-target`,
-`contradictory-batch-size-target`,
-`unsupported-host-mechanic`, or
-`unrecognized-prompt`.
+Every response uses this JSON schema:
+
+| Field | Type and stable values |
+| --- | --- |
+| `contract` | String; always `prompt-host-adapter`. |
+| `version` | Integer; currently `1`. |
+| `classification` | String; `compatible`, `portable`, `conversion-required`, or `ambiguous`. |
+| `reason_code` | String from the complete list below for `ambiguous`; otherwise `null`. |
+| `active_host` | String supplied through `--active-host`; unsupported values fail closed. |
+| `declared_host` | `codex`, `claude`, `portable`, or `null` when no supported declaration can be established. |
+| `execute_allowed` | Boolean; true only for `compatible` or `portable`. |
+| `adapter_contract` | `docs/host-adapter/contract.md` for `portable`; otherwise `null`. |
+| `relaunch_required` | Boolean; true only for `conversion-required`. |
+| `replanning_required` | Boolean; true only when conversion changes a declared batch-size target. |
+| `semantic_payload_preserved` | Boolean for `conversion-required`; otherwise `null`. |
+| `prompt` | Original prompt for executable classifications, inert converted prompt for `conversion-required`, or `null` for `ambiguous`. |
+
+An ambiguous result never includes raw prompt text.
+Complete stable `reason_code` values:
+
+`unknown-active-host`, `invalid-encoding`, `malformed-headers`,
+`duplicate-headers`, `partial-headers`, `unsupported-declared-host`,
+`non-advisory-route`, `invalid-preferred-route`, `invalid-host-mode-wrapper`,
+`invalid-host-invocation`, `contradictory-host-mechanic`,
+`duplicate-batch-size-target`, `invalid-batch-size-target`,
+`contradictory-batch-size-target`, `unsupported-host-mechanic`,
+`contradictory-source-mechanic`, `semantic-payload-changed`,
+`adapter-contract-missing`, `unrecognized-prompt`.
 
 Mechanic detection is token-based rather than verb-based: a bare lowercase
 `$name` or `/name` token counts as a host mechanic even after words such as
