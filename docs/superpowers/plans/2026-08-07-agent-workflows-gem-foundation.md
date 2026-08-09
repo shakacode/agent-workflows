@@ -6,7 +6,7 @@
 
 **Goal:** Establish the canonical `agent-workflows` gem, migrate the existing doctor subsystem as the first real implementation, and make every source-pack delivery mode install the wrapper and library atomically.
 
-**Architecture:** The repository remains the source of truth. Conventional gem files under `lib/agent_workflows` and `exe` become canonical, while existing `bin` paths remain thin compatibility launchers. Copy installs select immutable complete runtime generations; symlink installs select the live editable clone through one pointer. Package tests prove source, installed-gem, flat-copy, symlink, and plugin-companion behavior.
+**Architecture:** The repository remains the source of truth. Conventional gem files under `lib/agent_workflows` and `exe` become canonical, while existing `bin` paths remain thin compatibility launchers. Copy installs select immutable complete runtime generations; symlink installs select the live editable clone through one atomic selector pointer. Package tests prove source, installed-gem, flat-copy, symlink, and plugin-companion behavior.
 
 **Tech Stack:** Ruby 3.3+, RubyGems, Bundler, Rake, Minitest, RuboCop, Bash installer tests.
 
@@ -669,11 +669,11 @@ listed file before loading Ruby. It does not require or invent a generation
 receipt because checkout bytes are intentionally editable. Current mode's
 pinned bootstrap first validates the installed selector's ownership and explicit
 runtime kind. `immutable_generation` requires the generation receipt;
-`live_source` requires installer-owned selector metadata that binds the chosen
+`live_source` requires the immutable selected descriptor to bind the chosen
 canonical checkout root and uses the live-source manifest contract described in
 Task 5. Runtime kind is never inferred from receipt presence or absence. Current
-mode never falls back to checkout mode when its selector, required metadata,
-receipt, or tree is missing or invalid.
+mode never falls back to checkout mode when its selector descriptor, receipt,
+or tree is missing or invalid.
 
 Checkout mode and current mode with `live_source` verify the runtime manifest's
 declared package name/version against the manifest-selected `version.rb`;
@@ -790,11 +790,13 @@ git commit -m "feat: expose doctor commands through agent workflows gem"
 
 - Consumes: canonical `lib/agent_workflows` and root wrappers.
 - Produces in copy mode: immutable complete runtimes under
-  `<target>/.agent-workflows-generations/<runtime-digest>/`, one atomic
-  `<target>/.agent-workflows-current` pointer, and fixed installed launcher
-  paths. Produces in symlink mode: fixed launchers plus one atomically installed
-  pointer to the live source clone, preserving the documented edit-in-place
-  development workflow.
+  `<target>/.agent-workflows-generations/<runtime-digest>/`, immutable selector
+  descriptors under `<target>/.agent-workflows-selectors/<selector-digest>/`,
+  one atomic `<target>/.agent-workflows-current` pointer to a descriptor, and
+  fixed installed launcher paths. Produces in symlink mode: the same descriptor
+  and pointer boundary, with `runtime_kind: live_source` and the canonical
+  editable root bound together in the selected descriptor, preserving the
+  documented edit-in-place development workflow.
 - Produces a reusable
   `AgentWorkflows::Distribution::RuntimeBootstrap` trust anchor plus
   `AgentWorkflows::Distribution::GenerationTransaction` for immutable staging,
@@ -809,18 +811,21 @@ git commit -m "feat: expose doctor commands through agent workflows gem"
 For copy mode, assert regular files exist beneath the selected immutable
 generation, that their SHA-256 digests match source, and that the installed
 doctor succeeds after the source checkout is renamed. For symlink mode, assert
-that the single current pointer resolves to the editable clone, then change a
+that the single current pointer resolves to an immutable descriptor whose
+`runtime_kind` and canonical root select the editable clone, then change a
 canonical Ruby file in the fixture clone and prove the next invocation observes
 the edit without reinstalling. Repeat for flat and plugin-companion delivery.
 
 Add copy-mode fault-injection cases while staging, before and after the single
 current pointer swap, during initial fixed-launcher migration, and during final
-validation. Every invocation must observe either the prior complete generation
-or the new complete generation. For symlink mode, fault injection must preserve
-the prior complete live-source pointer or select the new complete source root;
-editing files inside the selected developer clone is intentionally outside the
-installer transaction. Every installer failure preserves or restores the prior
-pointer, launchers, ownership markers, and metadata.
+validation. Every invocation must observe either the prior complete descriptor
+and generation or the new complete descriptor and generation. For symlink mode,
+fault injection must preserve the prior complete live-source descriptor or
+atomically select the new complete descriptor; no state may expose an old root
+with a new runtime kind or the reverse. Editing files inside the selected
+developer clone is intentionally outside the installer transaction. Every
+installer failure preserves or restores the prior selector pointer, descriptor,
+launchers, and ownership markers.
 
 Add Ruby 3.2 no-mutation cases for the two installed top-level orchestration
 commands as part of this task. `upgrade-agent-workflows` rejects the unsupported
@@ -834,31 +839,41 @@ stack under an unsupported Agent Workflows runtime. Snapshot source repositories
 runtime/compat roots, installed homes, and network-fake call logs to prove zero
 mutation or fetch on rejection.
 
-Drive these cases through `GenerationTransaction`, with a small source-pack
-phase graph (`prepared`, `generation_promoted`, `pointer_selected`,
-`launchers_migrated`, `committed`). The `launchers_migrated` phase journals a
-complete prior and desired node descriptor for both fixed launchers: node type,
-regular-file bytes or symlink target, file mode including executable bits, and
-the surrounding ownership metadata. It advances only after both atomic
-replacements are durable. Fault-inject before, between, and after the two
-replacements; rollback recreates regular files as regular files and symlinks as
-symlinks with their exact targets and modes, then restores the prior selected
-generation as one consistent state. Test the primitive directly with injected
-filesystem failures and both prior launcher node types; installer tests assert
-delegation to the same implementation instead of a second installer-specific
-atomic-write state machine.
+Drive these cases through `GenerationTransaction`, with explicit source-pack
+graphs. Copy mode uses `prepared`, `generation_promoted`,
+`selector_promoted`, `pointer_selected`, `launchers_migrated`, `committed`;
+live-source mode omits only `generation_promoted` and starts
+`prepared`, `selector_promoted`, `pointer_selected`, `launchers_migrated`,
+`committed`. `selector_promoted` journals the exact canonical bytes, digest,
+path, ownership/mode evidence, and runtime identity for both the prior and
+desired immutable descriptors before the pointer can select the desired one.
+The `launchers_migrated` phase journals a complete prior and desired node
+descriptor for both fixed launchers: node type, regular-file bytes or symlink
+target, file mode including executable bits, and the surrounding ownership
+metadata. It advances only after both atomic replacements are durable.
+Fault-inject before and after runtime and selector promotion, pointer selection,
+and each launcher replacement; rollback recreates regular files as regular files
+and symlinks as symlinks with their exact targets and modes, then restores the
+prior selected descriptor as one consistent state. Test both phase graphs and
+the primitive directly with injected filesystem failures and both prior
+launcher node types; installer tests assert delegation to the same
+implementation instead of a second installer-specific atomic-write state
+machine.
 
-When compatibility requires a bridge bootstrap, use a distinct expanded graph:
-`prepared`, `generation_promoted`, `bridge_bootstrap_installed`,
+When compatibility requires a bridge bootstrap, use distinct expanded graphs.
+Copy mode uses `prepared`, `generation_promoted`,
+`desired_selector_promoted`, `bridge_bootstrap_installed`,
 `bridge_launchers_migrated`, `desired_pointer_selected`,
-`final_bootstrap_installed`, `final_launchers_migrated`, `committed`. The journal
-records authenticated prior, bridge, and final launcher descriptors, bootstrap
-and compatibility-file digests, the prior and desired pointer descriptors, and
-the matrix row authorizing each reachable pairing. A phase advances only after
-all of its durable postconditions verify. Startup reconciliation can therefore
-identify whether the live state is prior, bridge, or final and either resume the
-next authenticated transition or restore the complete prior state; it never
-maps a partial bridge cutover onto the ordinary `launchers_migrated` phase.
+`final_bootstrap_installed`, `final_launchers_migrated`, `committed`;
+live-source mode omits only `generation_promoted`. The journal records the exact
+authenticated prior and desired selector descriptors, prior and desired pointer
+nodes, bridge and final launcher descriptors, bootstrap and compatibility-file
+digests, and the matrix row authorizing each reachable pairing. A phase advances
+only after all of its durable postconditions verify. Startup reconciliation can
+therefore identify whether the live state is prior, bridge, or final and either
+resume the next authenticated transition or restore the complete prior state;
+it never maps a partial selector or bridge cutover onto the ordinary
+`launchers_migrated` phase.
 
 - [ ] **Step 2: Add failing partial-install and version-mismatch tests**
 
@@ -906,7 +921,11 @@ resources, and generation-local receipt under a temporary directory. The
 receipt records `ruby_package_name`, `ruby_package_version`, the full source
 revision, and sorted path/mode/SHA-256 entries; its digest names the immutable
 generation. Validate every entry, then atomically rename the complete directory
-to `.agent-workflows-generations/<runtime-digest>`. Fixed installed launchers
+to `.agent-workflows-generations/<runtime-digest>`. Build canonical selector
+data containing `schema_version`, `runtime_kind: immutable_generation`, and the
+validated relative generation identity; its digest names an installer-owned,
+non-writable directory under `.agent-workflows-selectors/`. Fsync and promote
+that complete descriptor before `.agent-workflows-current` can select it. Fixed installed launchers
 pin one immutable stdlib-only bootstrap at
 `.agent-workflows-bootstraps/<bootstrap-digest>.rb`. The canonical source is
 `AgentWorkflows::Distribution::RuntimeBootstrap`, which has no package requires
@@ -934,33 +953,39 @@ SHA-256 with `request[:compatibility_sha256]` before parsing the canonical JSON
 or trusting a protocol row. Reject unknown keys, modes, schemas, absolute or
 traversing identities, an unlisted helper, malformed/noncanonical compatibility
 JSON, or any digest mismatch before lease publication or generation code loading.
-Foundation tests implement both request modes against fixture generations even
-though Task 5 launchers use only `current`; they also prove changed bytes, a
-changed request digest, a second-read race, and an unknown matrix field all fail
-before generation loading. This makes the fixed-generation seam real before the
-pinned-copy exporter consumes it.
+Foundation tests implement both request modes, with `current` exercised against
+both immutable-generation and live-source selector descriptors even though Task
+5 launchers use only that request mode. They also prove changed bytes, a changed
+request digest, a second-read race, unknown selector or matrix fields, and
+missing/mismatched selector-schema compatibility rows all fail before runtime
+loading. This makes the fixed-generation seam real before the pinned-copy
+exporter consumes it.
 
 Create canonical `agent-workflows.bootstrap-compatibility.json` with
 `schema_version: 1` and sorted rows keyed by bootstrap protocol version. Each row
-lists accepted request-schema versions, generation-receipt schema versions, and
+lists accepted request-schema, selector-descriptor, generation-receipt, and
 runtime-manifest schema versions. `RuntimeBootstrap::PROTOCOL_VERSION`, every
-generation receipt's `required_bootstrap_protocol`, and each launcher's pinned
-protocol are checked against that file. The installer records the compatibility
-file SHA-256 in the generation receipt and launcher descriptor; each immutable
-bootstrap is installed with a same-basename compatibility file, and the minimal
-loader verifies its already-open bytes against the pinned digest before passing
-those same bytes and digest through the stable API above. Thus neither a mutable
-matrix, a path reopened by the bootstrap, nor package version alone can authorize
-a pairing.
+selector descriptor's `required_bootstrap_protocol`, every generation receipt's
+matching protocol, and each launcher's pinned protocol are checked against that
+file. Every selector descriptor records the exact compatibility-file SHA-256;
+the installer also records it in the generation receipt when applicable and in
+the launcher descriptor. Each immutable bootstrap is installed with a
+same-basename compatibility file, and the minimal loader verifies its
+already-open bytes against the pinned digest before passing those same bytes and
+digest through the stable API above. Thus neither a mutable matrix, a path
+reopened by the bootstrap, nor package version alone can authorize a pairing.
 
-The trusted bootstrap resolves `.agent-workflows-current` exactly once and
-requires its installer-owned metadata to declare and bind the selected runtime
-kind. For `immutable_generation`, it validates the generation receipt and full
-library-tree digest before requiring any generation Ruby. For `live_source`, it
-requires the pointer and metadata to name the same canonical editable root, then
-uses the checked-in manifest identity and completeness contract without a
-generation receipt or frozen tree digest. Neither branch falls back to a gem,
-checkout mode, or an unbound source checkout.
+The trusted bootstrap resolves `.agent-workflows-current` exactly once to an
+immutable selector descriptor. It opens the descriptor and canonical selector
+data with no-follow checks, verifies the digest-bound directory name, ownership,
+non-writable mode, schema, and exact allowed keys, and only then trusts the
+descriptor's bound runtime kind and root identity. For `immutable_generation`,
+it validates the bound generation receipt and full library-tree digest before
+requiring any generation Ruby. For `live_source`, the same selected descriptor
+binds `runtime_kind` and the canonical editable root in one atomic object, then
+the bootstrap uses the checked-in manifest identity and completeness contract
+without a generation receipt or frozen tree digest. Neither branch falls back
+to a gem, checkout mode, or an unbound source checkout.
 
 For `immutable_generation`, retain the prior generation while any invocation can
 still use it. The bootstrap resolves the selector and publishes a durable
@@ -991,12 +1016,13 @@ mode, ownership fixture, and bytes and prove the launcher exits `64` before any
 generation code loads.
 
 `GenerationTransaction` owns the staging directory, canonical receipt and
-digest calculation, atomic rename, journal writes, current-pointer replacement,
-startup reconciliation, and retention rules. Its consumers provide only an
-explicit phase graph plus domain callbacks for validating desired entries and
-stable paths. It rejects unknown phases, unsafe paths, symlink traversal,
-ambiguous prior receipts, or callbacks that cannot prove their postcondition.
-Do not duplicate these mechanisms in shell helpers.
+selector-descriptor digest calculation, atomic promotion, journal writes,
+current-selector-pointer replacement, startup reconciliation, and retention
+rules. Its consumers provide only an explicit phase graph plus domain callbacks
+for validating desired entries and stable paths. It rejects unknown phases,
+unsafe paths, symlink traversal, ambiguous prior receipts or descriptors, or
+callbacks that cannot prove their postcondition. Do not duplicate these
+mechanisms in shell helpers.
 
 Installer and stack-sync ownership checks now invoke
 `AgentWorkflows::Distribution::InstallOwnership` from the selected complete
@@ -1006,59 +1032,68 @@ canonical distribution adapter before Task 6 removes the legacy file. Run the
 existing marker/digest compatibility corpus against both implementations before
 the cutover and only the canonical implementation afterward.
 
-For the first migration, create and validate the complete generation and
-current pointer, then install the immutable bootstrap before atomically replacing
-each legacy launcher with its bootstrap-pinning trampoline; an invocation
+For the first migration, validate the complete desired runtime, promote its
+generation when copy mode requires one, promote the selector descriptor, and
+atomically select that descriptor. Then install the immutable bootstrap before
+atomically replacing each legacy launcher with its bootstrap-pinning trampoline;
+an invocation
 therefore opens either the complete legacy launcher or a complete new launcher
 whose bootstrap already exists and verifies. Journal each prior and desired
 launcher descriptor and pinned bootstrap digest through `launchers_migrated`.
 Rollback restores the old launcher but retains any installed bootstrap. After
-migration, publish an upgrade with one atomic relative-symlink replacement of
+migration, publish an upgrade by promoting the complete desired descriptor and
+then making one atomic relative-symlink replacement of
 `.agent-workflows-current`; when the bootstrap contract itself changes, install
 the new immutable bootstrap and compatibility file first. Before mutation,
 require the recorded matrix to prove that both old and new bootstrap protocols
-accept both prior and desired generation/request schemas. Then atomically replace
+accept both prior and desired runtime-manifest, selector, receipt-when-applicable,
+and request schemas. Then atomically replace
 each launcher and the pointer in either order while journaling every phase. If
 the full cross-product is not compatible, require a reviewed bridge bootstrap
-whose matrix row accepts both generations, install and cut over to that bridge
-before selecting the desired generation, and only then cut over to the final
-bootstrap through the explicit bridge phase graph above; if no such row exists,
-fail before mutation. Fault tests pause or crash before and after bootstrap
-install, each launcher replacement, pointer selection, and journal write in both
-graphs, and run every reachable old/bridge/new launcher, bootstrap, and
-generation pairing. They also restart from every durable bridge phase and from
-each injected partial launcher replacement. Recovery must resume or restore one
-matrix-accepted complete pairing with a matching authenticated journal state. Do
-not promote
+whose matrix row accepts both selected runtimes, install and cut over to that
+bridge before selecting the desired descriptor, and only then cut over to the
+final bootstrap through the explicit bridge phase graph above; if no such row
+exists, fail before mutation. Fault tests pause or crash before and after runtime
+and selector promotion, bootstrap install, each launcher replacement, pointer
+selection, and journal write in both graphs, and run every reachable
+old/bridge/new launcher, bootstrap, descriptor, and runtime pairing. They also
+restart from every durable bridge phase and from each injected partial launcher
+replacement. Recovery must resume or restore one matrix-accepted complete
+pairing with a matching authenticated journal state. Do not promote
 manifest, library, metadata, bootstrap, or wrappers as separate mutable live
 paths.
 
-In symlink mode, preserve the existing live-development contract: atomically
-point `.agent-workflows-current` at the canonical root of the explicitly chosen
-editable clone. Publish installer-owned selector metadata with
-`runtime_kind: live_source` and that exact canonical root before selecting it;
-fixed launchers require the metadata, pointer, and resolved root to agree before
-choosing the manifest-identity contract. Fixed launchers then validate safe
+In symlink mode, preserve the existing live-development contract: build
+canonical selector data containing `schema_version`,
+`runtime_kind: live_source`, and the exact canonical root of the explicitly
+chosen editable clone. Hash, fsync, and atomically promote the complete
+installer-owned, non-writable descriptor under
+`.agent-workflows-selectors/<selector-digest>/`, then make the single atomic
+`.agent-workflows-current` replacement select it. There is no separately mutable
+kind/root metadata. Fixed launchers validate the selected descriptor, safe
 manifest paths, required-file presence, and package/Ruby compatibility before
 loading the live files; they do not compare content against a frozen install
-digest. Missing or inconsistent live-source metadata fails closed and never
-falls through to generation, checkout, or receipt-free current behavior. Record
+digest. A missing or inconsistent descriptor fails closed and never falls
+through to generation, checkout, or receipt-free current behavior. Fault tests
+pause and crash before/after descriptor promotion and pointer selection and
+prove every invocation sees the complete prior or desired kind/root pair. Record
 the observed revision for status only and report later source edits as a dirty
 development checkout, not corruption. Refuse unmanaged conflicts, unsafe links,
 and destination ownership mismatches using the current no-follow checks.
 Serialize installers with the existing lock; rollback removes an unselected
-copy generation or restores the prior pointer/launcher on an initial-migration
-failure.
+copy generation or descriptor, or restores the prior pointer/launcher on an
+initial-migration failure.
 
 - [ ] **Step 5: Update stack sync**
 
 Teach the stack module installer that doctor wrappers select one complete
 runtime containing the matching `lib/agent_workflows` module. Copy-mode,
-adoption, and status checks verify the current pointer, receipt, and runtime
-digest before mutation. Symlink-mode checks verify the canonical live-source
-pointer, manifest completeness, compatibility, and dirty-checkout status
-without rejecting intentional edits. Preserve unrelated files and the existing
-`.agent-stack-managed` and `.agent-workflows-managed` ownership markers.
+adoption, and status checks verify the current selector pointer and descriptor,
+receipt, and runtime digest before mutation. Symlink-mode checks verify the
+selected live-source descriptor, canonical bound root, manifest completeness,
+compatibility, and dirty-checkout status without rejecting intentional edits.
+Preserve unrelated files and the existing `.agent-stack-managed` and
+`.agent-workflows-managed` ownership markers.
 
 - [ ] **Step 6: Run installer and rollback suites**
 
