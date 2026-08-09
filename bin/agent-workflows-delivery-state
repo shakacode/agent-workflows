@@ -496,7 +496,9 @@ module AgentWorkflowsDeliveryState
       collision_names: collision_names
     )
     companion_adapter_available = delivery_mode != "plugin-companion" || native_prompt_host_adapter_available?(native)
-    companion_adapter_requirement = if delivery_mode == "plugin-companion" && !companion_adapter_available
+    companion_adapter_missing = delivery_mode == "plugin-companion" && native["state"] == "active" &&
+                                !companion_adapter_available
+    companion_adapter_requirement = if companion_adapter_missing
                                       native_prompt_host_adapter_requirement(native)
                                     end
     native_compatible = native["state"] == (delivery_mode == "plugin-companion" ? "active" : "inactive") &&
@@ -511,7 +513,7 @@ module AgentWorkflowsDeliveryState
         "refusing to remove modified, ambiguous, or unowned skill paths: #{flat['blocking'].join(', ')}"
       elsif native["state"] == "unknown"
         native["reason"]
-      elsif delivery_mode == "plugin-companion" && !companion_adapter_available
+      elsif companion_adapter_missing
         "enabled native scw plugin does not provide the required #{companion_adapter_requirement}"
       elsif delivery_mode == "flat"
         "native scw and installer-managed flat skills cannot be active in one host/profile"
@@ -525,7 +527,7 @@ module AgentWorkflowsDeliveryState
         "Remove agent-workflows@agent-workflows, install and enable scw@agent-workflows, then rerun."
       elsif native["state"] == "unknown"
         "Inspect the Codex or Claude native plugin state and repair its configuration or install receipt before rerunning."
-      elsif delivery_mode == "plugin-companion" && !companion_adapter_available
+      elsif companion_adapter_missing
         "Upgrade scw@agent-workflows to a version that provides skills/pr-batch/bin/prompt-host-adapter " \
           "and docs/host-adapter/contract.md, then rerun."
       elsif delivery_mode == "flat"

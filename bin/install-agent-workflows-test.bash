@@ -366,6 +366,47 @@ test_native_plugin_plus_default_flat_install_fails_before_mutation() {
   done
 }
 
+test_plugin_companion_disabled_native_fails_before_mutation() {
+  local tmp target host output status metadata_before
+
+  for host in codex claude; do
+    tmp="$(mktemp -d)"
+    target="$tmp/$host-home"
+    "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode flat \
+      >"$tmp/flat.out"
+    write_native_scw_state "$host" "$target"
+    if [[ "$host" = "codex" ]]; then
+      printf '[plugins."scw@agent-workflows"]\nenabled = false\n' > "$target/config.toml"
+    else
+      printf '{"enabledPlugins":{"scw@agent-workflows":false}}\n' > "$target/settings.json"
+    fi
+    cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+    metadata_before="$tmp/metadata.before"
+
+    set +e
+    if [[ "$host" = "codex" ]]; then
+      output="$(QA_CODEX_PLUGIN_STATE=disabled "$ROOT/bin/install-agent-workflows" --host "$host" \
+        --target "$target" --delivery-mode plugin-companion 2>&1)"
+      status=$?
+    else
+      output="$("$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" \
+        --delivery-mode plugin-companion 2>&1)"
+      status=$?
+    fi
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "$host companion install accepted a disabled native plugin"
+    assert_contains "$output" "plugin-companion mode requires an enabled native scw plugin"
+    assert_contains "$output" "Install and enable scw@agent-workflows"
+    assert_not_contains "$output" "required prompt host adapter"
+    assert_file "$target/skills/pr-batch/SKILL.md"
+    cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+      fail "$host disabled-native failure changed install metadata"
+    [[ ! -e "$target/.agent-workflows-migration-staging" ]] || \
+      fail "$host disabled-native failure created a staging receipt"
+  done
+}
+
 test_plugin_companion_installs_non_skill_assets_and_records_mode() {
   local tmp target consumer host output
 
@@ -1971,6 +2012,7 @@ main() {
   local tests=(
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
+    test_plugin_companion_disabled_native_fails_before_mutation
     test_plugin_companion_installs_non_skill_assets_and_records_mode
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass

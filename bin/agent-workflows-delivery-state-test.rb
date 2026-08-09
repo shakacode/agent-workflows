@@ -236,6 +236,35 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_plugin_companion_inactive_native_plugin_requests_install_or_enable_for_each_host
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      %w[codex claude].each do |host|
+        target = File.join(tmp, host)
+        FileUtils.mkdir_p(target)
+        if host == "codex"
+          File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = false\n")
+        else
+          File.write(
+            File.join(target, "settings.json"),
+            "#{JSON.generate('enabledPlugins' => { 'scw@agent-workflows' => false })}\n"
+          )
+        end
+
+        out, _err, status = run_state(
+          "check", "--host", host, "--target", target, "--source", File.expand_path("..", __dir__),
+          "--delivery-mode", "plugin-companion", "--json", codex_state: "disabled"
+        )
+        payload = JSON.parse(out)
+
+        refute status.success?, host
+        assert_equal "inactive", payload.dig("native", "state"), host
+        assert_equal "plugin-companion mode requires an enabled native scw plugin", payload.fetch("reason"), host
+        assert_equal "Install and enable scw@agent-workflows, then rerun with --delivery-mode plugin-companion.",
+                     payload.fetch("guidance"), host
+      end
+    end
+  end
+
   def test_plugin_companion_ignores_unrelated_skill_without_install_metadata
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       target = File.join(tmp, "codex")

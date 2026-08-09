@@ -1077,6 +1077,24 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal prompt, result.fetch("prompt")
   end
 
+  def test_tab_separated_batch_size_target_list_marker_fails_closed_without_echo
+    prompt = direct_prompt(
+      host: "codex",
+      body: "-\tBatch size target: codex; SECRET_TAB_MARKER"
+    )
+
+    result, stderr, status, stdout = run_adapter(prompt, active_host: "claude")
+
+    assert status.success?, stderr
+    assert_equal "ambiguous", result.fetch("classification")
+    assert_equal "invalid-batch-size-target", result.fetch("reason_code")
+    assert_equal false, result.fetch("execute_allowed")
+    assert_equal false, result.fetch("relaunch_required")
+    assert_equal false, result.fetch("replanning_required")
+    assert_nil result.fetch("prompt")
+    refute_includes stdout, "SECRET_TAB_MARKER"
+  end
+
   def test_duplicate_batch_size_target_fails_closed_without_echo
     cases = [
       ["matching identical", "codex", "codex", %w[codex codex]],
@@ -1408,6 +1426,42 @@ class PromptHostAdapterTest < Minitest::Test
       assert_equal expected_classification, result.fetch("classification"), prose
       assert_equal true, result.fetch("execute_allowed"), prose
       assert_equal prompt, result.fetch("prompt"), prose
+    end
+  end
+
+  def test_nested_relative_path_segments_are_not_slash_command_mechanics
+    path_cases = [
+      ["codex", "codex", "Inspect repo/../tmp before closeout.", "compatible"],
+      ["portable", "claude", "Compare repo/./tmp with ../tmp and ./tmp.", "portable"],
+      ["portable", "codex", "Review https://example.com/repo/../tmp as evidence.", "portable"]
+    ]
+
+    path_cases.each do |declared_host, active_host, prose, expected_classification|
+      prompt = direct_prompt(host: declared_host, body: prose)
+      result, stderr, status = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal expected_classification, result.fetch("classification"), prose
+      assert_equal true, result.fetch("execute_allowed"), prose
+      assert_equal prompt, result.fetch("prompt"), prose
+    end
+
+    command_cases = [
+      "Run /address-review SECRET_PATH_COMMAND before closeout.",
+      "Inspect repo/../tmp, then run /address-review SECRET_PATH_MIXED."
+    ]
+    command_cases.each do |body|
+      result, stderr, status, stdout = run_adapter(
+        direct_prompt(host: "codex", body: body),
+        active_host: "codex"
+      )
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), body
+      assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), body
+      assert_equal false, result.fetch("execute_allowed"), body
+      assert_nil result.fetch("prompt"), body
+      refute_includes stdout, "SECRET_PATH", body
     end
   end
 
