@@ -1188,6 +1188,7 @@ Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; e
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+HST-v1
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
@@ -1421,6 +1422,42 @@ Pressure checks:
 - An autonomously clearable blocked goal gets one 15-minute current-thread monitor when supported; do not duplicate it, and stop it when the goal unblocks or completes. `blocked-user-input` keeps its exact question and manual resume instructions without a monitor.
 - `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
+
+### Human-Status Translation Contract
+
+`HST-v1` is the canonical boundary between internal telemetry and text shown to
+the user. Recurring monitors, Goal-mode wakes, workflow-owned heartbeats, and
+their prompt generators must reference this contract instead of defining local
+notification wording.
+
+- Keep raw coordination phases and lane codes, load samples, process identifiers
+  (PIDs), holder identities, lease details, and other exact machine evidence in
+  lifecycle records. They are internal telemetry by default.
+- Classify the wake before rendering anything for the user. A routine
+  successful, intermediate, repeated, or unchanged wake is silent. If the host
+  requires a payload, return exactly:
+
+  ```text
+  DONT_NOTIFY: No user action is needed. Monitoring will continue.
+  ```
+
+  The payload is a stable transport response, not a user notification; do not
+  add phase names, queue movement, or other telemetry.
+- Send an actionable notification only when a decision or action is required,
+  a target is ready for walkthrough or approval, a blocker exhausted its bounded
+  retries and needs intervention, or closeout/archive completed. Write it in
+  plain English with exactly these labeled parts: `What changed:`, `Action needed:`
+  (use `none` when applicable), and `Next:`. Each part must answer its
+  label directly.
+- Include an internal identifier only when it is necessary for the requested
+  action, and expand it on first use. Never guess an expansion that the evidence
+  does not establish.
+- An explicit technical or diagnostic status request may return exact telemetry.
+  Expand identifiers on first use, retain exact values, and mark unavailable
+  meanings `UNKNOWN` rather than translating them speculatively.
+- This boundary changes presentation only. It does not alter machine evidence or
+  any security, ownership, retry, scope, continuous integration (CI), review, or
+  merge gates.
 
 ### Coordination State
 
@@ -2071,6 +2108,7 @@ Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule 
 ```text
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>.
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
+HST-v1
 
 First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
 
@@ -2550,12 +2588,14 @@ Do not create separate tracking issues for these metrics. Keep them in the PR ev
 
 ## Human Attention Notifications
 
-If the user provides a Slack channel and the Slack connector or app is available, send a concise
-message when the agent needs a maintainer decision, has merge-ready PRs, is blocked, or is about to
-stop a long batch. For private channels, the Slack app or bot must be invited first.
+Apply [`HST-v1`](#human-status-translation-contract) before sending any Slack
+or other user-facing workflow notification. Its actionable categories, message
+shape, identifier expansion, diagnostic exception, and routine-wake silence
+govern; this section adds only channel-specific transport rules.
 
-Notification messages should include only the exact decision or status needed, the PR/issue links,
-and the next action the agent will take after a response. Do not post routine progress noise.
+If the user provides a Slack channel and the Slack connector or app is
+available, send an actionable `HST-v1` notice there with the relevant PR/issue
+links. For private channels, the Slack app or bot must be invited first.
 
 ## Hosted CI Backpressure
 

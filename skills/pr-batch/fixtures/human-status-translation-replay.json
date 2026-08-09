@@ -1,0 +1,92 @@
+{
+  "schema_version": "human-status-translation-replay-v1",
+  "stable_dont_notify_payload": "DONT_NOTIFY: No user action is needed. Monitoring will continue.",
+  "cases": [
+    {
+      "id": "routine-success-opaque-telemetry",
+      "input": {
+        "kind": "routine_success",
+        "host_requires_payload": false,
+        "telemetry": "functional B2 completed; raw load 4.82 8.13 8.94; PID 4312; holder aw-runner-7; lease heartbeat-385-9"
+      },
+      "expected_user_output": null
+    },
+    {
+      "id": "routine-success-host-payload",
+      "input": {
+        "kind": "routine_success",
+        "host_requires_payload": true,
+        "telemetry": "functional B2 completed; raw load 4.82 8.13 8.94; PID 4312; holder aw-runner-7; lease heartbeat-385-9"
+      },
+      "expected_user_output": "DONT_NOTIFY: No user action is needed. Monitoring will continue."
+    },
+    {
+      "id": "intermediate-b3",
+      "input": {
+        "kind": "intermediate",
+        "host_requires_payload": false,
+        "telemetry": "B3 queued"
+      },
+      "expected_user_output": null
+    },
+    {
+      "id": "intermediate-b-plus-c",
+      "input": {
+        "kind": "intermediate",
+        "host_requires_payload": false,
+        "telemetry": "B+C replay active"
+      },
+      "expected_user_output": null
+    },
+    {
+      "id": "intermediate-c6",
+      "input": {
+        "kind": "intermediate",
+        "host_requires_payload": false,
+        "telemetry": "c6 checkpoint reached"
+      },
+      "expected_user_output": null
+    },
+    {
+      "id": "repeated-unchanged",
+      "input": {
+        "kind": "unchanged",
+        "host_requires_payload": false,
+        "repeat_count": 3,
+        "telemetry": "B3 still queued; holder aw-runner-7; lease heartbeat-385-9"
+      },
+      "expected_user_output": null
+    },
+    {
+      "id": "actionable-decision",
+      "input": {
+        "kind": "action_required",
+        "what_changed": "The implementation reached a compatibility choice that cannot be made safely without you.",
+        "action_needed": "Choose whether to preserve the legacy behavior.",
+        "next": "After you decide, implementation will resume with that choice.",
+        "telemetry": "functional B2 stopped before B3; holder aw-runner-7"
+      },
+      "expected_user_output": "What changed: The implementation reached a compatibility choice that cannot be made safely without you. Action needed: Choose whether to preserve the legacy behavior. Next: After you decide, implementation will resume with that choice."
+    },
+    {
+      "id": "explicit-diagnostics",
+      "input": {
+        "kind": "explicit_diagnostic",
+        "what_changed": "You requested the exact coordination evidence.",
+        "action_needed": "none.",
+        "next": "Monitoring will continue under the existing gates.",
+        "expanded_telemetry": [
+          "functional B2 (functional workflow phase B2)",
+          "B3 (workflow phase B3)",
+          "B+C (combined workflow phases B and C)",
+          "c6 (coordination checkpoint 6)",
+          "raw load 4.82/8.13/8.94 (one-, five-, and fifteen-minute system load averages)",
+          "PID 4312 (process identifier 4312)",
+          "holder aw-runner-7 (coordination claim holder aw-runner-7)",
+          "lease heartbeat-385-9 (coordination lease heartbeat-385-9)"
+        ]
+      },
+      "expected_user_output": "What changed: You requested the exact coordination evidence. Action needed: none. Next: Monitoring will continue under the existing gates. Diagnostic details: functional B2 (functional workflow phase B2); B3 (workflow phase B3); B+C (combined workflow phases B and C); c6 (coordination checkpoint 6); raw load 4.82/8.13/8.94 (one-, five-, and fifteen-minute system load averages); PID 4312 (process identifier 4312); holder aw-runner-7 (coordination claim holder aw-runner-7); lease heartbeat-385-9 (coordination lease heartbeat-385-9)."
+    }
+  ]
+}
