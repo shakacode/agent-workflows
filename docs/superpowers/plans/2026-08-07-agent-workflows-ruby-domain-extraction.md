@@ -638,6 +638,8 @@ cutover separately with messages `refactor: extract seam command parsing`,
 - Modify: `skills/pr-batch/bin/pr-security-preflight-test.rb`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `lib/agent_workflows.rb`
+- Modify: `config/ruby-production-boundaries.yml` in every commit that changes a
+  wrapper classification.
 - Modify: pinned-copy installation and adoption documentation.
 - Delete after cutover: `skills/pr-batch/lib/git_probe_env.rb`
 
@@ -723,7 +725,10 @@ Then perform independent adversarial review focused on trust-source precedence, 
 
 - [ ] **Step 7: Commit transport, trust, scanners, and CLI cutover separately**
 
-Use four review-sized commits. Delete `git_probe_env.rb` only in the final cutover commit after `rg` proves no caller remains.
+Use four review-sized commits. Delete `git_probe_env.rb` only in the final
+cutover commit after `rg` proves no caller remains. The security-preflight
+wrapper cutover stages `config/ruby-production-boundaries.yml` with the wrapper
+and requires it in the exact staged name-status set.
 
 ### Task 4: Extract batch planning, routing, dependency, and readiness domains
 
@@ -736,6 +741,8 @@ Use four review-sized commits. Delete `git_probe_env.rb` only in the final cutov
 - Modify: `test/packaging/public_entrypoints_test.rb`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `lib/agent_workflows.rb`
+- Modify: `config/ruby-production-boundaries.yml` in every commit that changes a
+  wrapper classification, including the `pr-file-touch-map` ownership row.
 - Modify for every skill-relative wrapper cut over in this task:
   `bin/export-agent-workflows-pinned-copy`, its reviewed bundle manifest,
   `test/fixtures/pinned-copy-consumer/.agents/*`, and
@@ -784,7 +791,8 @@ replacing the next body. Do not combine route selection and readiness in one
 review diff. The same commit that replaces a skill-relative wrapper must update
 the exporter, bundle manifest, pinned fixture, and exporter test named in the
 Files list; an exact staged name-status assertion rejects a missing companion
-change.
+change. The same staged set must include
+`config/ruby-production-boundaries.yml`; omission is a hard failure.
 
 - [ ] **Step 6: Commit each independently reviewable domain**
 
@@ -805,6 +813,8 @@ Use separate commits for route/assignment, dependency graph, coordination bounds
 - Modify: `lib/agent_workflows.rb`
 - Modify current merge wrappers and focused tests.
 - Modify runtime-trust fixture paths and provenance tests.
+- Modify: `config/ruby-production-boundaries.yml` in every commit that changes a
+  wrapper classification.
 - Modify for every skill-relative wrapper cut over in this task:
   `bin/export-agent-workflows-pinned-copy`, its reviewed bundle manifest,
   `test/fixtures/pinned-copy-consumer/.agents/*`, and
@@ -860,7 +870,7 @@ and cleanup.
 
 Delete old skill-local libraries only after `rg` and packaging tests prove all installed layouts use canonical files. Each skill-relative wrapper commit also
 stages and exact-name-status checks its exporter, bundle-manifest, pinned-fixture,
-and exporter-test changes.
+exporter-test, and `config/ruby-production-boundaries.yml` changes.
 
 ### Task 6: Extract completed-batch audit and replay
 
@@ -873,6 +883,8 @@ and exporter-test changes.
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `lib/agent_workflows.rb`
 - Modify post-merge wrappers, tests, fixtures, and package manifest.
+- Modify: `config/ruby-production-boundaries.yml` in every commit that changes a
+  wrapper classification.
 - Modify for every skill-relative wrapper cut over in this task:
   `bin/export-agent-workflows-pinned-copy`, its reviewed bundle manifest,
   `test/fixtures/pinned-copy-consumer/.agents/*`, and
@@ -917,7 +929,8 @@ union completeness.
 
 Each commit leaves all command paths operational. Each skill-relative wrapper
 commit also stages and exact-name-status checks its exporter, bundle-manifest,
-pinned-fixture, and exporter-test changes.
+pinned-fixture, exporter-test, and `config/ruby-production-boundaries.yml`
+changes.
 
 ### Task 7: Extract distribution, validation, and maintainer commands
 
@@ -933,6 +946,8 @@ pinned-fixture, and exporter-test changes.
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `lib/agent_workflows.rb`
 - Modify root and skill-relative wrappers and legacy tests.
+- Modify: `config/ruby-production-boundaries.yml` in every commit that changes a
+  wrapper classification.
 - Modify for every skill-relative wrapper cut over in this task:
   `bin/export-agent-workflows-pinned-copy`, its reviewed bundle manifest,
   `test/fixtures/pinned-copy-consumer/.agents/*`, and
@@ -983,7 +998,8 @@ domain so a missing root require cannot survive to the next cutover.
 
 Do not combine fleet mutation code with unrelated validators. Each
 skill-relative wrapper commit also stages and exact-name-status checks its
-exporter, bundle-manifest, pinned-fixture, and exporter-test changes.
+exporter, bundle-manifest, pinned-fixture, exporter-test, and
+`config/ruby-production-boundaries.yml` changes.
 
 ### Task 8: Remove remaining legacy bodies and ratchet quality
 

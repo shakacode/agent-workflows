@@ -231,6 +231,37 @@ it must be byte-identical to this verified archival copy and the service
 artifact. Closeout verification freshly retrieves the service artifact and
 compares all three identities when the canonical path exists.
 
+### npm bootstrap durable closeout contract
+
+The canonical contract ID is `AW-RELEASE-NPM-BOOTSTRAP-CLOSEOUT-V1`. A
+successful interactive `0.1.0` bootstrap remains
+`PUBLISHED_CLOSEOUT_PENDING`; the maintainer checkout is never the terminal
+evidence store. After the unconditional credential cleanup and absence-of-local-
+credential read-back pass, use only non-secret evidence to create a candidate
+bundle containing the byte-identical postpublish receipt, verified captured-
+authorization archival copy, grant-manifest digest/results, reviewed tarball
+SHA-256 and npm integrity, trusted-publisher identity, publishing-access
+observation reference/digest, cleanup result, and canonical manifest.
+The manifest also binds the closed GitHub Release read-back record: numeric
+release ID, exact tag, target commit, observation timestamp, tarball/checksum
+attachment digests, and release-metadata digest.
+
+A separate evidence-only PR commits that bundle beneath
+`release/evidence/npm/agent-coordination-dashboard/0.1.0/`. Its workflow rejects
+code, package, or workflow changes; schema-validates every file; freshly
+downloads the public exact-version tarball; and compares public metadata,
+integrity, owners, provenance disposition, authorization, grants, and evidence
+digests without using a reusable publish credential. It also queries the exact
+GitHub Release ID and rejects a tag, target commit, attachment digest, or
+metadata-digest mismatch. After merge, a trusted-base finalizer reads the exact
+merged evidence, freshly revalidates that same GitHub Release identity, requires a fresh authenticated
+publishing-access observation produced by the non-secret read-back procedure,
+downloads the public tarball again, and replays the verifier. Only it may report
+`RELEASE_COMPLETE`. Tests cover lost or local-only receipts, wrong authorization
+or tarball, stale setting observation, failed cleanup, wrong or changed GitHub
+Release identity, extra files, unmerged evidence, and premature terminal
+reporting.
+
 Human owners are recovery principals, not an alternate routine publication
 path. The authorization explicitly forbids local `gem push` and token-based npm
 publication except for the one-time, separately authorized first-dashboard
@@ -611,9 +642,14 @@ and its trusted-base finalizer reports `RELEASE_COMPLETE`.
 - Create: `scripts/write-npm-postpublish-receipt.mjs` and
   `scripts/verify-npm-postpublish-receipt.mjs`.
 - Create: `scripts/npm-postpublish-receipt.test.mjs`.
+- Create: `.github/workflows/npm-bootstrap-closeout.yml`.
+- Create: `release/schemas/npm-bootstrap-closeout-v1.schema.json` plus
+  writer/finalizer tests for `AW-RELEASE-NPM-BOOTSTRAP-CLOSEOUT-V1`.
 - Create after publication:
   `release/evidence/agent-coordination-dashboard-0.1.0-publishing-access.v1.json`.
 - Create after publication: `release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json`.
+- Create after publication through the reviewed evidence-only PR:
+  `release/evidence/npm/agent-coordination-dashboard/0.1.0/*`.
 
 **Interfaces:**
 
@@ -769,6 +805,14 @@ integrity, checksum, and `0.1.0` changelog notes, then read back the tag and
 release. If publication fails after the tag is created, do not move or reuse the
 tag: reconcile live npm state and record an explicit retry or version-bump
 disposition. Do not publish another version merely to test OIDC.
+
+After the cleanup trap has removed the interactive session and its absence is
+read back, and after the GitHub Release read-back passes, run
+`AW-RELEASE-NPM-BOOTSTRAP-CLOSEOUT-V1`. Do not treat the receipt left in the
+maintainer checkout as durable. The dashboard release remains
+`PUBLISHED_CLOSEOUT_PENDING` until the exact evidence-only PR is merged and the
+trusted-base finalizer reports `RELEASE_COMPLETE` against a fresh authenticated
+publishing-access observation.
 
 ### Task 5: Evaluate self-contained Agent Workflows executables
 
@@ -1726,6 +1770,9 @@ evidence.
 - Create in each Ruby repository the exact merged
   `release/evidence/rubygems/<package>/<version>/` bundle required by
   `AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`.
+- Create in the dashboard repository the exact merged
+  `release/evidence/npm/agent-coordination-dashboard/0.1.0/` bundle required by
+  `AW-RELEASE-NPM-BOOTSTRAP-CLOSEOUT-V1`.
 - Create:
   `release/evidence/agent-coordination-dashboard-0.1.0-publishing-access-closeout.v1.json`.
 - Create no new alias package.
@@ -1793,6 +1840,11 @@ manifest path under `release/evidence/rubygems/<package>/<version>/`; freshly
 rerun the trusted-base finalizer and require `RELEASE_COMPLETE`. A release-note
 summary or expired publication-run artifact is never a substitute for those
 committed evidence bytes.
+For the dashboard, link the exact merged npm bootstrap closeout PR and commit,
+the durable postpublish receipt and manifest paths, and the fresh authenticated
+publishing-access observation used by the trusted-base finalizer. Require its
+`RELEASE_COMPLETE`; a maintainer-checkout receipt or expired candidate artifact
+is not terminal evidence.
 For an adopted standalone release, link the exact merged installation-docs and
 release-evidence PRs plus the immutable merge commit containing
 `release/evidence/standalone/closeouts/tag-<tag>/`. A release-note summary or
