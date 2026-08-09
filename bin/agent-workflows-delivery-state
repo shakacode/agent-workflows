@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 require "fileutils"
 require "find"
 require "open3"
@@ -315,6 +316,22 @@ module AgentWorkflowsDeliveryState
     entries
   end
 
+  def directory_fingerprint(root)
+    entries = filesystem_entries(root)
+    return nil unless entries
+
+    payload = entries.sort.map do |relative, path|
+      if File.symlink?(path)
+        ["symlink", relative, File.readlink(path)]
+      elsif File.file?(path)
+        ["file", relative, (File.stat(path).mode & 0o111).positive?, Digest::SHA256.file(path).hexdigest]
+      else
+        return nil
+      end
+    end
+    Digest::SHA256.hexdigest(JSON.generate(payload))
+  end
+
   def matches_directory_snapshot?(installed, snapshot, skill_name)
     actual = filesystem_entries(installed)
     return false unless actual
@@ -379,6 +396,16 @@ module AgentWorkflowsDeliveryState
     matches_directory_snapshot?(path, { type: :directory, root: source }, skill_name)
   end
 
+  def recorded_skill_copy_fingerprint_matches?(path, metadata, skill_name)
+    return false unless metadata.fetch("mode", nil) == "copy"
+
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints", nil)
+    return false unless fingerprints.is_a?(Hash)
+
+    expected = fingerprints[skill_name]
+    expected.is_a?(String) && directory_fingerprint(path) == expected
+  end
+
   def flat_skill_ownership_conflict(target:, source:, metadata:, names:, present:, revision:)
     recorded_names, snapshot = skill_names(source, metadata)
     case snapshot&.fetch(:type)
@@ -386,6 +413,7 @@ module AgentWorkflowsDeliveryState
       blocking = (names - recorded_names).filter_map do |name|
         path = File.join(target, "skills", name)
         next unless File.exist?(path) || File.symlink?(path)
+        next if recorded_skill_copy_fingerprint_matches?(path, metadata, name)
         next if current_source_skill_path?(path, source, name)
 
         path

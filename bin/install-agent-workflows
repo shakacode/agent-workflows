@@ -187,8 +187,44 @@ prepare_metadata() {
   source_remote="$(metadata_value source_remote)"
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-  ruby -rjson -e '
-    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at = ARGV
+  ruby -rjson -rdigest -rfind -e '
+    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, *pack_docs = ARGV
+    directory_fingerprint = lambda do |root|
+      entries = []
+      Find.find(root) do |entry|
+        next if entry == root || File.directory?(entry) && !File.symlink?(entry)
+
+        relative = entry.delete_prefix("#{root}/")
+        if File.symlink?(entry)
+          entries << ["symlink", relative, File.readlink(entry)]
+        elsif File.file?(entry)
+          entries << ["file", relative, (File.stat(entry).mode & 0o111).positive?, Digest::SHA256.file(entry).hexdigest]
+        else
+          abort "unsupported skill entry while preparing install metadata: #{entry}"
+        end
+      end
+      Digest::SHA256.hexdigest(JSON.generate(entries.sort))
+    end
+    skill_fingerprints = if mode == "copy" && delivery_mode == "flat"
+                           Dir.children(File.join(source, "skills")).sort.filter_map do |name|
+                             root = File.join(source, "skills", name)
+                             next unless File.directory?(root) && !File.symlink?(root)
+
+                             [name, directory_fingerprint.call(root)]
+                           end.to_h
+                         else
+                           {}
+                         end
+    doc_fingerprints = if mode == "copy"
+                         pack_docs.to_h do |name|
+                           doc = File.join(source, "docs", name)
+                           abort "missing pack document while preparing install metadata: #{doc}" unless File.file?(doc) && !File.symlink?(doc)
+
+                           [name, Digest::SHA256.file(doc).hexdigest]
+                         end
+                       else
+                         {}
+                       end
     metadata = {
       "host" => host,
       "mode" => mode,
@@ -198,10 +234,12 @@ prepare_metadata() {
       "source_revision" => revision,
       "source_branch" => branch,
       "source_remote" => remote,
-      "installed_at" => installed_at
+      "installed_at" => installed_at,
+      "managed_skill_copy_fingerprints" => skill_fingerprints,
+      "managed_pack_doc_copy_fingerprints" => doc_fingerprints
     }
     File.write(path, JSON.pretty_generate(metadata) + "\n")
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}"
 }
 
 commit_metadata() {
@@ -441,11 +479,31 @@ pack_doc_destination_owned() {
 
   if [[ "$mode" = "copy" ]]; then
     recorded_revision_contains_pack_doc "$doc_name" ||
+      recorded_pack_doc_copy_fingerprint_matches "$doc_name" "$destination" ||
       { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
       pack_doc_symlink_matches_recorded_source "$doc_name" "$destination"
   else
     pack_doc_symlink_matches_recorded_source "$doc_name" "$destination"
   fi
+}
+
+recorded_pack_doc_copy_fingerprint_matches() {
+  local doc_name="$1"
+  local destination="$2"
+  local metadata_path="$target/$metadata_name"
+  [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || return 1
+  [[ -f "$destination" && ! -L "$destination" ]] || return 1
+
+  ruby -rjson -rdigest -e '
+    metadata_path, doc_name, destination = ARGV
+    metadata = JSON.parse(File.binread(metadata_path))
+    exit 1 unless metadata.is_a?(Hash) && metadata["mode"] == "copy"
+    fingerprints = metadata["managed_pack_doc_copy_fingerprints"]
+    exit 1 unless fingerprints.is_a?(Hash)
+    expected = fingerprints[doc_name]
+    exit 1 unless expected.is_a?(String) && expected.match?(/\A[0-9a-f]{64}\z/i)
+    exit(Digest::SHA256.file(destination).hexdigest == expected ? 0 : 1)
+  ' "$metadata_path" "$doc_name" "$destination"
 }
 
 verify_pack_doc_destinations() {

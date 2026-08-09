@@ -816,7 +816,7 @@ test_repeat_install_replays_recorded_companion_delivery_mode() {
 }
 
 test_repeat_flat_install_accepts_installer_created_uncommitted_skill() {
-  local tmp source target mode
+  local tmp source target mode marker
   tmp="$(mktemp -d)"
   source="$tmp/source"
   mkdir -p "$source"
@@ -830,19 +830,115 @@ test_repeat_flat_install_accepts_installer_created_uncommitted_skill() {
     target="$tmp/codex-home-$mode"
     "$source/bin/install-agent-workflows" --host codex --target "$target" \
       --mode "$mode" --delivery-mode flat >"$tmp/first-$mode.out"
+    marker="source-edit-after-$mode-install"
+    printf '\n%s\n' "$marker" >> "$source/skills/uncommitted-local/SKILL.md"
     "$source/bin/install-agent-workflows" --host codex --target "$target" \
       --mode "$mode" --delivery-mode flat >"$tmp/repeat-$mode.out"
 
     if [[ "$mode" = copy ]]; then
       cmp -s "$source/skills/uncommitted-local/SKILL.md" \
         "$target/skills/uncommitted-local/SKILL.md" || \
-        fail "repeat copy install changed the installer-created uncommitted skill"
+        fail "repeat copy install did not update the installer-created uncommitted skill"
     else
       [[ "$(readlink "$target/skills/uncommitted-local")" = \
          "$source/skills/uncommitted-local" ]] || \
         fail "repeat symlink install changed the installer-created uncommitted skill link"
     fi
+    grep -qxF "$marker" "$target/skills/uncommitted-local/SKILL.md" || \
+      fail "repeat $mode install lost the uncommitted source edit"
   done
+}
+
+test_repeat_flat_copy_install_blocks_modified_installer_created_uncommitted_skill() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/uncommitted-local"
+  printf '%s\n' '---' 'name: uncommitted-local' \
+    'description: Exercise target-modification fencing.' \
+    '---' '' '# Uncommitted Local' > "$source/skills/uncommitted-local/SKILL.md"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+  printf '\npersonal installed-copy edit\n' >> \
+    "$target/skills/uncommitted-local/SKILL.md"
+  printf '\nnew source edit\n' >> "$source/skills/uncommitted-local/SKILL.md"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified uncommitted skill target"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal installed-copy edit' \
+    "$target/skills/uncommitted-local/SKILL.md" || \
+    fail "repeat copy install changed the modified uncommitted skill target"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "blocked uncommitted skill replay changed install metadata"
+}
+
+test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc() {
+  local tmp source target personal_target output status metadata_before doc_name
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  personal_target="$tmp/personal-codex-home"
+  doc_name="uncommitted-pack-doc.md"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.read(path)
+    insertion = "  user-facing-coordination.md\n  uncommitted-pack-doc.md\n)"
+    abort "missing pack_docs insertion point" unless text.sub!("  user-facing-coordination.md\n)", insertion)
+    File.write(path, text)
+  ' "$source/bin/install-agent-workflows"
+  printf 'managed-v1\n' > "$source/docs/$doc_name"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  printf 'managed-v2\n' > "$source/docs/$doc_name"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/repeat.out"
+  grep -qxF 'managed-v2' "$target/docs/$doc_name" || \
+    fail "repeat copy install did not update the installer-created uncommitted pack document"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+  printf 'personal installed-doc edit\n' > "$target/docs/$doc_name"
+  printf 'managed-v3\n' > "$source/docs/$doc_name"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified uncommitted pack document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  grep -qxF 'personal installed-doc edit' "$target/docs/$doc_name" || \
+    fail "repeat copy install changed the modified uncommitted pack document"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "blocked uncommitted document replay changed install metadata"
+
+  mkdir -p "$personal_target/docs"
+  printf 'personal-predating-first-install\n' > "$personal_target/docs/$doc_name"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$personal_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "first copy install replaced a personal uncommitted pack document collision"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  grep -qxF 'personal-predating-first-install' "$personal_target/docs/$doc_name" || \
+    fail "first copy install changed the personal uncommitted pack document"
+  [[ ! -e "$personal_target/.agent-workflows-install.json" ]] || \
+    fail "blocked first install committed metadata"
 }
 
 test_flat_upgrade_refuses_newly_packaged_skill_collision() {
@@ -2072,6 +2168,8 @@ main() {
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_repeat_flat_install_accepts_installer_created_uncommitted_skill
+    test_repeat_flat_copy_install_blocks_modified_installer_created_uncommitted_skill
+    test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
     test_flat_upgrade_refuses_newly_packaged_skill_collision
     test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill
     test_flat_copy_upgrade_refuses_newly_packaged_doc_collision
