@@ -548,7 +548,7 @@ module AgentWorkflows
 end
 ```
 
-Move the behavior from `bin/agent_doctor/install_ownership.rb` directly to
+Copy the behavior from `bin/agent_doctor/install_ownership.rb` into
 `lib/agent_workflows/distribution/install_ownership.rb` under
 `AgentWorkflows::Distribution::InstallOwnership`; it is installer ownership,
 not doctor diagnosis. Copy its existing tests to the matching distribution
@@ -827,13 +827,37 @@ git commit -m "feat: expose doctor commands through agent workflows gem"
   editable root bound together in the selected descriptor, preserving the
   documented edit-in-place development workflow.
 - Produces a reusable
-  `AgentWorkflows::Distribution::RuntimeBootstrap` trust anchor plus
+  `AgentWorkflows::Distribution::RuntimeBootstrap` integrity anchor for runtime
+  application code plus
   `AgentWorkflows::Distribution::GenerationTransaction` for immutable staging,
   manifest/receipt validation, no-follow locking, atomic generation promotion
   and selector replacement, durable phase journals, idempotent resume/rollback,
   and quiescence-gated retention. The source-pack installer is their first
   consumer; the pinned-copy exporter in the domain-extraction plan is their
   second.
+
+The threat model is explicit: these no-follow, ownership/mode, digest, fsync,
+and journal checks detect torn writes, crash-interrupted transitions, accidental
+drift, path substitution by an unprivileged process, and mixed application bytes
+inside the installer-owned non-writable tree. “Authenticated” below means
+integrity-bound to those already verified installer records. It is not external
+provenance and cannot resist an administrator or same-privilege local actor able
+to rewrite the launcher, bootstrap, manifests, receipts, ownership metadata, and
+digests together. Source/package provenance and installer acquisition remain
+separate release/distribution controls.
+
+The canonical records have these closed minimum bindings:
+
+| Record | Required bindings |
+| --- | --- |
+| Generation receipt | Package/version, revision, protocol, sorted path/mode/SHA-256 tree |
+| Selector descriptor | Runtime kind, exact generation or live root, required protocol, matrix SHA-256 |
+| Compatibility descriptor | Exact matrix bytes/digests and closed allowed-pairing rows |
+| Launcher descriptor | Bootstrap path/digest/protocol and compatibility-descriptor digest |
+| Transaction journal | Prior/desired node descriptors, phase, record digests, durable postconditions |
+
+Every parser rejects unknown keys and noncanonical bytes; implementation tests
+round-trip these schemas and fault-inject before and after each durable phase.
 
 - [ ] **Step 1: Add failing copy and symlink layout tests**
 
@@ -895,13 +919,19 @@ machine.
 
 When compatibility requires a bridge bootstrap, use distinct expanded graphs.
 Copy mode uses `prepared`, `generation_promoted`,
-`desired_selector_promoted`, `bridge_bootstrap_installed`,
+`desired_selector_promoted`, `bridge_compatibility_installed`,
+`bridge_bootstrap_installed`,
 `bridge_launchers_migrated`, `desired_pointer_selected`,
-`final_bootstrap_installed`, `final_launchers_migrated`, `committed`;
+`final_compatibility_installed`, `final_bootstrap_installed`,
+`final_launchers_migrated`, `committed`;
 live-source mode omits only `generation_promoted`. The journal records the exact
 authenticated prior and desired selector descriptors, prior and desired pointer
-nodes, bridge and final launcher descriptors, bootstrap and compatibility-file
-digests, and the matrix row authorizing each reachable pairing. A phase advances
+nodes, bridge and final launcher descriptors, old/bridge/final compatibility
+descriptor and matrix digests, bootstrap digests, and every row authorizing a
+reachable pairing. Install and fsync the bridge descriptor before its bootstrap
+or launcher; replace the launchers while the prior selector remains selected,
+then select the desired pointer, install/fsync the final singleton descriptor
+and bootstrap, and only then replace the bridge launchers. A phase advances
 only after all of its durable postconditions verify. Startup reconciliation can
 therefore identify whether the live state is prior, bridge, or final and either
 resume the next authenticated transition or restore the complete prior state;
@@ -980,7 +1010,7 @@ launcher pins the complete new bootstrap.
 The stable callable boundary is
 `RuntimeBootstrap.run(request:, compatibility_json:, argv:, env:)`. A version-1
 request is canonical data with `schema_version`, `mode`, `root`, `command`, and
-`compatibility_sha256`; `mode: current` names the source-pack current selector,
+`compatibility_descriptor_sha256`; `mode: current` names the source-pack current selector,
 while `mode: pinned_generation` bypasses that selector and additionally requires
 a validated relative `generation_identity`, `manifest_sha256`, and
 `helper_name`. A helper name is an exact key in the reviewed bundle manifest's
@@ -988,7 +1018,7 @@ canonical `helpers` map; its row binds one relative executable path and SHA-256,
 and the generation receipt repeats that binding. The minimal loader
 passes the exact frozen bytes read from the authenticated compatibility-file
 descriptor as `compatibility_json`; the bootstrap recomputes and compares their
-SHA-256 with `request[:compatibility_sha256]` before parsing the canonical JSON
+SHA-256 with `request[:compatibility_descriptor_sha256]` before parsing the canonical JSON
 or trusting a protocol row. Reject unknown keys, modes, schemas, absolute or
 traversing identities, a helper absent from that authenticated map,
 malformed/noncanonical compatibility
@@ -1007,13 +1037,28 @@ lists accepted request-schema, selector-descriptor, generation-receipt, and
 runtime-manifest schema versions. `RuntimeBootstrap::PROTOCOL_VERSION`, every
 selector descriptor's `required_bootstrap_protocol`, every generation receipt's
 matching protocol, and each launcher's pinned protocol are checked against that
-file. Every selector descriptor records the exact compatibility-file SHA-256;
-the installer also records it in the generation receipt when applicable and in
-the launcher descriptor. Each immutable bootstrap is installed with a
-same-basename compatibility file, and the minimal loader verifies its
-already-open bytes against the pinned digest before passing those same bytes and
-digest through the stable API above. Thus neither a mutable matrix, a path
-reopened by the bootstrap, nor package version alone can authorize a pairing.
+matrix.
+
+Installed launchers consume an immutable canonical compatibility descriptor,
+not an implicitly same-version matrix. Descriptor schema 1 contains a sorted
+closed `matrices` map from SHA-256 to the exact canonical matrix bytes and a
+sorted `allowed_pairings` set binding launcher protocol, bootstrap digest,
+selector matrix digest, and runtime schemas. Each selector and generation
+receipt bind their exact matrix SHA-256; each launcher pins the complete
+descriptor SHA-256. The minimal loader no-follow opens the descriptor, verifies
+its already-open bytes against that pinned digest, and passes those same bytes
+through the stable API. An ordinary descriptor contains one matrix. A reviewed
+bridge descriptor contains the exact prior and desired matrix bytes plus only
+the old-selector/bridge-bootstrap, desired-selector/bridge-bootstrap, and
+desired-selector/final-bootstrap pairings needed by the expanded phase graph.
+The bridge launcher can therefore select the prior runtime because its
+selector-bound old matrix digest is an authenticated member of the pinned bridge
+descriptor; no exact-digest comparison against only the new matrix rejects that
+first bridge pairing. After the desired selector is selected, the final launcher
+pins the desired singleton descriptor. Unknown matrices, duplicate digests,
+unlisted pairings, or descriptor/matrix digest mismatches fail before runtime
+loading. Thus neither a mutable matrix, a path reopened by the bootstrap, nor
+package version alone can authorize a pairing.
 
 The trusted bootstrap resolves `.agent-workflows-current` exactly once to an
 immutable selector descriptor. It opens the descriptor and canonical selector

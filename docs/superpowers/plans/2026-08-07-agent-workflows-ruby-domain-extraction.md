@@ -80,6 +80,7 @@ single-skill helper boundary, and safety contract.
 | Current surface | Canonical folder |
 | --- | --- |
 | `bin/agent-workflow-seam-doctor` | `lib/agent_workflows/seam` |
+| `bin/agent_doctor/autonomous_merge_policy*.rb` | `lib/agent_workflows/policy`; move atomically with every caller/provenance rewrite in Task 2 |
 | `skills/pr-batch/bin/pr-security-preflight` | `lib/agent_workflows/security` and `lib/agent_workflows/trust` |
 | `skills/plan-pr-batch/bin/batch-plan-preflight` | `lib/agent_workflows/batch` |
 | `skills/plan-pr-batch/bin/pr-file-touch-map` | Retained single-skill helper owned by `plan-pr-batch` |
@@ -171,19 +172,30 @@ exporter, plus exporter-only tests for helper-set transitions.
   generation root. A portable POSIX filesystem cannot atomically replace a
   non-empty legacy directory with a symlink. Treat that conversion as an
   explicit one-time offline migration, never as an online atomic update: require
-  a reviewed maintenance grant naming the consumer and skill, prove exporter
-  ownership and consumer quiescence under the no-follow lock, and fail before
-  mutation if any agent/host invocation may still read the path. Journal and
+  a reviewed maintenance grant naming the consumer, skill, host/supervisor, and
+  exact `LegacyConsumerFence` adapter path and SHA-256. The injected adapter must
+  acquire a supervisor-level stop-and-inhibit fence that prevents new host
+  invocations, enumerate that supervisor's active invocations, and return a
+  canonical receipt binding consumer root, skill, supervisor identity, fence
+  token digest, `active_invocation_count: 0`, observation time, and expiry. The
+  exporter verifies the granted adapter bytes, acquires that fence while holding
+  its no-follow lock, independently requires zero current generation leases,
+  and keeps both locks until the new path and receipt verify. A consumer without
+  a reviewed adapter that can both inhibit starts and prove zero active
+  invocations is not migratable in place; leave it on the legacy layout or use a
+  fresh consumer root. Journal and
   fsync the exact legacy directory descriptor, adjacent backup path, staged
   symlink, desired generation, and phases `prepared`, `legacy_backed_up`,
   `symlink_selected`, `verified`, `committed`. Rename the legacy directory to the
   backup, install the staged symlink, and verify before releasing quiescence;
-  startup recovery must reacquire the no-follow lock and freshly prove that the
-  named consumer remains stopped under the offline grant before restoring the
+  startup recovery must reacquire the no-follow lock and a fresh adapter fence,
+  require a new zero-active receipt, and prove that the named consumer remains
+  stopped under the offline grant before restoring the
   directory or finishing the symlink selection. If fresh quiescence cannot be
   proved, fail closed without another mutation and require renewed maintenance
   fencing; never reuse a pre-crash proof. Consumers may resume only after
-  recovery verifies a complete selected path. Retain the backup until the
+  recovery verifies a complete selected path and releases the adapter fence.
+  Retain the backup until the
   committed receipt verifies. The no-missing-path guarantee applies to online
   updates; this explicitly quiesced migration instead guarantees that no
   invocation can observe its bounded exchange interval. In `helper-companion`
@@ -210,7 +222,15 @@ exporter, plus exporter-only tests for helper-set transitions.
   collisions, serialize exporters with a no-follow lock, and retain every
   superseded generation until an explicit garbage-collection operation proves
   consumer quiescence. Normal export never deletes a generation.
-- Treat the requested helper allowlist as the complete desired managed set and
+- The union/compact helper graph below applies only to `helper-companion` mode.
+  A `full-skill` update stages one complete desired generation, journals
+  `prepared`, atomically replaces the single exporter-owned relative skill
+  symlink, fsyncs its parent, writes the bound receipt/status pointer, and then
+  journals `full_skill_selected` and `committed`. It retains the prior
+  generation. Recovery verifies the symlink and receipt as one old-or-new state
+  and either restores the prior symlink or finishes the desired receipt; it
+  never creates, replaces, or unlinks per-helper trampolines in this mode.
+- In `helper-companion` mode, treat the requested helper allowlist as the complete desired managed set and
   read the prior exporter receipt before building an update. For additions or
   removals, first build a transition generation containing the sorted union of
   the prior and desired helper sets, then atomically write a separate
@@ -287,8 +307,9 @@ exporter, plus exporter-only tests for helper-set transitions.
   revision coexist without overwrite, and concurrent invocations must survive
   both helper addition and removal, including a process paused after opening a
   soon-to-be-unlinked trampoline. A non-empty legacy `full-skill` fixture must
-  refuse migration before mutation without the exact maintenance grant and
-  proved consumer quiescence. With both present, fault injection at every
+  refuse migration before mutation without the exact maintenance grant,
+  digest-bound `LegacyConsumerFence`, held stop-and-inhibit fence, zero-active
+  canonical receipt, and empty generation-lease scan. With all present, fault injection at every
   `prepared`, `legacy_backed_up`, `symlink_selected`, `verified`, and `committed`
   boundary must prove startup recovery restores the legacy directory or finishes
   the symlink selection before quiescence is released. A restart fixture where
@@ -301,8 +322,8 @@ exporter, plus exporter-only tests for helper-set transitions.
   receipt, and compaction write proves the next exporter invocation idempotently
   resumes or restores a complete prior set. Prove normal exports never delete
   superseded generations; test explicit garbage collection only behind a
-  recorded quiescence assertion and fail closed when quiescence cannot be
-  established. An irreconcilable fixture must fail closed without changing any
+  a no-follow lock plus empty, freshly enumerated lease set and fail closed when
+  any valid lease exists or lease coverage is incomplete. An irreconcilable fixture must fail closed without changing any
   additional stable path.
 - Update the installation/adoption documentation and every supported pinned-copy
   updater to invoke this exporter. `bin/push-downstream` remains a seam

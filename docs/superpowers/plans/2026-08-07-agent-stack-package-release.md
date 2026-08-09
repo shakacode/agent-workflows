@@ -78,15 +78,40 @@ never expected to exist in the approved commit.
 
 Each repository adds
 `.github/workflows/capture-package-release-authorization.yml`, a read-only
-`workflow_dispatch` capture with `contents: read` and `actions: read`, no release
-environment, persisted checkout credential, OIDC permission, registry
-credential, or repository write permission. It runs at the exact approved
-commit and accepts the durable approval source URL, approver identity, package,
+`workflow_dispatch` capture with closed job-level `contents: read`,
+`actions: read`, `issues: read`, and `pull-requests: read`, no release environment,
+persisted checkout credential, OIDC permission, registry credential, or
+repository write permission. It runs at the exact approved commit and accepts
+the canonical durable GitHub approval URL plus package,
 version, registry, tag, commit, artifact digest, workflow path/ref/file digest,
-grant-manifest path/digest, expiry, and rollback disposition. A reviewed writer
+grant-manifest path/digest, expiry, and rollback disposition. For RubyGems only,
+it also requires the publisher action full commit and publisher-provenance
+producer run/artifact ID/service digest/file SHA-256; the schema forbids those
+RubyGems-only fields for npm. A reviewed writer
 creates canonical JSON in `RUNNER_TEMP`, binds the capture run ID and immutable
 capture-workflow path/ref/file digest, and validates it against the repository's
 fixed package-release-authorization schema.
+
+The capture does not accept a free-form approver identity or approval body. The
+only accepted object types are a pull-request review or an issue comment on that
+pull request. A read-only verifier parses the URL as an exact object ID in the
+expected GitHub repository, fetches that object through the API, derives its author and
+creation/update timestamps, and validates its canonical approval payload against
+every applicable registry-specific release field above. It rejects edited, deleted, cross-repository,
+non-human, unlisted, ambiguous, or payload-mismatched approvals. The
+derived login must appear in the exact-commit
+`release/approvers/package-release.v1.json` allowlist. That file is schema-
+validated, protected by CODEOWNERS and branch rules requiring two-person review,
+and its canonical SHA-256 is bound into the authorization. The verifier never
+attempts organization-team discovery with `GITHUB_TOKEN`. The
+authorization binds the durable object/node ID, derived approver login, creation
+and update timestamps, canonical body SHA-256, and the distinct capture dispatch
+actor from `github.triggering_actor`. Publication re-fetches the object and
+requires the same ID, actor, timestamps, and body digest so later edit/deletion
+or revocation stops the release. Tests cover forged URLs, actor substitution,
+dispatcher/approver confusion, edited or deleted approvals, and every target-
+payload mismatch, unavailable object-read authority, a missing or altered
+approver allowlist, and static permission expansion or omission.
 
 For npm only, the approval presentation and capture also require the exact
 GitHub login `npm_closeout_reviewer_login`. The schema requires that field when
@@ -114,15 +139,64 @@ proves through the GitHub API that the producer run succeeded at the approved
 commit under the bound capture workflow, downloads the artifact by exact ID and
 service digest, and validates the authorization only from that fresh directory.
 The unprivileged release job binds the verified authorization file digest and
-capture selectors into its same-run build receipt. The minimal protected job
-uses full immutable commit-SHA-pinned generic artifact/digest actions, never
-repository code, to compare that receipt and the freshly retrieved authorization bytes
-before tag or registry mutation. For the interactive npm bootstrap, the human
+capture selectors into its same-run build receipt.
+
+Before either RubyGems release task can proceed, independently build and review
+`shakacode/agent-release-publisher`. Its root `action.yml` loads only a checked-in
+`dist/index.js` reproduced from `src/index.ts`. Version 1 has one closed
+`publish-rubygems` mode: it accepts only the exact authorization, build receipt,
+reviewed gem path/digest, and expected fixed package/repository/tag/commit. It
+fetches the fixed `release/approvers/package-release.v1.json` path at the exact
+authorized commit through the GitHub Contents API and requires its canonical
+bytes to match the authorization-bound digest; no checkout-relative allowlist is
+accepted. It reads the runner clock itself in canonical UTC,
+performs the approval-object API read, schema/digest/remote-tag comparisons and
+expiry decision, creates the tag through the fixed Git refs API, reads it back,
+performs the OIDC upload of only the reviewed gem, and reads registry metadata
+back. It has no caller-supplied time, command, script, URL, route, ref, arbitrary
+request body, or arbitrary-payload input. Protected main, CODEOWNERS, two-person review, and tests
+that reproduce `dist/index.js` are mandatory. An unprivileged provenance job
+downloads that repository at the reviewed full commit and emits a canonical
+artifact receipt binding repository, commit, independent review URL,
+`action.yml`/source/distribution digests, mode/schema digests, and test result.
+The package authorization and environment review bind that receipt's producer
+run, artifact ID, service digest, file SHA-256, and the full action commit.
+
+The minimal protected job uses full immutable commit-SHA-pinned generic
+artifact/digest actions, never checkout, repository code, or inline scripts, to
+compare the build receipt, authorization, and publisher-provenance receipt
+before mutation.
+It then invokes only
+`shakacode/agent-release-publisher@<authorization-bound-full-commit>` in the
+closed mode as its only domain action. Immediately after protected-environment
+approval and immediately before requesting OIDC or creating a tag, that action
+re-fetches the bound approval object and compares canonical UTC with
+`expires_at`; expiry equality or a past value fails closed. Its only success
+result is the canonical publication receipt. It binds the authorization/capture
+selectors and digest, build-receipt identity/digest, publisher-provenance
+producer run/artifact ID/service digest/file SHA-256 and action/source/
+distribution/mode/schema digests, gem digest, `authorization_checked_at`,
+approval-object/allowlist digests and expiry, tag create/read-back identity,
+OIDC upload result, exact RubyGems name/version/artifact digest and registry
+read-back, protected run/job/action identity, and a closed outcome. A full-SHA
+generic artifact step uploads those exact result bytes, queries their artifact
+ID/service digest, downloads them into a fresh directory, and verifies their
+file SHA-256 before the protected job succeeds. Tests pause
+past expiry in the environment-approval queue and race approval edit/deletion
+between the unprivileged and protected jobs, and reject publisher receipt,
+commit, action, source, distribution, or schema substitution. For the
+interactive npm bootstrap, the human
 performs the same exact-selector download and validation before login. Tests
 cover missing, expired, cross-run, name-selected, substituted, wrong-head,
 wrong-workflow, digest-mismatched, and checkout-relative authorizations. Static
 workflow tests reject action references pinned by tag, branch, or floating major
 version in every privileged job.
+
+Any protected job that performs this re-fetch declares only the object-type
+permissions needed by the shared verifier—`issues: read` and
+`pull-requests: read`—in addition to its separately enumerated release
+permissions. Static workflow tests reject missing object-read permissions and
+any broader issue or pull-request permission.
 
 The captured JSON's canonical eventual repository path remains
 `release/authorizations/<package>-<version>.v1.json`, but a later reviewed
@@ -157,8 +231,8 @@ matching sequence without registry mutation.
 Every release workflow declares a package-name-keyed `concurrency` group with
 `cancel-in-progress: false`. Authorized runs for the same package are therefore
 serialized; a later run cannot observe an absent tag concurrently with an
-earlier run. The privileged job still fetches and checks the remote tag
-immediately before and after its one tag push because workflow serialization
+earlier run. The privileged publisher action still fetches and checks the remote
+tag immediately before and after its one fixed Git-refs creation because workflow serialization
 does not replace registry read-back.
 
 Each first-release workflow is protected `workflow_dispatch` only and requires
@@ -186,16 +260,20 @@ selectors. All Bundler, Rake, gemspec, dependency, repository-script, and
 package-hook execution ends in this unprivileged job.
 
 Only the second, minimal job uses the protected `release` environment and
-job-scoped `id-token: write`, `contents: write`, and `actions: read`. It
+job-scoped `id-token: write`, `contents: write`, `actions: read`, `issues: read`,
+and `pull-requests: read`. It
 downloads the artifact and receipt from the same workflow run through
 full immutable commit-SHA-pinned actions, compares both to
 the freshly retrieved exact authorization artifact through the shared handoff
-without executing repository code, verifies the checked-out workflow digest
-independently, fetches the remote tag, and performs only the exact tag push, tag
-read-back, and OIDC registry upload. It does not
+without checkout or repository code, uses the authorization-bound external
+publisher to freshly
+revalidate the approval object and authorization expiry against canonical UTC
+after environment approval, verify the bound workflow digest from authorization
+and GitHub API bytes, create/read back the exact tag through the fixed Git refs
+API, and perform/read back the OIDC registry upload. The workflow has no shell
+tag push or upload step. It does not
 run Bundler, Rake, tests, gemspec evaluation, dependency installation, build
-hooks, or a rebuild. The checkout credential remains unpersisted and is passed
-only to the explicit tag push. Configure OIDC only after every receipt,
+hooks, or a rebuild. Configure OIDC only after every receipt,
 checksum, branch, workflow, and tag check passes. Test wrong dispatch ref, run
 head SHA, workflow path/ref, workflow-file digest, cross-run artifact, receipt,
 checksum, and concurrent-run/tag collision as release-stopping cases. A later
@@ -377,11 +455,16 @@ actually taken.
   a capture artifact whose sole file has canonical eventual path
   `release/authorizations/<package>-<version>.v1.json`, containing the approved
   package, version, commit, tag, artifact digest, workflow binding,
-  grant-manifest digest, actor, source URL, timestamp, expiry, capture identity,
-  and rollback/remediation disposition.
+  grant-manifest digest, derived actor, canonical approval-object identity,
+  timestamp, expiry, capture identity, and rollback/remediation disposition; a
+  RubyGems authorization additionally binds publisher action/provenance
+  selectors, while an npm authorization forbids them.
 - Create in each repository:
   `.github/workflows/capture-package-release-authorization.yml`, the reviewed
   authorization writer and tests, and a fixed v1 authorization schema.
+- Create in each repository:
+  `release/approvers/package-release.v1.json` and its fixed schema; protect both
+  with CODEOWNERS and branch rules requiring two-person review.
 - Modify in each repository: package metadata only when a check below reveals a real gap.
 
 **Interfaces:**
@@ -809,7 +892,18 @@ authorized commit, then create/push and read back the protected tag before npm
 publication. A tag at another commit is a terminal collision. Before login,
 install the global bootstrap contract's unconditional cleanup trap and test its
 success, grant-failure, attachment-failure, verification-failure, interrupt, and
-unexpected-exit cases with a fake npm credential store. Publish the exact
+unexpected-exit cases with a fake npm credential store. Run the bootstrap in a
+disposable VM or OS user with a fresh isolated home and
+`NPM_CONFIG_USERCONFIG`, no unrelated repository checkout, browser profile,
+cloud credential, SSH agent, package token, or other reusable secret. Restrict
+network access to the exact npm and GitHub endpoints required by the runbook,
+open the account-wide npm session immediately before the closed publish/grant/
+publisher/settings sequence, and perform no unrelated command while it is
+live. The trap logs out and verifies the isolated store is credential-free;
+destroy the VM/user/home on both success and failure. A retry starts from a new
+environment and session. Tests prove the command uses only the isolated user
+config, rejects a pre-populated home, exercises every trap path, and destroys the
+environment even when logout/read-back is ambiguous. Publish the exact
 reviewed tarball interactively with 2FA only after the tag is verified. Verify
 npm registry metadata, owners, and tarball integrity; install the downloaded
 `agent-coordination-dashboard@0.1.0` tarball whose integrity matches the reviewed
@@ -889,6 +983,45 @@ artifacts, obtain the separate binary authorization, and only then create or
 resume the draft standalone release. A public GitHub Release for `v0.2.0` does
 not conflict with `prepare-publication`'s rejection of a public or unowned
 release for the distinct standalone tag. Neither tag may be moved or reused.
+
+**External protected-mutator prerequisite:** before Step 6, create and
+independently review the dedicated repository
+`shakacode/agent-release-mutator`. Its root `action.yml` loads only the reviewed,
+checked-in `dist/index.js` built from `src/index.ts`; tests prove the distribution
+matches source. Version 1 exposes only closed `stage-draft`, `expose-draft`, and
+`open-closeout-pr` modes with fixed input/result schemas, exact repository/tag/
+release/branch/path allowlists, and no arbitrary URL, route, ref, request body,
+script, or command input. Protected main, CODEOWNERS, and two-person review are
+required. An unprivileged prerequisite job downloads the action repository at
+that exact commit, verifies the source/distribution build and the closed schemas,
+and emits a canonical receipt binding the independent review URL, repository,
+commit, `action.yml` digest, `dist/index.js` digest, and every mode/schema digest.
+The release authorization and protected-environment review bind that exact
+receipt artifact ID, service digest, and file SHA-256. Record the independent
+review URL, repository, exact 40-hex commit,
+`action.yml` SHA-256, `dist/index.js` SHA-256, and each mode/schema digest in the
+release authorization. Every workflow invocation uses
+`shakacode/agent-release-mutator@<that-full-commit>`. The protected job receives
+write permission at job start, but before invoking the action it downloads and
+compares only the exact unprivileged receipt selected by artifact ID/digest; it
+does not claim that an in-job step can delay credential issuance. Test receipt,
+action-SHA, source digest, distribution digest, and schema substitution. Step 6
+is blocked until this separate deliverable exists and its tests/review pass; a
+placeholder, local action, mutable tag, or action code from this repository is
+forbidden.
+
+The mutator-provenance handoff is mandatory for every closed mode, including
+every `open-closeout-pr` invocation. Each unprivileged preparation job freshly
+downloads the exact provenance receipt by producer run, artifact ID, service
+digest, and file SHA-256 and binds those four selectors plus the action/source/
+distribution/mode/schema digests into its instruction, closed manifest, and
+PR-payload artifact. After the protected opener downloads and validates that
+payload, full-SHA generic artifact/digest actions retrieve and compare the exact
+bound provenance receipt before the full-SHA mutator is invoked. The committed
+PR-binding and protected operation-result records repeat all receipt selectors
+and digests. Missing, name-selected, checkout-relative, or substituted receipt
+evidence stops the opener before branch or PR mutation; tests apply that rule to
+all three version-1 modes.
 
 **Files in `shakacode/agent-workflows`:**
 
@@ -1206,7 +1339,12 @@ state, Ruby/Tebako versions, immutable GitHub repository/tag/commit target,
 source matrix run ID, workflow path/ref/digest, expiry, and rollback. Gem
 publication approval does not authorize binary artifacts. Create the
 authorization only from durable human approval that names the exact source
-evaluation digest:
+evaluation digest. Before invoking the writer, the read-only authorization job
+queries the complete artifact inventory for the exact mutator-provenance
+producer run and artifact ID, verifies the service digest, downloads into a
+fresh directory, and validates the file SHA-256, fixed receipt schema, action
+commit, action/source/distribution digests, and mode/schema digests. A checkout-
+relative receipt or artifact-name/latest-run lookup is forbidden:
 
 ```bash
 ruby packaging/tebako/write-release-authorization.rb \
@@ -1224,6 +1362,11 @@ ruby packaging/tebako/write-release-authorization.rb \
   --authorization-workflow-path .github/workflows/authorize-standalone.yml \
   --authorization-workflow-ref "$GITHUB_WORKFLOW_REF" \
   --authorization-workflow-digest "$AUTHORIZATION_WORKFLOW_DIGEST" \
+  --mutator-receipt "$VERIFIED_MUTATOR_PROVENANCE_RECEIPT_PATH" \
+  --mutator-receipt-run-id "$MUTATOR_RECEIPT_RUN_ID" \
+  --mutator-receipt-artifact-id "$MUTATOR_RECEIPT_ARTIFACT_ID" \
+  --mutator-receipt-service-digest "$MUTATOR_RECEIPT_SERVICE_DIGEST" \
+  --mutator-receipt-file-sha256 "$MUTATOR_RECEIPT_FILE_SHA256" \
   --mutator-action "$STANDALONE_MUTATOR_ACTION" \
   --mutator-action-digest "$STANDALONE_MUTATOR_ACTION_DIGEST" \
   --mutator-result-schema \
@@ -1238,12 +1381,65 @@ ruby test/packaging/standalone_release_evidence_test.rb
 The writer requires the input state to be
 `ADOPTED_PENDING_RELEASE_AUTHORIZATION`, copies the closed four-platform asset
 bindings from that evaluation, requires every target/run/workflow input above,
-requires an independently reviewed mutator action at an immutable commit and
-content digest, binds the result schema's fixed path, version, and SHA-256, and
-validates the result against
+requires and schema-validates that freshly downloaded provenance receipt,
+requires its independently reviewed mutator action at an immutable commit and
+content digest, binds all four receipt selectors and its action/source/
+distribution/mode/schema digests, binds the result schema's fixed path, version,
+and SHA-256, and validates the result against
 `standalone-release-authorization-v1.schema.json`. It rejects a threshold
 failure, failed criterion, terminal input, ambiguous approver, mutable target,
 missing rollback, or stale authorization.
+
+Every later preparation and protected publication job freshly retrieves that
+same provenance receipt by the authorization-bound producer run, artifact ID,
+service digest, and file SHA-256. The protected job compares the receipt through
+full-SHA generic artifact/digest actions before invoking the full-SHA mutator;
+tests reject substitution of any selector, receipt byte, action commit, or
+recorded digest.
+
+Terminal standalone closeouts are irreversible in this plan; there is no
+implicit reopening transition. Before authorization capture accepts the source
+evaluation, it fetches current `main` and rejects either deterministic terminal
+namespace for the same evaluation/tag:
+`release/evidence/standalone/closeouts/evaluation-<full-evaluation-sha256>/` or
+`release/evidence/standalone/closeouts/tag-<tag>/`. `prepare-publication` repeats
+that current-`main` check after verifying the authorization, and the final
+protected pre-exposure check repeats it immediately before making a draft
+public. Because the lock is released between separately queued jobs, every
+mutating job—including `stage-draft`, `expose-draft`, and every
+`open-closeout-pr` mode—re-fetches current `main` and rejects either terminal
+namespace under its acquired lock immediately before invoking its mutator.
+
+In each authorization, preparation, publication, and pre-merge denial or
+threshold-failure opener workflow, a first read-only identity job downloads and
+schema-validates the exact evidence selected by producer-run/artifact-ID/service-
+digest/file-digest, derives the full evaluation digest itself, pairs it with the
+plan-fixed `agent-workflows-standalone-v0.2.0` tag, and emits one canonical lock
+key. In each post-merge negative `finalize-standalone-closeout.yml` workflow,
+the identity job instead fetches the exact trusted-base merge commit from
+current `main`, validates the committed candidate/manifest and deterministic
+evaluation namespace, and derives the same digest/tag key from those durable
+bytes; retention artifact selectors cannot define that finalizer's lock. No
+dispatch or caller-provided lock key is accepted. Each subsequent writer,
+finalizer, or publication job declares job-level, non-cancelling concurrency on
+only that `needs.identity.outputs.lock_key`; GitHub therefore acquires the lock
+after validated identity derivation and before any mutation. The identical key
+covers authorization capture, preparation, the entire publication job including
+its protected expose action, and every denial or threshold-failure
+`finalize-standalone-closeout.yml` job. A merged negative
+evidence PR remains a candidate rather than an accepted terminal verdict until
+that serialized finalizer revalidates current `main` and the no-public-release
+condition. A terminal-candidate closeout merged after authorization capture therefore
+either invalidates the authorization before staging/exposure or waits for
+publication and is rejected by the finalizer after exposure. Tests cover
+forged identity inputs, cross-workflow serialization, finalizer/check/toggle
+interleavings, terminal acceptance between preparation and `stage-draft`, and
+the plan-fixed tag path for no-authorization negative cases,
+as well as merge denial,
+stale-authorization, and threshold-failure closeouts at each race boundary.
+Reopening would require a separately reviewed
+state-machine/schema revision and fresh approval; old source artifacts never
+reopen themselves.
 
 Run the writer only in `authorize-standalone.yml`, after the named human approval
 has been durably recorded. This capture workflow checks out the authorized source
@@ -1374,8 +1570,10 @@ capture workflow, downloads the authorization artifact by ID into a fresh
 directory, verifies the artifact and file digests plus the authorization schema,
 and requires the file's producer-run/workflow bindings to match the API evidence.
 It then verifies every workflow/evaluation/authorization/tag/commit/expiry
-binding and asset checksum/signature, rejects a public or unowned release for
-the tag, and writes a closed publication instruction:
+binding and asset checksum/signature, freshly downloads and verifies the exact
+authorization-bound mutator-provenance receipt by all four selectors, rejects a
+public or unowned release for the tag, and writes a closed publication
+instruction:
 
 ```bash
 ruby packaging/tebako/write-publication-instruction.rb \
@@ -1384,6 +1582,11 @@ ruby packaging/tebako/write-publication-instruction.rb \
   --authorization-producer-run-id "$AUTHORIZATION_PRODUCER_RUN_ID" \
   --authorization-artifact-id "$AUTHORIZATION_ARTIFACT_ID" \
   --authorization-artifact-digest "$AUTHORIZATION_ARTIFACT_DIGEST" \
+  --mutator-receipt "$VERIFIED_MUTATOR_PROVENANCE_RECEIPT_PATH" \
+  --mutator-receipt-run-id "$MUTATOR_RECEIPT_RUN_ID" \
+  --mutator-receipt-artifact-id "$MUTATOR_RECEIPT_ARTIFACT_ID" \
+  --mutator-receipt-service-digest "$MUTATOR_RECEIPT_SERVICE_DIGEST" \
+  --mutator-receipt-file-sha256 "$MUTATOR_RECEIPT_FILE_SHA256" \
   --repository shakacode/agent-workflows \
   --tag "$AUTHORIZED_BINARY_TAG" \
   --output "$RUNNER_TEMP/standalone-github-publication-instruction-v1.json"
@@ -1394,7 +1597,8 @@ source run, authorization producer run/artifact ID/artifact digest/file digest,
 authorization capture-workflow path/ref/digest, repository, immutable tag and
 target commit, closed four-asset name/digest/signature matrix, expiry, and the
 independently reviewed mutator action's repository, immutable commit, and content
-digest plus the mutator-result schema path, version, and digest. Upload the
+digest, all mutator-provenance receipt selectors and action/source/distribution/
+mode/schema digests, plus the mutator-result schema path, version, and digest. Upload the
 instruction, freshly downloaded verified authorization, freshly downloaded
 verified source evaluation, exact asset bundle, and a closed manifest of every
 file and SHA-256 as one same-run preparation artifact; read back and record its
@@ -1414,13 +1618,15 @@ authorization-bound independent mutator action in closed `stage-draft` mode.
 That action accepts no arbitrary API route, script, or request-body input. It
 downloads the preparation artifact by the exact ID/digest supplied from the
 completed `prepare-publication` job, independently validates its manifest,
-instruction, and artifact bundle, then creates or
+instruction, artifact bundle, and embedded provenance selectors, separately
+downloads and compares the exact provenance receipt, then creates or
 resumes only an exporter-owned **draft** release for the exact tag and uploads
 exactly the closed asset set. A build artifact, workflow log, or non-draft
 release is never an upload target. It emits a closed `stage_succeeded` operation
 result binding the protected run, preparation-artifact ID/digest, instruction,
-release/asset IDs, and observed `draft: true` under the bound mutator-result
-schema. A pinned artifact step uploads those exact bytes and queries the
+release/asset IDs, every mutator-provenance receipt selector and action/source/
+distribution/mode/schema digest, and observed `draft: true` under the bound
+mutator-result schema. A pinned artifact step uploads those exact bytes and queries the
 resulting artifact ID/digest. The unprivileged verifier owns fresh retrieval and
 domain-schema validation.
 
@@ -1457,7 +1663,9 @@ The `draft_verified` receipt binds the repository, release, tag, target, and
 asset IDs; API and authenticated-download timestamps; canonical asset URLs;
 downloaded digests; verified signatures; platform/architecture; authorization,
 source-evaluation, workflow, instruction, preparation-artifact, protected-run,
-and operation-result artifact IDs/digests; and observed `draft: true`. Upload it
+operation-result artifact IDs/digests, and every mutator-provenance receipt
+selector and action/source/distribution/mode/schema digest; and observed
+`draft: true`. Upload it
 as a retention-bounded artifact
 named by tag and staging run, then read back its artifact ID and SHA-256. Loss or
 mismatch blocks exposure.
@@ -1471,12 +1679,15 @@ the packaged executables, and writes a closed PR instruction binding the target
 base SHA, the installation-doc path/digest, fixed tag-specific committed
 instruction and PR-binding paths, source-evidence artifact identities,
 deterministic branch name, and the fixed binding/result schema paths, versions,
-digests, expected result-artifact name, and opener action digest. It packages
+digests, expected result-artifact name, opener action digest, and all four
+mutator-provenance receipt selectors plus its action/source/distribution/mode/
+schema digests. It packages
 the instruction, documentation, and a
 closed file manifest into one PR-payload artifact, uploads it, queries its exact
 ID/service digest, freshly downloads it, and revalidates every byte. A protected
-`open-pr` job has only `contents: write` and `pull-requests: write`, no release
-permission, checkout, shell, repository code, or caller-selected path/content.
+`open-pr` job has only `actions: read`, `contents: write`, and
+`pull-requests: write`, no release permission, checkout, shell, repository code,
+or caller-selected path/content.
 It receives only the payload producer run, exact artifact ID, and service digest,
 freshly downloads that artifact, and independently validates its instruction and
 manifest. Its only mutator is the independently reviewed immutable action in
@@ -1486,11 +1697,13 @@ and opens a PR but cannot merge or write directly to `main`.
 The opener adds the schema-valid PR-binding record at the instruction's fixed
 path. That committed record contains only pre-commit values: mode, PR number,
 target base, deterministic branch, opener run and immutable action, payload
-artifact ID/digest, instruction/file-manifest digests, and original
+artifact ID/digest, instruction/file-manifest digests, all mutator-provenance
+receipt selectors/digests, and original
 preparation/draft artifact identities. It deliberately cannot contain its own
 commit SHA. After updating the PR to the resulting final head, the opener emits a
 closed operation result binding the observed final head, committed binding-file
-digest, and every shared PR/payload value. A pinned artifact step uploads those
+digest, every mutator-provenance selector/digest, and every shared PR/payload
+value. A pinned artifact step uploads those
 exact result bytes; a read-only job queries the exact opener run, requires the
 one instruction-named result artifact, records its ID/service digest, freshly
 downloads it, and validates both records with
@@ -1517,7 +1730,9 @@ no-repository-code contract as `stage-draft`. Its only mutating step is the same
 independently pinned action in closed `expose-draft` mode. It freshly downloads
 the exact preparation and durable draft-receipt artifacts by their bound
 IDs/digests, verifies the preparation manifest and receipt bytes, and revalidates
-the unexpired authorization from the preparation artifact,
+the unexpired authorization from the preparation artifact. It separately
+downloads and compares the exact mutator-provenance receipt bound by the
+instruction and draft receipt, then
 re-reads that exact draft release, downloads and re-verifies every live asset
 digest/signature, rejects extra or replaced asset IDs, requires the same
 tag/target and `draft: true`, and may then toggle only that receipt's release ID.
@@ -1525,13 +1740,16 @@ The mutator emits either a closed `expose_succeeded` result or a closed ambiguit
 result under the authorization-bound result schema. The success result binds
 the protected run, release/tag/target, instruction, authorization,
 preparation-artifact ID/digest, draft-receipt artifact ID/digest, mutator
-identity/digest, toggle timestamp, and response status; it accepts no
-caller-selected fields. An immutable-SHA-pinned artifact
+identity/digest, every mutator-provenance receipt selector and action/source/
+distribution/mode/schema digest, toggle timestamp, and response status; the
+closed ambiguity variant binds that identical provenance set plus its first
+ambiguous timestamp and response evidence. Neither accepts caller-selected
+fields. An immutable-SHA-pinned artifact
 step uploads those exact bytes and queries the resulting artifact ID/digest; it
 does not execute repository or domain-validation code. A missing, substituted,
 or non-durable success result is `PUBLICATION_UNKNOWN`, never successful
 exposure.
-The exact mutator action identity/digest and both closed modes are part of human
+The exact mutator action identity/digest and every authorized closed mode are part of human
 environment review; a repository-controlled helper never receives a write token.
 
 `verify-public` is unprivileged and read-only. It freshly downloads the exact
@@ -1543,7 +1761,9 @@ path/version/digest with repository validation code, and requires the closed
 from the freshly downloaded preparation artifact. It then reads back the
 public release and emits `published_verified` only when the result's protected
 run and evidence bindings plus the tag, target, release ID, asset IDs, digests,
-and signatures still match the draft receipt. It then generates a schema-valid
+signatures, and every mutator-provenance receipt selector/digest still match the
+instruction, draft receipt, and expose result. The published receipt repeats
+that complete provenance set. It then generates a schema-valid
 candidate terminal `ADOPTED` evaluation without yet accepting, reporting, or
 committing that transition.
 Package the published receipt, candidate terminal evaluation, draft receipt,
@@ -1563,7 +1783,8 @@ verified authorization, draft and public receipts, candidate terminal
 evaluation, closed manifest, original PR instruction, and PR-binding record; each
 prepared content digest, fixed binding/result schema paths, versions, digests,
 expected result-artifact name, opener action digest, original closeout-artifact
-identity, and target base SHA are bound. Package the
+identity, target base SHA, and all mutator-provenance receipt selectors/digests
+are bound. Package the
 instruction, prepared files, and
 closed manifest into one PR-payload artifact, then upload, query, freshly
 download, and verify it exactly as in `installation-docs` mode. The same
@@ -1576,9 +1797,11 @@ The opener writes the fixed PR-binding file after the PR number exists and
 updates the branch to a final head containing it. That committed record binds the
 PR number, target base, deterministic branch, opener run/action digest,
 PR-payload artifact ID/service digest, instruction/manifest digests, and original
-publication-closeout producer run/artifact ID/service digest, but never its own
-commit SHA. Its closed operation-result artifact independently binds the observed
-final head and committed binding-file digest plus every shared value. Query the
+publication-closeout producer run/artifact ID/service digest plus all mutator-
+provenance receipt selectors/digests, but never its own commit SHA. Its closed
+operation-result artifact independently binds the observed final head, committed
+binding-file digest, and every mutator-provenance selector/digest plus every
+shared value. Query the
 exact opener run for the one instruction-named result artifact, record its
 ID/service digest, freshly download it, and validate both records before the PR
 is presented for merge.
@@ -1622,8 +1845,9 @@ retrieves and digests the original run's durable draft
 receipt, queries the protected run/job and step evidence through the GitHub API,
 and captures a fresh read-only release observation; it forbids mutator-result
 path and artifact fields. The record binds its closed origin variant, expose
-run/job and mutator identity/digest, workflow digest, authorization,
-preparation-artifact ID/digest, draft-receipt artifact ID/digest, conditionally
+run/job and mutator identity/digest, workflow digest, authorization, every
+mutator-provenance receipt selector and action/source/distribution/mode/schema
+digest, preparation-artifact ID/digest, draft-receipt artifact ID/digest, conditionally
 required-or-forbidden
 mutator-result artifact ID/digest, release ID, exact asset IDs, first ambiguous
 timestamp, recovery deadline, and attempt count. For
@@ -1634,6 +1858,12 @@ artifact counts, and absent name; the fixed grace duration and its start/end
 timestamps; and the terminal-receipt/recovery-artifact absence query's response
 digest, timestamp, pagination-completeness flag, and counts. Successor records
 preserve that entire origin proof byte-for-byte.
+
+The recovery writer derives the provenance selectors/digests from the freshly
+verified authorization and preparation instruction. For an artifact-backed
+origin it requires the ambiguity result to echo them exactly; for an interrupted
+origin it separately retrieves and compares the exact provenance receipt before
+creating attempt 0. Callers cannot supply or override provenance fields.
 
 ```bash
 ruby packaging/tebako/write-publication-recovery.rb \
@@ -1738,6 +1968,8 @@ execute checkout/repository code or arbitrary mutator inputs, missing or
 substituted successful expose-result artifacts, wrong result-schema bindings or
 variants, missing or substituted stage/ambiguity result artifacts, false or
 racing interrupted-result absence, a job that never entered the mutator step,
+missing or altered provenance selectors/digests in preparation, stage, draft,
+expose-success, expose-ambiguity, public, and recovery records,
 caller-supplied interrupted timestamps, altered or missing interrupted-origin
 proof in successor records, skipped/repeated/over-limit attempt ordinals, and
 refusal to publish before receipt verification. Also test refusal to expose
