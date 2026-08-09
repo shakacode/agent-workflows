@@ -61,9 +61,14 @@
 
 ### Shared RubyGems release contract
 
-Both Ruby packages use this single release contract. Package tasks below add
+The canonical contract ID for this section is `AW-RELEASE-RUBYGEMS-V1`. Both
+Ruby packages use this single release contract. Package tasks below add
 only their package-specific inputs and validation; they do not restate or
-weaken these controls.
+weaken these controls. The grant-manifest, post-publication grant, and read-back
+rules in Global Constraints are the canonical `AW-RELEASE-GRANTS-V1` contract.
+Every task call site references these exact IDs; implementation review must
+cross-check each call site against the canonical text, and any local paraphrase
+is explanatory rather than normative.
 
 Add two distinct verification tasks so Rake's run-once semantics cannot skip
 the post-push simulation in the unprivileged release-verification job. A
@@ -335,7 +340,7 @@ Add `gem "rake", require: false` to `Gemfile`, update the lockfile, require
 `bundler/gem_tasks` from `Rakefile`, and test that `bundle exec rake -T` exposes
 the build and release tasks in a clean bundle.
 
-Implement the shared RubyGems release contract above with package
+Implement `AW-RELEASE-RUBYGEMS-V1` above with package
 `agent-coordination`, version and tag `0.1.0`/`v0.1.0`, and the exact
 `pkg/agent-coordination-0.1.0.gem` artifact. The authorization inputs come from
 Step 7.
@@ -357,7 +362,7 @@ Create/push the signed or protected release tag through the authorized workflow;
 the workflow must verify that tag before it permits the gem-push hook. Verify
 RubyGems metadata, the checksum of the bytes actually published, owners, MFA
 status, and install from RubyGems into a clean gem home. For a first
-publication, execute the global post-publication owner-grant contract, record
+publication, execute `AW-RELEASE-GRANTS-V1`, record
 every manifest row's result in the release receipt, and verify the receipt binds
 the authorized manifest digest before continuing. Then create the GitHub
 Release explicitly from the verified tag and commit, attach the checksum
@@ -416,7 +421,7 @@ changelog contract tests before authorization.
 
 - [ ] **Step 4: Add the OIDC-only release workflow**
 
-Implement the shared RubyGems release contract above with package
+Implement `AW-RELEASE-RUBYGEMS-V1` above with package
 `agent-workflows`, version and tag `0.2.0`/`v0.2.0`, and its exact built gem.
 Confirm the foundation `Gemfile` includes Rake and its `Rakefile` still
 exposes Bundler's release task under `bundle exec`, then run `bin/validate`, gem
@@ -445,7 +450,7 @@ After the workflow reports success, independently query RubyGems, install the
 public gem, run each executable, verify tag/release SHA, and confirm the
 source-pack installer still uses its own pinned library bytes. For a first
 RubyGems publication under this name, execute and read back the global
-post-publication owner-grant contract before treating the release as complete.
+`AW-RELEASE-GRANTS-V1` before treating the release as complete.
 
 ### Task 4: Prepare and release npm `agent-coordination-dashboard` 0.1.0
 
@@ -487,7 +492,7 @@ Run the packaged command's help, foreground smoke on a disposable port/state roo
 
 Prepare npm provenance/OIDC from a protected GitHub release environment with no
 long-lived npm token. Use the same package-keyed non-cancelling concurrency and
-two-job privilege split as the shared RubyGems contract. The unprivileged job
+two-job privilege split as `AW-RELEASE-RUBYGEMS-V1`. The unprivileged job
 runs install, test, typecheck, build, package-content checks, and tarball smoke,
 then uploads the exact tarball and bound receipt. The minimal OIDC job downloads
 those same-run artifacts with pinned actions, verifies their authorization and

@@ -25,6 +25,11 @@ configuration files selected by a Ruby shebang or Ruby filename convention with
 22,620 lines. These categories are disjoint and reconcile to the headline
 totals. The largest production commands include:
 
+This is a point-in-time migration-priority snapshot, not a live invariant.
+Before implementation begins, rerun the tracked-file classifier against the
+then-current base, preserve its command and output in the implementation PR,
+and revise the extraction order if the refreshed measurements materially differ.
+
 - `bin/agent-workflow-seam-doctor`: 2,161 lines;
 - `bin/push-downstream`: 2,117 lines;
 - `skills/pr-batch/bin/pr-security-preflight`: 1,778 lines;
