@@ -341,4 +341,3 @@ Require exact-head Validate, Lint, configured reviews, and thread triage. Keep t
 - [ ] **Step 7: Rebuild and resume the walkthrough**
 
 Re-fetch base and head, reconcile every changed path into the coverage ledger, and restart from the revised conversion/generator boundary. Walkthrough participation is not merge approval.
-
