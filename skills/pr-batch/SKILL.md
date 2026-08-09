@@ -1022,6 +1022,9 @@ when present, durably enqueue that resume, and then acknowledge its `wake_id`;
 acknowledgement retries are idempotent. Redeliver an unacknowledged pending
 wake after restart, then rerun every
 security, origin, coordination, overlap, review, readiness, and exact-head gate.
+Keep acknowledgement state bounded: a delayed retry replays its original
+canonical observation and probe sequence so the reducer can derive and verify
+the exact waking identity without retaining an ever-growing membership ledger.
 If only model-mediated same-thread polling is available, use the bounded
 15-minute fast window, exponential backoff, and finite unchanged-run/call/token
 ceilings from the canonical contract; conservatively count every fallback

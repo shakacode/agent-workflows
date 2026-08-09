@@ -156,6 +156,15 @@ enqueue that continuation before acknowledging its `wake_id`; until then,
 `redeliver-pending-wake` remains a waking result so a runner restart cannot lose
 the transition. Acknowledgement is idempotent: retrying the same acknowledged
 `wake_id` is a non-waking replay and cannot fail a recovered runner.
+The reducer keeps this state bounded and does not persist an
+acknowledgement-membership ledger. It validates the current pending or last
+decision directly. Delayed acknowledgement retries replay the original
+canonical observation and `probe_sequence`; the reducer accepts only a
+`wake_id` derived from that fingerprint and a waking action possible for the
+submitted capability and statuses, without mutating newer state. Attaching an
+old acknowledgement to unrelated newer evidence, or naming an impossible
+waking action, fails closed. For bounded migration, legacy
+`acknowledged_wake_ids` is dropped on the next state persistence.
 
 `blocker_state` is an object whose arrays are set-valued collections; adapters
 must encode ordered sequences as keyed objects. The reducer canonicalizes object

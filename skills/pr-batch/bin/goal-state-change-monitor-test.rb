@@ -68,6 +68,22 @@ class GoalStateChangeMonitorTest < Minitest::Test
     acknowledged
   end
 
+  def derived_wake_id(input, action)
+    fingerprint = Digest::SHA256.hexdigest(
+      JSON.generate(canonicalize_for_digest(input.fetch("blocker_state")))
+    )
+    Digest::SHA256.hexdigest(
+      JSON.generate(
+        canonicalize_for_digest(
+          "monitor_id" => input.fetch("monitor_id"),
+          "probe_sequence" => input.fetch("probe_sequence"),
+          "fingerprint" => fingerprint,
+          "action" => action
+        )
+      )
+    )
+  end
+
   def test_deterministic_watcher_suppresses_unchanged_parent_wakes
     observations = Array.new(3) do |index|
       observation(
@@ -443,8 +459,16 @@ class GoalStateChangeMonitorTest < Minitest::Test
         assert_equal resume_instruction, current.dig("handoff", "resume_instruction")
         persisted = JSON.parse(File.read(state_path))
         refute persisted.key?("pending_wake")
-        assert_includes persisted.fetch("acknowledged_wake_ids"), dependency_stop.fetch("wake_id")
+        refute persisted.key?("acknowledged_wake_ids")
         assert_equal current.fetch("handoff"), persisted.dig("last_decision", "handoff")
+
+        delayed, delayed_stderr, delayed_status = run_helper(
+          state_path,
+          dependency_observation.merge("acknowledged_wake_id" => dependency_stop.fetch("wake_id"))
+        )
+        assert delayed_status.success?, delayed_stderr
+        assert_equal "suppress-acknowledgement-retry", delayed.fetch("action")
+        refute delayed.fetch("wake_parent")
       end
     end
   end
@@ -1014,6 +1038,49 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_repeated_changed_wake_ack_cycles_keep_restart_state_bounded
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      baseline_bytes = File.size(state_path)
+      one_ack_bytes = nil
+      one_ack_count = nil
+
+      1.upto(50) do |probe_sequence|
+        current_observation = observation(
+          "blocker_state" => {
+            "head" => (probe_sequence.odd? ? "b" : "a") * 40,
+            "pending" => []
+          },
+          "probe_sequence" => probe_sequence,
+          "observed_at" => format(
+            "2026-08-09T%<hour>02d:%<minute>02d:00Z",
+            hour: probe_sequence / 60,
+            minute: probe_sequence % 60
+          )
+        )
+        wake, wake_stderr, wake_status = run_helper(state_path, current_observation)
+        assert wake_status.success?, wake_stderr
+        assert_equal "wake-state-change", wake.fetch("action")
+        acknowledge_wake(state_path, current_observation, wake)
+        unless one_ack_bytes
+          one_ack_bytes = File.size(state_path)
+          one_ack_count = JSON.parse(File.read(state_path)).fetch("acknowledged_wake_ids", []).length
+        end
+      end
+
+      persisted = JSON.parse(File.read(state_path))
+      acknowledged_count = persisted.fetch("acknowledged_wake_ids", []).length
+      final_bytes = File.size(state_path)
+      puts "ACK_STATE_BASELINE_COUNT_BYTES=0/#{baseline_bytes}"
+      puts "ACK_STATE_AFTER_1_COUNT_BYTES=#{one_ack_count}/#{one_ack_bytes}"
+      puts "ACK_STATE_AFTER_50_COUNT_BYTES=#{acknowledged_count}/#{final_bytes}"
+      assert_equal 0, acknowledged_count
+      assert_operator final_bytes, :<=, one_ack_bytes + 128
+    end
+  end
+
   def test_same_sequence_acknowledgement_rejects_a_substantive_replay_change
     Dir.mktmpdir do |directory|
       state_path = File.join(directory, "monitor.json")
@@ -1359,7 +1426,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
       refute_equal first.fetch("wake_id"), second.fetch("wake_id")
       persisted = JSON.parse(File.read(state_path))
       assert_equal second.fetch("wake_id"), persisted.dig("pending_wake", "wake_id")
-      assert_includes persisted.fetch("acknowledged_wake_ids"), first.fetch("wake_id")
+      refute persisted.key?("acknowledged_wake_ids")
       assert_equal 2, persisted.fetch("probe_sequence")
       assert_equal({ "result" => "passed" }, persisted.fetch("blocker_state"))
     end
@@ -1377,6 +1444,14 @@ class GoalStateChangeMonitorTest < Minitest::Test
       acknowledge_wake(state_path, first_observation, first)
 
       second_observation = observation("blocker_state" => { "value" => 2 }, "probe_sequence" => 2)
+      unrelated, unrelated_stderr, unrelated_status = run_helper(
+        state_path,
+        second_observation.merge("acknowledged_wake_id" => first.fetch("wake_id"))
+      )
+      assert_nil unrelated
+      refute unrelated_status.success?
+      assert_includes unrelated_stderr, '"reason":"invalid-wake-acknowledgement"'
+
       second, second_stderr, second_status = run_helper(state_path, second_observation)
       assert second_status.success?, second_stderr
       acknowledge_wake(state_path, second_observation, second)
@@ -1388,6 +1463,101 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert delayed_status.success?, delayed_stderr
       assert_equal "suppress-acknowledgement-retry", delayed.fetch("action")
       assert_equal false, delayed.fetch("wake_parent")
+
+      persisted_before_retry = File.read(state_path)
+      retried, retried_stderr, retried_status = run_helper(
+        state_path,
+        first_observation.merge("acknowledged_wake_id" => first.fetch("wake_id"))
+      )
+      assert retried_status.success?, retried_stderr
+      assert_equal "suppress-acknowledgement-retry", retried.fetch("action")
+      refute retried.fetch("wake_parent")
+      assert_equal persisted_before_retry, File.read(state_path)
+    end
+  end
+
+  def test_stale_acknowledgements_fail_closed_for_impossible_waking_actions
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      first_observation = observation("blocker_state" => { "value" => 1 }, "probe_sequence" => 1)
+      first, first_stderr, first_status = run_helper(state_path, first_observation)
+      assert first_status.success?, first_stderr
+      acknowledge_wake(state_path, first_observation, first)
+      second_observation = observation("blocker_state" => { "value" => 2 }, "probe_sequence" => 2)
+      second, second_stderr, second_status = run_helper(state_path, second_observation)
+      assert second_status.success?, second_stderr
+      acknowledge_wake(state_path, second_observation, second)
+
+      impossible_acknowledgements = [
+        first_observation.merge(
+          "capability" => "unsupported",
+          "acknowledged_wake_id" => first.fetch("wake_id")
+        ),
+        first_observation.merge(
+          "task_status" => "terminal",
+          "acknowledged_wake_id" => first.fetch("wake_id")
+        ),
+        first_observation.merge(
+          "acknowledged_wake_id" => derived_wake_id(first_observation, "fallback-model-poll")
+        ),
+        first_observation.merge(
+          "acknowledged_wake_id" => derived_wake_id(first_observation, "stop-dependency-terminal")
+        )
+      ]
+
+      impossible_acknowledgements.each do |invalid_observation|
+        decision, stderr, status = run_helper(state_path, invalid_observation)
+        assert_nil decision
+        refute status.success?
+        assert_includes stderr, '"reason":"invalid-wake-acknowledgement"'
+      end
+    end
+  end
+
+  def test_legacy_acknowledgement_history_is_read_for_migration_then_dropped_on_persist
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      current_observation = observation("probe_sequence" => 2, "observed_at" => "2026-08-09T00:30:00Z")
+      _current, current_stderr, current_status = run_helper(state_path, current_observation)
+      assert current_status.success?, current_stderr
+      legacy_wake_id = "f" * 64
+      legacy_state = JSON.parse(File.read(state_path)).merge("acknowledged_wake_ids" => [legacy_wake_id])
+      File.write(state_path, JSON.generate(legacy_state))
+
+      unrelated, unrelated_stderr, unrelated_status = run_helper(
+        state_path,
+        observation(
+          "probe_sequence" => 3,
+          "observed_at" => "2026-08-09T00:45:00Z",
+          "acknowledged_wake_id" => legacy_wake_id
+        )
+      )
+      assert_nil unrelated
+      refute unrelated_status.success?
+      assert_includes unrelated_stderr, '"reason":"invalid-wake-acknowledgement"'
+
+      legacy_retry, legacy_stderr, legacy_status = run_helper(
+        state_path,
+        observation(
+          "probe_sequence" => 1,
+          "observed_at" => "2026-08-09T00:15:00Z",
+          "acknowledged_wake_id" => legacy_wake_id
+        )
+      )
+      assert legacy_status.success?, legacy_stderr
+      assert_equal "suppress-acknowledgement-retry", legacy_retry.fetch("action")
+      assert JSON.parse(File.read(state_path)).key?("acknowledged_wake_ids")
+
+      _next, next_stderr, next_status = run_helper(
+        state_path,
+        observation("probe_sequence" => 3, "observed_at" => "2026-08-09T00:45:00Z")
+      )
+      assert next_status.success?, next_stderr
+      refute JSON.parse(File.read(state_path)).key?("acknowledged_wake_ids")
     end
   end
 

@@ -1763,6 +1763,9 @@ qualifying state-change watcher:
   `state_delta` when present, then acknowledges its `wake_id`.
   Acknowledgement retries are idempotent. Until acknowledgement,
   `redeliver-pending-wake` preserves the wake across a runner restart;
+- keeps acknowledgement state bounded without a persistent membership ledger.
+  A delayed retry replays its original canonical observation and probe sequence;
+  attaching an old acknowledgement to unrelated newer evidence fails closed;
 - reruns full security, origin, coordination, overlap, review, readiness, and
   exact-head gates after that material transition. Prior green evidence never
   substitutes for this replay;

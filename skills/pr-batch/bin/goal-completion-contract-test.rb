@@ -546,6 +546,15 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_host_adapter, "acknowledging its `wake_id`", "host-adapter contract"
     assert_text_includes normalized_host_adapter, "Acknowledgement is idempotent", "host-adapter contract"
     assert_text_includes normalized_host_adapter,
+                         "does not persist an acknowledgement-membership ledger",
+                         "host-adapter bounded acknowledgement state"
+    assert_text_includes normalized_host_adapter,
+                         "Delayed acknowledgement retries replay the original canonical observation and `probe_sequence`",
+                         "host-adapter delayed acknowledgement identity"
+    assert_text_includes normalized_host_adapter,
+                         "legacy `acknowledged_wake_ids` is dropped on the next state persistence",
+                         "host-adapter acknowledgement migration"
+    assert_text_includes normalized_host_adapter,
                          "same `probe_sequence` must replay a canonical-equivalent observation payload",
                          "host-adapter replay identity contract"
     assert_text_includes normalized_host_adapter,

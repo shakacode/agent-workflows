@@ -46,6 +46,26 @@ def canonical_json(value)
   JSON.generate(canonicalize(value))
 end
 
+def wake_id_for(monitor_id:, probe_sequence:, fingerprint:, action:)
+  Digest::SHA256.hexdigest(
+    canonical_json(
+      "monitor_id" => monitor_id,
+      "probe_sequence" => probe_sequence,
+      "fingerprint" => fingerprint,
+      "action" => action
+    )
+  )
+end
+
+def possible_stale_wake_actions(capability:, task_status:, dependency_status:, probe_sequence:)
+  return [] if TASK_ACTIONS.key?(task_status) || capability == "unsupported"
+  return ["stop-dependency-terminal"] if dependency_status == "terminal"
+  return [] unless probe_sequence.positive?
+  return ["wake-state-change"] if capability == "deterministic-watcher"
+
+  %w[wake-state-change fallback-model-poll]
+end
+
 def positive_integer(value)
   value if value.is_a?(Integer) && value.positive?
 end
@@ -124,7 +144,8 @@ end
 
 def persist_state(state_path, state)
   temporary_path = "#{state_path}.tmp.#{Process.pid}"
-  File.write(temporary_path, JSON.generate(state), mode: "w", perm: 0o600)
+  bounded_state = state.reject { |key, _value| key == "acknowledged_wake_ids" }
+  File.write(temporary_path, JSON.generate(bounded_state), mode: "w", perm: 0o600)
   File.rename(temporary_path, state_path)
 end
 
@@ -261,19 +282,38 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   end
 
   pending_wake = previous&.fetch("pending_wake", nil)
-  acknowledged_wake_ids = previous.to_h.fetch("acknowledged_wake_ids", [])
-  fail_json("corrupt-persisted-state") unless acknowledged_wake_ids.is_a?(Array)
+  legacy_acknowledged_wake_ids = previous.to_h.fetch("acknowledged_wake_ids", [])
+  fail_json("corrupt-persisted-state") unless legacy_acknowledged_wake_ids.is_a?(Array)
   recognized_acknowledgement = false
   if acknowledged_wake_id
     validate_same_sequence_replay.call if previous && probe_sequence == previous.fetch("probe_sequence")
     if pending_wake.is_a?(Hash) && pending_wake["wake_id"] == acknowledged_wake_id
-      previous = previous.reject { |key, _value| key == "pending_wake" }
-                         .merge("acknowledged_wake_ids" => (acknowledged_wake_ids + [acknowledged_wake_id]).uniq)
+      previous = previous.reject { |key, _value| %w[pending_wake acknowledged_wake_ids].include?(key) }
       persist_state(state_path, previous)
-      acknowledged_wake_ids = previous.fetch("acknowledged_wake_ids")
       recognized_acknowledgement = true
-    elsif acknowledged_wake_ids.include?(acknowledged_wake_id)
+    elsif previous && probe_sequence <= previous.fetch("probe_sequence") &&
+          previous.dig("last_decision", "wake_parent") == true &&
+          previous.dig("last_decision", "wake_id") == acknowledged_wake_id
       recognized_acknowledgement = true
+    elsif previous && probe_sequence <= previous.fetch("probe_sequence") &&
+          legacy_acknowledged_wake_ids.include?(acknowledged_wake_id)
+      recognized_acknowledgement = true
+    elsif previous && probe_sequence < previous.fetch("probe_sequence")
+      possible_wake_ids = possible_stale_wake_actions(
+        capability: capability,
+        task_status: task_status,
+        dependency_status: dependency_status,
+        probe_sequence: probe_sequence
+      ).map do |action|
+        wake_id_for(
+          monitor_id: monitor_id,
+          probe_sequence: probe_sequence,
+          fingerprint: fingerprint,
+          action: action
+        )
+      end
+      recognized_acknowledgement = possible_wake_ids.include?(acknowledged_wake_id)
+      fail_json("invalid-wake-acknowledgement") unless recognized_acknowledgement
     else
       fail_json("invalid-wake-acknowledgement")
     end
@@ -283,9 +323,6 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   terminal_observation = TASK_ACTIONS.key?(task_status) || dependency_status == "terminal"
   terminal_observation_supersedes_pending = pending_wake && terminal_observation && previous &&
                                             probe_sequence > previous.fetch("probe_sequence")
-  if pending_wake && terminal_observation_supersedes_pending
-    acknowledged_wake_ids = (acknowledged_wake_ids + [pending_wake.fetch("wake_id")]).uniq
-  end
   if pending_wake && !terminal_observation_supersedes_pending
     pending_decision = pending_wake.fetch("decision")
     decision = pending_decision.merge(
@@ -531,13 +568,11 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     end
   end
   if wake_parent
-    wake_id = Digest::SHA256.hexdigest(
-      canonical_json(
-        "monitor_id" => monitor_id,
-        "probe_sequence" => probe_sequence,
-        "fingerprint" => fingerprint,
-        "action" => decision.fetch("action")
-      )
+    wake_id = wake_id_for(
+      monitor_id: monitor_id,
+      probe_sequence: probe_sequence,
+      fingerprint: fingerprint,
+      action: decision.fetch("action")
     )
     decision["wake_id"] = wake_id
   end
@@ -560,7 +595,6 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     "last_checked_at" => observation["observed_at"],
     "last_decision" => decision
   }
-  state["acknowledged_wake_ids"] = acknowledged_wake_ids unless acknowledged_wake_ids.empty?
   if wake_parent
     state["pending_wake"] = {
       "wake_id" => decision.fetch("wake_id"),
