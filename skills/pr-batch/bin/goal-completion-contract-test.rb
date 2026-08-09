@@ -144,6 +144,8 @@ PLAN_PR_BATCH_RESPONSE_ORDER = "Response order: Batch Plan; generated goal promp
 TRIAGE_RESPONSE_ORDER = "Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
 PARENT_RECONCILIATION_RULE = "After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive."
 PARENT_RECONCILIATION_FORWARD_REFERENCE = "This reconciliation is the post-batch/pre-release-or-archive gate below."
+PARENT_RECONCILIATION_AUDIT_READINESS_BRANCH_RULE = "For the parent gate, a completed-batch audit handoff is archive-ready only when either ordinary completion has `audit_status: complete`, `verdict: clean`, `findings: none`, and no follow-up dispositions except fully evidenced terminal records, or accepted legacy reconciliation has `audit_status: accepted_legacy_reconciliation` plus a bound publication snapshot matching a freshly reassessed eligible `completion_mode: accepted_legacy_reconciliation` preflight. In both cases the normalized blocker union must be empty; every OUTSTANDING ref, non-ready record, unresolved follow-up, or missing or `UNKNOWN` fact blocks coordinated release and parent archive."
+OBSOLETE_PARENT_COMPLETE_ONLY_AUDIT_RULE = "only `complete`/`clean`/`none` with fully evidenced terminal records is archive-ready"
 RELEASE_AUTHORITY_RECONCILIATION_RULE = "Coordinated release may pass this reconciliation gate only under separately established release authority; reconciliation never grants release or merge authority."
 OBSOLETE_RELEASE_AUTHORITY_RECONCILIATION_RULE = "may authorize a coordinated release action"
 TERMINAL_FOLLOW_UP_EVIDENCE_RULE = "A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref."
@@ -1379,6 +1381,8 @@ class GoalCompletionContractTest < Minitest::Test
                     "Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive."
     assert_includes lifecycle, TERMINAL_FOLLOW_UP_EVIDENCE_RULE
     assert_includes lifecycle, UNRESOLVED_HANDOFF_NON_CLEAN_RULE
+    assert_includes lifecycle, PARENT_RECONCILIATION_AUDIT_READINESS_BRANCH_RULE
+    refute_includes lifecycle, OBSOLETE_PARENT_COMPLETE_ONLY_AUDIT_RULE
     refute_includes lifecycle, "dispositioned/handed off"
     assert_includes lifecycle, "The parent only reconciles this handoff; it never reruns or owns the audit."
 
