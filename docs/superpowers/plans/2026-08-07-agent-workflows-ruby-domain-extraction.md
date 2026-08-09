@@ -1,6 +1,8 @@
 # Agent Workflows Ruby Domain Extraction Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution note:** Work task-by-task. Host-provided plan-execution or
+> subagent capabilities are optional accelerators, not repository dependencies;
+> when unavailable, follow the checked steps directly.
 
 **Goal:** Move remaining shared production Ruby command bodies into reviewable
 `AgentWorkflows` domain classes while preserving every public CLI, genuinely

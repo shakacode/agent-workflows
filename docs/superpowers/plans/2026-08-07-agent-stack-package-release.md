@@ -1,6 +1,8 @@
 # Agent Stack Package Release Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution note:** Work task-by-task. Host-provided plan-execution or
+> subagent capabilities are optional accelerators, not repository dependencies;
+> when unavailable, follow the checked steps directly.
 
 **Goal:** Publish legitimate first releases under the canonical Agent Workflows, Agent Coordination, and Dashboard package names, secure their ownership, and decide whether Agent Workflows also ships self-contained Ruby executables.
 
@@ -14,6 +16,13 @@
 - Do not publish underscore aliases or a dashboard Ruby gem.
 - A pending trusted publisher does not prove registry ownership; a successful legitimate package publication does.
 - Do not publish an empty, placeholder, alias-only, or name-squatting package.
+- For every previously unclaimed package, a successful first publication is
+  immediately followed by authenticated owner grants from the bootstrap owner
+  to every approved backup human and organization/team role. Read the registry
+  owner list back and require at least two confirmed human owners before the
+  release is complete. If any grant or read-back fails, stop with publication
+  recorded but release completion blocked; verification alone never substitutes
+  for the grant operation.
 - Do not publish without explicit release authorization naming the package,
   version, commit, registry, workflow path and ref, workflow-file digest, and
   rollback/disposition.
@@ -257,7 +266,9 @@ authorization.
 Create/push the signed or protected release tag through the authorized workflow;
 the workflow must verify that tag before it permits the gem-push hook. Verify
 RubyGems metadata, the checksum of the bytes actually published, owners, MFA
-status, and install from RubyGems into a clean gem home. Then create the GitHub
+status, and install from RubyGems into a clean gem home. For a first
+publication, execute the global post-publication owner-grant contract before
+continuing. Then create the GitHub
 Release explicitly from the verified tag and commit, attach the checksum
 manifest and versioned changelog notes, and read it back. A failed or ambiguous
 push or release creation is investigated through live registry and GitHub state
@@ -335,7 +346,11 @@ Publication approval for `agent-coordination` does not authorize
 
 - [ ] **Step 6: Publish and verify only after authorization**
 
-After the workflow reports success, independently query RubyGems, install the public gem, run each executable, verify tag/release SHA, and confirm the source-pack installer still uses its own pinned library bytes.
+After the workflow reports success, independently query RubyGems, install the
+public gem, run each executable, verify tag/release SHA, and confirm the
+source-pack installer still uses its own pinned library bytes. For a first
+RubyGems publication under this name, execute and read back the global
+post-publication owner-grant contract before treating the release as complete.
 
 ### Task 4: Prepare and release npm `agent-coordination-dashboard` 0.1.0
 
@@ -415,7 +430,9 @@ reviewed tarball interactively with 2FA only after the tag is verified. Verify
 npm registry metadata, owners, and tarball integrity; install the downloaded
 `agent-coordination-dashboard@0.1.0` tarball whose integrity matches the reviewed
 artifact, then run its installed `--help` and lifecycle smoke without resolving
-an unversioned `latest`. Immediately attach the protected release workflow as
+an unversioned `latest`. Use the authenticated bootstrap owner to grant every
+approved backup npm owner/team role, then read the owner list back under the
+global post-publication owner-grant contract. Immediately attach the protected release workflow as
 the package's trusted publisher, restrict token-based publishing, and read the
 publisher configuration back. The release is incomplete until that attachment
 is verified. Record that OIDC provenance starts with the next release because

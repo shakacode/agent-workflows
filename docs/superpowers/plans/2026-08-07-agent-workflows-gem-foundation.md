@@ -1,6 +1,8 @@
 # Agent Workflows Gem Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution note:** Work task-by-task. Host-provided plan-execution or
+> subagent capabilities are optional accelerators, not repository dependencies;
+> when unavailable, follow the checked steps directly.
 
 **Goal:** Establish the canonical `agent-workflows` gem, migrate the existing doctor subsystem as the first real implementation, and make every source-pack delivery mode install the wrapper and library atomically.
 
