@@ -325,6 +325,85 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_terminal_task_states_preserve_exact_restart_safe_handoffs
+    {
+      "terminal" => "stop-task-terminal",
+      "not-resumable" => "stop-task-not-resumable"
+    }.each do |task_status, expected_action|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        blocker_state = { "head" => "a" * 40, "pending" => ["maintainer-action"] }
+        resume_instruction = "Resume task thread-393 after #{task_status}."
+        decision, stderr, status = run_helper(
+          state_path,
+          observation(
+            "task_status" => task_status,
+            "blocker_state" => blocker_state,
+            "resume_instruction" => resume_instruction
+          )
+        )
+
+        assert status.success?, stderr
+        assert_equal expected_action, decision.fetch("action")
+        assert_equal false, decision.fetch("wake_parent")
+        assert_equal "goal-state-change-monitor-handoff", decision.dig("handoff", "contract")
+        assert_equal 1, decision.dig("handoff", "version")
+        assert_equal "thread-393:checks", decision.dig("handoff", "monitor_id")
+        assert_equal "task-#{task_status}", decision.dig("handoff", "reason")
+        assert_equal decision.fetch("fingerprint"), decision.dig("handoff", "fingerprint")
+        assert_equal blocker_state, decision.dig("handoff", "blocker_state")
+        assert_equal resume_instruction, decision.dig("handoff", "resume_instruction")
+        assert_equal "manual-resume-required", decision.dig("handoff", "resume")
+
+        persisted = JSON.parse(File.read(state_path))
+        assert_equal decision.fetch("handoff"), persisted.dig("last_decision", "handoff")
+
+        later, later_stderr, later_status = run_helper(
+          state_path,
+          observation(
+            "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+            "probe_sequence" => 1,
+            "observed_at" => "2026-08-09T00:15:00Z"
+          )
+        )
+        assert later_status.success?, later_stderr
+        assert_equal "already-stopped", later.fetch("action")
+        assert_equal decision.fetch("handoff"), later.fetch("handoff")
+        refute later.fetch("wake_parent")
+      end
+    end
+  end
+
+  def test_stopped_monitor_ignores_later_configuration_framing_drift
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _stopped, stopped_stderr, stopped_status = run_helper(
+        state_path,
+        observation("task_status" => "terminal")
+      )
+      assert stopped_status.success?, stopped_stderr
+
+      later, later_stderr, later_status = run_helper(
+        state_path,
+        observation(
+          "limits" => { "max_unchanged_runs" => 9, "max_model_calls" => 8, "max_tokens" => 7_000 },
+          "polling_policy" => {
+            "fast_interval_seconds" => 60,
+            "fast_attempts" => 2,
+            "max_interval_seconds" => 600
+          },
+          "probe_sequence" => 1,
+          "observed_at" => "2026-08-09T00:15:00Z"
+        )
+      )
+
+      assert later_status.success?, later_stderr
+      assert_equal "already-stopped", later.fetch("action")
+      assert_equal "stopped", later.fetch("monitor_status")
+      refute later.fetch("wake_parent")
+    end
+  end
+
   def test_blocked_user_input_preserves_the_exact_restart_safe_handoff
     blocker_state = {
       "question" => "Should this target wait for the configured reviewer?",
@@ -361,6 +440,100 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert later_status.success?, later_stderr
       assert_equal decision.fetch("handoff"), later.fetch("handoff")
       assert_equal false, later.fetch("wake_parent")
+    end
+  end
+
+  def test_paused_monitor_ignores_configuration_drift_and_terminal_transition_wins
+    blocker_state = {
+      "question" => "Should this target remain paused?",
+      "resume_instruction" => "Resume task thread-393 after answering the question."
+    }
+    changed_configuration = {
+      "limits" => { "max_unchanged_runs" => 9, "max_model_calls" => 8, "max_tokens" => 7_000 },
+      "polling_policy" => {
+        "fast_interval_seconds" => 60,
+        "fast_attempts" => 2,
+        "max_interval_seconds" => 600
+      }
+    }
+
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      paused, paused_stderr, paused_status = run_helper(
+        state_path,
+        observation(
+          "task_status" => "blocked-user-input",
+          "blocker_state" => blocker_state,
+          "resume_instruction" => blocker_state.fetch("resume_instruction")
+        )
+      )
+      assert paused_status.success?, paused_stderr
+
+      later, later_stderr, later_status = run_helper(
+        state_path,
+        observation(
+          changed_configuration.merge(
+            "probe_sequence" => 1,
+            "observed_at" => "2026-08-09T00:15:00Z"
+          )
+        )
+      )
+      assert later_status.success?, later_stderr
+      assert_equal "manual-resume-required", later.fetch("action")
+      assert_equal paused.fetch("handoff"), later.fetch("handoff")
+      refute later.fetch("wake_parent")
+
+      terminal, terminal_stderr, terminal_status = run_helper(
+        state_path,
+        observation(
+          changed_configuration.merge(
+            "task_status" => "terminal",
+            "probe_sequence" => 2,
+            "observed_at" => "2026-08-09T00:30:00Z"
+          )
+        )
+      )
+      assert terminal_status.success?, terminal_stderr
+      assert_equal "stop-task-terminal", terminal.fetch("action")
+      assert_equal "stopped", terminal.fetch("monitor_status")
+      refute terminal.fetch("wake_parent")
+    end
+  end
+
+  def test_active_monitor_fails_closed_on_configuration_drift
+    drift_cases = {
+      "limits" => {
+        "limits" => { "max_unchanged_runs" => 9, "max_model_calls" => 8, "max_tokens" => 7_000 }
+      },
+      "polling-policy" => {
+        "polling_policy" => {
+          "fast_interval_seconds" => 60,
+          "fast_attempts" => 2,
+          "max_interval_seconds" => 600
+        }
+      }
+    }
+
+    drift_cases.each_value do |drift|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+        assert baseline_status.success?, baseline_stderr
+
+        decision, stderr, status = run_helper(
+          state_path,
+          observation(
+            drift.merge(
+              "probe_sequence" => 1,
+              "observed_at" => "2026-08-09T00:15:00Z"
+            )
+          )
+        )
+
+        assert_nil decision
+        refute status.success?
+        assert_includes stderr, '"reason":"monitor-configuration-drift"'
+      end
     end
   end
 
@@ -611,7 +784,8 @@ class GoalStateChangeMonitorTest < Minitest::Test
         assert_equal "stop-task-#{task_status}", terminal.fetch("action")
         assert_equal "stopped", terminal.fetch("monitor_status")
         refute terminal.fetch("wake_parent")
-        refute terminal.key?("handoff")
+        assert_equal "task-#{task_status}", terminal.dig("handoff", "reason")
+        assert_equal "manual-resume-required", terminal.dig("handoff", "resume")
       end
     end
   end
@@ -751,6 +925,12 @@ class GoalStateChangeMonitorTest < Minitest::Test
         state_path,
         limited.merge(
           "dependency_status" => "terminal",
+          "limits" => { "max_unchanged_runs" => 9, "max_model_calls" => 8, "max_tokens" => 7_000 },
+          "polling_policy" => {
+            "fast_interval_seconds" => 60,
+            "fast_attempts" => 2,
+            "max_interval_seconds" => 600
+          },
           "usage_delta" => { "model_calls" => 0, "tokens" => 0 },
           "probe_sequence" => 1,
           "observed_at" => "2026-08-09T00:15:00Z"

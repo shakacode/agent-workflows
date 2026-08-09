@@ -255,10 +255,6 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     next
   end
 
-  if previous && (previous["limits"] != limits || previous["polling_policy"] != polling_policy)
-    fail_json("monitor-configuration-drift")
-  end
-
   task_action = TASK_ACTIONS[task_status]
   sticky_monitor_status = previous&.fetch("monitor_status", nil)
   if previous && (sticky_monitor_status == "stopped" ||
@@ -285,6 +281,11 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     persist_state(state_path, state)
     puts JSON.generate(decision)
     next
+  end
+
+  if previous && !terminal_observation &&
+     (previous["limits"] != limits || previous["polling_policy"] != polling_policy)
+    fail_json("monitor-configuration-drift")
   end
 
   changed = !previous.nil? && previous["fingerprint"] != fingerprint
@@ -378,6 +379,18 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
       "usage" => usage,
       "blocker_state" => normalized_blocker_state,
       "limits" => limits,
+      "resume_instruction" => resume_instruction,
+      "resume" => "manual-resume-required"
+    }
+  end
+  if %w[terminal not-resumable].include?(task_status)
+    decision["handoff"] = {
+      "contract" => "goal-state-change-monitor-handoff",
+      "version" => 1,
+      "monitor_id" => monitor_id,
+      "reason" => "task-#{task_status}",
+      "fingerprint" => fingerprint,
+      "blocker_state" => normalized_blocker_state,
       "resume_instruction" => resume_instruction,
       "resume" => "manual-resume-required"
     }
