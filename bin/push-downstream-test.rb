@@ -1472,6 +1472,41 @@ class PushDownstreamAuditTest < Minitest::Test
     end
   end
 
+  def test_audit_clone_ignores_hostile_transport_configuration
+    Dir.mktmpdir("push-downstream-audit-helper") do |dir|
+      marker = File.join(dir, "helper-ran")
+      helper = File.join(dir, "helper")
+      File.write(helper, "#!/bin/sh\ntouch #{marker}\nexit 1\n")
+      File.chmod(0o755, helper)
+      global_config = File.join(dir, "global.gitconfig")
+      File.write(global_config, <<~CONFIG)
+        [protocol "ext"]
+          allow = always
+        [url "ext::#{helper} "]
+          insteadOf = https://127.0.0.1:1/
+      CONFIG
+      hostile_environment = {
+        "GIT_ALLOW_PROTOCOL" => "ext:https",
+        "GIT_CONFIG_GLOBAL" => global_config,
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "protocol.ext.allow",
+        "GIT_CONFIG_VALUE_0" => "always"
+      }
+      previous_environment = hostile_environment.keys.to_h { |name| [name, ENV[name]] }
+      hostile_environment.each { |name, value| ENV[name] = value }
+
+      begin
+        entry = audit("https://127.0.0.1:1/repository.git")
+      ensure
+        previous_environment.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
+      end
+
+      assert_equal "blocked", entry.fetch("status")
+      assert_equal "clone of main failed", entry.fetch("reason")
+      refute_path_exists marker
+    end
+  end
+
   # #317 follow-ups the synchronizer intentionally cannot apply are carried into
   # the audit report rather than silently dropped.
   def test_audit_reports_follow_ups_the_synchronizer_cannot_apply

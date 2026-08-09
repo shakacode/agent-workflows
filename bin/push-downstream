@@ -28,7 +28,7 @@ module PushDownstream
     "gate_activation" => "after-remediation-and-validation"
   }.freeze
   DISABLED_HOOKS_PATH = File::NULL
-  SECURITY_AUDIT_GIT_ENVIRONMENT = {
+  AUDIT_GIT_ENVIRONMENT = {
     "GIT_CONFIG_NOSYSTEM" => "1",
     "GIT_CONFIG_SYSTEM" => File::NULL,
     "GIT_CONFIG_GLOBAL" => File::NULL,
@@ -39,6 +39,10 @@ module PushDownstream
     "GIT_ALLOW_PROTOCOL" => nil,
     "GIT_PROTOCOL_FROM_USER" => nil
   }.freeze
+  AUDIT_GIT_PREFIX = [
+    "git", "-c", "protocol.ext.allow=never", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}"
+  ].freeze
+  AUDIT_GIT_CLONE_ARGUMENTS = ["clone", "--depth", "1", "--no-tags"].freeze
   FALLBACK_GIT_USER_NAME = "Agent Workflows"
   FALLBACK_GIT_USER_EMAIL = "agent-workflows@users.noreply.github.com"
   NEW_AGENTS_HEADER = "# AGENTS.md\n"
@@ -855,14 +859,16 @@ module PushDownstream
   end
 
   def audit_source_sha(root)
-    sha, status = Open3.capture2("git", "-C", root, "rev-parse", "HEAD")
+    sha, status = Open3.capture2(AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", root, "rev-parse", "HEAD")
     status.success? && !sha.strip.empty? ? sha.strip : AUDIT_UNKNOWN
   rescue RuntimeError, SystemCallError
     AUDIT_UNKNOWN
   end
 
   def audit_source_worktree_clean(root)
-    porcelain, status = Open3.capture2("git", "-C", root, "status", "--porcelain")
+    porcelain, status = Open3.capture2(
+      AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", root, "status", "--porcelain"
+    )
     status.success? ? porcelain.strip.empty? : AUDIT_UNKNOWN
   rescue RuntimeError, SystemCallError
     AUDIT_UNKNOWN
@@ -884,9 +890,11 @@ module PushDownstream
       # forked child, but still raises when fork itself fails (Errno::EAGAIN,
       # Errno::ENOMEM), so it needs the same guard under resource pressure.
       begin
-        cloned = system("git", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}",
-                        "clone", "--depth", "1", "--branch", repo.fetch(:base_branch),
-                        repo_url(repo), clone, out: File::NULL, err: File::NULL)
+        cloned = system(
+          AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, *AUDIT_GIT_CLONE_ARGUMENTS,
+          "--branch", repo.fetch(:base_branch), repo_url(repo), clone,
+          out: File::NULL, err: File::NULL
+        )
       rescue RuntimeError, SystemCallError => e
         return audit_blocked(repo, "clone of #{repo.fetch(:base_branch)} could not be started: #{e.message}")
       end
@@ -895,7 +903,7 @@ module PushDownstream
       end
 
       begin
-        base_sha = local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
+        base_sha = audit_local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
       rescue RuntimeError, SystemCallError => e
         return audit_blocked(repo, "consumer base commit could not be resolved: #{e.message}")
       end
@@ -966,9 +974,17 @@ module PushDownstream
     entry
   end
 
+  def audit_local_ref_head(clone, ref)
+    output, status = Open3.capture2(
+      AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", clone, "rev-parse", "--verify", ref
+    )
+    status.success? ? output.strip : nil
+  end
+
   def audit_changed_paths(clone)
     output, status = Open3.capture2(
-      "git", "-C", clone, "status", "--porcelain=v1", "--untracked-files=all", "-z"
+      AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", clone,
+      "status", "--porcelain=v1", "--untracked-files=all", "-z"
     )
     return nil unless status.success?
 
@@ -1061,24 +1077,20 @@ module PushDownstream
     Dir.mktmpdir("push-downstream-security-audit") do |dir|
       clone = File.join(dir, repo.fetch(:repo))
       cloned = system(
-        SECURITY_AUDIT_GIT_ENVIRONMENT,
-        "git", "-c", "protocol.ext.allow=never", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}",
-        "clone", "--depth", "1", "--no-tags",
+        AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, *AUDIT_GIT_CLONE_ARGUMENTS,
         "--branch", repo.fetch(:base_branch), repo_url(repo), clone,
         out: File::NULL, err: File::NULL
       )
       return unknown_security_audit(repo, "clone-or-base-resolution-failed") unless cloned
 
       head, head_status = Open3.capture2(
-        SECURITY_AUDIT_GIT_ENVIRONMENT,
-        "git", "-c", "protocol.ext.allow=never", "-C", clone, "rev-parse", "HEAD"
+        AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", clone, "rev-parse", "HEAD"
       )
       return unknown_security_audit(repo, "head-resolution-failed") unless head_status.success?
 
       base_ref = "refs/remotes/origin/#{repo.fetch(:base_branch)}"
       base_head, _base_err, base_status = Open3.capture3(
-        SECURITY_AUDIT_GIT_ENVIRONMENT,
-        "git", "-c", "protocol.ext.allow=never", "-C", clone,
+        AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", clone,
         "rev-parse", "--verify", "#{base_ref}^{commit}"
       )
       unless base_status.success? && base_head.strip == head.strip
