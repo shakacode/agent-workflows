@@ -635,7 +635,7 @@ disposition. Do not publish another version merely to test OIDC.
 - Create: `packaging/tebako/measure-platform.rb`
 - Create: `packaging/tebako/write-release-authorization.rb`
 - Create: `packaging/tebako/write-release-decision.rb`
-- Create: `packaging/tebako/publish-github-release.rb`
+- Create: `packaging/tebako/write-publication-instruction.rb`
 - Create: `packaging/tebako/write-github-release-receipt.rb`
 - Create: `packaging/tebako/write-publication-recovery.rb`
 - Create: `packaging/tebako/validate-evaluation.rb`
@@ -651,6 +651,7 @@ disposition. Do not publish another version merely to test OIDC.
 - Create: `release/schemas/standalone-evaluation-v1.schema.json`
 - Create: `release/schemas/standalone-release-authorization-v1.schema.json`
 - Create: `release/schemas/standalone-release-decision-v1.schema.json`
+- Create: `release/schemas/standalone-publication-instruction-v1.schema.json`
 - Create: `release/schemas/standalone-github-release-receipt-v1.schema.json`
 - Create: `release/schemas/standalone-publication-recovery-v1.schema.json`
 - Create from matrix jobs: four
@@ -664,6 +665,8 @@ disposition. Do not publish another version merely to test OIDC.
   `release/evidence/standalone-github-release-receipt-v1.json`.
 - Create after an ambiguous toggle or public read-back:
   `release/evidence/standalone-github-publication-recovery-v1.json`.
+- Create before protected release mutation:
+  `release/evidence/standalone-github-publication-instruction-v1.json`.
 - Create: `docs/standalone-installation.md` only if the evaluation passes.
 
 **Interfaces:**
@@ -912,6 +915,8 @@ ruby packaging/tebako/write-release-authorization.rb \
   --workflow-path .github/workflows/package-standalone.yml \
   --workflow-ref "$STANDALONE_WORKFLOW_REF" \
   --workflow-digest "$STANDALONE_WORKFLOW_DIGEST" \
+  --mutator-action "$STANDALONE_MUTATOR_ACTION" \
+  --mutator-action-digest "$STANDALONE_MUTATOR_ACTION_DIGEST" \
   --expires-at "$BINARY_AUTHORIZATION_EXPIRY" \
   --rollback-disposition "$BINARY_ROLLBACK_DISPOSITION" \
   --rollback-evidence "$BINARY_ROLLBACK_EVIDENCE" \
@@ -922,7 +927,8 @@ ruby test/packaging/standalone_release_evidence_test.rb
 The writer requires the input state to be
 `ADOPTED_PENDING_RELEASE_AUTHORIZATION`, copies the closed four-platform asset
 bindings from that evaluation, requires every target/run/workflow input above,
-and validates the result against
+requires an independently reviewed mutator action at an immutable commit and
+content digest, and validates the result against
 `standalone-release-authorization-v1.schema.json`. It rejects a threshold
 failure, failed criterion, terminal input, ambiguous approver, mutable target,
 missing rollback, or stale authorization. For denial, or when a previously
@@ -962,100 +968,113 @@ are the only accepted terminal evidence contracts.
 
 - [ ] **Step 7: Publish binaries only after authorization**
 
-Add a minimal `publish` job to `package-standalone.yml`; no build, matrix, or
-aggregation job receives `contents: write`. The job is available only through a
-protected `workflow_dispatch` environment requiring a human reviewer. Its
-tag-keyed concurrency group uses `cancel-in-progress: false`, so two publication
-jobs cannot stage or expose the same release concurrently. It has only
-job-scoped `contents: write` and `actions: read`; the latter retrieves the exact
-cross-run matrix evidence and any prior recovery evidence but grants no release
-mutation. Its
-reviewed authorization binds the exact workflow path and digest, workflow
-commit, source matrix run ID, authorization and evaluation paths and SHA-256
-digests, repository, immutable tag and target commit, closed four-asset
-name/digest matrix, and expiry. The job checks out that exact commit, downloads
-only the named artifacts from the bound run ID, and runs
-`publish-github-release.rb --preflight` before creating a release or uploading
-bytes. Preflight fails before mutation unless the authorization is still
-unexpired, every workflow/evaluation/authorization binding agrees, the tag
-resolves to the authorized commit, every local artifact checksum and signature
-matches, and no public or unowned release already exists for the tag.
+Split standalone publication into five tag-serialized jobs under one concurrency
+group with `cancel-in-progress: false`: `prepare-publication`, `stage-draft`,
+`verify-draft`, `expose-draft`, and `verify-public`. No build, matrix,
+aggregation, verification, or recovery job receives `contents: write`.
 
-After preflight, create or resume only an exporter-owned **draft** GitHub Release
-for the authorized tag. Verify through the API that `draft: true` before and
-after uploading exactly the authorized assets; a build artifact, workflow log,
-or non-draft release is never an upload target. Query the immutable draft release
-and asset IDs, download every uploaded asset through authenticated API endpoints
-to a new temporary directory, and verify its checksum and signature against the
-authorization and reviewed matrix. The receipt writer performs those API reads
-and downloads and rejects a mutable/mismatched tag, a non-draft release, missing
-or extra asset, redirect to another repository, digest/signature mismatch, or
-evaluation and authorization digest mismatch. Stage and verify the private
-draft as one non-public phase:
+`prepare-publication` is unprivileged: `contents: read`, `actions: read`, no
+environment, persisted checkout credential, or write permission. All repository
+Ruby, Bundler, tests, schemas, and preflight logic end in this job. It checks out
+the exact authorized commit, downloads only the bound source-run artifacts,
+verifies every workflow/evaluation/authorization/tag/commit/expiry binding and
+asset checksum/signature, rejects a public or unowned release for the tag, and
+writes a closed publication instruction:
 
 ```bash
-ruby packaging/tebako/publish-github-release.rb \
-  --stage-draft \
+ruby packaging/tebako/write-publication-instruction.rb \
   --evaluation release/evidence/standalone-evaluation-v1.json \
   --authorization release/authorizations/agent-workflows-standalone-v1.json \
   --repository shakacode/agent-workflows \
-  --tag "$AUTHORIZED_BINARY_TAG"
+  --tag "$AUTHORIZED_BINARY_TAG" \
+  --output release/evidence/standalone-github-publication-instruction-v1.json
+```
+
+The instruction schema binds the authorization/evaluation/workflow digests,
+source run, repository, immutable tag and target commit, closed four-asset
+name/digest/signature matrix, expiry, and the independently reviewed mutator
+action's repository, immutable commit, and content digest. Upload the instruction
+plus exact asset bundle as one same-run workflow artifact; read back and record
+its artifact ID and SHA-256. Any mismatch stops before a write-capable job starts.
+
+`stage-draft` is the first protected write job. It has only job-scoped
+`contents: write` and `actions: read`, performs no checkout, and runs no shell,
+Ruby, Bundler, repository script, dependency hook, or caller-supplied program.
+Its only executable steps are immutable-SHA-pinned artifact download and the
+authorization-bound independent mutator action in closed `stage-draft` mode.
+That action accepts no arbitrary API route, script, or request-body input. It
+independently validates the instruction and artifact bundle, then creates or
+resumes only an exporter-owned **draft** release for the exact tag and uploads
+exactly the closed asset set. A build artifact, workflow log, or non-draft
+release is never an upload target. It emits a minimal operation result binding
+the protected run, release/asset IDs, and observed `draft: true`, which a pinned
+artifact step persists and reads back before the job ends.
+
+`verify-draft` is again unprivileged and has only `contents: read` plus
+`actions: read`. It runs the repository's read-only receipt writer, queries the
+immutable draft release and asset IDs, downloads every asset through authenticated
+API endpoints to a new temporary directory, and rejects a mismatched tag/target,
+non-draft release, missing or extra asset, cross-repository redirect,
+digest/signature mismatch, or evidence-binding mismatch:
+
+```bash
 ruby packaging/tebako/write-github-release-receipt.rb \
   --expected-state draft \
   --evaluation release/evidence/standalone-evaluation-v1.json \
   --authorization release/authorizations/agent-workflows-standalone-v1.json \
+  --operation-result "$STAGE_DRAFT_OPERATION_RESULT" \
   --repository shakacode/agent-workflows \
   --tag "$AUTHORIZED_BINARY_TAG" \
   --output "$RUNNER_TEMP/standalone-github-draft-release-receipt-v1.json"
 ```
 
-The schema's `draft_verified` variant binds the immutable repository, release,
-tag, target, and asset IDs; API and authenticated-download timestamps; canonical
-asset URLs; downloaded digests; verified signatures; platform/architecture;
-authorization and source-evaluation digests; protected-job run; workflow digest;
-and observed `draft: true` state. The read-only writer fails rather than emit
-that receipt unless the draft is complete. Only after it passes may the same
-protected job change that exact release ID to `draft: false`. Before the toggle,
-upload the draft receipt as a retention-bounded workflow artifact named by tag
-and protected run ID, read back its artifact ID and SHA-256, and record both in
-the job summary. Loss or mismatch of that durable artifact blocks the toggle.
-The mutator
-requires the draft receipt, revalidates its digest plus the still-unexpired
-authorization, re-reads that exact draft release, downloads and re-verifies every
-asset digest and signature, rejects extra or replaced asset IDs, and requires
-the same tag, target, and `draft: true` immediately before it may toggle only
-that receipt's release ID. Then the read-only writer immediately reads back the
-public release, requires the same tag, target, and asset IDs, and emits the
-durable `published_verified` receipt:
+The `draft_verified` receipt binds the repository, release, tag, target, and
+asset IDs; API and authenticated-download timestamps; canonical asset URLs;
+downloaded digests; verified signatures; platform/architecture; authorization,
+source-evaluation, workflow, instruction, protected-run, and operation-result
+digests; and observed `draft: true`. Upload it as a retention-bounded artifact
+named by tag and staging run, then read back its artifact ID and SHA-256. Loss or
+mismatch blocks exposure.
 
-```bash
-ruby packaging/tebako/publish-github-release.rb \
-  --publish-verified-draft \
-  --authorization release/authorizations/agent-workflows-standalone-v1.json \
-  --draft-receipt "$RUNNER_TEMP/standalone-github-draft-release-receipt-v1.json"
-ruby packaging/tebako/write-github-release-receipt.rb \
-  --expected-state published \
-  --evaluation release/evidence/standalone-evaluation-v1.json \
-  --authorization release/authorizations/agent-workflows-standalone-v1.json \
-  --draft-receipt "$RUNNER_TEMP/standalone-github-draft-release-receipt-v1.json" \
-  --repository shakacode/agent-workflows \
-  --tag "$AUTHORIZED_BINARY_TAG" \
-  --output release/evidence/standalone-github-release-receipt-v1.json
-```
+`expose-draft` is the second protected write job and has the same no-checkout,
+no-repository-code contract as `stage-draft`. Its only mutating step is the same
+independently pinned action in closed `expose-draft` mode. It consumes the exact
+durable draft receipt, revalidates its digest and the unexpired authorization,
+re-reads that exact draft release, downloads and re-verifies every live asset
+digest/signature, rejects extra or replaced asset IDs, requires the same
+tag/target and `draft: true`, and may then toggle only that receipt's release ID.
+The exact mutator action identity/digest and both closed modes are part of human
+environment review; a repository-controlled helper never receives a write token.
 
-The final receipt binds the draft-receipt digest, `draft: false` read-back, and
-unchanged release/asset identities in addition to the common evidence above.
+`verify-public` is unprivileged and read-only. It requires the expose operation
+result, reads back the public release, and emits `published_verified` only when
+the tag, target, release ID, asset IDs, digests, and signatures still match the
+draft receipt. It then generates a schema-valid candidate terminal `ADOPTED`
+evaluation without yet accepting, reporting, or committing that transition.
+Package the published receipt, candidate terminal evaluation, draft receipt,
+authorization, and a manifest of their SHA-256 digests as one
+`standalone-publication-closeout-<tag>-<expose-run>` workflow artifact. Upload,
+query, and download that artifact to a fresh directory, revalidate its manifest
+and both schemas, and record the artifact ID/digest in the job summary. Only
+that fresh durable read-back accepts and reports the candidate transition as
+terminal `ADOPTED`; an ephemeral checkout result is never adoption or closeout
+evidence.
+
 A failed preflight exposes nothing. A staging upload or draft read-back failure
 before the toggle leaves the release draft and records the exact retry/cleanup
 disposition; no fallback path may make it public. An ambiguous toggle response or
 failure of the post-toggle public read-back is instead `PUBLICATION_UNKNOWN` and
-blocks adoption. The protected job emits and uploads a schema-validated
-`publication_unknown` recovery record whenever it can observe the ambiguity; a
-later recovery dispatch may also create that record for an interrupted job only
-after retrieving and digesting the original run's durable draft receipt. The
-record binds the original protected run and workflow digest, authorization and
-draft-receipt artifact IDs and digests, release ID, exact asset IDs, first
-ambiguous timestamp, recovery deadline, and attempt count.
+blocks adoption; failure to persist and read back the final closeout artifact has
+the same result. The independently pinned mutator emits only a minimal ambiguity
+operation result, which a pinned artifact step persists without executing
+repository code. The subsequent read-only `verify-public` or recovery job turns
+that result into a schema-validated `publication_unknown` record. A later
+recovery dispatch may also create the record for an interrupted expose job only
+after retrieving and digesting the original run's durable draft receipt and
+mutator result. The record binds the expose run and mutator identity/digest,
+workflow digest, authorization and draft-receipt artifact IDs/digests, release
+ID, exact asset IDs, first ambiguous timestamp, recovery deadline, and attempt
+count.
 
 ```bash
 ruby packaging/tebako/write-publication-recovery.rb \
@@ -1063,7 +1082,8 @@ ruby packaging/tebako/write-publication-recovery.rb \
   --draft-receipt "$RUNNER_TEMP/standalone-github-draft-release-receipt-v1.json" \
   --draft-artifact-id "$DRAFT_RECEIPT_ARTIFACT_ID" \
   --draft-artifact-digest "$DRAFT_RECEIPT_ARTIFACT_DIGEST" \
-  --original-run-id "$GITHUB_RUN_ID" \
+  --original-run-id "$EXPOSE_RUN_ID" \
+  --mutator-result "$EXPOSE_MUTATOR_RESULT" \
   --reason "$PUBLICATION_AMBIGUITY" \
   --first-ambiguous-at "$PUBLICATION_AMBIGUOUS_AT" \
   --attempt-count 0 \
@@ -1094,22 +1114,27 @@ artifact bound to the current recovery run before the attempt ends; the next
 attempt must name it exactly.
 
 Allow at most three attempts before that immutable deadline. A matching public
-read-back may finish `published_verified`; any inconclusive, draft, missing,
-extra, or mismatched state preserves `PUBLICATION_UNKNOWN` and executes the
+read-back may generate `published_verified` and a candidate terminal evaluation,
+but recovery accepts and reports `ADOPTED` only after packaging them into and
+freshly reading back the same final closeout artifact required above. Any
+inconclusive, draft, missing, extra, mismatched, or non-durable state preserves
+`PUBLICATION_UNKNOWN` and executes the
 authorization's incident/remediation disposition when the attempt or deadline
-bound is reached. Tests cover stale authorization, wrong workflow or run
-binding, substituted local bytes, pre-existing public/unowned releases,
+bound is reached. Tests cover stale authorization, wrong workflow
+or run binding, substituted local bytes, pre-existing public/unowned releases,
 draft-state loss, loss or substitution of the durable draft artifact, missing,
 substituted, skipped, repeated, and over-limit recovery records, caller-selected,
 extended, or recomputed recovery deadlines, asset replacement between draft
 receipt and toggle, upload/draft-read-back failure, an ambiguous toggle response,
-a crash after toggle request, public read-back failure, bounded
-`PUBLICATION_UNKNOWN` recovery, and refusal to publish before receipt
-verification.
+a crash after toggle request, public read-back or final-closeout persistence
+failure, bounded `PUBLICATION_UNKNOWN` recovery, privileged-job attempts to
+execute checkout/repository code or arbitrary mutator inputs, and refusal to
+publish before receipt verification.
 
-Only after the public read-back passes, publish
-`docs/standalone-installation.md` and record terminal `ADOPTED`. The terminal
-writer receives the receipt rather than unverified URL strings:
+Only after the public and closeout-artifact read-backs pass, accept and report
+the candidate evaluation as terminal `ADOPTED`, then publish
+`docs/standalone-installation.md`. The candidate terminal writer receives the
+receipt rather than unverified URL strings:
 
 ```bash
 ruby packaging/tebako/write-evaluation.rb \
