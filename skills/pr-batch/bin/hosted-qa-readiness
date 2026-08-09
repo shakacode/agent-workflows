@@ -273,6 +273,7 @@ module HostedQaReadiness
       file.write(blob)
       file.flush
       File.chmod(0o700, file.path)
+      file.close
       stdout, stderr, status = CompletedBatchPublicationPreflight.capture_process(
         [file.path, *arguments],
         input: "",

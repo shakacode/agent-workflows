@@ -324,6 +324,64 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_closes_the_verifier_tempfile_before_process_invocation
+    head_sha = "1" * 40
+    fields = {
+      "deployment_id" => "production-#{head_sha}",
+      "deployment_url" => "https://deployments.example.test/#{head_sha}",
+      "head_sha" => head_sha,
+      "target" => "production"
+    }
+    observed_tempfile = nil
+    original_tempfile_create = Tempfile.method(:create)
+    tempfile_create = lambda do |*arguments, &block|
+      original_tempfile_create.call(*arguments) do |file|
+        observed_tempfile = file
+        block.call(file)
+      end
+    end
+    success_status = Object.new
+    success_status.define_singleton_method(:success?) { true }
+    test_case = self
+    capture = lambda do |command, input:, timeout:|
+      test_case.assert_equal observed_tempfile.path, command.first
+      test_case.assert observed_tempfile.closed?, "verifier tempfile must be closed before execution"
+      test_case.assert_equal "", input
+      test_case.assert_equal 30, timeout
+      receipt = fields.slice("deployment_id", "deployment_url", "target").merge(
+        "version" => 1,
+        "verified" => true,
+        "deployed_head_sha" => head_sha
+      )
+      [JSON.generate(receipt), "", success_status]
+    end
+
+    original_blob_reader = HostedQaReadiness.method(:trusted_executable_blob)
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    begin
+      Tempfile.singleton_class.send(:define_method, :create, tempfile_create)
+      HostedQaReadiness.singleton_class.send(:define_method, :trusted_executable_blob) do |*_arguments|
+        ["#!/usr/bin/env ruby\n", nil]
+      end
+      CompletedBatchPublicationPreflight.singleton_class.send(:define_method, :capture_process, capture)
+
+      verification, error = HostedQaReadiness.verify_deployment(
+        repo: "/unused",
+        base_sha: "0" * 40,
+        verifier_path: ".agents/bin/verify-hosted-deployment",
+        fields:
+      )
+    ensure
+      Tempfile.singleton_class.send(:define_method, :create, original_tempfile_create)
+      HostedQaReadiness.singleton_class.send(:define_method, :trusted_executable_blob, original_blob_reader)
+      CompletedBatchPublicationPreflight.singleton_class.send(:define_method, :capture_process, original_capture)
+    end
+
+    assert_nil error
+    assert_equal "trusted_base", verification.fetch("verifier_source")
+    refute_path_exists observed_tempfile.path
+  end
+
   def test_forbidden_waiver_mode_blocks_a_hosted_qa_waiver
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", hosted_policy(waiver_mode: "forbidden"))
