@@ -638,6 +638,8 @@ disposition. Do not publish another version merely to test OIDC.
 - Create: `packaging/tebako/write-publication-instruction.rb`
 - Create: `packaging/tebako/write-github-release-receipt.rb`
 - Create: `packaging/tebako/write-publication-recovery.rb`
+- Create: `packaging/tebako/write-closeout-pr-instruction.rb`
+- Create: `packaging/tebako/validate-closeout-pr-evidence.rb`
 - Create: `packaging/tebako/validate-evaluation.rb`
 - Create: `packaging/tebako/write-evaluation.rb`
 - Create: `packaging/tebako/write-platform-run.rb`
@@ -648,6 +650,8 @@ disposition. Do not publish another version merely to test OIDC.
 - Create: `.github/workflows/authorize-standalone.yml`
 - Create: `.github/workflows/record-standalone-release-decision.yml`
 - Create: `.github/workflows/package-standalone.yml`
+- Create: `.github/workflows/standalone-closeout-pr.yml`
+- Create: `.github/workflows/finalize-standalone-closeout.yml`
 - Create: `release/schemas/standalone-platform-input-v1.schema.json`
 - Create: `release/schemas/standalone-platform-run-v1.schema.json`
 - Create: `release/schemas/standalone-evaluation-v1.schema.json`
@@ -657,6 +661,9 @@ disposition. Do not publish another version merely to test OIDC.
 - Create: `release/schemas/standalone-mutator-operation-result-v1.schema.json`
 - Create: `release/schemas/standalone-github-release-receipt-v1.schema.json`
 - Create: `release/schemas/standalone-publication-recovery-v1.schema.json`
+- Create: `release/schemas/standalone-closeout-pr-instruction-v1.schema.json`
+- Create: `release/schemas/standalone-closeout-pr-binding-v1.schema.json`
+- Create: `release/schemas/standalone-closeout-pr-operation-result-v1.schema.json`
 - Create from matrix jobs: four
   `release/evidence/standalone/runs/<platform>-<architecture>.v1.json` records.
 - Create: `release/evidence/standalone-evaluation-v1.json` for either verdict.
@@ -668,6 +675,9 @@ disposition. Do not publish another version merely to test OIDC.
   `release/evidence/standalone-github-release-receipt-v1.json`.
 - Create after an ambiguous toggle or public read-back:
   `release/evidence/standalone-github-publication-recovery-v1.json`.
+- Commit through reviewed closeout PRs:
+  `release/evidence/standalone/closeouts/<tag>/` with the exact verified
+  authorization, receipts, terminal evaluation, and closed manifest.
 - Create before protected release mutation:
   `release/evidence/standalone-github-publication-instruction-v1.json`.
 - Create: `docs/standalone-installation.md` only if the evaluation passes.
@@ -1130,6 +1140,56 @@ as a retention-bounded artifact
 named by tag and staging run, then read back its artifact ID and SHA-256. Loss or
 mismatch blocks exposure.
 
+Before `expose-draft`, publish the installation documentation through the
+`installation-docs` mode of `.github/workflows/standalone-closeout-pr.yml`.
+Its unprivileged preparation job freshly downloads the exact preparation and
+draft-receipt artifacts, renders `docs/standalone-installation.md` from their
+closed tag/platform/asset bindings, validates every documented command against
+the packaged executables, and writes a closed PR instruction binding the target
+base SHA, the installation-doc path/digest, fixed tag-specific committed
+instruction and PR-binding paths, source-evidence artifact identities,
+deterministic branch name, and the fixed binding/result schema paths, versions,
+digests, expected result-artifact name, and opener action digest. It packages
+the instruction, documentation, and a
+closed file manifest into one PR-payload artifact, uploads it, queries its exact
+ID/service digest, freshly downloads it, and revalidates every byte. A protected
+`open-pr` job has only `contents: write` and `pull-requests: write`, no release
+permission, checkout, shell, repository code, or caller-selected path/content.
+It receives only the payload producer run, exact artifact ID, and service digest,
+freshly downloads that artifact, and independently validates its instruction and
+manifest. Its only mutator is the independently reviewed immutable action in
+closed `open-closeout-pr` mode; it creates or updates the deterministic branch
+and opens a PR but cannot merge or write directly to `main`.
+
+The opener adds the schema-valid PR-binding record at the instruction's fixed
+path. That committed record contains only pre-commit values: mode, PR number,
+target base, deterministic branch, opener run and immutable action, payload
+artifact ID/digest, instruction/file-manifest digests, and original
+preparation/draft artifact identities. It deliberately cannot contain its own
+commit SHA. After updating the PR to the resulting final head, the opener emits a
+closed operation result binding the observed final head, committed binding-file
+digest, and every shared PR/payload value. A pinned artifact step uploads those
+exact result bytes; a read-only job queries the exact opener run, requires the
+one instruction-named result artifact, records its ID/service digest, freshly
+downloads it, and validates both records with
+`packaging/tebako/validate-closeout-pr-evidence.rb`.
+
+Exposure requires a later exact dispatch naming that PR and merge commit. The
+read-only pre-exposure gate proves through the GitHub API that a human merged the
+current exact docs diff through required review/check policy, that the merge
+commit is on `main`, and that the committed docs, instruction, and PR-binding
+digests equal the exact payload instruction. It retrieves the payload and
+opener-result artifacts by the payload identity and exact opener run/expected
+result name committed in
+that binding record, requires exactly one result, records its service identity,
+and replays the instruction, binding, and operation-result schemas before
+trusting those expected values. The operation result—not the self-contained
+binding file—must match the observed final PR head.
+A draft, closed-unmerged, superseded, force-updated, or mismatched documentation
+PR blocks the public toggle. Thus supported installation instructions are on the
+default branch before any binary becomes public; opening the PR is not release
+or merge approval.
+
 `expose-draft` is the second protected write job and has the same no-checkout,
 no-repository-code contract as `stage-draft`. Its only mutating step is the same
 independently pinned action in closed `expose-draft` mode. It freshly downloads
@@ -1168,10 +1228,54 @@ Package the published receipt, candidate terminal evaluation, draft receipt,
 authorization, and a manifest of their SHA-256 digests as one
 `standalone-publication-closeout-<tag>-<expose-run>` workflow artifact. Upload,
 query, and download that artifact to a fresh directory, revalidate its manifest
-and both schemas, and record the artifact ID/digest in the job summary. Only
-that fresh durable read-back accepts and reports the candidate transition as
-terminal `ADOPTED`; an ephemeral checkout result is never adoption or closeout
-evidence.
+and both schemas, and record the artifact ID/digest in the job summary. This
+artifact is the exact source for durable repository closeout, but retention-
+bounded Actions storage alone never accepts or reports terminal `ADOPTED`.
+
+Invoke the `release-evidence` mode of `standalone-closeout-pr.yml` with that
+exact closeout-artifact producer run, ID, and service digest. Its unprivileged
+preparation job freshly downloads and revalidates the bundle, then writes a
+closed PR instruction for the tag-specific directory
+`release/evidence/standalone/closeouts/<tag>/`. The path set is fixed to the
+verified authorization, draft and public receipts, candidate terminal
+evaluation, closed manifest, original PR instruction, and PR-binding record; each
+prepared content digest, fixed binding/result schema paths, versions, digests,
+expected result-artifact name, opener action digest, original closeout-artifact
+identity, and target base SHA are bound. Package the
+instruction, prepared files, and
+closed manifest into one PR-payload artifact, then upload, query, freshly
+download, and verify it exactly as in `installation-docs` mode. The same
+protected no-checkout `open-pr` job consumes only its exact producer run/artifact
+ID/service digest and may create only the deterministic evidence branch and PR.
+It cannot merge, modify other paths, reuse release credentials, or push to
+`main`.
+
+The opener writes the fixed PR-binding file after the PR number exists and
+updates the branch to a final head containing it. That committed record binds the
+PR number, target base, deterministic branch, opener run/action digest,
+PR-payload artifact ID/service digest, instruction/manifest digests, and original
+publication-closeout producer run/artifact ID/service digest, but never its own
+commit SHA. Its closed operation-result artifact independently binds the observed
+final head and committed binding-file digest plus every shared value. Query the
+exact opener run for the one instruction-named result artifact, record its
+ID/service digest, freshly download it, and validate both records before the PR
+is presented for merge.
+
+`finalize-standalone-closeout.yml` is a separate read-only workflow triggered by
+the merged evidence PR. It proves the reviewed PR head/base and merge commit,
+required checks/reviews, ancestry on `main`, exact allowed file set and digests,
+and current public release/asset identity. It revalidates the committed receipt,
+authorization, manifest, PR-binding record, and terminal evaluation from the
+merge commit; freshly retrieves the exact PR-payload and opener-result artifacts
+selected by that record and exact opener run; validates the instruction, binding,
+and operation-result schemas with the owned validator; and requires the split
+contract to match the original closeout artifact plus observed final PR head/base.
+Only
+that immutable repository commit accepts and reports `ADOPTED`; the workflow
+artifact, an open PR, or an unmerged branch does not. Rejection or delay leaves
+the public release explicitly `closeout_pending` with the PR URL and named
+maintainer owner, and blocks batch/release closeout until merge or an authorized
+rollback removes the public assets.
 
 A failed preflight exposes nothing. A staging upload or draft read-back failure
 before the toggle leaves the release draft and records the exact retry/cleanup
@@ -1289,8 +1393,9 @@ total—before that immutable deadline. Bootstrap emits attempt 0; each successo
 derives its ordinal by incrementing the prior record, and attempt 3 is forbidden.
 A matching public
 read-back may generate `published_verified` and a candidate terminal evaluation,
-but recovery accepts and reports `ADOPTED` only after packaging them into and
-freshly reading back the same final closeout artifact required above. Any
+but recovery accepts and reports `ADOPTED` only after packaging them into the
+same final closeout artifact and the reviewed evidence PR is merged and verified
+on `main` as required above. Any
 inconclusive, draft, missing, extra, mismatched, or non-durable state preserves
 `PUBLICATION_UNKNOWN` and executes the
 authorization's incident/remediation disposition when the attempt or deadline
@@ -1313,7 +1418,20 @@ variants, missing or substituted stage/ambiguity result artifacts, false or
 racing interrupted-result absence, a job that never entered the mutator step,
 caller-supplied interrupted timestamps, altered or missing interrupted-origin
 proof in successor records, skipped/repeated/over-limit attempt ordinals, and
-refusal to publish before receipt verification.
+refusal to publish before receipt verification. Also test refusal to expose
+before the exact installation-docs PR is merged, docs-PR base/head/file-digest
+substitution, direct-main-write attempts, closeout actions receiving release
+credentials or executing repository code, evidence-PR extra/missing paths,
+unmerged or superseded evidence PRs, merge commits not on `main`, artifact expiry
+before durable closeout, and refusal to accept `ADOPTED` before the committed
+closeout bundle is revalidated from the exact merge commit. Cover missing,
+name-selected, cross-run, or substituted PR-payload/opener-result artifacts;
+payload, instruction, manifest, or committed PR-binding digest mismatch; a
+binding that names another PR/head/base or original closeout artifact; and a
+privileged opener that accepts bytes outside the exact verified payload. Reject
+a committed binding that claims its own head SHA, an opener result whose observed
+head does not contain the named binding digest, and missing or mismatched schema
+path/version/digest ownership.
 
 Before assembling the closeout artifact, the candidate terminal writer receives
 only the freshly downloaded preparation evaluation/authorization and the
@@ -1329,15 +1447,15 @@ ruby packaging/tebako/write-evaluation.rb \
   --output "$RUNNER_TEMP/standalone-candidate-terminal-evaluation-v1.json"
 ```
 
-Package that exact temporary output into the closeout artifact described above.
-Only after the artifact is freshly downloaded by exact ID/digest and its
-manifest passes may the job validate the candidate at its new verified path,
-accept and report it as terminal `ADOPTED`, and publish
-`docs/standalone-installation.md`:
+Package that exact temporary output into the closeout artifact described above,
+then publish the exact bundle through the reviewed `release-evidence` PR path.
+Only after `finalize-standalone-closeout.yml` proves the exact evidence PR merge
+commit on `main` may it validate the committed candidate and accept/report
+terminal `ADOPTED`:
 
 ```bash
 ruby packaging/tebako/validate-evaluation.rb \
-  "$VERIFIED_CLOSEOUT_EVALUATION_PATH"
+  "$VERIFIED_MERGED_CLOSEOUT_EVALUATION_PATH"
 ```
 
 If authorization is denied or stale before upload, record terminal
@@ -1439,6 +1557,10 @@ Confirm no `agent_workflows`, `agent_coordination`, dashboard Ruby gem, or other
 - [ ] **Step 6: Publish release closeout evidence**
 
 Record package URLs, exact versions, commits, checksums/integrities, owners, trusted publishers, smoke evidence, known limitations, standalone decision, and rollback instructions in the repositories' release notes.
+For an adopted standalone release, link the exact merged installation-docs and
+release-evidence PRs plus the immutable merge commit containing
+`release/evidence/standalone/closeouts/<tag>/`. A release-note summary or expired
+Actions artifact is never a substitute for those committed evidence bytes.
 
 ## Plan Completion Gate
 
