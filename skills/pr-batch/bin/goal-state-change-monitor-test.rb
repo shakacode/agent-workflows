@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "json"
 require "minitest/autorun"
 require "open3"
@@ -34,6 +35,26 @@ class GoalStateChangeMonitorTest < Minitest::Test
       stdin_data: JSON.generate(input)
     )
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
+  end
+
+  def canonicalize_for_digest(value)
+    case value
+    when Hash
+      value.keys.sort.to_h { |key| [key, canonicalize_for_digest(value.fetch(key))] }
+    when Array
+      value.map { |item| canonicalize_for_digest(item) }
+           .uniq { |item| JSON.generate(item) }
+           .sort_by { |item| JSON.generate(item) }
+    else
+      value
+    end
+  end
+
+  def observation_digest(input, include_observed_at:)
+    ignored_keys = ["acknowledged_wake_id"]
+    ignored_keys << "observed_at" unless include_observed_at
+    digest_input = input.reject { |key, _value| ignored_keys.include?(key) }
+    Digest::SHA256.hexdigest(JSON.generate(canonicalize_for_digest(digest_input)))
   end
 
   def acknowledge_wake(state_path, input, decision)
@@ -758,6 +779,103 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_same_sequence_replay_ignores_an_informational_timestamp_refresh
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+
+      replay, replay_stderr, replay_status = run_helper(
+        state_path,
+        observation("observed_at" => "2026-08-09T00:15:00Z")
+      )
+
+      assert replay_status.success?, replay_stderr
+      assert_equal "suppress-replayed-probe", replay.fetch("action")
+      assert_equal baseline.fetch("action"), replay.fetch("replayed_action")
+      assert replay.fetch("replayed")
+      refute replay.fetch("wake_parent")
+    end
+  end
+
+  def test_same_sequence_replay_rejects_a_substantive_observation_change
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+
+      decision, stderr, status = run_helper(
+        state_path,
+        observation(
+          "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+          "observed_at" => "2026-08-09T00:15:00Z"
+        )
+      )
+
+      assert_nil decision
+      refute status.success?
+      assert_includes stderr, '"reason":"probe-replay-mismatch"'
+    end
+  end
+
+  def test_exact_legacy_replay_migrates_the_digest_before_timestamp_only_retries
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      first_observation = observation
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, first_observation)
+      assert baseline_status.success?, baseline_stderr
+      legacy_state = JSON.parse(File.read(state_path))
+      legacy_state.delete("observation_digest_version")
+      legacy_state["last_observation_digest"] = observation_digest(
+        first_observation,
+        include_observed_at: true
+      )
+      File.write(state_path, JSON.generate(legacy_state))
+
+      replay, replay_stderr, replay_status = run_helper(state_path, first_observation)
+      assert replay_status.success?, replay_stderr
+      assert_equal "suppress-replayed-probe", replay.fetch("action")
+      refute replay.fetch("wake_parent")
+      migrated_state = JSON.parse(File.read(state_path))
+      assert_equal 2, migrated_state.fetch("observation_digest_version")
+      assert_equal observation_digest(first_observation, include_observed_at: false),
+                   migrated_state.fetch("last_observation_digest")
+
+      timestamp_retry, timestamp_stderr, timestamp_status = run_helper(
+        state_path,
+        first_observation.merge("observed_at" => "2026-08-09T00:15:00Z")
+      )
+      assert timestamp_status.success?, timestamp_stderr
+      assert_equal "suppress-replayed-probe", timestamp_retry.fetch("action")
+      refute timestamp_retry.fetch("wake_parent")
+    end
+  end
+
+  def test_legacy_replay_with_a_restamped_timestamp_fails_closed
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      first_observation = observation
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, first_observation)
+      assert baseline_status.success?, baseline_stderr
+      legacy_state = JSON.parse(File.read(state_path))
+      legacy_state.delete("observation_digest_version")
+      legacy_state["last_observation_digest"] = observation_digest(
+        first_observation,
+        include_observed_at: true
+      )
+      File.write(state_path, JSON.generate(legacy_state))
+
+      decision, stderr, status = run_helper(
+        state_path,
+        first_observation.merge("observed_at" => "2026-08-09T00:15:00Z")
+      )
+      assert_nil decision
+      refute status.success?
+      assert_includes stderr, '"reason":"probe-replay-mismatch"'
+      refute JSON.parse(File.read(state_path)).key?("observation_digest_version")
+    end
+  end
+
   def test_terminal_task_states_supersede_a_budget_paused_monitor
     %w[terminal not-resumable].each do |task_status|
       Dir.mktmpdir do |directory|
@@ -1142,6 +1260,144 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert_equal first.fetch("fingerprint"), second.fetch("fingerprint")
       assert_equal "suppress-unchanged", second.fetch("action")
       refute second.fetch("wake_parent")
+    end
+  end
+
+  def test_corrupt_persisted_state_is_rejected
+    ["{", JSON.generate([])].each do |persisted_state|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        File.write(state_path, persisted_state)
+
+        decision, stderr, status = run_helper(state_path, observation)
+
+        assert_nil decision
+        refute status.success?
+        assert_includes stderr, '"reason":"corrupt-persisted-state"'
+      end
+    end
+  end
+
+  def test_partial_or_malformed_persisted_state_is_structurally_rejected
+    corruptions = {
+      "partial-state" => lambda { |_state|
+        { "monitor_id" => "adversarial:393" }
+      },
+      "missing-probe-sequence" => lambda { |state|
+        state.reject { |key, _value| key == "probe_sequence" }
+      },
+      "invalid-pending-wake" => lambda { |state|
+        state.merge("pending_wake" => [])
+      },
+      "invalid-acknowledgement-history" => lambda { |state|
+        state.merge("acknowledged_wake_ids" => ["not-a-wake-id"])
+      },
+      "invalid-acknowledgement-history-type" => lambda { |state|
+        state.merge("acknowledged_wake_ids" => "not-an-array")
+      },
+      "invalid-last-decision" => lambda { |state|
+        state.merge("last_decision" => [])
+      },
+      "invalid-usage" => lambda { |state|
+        state.merge("usage" => {})
+      },
+      "invalid-observation-digest-version" => lambda { |state|
+        state.merge("observation_digest_version" => 99)
+      }
+    }
+
+    corruptions.each_value do |corrupt|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        monitored_observation = observation("monitor_id" => "adversarial:393")
+        _baseline, baseline_stderr, baseline_status = run_helper(state_path, monitored_observation)
+        assert baseline_status.success?, baseline_stderr
+        persisted_state = JSON.parse(File.read(state_path))
+        File.write(state_path, JSON.generate(corrupt.call(persisted_state)))
+
+        decision, stderr, status = run_helper(
+          state_path,
+          monitored_observation.merge(
+            "probe_sequence" => 1,
+            "observed_at" => "2026-08-09T00:15:00Z"
+          )
+        )
+
+        assert_nil decision
+        refute status.success?
+        assert_includes stderr, '"reason":"corrupt-persisted-state"'
+      end
+    end
+  end
+
+  def test_pending_wake_requires_one_consistent_waking_decision_id
+    corruptions = {
+      "missing-inner-wake-id" => lambda { |state|
+        state.dig("pending_wake", "decision").delete("wake_id")
+      },
+      "mismatched-inner-wake-id" => lambda { |state|
+        state.dig("pending_wake", "decision")["wake_id"] = "f" * 64
+      },
+      "non-waking-inner-decision" => lambda { |state|
+        state.dig("pending_wake", "decision")["wake_parent"] = false
+      },
+      "non-waking-inner-action" => lambda { |state|
+        state.dig("pending_wake", "decision")["action"] = "suppress-unchanged"
+      }
+    }
+
+    corruptions.each_value do |corrupt|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+        assert baseline_status.success?, baseline_stderr
+        _wake, wake_stderr, wake_status = run_helper(
+          state_path,
+          observation(
+            "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+            "probe_sequence" => 1,
+            "observed_at" => "2026-08-09T00:15:00Z"
+          )
+        )
+        assert wake_status.success?, wake_stderr
+        persisted_state = JSON.parse(File.read(state_path))
+        corrupt.call(persisted_state)
+        File.write(state_path, JSON.generate(persisted_state))
+
+        decision, stderr, status = run_helper(
+          state_path,
+          observation(
+            "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+            "probe_sequence" => 2,
+            "observed_at" => "2026-08-09T00:30:00Z"
+          )
+        )
+
+        assert_nil decision
+        refute status.success?
+        assert_includes stderr, '"reason":"corrupt-persisted-state"'
+      end
+    end
+  end
+
+  def test_invalid_wake_acknowledgements_are_rejected
+    acknowledgements = ["not-a-wake-id", "f" * 64]
+
+    acknowledgements.each do |acknowledged_wake_id|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+        assert baseline_status.success?, baseline_stderr
+
+        decision, stderr, status = run_helper(
+          state_path,
+          observation("acknowledged_wake_id" => acknowledged_wake_id)
+        )
+
+        assert_nil decision
+        refute status.success?
+        assert_includes stderr, '"reason":"invalid-wake-acknowledgement"'
+      end
     end
   end
 

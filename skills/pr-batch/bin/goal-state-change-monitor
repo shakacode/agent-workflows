@@ -11,6 +11,7 @@ TASK_ACTIONS = {
   "not-resumable" => "stop-task-not-resumable",
   "blocked-user-input" => "pause-user-input"
 }.freeze
+OBSERVATION_DIGEST_VERSION = 2
 
 options = {}
 OptionParser.new do |parser|
@@ -51,6 +52,74 @@ end
 
 def nonnegative_integer(value)
   value if value.is_a?(Integer) && !value.negative?
+end
+
+def sha256_digest?(value)
+  value.is_a?(String) && value.match?(/\A[0-9a-f]{64}\z/)
+end
+
+def persisted_decision?(decision, monitor_id)
+  decision.is_a?(Hash) &&
+    decision["contract"] == "goal-state-change-decision" &&
+    decision["version"] == 1 &&
+    decision["status"] == "ok" &&
+    decision["monitor_id"] == monitor_id &&
+    decision["action"].is_a?(String) && !decision["action"].empty? &&
+    sha256_digest?(decision["fingerprint"]) &&
+    [true, false].include?(decision["wake_parent"]) &&
+    %w[active paused stopped].include?(decision["monitor_status"]) &&
+    (!decision.key?("wake_id") || sha256_digest?(decision["wake_id"])) &&
+    (!decision.key?("handoff") || decision["handoff"].is_a?(Hash)) &&
+    (!decision.key?("state_delta") || decision["state_delta"].is_a?(Hash))
+end
+
+def persisted_state?(state)
+  return false unless state.is_a?(Hash)
+
+  required_keys = %w[
+    contract version monitor_id fingerprint blocker_state capability monitor_status limits polling_policy
+    usage unchanged_runs probe_sequence last_observation_digest last_checked_at last_decision
+  ]
+  return false unless required_keys.all? { |key| state.key?(key) }
+
+  monitor_id = state["monitor_id"]
+  limits = state["limits"]
+  polling_policy = state["polling_policy"]
+  usage = state["usage"]
+  acknowledged_wake_ids = state.fetch("acknowledged_wake_ids", [])
+  pending_wake = state["pending_wake"]
+  pending_wake_decision = pending_wake["decision"] if pending_wake.is_a?(Hash)
+
+  state["contract"] == "goal-state-change-monitor-state" &&
+    state["version"] == 1 &&
+    monitor_id.is_a?(String) && !monitor_id.empty? &&
+    sha256_digest?(state["fingerprint"]) &&
+    state["blocker_state"].is_a?(Hash) &&
+    %w[deterministic-watcher model-polling-only unsupported].include?(state["capability"]) &&
+    %w[active paused stopped].include?(state["monitor_status"]) &&
+    limits.is_a?(Hash) && %w[max_unchanged_runs max_model_calls max_tokens].all? do |key|
+      positive_integer(limits[key])
+    end &&
+    polling_policy.is_a?(Hash) &&
+    %w[fast_interval_seconds fast_attempts max_interval_seconds].all? do |key|
+      positive_integer(polling_policy[key])
+    end &&
+    usage.is_a?(Hash) && %w[model_calls tokens].all? do |key|
+      nonnegative_integer(usage[key])
+    end &&
+    nonnegative_integer(state["unchanged_runs"]) &&
+    nonnegative_integer(state["probe_sequence"]) &&
+    sha256_digest?(state["last_observation_digest"]) &&
+    (!state.key?("observation_digest_version") ||
+      state["observation_digest_version"] == OBSERVATION_DIGEST_VERSION) &&
+    persisted_decision?(state["last_decision"], monitor_id) &&
+    acknowledged_wake_ids.is_a?(Array) && acknowledged_wake_ids.all? { |wake_id| sha256_digest?(wake_id) } &&
+    (!state.key?("pending_wake") ||
+      (pending_wake.is_a?(Hash) && sha256_digest?(pending_wake["wake_id"]) &&
+       persisted_decision?(pending_wake_decision, monitor_id) &&
+       pending_wake_decision["wake_parent"] == true &&
+       pending_wake_decision["wake_id"] == pending_wake["wake_id"] &&
+       %w[wake-state-change stop-dependency-terminal fallback-model-poll].include?(pending_wake_decision["action"])))
 end
 
 def persist_state(state_path, state)
@@ -156,8 +225,12 @@ polling_policy = {
 normalized_blocker_state = canonicalize(observation.fetch("blocker_state"))
 canonical_state = JSON.generate(normalized_blocker_state)
 fingerprint = Digest::SHA256.hexdigest(canonical_state)
-digest_observation = observation.reject { |key, _value| key == "acknowledged_wake_id" }
+digest_observation = observation.reject do |key, _value|
+  %w[acknowledged_wake_id observed_at].include?(key)
+end
 observation_digest = Digest::SHA256.hexdigest(canonical_json(digest_observation))
+legacy_digest_observation = observation.reject { |key, _value| key == "acknowledged_wake_id" }
+legacy_observation_digest = Digest::SHA256.hexdigest(canonical_json(legacy_digest_observation))
 
 FileUtils.mkdir_p(File.dirname(state_path))
 File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
@@ -169,14 +242,12 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
                  fail_json("corrupt-persisted-state")
                end
              end
-  fail_json("corrupt-persisted-state") if previous && !previous.is_a?(Hash)
+  fail_json("corrupt-persisted-state") if previous && !persisted_state?(previous)
   fail_json("monitor-id-collision") if previous && previous["monitor_id"] != monitor_id
 
   pending_wake = previous&.fetch("pending_wake", nil)
   acknowledged_wake_ids = previous.to_h.fetch("acknowledged_wake_ids", [])
   fail_json("corrupt-persisted-state") unless acknowledged_wake_ids.is_a?(Array)
-  legacy_acknowledgement = previous&.fetch("last_acknowledged_wake_id", nil)
-  acknowledged_wake_ids = (acknowledged_wake_ids + [legacy_acknowledgement].compact).uniq
   recognized_acknowledgement = false
   if acknowledged_wake_id
     if pending_wake.is_a?(Hash) && pending_wake["wake_id"] == acknowledged_wake_id
@@ -228,7 +299,17 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
 
   if previous && probe_sequence <= previous.fetch("probe_sequence")
     if probe_sequence == previous.fetch("probe_sequence")
-      fail_json("probe-replay-mismatch") if previous["last_observation_digest"] != observation_digest
+      if previous["observation_digest_version"] == OBSERVATION_DIGEST_VERSION
+        fail_json("probe-replay-mismatch") if previous["last_observation_digest"] != observation_digest
+      else
+        fail_json("probe-replay-mismatch") if previous["last_observation_digest"] != legacy_observation_digest
+
+        previous = previous.merge(
+          "last_observation_digest" => observation_digest,
+          "observation_digest_version" => OBSERVATION_DIGEST_VERSION
+        )
+        persist_state(state_path, previous)
+      end
 
       previous_decision = previous.fetch("last_decision")
       decision = previous_decision.merge(
@@ -275,6 +356,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     state = previous.merge(
       "probe_sequence" => probe_sequence,
       "last_observation_digest" => observation_digest,
+      "observation_digest_version" => OBSERVATION_DIGEST_VERSION,
       "last_checked_at" => observation["observed_at"],
       "last_decision" => decision
     )
@@ -458,6 +540,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     "monitor_status" => monitor_status,
     "probe_sequence" => probe_sequence,
     "last_observation_digest" => observation_digest,
+    "observation_digest_version" => OBSERVATION_DIGEST_VERSION,
     "last_checked_at" => observation["observed_at"],
     "last_decision" => decision
   }
