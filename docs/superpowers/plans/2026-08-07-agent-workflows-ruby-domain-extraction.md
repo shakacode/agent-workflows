@@ -157,12 +157,31 @@ exporter, plus exporter-only tests for helper-set transitions.
   helper wrapper cuts over.
 - Validate every staged entry, then atomically rename the staged directory into
   its immutable generation name. In `full-skill` mode, require exporter ownership
-  of the complete stable `.agents/skills/<skill>` path and atomically replace
-  that path with one relative symlink to the immutable generation's complete
-  skill subtree; reject repo-owned files or a host that cannot discover and
-  resolve that symlink to the generation root. In `helper-companion` mode, do not
-  replace whole skill directories because they may coexist with repo-owned local
-  skills and unrelated pinned helpers. Instead, create one fixed, minimal
+  of the complete stable `.agents/skills/<skill>` path. For a fresh path or an
+  already exporter-owned symlink layout, atomically install or replace one
+  relative symlink to the immutable generation's complete skill subtree; reject
+  repo-owned files or a host that cannot discover and resolve that symlink to the
+  generation root. A portable POSIX filesystem cannot atomically replace a
+  non-empty legacy directory with a symlink. Treat that conversion as an
+  explicit one-time offline migration, never as an online atomic update: require
+  a reviewed maintenance grant naming the consumer and skill, prove exporter
+  ownership and consumer quiescence under the no-follow lock, and fail before
+  mutation if any agent/host invocation may still read the path. Journal and
+  fsync the exact legacy directory descriptor, adjacent backup path, staged
+  symlink, desired generation, and phases `prepared`, `legacy_backed_up`,
+  `symlink_selected`, `verified`, `committed`. Rename the legacy directory to the
+  backup, install the staged symlink, and verify before releasing quiescence;
+  startup recovery must reacquire the no-follow lock and freshly prove that the
+  named consumer remains stopped under the offline grant before restoring the
+  directory or finishing the symlink selection. If fresh quiescence cannot be
+  proved, fail closed without another mutation and require renewed maintenance
+  fencing; never reuse a pre-crash proof. Consumers may resume only after
+  recovery verifies a complete selected path. Retain the backup until the
+  committed receipt verifies. The no-missing-path guarantee applies to online
+  updates; this explicitly quiesced migration instead guarantees that no
+  invocation can observe its bounded exchange interval. In `helper-companion`
+  mode, do not replace whole skill directories because they may coexist with
+  repo-owned local skills and unrelated pinned helpers. Instead, create one fixed, minimal
   trampoline per selected helper path. Each sub-30-line trampoline binds its
   helper directly to one complete immutable generation and pins one immutable
   stdlib-only bootstrap path and digest under
@@ -172,9 +191,11 @@ exporter, plus exporter-only tests for helper-set transitions.
   first. Install and fsync the immutable bootstrap before any trampoline may name
   it, and never delete an older bootstrap during normal export. On first
   migration, build and select the complete generation and install its bootstrap
-  before atomically renaming each staged symlink or trampoline over its legacy
-  path. Each invocation therefore opens either the complete old path or the
-  complete new path; there is no missing-path or half-written interval.
+  before atomically renaming each staged symlink or trampoline over an absent,
+  symlink, or regular-file legacy path. Each online invocation therefore opens
+  either the complete old path or the complete new path; there is no missing-path
+  or half-written interval. A non-empty full-skill legacy directory follows only
+  the quiesced offline migration above and never enters this rename-over path.
   Subsequent updates atomically replace each affected
   generation-bound stable path and then update the single
   `.agents/agent-workflows-current` symlink used only for status and exporter
@@ -233,7 +254,9 @@ exporter, plus exporter-only tests for helper-set transitions.
   revision. Refuse any directory containing repo-specific skills, deliberate
   overrides, locally generated files, or other non-tracked entries without
   explicit exporter ownership or a consumer-owned disposition; no replacement
-  begins while any entry is unclassified.
+  begins while any entry is unclassified. A classified non-empty `full-skill`
+  directory still requires the named maintenance grant and proved quiescence
+  above; classification alone never authorizes its offline replacement.
   Classify each consumer as `full-skill` or `helper-companion` and prove that its
   selected mode leaves exactly one invocable skill route. Migrate one canary
   consumer first, then update every supported pinned consumer
@@ -249,20 +272,31 @@ exporter, plus exporter-only tests for helper-set transitions.
   `.agents` files survive. Prove `full-skill` fixtures remain discoverable and
   resolve the loaded skill base to one immutable generation carrying matching
   skill-policy/helper revisions, `helper-companion` fixtures contain no
-  picker-visible metadata, and mode collisions fail closed. An
-  invocation during every initial trampoline replacement and status-pointer
-  fault must see only an old or new complete implementation; an invocation
-  paused after opening a trampoline must finish against its bound immutable
-  generation, two helper allowlists at one source revision coexist without
-  overwrite, and concurrent invocations must survive both helper addition and
-  removal, including a process paused after opening a soon-to-be-unlinked
-  trampoline. Fault injection before and after every journal, pointer,
-  trampoline, receipt, and compaction write proves the next exporter invocation
-  idempotently resumes or restores a complete prior set. Prove normal exports
-  never delete superseded generations; test explicit garbage collection only
-  behind a recorded quiescence assertion and fail closed when quiescence cannot
-  be established. An irreconcilable
-  fixture must fail closed without changing any additional stable path.
+  picker-visible metadata, and mode collisions fail closed. An invocation during
+  every helper-companion trampoline replacement, online full-skill symlink
+  update, and status-pointer fault must see only an old or new complete
+  implementation; an invocation paused after opening a trampoline must finish
+  against its bound immutable generation, two helper allowlists at one source
+  revision coexist without overwrite, and concurrent invocations must survive
+  both helper addition and removal, including a process paused after opening a
+  soon-to-be-unlinked trampoline. A non-empty legacy `full-skill` fixture must
+  refuse migration before mutation without the exact maintenance grant and
+  proved consumer quiescence. With both present, fault injection at every
+  `prepared`, `legacy_backed_up`, `symlink_selected`, `verified`, and `committed`
+  boundary must prove startup recovery restores the legacy directory or finishes
+  the symlink selection before quiescence is released. A restart fixture where
+  the original proof is stale and a consumer has resumed must prove recovery
+  refuses every mutation until the lock is reacquired and fresh quiescence is
+  established. No consumer invocation is permitted during that offline interval,
+  and its adjacent backup remains until the committed receipt verifies. Fresh
+  and already exporter-owned symlink `full-skill` fixtures remain atomic online.
+  Fault injection before and after every other journal, pointer, trampoline,
+  receipt, and compaction write proves the next exporter invocation idempotently
+  resumes or restores a complete prior set. Prove normal exports never delete
+  superseded generations; test explicit garbage collection only behind a
+  recorded quiescence assertion and fail closed when quiescence cannot be
+  established. An irreconcilable fixture must fail closed without changing any
+  additional stable path.
 - Update the installation/adoption documentation and every supported pinned-copy
   updater to invoke this exporter. `bin/push-downstream` remains a seam
   synchronizer and must not silently acquire shared-skill copying behavior.
