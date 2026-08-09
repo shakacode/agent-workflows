@@ -851,6 +851,47 @@ test_flat_upgrade_refuses_newly_packaged_skill_collision() {
     fail "flat collision changed install metadata"
 }
 
+test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  git -C "$source" rm -r --quiet skills/close-session
+  git -C "$source" commit --quiet -m "simulate source before close-session"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/legacy-install.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  rsync -a "$ROOT/skills/close-session" "$source/skills/"
+  git -C "$source" add skills/close-session
+  git -C "$source" commit --quiet -m "add packaged close-session"
+  mv "$target/bin/agent-workflows-status" "$tmp/agent-workflows-status"
+  mkdir "$target/bin/agent-workflows-status"
+  printf 'personal helper collision\n' > "$target/bin/agent-workflows-status/sentinel"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat upgrade accepted a late helper collision"
+  assert_contains "$output" "Refusing to replace non-file path"
+  [[ ! -e "$target/skills/close-session" ]] || \
+    fail "failed flat upgrade stranded a newly packaged skill"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "failed flat upgrade changed install metadata"
+
+  mv "$target/bin/agent-workflows-status" "$tmp/personal-helper-collision"
+  mv "$tmp/agent-workflows-status" "$target/bin/agent-workflows-status"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/retry.out"
+  assert_file "$target/skills/close-session/SKILL.md"
+}
+
 test_flat_copy_upgrade_refuses_newly_packaged_doc_collision() {
   local tmp source target output status metadata_before
   tmp="$(mktemp -d)"
@@ -902,6 +943,45 @@ test_flat_copy_upgrade_refuses_newly_packaged_doc_collision() {
     fail "flat copy upgrade did not install an absent coordination document"
   cmp -s "$target/docs/coordination-backend.md" "$source/docs/coordination-backend.md" || \
     fail "flat copy upgrade did not update a previously managed document"
+}
+
+test_flat_copy_upgrade_refuses_pack_doc_directory_before_mutation() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/initial-install.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  mv "$target/docs/coordination-backend.md" "$tmp/coordination-backend.md"
+  mkdir "$target/docs/coordination-backend.md"
+  printf 'personal directory sentinel\n' > "$target/docs/coordination-backend.md/sentinel"
+  printf '\nlate-preflight-workflow-marker\n' >> "$source/workflows/pr-processing.md"
+  git -C "$source" add workflows/pr-processing.md
+  git -C "$source" commit --quiet -m "update managed workflow"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat upgrade replaced a pack document directory"
+  assert_contains "$output" "Refusing to replace non-file path"
+  assert_contains "$output" "$target/docs/coordination-backend.md"
+  assert_not_contains "$(cat "$target/workflows/pr-processing.md")" "late-preflight-workflow-marker"
+  assert_file "$target/docs/coordination-backend.md/sentinel"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "pack document directory collision changed install metadata"
+
+  mv "$target/docs/coordination-backend.md" "$tmp/personal-coordination-directory"
+  mv "$tmp/coordination-backend.md" "$target/docs/coordination-backend.md"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/retry.out"
+  assert_contains "$(cat "$target/workflows/pr-processing.md")" "late-preflight-workflow-marker"
 }
 
 test_symlink_upgrade_refuses_newly_packaged_doc_collisions_before_mutation() {
@@ -1932,7 +2012,9 @@ main() {
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_flat_upgrade_refuses_newly_packaged_skill_collision
+    test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill
     test_flat_copy_upgrade_refuses_newly_packaged_doc_collision
+    test_flat_copy_upgrade_refuses_pack_doc_directory_before_mutation
     test_symlink_upgrade_refuses_newly_packaged_doc_collisions_before_mutation
     test_repeat_companion_install_blocks_new_current_native_skill_collision
     test_repeat_companion_install_blocks_native_skill_removed_from_current_source

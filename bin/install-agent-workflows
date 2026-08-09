@@ -455,11 +455,91 @@ verify_pack_doc_destinations() {
     destination="$target/docs/$doc_name"
     source_path="$repo_root/docs/$doc_name"
     [[ -e "$destination" || -L "$destination" ]] || continue
+    if [[ "$mode" = "copy" && ! -f "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-file path: $destination" >&2
+      exit 1
+    fi
     pack_doc_destination_owned "$doc_name" "$destination" "$source_path" && continue
 
     echo "Refusing to replace unowned pack document: $destination" >&2
     exit 1
   done
+}
+
+verify_install_destinations() {
+  local destination helper skill source_path
+
+  if [[ "$mode" = "copy" ]]; then
+    for destination in "$target/bin" "$target/workflows" "$target/docs" "$target/docs/solutions"; do
+      if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-directory path: $destination" >&2
+        exit 1
+      fi
+    done
+    if [[ "$delivery_mode" = "flat" ]]; then
+      destination="$target/skills"
+      if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-directory path: $destination" >&2
+        exit 1
+      fi
+    fi
+    destination="$target/LICENSE"
+    if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-file path: $destination" >&2
+      exit 1
+    fi
+    for helper in "${bin_helpers[@]}"; do
+      destination="$target/bin/$helper"
+      if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-file path: $destination" >&2
+        exit 1
+      fi
+    done
+  else
+    for destination in "$target/bin" "$target/skills"; do
+      if [[ ( -e "$destination" || -L "$destination" ) && ! -d "$destination" ]]; then
+        echo "Refusing to use non-directory path: $destination" >&2
+        exit 1
+      fi
+    done
+    for destination in "$target/docs" "$target/docs/solutions"; do
+      if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-directory path: $destination" >&2
+        exit 1
+      fi
+    done
+    for destination in "$target/LICENSE" "$target/workflows"; do
+      if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-symlink path: $destination" >&2
+        exit 1
+      fi
+    done
+    if [[ "$delivery_mode" = "flat" ]]; then
+      for skill in "$repo_root"/skills/*; do
+        [[ -d "$skill" ]] || continue
+        destination="$target/skills/$(basename "$skill")"
+        if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
+          echo "Refusing to replace non-symlink path: $destination" >&2
+          exit 1
+        fi
+      done
+    fi
+    for source_path in "$repo_root"/docs/solutions/*; do
+      [[ -e "$source_path" ]] || continue
+      destination="$target/docs/solutions/$(basename "$source_path")"
+      if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-symlink path: $destination" >&2
+        exit 1
+      fi
+    done
+    for helper in "${bin_helpers[@]}"; do
+      destination="$target/bin/$helper"
+      if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-symlink path: $destination" >&2
+        exit 1
+      fi
+    done
+  fi
 }
 
 copy_pack_docs() {
@@ -685,6 +765,7 @@ if [[ "$delivery_status" -ne 0 ]]; then
   exit 1
 fi
 verify_pack_doc_destinations
+verify_install_destinations
 prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then

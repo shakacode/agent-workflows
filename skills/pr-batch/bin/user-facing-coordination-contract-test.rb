@@ -11,6 +11,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   PLAN_PR_BATCH = "skills/plan-pr-batch/SKILL.md"
   TRIAGE = "skills/triage/SKILL.md"
   CLOSE_SESSION = "skills/close-session/SKILL.md"
+  README = "README.md"
   GMCC_V3 = "GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or " \
             "threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; " \
             "auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; " \
@@ -199,5 +200,28 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes text, "An internal worker is not another user-visible task."
     assert_includes text, "External tasks and automations do not gain ownership."
     assert_includes text, "delete obsolete heartbeat automations"
+  end
+
+  def test_close_session_preserves_hst_v1_closeout_envelope
+    text = normalized_section(CLOSE_SESSION, "## Final response", end_heading: /^##\s+/)
+    assert_ordered(
+      text,
+      "What changed:",
+      "Action needed:",
+      "Next:",
+      "Done",
+      "Durable captures",
+      "Open follow-ups",
+      "Decisions needed",
+      "Archive verdict",
+      "Conversation status:"
+    )
+    assert_includes text, "HST-v1"
+  end
+
+  def test_public_skill_inventory_lists_close_session
+    text = normalized(README)
+    assert_includes text,
+                    "| `close-session` | Close active work with verified handoff and archive readiness. |"
   end
 end

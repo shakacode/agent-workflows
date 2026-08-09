@@ -161,7 +161,14 @@ Use a more specific available skill when it governs part of closeout:
 
 ## Final response
 
-Keep the closeout compact and include:
+Keep the closeout compact. Apply the canonical `HST-v1` envelope first, with
+these exact labels in this order:
+
+- `What changed:` the material closeout or archive result;
+- `Action needed:` the exact user action or `none`; and
+- `Next:` the current task's next action or terminal state.
+
+Then include the existing closeout handoff:
 
 - **Done**
 - **Durable captures**
