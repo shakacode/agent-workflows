@@ -78,8 +78,9 @@ Report these four facts separately; one never implies another:
   QA, CI, unresolved-thread, and merge-assurance gates are satisfied.
 - **Ownership:** the current task remains responsible for the in-scope next
   action, including work it assigns to internal workers.
-- **Repository submission policy:** how an authorized merge must be submitted,
-  such as a merge queue or repository-owned guarded submission path.
+- **Repository submission policy:** whether normal branch, commit, push, and PR
+  publication are already required, allowed, or not authorized, plus any
+  required merge queue or repository-owned guarded submission path.
 - **Merge authority:** whether the current task has `none`, `ask`, or
   `auto_merge_when_gates_pass` authority for the exact current diff.
 

@@ -1,6 +1,6 @@
 ---
 name: close-session
-description: Close an active Codex task with live-state verification, durable outcome capture, explicit follow-up ownership, and an archive-readiness verdict. Use when the user says "close session", asks "anything else pending?", "any decisions needed?", or "should we archive this chat?", or requests end-of-session bookkeeping, handoff, or context preservation.
+description: Close an active agent task with live-state verification, durable outcome capture, explicit follow-up ownership, and an archive-readiness verdict. Use when the user says "close session", asks "anything else pending?", "any decisions needed?", or "should we archive this chat?", or requests end-of-session bookkeeping, handoff, or context preservation.
 ---
 
 # Close Session

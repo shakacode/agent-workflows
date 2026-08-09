@@ -851,6 +851,59 @@ test_flat_upgrade_refuses_newly_packaged_skill_collision() {
     fail "flat collision changed install metadata"
 }
 
+test_flat_copy_upgrade_refuses_newly_packaged_doc_collision() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  git -C "$source" rm --quiet docs/user-facing-coordination.md
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.read(path)
+    abort "missing pack doc entry" unless text.sub!("  user-facing-coordination.md\n", "")
+    File.write(path, text)
+  ' "$source/bin/install-agent-workflows"
+  git -C "$source" add bin/install-agent-workflows
+  git -C "$source" commit --quiet -m "simulate source before coordination doc"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/legacy-install.out"
+
+  printf 'personal coordination sentinel\n' > "$target/docs/user-facing-coordination.md"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  install -m 0644 "$ROOT/docs/user-facing-coordination.md" "$source/docs/user-facing-coordination.md"
+  install -m 0755 "$ROOT/bin/install-agent-workflows" "$source/bin/install-agent-workflows"
+  printf '\nupgrade-managed-doc-marker\n' >> "$source/docs/coordination-backend.md"
+  git -C "$source" add docs/user-facing-coordination.md docs/coordination-backend.md bin/install-agent-workflows
+  git -C "$source" commit --quiet -m "add coordination doc"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat copy upgrade replaced a newly colliding personal document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  assert_contains "$output" "$target/docs/user-facing-coordination.md"
+  grep -qxF 'personal coordination sentinel' "$target/docs/user-facing-coordination.md" || \
+    fail "flat copy upgrade changed the personal coordination document"
+  assert_not_contains "$(cat "$target/docs/coordination-backend.md")" "upgrade-managed-doc-marker"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "flat document collision changed install metadata"
+
+  mv "$target/docs/user-facing-coordination.md" "$tmp/personal-coordination.md"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/successful-upgrade.out"
+  cmp -s "$target/docs/user-facing-coordination.md" "$source/docs/user-facing-coordination.md" || \
+    fail "flat copy upgrade did not install an absent coordination document"
+  cmp -s "$target/docs/coordination-backend.md" "$source/docs/coordination-backend.md" || \
+    fail "flat copy upgrade did not update a previously managed document"
+}
+
 test_repeat_companion_install_blocks_new_current_native_skill_collision() {
   local tmp source target plugin_root metadata_before output status
   tmp="$(mktemp -d)"
@@ -1811,6 +1864,7 @@ main() {
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_flat_upgrade_refuses_newly_packaged_skill_collision
+    test_flat_copy_upgrade_refuses_newly_packaged_doc_collision
     test_repeat_companion_install_blocks_new_current_native_skill_collision
     test_repeat_companion_install_blocks_native_skill_removed_from_current_source
     test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots

@@ -39,7 +39,8 @@ The current task is the sole user-facing coordinator. Subagents, lane workers,
 reviewers, and QA agents are internal workers owned by the current task, never
 separate chats whose mechanics the user must coordinate. External tasks may
 send evidence or requests without gaining ownership, and automations only wake
-the current task. Route authority and separate-scope work through the shared
+the current task. Apply authority decisions and separate-scope routing through
+the shared
 [user-facing coordination contract](../../docs/user-facing-coordination.md).
 
 For a heartbeat or monitor, a no-change wake produces no user-visible

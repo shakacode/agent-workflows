@@ -130,6 +130,8 @@ class UserFacingCoordinationContractTest < Minitest::Test
       "Repository submission policy:",
       "Merge authority:"
     )
+    assert_includes text,
+                    "whether normal branch, commit, push, and PR publication are already required, allowed, or not authorized"
   end
 
   def test_existing_autonomous_authority_acts_without_a_merge_prompt
@@ -190,6 +192,8 @@ class UserFacingCoordinationContractTest < Minitest::Test
 
   def test_close_session_consumes_the_shared_model
     text = normalized(CLOSE_SESSION)
+    assert_includes text, "description: Close an active agent task"
+    refute_includes text, "description: Close an active Codex task"
     assert_includes text, "User-Facing Coordination Contract"
     assert_includes text, "current task remains the sole user-facing coordinator"
     assert_includes text, "An internal worker is not another user-visible task."

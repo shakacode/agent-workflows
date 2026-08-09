@@ -402,6 +402,56 @@ remove_legacy_managed_model_routing_path() {
   fi
 }
 
+recorded_revision_contains_pack_doc() {
+  local doc_name="$1"
+  local previous_revision previous_source source_root
+  previous_revision="$(installed_metadata_value source_revision 2>/dev/null || true)"
+  [[ "$previous_revision" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+  previous_source="$(installed_metadata_value source 2>/dev/null || true)"
+
+  for source_root in "$repo_root" "$previous_source"; do
+    [[ -n "$source_root" && -d "$source_root" ]] || continue
+    if git -C "$source_root" cat-file -e "$previous_revision:docs/$doc_name" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+pack_doc_symlink_matches_recorded_source() {
+  local doc_name="$1"
+  local destination="$2"
+  local previous_source resolved source_root expected
+  [[ -L "$destination" ]] || return 1
+  resolved="$(ruby -e 'puts File.expand_path(File.readlink(ARGV.fetch(0)), File.dirname(ARGV.fetch(0)))' "$destination")"
+  previous_source="$(installed_metadata_value source 2>/dev/null || true)"
+
+  for source_root in "$repo_root" "$previous_source"; do
+    [[ -n "$source_root" ]] || continue
+    expected="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$source_root/docs/$doc_name")"
+    [[ "$resolved" = "$expected" ]] && return 0
+  done
+  return 1
+}
+
+verify_copy_pack_doc_destinations() {
+  local doc_name destination source_path
+
+  for doc_name in "${pack_docs[@]}"; do
+    destination="$target/docs/$doc_name"
+    source_path="$repo_root/docs/$doc_name"
+    [[ -e "$destination" || -L "$destination" ]] || continue
+    if recorded_revision_contains_pack_doc "$doc_name" ||
+       { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
+       pack_doc_symlink_matches_recorded_source "$doc_name" "$destination"; then
+      continue
+    fi
+
+    echo "Refusing to replace unowned pack document: $destination" >&2
+    exit 1
+  done
+}
+
 copy_pack_docs() {
   local docs_target="$1"
   local doc_name destination
@@ -627,6 +677,7 @@ fi
 prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then
+  verify_copy_pack_doc_destinations
   ensure_real_directory "$target/bin"
   prepare_workflow_doctor_copy_destination
   copy_pack_license

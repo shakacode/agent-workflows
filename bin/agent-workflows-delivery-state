@@ -360,6 +360,48 @@ module AgentWorkflowsDeliveryState
     end
   end
 
+  def recorded_flat_skill_path?(path, snapshot, metadata)
+    return matches_directory_snapshot?(path, snapshot, File.basename(path)) unless File.symlink?(path)
+
+    recorded_source = metadata.fetch("source", nil)
+    return false unless recorded_source
+
+    recorded_target = File.expand_path(File.join(recorded_source, "skills", File.basename(path)))
+    File.expand_path(File.readlink(path), File.dirname(path)) == recorded_target
+  end
+
+  def flat_skill_ownership_conflict(target:, source:, metadata:, names:, present:, revision:)
+    recorded_names, snapshot = skill_names(source, metadata)
+    case snapshot&.fetch(:type)
+    when :git
+      blocking = (names - recorded_names).filter_map do |name|
+        path = File.join(target, "skills", name)
+        path if File.exist?(path) || File.symlink?(path)
+      end
+      return if blocking.empty?
+
+      {
+        "state" => "ambiguous", "paths" => present.sort,
+        "removable" => [], "blocking" => blocking.sort
+      }
+    when :directory
+      blocking = present.reject { |path| recorded_flat_skill_path?(path, snapshot, metadata) }
+      return if blocking.empty?
+
+      {
+        "state" => "ambiguous", "paths" => present.sort,
+        "removable" => [], "blocking" => blocking.sort,
+        "reason" => "recorded source revision is unavailable: #{revision}"
+      }
+    else
+      {
+        "state" => "unknown", "paths" => present.sort,
+        "removable" => [], "blocking" => present.sort,
+        "reason" => "recorded source revision is unavailable: #{revision}"
+      }
+    end
+  end
+
   def managed_flat_inventory(target:, source:, delivery_mode:, collision_names: [])
     if delivery_mode == "plugin-companion" && (component = symlinked_target_component(target))
       return {
@@ -408,45 +450,11 @@ module AgentWorkflowsDeliveryState
       end
 
       if present.any? && metadata && prior_delivery_mode == "flat"
-        recorded_names, snapshot = skill_names(source, metadata)
-        if snapshot&.fetch(:type) == :git
-          introduced_names = names - recorded_names
-          blocking = introduced_names.filter_map do |name|
-            path = File.join(target, "skills", name)
-            path if File.exist?(path) || File.symlink?(path)
-          end
-          unless blocking.empty?
-            return {
-              "state" => "ambiguous", "paths" => present.sort,
-              "removable" => [], "blocking" => blocking.sort
-            }
-          end
-        elsif snapshot
-          blocking = present.reject do |path|
-            if File.symlink?(path)
-              recorded_source = metadata.fetch("source", nil)
-              recorded_target = recorded_source && File.expand_path(
-                File.join(recorded_source, "skills", File.basename(path))
-              )
-              recorded_target && File.expand_path(File.readlink(path), File.dirname(path)) == recorded_target
-            else
-              matches_directory_snapshot?(path, snapshot, File.basename(path))
-            end
-          end
-          unless blocking.empty?
-            return {
-              "state" => "ambiguous", "paths" => present.sort,
-              "removable" => [], "blocking" => blocking.sort,
-              "reason" => "recorded source revision is unavailable: #{revision}"
-            }
-          end
-        else
-          return {
-            "state" => "unknown", "paths" => present.sort,
-            "removable" => [], "blocking" => present.sort,
-            "reason" => "recorded source revision is unavailable: #{revision}"
-          }
-        end
+        conflict = flat_skill_ownership_conflict(
+          target: target, source: source, metadata: metadata,
+          names: names, present: present, revision: revision
+        )
+        return conflict if conflict
       end
 
       return { "state" => present.empty? ? "absent" : "present", "paths" => present.sort, "removable" => [], "blocking" => [] }
