@@ -676,8 +676,9 @@ disposition. Do not publish another version merely to test OIDC.
 - Create after an ambiguous toggle or public read-back:
   `release/evidence/standalone-github-publication-recovery-v1.json`.
 - Commit through reviewed closeout PRs:
-  `release/evidence/standalone/closeouts/<tag>/` with the exact verified
-  authorization, receipts, terminal evaluation, and closed manifest.
+  `release/evidence/standalone/closeouts/<tag>/` with either the exact verified
+  authorization/receipts or denial/stale decision, terminal evaluation, and
+  closed manifest.
 - Create before protected release mutation:
   `release/evidence/standalone-github-publication-instruction-v1.json`.
 - Create: `docs/standalone-installation.md` only if the evaluation passes.
@@ -1026,14 +1027,32 @@ JSON is forbidden.
 
 `finalize-decision` freshly downloads the exact source evaluation and captured
 decision by producer run/artifact ID/service digest, revalidates both, and writes
-the candidate terminal `NOT_ADOPTED` evaluation into `RUNNER_TEMP`. It packages
-the decision, terminal evaluation, and a closed SHA-256 manifest as one
+the candidate terminal `NOT_ADOPTED` evaluation into `RUNNER_TEMP`. For
+`authorization-stale`, it also freshly downloads and revalidates the exact
+expired authorization named by the decision. It packages the source evaluation,
+decision, terminal evaluation, conditionally required-or-forbidden expired
+authorization, and a closed SHA-256 manifest as one
 `standalone-release-decision-closeout-<tag>-<capture-run>` artifact, queries its
 exact ID/service digest, downloads it into a new directory, and revalidates the
-manifest and both schemas. Only that fresh durable read-back may report terminal
-`NOT_ADOPTED`. Loss or mismatch leaves the state
-`ADOPTED_PENDING_RELEASE_AUTHORIZATION`; the temporary decision or evaluation
-alone is not terminal evidence.
+manifest and every applicable schema. Evaluation and decision schemas are always
+required; the authorization schema and file are required for
+`authorization-stale` and forbidden for `authorization-denied`. That retention-
+bounded artifact is only the source for
+the `negative-decision-evidence` mode of
+`.github/workflows/standalone-closeout-pr.yml`; its fresh read-back alone is not
+terminal evidence.
+
+The negative mode uses the same unprivileged preparation, exact PR-payload
+artifact, limited no-checkout opener, committed instruction/binding, post-push
+operation-result, human PR review, and split-contract verification defined below.
+Its fixed tag directory contains the source evaluation, denial/stale decision,
+candidate terminal `NOT_ADOPTED` evaluation, closed manifest, and—only for
+`authorization-stale`—the exact expired authorization. After merge,
+`finalize-standalone-closeout.yml` revalidates those files from the exact commit,
+proves the no-public-artifact condition, and accepts/reports `NOT_ADOPTED` only
+from that immutable `main` evidence. Loss, mismatch, or an unmerged PR leaves the
+state `ADOPTED_PENDING_RELEASE_AUTHORIZATION`; temporary files and Actions
+artifacts never complete the negative path.
 
 - [ ] **Step 7: Publish binaries only after authorization**
 
@@ -1431,7 +1450,10 @@ binding that names another PR/head/base or original closeout artifact; and a
 privileged opener that accepts bytes outside the exact verified payload. Reject
 a committed binding that claims its own head SHA, an opener result whose observed
 head does not contain the named binding digest, and missing or mismatched schema
-path/version/digest ownership.
+path/version/digest ownership. Apply the same cases to negative-decision
+closeouts, including expired decision artifacts, omission or forbidden inclusion
+of the stale authorization, a public release on the negative path, and refusal
+to report `NOT_ADOPTED` before the exact evidence PR merge is revalidated.
 
 Before assembling the closeout artifact, the candidate terminal writer receives
 only the freshly downloaded preparation evaluation/authorization and the
@@ -1471,13 +1493,13 @@ ruby packaging/tebako/write-evaluation.rb \
   --output "$RUNNER_TEMP/standalone-candidate-terminal-evaluation-v1.json"
 ```
 
-The decision-closeout artifact must then be uploaded and freshly read back as
-specified in Step 6. Validate and report only the terminal evaluation path from
-that verified download:
+The decision-closeout artifact must then pass the reviewed
+`negative-decision-evidence` PR path specified in Step 6. Validate and report
+only the terminal evaluation path from the exact verified merge commit:
 
 ```bash
 ruby packaging/tebako/validate-evaluation.rb \
-  "$VERIFIED_DECISION_CLOSEOUT_EVALUATION_PATH"
+  "$VERIFIED_MERGED_NEGATIVE_CLOSEOUT_EVALUATION_PATH"
 ```
 
 `AUTHORIZATION_FAILURE` is a closed enum containing only
