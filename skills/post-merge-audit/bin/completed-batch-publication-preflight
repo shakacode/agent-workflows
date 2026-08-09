@@ -1137,6 +1137,9 @@ module CompletedBatchPublicationPreflight
 
   def canonical_lane_snapshots(entries, authenticated_later_target_keys, blockers, legacy_reconciliation: nil)
     validate_legacy_lane_missing_fact_targets(entries, legacy_reconciliation, blockers) if legacy_reconciliation
+    legacy_targets_by_lane = entries.group_by { |entry| entry.fetch("name") }.transform_values do |lane_entries|
+      lane_entries.map { |entry| entry.fetch("target") }
+    end
 
     entries.map do |entry|
       lane = entry.fetch("lane")
@@ -1157,7 +1160,7 @@ module CompletedBatchPublicationPreflight
         elsif !valid_timestamp?(lane["closed_at"])
           blockers << "coordination lane #{lane_name} close timestamp is absent without an accepted legacy missing fact"
         end
-        unless valid_legacy_lane_outcome?(lane)
+        unless valid_legacy_lane_outcome?(lane, targets: legacy_targets_by_lane.fetch(lane_name))
           blockers << "coordination lane #{lane_name} legacy target outcome is invalid or contradicts its terminal state"
         end
         evidence = durable_reference_url(lane["evidence_url"])
@@ -1230,13 +1233,14 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def valid_legacy_lane_outcome?(lane)
+  def valid_legacy_lane_outcome?(lane, targets:)
     outcome = lane["pr_state"]
     return false unless LEGACY_LANE_OUTCOMES.include?(outcome)
 
     case lane["terminal"]
     when "done"
-      %w[merged no-pr].include?(outcome)
+      %w[merged no-pr].include?(outcome) &&
+        !(outcome == "no-pr" && targets.any? { |target| target.fetch("type") == "pull_request" })
     when "abandoned", "superseded"
       outcome == "blocked-user-input"
     else

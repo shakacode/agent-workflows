@@ -314,6 +314,13 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   def test_accepted_legacy_publish_and_reference_replay_preserve_distinct_human_output
     target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
     preflight = accepted_legacy_output_preflight
+    unicode_owner = "ops — primary"
+    preflight.dig("snapshot", "legacy_reconciliation", "target_dispositions", 0)["owner"] = unicode_owner
+    preflight["snapshot"] = CompletedBatchPublicationPreflight.canonicalize(preflight.fetch("snapshot"))
+    preflight["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(preflight.fetch("snapshot"))
+    preflight["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      preflight.reject { |key, _value| key == "receipt_digest" }
+    )
     supplied_marker = ready_marker.sub("audit_status: complete", "audit_status: accepted_legacy_reconciliation")
     posted_body = nil
     comment = lambda do
@@ -376,8 +383,10 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert result.fetch("ready")
       assert_includes result.fetch("chat_reference"), "accepted-legacy-reconciliation"
       assert_includes result.fetch("chat_reference"), "ordinary coordination completion was not proven"
+      assert_includes result.fetch("chat_reference"), "owner #{unicode_owner}"
       assert_includes result.dig("pr_description_summary", "section"), "**Waived missing facts:**"
       assert_includes result.dig("pr_description_summary", "section"), "**Accepted deferrals:**"
+      assert_includes result.dig("pr_description_summary", "section"), unicode_owner
       refute_includes result.dig("pr_description_summary", "section"), "**Status:** Clean"
     end
     assert_equal published.fetch("chat_reference"), replayed.fetch("chat_reference")
@@ -859,6 +868,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert_operator replay_coordination_calls.length, :>, publish_coordination_calls.length
       assert(replay_coordination_calls.all? { |call| call == "status --batch-id batch-184 --json" })
     end
+  end
+
+  def test_publication_snapshot_rejects_invalid_utf8_after_base64url_decode
+    malformed_json = '{"owner":"'.b + [0xff].pack("C") + '"}'.b
+    encoded = Base64.urlsafe_encode64(malformed_json, padding: false)
+    value = "sha256:#{'0' * 64}; encoding=base64url; data=#{encoded}"
+
+    assert_nil CompletedBatchAuditReceipt.publication_snapshot(value)
   end
 
   def test_bound_snapshot_replay_requires_the_current_exact_target_manifest

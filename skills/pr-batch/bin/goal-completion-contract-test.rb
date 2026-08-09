@@ -156,6 +156,8 @@ COMPLETED_BATCH_LEGACY_MISSING_TIMESTAMP_RULE = "Missing fresh projection timest
 COMPLETED_BATCH_LEGACY_EXACT_MARKER_RULE = "Authentication compares the exact emitted marker bytes, not only parsed field values; reordered fields, alternate JSON whitespace or Unicode escapes, duplicate JSON keys, and any other semantically equivalent re-encoding are not authorized and block."
 COMPLETED_BATCH_LEGACY_OUTPUT_RULE = "Accepted legacy reconciliation never renders as `clean`; its compact and managed summaries say ordinary coordination completion was not proven and list every waived fact/path and each accepted deferral's exact target, owner, and evidence URL."
 COMPLETED_BATCH_ACCEPTED_LEGACY_COMPACT_RECEIPT = "Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
+COMPLETED_BATCH_FINAL_OUTPUT_BRANCH_RULE = "Immediately before the exact final `Conversation status` line, emit the helper-returned compact receipt for the bound completion mode: use the ordinary form only for ordinary completion, and use the accepted-legacy form only for `accepted_legacy_reconciliation`."
+OBSOLETE_ORDINARY_ONLY_COMPACT_RECEIPT_RULE = "Immediately before the exact final `Conversation status` line, emit only: Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
 COMPLETED_BATCH_LEGACY_TARGETED_CLAIMS_RULE = "A batch-scoped `claims: []` accompanied by a degraded or not-checked claims section is not evidence that targets are unclaimed."
 COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
 COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE = "A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`."
@@ -1627,12 +1629,15 @@ class GoalCompletionContractTest < Minitest::Test
        COMPLETED_BATCH_LEGACY_EXACT_MARKER_RULE,
        COMPLETED_BATCH_LEGACY_OUTPUT_RULE,
        COMPLETED_BATCH_ACCEPTED_LEGACY_COMPACT_RECEIPT,
+       COMPLETED_BATCH_FINAL_OUTPUT_BRANCH_RULE,
        COMPLETED_BATCH_LEGACY_TARGETED_CLAIMS_RULE,
        COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE,
        COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE,
        COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE].each do |rule|
         assert_text_includes normalized_text, rule, label
       end
+      refute_includes normalized_text, OBSOLETE_ORDINARY_ONLY_COMPACT_RECEIPT_RULE,
+                      "#{label} should not retain an ordinary-only final-output rule"
     end
 
     assert_text_includes read_repo_file(File.join(ROOT, "workflows/post-merge-audit.md")),

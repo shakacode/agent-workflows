@@ -587,9 +587,8 @@ Replay the final visible status line from the normalized blocker union: render a
 
 Use exactly `Conversation status: Ready for archiving.` only when archive-ready and the blocker union is empty. Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`
 
-In final chat, this compact receipt line immediately precedes the exact
-`Conversation status` final line; never include the full wrapper. Ordinary
-completion uses:
+Immediately before the exact final `Conversation status` line, emit the helper-returned compact receipt for the bound completion mode: use the ordinary form only for ordinary completion, and use the accepted-legacy form only for `accepted_legacy_reconciliation`.
+Never include the full wrapper in final chat. Ordinary completion uses:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 

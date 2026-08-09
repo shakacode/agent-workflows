@@ -602,7 +602,9 @@ module CompletedBatchAuditReceipt
     return unless match
 
     padding = "=" * ((4 - (match[2].length % 4)) % 4)
-    json = Base64.urlsafe_decode64("#{match[2]}#{padding}")
+    json = Base64.urlsafe_decode64("#{match[2]}#{padding}").force_encoding(Encoding::UTF_8)
+    return unless json.valid_encoding?
+
     parsed = JSON.parse(json)
     return unless parsed.is_a?(Hash)
 

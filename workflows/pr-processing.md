@@ -2334,12 +2334,6 @@ bounded exact-target status per manifest target in `coordination_claim_statuses`
 publish and replay rerun every same target read, and missing, degraded,
 mismatched, active, nonreleased, or stale claim evidence blocks.
 
-The distinct accepted-legacy compact receipt form is:
-
-```text
-Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
-```
-
 Each `qa_evidence` row must carry a coordinator-owned
 `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's
 canonical target and publication snapshot; `yes` requires strict visual-evidence
@@ -2361,9 +2355,18 @@ When `coordination_backend: n/a`, `coordination_status` must instead be a `compl
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
-Immediately before the exact final `Conversation status` line, emit only:
+Immediately before the exact final `Conversation status` line, emit the helper-returned compact receipt for the bound completion mode: use the ordinary form only for ordinary completion, and use the accepted-legacy form only for `accepted_legacy_reconciliation`.
+Never include the full wrapper in final chat. Ordinary completion uses:
 
+```text
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
+```
+
+Accepted legacy reconciliation uses:
+
+```text
+Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
+```
 
 The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. An `audit_status: accepted_legacy_reconciliation` receipt is separately release/archive-ready only when its `publication_snapshot` matches a freshly reassessed eligible `completion_mode: accepted_legacy_reconciliation` preflight; it never proves ordinary coordination completion, never mutates the source batch, and no other non-`complete` status is ready. New ready receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. New ready receipts also contain exactly one helper-managed `publication_snapshot`; unrefreshed or snapshot-mismatched data fails. A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
 

@@ -618,6 +618,13 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert result.fetch("eligible"), result.fetch("blockers").join("\n")
     assert_equal "accepted_legacy_reconciliation", result.fetch("completion_mode")
     assert_equal "accepted_legacy_reconciliation", result.dig("snapshot", "completion_mode")
+    lanes = result.dig("snapshot", "coordination", "lanes")
+    issue_only_merged = lanes.find { |row| row.fetch("name") == "d4605" }
+    assert_equal "issue", issue_only_merged.dig("target", "type")
+    assert_equal "merged", issue_only_merged.fetch("target_state")
+    mixed_merged = lanes.select { |row| row.fetch("name") == "d4274" }
+    assert_equal %w[issue pull_request], mixed_merged.map { |row| row.dig("target", "type") }.sort
+    assert_equal ["merged"], mixed_merged.map { |row| row.fetch("target_state") }.uniq
     deferred = result.dig("snapshot", "targets").find { |row| row.dig("target", "number") == 4279 }
     assert_equal "open", deferred.fetch("state")
     assert_equal "accepted_deferral", deferred.fetch("disposition")
@@ -893,6 +900,20 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                       "coordination lane d4271 legacy target outcome is invalid or contradicts its terminal state",
                       outcome
     end
+  end
+
+  def test_legacy_reconciliation_rejects_no_pr_for_a_multi_target_lane_that_contains_a_pull_request
+    input = legacy_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |candidate| candidate.fetch("name") == "d4274" }
+    assert_equal %w[4274 4282], lane.fetch("targets")
+    lane["pr_state"] = "no-pr"
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane d4274 legacy target outcome is invalid or contradicts its terminal state"
   end
 
   def test_legacy_reconciliation_rejects_an_invalid_lane_evidence_url

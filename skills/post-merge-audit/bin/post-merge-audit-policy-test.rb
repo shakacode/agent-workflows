@@ -41,6 +41,11 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_PR_DESCRIPTION_SUMMARY_END = "<!-- completed-batch-audit-summary:end -->"
   REQUIRED_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
   REQUIRED_ACCEPTED_LEGACY_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
+  REQUIRED_FINAL_OUTPUT_BRANCH_RULE = "Immediately before the exact final `Conversation status` line, emit the helper-returned compact receipt for the bound completion mode: use the ordinary form only for ordinary completion, and use the accepted-legacy form only for `accepted_legacy_reconciliation`."
+  OBSOLETE_ORDINARY_ONLY_FINAL_OUTPUT_RULES = [
+    "Immediately before the exact final `Conversation status` line, emit only: #{REQUIRED_COMPACT_RECEIPT_FORMAT}",
+    "In final chat, this compact receipt line immediately precedes the exact `Conversation status` final line; never include the full wrapper: #{REQUIRED_COMPACT_RECEIPT_FORMAT}"
+  ].freeze
   REQUIRED_LEGACY_TARGETED_CLAIMS_RULE = "A batch-scoped `claims: []` accompanied by a degraded or not-checked claims section is not evidence that targets are unclaimed."
   REQUIRED_RECEIPT_PUBLISH_ORDER = "Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync."
   REQUIRED_RECEIPT_REPLAY_RULE = "Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result."
@@ -220,6 +225,12 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should expose only the compact durable receipt reference in chat"
       assert_includes normalized_text, REQUIRED_ACCEPTED_LEGACY_COMPACT_RECEIPT_FORMAT,
                       "#{relative_path} should expose the distinct accepted-legacy compact receipt form"
+      assert_includes normalized_text, REQUIRED_FINAL_OUTPUT_BRANCH_RULE,
+                      "#{relative_path} should branch final output by the helper-bound completion mode"
+      OBSOLETE_ORDINARY_ONLY_FINAL_OUTPUT_RULES.each do |obsolete|
+        refute_includes normalized_text, obsolete,
+                        "#{relative_path} should not retain an ordinary-only final-output rule"
+      end
       assert_includes normalized_text, REQUIRED_RECEIPT_PUBLISH_ORDER,
                       "#{relative_path} should require safe publish ordering"
       assert_includes normalized_text, REQUIRED_RECEIPT_REPLAY_RULE,

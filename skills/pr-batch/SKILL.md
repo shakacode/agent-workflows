@@ -943,19 +943,22 @@ bounded exact-target status per manifest target in `coordination_claim_statuses`
 publish and replay rerun every same target read, and missing, degraded,
 mismatched, active, nonreleased, or stale claim evidence blocks.
 
-The distinct accepted-legacy compact receipt form is:
-
-```text
-Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
-```
-
 Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
-Immediately before the exact final `Conversation status` line, emit only:
+Immediately before the exact final `Conversation status` line, emit the helper-returned compact receipt for the bound completion mode: use the ordinary form only for ordinary completion, and use the accepted-legacy form only for `accepted_legacy_reconciliation`.
+Never include the full wrapper in final chat. Ordinary completion uses:
 
+```text
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
+```
+
+Accepted legacy reconciliation uses:
+
+```text
+Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
+```
 
 A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`. Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid. `UNKNOWN` validation is fail-closed: only literal ASCII exact `UNKNOWN` may use an exact-sentinel path; NFKC-normalize a copy of every scalar and record value before case-insensitive nested-`UNKNOWN` rejection, so compatibility forms cannot count as evidence. Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported. Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records. Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens. Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union. After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union.
 
