@@ -151,6 +151,7 @@ UNRESOLVED_HANDOFF_NON_CLEAN_RULE = "Clean/none permits no records or only fully
 OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
 COMPLETED_BATCH_AUDIT_COMPANION_DEPENDENCY_RULE = "The completed-batch closeout validation contract requires `pr-batch` and `post-merge-audit` from the same Agent Workflows pack revision."
 COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE = "A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records."
+COMPLETED_BATCH_ACCEPTED_LEGACY_RECONCILIATION_RULE = "An `audit_status: accepted_legacy_reconciliation` receipt is separately release/archive-ready only when its `publication_snapshot` matches a freshly reassessed eligible `completion_mode: accepted_legacy_reconciliation` preflight; it never proves ordinary coordination completion, never mutates the source batch, and no other non-`complete` status is ready."
 COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
 COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE = "A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`."
 COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE = "Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records."
@@ -1616,6 +1617,7 @@ class GoalCompletionContractTest < Minitest::Test
     }.each do |label, text|
       normalized_text = text.gsub(/\s+/, " ")
       [COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE,
+       COMPLETED_BATCH_ACCEPTED_LEGACY_RECONCILIATION_RULE,
        COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE,
        COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE,
        COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE].each do |rule|

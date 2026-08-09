@@ -911,7 +911,18 @@ credible release-readiness risk. A clean audit with no OUTSTANDING findings,
 follow-ups, unresolved questions, pending work, or `UNKNOWN` facts ends with
 `Conversation status: Ready for archiving.` Otherwise the final user-visible
 line must be `Conversation status: Follow-ups remain — <each exact action or
-blocker>.` A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails.
+blocker>.` A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. An `audit_status: accepted_legacy_reconciliation` receipt is separately release/archive-ready only when its `publication_snapshot` matches a freshly reassessed eligible `completion_mode: accepted_legacy_reconciliation` preflight; it never proves ordinary coordination completion, never mutates the source batch, and no other non-`complete` status is ready. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails.
+
+Do not manufacture missing claims, lane terminals, or batch completion to close a
+legacy batch. When immutable history lacks facts required by the current schema,
+use the same-pack `post-merge-audit` helper's legacy reconciliation path. It
+binds the exact raw targeted status and raw batch audit, complete typed target
+manifest, enumerated lane/batch gaps with reasons and displaced gates, target
+dispositions with named owners and durable evidence, and one exact authenticated
+human decision. Only an explicitly bound issue disposition may remain open as an
+accepted deferral; open pull requests and all unbound, contradictory, stale, or
+`UNKNOWN` facts remain blockers. Publish and replay must freshly reauthenticate
+the decision, coordination inputs, targets, and QA.
 
 Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
