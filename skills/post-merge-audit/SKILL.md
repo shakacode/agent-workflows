@@ -428,6 +428,44 @@ with an authenticated replayable maintainer-waiver comment; or when
 the configured coordination seam is unavailable. `unknown`, `in_progress`,
 missing, stale-head, and malformed QA evidence block completion.
 
+An immutable legacy batch whose coordination history cannot truthfully satisfy
+that ordinary contract may use `audit_status: accepted_legacy_reconciliation`
+only through the helper's explicit legacy mode. This is a distinct terminal
+receipt status, never ordinary historical completion. Add a typed
+`legacy_reconciliation` object to the v1 preflight input with the exact
+enumerated missing facts and one disposition for every canonical target, and
+also include the raw `agent-coord batch-audit --batch-id <id> --json` response
+as `coordination_audit`. The helper freshly reruns both targeted coordination
+status and raw batch audit. The authenticated audit must be exact, incomplete,
+non-malformed, lane-bound, and match every declared `claim.acquired` or
+`lane.terminal` gap; contradictions or additional gaps block.
+Each missing-fact record names its exact lane target set (or exact batch path),
+the raw status/audit path, why the immutable fact cannot be reconstructed, and
+the ordinary gate that requires it. Related targets are never silently
+absorbed: every numeric target in a coordination lane must resolve to an
+explicit typed manifest target, target snapshot, QA row, and disposition.
+
+Run that preflight once without authorization to obtain
+`legacy_reconciliation_authorization.decision_marker`. Post that exact marker
+unchanged as a human maintainer comment on one manifest target, then rerun with
+`--legacy-reconciliation-decision-url <exact #issuecomment URL>`. The marker
+binds the exact batch ID, canonical target manifest, full canonical source-input
+digest (including raw coordination status and raw batch audit), exact missing
+facts, repository, fresh batch status, helper/schema version, artifact creation
+time, and every target disposition including its named owner. The decision URL is deliberately supplied
+outside the canonical source input so it cannot create a self-referential
+digest. The helper fetches the comment and current author write permission; a
+bot/untrusted author, moved or edited comment, stale digest, wrong target or
+batch, missing permission, malformed marker, or any live contradiction blocks.
+
+The only supported open-target exception is an issue disposition of
+`accepted_deferral` with `expected_state: open`, exact durable evidence, and the
+same authenticated legacy decision binding. All targets need an explicit bound
+disposition, and an open issue without this mode remains blocked. Pull requests
+cannot use accepted deferral. Publish and replay re-fetch the decision, targets,
+targeted coordination status, raw batch audit, and QA/waiver evidence before
+accepting the bound snapshot.
+
 A normal terminal `done` lane still requires its coordination target state and
 terminal evidence. An immutable terminal `abandoned` or `superseded` lane may
 instead reconcile only when the helper independently authenticates that the
@@ -439,7 +477,8 @@ facts, and malformed terminal timestamps remain blocked.
 
 Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
-For `audit_status: complete`, that parse/bind step additionally requires the
+For `audit_status: complete` or `accepted_legacy_reconciliation`, that
+parse/bind step additionally requires the
 eligible publication preflight and exact manifest match. Pass the same refreshed
 preflight receipt to `publish` and `replay`
 with `--publication-preflight` and explicit `--workflow-config <trusted repo
@@ -461,6 +500,20 @@ Each `qa_evidence` row must carry a coordinator-owned
 canonical target and publication snapshot; `yes` requires strict visual-evidence
 v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or
 v2-contradictory classification blocks.
+Legacy mode additionally requires `coordination_audit` plus
+`legacy_reconciliation` with `contract:
+completed-batch-legacy-reconciliation`, `version: 1`, nonempty typed
+`missing_facts`, and exact-manifest `target_dispositions`. Each disposition has
+a known named `owner`. A completed target
+uses `disposition: completed` with its normal terminal state; only an issue may
+use `disposition: accepted_deferral` with `expected_state: open`.
+
+Do not invent the final publication receipt URL in the preflight artifact. The
+helper learns that URL only from the successful comment POST, then reads back
+the exact returned comment ID and binds the durable wrapper URL, body hash,
+author, and timestamps in the publish result and compact reference. The bound
+publication snapshot inside that wrapper already contains the authenticated
+legacy decision URL and exact artifact; replay revalidates both layers.
 
 The preflight receipt embeds the canonical raw v1 input as `source_input` with
 `source_input_digest`; digests prove integrity only and never authenticate
@@ -499,7 +552,7 @@ preflight digest is not authentication.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
-A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. New complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. New complete receipts also have exactly one helper-managed `publication_snapshot`; unrefreshed or snapshot-mismatched data fails closed. A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
+A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. An authenticated legacy reconciliation may instead use `audit_status: accepted_legacy_reconciliation` with the same clean verdict, findings, and dispositions contract, but only with an exact eligible legacy-mode preflight; ordinary and legacy preflights are never interchangeable. New ready receipts require the helper-managed `publication_snapshot` to match a fresh eligible preflight. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. New ready receipts also have exactly one helper-managed `publication_snapshot`; unrefreshed or snapshot-mismatched data fails closed. A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
 
 A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`. Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid. `UNKNOWN` validation is fail-closed: only literal ASCII exact `UNKNOWN` may use an exact-sentinel path; NFKC-normalize a copy of every scalar and record value before case-insensitive nested-`UNKNOWN` rejection, so compatibility forms cannot count as evidence. Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported. Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records. Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens. Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union. After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union.
 
@@ -525,7 +578,7 @@ Completed-batch audit: replay evidence follows.
 
 <!-- completed-batch-audit v1
 batch_id: <opaque coordination batch id (may contain : or ;)|non-backend: identity; rationale: why no backend applies|not-applicable: rationale|UNKNOWN>
-audit_status: <complete|blocked|UNKNOWN>
+audit_status: <complete|accepted_legacy_reconciliation|blocked|UNKNOWN>
 verdict: <clean|follow-ups-remain|UNKNOWN>
 scope_evidence: <concise refs|UNKNOWN>
 checker_evidence: <identity/route/independence refs|UNKNOWN>

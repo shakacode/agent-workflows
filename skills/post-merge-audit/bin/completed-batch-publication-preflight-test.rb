@@ -190,6 +190,89 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     }
   end
 
+  def legacy_input
+    fixture("completed-batch-publication-ror-legacy.json")
+  end
+
+  def legacy_decision_url
+    "https://github.com/shakacode/react_on_rails/issues/4605#issuecomment-6000000000"
+  end
+
+  def valid_legacy_decision_comment(input)
+    reconciliation = input.fetch("legacy_reconciliation")
+    source_input = CompletedBatchPublicationPreflight.canonicalize(input)
+    targets = CompletedBatchPublicationPreflight.validated_target_set(
+      input.fetch("expected_targets"),
+      [],
+      "expected target"
+    )
+    canonical_reconciliation = CompletedBatchPublicationPreflight.canonical_legacy_reconciliation(
+      reconciliation,
+      targets,
+      [],
+      batch_id: input.fetch("batch_id")
+    )
+    body = <<~BODY
+      Maintainer acceptance of immutable legacy reconciliation.
+
+      <!-- completed-batch-legacy-reconciliation v1
+      batch_id: #{input.fetch('batch_id')}
+      repository: #{canonical_reconciliation.fetch('repository')}
+      batch_status: #{canonical_reconciliation.fetch('batch_status')}
+      workflow_version: #{canonical_reconciliation.fetch('workflow_version')}
+      created_at: #{canonical_reconciliation.fetch('created_at')}
+      source_input_digest: #{CompletedBatchPublicationPreflight.digest(source_input)}
+      expected_targets: #{JSON.generate(targets.map { |target| CompletedBatchPublicationPreflight.target_base_url(target) })}
+      missing_facts: #{JSON.generate(canonical_reconciliation.fetch('missing_facts'))}
+      target_dispositions: #{JSON.generate(canonical_reconciliation.fetch('target_dispositions'))}
+      decision: accepted_legacy_reconciliation
+      -->
+    BODY
+    {
+      "id" => 6_000_000_000,
+      "html_url" => legacy_decision_url,
+      "issue_url" => "https://api.github.com/repos/shakacode/react_on_rails/issues/4605",
+      "body" => body,
+      "user" => { "login" => "justin808", "type" => "User" },
+      "author_association" => "MEMBER",
+      "created_at" => "2026-08-09T04:00:00Z",
+      "updated_at" => "2026-08-09T04:00:00Z"
+    }
+  end
+
+  def valid_legacy_decision_verifier(input)
+    comment = valid_legacy_decision_comment(input)
+    lambda do |host:, repo:, comment_id:|
+      next unless host == "github.com" && repo == "shakacode/react_on_rails"
+      next unless comment_id == 6_000_000_000
+
+      comment
+    end
+  end
+
+  def valid_coordination_audit_verifier(input, backend)
+    expected_backend = backend
+    lambda do |backend:, batch_id:|
+      next unless backend == expected_backend && batch_id == input.fetch("batch_id")
+
+      input.fetch("coordination_audit")
+    end
+  end
+
+  def assess_legacy(input, decision_comment: valid_legacy_decision_comment(input), audit_verifier: nil)
+    audit_verifier ||= valid_coordination_audit_verifier(input, BACKEND)
+    CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      waiver_verifier: ->(**) {},
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      coordination_audit_verifier: audit_verifier,
+      reconciliation_decision_url: legacy_decision_url,
+      reconciliation_verifier: ->(**) { decision_comment }
+    )
+  end
+
   def with_fake_waiver_gh(input, mode: "success", author_permission: "write")
     Dir.mktmpdir("completed-batch-publication-preflight") do |directory|
       bin = File.join(directory, "bin")
@@ -440,6 +523,29 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_authenticated_raw_batch_audit_accepts_the_expected_incomplete_exit_status
+    input = legacy_input
+    audit = input.fetch("coordination_audit")
+    calls = []
+    capture = lambda do |command, input:, timeout:|
+      calls << { "command" => command, "input" => input, "timeout" => timeout }
+      [JSON.generate(audit), "", Struct.new(:exitstatus).new(1)]
+    end
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
+
+    result = CompletedBatchPublicationPreflight.authenticated_coordination_audit(
+      backend: BACKEND,
+      batch_id: input.fetch("batch_id")
+    )
+
+    assert_equal audit, result
+    assert_equal 1, calls.length
+    assert_equal "batch-audit", calls.first.fetch("command").fetch(3)
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture) if original_capture
+  end
+
   def test_premature_hichee_publication_replays_blocked_for_coordination_target_and_qa
     result = assess_input(fixture("completed-batch-publication-hichee-premature.json"))
 
@@ -456,6 +562,226 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("snapshot_digest"))
     assert_equal "sha256:2e73bd93cdf88b511d2865d9572d6e9ba4ee3c13a65bf8048f8cded7f37e5ca5",
                  result.fetch("snapshot_digest")
+  end
+
+  def test_digest_bound_legacy_reconciliation_accepts_exact_missing_history_and_open_deferral
+    input = legacy_input
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      waiver_verifier: ->(**) {},
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      coordination_audit_verifier: valid_coordination_audit_verifier(input, BACKEND),
+      reconciliation_decision_url: legacy_decision_url,
+      reconciliation_verifier: valid_legacy_decision_verifier(input)
+    )
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal "accepted_legacy_reconciliation", result.fetch("completion_mode")
+    assert_equal "accepted_legacy_reconciliation", result.dig("snapshot", "completion_mode")
+    deferred = result.dig("snapshot", "targets").find { |row| row.dig("target", "number") == 4279 }
+    assert_equal "open", deferred.fetch("state")
+    assert_equal "accepted_deferral", deferred.fetch("disposition")
+    assert_equal "justin808", deferred.fetch("disposition_owner")
+    assert_equal legacy_decision_url, result.dig("snapshot", "legacy_reconciliation", "decision", "url")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+    assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_legacy_decision_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      coordination_audit_verifier: valid_coordination_audit_verifier(input, BACKEND)
+    )
+  end
+
+  def test_legacy_reconciliation_rejects_missing_raw_batch_audit
+    input = legacy_input
+    input.delete("coordination_audit")
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      waiver_verifier: ->(**) {},
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      reconciliation_decision_url: legacy_decision_url,
+      reconciliation_verifier: valid_legacy_decision_verifier(input)
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "raw coordination batch audit is absent or invalid"
+  end
+
+  def test_legacy_reconciliation_decision_is_exact_digest_bound_and_unchanged
+    mutations = [
+      ->(comment) { comment["body"] = comment.fetch("body").sub(/source_input_digest: sha256:[0-9a-f]+/, "source_input_digest: sha256:#{'0' * 64}") },
+      ->(comment) { comment["body"] = comment.fetch("body").sub("ror-d-roadmap-evidence-20260715", "wrong-batch") },
+      ->(comment) { comment["html_url"] = comment.fetch("html_url").sub("/4605#", "/4279#") },
+      ->(comment) { comment["issue_url"] = comment.fetch("issue_url").sub("/4605", "/4279") },
+      ->(comment) { comment["updated_at"] = "2026-08-09T04:01:00Z" }
+    ]
+
+    mutations.each_with_index do |mutate, index|
+      input = legacy_input
+      comment = valid_legacy_decision_comment(input)
+      mutate.call(comment)
+      result = assess_legacy(input, decision_comment: comment)
+
+      refute result.fetch("eligible"), index
+      assert_includes result.fetch("blockers"),
+                      "authenticated legacy reconciliation decision is absent, stale, or mismatched",
+                      index
+    end
+  end
+
+  def test_legacy_reconciliation_decision_requires_a_trusted_human_with_write_authority
+    mutations = [
+      ->(comment) { comment.fetch("user")["type"] = "Bot" },
+      ->(comment) { comment.fetch("user")["login"] = "reconcile[bot]" },
+      ->(comment) { comment["author_association"] = "NONE" }
+    ]
+    mutations.each_with_index do |mutate, index|
+      input = legacy_input
+      comment = valid_legacy_decision_comment(input)
+      mutate.call(comment)
+      result = assess_legacy(input, decision_comment: comment)
+
+      refute result.fetch("eligible"), index
+      assert_includes result.fetch("blockers"),
+                      "authenticated legacy reconciliation decision is absent, stale, or mismatched",
+                      index
+    end
+
+    input = legacy_input
+    no_permission = assess_legacy(input, decision_comment: nil)
+    refute no_permission.fetch("eligible")
+    assert_includes no_permission.fetch("blockers"),
+                    "authenticated legacy reconciliation decision is absent, stale, or mismatched"
+  end
+
+  def test_legacy_reconciliation_requires_fresh_exact_raw_batch_audit_and_missing_fact_match
+    input = legacy_input
+    stale_audit = JSON.parse(JSON.generate(input.fetch("coordination_audit")))
+    stale_audit.fetch("lanes").first["event_count"] += 1
+    stale_result = assess_legacy(
+      input,
+      audit_verifier: ->(**) { stale_audit }
+    )
+
+    refute stale_result.fetch("eligible")
+    assert_includes stale_result.fetch("blockers"), "raw coordination batch audit is not authenticated or fresh"
+
+    input = legacy_input
+    input.fetch("coordination_audit").fetch("lanes").first.fetch("missing").delete("terminal")
+    mismatch = assess_legacy(input)
+    refute mismatch.fetch("eligible")
+    assert_includes mismatch.fetch("blockers"),
+                    "legacy reconciliation missing facts do not match the raw coordination batch audit"
+  end
+
+  def test_legacy_reconciliation_rejects_live_contradictions
+    input = legacy_input
+    batch = input.dig("coordination_status", "batches", 0)
+    batch["status"] = "completed"
+    batch["completed_at"] = "2026-08-09T04:00:00Z"
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "legacy reconciliation contradicts a completed coordination batch"
+  end
+
+  def test_legacy_reconciliation_rejects_coordination_projection_that_contradicts_authenticated_terminal_audit
+    input = legacy_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes").find { |row| row["name"] == "d4279" }
+    lane["status"] = "abandoned"
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/react_on_rails#issue:4279 coordination projection contradicts its terminal audit"
+  end
+
+  def test_open_issue_remains_rejected_without_authenticated_accepted_deferral
+    input = legacy_input
+    input.delete("legacy_reconciliation")
+    input.delete("coordination_audit")
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "shakacode/react_on_rails#issue:4279 target is not closed"
+  end
+
+  def test_legacy_reconciliation_rejects_any_unmanifested_lane_target
+    input = legacy_input
+    input.fetch("expected_targets").reject! { |target| target.fetch("number") == 4282 }
+    input.fetch("target_snapshots").reject! { |row| row.dig("target", "number") == 4282 }
+    input.fetch("qa_evidence").reject! { |row| row.dig("target", "number") == 4282 }
+    reconciliation = input.fetch("legacy_reconciliation")
+    reconciliation.fetch("target_dispositions").reject! { |row| row.dig("target", "number") == 4282 }
+    reconciliation.fetch("missing_facts").find { |row| row["lane"] == "d4274" }
+                                         .fetch("targets").reject! { |target| target.fetch("number") == 4282 }
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "coordination lane d4274 target is absent or ambiguous"
+    assert_includes result.fetch("blockers"),
+                    "shakacode/react_on_rails#issue:4274 is absent from resolved coordination scope"
+  end
+
+  def test_legacy_missing_facts_require_exact_path_reason_and_ordinary_gate
+    mutations = [
+      ->(fact) { fact.delete("path") },
+      ->(fact) { fact["path"] = "coordination_audit.lanes[other].missing[claim.acquired]" },
+      ->(fact) { fact.delete("reason") },
+      ->(fact) { fact["ordinary_gate"] = "UNKNOWN" }
+    ]
+    mutations.each_with_index do |mutate, index|
+      input = legacy_input
+      fact = input.fetch("legacy_reconciliation").fetch("missing_facts").find { |row| row["lane"] == "d4605" }
+      mutate.call(fact)
+      result = assess_legacy(input, decision_comment: nil)
+
+      refute result.fetch("eligible"), index
+      assert(result.fetch("blockers").any? { |blocker| blocker.start_with?("legacy reconciliation missing fact") }, index)
+    end
+  end
+
+  def test_legacy_artifact_binds_repository_status_workflow_version_creation_time_and_owner
+    metadata_mutations = [
+      ->(record) { record["repository"] = "shakacode/other" },
+      ->(record) { record["workflow_version"] = "completed-batch-publication-preflight:v0" },
+      ->(record) { record["created_at"] = "not-a-time" }
+    ]
+    metadata_mutations.each_with_index do |mutate, index|
+      input = legacy_input
+      mutate.call(input.fetch("legacy_reconciliation"))
+      result = assess_legacy(input, decision_comment: nil)
+
+      refute result.fetch("eligible"), index
+      assert_includes result.fetch("blockers"),
+                      "legacy reconciliation repository, status, workflow version, or creation time is invalid",
+                      index
+    end
+
+    input = legacy_input
+    input.fetch("legacy_reconciliation")["batch_status"] = "completed"
+    status_mismatch = assess_legacy(input)
+    refute status_mismatch.fetch("eligible")
+    assert_includes status_mismatch.fetch("blockers"),
+                    "legacy reconciliation batch status does not match fresh coordination status"
+
+    input = legacy_input
+    deferred = input.fetch("legacy_reconciliation").fetch("target_dispositions")
+                    .find { |row| row.fetch("disposition") == "accepted_deferral" }
+    deferred.delete("owner")
+    missing_owner = assess_legacy(input, decision_comment: nil)
+    refute missing_owner.fetch("eligible")
+    assert(missing_owner.fetch("blockers").any? { |blocker| blocker.include?("target disposition") })
   end
 
   def test_real_premature_marker_fixture_preserves_reported_hash_and_is_not_well_formed

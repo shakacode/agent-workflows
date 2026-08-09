@@ -37,6 +37,7 @@ module CompletedBatchAuditReceipt
   CURRENT_STATUSES = %w[open unresolved pending UNKNOWN terminal].freeze
   TERMINAL_DISPOSITIONS = %w[resolved accepted-waiver accepted-deferral not-applicable].freeze
   NONTERMINAL_ACTIONS = %w[investigate fix await-input retry replay track].freeze
+  READY_AUDIT_STATUSES = %w[complete accepted_legacy_reconciliation].freeze
 
   State = Struct.new(:fields, :records, keyword_init: true)
   CanonicalRef = Struct.new(:canonical_display, :identity, keyword_init: true)
@@ -151,12 +152,13 @@ module CompletedBatchAuditReceipt
     deterministic = deterministic_targets(targets)
     marker = comment_marker(comment_body)
     state = marker_state(marker)
-    if state&.fields&.fetch("audit_status") == "complete"
+    if state && READY_AUDIT_STATUSES.include?(state.fields.fetch("audit_status"))
       validate_publication_preflight!(
         publication_preflight,
         expected_batch_id:,
         targets: deterministic,
-        coordination_backend:
+        coordination_backend:,
+        expected_audit_status: state.fields.fetch("audit_status")
       )
       marker = bind_publication_snapshot(marker, publication_preflight)
       comment_body = "#{COMMENT_HEADER}\n\n#{marker}"
@@ -517,7 +519,13 @@ module CompletedBatchAuditReceipt
     "#{COMMENT_HEADER}\n\n#{marker}"
   end
 
-  def validate_publication_preflight!(preflight, expected_batch_id:, targets:, coordination_backend: nil)
+  def validate_publication_preflight!(
+    preflight,
+    expected_batch_id:,
+    targets:,
+    coordination_backend: nil,
+    expected_audit_status: "complete"
+  )
     valid = publication_preflight_reassessed?(
       preflight,
       expected_batch_id:,
@@ -526,6 +534,11 @@ module CompletedBatchAuditReceipt
     )
     raise PublicationPreflightError, "completed-batch publication preflight is missing or invalid" unless valid
     raise PublicationPreflightError, "completed-batch publication preflight is blocked" unless preflight.fetch("eligible")
+
+    expected_mode = expected_audit_status == "accepted_legacy_reconciliation" ? expected_audit_status : nil
+    return if preflight["completion_mode"] == expected_mode
+
+    raise PublicationPreflightError, "completed-batch publication preflight mode does not match audit status"
   end
 
   def bind_publication_snapshot(marker, preflight)
@@ -575,7 +588,7 @@ module CompletedBatchAuditReceipt
 
   def publication_snapshot_blockers(state, preflight, expected_targets: nil, coordination_backend: nil)
     value = state.fields["publication_snapshot"]
-    return [PUBLICATION_REFRESH_BLOCKER] if state.fields["audit_status"] == "complete" && !value
+    return [PUBLICATION_REFRESH_BLOCKER] if READY_AUDIT_STATUSES.include?(state.fields["audit_status"]) && !value
     return [] unless value
     return [PUBLICATION_REFRESH_BLOCKER] unless preflight
     return [PUBLICATION_MISMATCH_BLOCKER] unless publication_preflight_reassessed?(
@@ -585,6 +598,11 @@ module CompletedBatchAuditReceipt
       coordination_backend:
     )
     return [PUBLICATION_MISMATCH_BLOCKER] unless preflight.fetch("eligible")
+
+    expected_mode = if state.fields["audit_status"] == "accepted_legacy_reconciliation"
+                      "accepted_legacy_reconciliation"
+                    end
+    return [PUBLICATION_MISMATCH_BLOCKER] unless preflight["completion_mode"] == expected_mode
 
     bound = publication_snapshot(value)
     current = CompletedBatchPublicationPreflight.canonicalize(preflight.fetch("snapshot"))
@@ -619,7 +637,8 @@ module CompletedBatchAuditReceipt
       coordination_backend: trusted_backend,
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
-      coordination_verifier: method(:authenticated_publication_coordination_status)
+      coordination_verifier: method(:authenticated_publication_coordination_status),
+      coordination_audit_verifier: method(:authenticated_publication_coordination_audit)
     )
   end
 
@@ -647,6 +666,10 @@ module CompletedBatchAuditReceipt
 
   def authenticated_publication_coordination_status(backend:, batch_id:)
     CompletedBatchPublicationPreflight.authenticated_coordination_status(backend:, batch_id:)
+  end
+
+  def authenticated_publication_coordination_audit(backend:, batch_id:)
+    CompletedBatchPublicationPreflight.authenticated_coordination_audit(backend:, batch_id:)
   end
 
   def trusted_coordination_backend(workflow_config)
@@ -800,7 +823,7 @@ module CompletedBatchAuditReceipt
 
   def state_ready?(state)
     fields = state.fields
-    return false unless fields["audit_status"] == "complete" && fields["verdict"] == "clean"
+    return false unless READY_AUDIT_STATUSES.include?(fields["audit_status"]) && fields["verdict"] == "clean"
     return false unless fields["findings"] == "none"
     return false unless evidenced_scalar?(fields["batch_id"])
     return false unless evidenced_scalar?(fields["scope_evidence"]) && evidenced_scalar?(fields["checker_evidence"])
@@ -837,7 +860,7 @@ module CompletedBatchAuditReceipt
 
   def scalars_well_formed?(fields, records: [])
     well_formed_batch_identity?(fields["batch_id"], fields["scope_evidence"]) &&
-      %w[complete blocked UNKNOWN].include?(fields["audit_status"]) &&
+      %w[complete accepted_legacy_reconciliation blocked UNKNOWN].include?(fields["audit_status"]) &&
       %w[clean follow-ups-remain UNKNOWN].include?(fields["verdict"]) &&
       structurally_valid_scalar?(fields["scope_evidence"]) &&
       structurally_valid_scalar?(fields["checker_evidence"]) &&
@@ -877,7 +900,8 @@ module CompletedBatchAuditReceipt
     non_ready_records = records.select(&:non_ready?)
     outstanding = findings.start_with?("OUTSTANDING ")
     unknown_marker = fields.fetch("audit_status") == "UNKNOWN" && verdict == "UNKNOWN" && findings == "UNKNOWN"
-    clean_marker = fields.fetch("audit_status") == "complete" && verdict == "clean" && findings == "none"
+    clean_marker = READY_AUDIT_STATUSES.include?(fields.fetch("audit_status")) &&
+                   verdict == "clean" && findings == "none"
 
     return true if clean_marker && non_ready_records.empty?
     return true if unknown_marker

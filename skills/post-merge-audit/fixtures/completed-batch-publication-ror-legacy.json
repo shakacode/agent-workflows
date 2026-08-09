@@ -1,0 +1,199 @@
+{
+  "contract": "completed-batch-publication-preflight-input",
+  "version": 1,
+  "batch_id": "ror-d-roadmap-evidence-20260715",
+  "expected_targets": [
+    { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "pull_request", "number": 4282 },
+    { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 },
+    { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4279 },
+    { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4274 },
+    { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4271 },
+    { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 }
+  ],
+  "coordination_status": {
+    "scope": { "kind": "batch", "batch_id": "ror-d-roadmap-evidence-20260715" },
+    "claims": [],
+    "batches": [
+      {
+        "batch_id": "ror-d-roadmap-evidence-20260715",
+        "repo": "shakacode/react_on_rails",
+        "status": "blocked",
+        "updated_at": "2026-08-03T09:36:12Z",
+        "completed_at": null,
+        "lanes": [
+          {
+            "name": "d4605",
+            "targets": ["4605"],
+            "status": "done",
+            "terminal": "done",
+            "pr_state": "merged",
+            "evidence_url": "https://github.com/shakacode/react_on_rails/pull/4809"
+          },
+          {
+            "name": "d4279",
+            "targets": ["4279"],
+            "status": "done",
+            "terminal": "done",
+            "pr_state": "no-pr",
+            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4279#issuecomment-4990619015"
+          },
+          {
+            "name": "d4274",
+            "targets": ["4274", "4282"],
+            "status": "done",
+            "terminal": "done",
+            "pr_state": "merged",
+            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4274#issuecomment-4990651445"
+          },
+          {
+            "name": "d4271",
+            "targets": ["4271"],
+            "status": "done",
+            "terminal": "done",
+            "pr_state": "no-pr",
+            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4271#issuecomment-4990717300"
+          },
+          {
+            "name": "d4073",
+            "targets": ["4073"],
+            "status": "abandoned",
+            "terminal": "abandoned",
+            "pr_state": "blocked-user-input",
+            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4073#issuecomment-5164689602"
+          }
+        ]
+      }
+    ]
+  },
+  "coordination_audit": {
+    "batch_id": "ror-d-roadmap-evidence-20260715",
+    "verdict": "incomplete",
+    "lanes": [
+      { "name": "d4605", "owner": "rord-d4605-strongest", "targets": ["4605"], "event_count": 1, "missing": ["claim.acquired", "terminal"], "complete": false, "malformed": false },
+      { "name": "d4279", "owner": "rord-d4279-balanced", "targets": ["4279"], "event_count": 2, "missing": ["claim.acquired"], "complete": false, "malformed": false },
+      { "name": "d4274", "owner": "rord-d4274-balanced", "targets": ["4274", "4282"], "event_count": 9, "missing": ["claim.acquired"], "complete": false, "malformed": false },
+      { "name": "d4271", "owner": "rord-d4271-balanced", "targets": ["4271"], "event_count": 1, "missing": ["claim.acquired"], "complete": false, "malformed": false },
+      { "name": "d4073", "owner": "rord-d4073-strongest", "targets": ["4073"], "event_count": 4, "missing": ["claim.acquired"], "complete": false, "malformed": false }
+    ]
+  },
+  "target_snapshots": [
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "pull_request", "number": 4282 },
+      "state": "merged",
+      "head_sha": "4521084409819e6f9e6ba104956a3449ae811dc0",
+      "source": "https://github.com/shakacode/react_on_rails/pull/4282"
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 },
+      "state": "closed",
+      "head_sha": "not_applicable",
+      "source": "https://github.com/shakacode/react_on_rails/issues/4605",
+      "no_pr_evidence": {
+        "url": "https://github.com/shakacode/react_on_rails/issues/4605",
+        "rationale": "product decision recorded without an implementation PR",
+        "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 }
+      }
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4279 },
+      "state": "open",
+      "head_sha": "not_applicable",
+      "source": "https://github.com/shakacode/react_on_rails/issues/4279",
+      "no_pr_evidence": {
+        "url": "https://github.com/shakacode/react_on_rails/issues/4279",
+        "rationale": "maintainer accepted deferral to the next major release",
+        "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4279 }
+      }
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4274 },
+      "state": "closed",
+      "head_sha": "not_applicable",
+      "source": "https://github.com/shakacode/react_on_rails/issues/4274",
+      "no_pr_evidence": {
+        "url": "https://github.com/shakacode/react_on_rails/issues/4274",
+        "rationale": "review-thread triage accepted without a new implementation PR",
+        "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4274 }
+      }
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4271 },
+      "state": "closed",
+      "head_sha": "not_applicable",
+      "source": "https://github.com/shakacode/react_on_rails/issues/4271",
+      "no_pr_evidence": {
+        "url": "https://github.com/shakacode/react_on_rails/issues/4271",
+        "rationale": "roadmap children reconciled without a new implementation PR",
+        "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4271 }
+      }
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 },
+      "state": "closed",
+      "head_sha": "not_applicable",
+      "source": "https://github.com/shakacode/react_on_rails/issues/4073",
+      "no_pr_evidence": {
+        "url": "https://github.com/shakacode/react_on_rails/issues/4073",
+        "rationale": "benchmark tracker delivered without a new issue-specific implementation PR",
+        "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 }
+      }
+    }
+  ],
+  "qa_evidence": [
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "pull_request", "number": 4282 },
+      "user_visible_ui_change": "no",
+      "evidence": "<!-- qa-evidence v1\nrequired: no\nstatus: not_applicable\nhead_sha: 4521084409819e6f9e6ba104956a3449ae811dc0\ntested_at: PR/head 4521084409819e6f9e6ba104956a3449ae811dc0\nscope: historical merged PR included in exact worked scope\nautomated_checks: not applicable: historical evidence-only target\nmanual_checks: not applicable: no new implementation\nfindings: none\nrelease_blocking: not_applicable\nprocess_gap_disposition: not applicable\n-->"
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 },
+      "user_visible_ui_change": "no",
+      "evidence": "<!-- qa-evidence v1\nrequired: no\nstatus: not_applicable\nhead_sha: not_applicable\ntested_at: issue #4605 product decision\nscope: issue-only decision closeout\nautomated_checks: not applicable\nmanual_checks: not applicable\nfindings: none\nrelease_blocking: not_applicable\nprocess_gap_disposition: not applicable\n-->"
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4279 },
+      "user_visible_ui_change": "no",
+      "evidence": "<!-- qa-evidence v1\nrequired: no\nstatus: not_applicable\nhead_sha: not_applicable\ntested_at: issue #4279 accepted deferral\nscope: issue-only accepted deferral\nautomated_checks: not applicable\nmanual_checks: not applicable\nfindings: none\nrelease_blocking: not_applicable\nprocess_gap_disposition: not applicable\n-->"
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4274 },
+      "user_visible_ui_change": "no",
+      "evidence": "<!-- qa-evidence v1\nrequired: no\nstatus: not_applicable\nhead_sha: not_applicable\ntested_at: issue #4274 closed\nscope: issue-only closeout\nautomated_checks: not applicable\nmanual_checks: not applicable\nfindings: none\nrelease_blocking: not_applicable\nprocess_gap_disposition: not applicable\n-->"
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4271 },
+      "user_visible_ui_change": "no",
+      "evidence": "<!-- qa-evidence v1\nrequired: no\nstatus: not_applicable\nhead_sha: not_applicable\ntested_at: issue #4271 closed\nscope: issue-only closeout\nautomated_checks: not applicable\nmanual_checks: not applicable\nfindings: none\nrelease_blocking: not_applicable\nprocess_gap_disposition: not applicable\n-->"
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 },
+      "user_visible_ui_change": "no",
+      "evidence": "<!-- qa-evidence v1\nrequired: no\nstatus: not_applicable\nhead_sha: not_applicable\ntested_at: issue #4073 closed\nscope: issue-only closeout\nautomated_checks: not applicable\nmanual_checks: not applicable\nfindings: none\nrelease_blocking: not_applicable\nprocess_gap_disposition: not applicable\n-->"
+    }
+  ],
+  "legacy_reconciliation": {
+    "contract": "completed-batch-legacy-reconciliation",
+    "version": 1,
+    "repository": "shakacode/react_on_rails",
+    "batch_status": "blocked",
+    "workflow_version": "completed-batch-publication-preflight:v1",
+    "created_at": "2026-08-09T04:00:00Z",
+    "missing_facts": [
+      { "fact": "batch.completed", "path": "coordination_status.batches[ror-d-roadmap-evidence-20260715].completed_at", "reason": "the immutable legacy batch has no truthful completion event to replay", "ordinary_gate": "ordinary publication requires completed batch status and timestamp" },
+      { "fact": "claim.acquired", "lane": "d4605", "path": "coordination_audit.lanes[d4605].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 }] },
+      { "fact": "lane.terminal", "lane": "d4605", "path": "coordination_audit.lanes[d4605].missing[terminal]", "reason": "the immutable legacy event log does not contain the original terminal event", "ordinary_gate": "ordinary batch lifecycle requires a terminal lane event", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 }] },
+      { "fact": "claim.acquired", "lane": "d4279", "path": "coordination_audit.lanes[d4279].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4279 }] },
+      { "fact": "claim.acquired", "lane": "d4274", "path": "coordination_audit.lanes[d4274].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "pull_request", "number": 4282 }, { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4274 }] },
+      { "fact": "claim.acquired", "lane": "d4271", "path": "coordination_audit.lanes[d4271].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4271 }] },
+      { "fact": "claim.acquired", "lane": "d4073", "path": "coordination_audit.lanes[d4073].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 }] }
+    ],
+    "target_dispositions": [
+      { "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "pull_request", "number": 4282 }, "disposition": "completed", "expected_state": "merged", "owner": "RORD coordinator", "evidence": "https://github.com/shakacode/react_on_rails/pull/4282" },
+      { "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 }, "disposition": "completed", "expected_state": "closed", "owner": "RORD coordinator", "evidence": "https://github.com/shakacode/react_on_rails/issues/4605" },
+      { "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4279 }, "disposition": "accepted_deferral", "expected_state": "open", "owner": "justin808", "evidence": "https://github.com/shakacode/react_on_rails/issues/4279#issuecomment-5210877432" },
+      { "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4274 }, "disposition": "completed", "expected_state": "closed", "owner": "RORD coordinator", "evidence": "https://github.com/shakacode/react_on_rails/issues/4274" },
+      { "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4271 }, "disposition": "completed", "expected_state": "closed", "owner": "RORD coordinator", "evidence": "https://github.com/shakacode/react_on_rails/issues/4271" },
+      { "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 }, "disposition": "completed", "expected_state": "closed", "owner": "RORD coordinator", "evidence": "https://github.com/shakacode/react_on_rails/issues/4073" }
+    ]
+  }
+}

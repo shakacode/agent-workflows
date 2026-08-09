@@ -186,6 +186,50 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal "clean", result.dig("fields", "verdict")
   end
 
+  def test_accepted_legacy_reconciliation_is_a_distinct_archive_ready_audit_status
+    marker = ready_marker.sub("audit_status: complete", "audit_status: accepted_legacy_reconciliation")
+    state = CompletedBatchAuditReceipt.marker_state(marker)
+
+    refute_nil state
+    assert CompletedBatchAuditReceipt.state_ready?(state)
+    assert_equal "accepted_legacy_reconciliation", state.fields.fetch("audit_status")
+  end
+
+  def test_accepted_legacy_reconciliation_snapshot_cannot_be_swapped_for_ordinary_completion
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    legacy_preflight = publication_preflight
+    legacy_preflight["completion_mode"] = "accepted_legacy_reconciliation"
+    legacy_preflight.fetch("snapshot")["completion_mode"] = "accepted_legacy_reconciliation"
+    legacy_preflight["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(legacy_preflight.fetch("snapshot"))
+    legacy_preflight["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      legacy_preflight.reject { |key, _value| key == "receipt_digest" }
+    )
+    accepted_marker = ready_marker.sub("audit_status: complete", "audit_status: accepted_legacy_reconciliation")
+    bound = CompletedBatchAuditReceipt.bind_publication_snapshot(accepted_marker, legacy_preflight)
+
+    with_stubbed_publication_preflight_reassessment(->(_preflight, **) { true }) do
+      result = CompletedBatchAuditReceipt.replay_marker(
+        bound,
+        expected_batch_id: "batch-184",
+        publication_preflight: legacy_preflight,
+        expected_targets: [target],
+        coordination_backend: "n/a"
+      )
+      assert result.fetch("ready"), result.fetch("blockers").join("\n")
+
+      ordinary = publication_preflight
+      swapped = CompletedBatchAuditReceipt.replay_marker(
+        bound,
+        expected_batch_id: "batch-184",
+        publication_preflight: ordinary,
+        expected_targets: [target],
+        coordination_backend: "n/a"
+      )
+      refute swapped.fetch("ready")
+      assert_equal ["completed-batch-audit publication snapshot mismatch or stale"], swapped.fetch("blockers")
+    end
+  end
+
   def test_real_premature_hichee_marker_replays_invalid_and_nonready
     marker = File.read(
       File.join(FIXTURES, "completed-batch-publication-hichee-premature-marker.txt"),
@@ -2760,6 +2804,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     yield
   ensure
     CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, original)
+  end
+
+  def with_stubbed_publication_preflight_reassessment(callable)
+    original = CompletedBatchAuditReceipt.method(:publication_preflight_reassessed?)
+    CompletedBatchAuditReceipt.define_singleton_method(:publication_preflight_reassessed?, callable)
+    yield
+  ensure
+    CompletedBatchAuditReceipt.define_singleton_method(:publication_preflight_reassessed?, original)
   end
 
   def with_fake_gh(mode: nil, target_type: "pull_request", coordination_backend: "n/a")

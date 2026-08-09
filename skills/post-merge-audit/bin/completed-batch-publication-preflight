@@ -28,6 +28,9 @@ module CompletedBatchPublicationPreflight
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
   TRUSTED_HUMAN_TYPES = %w[User].freeze
   WRITE_PERMISSIONS = %w[write maintain admin].freeze
+  LEGACY_COMPLETION_MODE = "accepted_legacy_reconciliation"
+  LEGACY_WORKFLOW_VERSION = "completed-batch-publication-preflight:v1"
+  LEGACY_MISSING_FACTS = %w[batch.completed claim.acquired lane.terminal].freeze
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
   RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned superseded].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
@@ -45,7 +48,10 @@ module CompletedBatchPublicationPreflight
     coordination_backend:,
     waiver_verifier: nil,
     target_verifier: nil,
-    coordination_verifier: nil
+    coordination_verifier: nil,
+    coordination_audit_verifier: nil,
+    reconciliation_decision_url: nil,
+    reconciliation_verifier: nil
   )
     blockers = []
     input = {} unless input.is_a?(Hash)
@@ -56,6 +62,13 @@ module CompletedBatchPublicationPreflight
     batch_id = normalized_known_string(input["batch_id"])
     blockers << "publication batch id is invalid" unless batch_id
     expected_targets = validated_target_set(input["expected_targets"], blockers, "expected target")
+    legacy_reconciliation = canonical_legacy_reconciliation(
+      input["legacy_reconciliation"],
+      expected_targets,
+      blockers,
+      batch_id:
+    )
+    completion_mode = legacy_reconciliation && LEGACY_COMPLETION_MODE
     no_backend = backend&.downcase == "n/a"
     if no_backend
       no_backend_evidence = resolved_no_backend_evidence(
@@ -74,24 +87,45 @@ module CompletedBatchPublicationPreflight
         blockers << "coordination status is not authenticated or fresh"
       end
       batch = resolved_batch(input["coordination_status"], batch_id, blockers)
+      validate_legacy_metadata(batch, legacy_reconciliation, blockers) if legacy_reconciliation
       lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
+      if legacy_reconciliation
+        validate_legacy_coordination_facts(
+          input["coordination_status"],
+          legacy_reconciliation,
+          blockers
+        )
+      end
     end
     compare_resolved_scope(expected_targets, resolved_targets, blockers)
+    if legacy_reconciliation
+      legacy_coordination_audit = canonical_legacy_coordination_audit(
+        input["coordination_audit"],
+        batch_id:,
+        lane_entries:,
+        reconciliation: legacy_reconciliation,
+        backend:,
+        verifier: coordination_audit_verifier,
+        blockers:
+      )
+    end
     snapshots = indexed_target_snapshots(input["target_snapshots"], expected_targets, blockers)
     qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
 
-    validate_batch_terminal(batch, blockers) unless no_backend
+    validate_batch_terminal(batch, blockers, legacy_reconciliation:) unless no_backend
     canonical_targets, authenticated_later_target_keys = canonical_target_snapshots(
       expected_targets,
       snapshots,
       lane_entries,
       blockers,
-      target_verifier:
+      target_verifier:,
+      legacy_reconciliation:
     )
     canonical_lanes = canonical_lane_snapshots(
       lane_entries,
       authenticated_later_target_keys,
-      blockers
+      blockers,
+      legacy_reconciliation:
     )
     canonical_qa = canonical_qa_snapshots(
       expected_targets,
@@ -100,6 +134,18 @@ module CompletedBatchPublicationPreflight
       blockers,
       waiver_verifier:
     )
+    source_input = canonicalize(input)
+    if legacy_reconciliation
+      decision = canonical_legacy_decision(
+        reconciliation_decision_url,
+        batch_id:,
+        expected_targets:,
+        source_input_digest: digest(source_input),
+        reconciliation: legacy_reconciliation,
+        verifier: reconciliation_verifier,
+        blockers:
+      )
+    end
     snapshot = {
       "batch_id" => batch_id,
       "coordination_backend" => backend,
@@ -112,8 +158,20 @@ module CompletedBatchPublicationPreflight
       "targets" => canonical_targets,
       "qa" => canonical_qa
     }
+    if legacy_reconciliation
+      snapshot["completion_mode"] = completion_mode
+      snapshot["legacy_reconciliation"] = {
+        "repository" => legacy_reconciliation.fetch("repository"),
+        "batch_status" => legacy_reconciliation.fetch("batch_status"),
+        "workflow_version" => legacy_reconciliation.fetch("workflow_version"),
+        "created_at" => legacy_reconciliation.fetch("created_at"),
+        "missing_facts" => legacy_reconciliation.fetch("missing_facts"),
+        "target_dispositions" => legacy_reconciliation.fetch("target_dispositions"),
+        "coordination_audit" => legacy_coordination_audit,
+        "decision" => decision
+      }
+    end
     snapshot = canonicalize(snapshot)
-    source_input = canonicalize(input)
     snapshot_digest = digest(snapshot)
     blockers = blockers.uniq
     eligible = blockers.empty?
@@ -131,6 +189,18 @@ module CompletedBatchPublicationPreflight
       "snapshot" => snapshot,
       "snapshot_digest" => snapshot_digest
     }
+    if completion_mode
+      result["completion_mode"] = completion_mode
+      result["legacy_reconciliation_authorization"] = {
+        "source_input_digest" => digest(source_input),
+        "decision_marker" => legacy_decision_marker(
+          batch_id:,
+          expected_targets:,
+          source_input_digest: digest(source_input),
+          reconciliation: legacy_reconciliation
+        )
+      }
+    end
     result["receipt_digest"] = digest(result)
     result
   rescue StandardError => e
@@ -178,6 +248,41 @@ module CompletedBatchPublicationPreflight
     return false unless receipt["receipt_digest"] == digest(canonicalize(unsigned))
     return false unless receipt["batch_id"] == receipt.dig("snapshot", "batch_id")
 
+    mode = receipt["completion_mode"]
+    legacy_snapshot = receipt.dig("snapshot", "legacy_reconciliation")
+    if mode == LEGACY_COMPLETION_MODE
+      return false unless mode == receipt.dig("snapshot", "completion_mode")
+      return false unless legacy_snapshot.is_a?(Hash) && legacy_snapshot["decision"].is_a?(Hash)
+      return false unless legacy_snapshot.dig("decision", "decision") == LEGACY_COMPLETION_MODE
+      return false unless legacy_snapshot.dig("decision", "source_input_digest") == receipt["source_input_digest"]
+      return false unless legacy_snapshot.dig("decision", "repository") == legacy_snapshot["repository"]
+      return false unless legacy_snapshot.dig("decision", "batch_status") == legacy_snapshot["batch_status"]
+      return false unless legacy_snapshot.dig("decision", "workflow_version") == legacy_snapshot["workflow_version"]
+      return false unless legacy_snapshot.dig("decision", "artifact_created_at") == legacy_snapshot["created_at"]
+      return false unless legacy_snapshot["coordination_audit"] == canonicalize(receipt.dig("source_input", "coordination_audit"))
+      return false unless legacy_snapshot["missing_facts"] ==
+                          canonical_legacy_reconciliation(
+                            receipt.dig("source_input", "legacy_reconciliation"),
+                            validated_target_set(receipt["targets"], [], "receipt target"),
+                            [],
+                            batch_id: receipt["batch_id"]
+                          )&.fetch("missing_facts", nil)
+      return false unless legacy_snapshot["target_dispositions"] ==
+                          canonical_legacy_reconciliation(
+                            receipt.dig("source_input", "legacy_reconciliation"),
+                            validated_target_set(receipt["targets"], [], "receipt target"),
+                            [],
+                            batch_id: receipt["batch_id"]
+                          )&.fetch("target_dispositions", nil)
+
+      authorization = receipt["legacy_reconciliation_authorization"]
+      return false unless authorization.is_a?(Hash) && authorization.keys.sort == %w[decision_marker source_input_digest]
+      return false unless authorization["source_input_digest"] == receipt["source_input_digest"]
+    else
+      return false unless mode.nil? && receipt.dig("snapshot", "completion_mode").nil? && legacy_snapshot.nil? &&
+                          !receipt.key?("legacy_reconciliation_authorization")
+    end
+
     backend = normalized_known_string(receipt["coordination_backend"])
     return false unless backend && backend == receipt.dig("snapshot", "coordination_backend")
     return false if expected_batch_id && receipt["batch_id"] != expected_batch_id
@@ -196,6 +301,23 @@ module CompletedBatchPublicationPreflight
       return false unless targets == coordination.fetch("lanes").map { |entry| entry.fetch("target") }
     end
     return false unless targets == receipt.dig("snapshot", "qa").map { |entry| entry.fetch("target") }
+
+    if mode == LEGACY_COMPLETION_MODE
+      expected_marker = legacy_decision_marker(
+        batch_id: receipt.fetch("batch_id"),
+        expected_targets: targets,
+        source_input_digest: receipt.fetch("source_input_digest"),
+        reconciliation: {
+          "repository" => legacy_snapshot.fetch("repository"),
+          "batch_status" => legacy_snapshot.fetch("batch_status"),
+          "workflow_version" => legacy_snapshot.fetch("workflow_version"),
+          "created_at" => legacy_snapshot.fetch("created_at"),
+          "missing_facts" => legacy_snapshot.fetch("missing_facts"),
+          "target_dispositions" => legacy_snapshot.fetch("target_dispositions")
+        }
+      )
+      return false unless receipt.dig("legacy_reconciliation_authorization", "decision_marker") == expected_marker
+    end
 
     if expected_targets
       expected_blockers = []
@@ -262,7 +384,8 @@ module CompletedBatchPublicationPreflight
     coordination_backend:,
     waiver_verifier:,
     target_verifier:,
-    coordination_verifier:
+    coordination_verifier:,
+    coordination_audit_verifier: coordination_verifier
   )
     return false unless valid_receipt?(receipt)
 
@@ -276,7 +399,10 @@ module CompletedBatchPublicationPreflight
       coordination_backend: trusted_backend,
       waiver_verifier:,
       target_verifier:,
-      coordination_verifier:
+      coordination_verifier:,
+      coordination_audit_verifier:,
+      reconciliation_decision_url: receipt.dig("snapshot", "legacy_reconciliation", "decision", "url"),
+      reconciliation_verifier: waiver_verifier
     )
     canonicalize(refreshed) == canonicalize(receipt)
   rescue KeyError, NoMethodError, TypeError
@@ -289,6 +415,413 @@ module CompletedBatchPublicationPreflight
     required = %w[batch_id expected_targets coordination_status target_snapshots qa_evidence]
     missing = required.reject { |key| input.key?(key) }
     blockers << "publication preflight input fields are missing: #{missing.join(', ')}" unless missing.empty?
+  end
+
+  def canonical_legacy_reconciliation(value, expected_targets, blockers, batch_id: nil)
+    return nil if value.nil?
+
+    expected_keys = %w[
+      batch_status contract created_at missing_facts repository target_dispositions version workflow_version
+    ]
+    unless value.is_a?(Hash) && value.keys.sort == expected_keys &&
+           value["contract"] == "completed-batch-legacy-reconciliation" && value["version"] == VERSION
+      blockers << "legacy reconciliation contract or shape is invalid"
+      return nil
+    end
+
+    repositories = expected_targets.map { |target| target.fetch("repo") }.uniq
+    repository = normalized_known_string(value["repository"])
+    batch_status = normalized_known_string(value["batch_status"])
+    workflow_version = normalized_known_string(value["workflow_version"])
+    created_at = value["created_at"]
+    unless repositories.one? && repository == repositories.first && batch_status &&
+           workflow_version == LEGACY_WORKFLOW_VERSION && valid_timestamp?(created_at)
+      blockers << "legacy reconciliation repository, status, workflow version, or creation time is invalid"
+      return nil
+    end
+
+    missing_facts = canonical_legacy_missing_facts(
+      value["missing_facts"],
+      expected_targets,
+      blockers,
+      batch_id:
+    )
+    dispositions = canonical_legacy_target_dispositions(value["target_dispositions"], expected_targets, blockers)
+    return nil unless missing_facts && dispositions
+
+    {
+      "contract" => value.fetch("contract"),
+      "version" => VERSION,
+      "repository" => repository,
+      "batch_status" => batch_status,
+      "workflow_version" => workflow_version,
+      "created_at" => created_at,
+      "missing_facts" => missing_facts,
+      "target_dispositions" => dispositions
+    }
+  end
+
+  def canonical_legacy_missing_facts(rows, expected_targets, blockers, batch_id: nil)
+    unless rows.is_a?(Array) && !rows.empty? && rows.all? { |row| row.is_a?(Hash) }
+      blockers << "legacy reconciliation missing facts are absent or invalid"
+      return nil
+    end
+
+    expected_keys = expected_targets.to_h { |target| [target_key(target), target] }
+    parsed = rows.filter_map do |row|
+      fact = row["fact"]
+      fact_target_blockers = []
+      targets = validated_target_set(row["targets"], fact_target_blockers, "legacy missing-fact target") if row.key?("targets")
+      reason = normalized_known_string(row["reason"])
+      ordinary_gate = normalized_known_string(row["ordinary_gate"])
+      valid_shape = if fact == "batch.completed"
+                      row.keys.sort == %w[fact ordinary_gate path reason] && batch_id &&
+                        row["path"] == "coordination_status.batches[#{batch_id}].completed_at"
+                    else
+                      raw_fact = fact == "lane.terminal" ? "terminal" : fact
+                      lane = normalized_known_string(row["lane"])
+                      row.keys.sort == %w[fact lane ordinary_gate path reason targets] &&
+                        %w[claim.acquired lane.terminal].include?(fact) && lane &&
+                        row["path"] == "coordination_audit.lanes[#{lane}].missing[#{raw_fact}]" &&
+                        fact_target_blockers.empty? && targets&.all? { |target| expected_keys.key?(target_key(target)) }
+                    end
+      unless valid_shape && reason && ordinary_gate && LEGACY_MISSING_FACTS.include?(fact)
+        blockers << "legacy reconciliation missing fact is invalid or outside the target manifest"
+        next
+      end
+
+      if targets
+        {
+          "fact" => fact,
+          "lane" => row.fetch("lane"),
+          "path" => row.fetch("path"),
+          "reason" => reason,
+          "ordinary_gate" => ordinary_gate,
+          "targets" => targets
+        }
+      else
+        {
+          "fact" => fact,
+          "path" => row.fetch("path"),
+          "reason" => reason,
+          "ordinary_gate" => ordinary_gate
+        }
+      end
+    end
+    identities = parsed.map do |row|
+      [row.fetch("fact"), row["lane"], Array(row["targets"]).map { |target| target_key(target) }]
+    end
+    if parsed.length != rows.length || identities.uniq.length != identities.length
+      blockers << "legacy reconciliation missing facts are duplicated or invalid"
+      return nil
+    end
+
+    parsed.sort_by do |row|
+      [row.fetch("fact"), row["lane"].to_s]
+    end
+  end
+
+  def canonical_legacy_target_dispositions(rows, expected_targets, blockers)
+    unless rows.is_a?(Array) && rows.all? { |row| row.is_a?(Hash) }
+      blockers << "legacy reconciliation target dispositions are absent or invalid"
+      return nil
+    end
+
+    expected_keys = expected_targets.to_h { |target| [target_key(target), target] }
+    parsed = rows.filter_map do |row|
+      unless row.keys.sort == %w[disposition evidence expected_state owner target]
+        blockers << "legacy reconciliation target disposition shape is invalid"
+        next
+      end
+      target = validated_target(row["target"])
+      evidence = durable_reference_url(row["evidence"])
+      owner = normalized_known_string(row["owner"])
+      disposition = row["disposition"]
+      expected_state = row["expected_state"]
+      default_state = target && (target["type"] == "pull_request" ? "merged" : "closed")
+      valid_disposition = disposition == "completed" && expected_state == default_state
+      valid_disposition ||= target&.fetch("type") == "issue" && disposition == "accepted_deferral" &&
+                            expected_state == "open"
+      unless target && expected_keys.key?(target_key(target)) && evidence && owner && valid_disposition
+        blockers << "legacy reconciliation target disposition is invalid or outside the target manifest"
+        next
+      end
+
+      {
+        "target" => target,
+        "disposition" => disposition,
+        "expected_state" => expected_state,
+        "owner" => owner,
+        "evidence" => evidence
+      }
+    end
+    keys = parsed.map { |row| target_key(row.fetch("target")) }
+    unless parsed.length == rows.length && keys.uniq.length == keys.length && keys.sort == expected_keys.keys.sort
+      blockers << "legacy reconciliation target dispositions do not match the exact target manifest"
+      return nil
+    end
+
+    parsed.sort_by { |row| target_sort_key(row.fetch("target")) }
+  end
+
+  def legacy_missing_fact?(reconciliation, fact, target: nil)
+    return false unless reconciliation
+
+    reconciliation.fetch("missing_facts").any? do |row|
+      row.fetch("fact") == fact && if target
+                                     Array(row["targets"]).any? do |candidate|
+                                       target_key(candidate) == target_key(target)
+                                     end
+                                   else
+                                     !row.key?("targets")
+                                   end
+    end
+  end
+
+  def legacy_target_disposition(reconciliation, target)
+    return unless reconciliation
+
+    reconciliation.fetch("target_dispositions").find do |row|
+      target_key(row.fetch("target")) == target_key(target)
+    end
+  end
+
+  def validate_legacy_coordination_facts(status, reconciliation, blockers)
+    return unless reconciliation
+
+    missing_claims = reconciliation.fetch("missing_facts").any? { |row| row.fetch("fact") == "claim.acquired" }
+    return unless missing_claims && (!status.is_a?(Hash) || status["claims"] != [])
+
+    blockers << "legacy reconciliation claim gap contradicts current coordination claim evidence"
+  end
+
+  def validate_legacy_metadata(batch, reconciliation, blockers)
+    return unless batch && reconciliation
+
+    blockers << "legacy reconciliation repository does not match coordination batch" unless
+      batch["repo"].to_s.casecmp?(reconciliation.fetch("repository"))
+    blockers << "legacy reconciliation batch status does not match fresh coordination status" unless
+      batch["status"] == reconciliation.fetch("batch_status")
+  end
+
+  def canonical_legacy_coordination_audit(
+    value,
+    batch_id:,
+    lane_entries:,
+    reconciliation:,
+    backend:,
+    verifier:,
+    blockers:
+  )
+    unless value.is_a?(Hash) && value.keys.sort == %w[batch_id lanes verdict] &&
+           value["batch_id"] == batch_id && value["verdict"] == "incomplete" && value["lanes"].is_a?(Array)
+      blockers << "raw coordination batch audit is absent or invalid"
+      return nil
+    end
+    authenticated = verifier&.call(backend:, batch_id:)
+    unless authenticated == value
+      blockers << "raw coordination batch audit is not authenticated or fresh"
+      return nil
+    end
+
+    entries_by_name = lane_entries.group_by { |entry| entry.fetch("name") }
+    audit_lanes = value.fetch("lanes")
+    parsed = audit_lanes.filter_map do |row|
+      expected_keys = %w[complete event_count malformed missing name owner targets]
+      unless row.is_a?(Hash) && row.keys.sort == expected_keys && normalized_known_string(row["name"]) &&
+             normalized_known_string(row["owner"]) && row["event_count"].is_a?(Integer) && row["event_count"] >= 0 &&
+             row["complete"] == false && row["malformed"] == false &&
+             row["targets"].is_a?(Array) && row["targets"].all? { |item| item.to_s.match?(/\A\d+\z/) } &&
+             row["missing"].is_a?(Array) && !row["missing"].empty? &&
+             row["missing"].all? { |fact| %w[claim.acquired terminal].include?(fact) }
+        blockers << "raw coordination batch audit lane is malformed or contradictory"
+        next
+      end
+      matches = entries_by_name.fetch(row.fetch("name"), [])
+      if matches.empty?
+        blockers << "raw coordination batch audit lane does not match resolved coordination scope"
+        next
+      end
+
+      targets = matches.map { |entry| entry.fetch("target") }.sort_by { |target| target_sort_key(target) }
+      unless row.fetch("targets").map(&:to_s).sort == targets.map { |target| target.fetch("number").to_s }.sort
+        blockers << "raw coordination batch audit lane target does not match resolved coordination scope"
+        next
+      end
+      canonicalize(row)
+    end
+    if parsed.length != audit_lanes.length || parsed.map { |row| row.fetch("name") }.uniq.length != parsed.length ||
+       parsed.map { |row| row.fetch("name") }.sort != entries_by_name.keys.sort
+      blockers << "raw coordination batch audit lanes do not match the exact coordination lane set"
+      return nil
+    end
+
+    observed_missing_facts = parsed.flat_map do |row|
+      targets = entries_by_name.fetch(row.fetch("name")).map { |entry| entry.fetch("target") }
+                                                        .sort_by { |target| target_sort_key(target) }
+      row.fetch("missing").map do |fact|
+        { "fact" => fact == "terminal" ? "lane.terminal" : fact, "lane" => row.fetch("name"), "targets" => targets }
+      end
+    end
+    observed_missing_facts.sort_by! { |row| [row.fetch("fact"), row.fetch("lane")] }
+    declared_missing_facts = reconciliation.fetch("missing_facts").filter_map do |row|
+      next unless row.key?("targets")
+
+      { "fact" => row.fetch("fact"), "lane" => row.fetch("lane"), "targets" => row.fetch("targets") }
+    end
+    unless canonicalize(observed_missing_facts) == canonicalize(declared_missing_facts)
+      blockers << "legacy reconciliation missing facts do not match the raw coordination batch audit"
+    end
+
+    canonicalize(value)
+  end
+
+  def canonical_legacy_decision(
+    value,
+    batch_id:,
+    expected_targets:,
+    source_input_digest:,
+    reconciliation:,
+    verifier:,
+    blockers:
+  )
+    reference = legacy_decision_comment_reference(value, expected_targets)
+    unless reference && verifier.respond_to?(:call)
+      blockers << "authenticated legacy reconciliation decision is absent or invalid"
+      return nil
+    end
+
+    comment = verifier.call(
+      host: reference.fetch("target").fetch("host"),
+      repo: reference.fetch("target").fetch("repo"),
+      comment_id: reference.fetch("comment_id")
+    )
+    decision = verified_legacy_decision_comment(
+      comment,
+      reference:,
+      batch_id:,
+      expected_targets:,
+      source_input_digest:,
+      reconciliation:
+    )
+    blockers << "authenticated legacy reconciliation decision is absent, stale, or mismatched" unless decision
+    decision
+  end
+
+  def legacy_decision_comment_reference(value, expected_targets)
+    expected_targets.each do |target|
+      reference = waiver_comment_reference(value, target)
+      return reference.merge("target" => target) if reference
+    end
+    nil
+  end
+
+  def verified_legacy_decision_comment(
+    comment,
+    reference:,
+    batch_id:,
+    expected_targets:,
+    source_input_digest:,
+    reconciliation:
+  )
+    target = reference.fetch("target")
+    return unless comment.is_a?(Hash)
+    return unless Integer(comment["id"], exception: false) == reference.fetch("comment_id")
+    return unless comment["html_url"] == reference.fetch("url")
+    return unless issue_api_url_matches_target?(comment["issue_url"], target)
+    return unless valid_timestamp?(comment["created_at"]) && comment["updated_at"] == comment["created_at"]
+
+    author = waiver_comment_author(comment)
+    association = comment["author_association"].to_s
+    return unless author && TRUSTED_ASSOCIATIONS.include?(association)
+
+    body = comment["body"]
+    fields = legacy_decision_marker_fields(body)
+    return unless fields
+    return unless fields.fetch("batch_id") == batch_id
+    return unless fields.fetch("repository") == reconciliation.fetch("repository")
+    return unless fields.fetch("batch_status") == reconciliation.fetch("batch_status")
+    return unless fields.fetch("workflow_version") == reconciliation.fetch("workflow_version")
+    return unless fields.fetch("created_at") == reconciliation.fetch("created_at")
+    return unless fields.fetch("source_input_digest") == source_input_digest
+    return unless fields.fetch("decision") == LEGACY_COMPLETION_MODE
+
+    target_urls = expected_targets.map { |expected| target_base_url(expected) }
+    return unless fields.fetch("expected_targets") == target_urls
+    return unless fields.fetch("missing_facts") == reconciliation.fetch("missing_facts")
+    return unless fields.fetch("target_dispositions") == reconciliation.fetch("target_dispositions")
+
+    {
+      "url" => reference.fetch("url"),
+      "comment_id" => reference.fetch("comment_id"),
+      "author" => author,
+      "author_association" => association,
+      "body_sha256" => Digest::SHA256.hexdigest(body.encode(Encoding::UTF_8)),
+      "created_at" => comment.fetch("created_at"),
+      "updated_at" => comment.fetch("updated_at"),
+      "batch_id" => batch_id,
+      "repository" => reconciliation.fetch("repository"),
+      "batch_status" => reconciliation.fetch("batch_status"),
+      "workflow_version" => reconciliation.fetch("workflow_version"),
+      "artifact_created_at" => reconciliation.fetch("created_at"),
+      "source_input_digest" => source_input_digest,
+      "decision" => LEGACY_COMPLETION_MODE,
+      "verification_source" => "authenticated gh api"
+    }
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def legacy_decision_marker_fields(body)
+    return unless body.is_a?(String) && body.scan("<!-- completed-batch-legacy-reconciliation v1").length == 1
+
+    matches = body.scan(/<!-- completed-batch-legacy-reconciliation v1\n(.*?)\n-->/m)
+    return unless matches.one?
+
+    allowed = %w[
+      batch_id batch_status created_at decision expected_targets missing_facts repository source_input_digest
+      target_dispositions workflow_version
+    ]
+    raw_fields = matches.first.fetch(0).lines(chomp: true).each_with_object({}) do |line, parsed|
+      match = line.match(/\A([a-z_]+): (.+)\z/)
+      break unless match && allowed.include?(match[1]) && !parsed.key?(match[1])
+
+      parsed[match[1]] = match[2]
+    end
+    return unless raw_fields&.keys&.sort == allowed.sort
+
+    {
+      "batch_id" => raw_fields.fetch("batch_id"),
+      "repository" => raw_fields.fetch("repository"),
+      "batch_status" => raw_fields.fetch("batch_status"),
+      "workflow_version" => raw_fields.fetch("workflow_version"),
+      "created_at" => raw_fields.fetch("created_at"),
+      "source_input_digest" => raw_fields.fetch("source_input_digest"),
+      "expected_targets" => JSON.parse(raw_fields.fetch("expected_targets")),
+      "missing_facts" => canonicalize(JSON.parse(raw_fields.fetch("missing_facts"))),
+      "target_dispositions" => canonicalize(JSON.parse(raw_fields.fetch("target_dispositions"))),
+      "decision" => raw_fields.fetch("decision")
+    }
+  rescue JSON::ParserError
+    nil
+  end
+
+  def legacy_decision_marker(batch_id:, expected_targets:, source_input_digest:, reconciliation:)
+    target_urls = expected_targets.map { |target| target_base_url(target) }
+    <<~MARKER.chomp
+      <!-- completed-batch-legacy-reconciliation v1
+      batch_id: #{batch_id}
+      repository: #{reconciliation.fetch('repository')}
+      batch_status: #{reconciliation.fetch('batch_status')}
+      workflow_version: #{reconciliation.fetch('workflow_version')}
+      created_at: #{reconciliation.fetch('created_at')}
+      source_input_digest: #{source_input_digest}
+      expected_targets: #{JSON.generate(target_urls)}
+      missing_facts: #{JSON.generate(canonicalize(reconciliation.fetch('missing_facts')))}
+      target_dispositions: #{JSON.generate(canonicalize(reconciliation.fetch('target_dispositions')))}
+      decision: #{LEGACY_COMPLETION_MODE}
+      -->
+    MARKER
   end
 
   def resolved_batch(status, batch_id, blockers)
@@ -425,6 +958,8 @@ module CompletedBatchPublicationPreflight
 
       target_rows = raw_targets.map do |raw|
         number = Integer(raw.to_s.sub(/\A#/, ""), exception: false)
+        return [] unless number
+
         candidates = expected_targets.select do |target|
           target["repo"].casecmp?(batch_repo) && target["number"] == number
         end
@@ -458,26 +993,60 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def validate_batch_terminal(batch, blockers)
+  def validate_batch_terminal(batch, blockers, legacy_reconciliation: nil)
     return unless batch
 
-    blockers << "coordination batch is not completed" unless batch["status"] == "completed"
+    missing_completion = legacy_missing_fact?(legacy_reconciliation, "batch.completed")
+    if missing_completion
+      blockers << "legacy reconciliation contradicts a completed coordination batch" if batch["status"] == "completed"
+    else
+      blockers << "coordination batch is not completed" unless batch["status"] == "completed"
+    end
     blockers << "coordination batch update timestamp is absent or invalid" unless valid_timestamp?(batch["updated_at"])
+    return if missing_completion
+
     blockers << "coordination batch completion timestamp is absent or invalid" unless valid_timestamp?(batch["completed_at"])
   end
 
-  def canonical_lane_snapshots(entries, authenticated_later_target_keys, blockers)
+  def canonical_lane_snapshots(entries, authenticated_later_target_keys, blockers, legacy_reconciliation: nil)
     entries.map do |entry|
       lane = entry.fetch("lane")
       target = entry.fetch("target")
       terminal_state = lane["terminal"]
       terminal = valid_terminal_lane?(lane)
-      blockers << "#{target_label(target)} coordination lane is nonterminal" unless terminal
-      expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+      missing_terminal = legacy_missing_fact?(legacy_reconciliation, "lane.terminal", target:)
+      if legacy_reconciliation
+        unless missing_terminal || (TERMINAL_LANE_STATES.include?(terminal_state) && lane["status"] == terminal_state)
+          blockers << "#{target_label(target)} coordination projection contradicts its terminal audit"
+        end
+        next(
+          {
+            "name" => entry.fetch("name"),
+            "target" => target,
+            "status" => scalar_or_nil(lane["status"]),
+            "terminal" => scalar_or_nil(lane["terminal"]),
+            "closed_at" => scalar_or_nil(lane["closed_at"]),
+            "target_state" => scalar_or_nil(lane["pr_state"]),
+            "evidence" => normalized_known_string(lane["evidence_url"]),
+            "completion_mode" => if missing_terminal
+                                   "accepted_missing_legacy_terminal_event"
+                                 else
+                                   "authenticated_raw_batch_audit_terminal_event"
+                                 end
+          }
+        )
+      end
+      if missing_terminal
+        blockers << "#{target_label(target)} legacy reconciliation contradicts a terminal lane" if terminal
+      else
+        blockers << "#{target_label(target)} coordination lane is nonterminal" unless terminal
+      end
+      disposition = legacy_target_disposition(legacy_reconciliation, target)
+      expected_state = disposition&.fetch("expected_state") || (target["type"] == "pull_request" ? "merged" : "closed")
       evidence = normalized_known_string(lane["evidence_url"])
       coordination_completion = terminal_state == "done" && lane["pr_state"] == expected_state && evidence
       later_target_completion = authenticated_later_target_keys[target_key(target)] == true
-      unless coordination_completion || later_target_completion
+      unless missing_terminal || coordination_completion || later_target_completion
         if terminal && RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state)
           blockers << "#{target_label(target)} target completion is not authenticated after coordination closeout"
         end
@@ -496,6 +1065,8 @@ module CompletedBatchPublicationPreflight
       }
       if terminal && later_target_completion
         snapshot["completion_mode"] = "authenticated_target_after_coordination_closeout"
+      elsif missing_terminal
+        snapshot["completion_mode"] = "accepted_missing_legacy_terminal_fact"
       end
       snapshot
     end
@@ -528,7 +1099,14 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers, target_verifier:)
+  def canonical_target_snapshots(
+    expected_targets,
+    snapshots,
+    lane_entries,
+    blockers,
+    target_verifier:,
+    legacy_reconciliation: nil
+  )
     lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
     authenticated_later_target_keys = {}
     canonical_targets = expected_targets.map do |target|
@@ -548,7 +1126,8 @@ module CompletedBatchPublicationPreflight
           }
         )
       end
-      expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+      disposition = legacy_target_disposition(legacy_reconciliation, target)
+      expected_state = disposition&.fetch("expected_state") || (target["type"] == "pull_request" ? "merged" : "closed")
       state = scalar_or_nil(row["state"])
       blockers << "#{target_label(target)} target is not #{expected_state}" unless state == expected_state
       raw_head_sha = row["head_sha"].to_s.downcase
@@ -565,12 +1144,18 @@ module CompletedBatchPublicationPreflight
       source = normalized_known_string(row["source"])
       blockers << "#{target_label(target)} target snapshot source is absent" unless source
       verified = target_verifier&.call(target:)
+      completed_at_valid = if state == "open"
+                             verified&.fetch("completed_at", nil).nil? ||
+                               valid_timestamp?(verified&.fetch("completed_at", nil))
+                           else
+                             valid_timestamp?(verified&.fetch("completed_at", nil))
+                           end
       verified_shape = verified.is_a?(Hash) &&
                        verified.keys.sort == %w[completed_at head_sha state target verification_source] &&
                        validated_target(verified["target"]) == target &&
                        verified["state"] == state &&
                        verified["head_sha"] == head_sha &&
-                       valid_timestamp?(verified["completed_at"]) &&
+                       completed_at_valid &&
                        verified["verification_source"] == "authenticated gh api"
       unless verified_shape
         blockers << "#{target_label(target)} target state/head is not authenticated or fresh"
@@ -584,7 +1169,7 @@ module CompletedBatchPublicationPreflight
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
       }
       authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
-      if lane_state && state && lane_state != state && !authenticated_later_completion
+      if !legacy_reconciliation && lane_state && state && lane_state != state && !authenticated_later_completion
         blockers << "#{target_label(target)} coordination and target state disagree"
       end
       snapshot = {
@@ -595,6 +1180,11 @@ module CompletedBatchPublicationPreflight
         "source" => source,
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
       }
+      if disposition
+        snapshot["disposition"] = disposition.fetch("disposition")
+        snapshot["disposition_owner"] = disposition.fetch("owner")
+        snapshot["disposition_evidence"] = disposition.fetch("evidence")
+      end
       snapshot["completed_at"] = verified_target_facts.fetch("completed_at") if authenticated_later_completion
       authenticated_later_target_keys[key] = true if authenticated_later_completion
       snapshot
@@ -884,6 +1474,16 @@ module CompletedBatchPublicationPreflight
     nil
   end
 
+  def durable_reference_url(value)
+    uri = URI.parse(value.to_s)
+    return unless uri.is_a?(URI::HTTPS) && uri.host && uri.userinfo.nil? && uri.query.nil?
+    return if uri.fragment && !uri.fragment.match?(/\Aissuecomment-\d+\z/)
+
+    value
+  rescue URI::InvalidURIError
+    nil
+  end
+
   def scalar_or_nil(value)
     value.is_a?(String) ? value : nil
   end
@@ -1001,12 +1601,18 @@ module CompletedBatchPublicationPreflight
       state = "merged"
       completed_at = payload.fetch("merged_at")
     else
-      return unless payload["state"] == "closed" && !payload.key?("pull_request") &&
-                    valid_timestamp?(payload["closed_at"])
+      return if payload.key?("pull_request")
 
       head_sha = nil
-      state = "closed"
-      completed_at = payload.fetch("closed_at")
+      if payload["state"] == "closed" && valid_timestamp?(payload["closed_at"])
+        state = "closed"
+        completed_at = payload.fetch("closed_at")
+      elsif payload["state"] == "open" && payload["closed_at"].nil?
+        state = "open"
+        completed_at = nil
+      else
+        return
+      end
     end
     {
       "target" => target,
@@ -1035,6 +1641,29 @@ module CompletedBatchPublicationPreflight
       timeout: COORDINATION_CAPTURE_TIMEOUT_SECONDS
     )
     return unless status.success?
+
+    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
+    payload if payload.is_a?(Hash)
+  rescue JSON::ParserError, SystemCallError, Timeout::Error
+    nil
+  end
+
+  def authenticated_coordination_audit(backend:, batch_id:)
+    normalized_backend = normalized_known_string(backend)
+    return unless normalized_backend && normalized_backend.downcase != "n/a"
+    return if normalized_backend.match?(PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN)
+
+    command = [
+      AGENT_COORD_BOUNDED,
+      "--timeout", COORDINATION_TIMEOUT_SECONDS.to_s,
+      "batch-audit", "--batch-id", batch_id, "--json"
+    ]
+    stdout, _stderr, status = capture_process(
+      command,
+      input: "",
+      timeout: COORDINATION_CAPTURE_TIMEOUT_SECONDS
+    )
+    return unless [0, 1].include?(status.exitstatus)
 
     payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
     payload if payload.is_a?(Hash)
@@ -1343,9 +1972,13 @@ module CompletedBatchPublicationPreflight
   def run(argv)
     options = {}
     parser = OptionParser.new do |opts|
-      opts.banner = "Usage: completed-batch-publication-preflight --workflow-config PATH --input PATH|-"
+      opts.banner = "Usage: completed-batch-publication-preflight --workflow-config PATH --input PATH|- " \
+                    "[--legacy-reconciliation-decision-url URL]"
       opts.on("--workflow-config PATH") { |value| options["workflow_config"] = value }
       opts.on("--input PATH") { |value| options["input"] = value }
+      opts.on("--legacy-reconciliation-decision-url URL") do |value|
+        options["legacy_reconciliation_decision_url"] = value
+      end
       opts.on("-h", "--help") do
         puts opts
         return 0
@@ -1368,7 +2001,10 @@ module CompletedBatchPublicationPreflight
       coordination_backend: config["coordination_backend"],
       waiver_verifier: method(:authenticated_waiver_comment),
       target_verifier: method(:authenticated_target_snapshot),
-      coordination_verifier: method(:authenticated_coordination_status)
+      coordination_verifier: method(:authenticated_coordination_status),
+      coordination_audit_verifier: method(:authenticated_coordination_audit),
+      reconciliation_decision_url: options["legacy_reconciliation_decision_url"],
+      reconciliation_verifier: method(:authenticated_waiver_comment)
     )
     puts JSON.pretty_generate(result)
     result.fetch("eligible") ? 0 : 1
