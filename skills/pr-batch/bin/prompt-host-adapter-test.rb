@@ -1547,6 +1547,37 @@ class PromptHostAdapterTest < Minitest::Test
     refute_includes stdout, marker
   end
 
+  def test_url_hash_routes_are_not_slash_command_mechanics
+    url_cases = [
+      ["codex", "codex", "Inspect https://example.test/#/address-review as evidence.", "compatible"],
+      ["portable", "claude", "Review https://example.test/app#/pr-batch?step=1.", "portable"]
+    ]
+
+    url_cases.each do |declared_host, active_host, prose, expected_classification|
+      prompt = direct_prompt(host: declared_host, body: prose)
+      result, stderr, status = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal expected_classification, result.fetch("classification"), prose
+      assert_equal true, result.fetch("execute_allowed"), prose
+      assert_equal prompt, result.fetch("prompt"), prose
+    end
+
+    marker = "SECRET_ADJACENT_HASH_ROUTE_COMMAND"
+    body = "Inspect https://example.test/#/address-review, then run /pr-batch #{marker}."
+    result, stderr, status, stdout = run_adapter(
+      direct_prompt(host: "codex", body: body),
+      active_host: "codex"
+    )
+
+    assert status.success?, stderr
+    assert_equal "ambiguous", result.fetch("classification")
+    assert_equal "unsupported-host-mechanic", result.fetch("reason_code")
+    assert_equal false, result.fetch("execute_allowed")
+    assert_nil result.fetch("prompt")
+    refute_includes stdout, marker
+  end
+
   def test_nested_relative_path_segments_are_not_slash_command_mechanics
     path_cases = [
       ["codex", "codex", "Inspect repo/../tmp before closeout.", "compatible"],

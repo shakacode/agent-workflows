@@ -155,6 +155,9 @@ CODEX_GOAL_ENVELOPE_RULES = [
 ].freeze
 NEW_CODEX_PROMPT_INSTALLATION_RULE =
   "Newly generated Codex prompts default to `Prompt mode: batch` without `/goal`."
+REQUIRED_INTERVIEW_DEFAULT_BATCH_MODE_RULE =
+  "**Mode**: plan-only, create an ordinary batch prompt (the default), create a persistent `/goal` prompt only " \
+  "when explicitly requested, or launch workers now."
 LEGACY_CODEX_GOAL_RERENDER_RULE =
   "Previously generated oversized Codex goal text must be re-rendered with the current selector before launch; " \
   "do not hand-edit or split it merely to preserve `/goal`."
@@ -497,6 +500,18 @@ class GoalCompletionContractTest < Minitest::Test
         assert_equal 1, text.scan(rule).length, "#{label} must state exactly once: #{rule}"
       end
     end
+  end
+
+  def test_required_interview_separates_default_batch_prompt_from_explicit_persistent_goal
+    required_interview = extract_markdown_section(
+      @pr_batch_skill,
+      "## Required Interview",
+      end_heading: /^##\s+/
+    )
+
+    assert_text_includes required_interview, REQUIRED_INTERVIEW_DEFAULT_BATCH_MODE_RULE,
+                         "skills/pr-batch/SKILL.md Required Interview"
+    refute_includes required_interview, "plan-only, create `/goal` prompt, or launch workers now."
   end
 
   def test_installation_guidance_requires_current_codex_prompt_rendering

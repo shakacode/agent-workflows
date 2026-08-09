@@ -217,7 +217,7 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
    prompt, and use that output for `MM-DD HH:MM`.
 <!-- host-branch: codex-only start -->
-5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
+5. **Mode**: plan-only, create an ordinary batch prompt (the default), create a persistent `/goal` prompt only when explicitly requested, or launch workers now.
 <!-- host-branch: codex-only end -->
 6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
    it before worker launch from visible authority or ask the user. Explain that
