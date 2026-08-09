@@ -904,6 +904,74 @@ test_flat_copy_upgrade_refuses_newly_packaged_doc_collision() {
     fail "flat copy upgrade did not update a previously managed document"
 }
 
+test_symlink_upgrade_refuses_newly_packaged_doc_collisions_before_mutation() {
+  local tmp source legacy_source target destination output status metadata_before
+  local workflow_before license_before skill_before coordination_before variant
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  legacy_source="$tmp/legacy-source"
+  mkdir -p "$source" "$legacy_source"
+  new_source_repo "$source"
+  new_source_repo "$legacy_source"
+
+  git -C "$legacy_source" rm --quiet docs/user-facing-coordination.md
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.read(path)
+    abort "missing pack doc entry" unless text.sub!("  user-facing-coordination.md\n", "")
+    File.write(path, text)
+  ' "$legacy_source/bin/install-agent-workflows"
+  git -C "$legacy_source" add bin/install-agent-workflows
+  git -C "$legacy_source" commit --quiet -m "simulate source before coordination doc"
+
+  for variant in symlink file; do
+    target="$tmp/codex-home-$variant"
+    "$legacy_source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode symlink --delivery-mode flat >"$tmp/legacy-$variant.out"
+    destination="$target/docs/user-facing-coordination.md"
+    if [[ "$variant" = symlink ]]; then
+      printf 'personal coordination sentinel\n' > "$tmp/personal-coordination.md"
+      ln -s "$tmp/personal-coordination.md" "$destination"
+    else
+      printf 'personal coordination sentinel\n' > "$destination"
+    fi
+
+    workflow_before="$(readlink "$target/workflows")"
+    license_before="$(readlink "$target/LICENSE")"
+    skill_before="$(readlink "$target/skills/pr-batch")"
+    coordination_before="$(readlink "$target/docs/coordination-backend.md")"
+    metadata_before="$tmp/metadata-$variant.before"
+    cp "$target/.agent-workflows-install.json" "$metadata_before"
+
+    set +e
+    output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode symlink --delivery-mode flat 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "symlink upgrade replaced a newly colliding personal $variant"
+    assert_contains "$output" "Refusing to replace unowned pack document"
+    assert_contains "$output" "$destination"
+    if [[ "$variant" = symlink ]]; then
+      [[ "$(readlink "$destination")" = "$tmp/personal-coordination.md" ]] || \
+        fail "symlink upgrade changed the personal coordination symlink"
+    else
+      grep -qxF 'personal coordination sentinel' "$destination" || \
+        fail "symlink upgrade changed the personal coordination file"
+    fi
+    [[ "$(readlink "$target/workflows")" = "$workflow_before" ]] || \
+      fail "symlink document collision partially changed workflows"
+    [[ "$(readlink "$target/LICENSE")" = "$license_before" ]] || \
+      fail "symlink document collision partially changed LICENSE"
+    [[ "$(readlink "$target/skills/pr-batch")" = "$skill_before" ]] || \
+      fail "symlink document collision partially changed skills"
+    [[ "$(readlink "$target/docs/coordination-backend.md")" = "$coordination_before" ]] || \
+      fail "symlink document collision partially changed an earlier pack document"
+    cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+      fail "symlink document collision changed install metadata"
+  done
+}
+
 test_repeat_companion_install_blocks_new_current_native_skill_collision() {
   local tmp source target plugin_root metadata_before output status
   tmp="$(mktemp -d)"
@@ -1865,6 +1933,7 @@ main() {
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_flat_upgrade_refuses_newly_packaged_skill_collision
     test_flat_copy_upgrade_refuses_newly_packaged_doc_collision
+    test_symlink_upgrade_refuses_newly_packaged_doc_collisions_before_mutation
     test_repeat_companion_install_blocks_new_current_native_skill_collision
     test_repeat_companion_install_blocks_native_skill_removed_from_current_source
     test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots

@@ -434,18 +434,28 @@ pack_doc_symlink_matches_recorded_source() {
   return 1
 }
 
-verify_copy_pack_doc_destinations() {
+pack_doc_destination_owned() {
+  local doc_name="$1"
+  local destination="$2"
+  local source_path="$3"
+
+  if [[ "$mode" = "copy" ]]; then
+    recorded_revision_contains_pack_doc "$doc_name" ||
+      { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
+      pack_doc_symlink_matches_recorded_source "$doc_name" "$destination"
+  else
+    pack_doc_symlink_matches_recorded_source "$doc_name" "$destination"
+  fi
+}
+
+verify_pack_doc_destinations() {
   local doc_name destination source_path
 
   for doc_name in "${pack_docs[@]}"; do
     destination="$target/docs/$doc_name"
     source_path="$repo_root/docs/$doc_name"
     [[ -e "$destination" || -L "$destination" ]] || continue
-    if recorded_revision_contains_pack_doc "$doc_name" ||
-       { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
-       pack_doc_symlink_matches_recorded_source "$doc_name" "$destination"; then
-      continue
-    fi
+    pack_doc_destination_owned "$doc_name" "$destination" "$source_path" && continue
 
     echo "Refusing to replace unowned pack document: $destination" >&2
     exit 1
@@ -674,10 +684,10 @@ if [[ "$delivery_status" -ne 0 ]]; then
   '
   exit 1
 fi
+verify_pack_doc_destinations
 prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then
-  verify_copy_pack_doc_destinations
   ensure_real_directory "$target/bin"
   prepare_workflow_doctor_copy_destination
   copy_pack_license
