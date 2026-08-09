@@ -211,7 +211,9 @@ git commit -m "feat: define user-facing coordination contract"
 **Interfaces:**
 
 - Consumes: existing `GMCC-v3`, autonomous merge eligibility, merge assurance, repository submission policy, and `merge_authority` semantics.
-- Produces: `GMCC-v4`, exact approval-field separation, silent no-change wakeups, material notifications, and automatic monitor cleanup.
+- Produces: an `HST-v1` cleanup extension, exact approval-field separation,
+  silent no-change wakeups, material notifications, and automatic monitor
+  cleanup while preserving `GMCC-v3` verbatim.
 
 - [ ] **Step 1: Add failing approval and heartbeat scenarios**
 
@@ -276,15 +278,16 @@ Merge authority: <none|ask|auto_merge_when_gates_pass> plus exact-head eligibili
 
 State separately that repository-authorized branch/commit/push/PR publication proceeds without another question; autonomous merge proceeds only when ordinary gates, exact-head eligibility, and merge assurance pass; exact-head human approval names the SHA, sorted gates, rollback status, and durable decision needed before asking one final question.
 
-- [ ] **Step 4: Replace `GMCC-v3` with the self-contained `GMCC-v4` contract**
+- [ ] **Step 4: Preserve `GMCC-v3` and extend canonical `HST-v1`**
 
-Use this exact compact line in the workflow and every generation surface:
+Keep the existing compact `GMCC-v3` line byte-for-byte on every generation
+surface. In particular, retain these clauses verbatim:
 
 ```text
-GMCC-v4: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; watch=>1 15m same-task else exact manual resume; no-change=>silent; notify=>material-change|required-decision|durable-blocker|completion; delete=>gate-clear|durably-terminal; automation!=owner; blocked-user-input=>no-watch+one-exact-question; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
 ```
 
-Update the canonical expansion so it explicitly says:
+Extend `HST-v1` and the shared user-facing contract so they explicitly say:
 
 - no-change wakeups produce no user-visible notification;
 - only material change, required decision, durable blocker, or completion notifies;
@@ -292,7 +295,9 @@ Update the canonical expansion so it explicitly says:
 - automation never owns the task; and
 - `blocked-user-input` uses no monitor and preserves one exact question.
 
-Update `COMPACT_CONTRACT_LINE`, `CANONICAL_CONTRACT_LINE`, invariants, the alignment sentence, line matchers, prompt-size constants, and the `GMCC-v4:` expectation in the existing tests. Do not remove any existing readiness or autonomous-merge invariant.
+Add exact regression assertions for the complete `GMCC-v3` line. Reuse the
+existing HST fixture and mutation coverage; do not change prompt constants or
+accept renamed or abbreviated merge-authority clauses.
 
 - [ ] **Step 5: Run Goal Mode, autonomous merge, prompt-size, and focused tests**
 
@@ -305,12 +310,13 @@ ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
 ```
 
-Expected: all commands pass, generated surfaces contain one aligned `GMCC-v4` contract, and the existing merge states remain intact.
+Expected: all commands pass, generated surfaces retain the exact `GMCC-v3`
+contract and `HST-v1` remains the single heartbeat translation policy.
 
 - [ ] **Step 6: Commit approval and heartbeat behavior**
 
 ```bash
-git add docs/user-facing-coordination.md workflows/pr-processing.md skills/pr-batch/SKILL.md skills/plan-pr-batch/SKILL.md skills/triage/SKILL.md skills/plan-pr-batch/scripts/check_goal_prompt_size.rb skills/pr-batch/bin/user-facing-coordination-contract-test.rb skills/pr-batch/bin/goal-completion-contract-test.rb skills/pr-batch/bin/autonomous-merge-contract-test.rb
+git add docs/user-facing-coordination.md workflows/pr-processing.md skills/pr-batch/SKILL.md skills/pr-batch/bin/user-facing-coordination-contract-test.rb skills/pr-batch/bin/goal-completion-contract-test.rb
 git commit -m "feat: route approvals and heartbeat updates precisely"
 ```
 

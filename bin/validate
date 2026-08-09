@@ -106,6 +106,7 @@ bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
 ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
+ruby skills/pr-batch/bin/user-facing-coordination-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-eligibility-test.rb

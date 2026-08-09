@@ -22,6 +22,20 @@ For an interactive human-oriented explanation of a PR, use
 one conceptual change at a time, explains why it exists, and pauses for
 questions before continuing.
 
+## User-Facing Coordination Contract
+
+The current task is the sole user-facing coordinator. Its subagents and lane
+workers are internal workers, not separate chats the user must coordinate.
+External task messages supply evidence or requests without transferring
+ownership, and automations are wake-up mechanisms only. Use
+[User-Facing Coordination](../docs/user-facing-coordination.md) to route existing
+authority, new decisions, and materially separate scope.
+
+For a heartbeat or monitor, a no-change wake produces no user-visible
+notification. Notify only for a material state change, a required decision, a
+durable blocker, or completion; delete the heartbeat when its gate clears or
+becomes durably terminal. The automation never owns the task or next action.
+
 ## Default Operating Model
 
 1. Resolve the work item:
@@ -2310,6 +2324,22 @@ Pressure checks:
 - Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the marker grammar above; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`
 
 ### Coordinator Closeout Lane
+
+The current task remains the sole user-facing coordinator through closeout. If
+ownership is ambiguous or the user asks who is working, emit only:
+
+```text
+Current task: <responsibility and scoped outcome>
+Internal workers: <owned implementation, review, QA, or audit roles; or none>
+External tasks: <request or evidence role only; ownership did not transfer; or none>
+Next: <current-task action or exact required decision>
+```
+
+Do not append raw cross-task messages, coordination backend events, heartbeat
+logs, worker transcripts, or claim telemetry. For an approval or readiness
+handoff, report `Technical readiness:`, `Ownership:`, `Repository submission
+policy:`, and `Merge authority:` separately. Act under existing authority; ask
+one exact question only when new authority or a product decision is required.
 
 After workers finish, the coordinator keeps working until each target has a live
 final state. Do not stop at PR creation unless the user explicitly requested

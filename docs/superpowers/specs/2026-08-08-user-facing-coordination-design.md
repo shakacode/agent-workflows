@@ -85,8 +85,10 @@ merge decision after the walkthrough. Participation never counts as approval.
 
 ## Heartbeat Automation
 
-The Goal Mode Completion Contract advances to `GMCC-v4` so generated prompts
-carry the communication behavior with the existing completion rules.
+The existing `HST-v1` Human-Status Translation Contract remains the canonical
+user-facing heartbeat policy and is extended with obsolete-automation cleanup
+and the automation-not-owner boundary. The exact compact `GMCC-v3` readiness
+and merge-authority clauses remain unchanged.
 
 - A no-change wake performs its bounded refresh and produces no user-visible
   notification.
@@ -131,10 +133,11 @@ Update these consumers:
 
 - `skills/pr-batch/SKILL.md` — ownership model, action router, approval split,
   heartbeat behavior, ambiguity guard, and Coordinator Closeout Lane routing.
-- `workflows/pr-processing.md` — canonical execution/closeout behavior and the
-  `GMCC-v4` compact and expanded contracts.
-- `skills/plan-pr-batch/SKILL.md`, `skills/triage/SKILL.md`, and the goal-prompt
-  size checker — aligned `GMCC-v4` generation surfaces.
+- `workflows/pr-processing.md` — canonical execution/closeout behavior plus the
+  existing `HST-v1` translation contract and its cleanup extension.
+- Existing `skills/plan-pr-batch/SKILL.md`, `skills/triage/SKILL.md`, prompt-size
+  checks, and HST fixtures remain canonical; no competing compact heartbeat or
+  merge-authority contract is introduced.
 - `skills/pr-walkthrough/SKILL.md` — retain one-concept interaction while
   returning the exact decision to the current task.
 - `skills/close-session/SKILL.md` and `skills/close-session/agents/openai.yaml`
@@ -157,7 +160,8 @@ Add a focused Ruby contract test and register it in `bin/validate`. It verifies:
 7. technically ready PR behavior under autonomous authority;
 8. technically ready PR behavior under current exact-head human approval;
 9. ambiguity-guard fields and exclusion of raw coordination events; and
-10. parity of the `GMCC-v4` compact and canonical copies.
+10. exact preservation of the `GMCC-v3` compact merge/readiness clauses and
+    the canonical `HST-v1` translation behavior.
 
 Extend the existing walkthrough contract test to keep one-concept behavior and
 separate approval intact. Tests assert operational meaning and ordering rather

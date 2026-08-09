@@ -33,6 +33,20 @@ Run a Codex batch
 Run a Claude batch
 ```
 
+## User-Facing Coordination Contract
+
+The current task is the sole user-facing coordinator. Subagents, lane workers,
+reviewers, and QA agents are internal workers owned by the current task, never
+separate chats whose mechanics the user must coordinate. External tasks may
+send evidence or requests without gaining ownership, and automations only wake
+the current task. Route authority and separate-scope work through the shared
+[user-facing coordination contract](../../docs/user-facing-coordination.md).
+
+For a heartbeat or monitor, a no-change wake produces no user-visible
+notification. Notify only for a material state change, a required decision, a
+durable blocker, or completion; delete the heartbeat when its gate clears or
+becomes durably terminal. The automation never owns the task or next action.
+
 ## Single-Target Mode
 
 Use this mode for one direct-prompt task, GitHub issue, or pull request. It keeps
@@ -835,6 +849,22 @@ coordinator/operator hard-escape path proceeds immediately to worker process
 termination and claim release, without waiting further on the drain event.
 
 ## Coordinator Closeout Lane
+
+The current task remains the sole user-facing coordinator through closeout. If
+ownership is ambiguous or the user asks who is working, emit only:
+
+```text
+Current task: <responsibility and scoped outcome>
+Internal workers: <owned implementation, review, QA, or audit roles; or none>
+External tasks: <request or evidence role only; ownership did not transfer; or none>
+Next: <current-task action or exact required decision>
+```
+
+Do not append raw cross-task messages, coordination backend events, heartbeat
+logs, worker transcripts, or claim telemetry. For an approval or readiness
+handoff, report `Technical readiness:`, `Ownership:`, `Repository submission
+policy:`, and `Merge authority:` separately. Act under existing authority; ask
+one exact question only when new authority or a product decision is required.
 
 Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
 
