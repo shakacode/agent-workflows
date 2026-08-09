@@ -212,6 +212,18 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes text, "delete obsolete heartbeat automations"
   end
 
+  def test_close_session_informational_prompts_are_read_only
+    authority = normalized_section(CLOSE_SESSION, "## Authority and safety", end_heading: /^##\s+/)
+    coordination = normalized_section(CLOSE_SESSION, "## User-Facing Coordination Contract", end_heading: /^##\s+/)
+    assert_includes authority, "Informational prompts"
+    assert_includes authority, "authorize read-only closeout verification only"
+    assert_includes authority, "Do not make durable writes"
+    assert_includes authority, "explicitly asks to close or archive the task, hand it off, preserve context"
+    refute_includes authority, "Treat invocation as authority to perform routine closeout checks and update"
+    assert_includes coordination, "For an informational prompt, inspect and report these states without mutating them"
+    assert_includes coordination, "Only under the explicit mutation authority above"
+  end
+
   def test_close_session_preserves_hst_v1_closeout_envelope
     text = normalized_section(CLOSE_SESSION, "## Final response", end_heading: /^##\s+/)
     assert_ordered(

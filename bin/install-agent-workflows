@@ -54,6 +54,10 @@ pack_docs=(
   agent-workflows-model-routing.md
   user-facing-coordination.md
 )
+for solution_path in "$repo_root"/docs/solutions/*; do
+  [[ -f "$solution_path" && ! -L "$solution_path" ]] || continue
+  pack_docs+=("solutions/$(basename "$solution_path")")
+done
 
 default_target_for_host() {
   case "$1" in
@@ -516,6 +520,8 @@ verify_pack_doc_destinations() {
   [[ ! -L "$target/docs" ]] || return 0
 
   for doc_name in "${pack_docs[@]}"; do
+    # Both delivery modes replace a solutions-directory symlink without following it.
+    [[ "$doc_name" == solutions/* && -L "$target/docs/solutions" ]] && continue
     destination="$target/docs/$doc_name"
     source_path="$repo_root/docs/$doc_name"
     [[ -e "$destination" || -L "$destination" ]] || continue
@@ -588,14 +594,16 @@ verify_install_destinations() {
         fi
       done
     fi
-    for source_path in "$repo_root"/docs/solutions/*; do
-      [[ -e "$source_path" ]] || continue
-      destination="$target/docs/solutions/$(basename "$source_path")"
-      if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
-        echo "Refusing to replace non-symlink path: $destination" >&2
-        exit 1
-      fi
-    done
+    if [[ ! -L "$target/docs/solutions" ]]; then
+      for source_path in "$repo_root"/docs/solutions/*; do
+        [[ -e "$source_path" ]] || continue
+        destination="$target/docs/solutions/$(basename "$source_path")"
+        if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
+          echo "Refusing to replace non-symlink path: $destination" >&2
+          exit 1
+        fi
+      done
+    fi
     for helper in "${bin_helpers[@]}"; do
       destination="$target/bin/$helper"
       if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
@@ -624,13 +632,11 @@ copy_pack_docs() {
     fi
     install -m 0644 "$repo_root/docs/$doc_name" "$destination"
   done
-
-  copy_children_preserving_unrelated "$repo_root/docs/solutions" "$docs_target/solutions"
 }
 
 link_pack_docs() {
   local docs_target="$1"
-  local destination doc_name source_path
+  local destination doc_name
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
   remove_legacy_managed_model_routing_path "$docs_target"
@@ -642,16 +648,6 @@ link_pack_docs() {
       exit 1
     fi
     ln -sfn "$repo_root/docs/$doc_name" "$destination"
-  done
-
-  for source_path in "$repo_root"/docs/solutions/*; do
-    [[ -e "$source_path" ]] || continue
-    destination="$docs_target/solutions/$(basename "$source_path")"
-    if [[ -e "$destination" && ! -L "$destination" ]]; then
-      echo "Refusing to replace non-symlink path: $destination" >&2
-      exit 1
-    fi
-    ln -sfn "$source_path" "$destination"
   done
 }
 

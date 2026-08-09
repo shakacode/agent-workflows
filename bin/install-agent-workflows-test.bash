@@ -938,7 +938,7 @@ test_repeat_flat_copy_install_blocks_modified_recorded_targets() {
     --mode copy --delivery-mode flat >"$tmp/symlink-first.out"
   mkdir -p "$tmp/personal-pr-batch"
   printf 'personal symlink target\n' > "$tmp/personal-pr-batch/SKILL.md"
-  rm -rf "$symlink_target/skills/pr-batch"
+  mv "$symlink_target/skills/pr-batch" "$tmp/installed-pr-batch.before-symlink"
   ln -s "$tmp/personal-pr-batch" "$symlink_target/skills/pr-batch"
   cp "$symlink_target/.agent-workflows-install.json" "$tmp/symlink-metadata.before"
 
@@ -1011,6 +1011,56 @@ test_repeat_flat_copy_install_uses_fingerprints_without_git_history() {
     fail "blocked non-git upgrade changed install metadata"
 }
 
+test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history() {
+  local tmp source target modified_target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mv "$source/.git" "$tmp/source.git"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/flat.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints")
+    abort metadata.inspect unless metadata["source_revision"] == "unknown" && !fingerprints.empty?
+  ' "$target/.agent-workflows-install.json"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion >"$tmp/companion.out"
+
+  [[ ! -e "$target/skills/pr-batch" ]] || \
+    fail "fingerprint-authorized companion migration retained a managed flat skill"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+  ' "$target/.agent-workflows-install.json"
+
+  modified_target="$tmp/modified-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$modified_target" \
+    --mode copy --delivery-mode flat >"$tmp/modified-flat.out"
+  printf '\npersonal non-git migration edit\n' >> "$modified_target/skills/pr-batch/SKILL.md"
+  write_native_scw_state codex "$modified_target"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$modified_target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "fingerprints authorized migration of a modified flat skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal non-git migration edit' "$modified_target/skills/pr-batch/SKILL.md" || \
+    fail "blocked fingerprint migration changed the modified flat skill"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$modified_target/.agent-workflows-install.json"
+}
+
 test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
   local tmp source target recorded_fingerprint verified_fingerprint
   tmp="$(mktemp -d)"
@@ -1050,6 +1100,8 @@ test_installation_docs_describe_managed_coordination_doc_fingerprints() {
   assert_contains "$docs" '<target>/docs/user-facing-coordination.md'
   assert_contains "$docs" 'managed_skill_copy_fingerprints'
   assert_contains "$docs" 'managed_pack_doc_copy_fingerprints'
+  assert_contains "$docs" 'including every installed'
+  assert_contains "$docs" '<target>/docs/solutions/*'
   assert_contains "$docs" 'installer refuses to'
   assert_contains "$docs" 'replace a modified'
   assert_contains "$changelog" 'Copy-install fingerprints'
@@ -1110,6 +1162,41 @@ test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc()
     fail "first copy install changed the personal uncommitted pack document"
   [[ ! -e "$personal_target/.agent-workflows-install.json" ]] || \
     fail "blocked first install committed metadata"
+}
+
+test_repeat_copy_install_blocks_modified_solution_document() {
+  local tmp source target output status metadata_before solution_name
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  solution_name="coordination-unknown-state.md"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_pack_doc_copy_fingerprints")
+    abort fingerprints.inspect unless fingerprints.key?(ARGV.fetch(1))
+  ' "$target/.agent-workflows-install.json" "solutions/$solution_name"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+  printf 'personal installed-solution edit\n' > "$target/docs/solutions/$solution_name"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified solution document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  assert_contains "$output" "$target/docs/solutions/$solution_name"
+  grep -qxF 'personal installed-solution edit' "$target/docs/solutions/$solution_name" || \
+    fail "repeat copy install changed the modified solution document"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "blocked solution document replay changed install metadata"
 }
 
 test_flat_upgrade_refuses_newly_packaged_skill_collision() {
@@ -1890,6 +1977,34 @@ test_install_replaces_docs_directory_symlink_without_following_pack_named_childr
   done
 }
 
+test_install_replaces_solutions_directory_symlink_without_following_pack_named_children() {
+  local tmp target external_solutions solution_name mode
+  tmp="$(mktemp -d)"
+  solution_name="coordination-unknown-state.md"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-home-$mode"
+    external_solutions="$tmp/external-solutions-$mode"
+    mkdir -p "$target/docs" "$external_solutions"
+    printf 'personal external solution sentinel\n' > "$external_solutions/$solution_name"
+    ln -s "$external_solutions" "$target/docs/solutions"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" >"$tmp/install-$mode.out"
+
+    [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || \
+      fail "$mode install did not replace the solutions directory symlink"
+    grep -qxF 'personal external solution sentinel' "$external_solutions/$solution_name" || \
+      fail "$mode install changed the external solution document"
+    if [[ "$mode" = copy ]]; then
+      cmp -s "$target/docs/solutions/$solution_name" "$ROOT/docs/solutions/$solution_name" || \
+        fail "copy install did not install the managed solution document"
+    else
+      assert_symlink "$target/docs/solutions/$solution_name"
+    fi
+  done
+}
+
 test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
   local tmp target source_doc
   tmp="$(mktemp -d)"
@@ -2342,8 +2457,10 @@ main() {
     test_repeat_flat_copy_install_blocks_modified_installer_created_uncommitted_skill
     test_repeat_flat_copy_install_blocks_modified_recorded_targets
     test_repeat_flat_copy_install_uses_fingerprints_without_git_history
+    test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history
     test_copy_metadata_fingerprint_matches_delivery_state_verifier
     test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
+    test_repeat_copy_install_blocks_modified_solution_document
     test_installation_docs_describe_managed_coordination_doc_fingerprints
     test_flat_upgrade_refuses_newly_packaged_skill_collision
     test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill
@@ -2373,6 +2490,7 @@ main() {
     test_symlink_mode_links_skills_workflows_and_helpers
     test_symlink_mode_replaces_docs_directory_symlink
     test_install_replaces_docs_directory_symlink_without_following_pack_named_children
+    test_install_replaces_solutions_directory_symlink_without_following_pack_named_children
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
     test_symlink_mode_refuses_unmanaged_live_and_dangling_doctor_links_before_mutation
     test_symlink_mode_replaces_recorded_prior_source_doctor_link

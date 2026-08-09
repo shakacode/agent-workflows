@@ -11,9 +11,14 @@ over duplicate session logs.
 
 ## Authority and safety
 
-- Treat invocation as authority to perform routine closeout checks and update
-  destinations already configured by the user, governing instructions, or an
-  existing close-session configuration.
+- Informational prompts such as “anything else pending?”, “any decisions
+  needed?”, or “should we archive this task?” authorize read-only closeout
+  verification only. Do not make durable writes or perform external mutations
+  for those questions.
+- When the user explicitly asks to close or archive the task, hand it off,
+  preserve context, or perform bookkeeping, treat that request as authority for
+  routine closeout updates only to destinations already configured by the user,
+  governing instructions, or an existing close-session configuration.
 - Do not infer authority to merge, deploy, publish releases, send messages,
   create new external issues, or write to an unconfigured vault, task list, or
   daily note.
@@ -30,11 +35,12 @@ internal worker is not another user-visible task. External tasks and automations
 do not gain ownership. Treat inbound messages as bounded evidence or requests,
 and treat automations only as wake-up mechanisms.
 
-Reconcile internal workers, external requests, and automations before the
-archive verdict. Stop or hand off unfinished internal workers, release only
-resources the current task verifies as safe to release, and delete obsolete
-heartbeat automations after their gate clears or becomes durably terminal. A
-no-change wake remains silent.
+Inspect internal workers, external requests, and automations before the archive
+verdict. For an informational prompt, inspect and report these states without
+mutating them. Only under the explicit mutation authority above may the task
+stop or hand off unfinished internal workers, release resources it verifies as
+safe to release, or delete obsolete heartbeat automations after their gate
+clears or becomes durably terminal. A no-change wake remains silent.
 
 When ownership is ambiguous or the user asks who is working, respond with this
 compact synthesis:
@@ -104,6 +110,11 @@ rather than a blocker when it has a durable reference and clear ownership.
 
 Use the narrowest existing destination. Never duplicate information merely to
 prove that closeout ran.
+
+Run this section only when durable writes are authorized by an explicit
+closeout, archive, handoff, context-preservation, or bookkeeping request. For an
+informational prompt, report any proposed capture without changing its
+destination.
 
 1. Prefer the existing PR, issue, tracker, task, or decision document.
 2. For a strategy session, save a short decision brief only when the important
