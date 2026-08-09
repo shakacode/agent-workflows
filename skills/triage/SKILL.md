@@ -281,7 +281,7 @@ precise blocker.
    Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
    A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
    When host observations become available, reconcile registration field by field. Before requiring reconciliation, detect advertised registration update/upsert/reconciliation capability. An unadvertised or unsupported create-only backend records each affected field `UNKNOWN`. An advertised update uses the bounded safe executable-plus-opaque-argv contract; failure records affected fields `UNKNOWN` without wedging. Every advertised registration invocation resolves a backend-advertised safe executable plus ordered opaque argv without shell evaluation and runs with a finite hard deadline in its own process group; timeout or whole-group `TERM` then `KILL` records best-effort field-granular `UNKNOWN`, names reconciliation, and does not block worker launch.
-   For an explicitly requested Codex goal, measure the complete rendered text,
+   For Codex prompts, when a persistent Goal was explicitly requested, measure the complete rendered text,
    including the `/goal` wrapper, and require at least 300 characters of headroom <!-- host-allow: codex-only -->
    under the 4 000-character compatibility ceiling. If it does not
    fit, render the complete group as Codex batch without a wrapper before
