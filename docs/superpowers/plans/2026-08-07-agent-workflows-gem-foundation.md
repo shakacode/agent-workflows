@@ -227,25 +227,26 @@ raise "Unsafe agent-workflows manifest" unless package_files == package_files.so
                                                package_files.uniq == package_files &&
                                                package_files.none? { |path| path.start_with?("/", "../") || path.include?("/../") }
 
-def resolved_manifest_entry(root, relative_path)
+resolved_manifest_entry = lambda do |root_dir, relative_path|
   parts = relative_path.split("/", -1)
-  return if parts.empty? || parts.any? { |part| part.empty? || part == "." || part == ".." }
+  next if parts.empty? || parts.any? { |part| part.empty? || part == "." || part == ".." }
 
-  root = File.realpath(root)
-  current = root
-  parts.each_with_index do |part, index|
+  canonical_root = File.realpath(root_dir)
+  current = canonical_root
+  valid = parts.each_with_index.all? do |part, index|
     current = File.join(current, part)
     stat = File.lstat(current)
-    return if stat.symlink?
-    return unless index == parts.length - 1 ? stat.file? : stat.directory?
+    !stat.symlink? && (index == parts.length - 1 ? stat.file? : stat.directory?)
   end
+  next unless valid
+
   resolved = File.realpath(current)
-  resolved if resolved.start_with?("#{root}#{File::SEPARATOR}")
+  resolved if resolved.start_with?("#{canonical_root}#{File::SEPARATOR}")
 rescue Errno::ENOENT, Errno::ELOOP
   nil
 end
 
-resolved_package_files = package_files.map { |path| resolved_manifest_entry(root, path) }
+resolved_package_files = package_files.map { |path| resolved_manifest_entry.call(root, path) }
 raise "Missing, duplicate, or non-regular agent-workflows manifest entry" unless resolved_package_files.none?(&:nil?) &&
                                                                                resolved_package_files.uniq == resolved_package_files
 
@@ -296,10 +297,11 @@ Create `.ruby-version` containing exact `3.4.6`. Generate `Gemfile.lock` with
 Ruby 3.4.6, RubyGems 3.6.9, and Bundler 4.0.10, and require the lockfile's
 `BUNDLED WITH` value to equal `4.0.10`. Add packaging assertions for the exact
 development builder while retaining `required_ruby_version >= 3.2`. Before the
-build and again in the release job, independently assert `ruby --version` is
-3.4.6, `gem --version` is 3.6.9, and `bundle --version` is 4.0.10; do not infer
-the RubyGems version from `Gemfile.lock`. CI later proves runtime behavior on the
-floor independently.
+build and again in the unprivileged release-verification job, independently
+assert `ruby --version` is 3.4.6, `gem --version` is 3.6.9, and
+`bundle --version` is 4.0.10; do not infer the RubyGems version from
+`Gemfile.lock`. The privileged publication job executes none of these tools.
+CI later proves runtime behavior on the floor independently.
 
 Create `Rakefile` with `require "bundler/gem_tasks"`, named `test:gem` and
 `test:packaging` Minitest file-list tasks, and an aggregate `test` task. Add a

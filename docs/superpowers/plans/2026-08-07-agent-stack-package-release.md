@@ -34,9 +34,9 @@
 - Package artifacts contain no credentials, local absolute paths, untracked files, test secrets, or private fixtures.
 - Every release binds package checksum, Git tag, repository commit, and registry version.
 - Both gem releases use Ruby `3.4.6`, RubyGems `3.6.9`, and Bundler `4.0.10`
-  in a pinned Linux build environment for the authorization build and release
-  rebuild. The workflow verifies all three versions before building; a mismatch
-  stops before OIDC credential configuration.
+  in a pinned Linux build environment for the authorization build and
+  unprivileged workflow build. The workflow verifies all three versions before
+  building; a mismatch stops before the protected publication job begins.
 - Both gemspecs set `allowed_push_host` to exactly
   `https://rubygems.org`, packaging tests assert it, and release jobs reject any
   conflicting `RUBYGEMS_HOST`.
@@ -48,8 +48,9 @@ Both Ruby packages use this single release contract. Package tasks below add
 only their package-specific inputs and validation; they do not restate or
 weaken these controls.
 
-Add two distinct release tasks so Rake's run-once semantics cannot skip the
-post-push check. A pre-source-control prerequisite, after the Bundler build,
+Add two distinct verification tasks so Rake's run-once semantics cannot skip
+the post-push simulation in the unprivileged release-verification job. A
+pre-source-control prerequisite, after the Bundler build,
 requires the authorized commit and artifact SHA-256 inputs, compares them with
 `HEAD` and the exact built gem, fetches tags, and requires the version tag
 either to be absent or to dereference to the authorized commit. A tag at
@@ -61,6 +62,13 @@ publication. Test missing or mismatched authorization, absent, matching, and
 colliding pre-push tags, missing or mismatched post-push tags, and a fully
 matching sequence without registry mutation.
 
+Every release workflow declares a package-name-keyed `concurrency` group with
+`cancel-in-progress: false`. Authorized runs for the same package are therefore
+serialized; a later run cannot observe an absent tag concurrently with an
+earlier run. The privileged job still fetches and checks the remote tag
+immediately before and after its one tag push because workflow serialization
+does not replace registry read-back.
+
 Each first-release workflow is protected `workflow_dispatch` only and requires
 exact package, version, release branch, commit, artifact SHA-256, workflow path,
 workflow ref, and workflow-file SHA-256 authorization inputs. Dispatch only
@@ -71,22 +79,30 @@ reviewer reads the run metadata and independently verifies its workflow path,
 `github.workflow_ref`, and `head_sha` against the authorization; a mismatch is
 rejected before any job with `id-token: write` can start.
 
-The OIDC-capable release job declares permissions at job scope, uses the
-protected `release` environment, and begins by hashing its checked-out workflow
-file and comparing that hash with the pre-recorded authorization digest captured
-independently from the reviewed workflow before the run. It never derives the
-expected digest from its own checkout. Fetch full history, check out the
-authorized release branch as an attached local branch rather than the raw SHA,
-and verify both `HEAD` and `origin/<authorized-release-branch>` equal the
-authorized commit. Branch movement stops the workflow and requires fresh
-authorization; never let Bundler run from detached `HEAD`, because its release
-task pushes the current branch before the tag. The job uses `id-token: write`,
-`contents: write` for Bundler's release-tag push, pinned actions, package tests,
-a rebuilt artifact, checksum verification, and `rubygems/release-gem`. It has
-no long-lived RubyGems API token or broader repository permission. Test wrong
-dispatch ref, run head SHA, workflow path/ref, and workflow-file digest as
-release-stopping cases. A later tag-triggered release is a separate design
-change unless an immutable authorization manifest supplies the same bindings.
+Split verification from publication. The first job has only `contents: read`,
+checks out with persisted credentials disabled, and has no environment,
+`id-token: write`, or `contents: write`. It verifies the authorization inputs,
+full attached-branch state, workflow path/ref/digest, toolchain, tests, package
+contents, tag preconditions, and reproducible build; then it uploads the exact
+gem plus a machine-readable receipt binding package, version, commit, workflow
+digest, artifact SHA-256, and toolchain versions. All Bundler, Rake, gemspec,
+dependency, repository-script, and package-hook execution ends in this
+unprivileged job.
+
+Only the second, minimal job uses the protected `release` environment and
+job-scoped `id-token: write` plus `contents: write`. It downloads the artifact
+and receipt from the same workflow run through pinned actions, compares both to
+the pre-recorded authorization without executing repository code, verifies the
+checked-out workflow digest independently, fetches the remote tag, and performs
+only the exact tag push, tag read-back, and OIDC registry upload. It does not
+run Bundler, Rake, tests, gemspec evaluation, dependency installation, build
+hooks, or a rebuild. The checkout credential remains unpersisted and is passed
+only to the explicit tag push. Configure OIDC only after every receipt,
+checksum, branch, workflow, and tag check passes. Test wrong dispatch ref, run
+head SHA, workflow path/ref, workflow-file digest, cross-run artifact, receipt,
+checksum, and concurrent-run/tag collision as release-stopping cases. A later
+tag-triggered release is a separate design change unless an immutable
+authorization manifest supplies the same bindings.
 
 ---
 
@@ -213,8 +229,9 @@ version.
 Build the authorization artifact in the pinned Linux release-preflight
 environment with Ruby 3.4.6, RubyGems 3.6.9, and Bundler 4.0.10. Record the
 immutable environment/image digest and verify all tool versions before the
-build. The OIDC release job uses the same environment and rejects a rebuilt
-artifact unless its SHA-256 equals this authorization artifact.
+build. The unprivileged release-verification job uses the same environment and
+requires its rebuilt artifact SHA-256 to equal this authorization artifact.
+The protected OIDC job consumes those bytes and never rebuilds them.
 
 Run:
 
@@ -332,10 +349,12 @@ exposes Bundler's release task under `bundle exec`, then run `bin/validate`, gem
 packaging tests, isolated install smoke, and source-pack parity before
 `rubygems/release-gem`. Require the foundation workflow's exact-commit
 `macos-packaging-smoke` receipt; an older or skipped macOS run does not satisfy
-this release gate. Build both authorization and workflow artifacts in the same
-pinned Linux environment with Ruby 3.4.6, RubyGems 3.6.9, and Bundler 4.0.10;
-verify the exact versions and require byte-identical SHA-256 before configuring
-RubyGems credentials.
+this release gate. Build the authorization artifact and the unprivileged
+workflow artifact in the same pinned Linux environment with Ruby 3.4.6,
+RubyGems 3.6.9, and Bundler 4.0.10; verify the exact versions and require
+byte-identical SHA-256. The minimal privileged job consumes that verified
+artifact and never rebuilds or executes repository package code before
+configuring RubyGems OIDC.
 
 - [ ] **Step 5: Run current-head release gates and stop for authorization**
 
@@ -391,13 +410,18 @@ Run the packaged command's help, foreground smoke on a disposable port/state roo
 - [ ] **Step 3: Prepare npm trusted publishing and bootstrap controls**
 
 Prepare npm provenance/OIDC from a protected GitHub release environment with no
-long-lived npm token. Pin actions, exact Node `24.8.0`, and exact npm `11.5.1`
-for the future OIDC publication job; assert those versions before requesting an
-OIDC token. This deliberately exceeds npm trusted publishing's Node `22.14.0`
-and meets its npm `11.5.1` minimum. Bind the future job to the authorized
+long-lived npm token. Use the same package-keyed non-cancelling concurrency and
+two-job privilege split as the shared RubyGems contract. The unprivileged job
+runs install, test, typecheck, build, package-content checks, and tarball smoke,
+then uploads the exact tarball and bound receipt. The minimal OIDC job downloads
+those same-run artifacts with pinned actions, verifies their authorization and
+integrity without installing dependencies or running repository/package hooks,
+and publishes the exact tarball with scripts disabled; it never rebuilds.
+Pin actions, exact Node `24.8.0`, and exact npm `11.5.1` for publication; assert
+those versions before requesting an OIDC token. This deliberately exceeds npm
+trusted publishing's Node `22.14.0` and meets its npm `11.5.1` minimum. Bind the future job to the authorized
 workflow path, dispatch ref, run head SHA, and workflow-file digest with the
-same external environment-approval boundary as Task 2. Run install, test,
-typecheck, build, package-content, and tarball smoke before publication. Because
+same external environment-approval boundary as Task 2. Because
 the trusted publisher cannot be attached until the package exists, the exact
 reviewed `0.1.0` tarball is bootstrapped by a human maintainer using interactive
 2FA only after Step 4 authorization; the OIDC-capable job must not publish the
@@ -460,26 +484,43 @@ disposition. Do not publish another version merely to test OIDC.
 
 - [ ] **Step 1: Define one multi-command entrypoint**
 
-`entrypoint.rb` selects a canonical CLI from the invoked link name. The
-canonical `agent-workflows` artifact instead consumes the command as its first
-argument:
+`commands.yml` is the single command registry: each key is an installed command
+name and each value is its canonical CLI constant. `entrypoint.rb` validates
+and loads that registry, selects a canonical CLI from the invoked link name,
+and has no second hard-coded command list. The canonical `agent-workflows`
+artifact consumes the command as its first argument; no arguments, `-h`, or
+`--help` prints top-level usage and exits zero:
 
 ```ruby
+require "psych"
 require "agent_workflows"
 
 command = File.basename($PROGRAM_NAME)
+commands = Psych.safe_load_file(File.join(__dir__, "commands.yml"), permitted_classes: [], aliases: false)
+usage = "usage: agent-workflows <#{commands.keys.sort.join('|')}> [arguments]"
+if command == "agent-workflows" && (ARGV.empty? || %w[-h --help].include?(ARGV.first))
+  puts usage
+  exit 0
+end
 command = ARGV.shift if command == "agent-workflows"
-cli = {
-  "agent-workflows-doctor" => AgentWorkflows::CLI::WorkflowsDoctor,
-  "agent-stack-doctor" => AgentWorkflows::CLI::StackDoctor
-}.fetch(command) { abort "unknown agent-workflows command: #{command.inspect}" }
+constant_name = commands.fetch(command) do
+  warn "unknown agent-workflows command: #{command.inspect}\n#{usage}"
+  exit 64
+end
+cli = constant_name.split("::").reject(&:empty?).reduce(Object) do |scope, name|
+  scope.const_get(name, false)
+end
 exit cli.start(ARGV, env: ENV, input: $stdin, output: $stdout, error: $stderr)
 ```
 
 Generate small platform command links/wrappers only after the single packaged
-entrypoint passes. Contract tests invoke the canonical artifact with an
-explicit command and invoke each link directly with `--help`, proving neither
-form mistakes the first user argument for the command name.
+entrypoint passes. Validate `commands.yml` as a string-to-string mapping with
+safe command/constant-name patterns before constant resolution. Contract tests
+derive every expected link from the YAML keys, reject unlisted links, invoke
+the canonical artifact with no arguments and both help flags, invoke it with
+each explicit command, and invoke every link directly with `--help`. Adding a
+future extracted CLI therefore requires one reviewed registry entry and cannot
+silently diverge from the packaged dispatch table.
 
 - [ ] **Step 2: Build a pinned Tebako artifact matrix**
 
