@@ -21,9 +21,11 @@ RESERVED_HEADER_LABEL =
   "(?:prompt[ ._\t-]*(?:host|mode)|preferred[ ._\t-]*route|route[ ._\t-]*requirement)"
 RESERVED_HEADER_MARKDOWN_PREFIX =
   "(?:(?:>[ \t]*|(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)+(?:\\[[ xX]\\][ \t]+)?)?(?:[#]{1,6}[ \t]+)?"
-RESERVED_HEADER_EMPHASIS = "(?<reserved_header_emphasis>\\*\\*|__|\\*|_)"
+RESERVED_HEADER_EMPHASIS = "(?<reserved_header_emphasis>\\*{1,3}|_{1,3})"
+RESERVED_HEADER_EMPHASIZED_DECLARATION =
+  "#{RESERVED_HEADER_EMPHASIS}#{RESERVED_HEADER_LABEL}(?:\\k<reserved_header_emphasis>[ \t]*(?::+|=)|[ \t]*(?::+|=)[^\\r\\n]*?\\k<reserved_header_emphasis>)".freeze
 RESERVED_HEADER_LIKE_DECLARATION =
-  /\A[ \t]*#{RESERVED_HEADER_MARKDOWN_PREFIX}(?:#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)|#{RESERVED_HEADER_EMPHASIS}#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)\k<reserved_header_emphasis>)/i
+  /\A[ \t]*#{RESERVED_HEADER_MARKDOWN_PREFIX}(?:#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)|#{RESERVED_HEADER_EMPHASIZED_DECLARATION})/i
 CANONICAL_RESERVED_HEADER_DECLARATION =
   /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): /
 GOAL_WRAPPER = %r{\A/goal\r?\n}
@@ -91,11 +93,11 @@ def invoked_host_mechanics(prompt)
     relative_path = match[0].start_with?("/") &&
                     (prefix.match?(/(?:\A|[[:space:]("'`])(?:\.{1,2}|~)\z/) ||
                      prefix.match?(%r{[^[:space:]]/\.{1,2}\z}))
-    url_query_or_fragment_value = match[0].start_with?("/") &&
-                                  prefix.match?(%r{(?:\A|[[:space:]("'`<=:])https?://[^[:space:]]*[?#][^[:space:]]*=\z}i)
-    url_hash_route = match[0].start_with?("/") &&
-                     prefix.match?(%r{(?:\A|[[:space:]("'`<=:])https?://[^[:space:]]*#\z}i)
-    match[0] unless relative_path || url_query_or_fragment_value || url_hash_route
+    url_continuation = match[0].start_with?("/") &&
+                       prefix.match?(%r{(?:\A|[[:space:]("'`<=:])https?://[^[:space:]]*\z}i)
+    assigned_path_value = match[0].start_with?("/") &&
+                          prefix.match?(/(?:\A|\r?\n)[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(?:\.{1,2}|~)?\z/)
+    match[0] unless relative_path || url_continuation || assigned_path_value
   end.uniq
 end
 

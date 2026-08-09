@@ -693,19 +693,26 @@ class PromptHostAdapterTest < Minitest::Test
   end
 
   def test_emphasized_reserved_declarations_fail_closed_without_echo
-    emphasized_declarations = [
-      "**Prompt host:** claude %<marker>s",
-      "__Prompt mode:__ batch %<marker>s",
-      "*Preferred route:* default %<marker>s",
-      "_Route requirement:_ advisory %<marker>s",
-      "## **Prompt host:** claude %<marker>s",
-      "> ### __Prompt mode:__ batch %<marker>s",
-      "- *Preferred route:* default %<marker>s",
-      "> - [ ] _Route requirement:_ advisory %<marker>s"
-    ]
+    emphasized_declarations = %w[* ** *** _ __ ___].flat_map do |delimiter|
+      [
+        "#{delimiter}Prompt host#{delimiter}: claude %<marker>s",
+        "#{delimiter}Prompt mode:#{delimiter} batch %<marker>s",
+        "#{delimiter}Preferred route: default#{delimiter} %<marker>s"
+      ]
+    end.concat(
+      [
+        "## **Prompt host**: claude %<marker>s",
+        "> ***Prompt host:*** claude %<marker>s",
+        "- ___Preferred route: default___ %<marker>s",
+        "> - [ ] ## __Route requirement__: required %<marker>s"
+      ]
+    )
     prompt_builders = {
       "complete Codex headers" => ->(body) { direct_prompt(host: "codex", body:) },
-      "legacy Codex wrapper" => ->(body) { legacy_prompt(host: "codex", body:) }
+      "legacy Codex wrapper" => ->(body) { legacy_prompt(host: "codex", body:) },
+      "CRLF legacy Codex wrapper" => lambda do |body|
+        legacy_prompt(host: "codex", body:).gsub("\n", "\r\n")
+      end
     }
 
     prompt_builders.each do |surface, build_prompt|
@@ -728,7 +735,10 @@ class PromptHostAdapterTest < Minitest::Test
       "## **Prompt host considerations**",
       "> *Discuss Prompt host:* claude as literal prose.",
       "Emphasize **Prompt host:** only as literal prose.",
-      "- __Release notes:__ no host declaration here."
+      "- __Release notes:__ no host declaration here.",
+      "**Prompt host: claude",
+      "__Prompt mode**: batch",
+      "***Preferred route: default**"
     ]
     prompt_builders.each do |surface, build_prompt|
       incidental_emphasis.each do |line|
@@ -1794,6 +1804,48 @@ class PromptHostAdapterTest < Minitest::Test
       result, stderr, status, stdout = run_adapter(
         direct_prompt(host: active_host, body: "#{body} #{marker}"),
         active_host:
+      )
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), body
+      assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), body
+      assert_equal false, result.fetch("execute_allowed"), body
+      assert_nil result.fetch("prompt"), body
+      refute_includes stdout, marker
+    end
+  end
+
+  def test_url_and_path_assignment_continuations_are_not_slash_command_mechanics
+    continuation_cases = [
+      "https://example.test/#!/address-review",
+      "https://example.test/-/address-review",
+      "PATH=./address-review",
+      "PATH=../address-review",
+      "PATH=~/address-review",
+      "PATH=/address-review"
+    ]
+
+    continuation_cases.each do |body|
+      prompt = direct_prompt(host: "portable", body:)
+      result, stderr, status = run_adapter(prompt, active_host: "codex")
+
+      assert status.success?, stderr
+      assert_equal "portable", result.fetch("classification"), body
+      assert_equal true, result.fetch("execute_allowed"), body
+      assert_equal prompt, result.fetch("prompt"), body
+    end
+
+    command_cases = [
+      "/address-review",
+      "PATH=/address-review; then run /pr-batch",
+      "https://example.test/#!/address-review; then run /pr-batch",
+      "https://example.test/-/address-review; then run $address-review"
+    ]
+    command_cases.each_with_index do |body, index|
+      marker = "SECRET_CONTINUATION_COMMAND_#{index}"
+      result, stderr, status, stdout = run_adapter(
+        direct_prompt(host: "portable", body: "#{body} #{marker}"),
+        active_host: "codex"
       )
 
       assert status.success?, stderr
