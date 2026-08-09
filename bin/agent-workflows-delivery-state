@@ -244,10 +244,29 @@ module AgentWorkflowsDeliveryState
 
     roots.all? do |root|
       adapter = File.join(root, "skills/pr-batch/bin/prompt-host-adapter")
-      File.file?(adapter) && File.executable?(adapter)
+      contract = File.join(root, "docs/host-adapter/contract.md")
+      File.file?(adapter) && File.executable?(adapter) && File.file?(contract)
     end
   rescue SystemCallError, TypeError
     false
+  end
+
+  def native_prompt_host_adapter_requirement(native)
+    roots = native["roots"]
+    return "prompt host adapter and contract" unless roots.is_a?(Array) && !roots.empty?
+
+    adapters_available = roots.all? do |root|
+      adapter = File.join(root, "skills/pr-batch/bin/prompt-host-adapter")
+      File.file?(adapter) && File.executable?(adapter)
+    end
+    return "prompt host adapter" unless adapters_available
+
+    contracts_available = roots.all? do |root|
+      File.file?(File.join(root, "docs/host-adapter/contract.md"))
+    end
+    contracts_available ? "prompt host adapter and contract" : "prompt host adapter contract"
+  rescue SystemCallError, TypeError
+    "prompt host adapter and contract"
   end
 
   def symlinked_target_component(target)
@@ -477,6 +496,9 @@ module AgentWorkflowsDeliveryState
       collision_names: collision_names
     )
     companion_adapter_available = delivery_mode != "plugin-companion" || native_prompt_host_adapter_available?(native)
+    companion_adapter_requirement = if delivery_mode == "plugin-companion" && !companion_adapter_available
+                                      native_prompt_host_adapter_requirement(native)
+                                    end
     native_compatible = native["state"] == (delivery_mode == "plugin-companion" ? "active" : "inactive") &&
                         companion_adapter_available
     compatible = native_compatible && flat["state"] != "unknown" && flat["blocking"].empty?
@@ -490,7 +512,7 @@ module AgentWorkflowsDeliveryState
       elsif native["state"] == "unknown"
         native["reason"]
       elsif delivery_mode == "plugin-companion" && !companion_adapter_available
-        "enabled native scw plugin does not provide the required prompt host adapter"
+        "enabled native scw plugin does not provide the required #{companion_adapter_requirement}"
       elsif delivery_mode == "flat"
         "native scw and installer-managed flat skills cannot be active in one host/profile"
       else
@@ -504,7 +526,8 @@ module AgentWorkflowsDeliveryState
       elsif native["state"] == "unknown"
         "Inspect the Codex or Claude native plugin state and repair its configuration or install receipt before rerunning."
       elsif delivery_mode == "plugin-companion" && !companion_adapter_available
-        "Upgrade scw@agent-workflows to a version that provides skills/pr-batch/bin/prompt-host-adapter, then rerun."
+        "Upgrade scw@agent-workflows to a version that provides skills/pr-batch/bin/prompt-host-adapter " \
+          "and docs/host-adapter/contract.md, then rerun."
       elsif delivery_mode == "flat"
         "Disable or remove scw@agent-workflows, or rerun with --delivery-mode plugin-companion."
       else

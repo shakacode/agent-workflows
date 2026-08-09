@@ -84,6 +84,9 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     adapter = File.join(root, "skills/pr-batch/bin/prompt-host-adapter")
     File.write(adapter, "#!/bin/sh\n")
     FileUtils.chmod(0o755, adapter)
+    contract = File.join(root, "docs/host-adapter/contract.md")
+    FileUtils.mkdir_p(File.dirname(contract))
+    File.write(contract, "prompt host adapter contract\n")
     manifest = {
       "name" => "scw",
       "version" => File.basename(root),
@@ -193,6 +196,43 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       refute status.success?
       refute payload.fetch("compatible")
       assert_equal "enabled native scw plugin does not provide the required prompt host adapter", payload.fetch("reason")
+    end
+  end
+
+  def test_plugin_companion_requires_prompt_host_adapter_contract_for_each_host
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      %w[codex claude].each do |host|
+        target = File.join(tmp, host)
+        plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+        if host == "codex"
+          write_codex_native_state(target)
+        else
+          FileUtils.mkdir_p(File.join(target, "plugins"))
+          File.write(
+            File.join(target, "settings.json"),
+            "#{JSON.generate('enabledPlugins' => { 'scw@agent-workflows' => true })}\n"
+          )
+          File.write(
+            File.join(target, "plugins/installed_plugins.json"),
+            "#{JSON.generate('version' => 2, 'plugins' => {
+                               'scw@agent-workflows' => [{ 'installPath' => plugin_root }]
+                             })}\n"
+          )
+          write_manifest(plugin_root, host:)
+        end
+        FileUtils.rm(File.join(plugin_root, "docs/host-adapter/contract.md"))
+
+        out, _err, status = run_state(
+          "check", "--host", host, "--target", target, "--source", File.expand_path("..", __dir__),
+          "--delivery-mode", "plugin-companion", "--json"
+        )
+        payload = JSON.parse(out)
+
+        refute status.success?, host
+        refute payload.fetch("compatible"), host
+        assert_equal "enabled native scw plugin does not provide the required prompt host adapter contract",
+                     payload.fetch("reason"), host
+      end
     end
   end
 

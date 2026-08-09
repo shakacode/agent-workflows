@@ -1048,6 +1048,35 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
+  def test_declaration_like_malformed_batch_size_target_spacing_fails_closed_without_echo
+    malformed_lines = [
+      "Batch size target : claude; SECRET_MALFORMED_SEPARATOR",
+      "Batch size target:\tclaude; SECRET_MALFORMED_SPACING",
+      "  - Batch size target : codex; SECRET_MALFORMED_PREFIX"
+    ]
+
+    malformed_lines.each do |line|
+      prompt = direct_prompt(host: "codex", body: line)
+      result, stderr, status, stdout = run_adapter(prompt, active_host: "codex")
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), line.inspect
+      assert_equal "invalid-batch-size-target", result.fetch("reason_code"), line.inspect
+      assert_equal false, result.fetch("execute_allowed"), line.inspect
+      assert_nil result.fetch("prompt"), line.inspect
+      refute_includes stdout, "SECRET_MALFORMED", line.inspect
+    end
+
+    incidental_prose = "Objective: discuss Batch size target : claude; as malformed example prose."
+    prompt = direct_prompt(host: "codex", body: incidental_prose)
+    result, stderr, status = run_adapter(prompt, active_host: "codex")
+
+    assert status.success?, stderr
+    assert_equal "compatible", result.fetch("classification")
+    assert_equal true, result.fetch("execute_allowed")
+    assert_equal prompt, result.fetch("prompt")
+  end
+
   def test_duplicate_batch_size_target_fails_closed_without_echo
     cases = [
       ["matching identical", "codex", "codex", %w[codex codex]],

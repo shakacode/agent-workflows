@@ -13,6 +13,7 @@ NEUTRAL_CANONICAL_HOST_MECHANICS = [
   %r{^- Resolve `base_branch` via repo/`AGENTS\.md` config; fetch/prune origin; verify pr-batch\+workflow;}
 ].freeze
 BATCH_SIZE_TARGET_PREFIX = " {0,3}(?:[-*+] +)?"
+BATCH_SIZE_TARGET_DECLARATION = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target(?=[ \t]*:)/
 BATCH_SIZE_TARGET_FIELD = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target:/
 BATCH_SIZE_TARGET_VALUE = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target: (codex|claude|generic);/
 RESERVED_HEADER_LABEL =
@@ -180,7 +181,7 @@ legacy_host = if no_headers && !malformed_reserved_headers && prompt.match?(LEGA
               elsif no_headers && !malformed_reserved_headers && prompt.match?(%r{\A/pr-batch(?:\s|\z)})
                 "claude"
               end
-batch_size_target_count = prompt.scan(BATCH_SIZE_TARGET_FIELD).length
+batch_size_target_count = prompt.scan(BATCH_SIZE_TARGET_DECLARATION).length
 concrete_batch_size_targets = prompt.scan(BATCH_SIZE_TARGET_VALUE).flatten
 expected_batch_size_target = {
   "codex" => "codex",

@@ -43,12 +43,14 @@ class AgentWorkflowsStatusTest < Minitest::Test
     FileUtils.mkdir_p(plugin_root)
     FileUtils.mkdir_p(File.join(cache_root, "skills/example"))
     FileUtils.mkdir_p(File.join(cache_root, "skills/pr-batch/bin"))
+    FileUtils.mkdir_p(File.join(cache_root, "docs/host-adapter"))
     File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = true\n")
     File.write(File.join(cache_root, "skills/example/SKILL.md"), "example\n")
     File.write(File.join(cache_root, "skills/pr-batch/SKILL.md"), "pr-batch\n")
     adapter = File.join(cache_root, "skills/pr-batch/bin/prompt-host-adapter")
     File.write(adapter, "#!/bin/sh\n")
     FileUtils.chmod(0o755, adapter)
+    File.write(File.join(cache_root, "docs/host-adapter/contract.md"), "prompt host adapter contract\n")
     manifest = {
       "name" => "scw",
       "version" => "0.1.0",
