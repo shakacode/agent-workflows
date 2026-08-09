@@ -1872,7 +1872,7 @@ node scripts/verify-npm-postpublish-receipt.mjs \
   --grant-manifest release/grants/agent-coordination-dashboard-0.1.0.v1.json \
   --tarball "$NPM_AUDIT_TARBALL" \
   --fresh-observation release/evidence/agent-coordination-dashboard-0.1.0-publishing-access-closeout.v1.json \
-  --expected-commit "$(node -p 'require(process.env.VERIFIED_PACKAGE_AUTHORIZATION_PATH).commit')" \
+  --expected-commit "$(node -e 'process.stdout.write(require(process.argv[1]).commit)' "$VERIFIED_PACKAGE_AUTHORIZATION_PATH")" \
   --expected-tag v0.1.0
 ```
 
