@@ -1053,6 +1053,9 @@ all three version-1 modes.
 - Create: `release/schemas/standalone-platform-run-v1.schema.json`
 - Create: `release/schemas/standalone-evaluation-v1.schema.json`
 - Create: `release/schemas/standalone-release-authorization-v1.schema.json`
+- Create: `release/approvers/standalone-release.v1.json`
+- Create: `release/schemas/standalone-approver-allowlist-v1.schema.json`
+- Create: `release/schemas/standalone-approval-object-v1.schema.json`
 - Create: `release/schemas/standalone-release-decision-v1.schema.json`
 - Create: `release/schemas/standalone-publication-instruction-v1.schema.json`
 - Create: `release/schemas/standalone-mutator-operation-result-v1.schema.json`
@@ -1338,8 +1341,24 @@ Binary release approval names platforms, architectures, checksums, signing
 state, Ruby/Tebako versions, immutable GitHub repository/tag/commit target,
 source matrix run ID, workflow path/ref/digest, expiry, and rollback. Gem
 publication approval does not authorize binary artifacts. Create the
-authorization only from durable human approval that names the exact source
-evaluation digest. Before invoking the writer, the read-only authorization job
+authorization only from a canonical durable GitHub pull-request review or issue
+comment that names the exact source evaluation digest and every binary release
+binding. The dispatch accepts that object URL but no approver identity or body.
+With closed `contents: read`, `actions: read`, `issues: read`, and
+`pull-requests: read` permissions, the read-only authorization job parses the
+URL as an exact object ID in `shakacode/agent-workflows`, fetches the object,
+derives its author and creation/update timestamps, and validates its canonical
+payload against the evaluation, platform/architecture/checksum/signing set,
+repository/tag/commit, workflow, expiry, rollback, and mutator-provenance fields.
+The derived login must appear in the exact-commit, schema-validated
+`release/approvers/standalone-release.v1.json` allowlist, protected by CODEOWNERS
+and branch rules requiring two-person review. The verifier binds that allowlist
+digest and writes a canonical verified approval-object record in `RUNNER_TEMP`;
+the record uses the fixed `standalone-approval-object-v1` schema and binds its
+own schema path/version/digest, object type, repository, URL/node ID, derived
+author, timestamps, canonical body digest, and validated release payload;
+it records `github.triggering_actor` separately and never treats the dispatcher
+as the approver. Before invoking the writer, the same read-only job
 queries the complete artifact inventory for the exact mutator-provenance
 producer run and artifact ID, verifies the service digest, downloads into a
 fresh directory, and validates the file SHA-256, fixed receipt schema, action
@@ -1349,8 +1368,8 @@ relative receipt or artifact-name/latest-run lookup is forbidden:
 ```bash
 ruby packaging/tebako/write-release-authorization.rb \
   --evaluation "$VERIFIED_EVALUATION_PATH" \
-  --approval-source-url "$BINARY_APPROVAL_SOURCE_URL" \
-  --approved-by "$BINARY_APPROVER" \
+  --approval-object "$VERIFIED_STANDALONE_APPROVAL_OBJECT_PATH" \
+  --approver-allowlist "$VERIFIED_STANDALONE_APPROVER_ALLOWLIST_PATH" \
   --repository shakacode/agent-workflows \
   --tag "$AUTHORIZED_BINARY_TAG" \
   --target-commit "$AUTHORIZED_BINARY_COMMIT" \
@@ -1381,6 +1400,10 @@ ruby test/packaging/standalone_release_evidence_test.rb
 The writer requires the input state to be
 `ADOPTED_PENDING_RELEASE_AUTHORIZATION`, copies the closed four-platform asset
 bindings from that evaluation, requires every target/run/workflow input above,
+schema-validates the verified approval-object record and fixed approver
+allowlist, and binds the canonical object URL/node ID, derived approver login,
+creation/update timestamps, body SHA-256, allowlist SHA-256, and distinct
+dispatch actor. It
 requires and schema-validates that freshly downloaded provenance receipt,
 requires its independently reviewed mutator action at an immutable commit and
 content digest, binds all four receipt selectors and its action/source/
@@ -1394,8 +1417,14 @@ Every later preparation and protected publication job freshly retrieves that
 same provenance receipt by the authorization-bound producer run, artifact ID,
 service digest, and file SHA-256. The protected job compares the receipt through
 full-SHA generic artifact/digest actions before invoking the full-SHA mutator;
-tests reject substitution of any selector, receipt byte, action commit, or
-recorded digest.
+the unprivileged preparation and protected mutator also re-fetch the exact bound
+approval object and require unchanged ID, author, timestamps, body digest,
+allowlist digest, payload, and unexpired authorization. Tests reject forged or
+cross-repository URLs, dispatcher/approver substitution, edited/deleted approval,
+unlisted approvers, payload mismatch, substitution of any receipt selector or
+byte, action commit, or recorded digest. They also reject malformed or unknown
+approval-record fields, object-type substitution, missing object-read
+permissions, or any broader issue/pull-request permission.
 
 Terminal standalone closeouts are irreversible in this plan; there is no
 implicit reopening transition. Before authorization capture accepts the source
@@ -1444,7 +1473,9 @@ reopen themselves.
 Run the writer only in `authorize-standalone.yml`, after the named human approval
 has been durably recorded. This capture workflow checks out the authorized source
 commit with persisted credentials disabled, has only `contents: read` and
-`actions: read`, downloads and verifies the exact source-evaluation artifact,
+`actions: read` plus the exact `issues: read` and `pull-requests: read`
+permissions required for approval-object verification, downloads and verifies
+the exact source-evaluation artifact and approval object,
 resolves `VERIFIED_EVALUATION_PATH` only inside that fresh exact-ID/digest
 download, requires the capture run's head SHA to equal that commit, and receives
 no release-write permission. The authorization binds its own producer run ID and
@@ -1560,8 +1591,9 @@ group with `cancel-in-progress: false`: `prepare-publication`, `stage-draft`,
 `verify-draft`, `expose-draft`, and `verify-public`. No build, matrix,
 aggregation, verification, or recovery job receives `contents: write`.
 
-`prepare-publication` is unprivileged: `contents: read`, `actions: read`, no
-environment, persisted checkout credential, or write permission. All repository
+`prepare-publication` is unprivileged: `contents: read`, `actions: read`,
+`issues: read`, and `pull-requests: read`, with no environment, persisted
+checkout credential, or write permission. All repository
 Ruby, Bundler, tests, schemas, and preflight logic end in this job. It checks out
 the exact authorized commit, downloads the bound source-run artifacts, and
 requires exact workflow-dispatch inputs for the authorization producer run,
@@ -1611,7 +1643,8 @@ cross-run, name-selected, substituted, or digest-mismatched authorization,
 evaluation, or preparation artifact stops before a write-capable job starts.
 
 `stage-draft` is the first protected write job. It has only job-scoped
-`contents: write` and `actions: read`, performs no checkout, and runs no shell,
+`contents: write`, `actions: read`, `issues: read`, and `pull-requests: read`,
+performs no checkout, and runs no shell,
 Ruby, Bundler, repository script, dependency hook, or caller-supplied program.
 Its only executable steps are immutable-SHA-pinned artifact download and the
 authorization-bound independent mutator action in closed `stage-draft` mode.
@@ -1725,8 +1758,10 @@ PR blocks the public toggle. Thus supported installation instructions are on the
 default branch before any binary becomes public; opening the PR is not release
 or merge approval.
 
-`expose-draft` is the second protected write job and has the same no-checkout,
-no-repository-code contract as `stage-draft`. Its only mutating step is the same
+`expose-draft` is the second protected write job and has the same closed
+`contents: write`, `actions: read`, `issues: read`, and `pull-requests: read`
+permissions plus the no-checkout/no-repository-code contract as `stage-draft`.
+Its only mutating step is the same
 independently pinned action in closed `expose-draft` mode. It freshly downloads
 the exact preparation and durable draft-receipt artifacts by their bound
 IDs/digests, verifies the preparation manifest and receipt bytes, and revalidates
