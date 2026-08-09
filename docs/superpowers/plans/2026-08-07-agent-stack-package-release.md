@@ -56,7 +56,11 @@
   building; a mismatch stops before the protected publication job begins.
   Bundler `4.0.10` is an existing RubyGems.org release (published 2026-04-08),
   requires Ruby `>= 3.2.0` and RubyGems `>= 3.4.1`, and is therefore compatible
-  with these pins. The implementation preflight still resolves this exact
+  with these pins. Bundler and RubyGems do not need matching major versions;
+  the authoritative compatibility field is Bundler's
+  `required_rubygems_version`. Preserve the independent metadata check against
+  `https://rubygems.org/gems/bundler/versions/4.0.10` in the release receipt.
+  The implementation preflight still resolves this exact
   version from RubyGems.org before building so a typo or unavailable artifact
   fails before authorization.
 - Both gemspecs set `allowed_push_host` to exactly
@@ -185,6 +189,47 @@ head SHA, workflow path/ref, workflow-file digest, cross-run artifact, receipt,
 checksum, and concurrent-run/tag collision as release-stopping cases. A later
 tag-triggered release is a separate design change unless an immutable
 authorization manifest supplies the same bindings.
+
+### Shared RubyGems durable closeout contract
+
+The canonical contract ID is `AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`. A successful
+publication job leaves the release in `PUBLISHED_CLOSEOUT_PENDING`; its
+retention-limited same-run artifact is necessary evidence, but never a terminal
+receipt. For each Ruby gem, an unprivileged closeout job with only
+`contents: read` and `actions: read` freshly downloads that artifact by exact
+producer run and artifact ID, verifies its service digest and file SHA-256, and
+freshly downloads the published gem by exact name/version. It records the
+original machine-readable receipt, authorization-capture selectors and digest,
+the freshly downloaded byte-identical authorization JSON itself, published-gem
+SHA-256, RubyGems metadata and provenance, tag and GitHub Release commit,
+grant-manifest results, owner/MFA read-back, toolchain, and clean-install smoke
+in a canonical manifest.
+
+The candidate bundle is uploaded by exact ID, then a separate reviewed closeout
+PR commits only allowlisted data beneath
+`release/evidence/rubygems/<package>/<version>/`; it contains the byte-identical
+publication receipt, byte-identical authorization JSON, canonical manifest, and
+detached verification record. Its schema binds the authorization file SHA-256
+to both the capture selectors and publication receipt. The PR workflow executes
+no candidate code, rejects executable or workflow changes, re-downloads the
+authorization capture, candidate bundle, and public gem, and checks every
+digest and live identity. After merge, a trusted-base finalizer freshly reads the exact
+merged commit and public registry state. Only that finalizer may report
+`RELEASE_COMPLETE`. An expired Actions artifact, GitHub Release note summary,
+or unmerged evidence branch cannot substitute for the merged bytes. Tests cover
+artifact substitution, wrong producer run/artifact/service/file digest, changed
+or missing authorization bytes, public bytes or metadata, wrong tag/commit,
+missing grants, extra files, stale live observations, unmerged evidence, and
+premature terminal reporting.
+
+Within that evidence directory, name the authorization archival copy
+`captured-authorization.v1.json`. It is not the canonical eventual checkout path
+`release/authorizations/<package>-<version>.v1.json` defined by
+`AW-RELEASE-AUTHORIZATION-HANDOFF-V1`, does not authorize publication, and is
+never accepted as a checkout input. If the canonical path is committed later,
+it must be byte-identical to this verified archival copy and the service
+artifact. Closeout verification freshly retrieves the service artifact and
+compares all three identities when the canonical path exists.
 
 Human owners are recovery principals, not an alternate routine publication
 path. The authorization explicitly forbids local `gem push` and token-based npm
@@ -323,6 +368,11 @@ dashboard gem, or unsupported-by-assumption npm team disposition is included.
 - Modify: `test/packaging_test.rb`
 - Create/modify: `Rakefile`
 - Create/modify: `.github/workflows/release-gem.yml`
+- Create: `.github/workflows/rubygems-release-closeout.yml`.
+- Create: `release/schemas/rubygems-release-closeout-v1.schema.json` and
+  reviewed writer/verifier tests for `AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`.
+- Create after publication through the reviewed closeout PR:
+  `release/evidence/rubygems/agent-coordination/0.1.0/*`.
 - Modify: `README.md`, `CHANGELOG.md`, release runbook.
 
 **Interfaces:**
@@ -441,7 +491,19 @@ the authorized manifest digest before continuing. Then create the GitHub
 Release explicitly from the verified tag and commit, attach the checksum
 manifest and versioned changelog notes, and read it back. A failed or ambiguous
 push or release creation is investigated through live registry and GitHub state
-before retrying.
+before retrying. Run `AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`; the release remains
+`PUBLISHED_CLOSEOUT_PENDING` until its exact evidence PR is merged and the
+trusted-base finalizer reports `RELEASE_COMPLETE`.
+
+The release authorization also names one exact human GitHub login as
+`ruby_floor_follow_up_owner`. Before the finalizer may report completion, create
+and assign a durable `shakacode/agent-coordination` issue titled "Decide the
+post-0.1.0 Ruby compatibility floor" to that login. The issue records the
+current `>= 3.2` contract, Ruby 3.2 end-of-life risk, the next breaking `0.x`
+release as the decision boundary, the supported-downstream-matrix trigger, and
+the earlier security/dependency trigger. Bind the issue URL, assignee, and live
+assignment read-back in the RubyGems closeout manifest; a role-only owner or
+unassigned note does not satisfy this follow-up.
 
 ### Task 3: Prepare and release `agent-workflows` 0.2.0
 
@@ -454,6 +516,11 @@ before retrying.
   `agent-workflows.runtime-manifest`, release docs,
   `CHANGELOG.md`.
 - Create: `.github/workflows/release-gem.yml`.
+- Create: `.github/workflows/rubygems-release-closeout.yml`.
+- Create: `release/schemas/rubygems-release-closeout-v1.schema.json` and
+  reviewed writer/verifier tests for `AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`.
+- Create after publication through the reviewed closeout PR:
+  `release/evidence/rubygems/agent-workflows/0.2.0/*`.
 
 **Interfaces:**
 
@@ -526,7 +593,9 @@ After the workflow reports success, independently query RubyGems, install the
 public gem, run each executable, verify tag/release SHA, and confirm the
 source-pack installer still uses its own pinned library bytes. For a first
 RubyGems publication under this name, execute and read back the global
-`AW-RELEASE-GRANTS-V1` before treating the release as complete.
+`AW-RELEASE-GRANTS-V1`, then run `AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`. Treat the
+release as `PUBLISHED_CLOSEOUT_PENDING` until the exact evidence PR is merged
+and its trusted-base finalizer reports `RELEASE_COMPLETE`.
 
 ### Task 4: Prepare and release npm `agent-coordination-dashboard` 0.1.0
 
@@ -1654,6 +1723,9 @@ evidence.
 **Files:**
 
 - Update release runbooks and changelogs in each repository.
+- Create in each Ruby repository the exact merged
+  `release/evidence/rubygems/<package>/<version>/` bundle required by
+  `AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`.
 - Create:
   `release/evidence/agent-coordination-dashboard-0.1.0-publishing-access-closeout.v1.json`.
 - Create no new alias package.
@@ -1713,7 +1785,14 @@ Confirm no `agent_workflows`, `agent_coordination`, dashboard Ruby gem, or other
 
 - [ ] **Step 6: Publish release closeout evidence**
 
-Record package URLs, exact versions, commits, checksums/integrities, owners, trusted publishers, smoke evidence, known limitations, standalone decision, and rollback instructions in the repositories' release notes.
+Record package URLs, exact versions, commits, checksums/integrities, owners,
+trusted publishers, smoke evidence, known limitations, standalone decision, and
+rollback instructions in the repositories' release notes. For both Ruby gems,
+link the exact merged closeout PR and commit plus the durable receipt and
+manifest path under `release/evidence/rubygems/<package>/<version>/`; freshly
+rerun the trusted-base finalizer and require `RELEASE_COMPLETE`. A release-note
+summary or expired publication-run artifact is never a substitute for those
+committed evidence bytes.
 For an adopted standalone release, link the exact merged installation-docs and
 release-evidence PRs plus the immutable merge commit containing
 `release/evidence/standalone/closeouts/tag-<tag>/`. A release-note summary or

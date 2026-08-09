@@ -50,7 +50,7 @@ single-skill helper boundary, and safety contract.
   stdlib-free Ruby-version check before requiring package code. The shared
   `ruby32-source-pack-guard` corpus invokes every extracted launcher from
   source-pack and Codex/Claude native-plugin layouts under Ruby 3.2 and requires
-  the single documented diagnostic, no backtrace, and exit `64`.
+  the single documented diagnostic, no backtrace, and exit `78` (`EX_CONFIG`).
 - Before each wrapper cutover, inventory every runtime file read relative to the
   checkout. Package required schemas, templates, datasets, and other resources
   under a canonical data path or inject them explicitly; never leave a gem
@@ -133,7 +133,7 @@ exporter, plus exporter-only tests for helper-set transitions.
   revision-ambiguous source. Before loading canonical Ruby, acquiring its lock,
   creating staging state, or changing the target, its stdlib-only pre-floor
   guard rejects Ruby older than 3.3 with the source pack's single diagnostic and
-  exit `64`. Extend the foundation's required Ruby 3.2 source-pack guard job with
+  exit `78` (`EX_CONFIG`). Extend the foundation's required Ruby 3.2 source-pack guard job with
   exporter no-mutation filesystem snapshots before this entrypoint is supported.
   `full-skill` mode is the supported fallback for a
   host that cannot load installed or native-plugin skills: it versions the
@@ -270,7 +270,7 @@ exporter, plus exporter-only tests for helper-set transitions.
 - Add `test/pinned_copy/export_test.bash` and fixture consumers containing no
   gem, host-global library, or source checkout. Before the first skill wrapper
   cutover, prove exported helpers run from the fixture, a partial or
-  version-mismatched library fails with exit `64`, and same-version stale or
+  version-mismatched library fails with exit `78`, and same-version stale or
   mixed-generation wrapper/library bytes fail their digest or generation check.
   Prove an old wrapper-only pin fails with upgrade guidance and unrelated
   `.agents` files survive. Prove `full-skill` fixtures remain discoverable and
@@ -382,12 +382,16 @@ ruby -Itest test/gem/support/differential_contract_test.rb
 rubocop "_$(tr -d '[:space:]' < .rubocop-version)_" test/support test/gem/support
 ```
 
+The underscore-wrapped first argument is RubyGems' executable-version selector,
+not a RuboCop path. First run the same command with only `--version` and require
+its output to equal `.rubocop-version`; then run the lint command above.
 Expected: PASS.
 
 - [ ] **Step 7: Commit the harness**
 
 ```bash
-git add -- Rakefile test/support/cli_contract.rb \
+git add -- Rakefile config/ruby-production-boundaries.yml \
+  test/support/cli_contract.rb \
   test/support/fake_command.rb test/support/differential_contract.rb \
   test/gem/support/cli_contract_test.rb \
   test/gem/support/differential_contract_test.rb
@@ -682,7 +686,7 @@ version-mismatch, source-absent, and rollback cases from the pinned-copy bundle
 contract by extending the shared `GenerationTransaction` phase graph and
 callbacks. Extend
 `RuntimeBootstrap.run(request:, compatibility_json:, argv:, env:)` and its direct
-tests for the foundation's version-1 `mode: fixed` request: the trampoline passes
+tests for the foundation's version-1 `mode: pinned_generation` request: the trampoline passes
 its already-open embedded generation identity, helper name, manifest digest,
 compatibility digest, consumer root, and the exact authenticated compatibility
 bytes; the bootstrap validates those fields against the immutable bundle and
@@ -732,6 +736,10 @@ Use four review-sized commits. Delete `git_probe_env.rb` only in the final cutov
 - Modify: `test/packaging/public_entrypoints_test.rb`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `lib/agent_workflows.rb`
+- Modify for every skill-relative wrapper cut over in this task:
+  `bin/export-agent-workflows-pinned-copy`, its reviewed bundle manifest,
+  `test/fixtures/pinned-copy-consumer/.agents/*`, and
+  `test/pinned_copy/export_test.bash`.
 - Modify wrappers and legacy tests for `batch-plan-preflight`, `dispatcher-capability-preflight`, `stage-dependency-gate`, `stale-assignment-sweep`, `agent-coord-bounded`, and `pr-ci-readiness`.
 - Retain `skills/plan-pr-batch/bin/pr-file-touch-map` and its direct tests as a
   genuinely single-skill helper owned by `plan-pr-batch`; add it to the reviewed
@@ -773,7 +781,10 @@ Create typed check-run and review observations. Preserve missing required-check 
 For each command, run its full legacy test, direct domain tests, differential
 corpus, `test/packaging/public_entrypoints_test.rb`, and `bin/validate` before
 replacing the next body. Do not combine route selection and readiness in one
-review diff.
+review diff. The same commit that replaces a skill-relative wrapper must update
+the exporter, bundle manifest, pinned fixture, and exporter test named in the
+Files list; an exact staged name-status assertion rejects a missing companion
+change.
 
 - [ ] **Step 6: Commit each independently reviewable domain**
 
@@ -794,6 +805,10 @@ Use separate commits for route/assignment, dependency graph, coordination bounds
 - Modify: `lib/agent_workflows.rb`
 - Modify current merge wrappers and focused tests.
 - Modify runtime-trust fixture paths and provenance tests.
+- Modify for every skill-relative wrapper cut over in this task:
+  `bin/export-agent-workflows-pinned-copy`, its reviewed bundle manifest,
+  `test/fixtures/pinned-copy-consumer/.agents/*`, and
+  `test/pinned_copy/export_test.bash`.
 
 **Interfaces:**
 
@@ -843,7 +858,9 @@ and cleanup.
 
 - [ ] **Step 7: Commit policy, assurance, snapshot, and submission separately**
 
-Delete old skill-local libraries only after `rg` and packaging tests prove all installed layouts use canonical files.
+Delete old skill-local libraries only after `rg` and packaging tests prove all installed layouts use canonical files. Each skill-relative wrapper commit also
+stages and exact-name-status checks its exporter, bundle-manifest, pinned-fixture,
+and exporter-test changes.
 
 ### Task 6: Extract completed-batch audit and replay
 
@@ -856,6 +873,10 @@ Delete old skill-local libraries only after `rg` and packaging tests prove all i
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `lib/agent_workflows.rb`
 - Modify post-merge wrappers, tests, fixtures, and package manifest.
+- Modify for every skill-relative wrapper cut over in this task:
+  `bin/export-agent-workflows-pinned-copy`, its reviewed bundle manifest,
+  `test/fixtures/pinned-copy-consumer/.agents/*`, and
+  `test/pinned_copy/export_test.bash`.
 
 **Interfaces:**
 
@@ -894,7 +915,9 @@ union completeness.
 
 - [ ] **Step 6: Commit parser, preflight, publication, and replay separately**
 
-Each commit leaves all command paths operational.
+Each commit leaves all command paths operational. Each skill-relative wrapper
+commit also stages and exact-name-status checks its exporter, bundle-manifest,
+pinned-fixture, and exporter-test changes.
 
 ### Task 7: Extract distribution, validation, and maintainer commands
 
@@ -910,6 +933,10 @@ Each commit leaves all command paths operational.
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `lib/agent_workflows.rb`
 - Modify root and skill-relative wrappers and legacy tests.
+- Modify for every skill-relative wrapper cut over in this task:
+  `bin/export-agent-workflows-pinned-copy`, its reviewed bundle manifest,
+  `test/fixtures/pinned-copy-consumer/.agents/*`, and
+  `test/pinned_copy/export_test.bash`.
 
 **Interfaces:**
 
@@ -954,7 +981,9 @@ domain so a missing root require cannot survive to the next cutover.
 
 - [ ] **Step 6: Commit read-only distribution, validators, downstream sync, and small helpers separately**
 
-Do not combine fleet mutation code with unrelated validators.
+Do not combine fleet mutation code with unrelated validators. Each
+skill-relative wrapper commit also stages and exact-name-status checks its
+exporter, bundle-manifest, pinned-fixture, and exporter-test changes.
 
 ### Task 8: Remove remaining legacy bodies and ratchet quality
 

@@ -226,8 +226,15 @@ The initial Agent Workflows gem declares Ruby `>= 3.3`; Ruby 3.2 reached end of
 life before this decision and is covered only by the negative launcher guard.
 The existing package-ready Agent Coordination gem retains its separately owned
 `>= 3.2` compatibility contract until that repository makes a coordinated
-floor change. Agent Workflows CI tests Ruby 3.3 and the exact current project
-Ruby, 3.4.6. Raising either floor requires a documented compatibility decision.
+floor change. These are separate gems in separate repositories; sharing the
+source-pack distribution channel does not make their runtime contracts the
+same, and continued compatibility is not an endorsement of an end-of-life Ruby.
+The Agent Coordination release must create a named follow-up compatibility
+decision after `0.1.0`: raise the floor in its next breaking `0.x` release once
+its supported downstream matrix no longer requires 3.2, or sooner if a security
+or dependency constraint makes 3.2 unsafe. Agent Workflows CI tests Ruby 3.3 and
+the exact current project Ruby, 3.4.6. Raising either floor requires a documented
+compatibility decision.
 
 The new `agent-workflows` gem initially uses only the Ruby standard library.
 The existing `agent-coordination` package retains its separately reviewed
@@ -301,8 +308,9 @@ Each migrated command must preserve:
 
 Installed wrappers must locate the library relative to their verified install
 root. They must not search arbitrary checkouts, `$LOAD_PATH`, or the network as
-a fallback. Missing, partial, or version-mismatched libraries exit `64` with a
-concise actionable diagnostic.
+a fallback. Missing, partial, or version-mismatched libraries exit `78`
+(`EX_CONFIG`) with a concise actionable diagnostic; `64` (`EX_USAGE`) remains
+reserved for invalid command-line usage.
 
 ## Testing Strategy
 
@@ -388,12 +396,19 @@ a prerelease unless the release owner explicitly accepts stable-version
 compatibility; neither form replaces the source-pack installer.
 
 Every source-pack install records its application-library version and observed
-source revision. Copy mode stages and validates one immutable complete runtime,
-then changes one current-generation pointer while preserving the prior
-generation for rollback. Symlink mode atomically selects the explicit editable
-clone and intentionally exposes later source edits while still validating path,
-manifest, and compatibility boundaries. Any cleanup failure is reported
-explicitly rather than reclassifying a partial install as success.
+source revision. Copy mode stages and validates one immutable complete runtime
+on the destination filesystem, fsyncs it, and promotes it by same-filesystem
+atomic rename. It then fsyncs and atomically renames one same-directory selector
+descriptor before changing the current-generation pointer, while preserving the
+prior generation for rollback. Symlink mode uses the same descriptor-promotion
+and pointer-replacement mechanism to select the explicit editable clone. On
+every invocation, before loading application code, the trusted bootstrap opens
+that selected descriptor once and revalidates the canonical clone path,
+manifest identity and completeness, and compatibility row. Symlink mode still
+intentionally exposes source edits made after installation; it never treats an
+install-time validation as permanent authorization for later invocations. Any
+cleanup failure is reported explicitly rather than reclassifying a partial
+install as success.
 
 ## Success Criteria
 

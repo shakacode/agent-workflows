@@ -18,7 +18,8 @@
 - Runtime dependencies are Ruby standard library only.
 - Existing CLI paths, argv, stdout, stderr, JSON contracts, and exit codes remain stable.
 - Source-pack installation remains offline after the source checkout is present; it never resolves an unpinned remote gem.
-- Missing, partial, or incompatible installed libraries exit `64` with actionable diagnostics.
+- Missing, partial, or incompatible installed libraries exit `78` (`EX_CONFIG`)
+  with actionable diagnostics. Exit `64` remains reserved for CLI usage errors.
 - Extraction does not change trust, mutation, timeout, or fail-closed policy.
 - Package publication is not part of this plan.
 - The development/release builder is pinned to Ruby `3.4.6`, RubyGems `3.6.9`,
@@ -131,12 +132,25 @@ diagnostics collection supplied by package code before return.
 - Create: `lib/agent_workflows/version.rb`
 - Create: `test/gem/version_test.rb`
 - Create: `test/packaging/gemspec_test.rb`
+- Create: `release/evidence/foundation/no-publication-baseline.v1.json`
+- Create: `release/schemas/foundation-no-publication-v1.schema.json`
+- Create: `test/packaging/foundation_no_publication_evidence_test.rb`
 - Modify: `.gitignore`
 
 **Interfaces:**
 
 - Consumes: root `VERSION`, `LICENSE`, `README.md`, `CHANGELOG.md`.
 - Produces: `AgentWorkflows::VERSION`; buildable `agent-workflows-VERSION.gem`.
+
+- [ ] **Step 0: Capture the pre-foundation publication baseline**
+
+Before creating package code, use read-only RubyGems and GitHub queries to write
+`no-publication-baseline.v1.json`. Bind the exact base commit, observation time,
+complete live RubyGems version metadata for `agent-workflows`, tag and GitHub
+Release inventory, and release-workflow run inventory. Canonicalize and
+schema-validate it; reject missing pages or `UNKNOWN` coverage. Commit this
+baseline in the first task so later work cannot replace it with a retrospective
+claim.
 
 - [ ] **Step 1: Write the version and gemspec tests**
 
@@ -324,7 +338,10 @@ package assertion:
 git add -- .gitignore .ruby-version Gemfile Gemfile.lock Rakefile \
   agent-workflows.gemspec agent-workflows.gem-manifest \
   lib/agent_workflows.rb lib/agent_workflows/version.rb \
-  test/gem/version_test.rb test/packaging/gemspec_test.rb
+  release/evidence/foundation/no-publication-baseline.v1.json \
+  release/schemas/foundation-no-publication-v1.schema.json \
+  test/gem/version_test.rb test/packaging/gemspec_test.rb \
+  test/packaging/foundation_no_publication_evidence_test.rb
 ```
 
 Run:
@@ -335,6 +352,7 @@ gem build agent-workflows.gemspec --output pkg/agent-workflows.gem
 gem specification pkg/agent-workflows.gem --yaml
 ruby test/gem/version_test.rb
 ruby test/packaging/gemspec_test.rb
+ruby test/packaging/foundation_no_publication_evidence_test.rb
 ```
 
 Expected: build succeeds; name is `agent-workflows`; version matches `VERSION`; Ruby requirement is `>= 3.3`; executables are empty until Task 4.
@@ -640,7 +658,9 @@ returns `64`. Make every doctor configuration/input error subclass the matching
 top-level error (or normalize it to that error at the domain boundary); do not
 define a parallel `AgentWorkflows::Doctor::Configuration::UsageError` that the
 CLI rescue cannot catch. Add malformed dashboard URL, host, and path cases that
-prove one diagnostic, no backtrace, and exit `64`.
+prove one diagnostic, no backtrace, and exit `64` (`EX_USAGE`). Exit `78`
+remains reserved for launcher/runtime package configuration failures outside
+this preserved CLI usage surface.
 
 Keep the two old CLI implementation files unchanged. Canonical adapters must
 match their behavior through differential tests, but no installed legacy path
@@ -654,7 +674,7 @@ now: they read the selected runtime root's exact
 absolute or parent-traversing entries, and verify every listed `lib/` file is a
 regular file before loading Ruby. Before touching `Data` or requiring any gem
 code, a stdlib-free launcher check parses `RUBY_VERSION` and rejects anything
-older than 3.3 with one actionable diagnostic and exit `64`. Unit-test the
+older than 3.3 with one actionable diagnostic and exit `78` (`EX_CONFIG`). Unit-test the
 predicate with 2.7, 3.2, 3.3, and 4.0 strings, and run a negative launcher
 contract under an available pre-3.3 Ruby in CI so the no-backtrace behavior is
 proved in the real interpreter. Define two explicit source-pack modes rather
@@ -682,7 +702,7 @@ name/version against that same file. All paths prepend only the selected runtime
 root's exact `lib` to `$LOAD_PATH`, require `agent_workflows`, explicitly verify
 the expected version and relevant CLI constant are defined, and call `.start`.
 Manifest, receipt/selector, `LoadError`, Ruby-version, missing-constant, and
-package-version failures produce one diagnostic and exit `64` without a
+package-version failures produce one diagnostic and exit `78` without a
 backtrace. Syntax errors and unrelated runtime exceptions are not broadly
 rescued. The launchers do not search GEM paths or another checkout. Add
 post-cutover tests that invoke both root launchers directly from a checkout,
@@ -699,20 +719,20 @@ Both `exe/*` files use:
 ruby_major, ruby_minor = RUBY_VERSION.split(".").first(2).map(&:to_i)
 if ruby_major < 3 || (ruby_major == 3 && ruby_minor < 3)
   warn "agent-workflows requires Ruby 3.3 or newer"
-  exit 64
+  exit 78
 end
 
 begin
   require "agent_workflows"
 rescue LoadError => error
   warn "agent-workflows installation is incomplete: #{error.path || error.message}"
-  exit 64
+  exit 78
 end
 
 unless defined?(AgentWorkflows::VERSION) &&
     defined?(AgentWorkflows::CLI::WorkflowsDoctor)
   warn "agent-workflows installation has incompatible package bytes"
-  exit 64
+  exit 78
 end
 
 exit AgentWorkflows::CLI::WorkflowsDoctor.start(
@@ -728,7 +748,7 @@ rather than being inferred from a gem executable's own loaded constants. Tests
 remove the root require and each nested required file in turn, remove the
 expected CLI and version constants, and inject a source-pack package-version
 mismatch; each documented compatibility failure requires one actionable
-diagnostic, no backtrace, and exit `64`. A syntax-error fixture proves unrelated
+diagnostic, no backtrace, and exit `78`. A syntax-error fixture proves unrelated
 parse failures are not converted into compatibility errors. Add both executables
 and all new CLI library files to `agent-workflows.gem-manifest` in deterministic
 sorted order.
@@ -877,7 +897,7 @@ it never maps a partial selector or bridge cutover onto the ordinary
 
 - [ ] **Step 2: Add failing partial-install and version-mismatch tests**
 
-In copy mode, delete one installed library file and assert the command exits `64` without
+In copy mode, delete one installed library file and assert the command exits `78` without
 searching the source checkout. Replace installed `version.rb` with another
 same-length, same-version payload and separately alter another library file;
 assert the launcher recomputes and rejects the recorded manifest/library-tree
@@ -925,7 +945,7 @@ to `.agent-workflows-generations/<runtime-digest>`. Build canonical selector
 data containing `schema_version`, `runtime_kind: immutable_generation`, and the
 validated relative generation identity; its digest names an installer-owned,
 non-writable directory under `.agent-workflows-selectors/`. Fsync and promote
-that complete descriptor before `.agent-workflows-current` can select it. Fixed installed launchers
+that complete descriptor before `.agent-workflows-current` can select it. Digest-pinned installed launchers
 pin one immutable stdlib-only bootstrap at
 `.agent-workflows-bootstraps/<bootstrap-digest>.rb`. The canonical source is
 `AgentWorkflows::Distribution::RuntimeBootstrap`, which has no package requires
@@ -945,20 +965,24 @@ The stable callable boundary is
 `RuntimeBootstrap.run(request:, compatibility_json:, argv:, env:)`. A version-1
 request is canonical data with `schema_version`, `mode`, `root`, `command`, and
 `compatibility_sha256`; `mode: current` names the source-pack current selector,
-while `mode: fixed` additionally requires a validated relative
-`generation_identity`, `manifest_sha256`, and `helper_name`. The minimal loader
+while `mode: pinned_generation` bypasses that selector and additionally requires
+a validated relative `generation_identity`, `manifest_sha256`, and
+`helper_name`. A helper name is an exact key in the reviewed bundle manifest's
+canonical `helpers` map; its row binds one relative executable path and SHA-256,
+and the generation receipt repeats that binding. The minimal loader
 passes the exact frozen bytes read from the authenticated compatibility-file
 descriptor as `compatibility_json`; the bootstrap recomputes and compares their
 SHA-256 with `request[:compatibility_sha256]` before parsing the canonical JSON
 or trusting a protocol row. Reject unknown keys, modes, schemas, absolute or
-traversing identities, an unlisted helper, malformed/noncanonical compatibility
+traversing identities, a helper absent from that authenticated map,
+malformed/noncanonical compatibility
 JSON, or any digest mismatch before lease publication or generation code loading.
 Foundation tests implement both request modes, with `current` exercised against
 both immutable-generation and live-source selector descriptors even though Task
 5 launchers use only that request mode. They also prove changed bytes, a changed
 request digest, a second-read race, unknown selector or matrix fields, and
 missing/mismatched selector-schema compatibility rows all fail before runtime
-loading. This makes the fixed-generation seam real before the pinned-copy
+loading. This makes the pinned-generation seam real before the pinned-copy
 exporter consumes it.
 
 Create canonical `agent-workflows.bootstrap-compatibility.json` with
@@ -1020,7 +1044,7 @@ while running from the trusted source checkout and never reimplements those
 rules. Direct tests run the same corrupt-node, selector race,
 held/released/unknown-lock, and lease cleanup corpus against both the installed immutable bootstrap
 and the transaction caller. Tests also tamper with the bootstrap path, node type,
-mode, ownership fixture, and bytes and prove the launcher exits `64` before any
+mode, ownership fixture, and bytes and prove the launcher exits `78` before any
 generation code loads.
 
 `GenerationTransaction` owns the staging directory, canonical receipt and
@@ -1201,6 +1225,9 @@ commit with message `refactor: remove legacy doctor implementation tree`.
 - Modify: `docs/installation-and-upgrades.md`
 - Modify: `CHANGELOG.md`
 - Create: `docs/adr/0004-agent-workflows-ruby-package-boundary.md`
+- Create in a separate final evidence-only commit:
+  `release/evidence/foundation/no-publication-closeout.v1.json`
+- Modify: `test/packaging/foundation_no_publication_evidence_test.rb`
 
 **Interfaces:**
 
@@ -1231,7 +1258,7 @@ updates, compatibility linking, or command installation, including `--no-install
 runs. The job proves each entrypoint detects the unsupported interpreter before
 requiring gem code, creating staging state, taking an installation lock, making
 a network call, or changing any source/target byte; writes the one documented
-diagnostic to stderr; emits no backtrace; and exits `64`. Include before/after
+diagnostic to stderr; emits no backtrace; and exits `78`. Include before/after
 filesystem and fake-network snapshots for every mutating entrypoint. This job
 does not build or install the Ruby-3.3-floor gem; its sole purpose is to exercise
 every pre-floor guard under a real runtime.
@@ -1285,9 +1312,25 @@ Use the repository `autoreview` skill on the complete branch diff. Verify every 
 git add -- .github/workflows/validate.yml .github/workflows/lint.yml \
   AGENTS.md bin/validate README.md CONTRIBUTING.md \
   docs/installation-and-upgrades.md \
-  docs/adr/0004-agent-workflows-ruby-package-boundary.md CHANGELOG.md
+  docs/adr/0004-agent-workflows-ruby-package-boundary.md CHANGELOG.md \
+  test/packaging/foundation_no_publication_evidence_test.rb
 git commit -m "docs: define agent workflows gem distribution"
 ```
+
+- [ ] **Step 7: Commit the non-self-referential publication closeout**
+
+Record the Step 6 commit as `implementation_head_sha`. From that exact head,
+rerun the complete read-only RubyGems, tag/release, and release-workflow
+inventory. Write `no-publication-closeout.v1.json` with the implementation head,
+baseline path and SHA-256, final observation, and a canonical comparison proving
+no publication mutation occurred. Validate it against the shared schema, stage
+only `release/evidence/foundation/no-publication-closeout.v1.json`, require that
+exact added path as the complete staged name-status, and commit it as a separate
+evidence-only child of the bound implementation head. The validator and its test
+already belong to the bound Step 6 implementation commit. Current-head review
+and validation run on the child commit and verify both the bound parent and the
+genuinely evidence-only diff; the receipt never attempts to name its own commit
+SHA.
 
 ## Plan Completion Gate
 
@@ -1300,5 +1343,10 @@ The foundation is complete only when:
   `bin/agent_doctor`, with their atomic caller/provenance cutover and removal
   owned by Task 2 of the domain-extraction plan;
 - Ruby 3.3 and 3.4.6 validation pass;
-- no package was published;
+- the committed pre-work baseline and separate evidence-only closeout under
+  `release/evidence/foundation/` schema-validate, the closeout binds its parent
+  implementation head plus the baseline digest without naming its own commit,
+  and their complete live RubyGems, tag/release, and release-workflow inventories
+  prove that this plan created no registry version, version tag, GitHub Release,
+  or registry-mutating workflow run;
 - current-head independent review and full `bin/validate` pass.
