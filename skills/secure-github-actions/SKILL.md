@@ -42,6 +42,13 @@ The mechanical gate enforces:
 - every external action repository is present as an exact `owner/repository`
   entry in the closed `trusted_actions` seam.
 
+Recursive action discovery scans regular `action.yml` / `action.yaml`
+descriptors beneath real repository directories when they are tracked or not
+Git-ignored. It omits unreferenced Git-ignored descriptors. Separately,
+explicitly referenced ignored local actions are resolved and scanned; excluded
+temporary and metadata roots are not discovered, and explicit references into
+them fail closed.
+
 `trusted_actions` defaults to an empty list when absent. Entries are unique,
 case-insensitive exact repository identities. Wildcards, organization-wide
 trust, refs, subpaths, aliases, and `UNKNOWN` are invalid. Allowlisting never

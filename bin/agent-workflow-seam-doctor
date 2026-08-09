@@ -1994,14 +1994,13 @@ module AgentWorkflowSeamDoctor
 
   def shared_markdown_paths(root, shared_roots: [])
     repo_patterns = [
-      File.join(root, ".agents/skills/**/*.md"),
-      File.join(root, ".agents/workflows/**/*.md")
+      ".agents/skills/**/*.md",
+      ".agents/workflows/**/*.md"
     ]
-    shared_patterns = shared_roots.flat_map { |shared_root| shared_markdown_patterns(shared_root) }
+    repo_paths = markdown_paths(root, repo_patterns)
+    shared_paths = shared_roots.flat_map { |shared_root| shared_markdown_paths_for_root(shared_root) }
 
-    (repo_patterns + shared_patterns).flat_map { |pattern| Dir.glob(pattern) }.map do |path|
-      File.expand_path(path)
-    end.uniq.sort
+    (repo_paths + shared_paths).uniq.sort
   end
 
   def shared_root_issues(shared_roots)
@@ -2016,17 +2015,23 @@ module AgentWorkflowSeamDoctor
   end
 
   def shared_markdown_paths_for_root(shared_root)
-    shared_markdown_patterns(shared_root).flat_map { |pattern| Dir.glob(pattern) }.uniq.sort
+    markdown_paths(shared_root, shared_markdown_patterns)
   end
 
-  def shared_markdown_patterns(shared_root)
-    expanded = File.expand_path(shared_root)
+  def shared_markdown_patterns
     [
-      File.join(expanded, "skills/**/*.md"),
-      File.join(expanded, "workflows/**/*.md"),
+      "skills/**/*.md",
+      "workflows/**/*.md",
       # Also support passing an installed skill root directly, without a parent skills/ directory.
-      File.join(expanded, "**/SKILL.md")
+      "**/SKILL.md"
     ]
+  end
+
+  def markdown_paths(root, patterns)
+    expanded = File.expand_path(root)
+    patterns.flat_map do |pattern|
+      Dir.glob(pattern, base: expanded).map { |relative| File.join(expanded, relative) }
+    end.uniq.sort
   end
 
   def executable_placeholder_issues(root, path)

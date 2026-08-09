@@ -4,6 +4,32 @@ require "open3"
 require "psych"
 
 module SecureGitHubActions
+  EXCLUDED_ACTION_ROOTS = %w[.codex .git .tmp tmp].freeze
+
+  def self.excluded_action_root?(root, relative, lstat: File.method(:lstat))
+    return false if relative.empty? || relative == "."
+
+    root_segment = relative.split("/", 2).first
+    return true if EXCLUDED_ACTION_ROOTS.include?(root_segment)
+
+    normalized = root_segment.downcase
+    return false unless EXCLUDED_ACTION_ROOTS.include?(normalized)
+
+    begin
+      normalized_stat = lstat.call(File.join(root, normalized))
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      return false
+    end
+    return false unless normalized_stat.directory? && !normalized_stat.symlink?
+
+    candidate_stat = lstat.call(File.join(root, root_segment))
+    return false unless candidate_stat.directory? && !candidate_stat.symlink?
+
+    [candidate_stat.dev, candidate_stat.ino] == [normalized_stat.dev, normalized_stat.ino]
+  rescue SystemCallError
+    true
+  end
+
   class UnsafeFileError < StandardError; end
 
   Result = Struct.new(:root, :files, :findings, keyword_init: true) do
@@ -27,29 +53,35 @@ module SecureGitHubActions
 
   class Scanner
     EXPRESSION_PATTERN = /\$\{\{.*?\}\}/m
-    EXCLUDED_ACTION_ROOTS = %w[.codex .git .tmp tmp].freeze
     ACTION_DESCRIPTORS = %w[action.yml action.yaml].freeze
+    PATH_ENCODING = Encoding::UTF_8
     DIRECTORY_ENUMERATION_PERMISSIONS = [0o500, 0o050, 0o005].freeze
     DESCRIPTOR_REVIEWABLE = :reviewable
     DESCRIPTOR_NOT_REVIEWABLE = :not_reviewable
     DESCRIPTOR_MEMBERSHIP_UNSTABLE = :membership_unstable
 
     def initialize(root)
-      @root = File.realpath(root)
+      @root = File.realpath(root).dup.force_encoding(PATH_ENCODING)
+      raise ArgumentError, "consumer root path has invalid encoding" unless @root.valid_encoding?
       raise ArgumentError, "consumer root must be a directory" unless File.directory?(@root)
     end
 
     def scan
-      workflow_paths = Dir.glob(
-        ".github/workflows/*.{yml,yaml}", File::FNM_DOTMATCH, base: @root
-      ).map { |relative| File.join(@root, relative) }
+      workflow_boundary_findings = input_boundary_findings
+      workflow_paths = if workflow_boundary_findings.empty?
+                         Dir.glob(
+                           ".github/workflows/*.{yml,yaml}", File::FNM_DOTMATCH, base: @root
+                         ).map { |relative| File.join(@root, relative) }
+                       else
+                         []
+                       end
       action_paths, action_discovery_findings = discover_action_paths
       paths = (workflow_paths + action_paths).uniq.sort
       @scan_queue = paths.dup
       @queued_paths = paths.to_h { |path| [path, true] }
       scanned_paths = []
       @trusted_actions, policy_findings = load_trusted_actions
-      findings = policy_findings + input_boundary_findings + action_discovery_findings
+      findings = policy_findings + workflow_boundary_findings + action_discovery_findings
       until @scan_queue.empty?
         path = @scan_queue.shift
         scanned_paths << path
@@ -134,7 +166,15 @@ module SecureGitHubActions
             next
           end
 
-          entries = Dir.children(directory).sort
+          entries = Dir.children(directory).filter_map do |entry|
+            normalized_entry = normalize_path_encoding(entry)
+            if normalized_entry
+              normalized_entry
+            else
+              findings << unsafe_action_discovery_finding(directory)
+              nil
+            end
+          end.sort
           entries.each do |entry|
             path = File.join(directory, entry)
             begin
@@ -190,8 +230,16 @@ module SecureGitHubActions
 
       descriptors = {}
       directories = {}
-      stdout.split("\0").each do |relative|
-        next if relative.empty? || relative.start_with?("../") || relative.start_with?("/")
+      invalid_path_encoding = false
+      stdout.split("\0").each do |raw_relative|
+        next if raw_relative.empty?
+
+        relative = normalize_path_encoding(raw_relative)
+        unless relative
+          invalid_path_encoding = true
+          next
+        end
+        next if relative.start_with?("../") || relative.start_with?("/")
 
         descriptors[relative] = true if ACTION_DESCRIPTORS.include?(File.basename(relative))
         directory = File.dirname(relative)
@@ -206,7 +254,7 @@ module SecureGitHubActions
       paths = { descriptors: descriptors, directories: directories }
       directory_identities = {}
       descriptor_names_by_parent = Hash.new { |entries, identity| entries[identity] = [] }
-      identity_errors = []
+      identity_errors = invalid_path_encoding ? ["."] : []
       directories.each_key do |relative|
         stat = reviewable_path_lstat(relative)
         directory_identities[[stat.dev, stat.ino]] = true if stat
@@ -236,6 +284,11 @@ module SecureGitHubActions
       )
     rescue SystemCallError
       nil
+    end
+
+    def normalize_path_encoding(path)
+      normalized = path.dup.force_encoding(@root.encoding)
+      normalized if normalized.valid_encoding?
     end
 
     def reviewable_path_lstat(relative)
@@ -642,32 +695,7 @@ module SecureGitHubActions
     end
 
     def excluded_action_root?(relative)
-      return false if relative.empty?
-
-      root_segment = relative.split("/", 2).first
-      return true if EXCLUDED_ACTION_ROOTS.include?(root_segment)
-
-      normalized = root_segment.downcase
-      return false unless EXCLUDED_ACTION_ROOTS.include?(normalized)
-
-      # Preserve distinct uppercase roots on case-sensitive filesystems; reject
-      # only when the alias and reserved spelling resolve to the same entry.
-      return false unless action_root_entry_exists?(normalized)
-
-      identical_action_roots?(root_segment, normalized)
-    rescue SystemCallError
-      true
-    end
-
-    def action_root_entry_exists?(segment)
-      File.lstat(File.join(@root, segment))
-      true
-    rescue Errno::ENOENT, Errno::ENOTDIR
-      false
-    end
-
-    def identical_action_roots?(root_segment, normalized)
-      File.identical?(File.join(@root, root_segment), File.join(@root, normalized))
+      SecureGitHubActions.excluded_action_root?(@root, relative)
     end
 
     def external_use?(reference)
@@ -763,6 +791,8 @@ module SecureGitHubActions
     end
 
     def relative_path(path)
+      return "." if path == @root
+
       path.delete_prefix("#{@root}/")
     end
   end

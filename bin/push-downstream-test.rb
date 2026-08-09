@@ -235,13 +235,21 @@ class PushDownstreamSecurityAuditFleetTest < Minitest::Test
   def test_security_audit_fleet_is_read_only_and_head_bound
     Dir.mktmpdir("push-downstream-security-audit") do |dir|
       consumer = File.join(dir, "consumer")
+      malicious_scanner = File.join(
+        consumer,
+        ".agents/skills/secure-github-actions/bin/secure-github-actions-scan"
+      )
+      malicious_marker = File.join(dir, "consumer-scanner-ran")
       FileUtils.mkdir_p(File.join(consumer, ".github/workflows"))
+      FileUtils.mkdir_p(File.dirname(malicious_scanner))
       File.write(File.join(consumer, ".github/workflows/unsafe.yml"), <<~'YAML')
         jobs:
           build:
             steps:
               - run: echo "${{ github.event.pull_request.title }}"
       YAML
+      File.write(malicious_scanner, "#!/bin/sh\ntouch #{Shellwords.escape(malicious_marker)}\nexit 0\n")
+      File.chmod(0o755, malicious_scanner)
       git!(consumer, "init", "-b", "main")
       git!(consumer, "add", ".")
       git!(consumer, "-c", "user.name=Test", "-c", "user.email=test@example.com",
@@ -280,6 +288,57 @@ class PushDownstreamSecurityAuditFleetTest < Minitest::Test
       assert_equal "maintainer-decision-required", repo.dig("rollout", "trusted_actions")
       assert_equal head, git!(consumer, "rev-parse", "HEAD").strip
       assert_empty git!(consumer, "status", "--short")
+      refute_path_exists malicious_marker
+    end
+  end
+
+  def test_security_audit_does_not_disclose_temporary_clone_path_for_root_replacement
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      consumer = File.join(dir, "consumer")
+      FileUtils.mkdir_p(File.join(consumer, ".github/workflows"))
+      File.write(File.join(consumer, ".github/workflows/clean.yml"), "jobs: {}\n")
+      git!(consumer, "init", "-b", "main")
+      git!(consumer, "add", ".")
+      git!(consumer, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "-m", "fixture")
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: consumer
+                base_branch: main
+                remote_url: #{consumer.inspect}
+      YAML
+
+      scanner_class = SecureGitHubActions::Scanner
+      original_new = scanner_class.method(:new)
+      scanner_class.singleton_class.define_method(:new) do |root|
+        scanner = original_new.call(root)
+        File.rename(root, "#{root}-replaced")
+        File.write(root, "not a directory\n")
+        scanner
+      end
+
+      begin
+        out, err = capture_io do
+          @status = PushDownstream.run_security_audit_fleet(
+            config,
+            fleet_name: "workflow-security",
+            only: nil
+          )
+        end
+      ensure
+        scanner_class.singleton_class.define_method(:new, original_new)
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      repo = JSON.parse(out).fetch("repositories").fetch(0)
+      assert_equal "noncompliant", repo.fetch("status")
+      assert_equal ["."], repo.fetch("findings").map { |finding| finding.fetch("file") }.uniq
+      refute_includes out, "push-downstream-security-audit"
     end
   end
 
@@ -378,6 +437,98 @@ class PushDownstreamSecurityAuditFleetTest < Minitest::Test
         assert_includes err, "invalid security audit fleet remote_url"
         refute_includes err, "backtrace"
       end
+    end
+  end
+
+  def test_security_audit_rejects_remote_helper_syntax_before_execution
+    Dir.mktmpdir("push-downstream-security-audit-helper") do |dir|
+      marker = File.join(dir, "helper-ran")
+      helper = File.join(dir, "helper")
+      File.write(helper, "#!/bin/sh\ntouch #{marker}\nexit 1\n")
+      File.chmod(0o755, helper)
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: consumer
+                base_branch: main
+                remote_url: ext::#{helper}
+      YAML
+      previous = ENV["GIT_ALLOW_PROTOCOL"]
+      ENV["GIT_ALLOW_PROTOCOL"] = "ext"
+
+      begin
+        out, err = capture_io do
+          @status = PushDownstream.run_security_audit_fleet(
+            config,
+            fleet_name: "workflow-security",
+            only: nil
+          )
+        end
+      ensure
+        previous ? ENV["GIT_ALLOW_PROTOCOL"] = previous : ENV.delete("GIT_ALLOW_PROTOCOL")
+      end
+
+      assert_equal 1, @status
+      assert_empty out
+      assert_includes err, "invalid security audit fleet remote_url"
+      refute_path_exists marker
+    end
+  end
+
+  def test_security_audit_clone_ignores_hostile_transport_configuration
+    Dir.mktmpdir("push-downstream-security-audit-helper") do |dir|
+      marker = File.join(dir, "helper-ran")
+      helper = File.join(dir, "helper")
+      File.write(helper, "#!/bin/sh\ntouch #{marker}\nexit 1\n")
+      File.chmod(0o755, helper)
+      global_config = File.join(dir, "global.gitconfig")
+      File.write(global_config, <<~CONFIG)
+        [protocol "ext"]
+          allow = always
+        [url "ext::#{helper} "]
+          insteadOf = https://127.0.0.1:1/
+      CONFIG
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: consumer
+                base_branch: main
+                remote_url: https://127.0.0.1:1/repository.git
+      YAML
+      hostile_environment = {
+        "GIT_ALLOW_PROTOCOL" => "ext:https",
+        "GIT_CONFIG_GLOBAL" => global_config,
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "protocol.ext.allow",
+        "GIT_CONFIG_VALUE_0" => "always"
+      }
+      previous_environment = hostile_environment.keys.to_h { |name| [name, ENV[name]] }
+      hostile_environment.each { |name, value| ENV[name] = value }
+
+      begin
+        out, err = capture_io do
+          @status = PushDownstream.run_security_audit_fleet(
+            config,
+            fleet_name: "workflow-security",
+            only: nil
+          )
+        end
+      ensure
+        previous_environment.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      report = JSON.parse(out).fetch("repositories").fetch(0)
+      assert_equal "UNKNOWN", report.fetch("status")
+      assert_equal "clone-or-base-resolution-failed", report.fetch("reason")
+      refute_path_exists marker
     end
   end
 

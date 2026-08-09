@@ -28,6 +28,17 @@ module PushDownstream
     "gate_activation" => "after-remediation-and-validation"
   }.freeze
   DISABLED_HOOKS_PATH = File::NULL
+  SECURITY_AUDIT_GIT_ENVIRONMENT = {
+    "GIT_CONFIG_NOSYSTEM" => "1",
+    "GIT_CONFIG_SYSTEM" => File::NULL,
+    "GIT_CONFIG_GLOBAL" => File::NULL,
+    "GIT_CONFIG_PARAMETERS" => nil,
+    "GIT_CONFIG_COUNT" => "0",
+    "GIT_CONFIG_KEY_0" => nil,
+    "GIT_CONFIG_VALUE_0" => nil,
+    "GIT_ALLOW_PROTOCOL" => nil,
+    "GIT_PROTOCOL_FROM_USER" => nil
+  }.freeze
   FALLBACK_GIT_USER_NAME = "Agent Workflows"
   FALLBACK_GIT_USER_EMAIL = "agent-workflows@users.noreply.github.com"
   NEW_AGENTS_HEADER = "# AGENTS.md\n"
@@ -214,7 +225,8 @@ module PushDownstream
   def valid_security_audit_remote_url?(remote_url)
     remote_url.is_a?(String) &&
       remote_url.match?(/\A[^\s\0]+\z/) &&
-      !remote_url.start_with?("-")
+      !remote_url.start_with?("-") &&
+      !remote_url.match?(/\A[A-Za-z][A-Za-z0-9+.-]*::/)
   end
 
   def valid_github_owner?(owner)
@@ -811,18 +823,25 @@ module PushDownstream
     Dir.mktmpdir("push-downstream-security-audit") do |dir|
       clone = File.join(dir, repo.fetch(:repo))
       cloned = system(
-        "git", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}", "clone", "--depth", "1", "--no-tags",
+        SECURITY_AUDIT_GIT_ENVIRONMENT,
+        "git", "-c", "protocol.ext.allow=never", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}",
+        "clone", "--depth", "1", "--no-tags",
         "--branch", repo.fetch(:base_branch), repo_url(repo), clone,
         out: File::NULL, err: File::NULL
       )
       return unknown_security_audit(repo, "clone-or-base-resolution-failed") unless cloned
 
-      head, head_status = Open3.capture2("git", "-C", clone, "rev-parse", "HEAD")
+      head, head_status = Open3.capture2(
+        SECURITY_AUDIT_GIT_ENVIRONMENT,
+        "git", "-c", "protocol.ext.allow=never", "-C", clone, "rev-parse", "HEAD"
+      )
       return unknown_security_audit(repo, "head-resolution-failed") unless head_status.success?
 
       base_ref = "refs/remotes/origin/#{repo.fetch(:base_branch)}"
       base_head, _base_err, base_status = Open3.capture3(
-        "git", "-C", clone, "rev-parse", "--verify", "#{base_ref}^{commit}"
+        SECURITY_AUDIT_GIT_ENVIRONMENT,
+        "git", "-c", "protocol.ext.allow=never", "-C", clone,
+        "rev-parse", "--verify", "#{base_ref}^{commit}"
       )
       unless base_status.success? && base_head.strip == head.strip
         return unknown_security_audit(repo, "base-branch-ref-missing-or-head-mismatch")

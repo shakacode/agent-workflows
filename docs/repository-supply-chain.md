@@ -61,8 +61,10 @@ rules. Job-level local reusable workflows must be regular non-symlink files
 under `.github/workflows`. Step-level local actions must be regular non-symlink
 directories with regular `action.yml` / `action.yaml` descriptors, and excluded
 temporary or metadata roots cannot be referenced. Digest-pinned containers keep
-their distinct immutable form. `agent-workflow-seam-doctor` and `bin/validate`
-run this gate.
+their distinct immutable form. Recursive discovery scans tracked and unignored
+regular descriptors, omits unreferenced ignored descriptors and excluded roots,
+and separately resolves explicitly referenced ignored local actions.
+`agent-workflow-seam-doctor` and `bin/validate` run this gate.
 
 A clean mechanical result is necessary but not sufficient. Review permissions,
 event triggers, untrusted checkout and execution, credential persistence,

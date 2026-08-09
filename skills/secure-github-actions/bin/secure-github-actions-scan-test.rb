@@ -617,6 +617,124 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_git_action_discovery_preserves_unicode_paths_under_c_locale
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "café-repository")
+      action_path = File.join(root, "acción/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+      git!(root, "init", "-b", "main")
+      git!(root, "add", "acción/action.yml")
+
+      stdout, stderr, status = Open3.capture3(
+        { "LC_ALL" => "C", "LANG" => "C" }, RbConfig.ruby, SCANNER, "--json", root
+      )
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal ["acción/action.yml"], document.dig("scan", "files_scanned")
+      finding_files = document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      assert_equal ["acción/action.yml"], finding_files
+    end
+  end
+
+  def test_git_action_discovery_fails_closed_for_undecodable_tracked_path
+    with_repository("jobs: {}\n") do |root|
+      _out, _err, successful_status = Open3.capture3("git", "--version")
+      original_capture = Open3.method(:capture3)
+      Open3.singleton_class.define_method(:capture3) do |*arguments, **keywords|
+        if arguments.include?("ls-files")
+          ["invalid-\xFF/action.yml\0".b, "", successful_status]
+        else
+          original_capture.call(*arguments, **keywords)
+        end
+      end
+
+      begin
+        result = SecureGitHubActions::Scanner.new(root).scan
+      ensure
+        Open3.singleton_class.define_method(:capture3, original_capture)
+      end
+
+      refute_predicate result, :clean?
+      assert_equal ["secure-github-actions/unsafe-file"],
+                   result.findings.map { |finding| finding.fetch("rule_id") }.uniq
+      assert_equal ["."], result.findings.map { |finding| finding.dig("location", "file") }.uniq
+      assert_equal [".github/workflows/test.yml"], result.files
+    end
+  end
+
+  def test_git_fixture_commands_ignore_host_signing_hooks_excludes_and_templates
+    Dir.mktmpdir("secure-github-actions-git-fixture") do |outer|
+      root = File.join(outer, "repository")
+      hooks = File.join(outer, "hooks")
+      template = File.join(outer, "template")
+      excludes = File.join(outer, "excludes")
+      global_config = File.join(outer, "global.gitconfig")
+      system_config = File.join(outer, "system.gitconfig")
+      hook_marker = File.join(outer, "hook-ran")
+      FileUtils.mkdir_p(root)
+      FileUtils.mkdir_p(hooks)
+      FileUtils.mkdir_p(File.join(template, "hooks"))
+      hook = <<~SH
+        #!/bin/sh
+        printf ran > #{hook_marker}
+        exit 1
+      SH
+      File.write(File.join(hooks, "pre-commit"), hook)
+      File.write(File.join(template, "hooks/pre-commit"), hook)
+      File.write(File.join(template, "template-marker"), "copied\n")
+      File.chmod(0o755, File.join(hooks, "pre-commit"))
+      File.chmod(0o755, File.join(template, "hooks/pre-commit"))
+      File.write(excludes, "source/action.yml\n")
+      File.write(global_config, <<~CONFIG)
+        [core]
+          hooksPath = #{hooks}
+          excludesFile = #{excludes}
+        [init]
+          templateDir = #{template}
+        [commit]
+          gpgSign = true
+        [gpg]
+          program = /usr/bin/false
+      CONFIG
+      File.write(system_config, "[commit]\n  gpgSign = true\n")
+      hostile_environment = {
+        "GIT_CONFIG_NOSYSTEM" => nil,
+        "GIT_CONFIG_SYSTEM" => system_config,
+        "GIT_CONFIG_GLOBAL" => global_config,
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "commit.gpgSign",
+        "GIT_CONFIG_VALUE_0" => "true",
+        "GIT_TEMPLATE_DIR" => template
+      }
+      previous_environment = hostile_environment.keys.to_h { |name| [name, ENV[name]] }
+      hostile_environment.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
+
+      begin
+        git!(root, "init", "-b", "main")
+        action_path = File.join(root, "source/action.yml")
+        FileUtils.mkdir_p(File.dirname(action_path))
+        File.write(action_path, "runs: { using: composite, steps: [] }\n")
+        git!(root, "add", "source/action.yml")
+        git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture")
+      ensure
+        previous_environment.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
+      end
+
+      refute_path_exists hook_marker
+      refute_path_exists File.join(root, ".git/template-marker")
+      assert_empty git!(root, "status", "--short")
+      assert_equal "Test", git!(root, "show", "-s", "--format=%an", "HEAD").strip
+    end
+  end
+
   def test_git_action_discovery_scans_case_variant_tracked_descriptor_on_case_insensitive_filesystems
     skip "filesystem is case-sensitive" unless filesystem_case_insensitive?
 
@@ -949,7 +1067,7 @@ class SecureGitHubActionsScanTest < Minitest::Test
           false,
           [],
           ["secure-github-actions/unsafe-file"],
-          [canonical_root],
+          ["."],
           [canonical_root]
         ]
         [
@@ -1285,15 +1403,30 @@ class SecureGitHubActionsScanTest < Minitest::Test
           steps:
             - run: echo "${{ github.event.issue.title }}"
     YAML
-    expected_rules = {
-      0o111 => ["secure-github-actions/unsafe-file"],
-      0o311 => ["secure-github-actions/unsafe-file"],
-      0o511 => ["secure-github-actions/expression-in-run"]
+    expected = {
+      0o111 => [
+        ["secure-github-actions/unsafe-file"],
+        ["source/action.yml"],
+        [".github/workflows"]
+      ],
+      0o311 => [
+        ["secure-github-actions/unsafe-file"],
+        ["source/action.yml"],
+        [".github/workflows"]
+      ],
+      0o511 => [
+        ["secure-github-actions/expression-in-run"],
+        [".github/workflows/test.yml", "source/action.yml"],
+        [".github/workflows/test.yml"]
+      ]
     }
 
-    actual = expected_rules.keys.to_h do |mode|
+    actual = expected.keys.to_h do |mode|
       with_repository(workflow) do |root|
         workflows_path = File.join(root, ".github/workflows")
+        action_path = File.join(root, "source/action.yml")
+        FileUtils.mkdir_p(File.dirname(action_path))
+        File.write(action_path, "runs: { using: composite, steps: [] }\n")
         File.chmod(mode, workflows_path)
 
         begin
@@ -1302,11 +1435,57 @@ class SecureGitHubActionsScanTest < Minitest::Test
           File.chmod(0o755, workflows_path)
         end
 
-        [mode, [status.exitstatus, stderr, rule_ids(JSON.parse(stdout))]]
+        document = JSON.parse(stdout)
+        [mode, [
+          status.exitstatus,
+          stderr,
+          rule_ids(document),
+          document.dig("scan", "files_scanned"),
+          document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+        ]]
       end
     end
 
-    assert_equal expected_rules.transform_values { |rules| [1, "", rules] }, actual
+    assert_equal expected.transform_values { |rules, files, findings| [1, "", rules, files, findings] }, actual
+  end
+
+  def test_unsafe_workflow_boundary_does_not_scan_contents_when_privileged_enumeration_succeeds
+    workflow = <<~'YAML'
+      jobs:
+        build:
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+    YAML
+    with_repository(workflow) do |root|
+      workflows_path = File.join(root, ".github/workflows")
+      action_path = File.join(root, "source/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, "runs: { using: composite, steps: [] }\n")
+      File.chmod(0o111, workflows_path)
+      scanner = SecureGitHubActions::Scanner.new(root)
+      original_glob = Dir.method(:glob)
+      Dir.singleton_class.define_method(:glob) do |*arguments, **keywords|
+        if arguments.first == ".github/workflows/*.{yml,yaml}"
+          [".github/workflows/test.yml"]
+        else
+          original_glob.call(*arguments, **keywords)
+        end
+      end
+
+      begin
+        result = scanner.scan
+      ensure
+        Dir.singleton_class.define_method(:glob, original_glob)
+        File.chmod(0o755, workflows_path)
+      end
+
+      refute_predicate result, :clean?
+      finding_rules = result.findings.map { |finding| finding.fetch("rule_id") }
+      finding_files = result.findings.map { |finding| finding.dig("location", "file") }
+      assert_equal ["secure-github-actions/unsafe-file"], finding_rules
+      assert_equal [".github/workflows"], finding_files
+      assert_equal ["source/action.yml"], result.files
+    end
   end
 
   def test_symlinked_trusted_actions_policy_is_invalid_and_not_read
@@ -1792,14 +1971,10 @@ class SecureGitHubActionsScanTest < Minitest::Test
 
   def test_missing_normalized_excluded_root_is_distinct_but_indeterminate_identity_fails_closed
     with_repository("jobs: {}\n") do |root|
-      scanner = SecureGitHubActions::Scanner.new(root)
-
-      scanner.define_singleton_method(:action_root_entry_exists?) { |*, **| false }
-      scanner.define_singleton_method(:identical_action_roots?) { |*, **| raise "identity lookup must not run" }
-      refute scanner.send(:excluded_action_root?, "TMP/local")
-
-      scanner.define_singleton_method(:action_root_entry_exists?) { |*, **| raise Errno::EACCES }
-      assert scanner.send(:excluded_action_root?, "TMP/local")
+      refute SecureGitHubActions.excluded_action_root?(root, "TMP/local")
+      assert SecureGitHubActions.excluded_action_root?(
+        root, "TMP/local", lstat: ->(*) { raise Errno::EACCES }
+      )
     end
   end
 
@@ -1929,7 +2104,23 @@ class SecureGitHubActionsScanTest < Minitest::Test
   private
 
   def git!(root, *arguments)
-    output, status = Open3.capture2e("git", "-C", root, *arguments)
+    environment = {
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_SYSTEM" => File::NULL,
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_CONFIG_PARAMETERS" => nil,
+      "GIT_CONFIG_COUNT" => "0",
+      "GIT_CONFIG_KEY_0" => nil,
+      "GIT_CONFIG_VALUE_0" => nil,
+      "GIT_TEMPLATE_DIR" => nil
+    }
+    fixture_config = [
+      "-c", "commit.gpgSign=false",
+      "-c", "core.hooksPath=#{File::NULL}",
+      "-c", "core.excludesFile=#{File::NULL}",
+      "-c", "init.templateDir="
+    ]
+    output, status = Open3.capture2e(environment, "git", "-C", root, *fixture_config, *arguments)
     raise "git fixture failed: #{output}" unless status.success?
 
     output

@@ -85,7 +85,7 @@ notes.
    and thread handles. The initializer does not add this optional key.
 
    Repositories that use external Actions or reusable workflows must also add a
-   closed, exact `trusted_actions` allowlist. Its entries are lowercase-insensitive
+   closed, exact `trusted_actions` allowlist. Its entries are case-insensitive
    `owner/repository` identities, with no refs, subpaths, or wildcards:
 
    ```yaml
@@ -361,7 +361,8 @@ malformed schema.
 - `agent-workflows-status --host <codex|claude>` reports `UP_TO_DATE`, or the
   upgrade decision is recorded.
 - `agent-workflow-seam-doctor --shared <path-to-shakacode/agent-workflows>` passes.
-- `secure-github-actions-scan <path-to-consumer>` passes, and a human reviews
+- `/path/to/trusted/agent-workflows/skills/secure-github-actions/bin/secure-github-actions-scan <path-to-consumer>`
+  passes, and a human reviews
   GitHub Actions permissions, triggers, checkout trust, and credentials.
 - Every generated wrapper's underlying command exists in the target repo.
 - `pr-security-preflight --repo OWNER/REPO --trust-config .agents/trusted-github-actors.yml --strict-trust <exact-targets>`

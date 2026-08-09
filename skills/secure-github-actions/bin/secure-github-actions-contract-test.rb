@@ -2,6 +2,9 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "fileutils"
+require "open3"
+require "tmpdir"
 
 class SecureGitHubActionsContractTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
@@ -35,6 +38,132 @@ class SecureGitHubActionsContractTest < Minitest::Test
     assert_includes public_rules, "nonblocking observation"
   end
 
+  def test_audit_commands_require_an_absolute_trusted_pack_without_consumer_fallback
+    audit = File.read(File.join(ROOT, "references/audit-commands.md"), encoding: "UTF-8")
+
+    assert_includes audit, "already-resolved absolute trusted-pack skill directory"
+    assert_includes audit, 'case "${SECURE_GITHUB_ACTIONS_SKILL_DIR}" in'
+    assert_includes audit, '"${SECURE_GITHUB_ACTIONS_SKILL_DIR}/bin/secure-github-actions-scan"'
+    refute_includes audit, "${SECURE_GITHUB_ACTIONS_SKILL_DIR:-.agents/skills/secure-github-actions}"
+  end
+
+  def test_audit_command_never_executes_a_consumer_checkout_scanner
+    audit = File.read(File.join(ROOT, "references/audit-commands.md"), encoding: "UTF-8")
+    command = audit.scan(/```bash\n(.*?)```/m).fetch(0).fetch(0)
+
+    Dir.mktmpdir("secure-github-actions-command-contract") do |outer|
+      consumer = File.join(outer, "consumer")
+      trusted_skill = File.join(outer, "trusted-pack/secure-github-actions")
+      trusted_marker = File.join(outer, "trusted-ran")
+      malicious_marker = File.join(outer, "malicious-ran")
+      write_scanner(File.join(trusted_skill, "bin/secure-github-actions-scan"), trusted_marker)
+      write_scanner(
+        File.join(consumer, ".agents/skills/secure-github-actions/bin/secure-github-actions-scan"),
+        malicious_marker
+      )
+
+      _out, err, status = Open3.capture3(
+        { "SECURE_GITHUB_ACTIONS_SKILL_DIR" => trusted_skill }, "bash", "-c", command, chdir: consumer
+      )
+
+      assert_predicate status, :success?, err
+      assert_path_exists trusted_marker
+      refute_path_exists malicious_marker
+
+      _out, err, status = Open3.capture3(
+        { "SECURE_GITHUB_ACTIONS_SKILL_DIR" => ".agents/skills/secure-github-actions" },
+        "bash", "-c", command, chdir: consumer
+      )
+
+      refute_predicate status, :success?
+      assert_includes err, "must be absolute"
+      refute_path_exists malicious_marker
+    end
+  end
+
+  def test_replayable_snapshot_refuses_dirty_state_and_binds_exact_head
+    audit = File.read(File.join(ROOT, "references/audit-commands.md"), encoding: "UTF-8")
+
+    assert_includes audit, "git rev-parse --verify 'HEAD^{commit}'"
+    assert_includes audit, "git status --porcelain=v1 --untracked-files=all"
+    assert_includes audit, "Refusing replayable snapshot: checkout is dirty"
+    assert_operator audit.index("git status --porcelain=v1 --untracked-files=all"), :<,
+                    audit.rindex("secure-github-actions-scan")
+  end
+
+  def test_replayable_snapshot_command_refuses_staged_unstaged_and_untracked_state
+    audit = File.read(File.join(ROOT, "references/audit-commands.md"), encoding: "UTF-8")
+    command = audit.scan(/```bash\n(.*?)```/m).fetch(1).fetch(0)
+
+    %i[staged unstaged untracked].each do |dirty_state|
+      Dir.mktmpdir("secure-github-actions-snapshot-contract") do |outer|
+        root = File.join(outer, "consumer")
+        trusted_skill = File.join(outer, "trusted-pack/secure-github-actions")
+        scanner_marker = File.join(outer, "scanner-ran")
+        FileUtils.mkdir_p(root)
+        File.write(File.join(root, "tracked"), "clean\n")
+        git!(root, "init", "-b", "main")
+        git!(root, "add", "tracked")
+        git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+             "commit", "-m", "fixture")
+        case dirty_state
+        when :staged
+          File.write(File.join(root, "tracked"), "staged\n")
+          git!(root, "add", "tracked")
+        when :unstaged
+          File.write(File.join(root, "tracked"), "unstaged\n")
+        when :untracked
+          File.write(File.join(root, "untracked"), "untracked\n")
+        end
+        write_scanner(File.join(trusted_skill, "bin/secure-github-actions-scan"), scanner_marker)
+
+        _out, err, status = Open3.capture3(
+          { "SECURE_GITHUB_ACTIONS_SKILL_DIR" => trusted_skill }, "bash", "-c", command, chdir: root
+        )
+
+        refute_predicate status, :success?, dirty_state
+        assert_includes err, "Refusing replayable snapshot: checkout is dirty", dirty_state
+        refute_path_exists scanner_marker, dirty_state
+      end
+    end
+
+    Dir.mktmpdir("secure-github-actions-snapshot-contract") do |outer|
+      root = File.join(outer, "consumer")
+      trusted_skill = File.join(outer, "trusted-pack/secure-github-actions")
+      scanner_marker = File.join(outer, "scanner-ran")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "tracked"), "clean\n")
+      git!(root, "init", "-b", "main")
+      git!(root, "add", "tracked")
+      git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "-m", "fixture")
+      head = git!(root, "rev-parse", "HEAD").strip
+      write_scanner(File.join(trusted_skill, "bin/secure-github-actions-scan"), scanner_marker)
+
+      out, err, status = Open3.capture3(
+        { "SECURE_GITHUB_ACTIONS_SKILL_DIR" => trusted_skill }, "bash", "-c", command, chdir: root
+      )
+
+      assert_predicate status, :success?, err
+      assert_includes out, "exact HEAD: #{head}"
+      assert_path_exists scanner_marker
+    end
+  end
+
+  def test_docs_describe_discovery_exclusions_and_ignored_reference_behavior
+    skill = File.read(File.join(ROOT, "SKILL.md"), encoding: "UTF-8")
+    audit = File.read(File.join(ROOT, "references/audit-commands.md"), encoding: "UTF-8")
+    adoption = read_project("docs/adoption.md")
+
+    assert_includes skill, "unreferenced Git-ignored descriptors"
+    assert_includes skill, "explicitly referenced ignored local actions"
+    assert_includes audit, "Excluded roots are not discovered"
+    assert_includes adoption, "case-insensitive"
+    refute_includes adoption, "lowercase-insensitive"
+    assert_includes adoption,
+                    "/path/to/trusted/agent-workflows/skills/secure-github-actions/bin/secure-github-actions-scan"
+  end
+
   def test_repository_validation_runs_all_focused_security_suites
     validate = File.read(File.join(PROJECT_ROOT, "bin/validate"), encoding: "UTF-8")
 
@@ -65,6 +194,24 @@ class SecureGitHubActionsContractTest < Minitest::Test
   end
 
   private
+
+  def write_scanner(path, marker)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "#!/bin/sh\n: > #{marker}\n")
+    File.chmod(0o755, path)
+  end
+
+  def git!(root, *arguments)
+    environment = {
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_CONFIG_PARAMETERS" => nil
+    }
+    out, status = Open3.capture2e(environment, "git", "-C", root, *arguments)
+    raise "git fixture failed: #{out}" unless status.success?
+
+    out
+  end
 
   def read_project(relative)
     File.read(File.join(PROJECT_ROOT, relative), encoding: "UTF-8")

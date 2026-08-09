@@ -1610,6 +1610,27 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
       assert status.success?, out
     end
   end
+
+  def test_repository_root_with_glob_metacharacters_scans_executable_placeholders
+    Dir.mktmpdir("agent-workflow-seam-doctor-metachar") do |outer|
+      root = File.join(outer, "repository[fixture]")
+      FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+      FileUtils.mkdir_p(File.join(root, ".agents/skills/example"))
+      FileUtils.mkdir_p(File.join(root, ".agents/workflows"))
+      write_valid_binstub_contract(root)
+      write_skill(root, <<~MARKDOWN)
+        ```bash
+        gh issue create --title "<follow-up prefix> Review"
+        ```
+      MARKDOWN
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, ".agents/skills/example/SKILL.md"
+      assert_includes out, "<follow-up prefix>"
+    end
+  end
 end
 
 class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
@@ -1633,6 +1654,30 @@ class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
         refute status.success?
         assert_includes out, "[shared]"
         assert_includes out, "skills/shared/SKILL.md"
+      end
+    end
+  end
+
+  def test_shared_root_with_glob_metacharacters_scans_executable_placeholders
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+
+      Dir.mktmpdir("agent-workflow-shared-root-metachar") do |outer|
+        shared_root = File.join(outer, "shared[pack]")
+        FileUtils.mkdir_p(File.join(shared_root, "skills/shared"))
+        File.write(File.join(shared_root, "skills/shared/SKILL.md"), <<~MARKDOWN)
+          ```bash
+          gh issue create --title "<follow-up prefix> Review"
+          ```
+        MARKDOWN
+
+        out, status = run_doctor(root, "--shared", shared_root)
+
+        refute status.success?
+        assert_includes out, "skills/shared/SKILL.md"
+        assert_includes out, "<follow-up prefix>"
+        refute_includes out, "shared root has no skill/workflow Markdown"
       end
     end
   end
