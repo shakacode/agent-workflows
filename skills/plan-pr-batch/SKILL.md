@@ -91,12 +91,17 @@ Plan a PR batch
      Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
      Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
-   - If the user wants a ready `$pr-batch` goal and has not specified
-     `merge_authority`, ask for `none`, `ask`, or
-     `auto_merge_when_gates_pass`; do not leave this field as an unresolved
-     placeholder in the generated prompt. Explain that `ask` automatically
-     walks through the exact-diff PR one conceptual change at a time before its
-     one final merge decision.
+   - Accept `none`, `ask`, the editable alias `auto`, and the compatible
+     canonical value `auto_merge_when_gates_pass`. Immediately after resolving
+     the visible value, normalize `auto` to `auto_merge_when_gates_pass`; only
+     that canonical value may cross worker-prompt or durable-evidence
+     boundaries. A missing value, an unresolved placeholder, or any other value
+     is invalid and fails closed before worker launch.
+     If prompt-generation mode has no supplied authority, emit the editable
+     `merge_authority: <none|ask|auto>` placeholder instead of starting another
+     planning round; the executor must resolve it before launch. Explain that
+     `ask` automatically walks through the exact-diff PR one conceptual change
+     at a time before its one final merge decision.
    - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list.
 
 2. Verify
@@ -405,9 +410,13 @@ Plan a PR batch
      is heuristic: prefer host-exposed runtime signals over installed-home
      auto-detection, and choose `generic` when both Codex and Claude are
      plausible.
-   - After the target-specific invocation line, put a short `Batch title:` near
-     the top of every pasteable batch prompt:
-     `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+   - After the target-specific invocation line, put the editable controls first
+     in every pasteable batch prompt, in this exact order: `Batch title:`,
+     `Repo:`, `Objective:`, and `merge_authority:`. Use one space after every
+     control-field colon and exactly one blank line after `merge_authority:`.
+     Do not add a `Targets:` control; `Items:` remains the single canonical
+     target section. Use `<PROJECT> <A?> <MM-DD HH:MM> - <short title>` for the
+     batch title.
      Resolve `<PROJECT>` from the optional `repo_prefix` in
      `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
      ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
@@ -582,14 +591,15 @@ evidence failure, trusted-base policy provenance, and repair action. `UNKNOWN`
 is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
-Use $pr-batch to complete this batch with subagents.
+Use $pr-batch to complete or continue the exact requested batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+Repo: OWNER/REPO
+Objective: ...
+merge_authority: <none|ask|auto>
+
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
-Repo:OWNER/REPO
-Objective:...
-merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.

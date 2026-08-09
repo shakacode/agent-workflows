@@ -110,9 +110,11 @@ facts remain fail-closed and stop before mutation.
   A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
   visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
-  for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
-  automatic interactive exact-diff walkthrough before the one final merge
-  decision. Do not silently default it.
+  for `none`, `ask`, or `auto`; continue accepting
+  `auto_merge_when_gates_pass` for compatibility. Apply the fail-closed
+  normalization contract in **Required Interview** before preflight or dispatch.
+  `ask` includes an automatic interactive exact-diff walkthrough before the one
+  final merge decision. Do not silently default it.
 
 The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
 a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
@@ -194,10 +196,17 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 <!-- host-branch: codex-only start -->
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 <!-- host-branch: codex-only end -->
-6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
-   it before worker launch from visible authority or ask the user. Explain that
-   `ask` automatically walks through the exact-diff PR one conceptual change at
-   a time before the one final merge decision; do not silently default it.
+6. **merge_authority**: `none`, `ask`, or the editable alias `auto`. Continue
+   accepting `auto_merge_when_gates_pass` for compatibility. Immediately after
+   resolving the visible value, normalize `auto` to
+   `auto_merge_when_gates_pass`; preserve the other canonical values unchanged.
+   A missing value, an unresolved placeholder, or any other value is invalid:
+   stop before dispatcher selection or worker launch. Only the editable prompt
+   may carry `auto`; worker prompts, manifests, handoffs, merge-assurance
+   contexts or receipts, audits, helper inputs, and every other durable record
+   carry the canonical value. Explain that `ask` automatically walks through the
+   exact-diff PR one conceptual change at a time before the one final merge
+   decision; do not silently default it.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
 8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
    user-requested host or paste destination wins. Use `codex` for up to 10
@@ -382,7 +391,11 @@ Before implementation or worker launch, produce:
 <!-- host-branch: codex-only end -->
 
 After any target-specific invocation line, each pasteable batch prompt must put
-`Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>` near the top.
+the editable controls first, in this exact order: `Batch title:`, `Repo:`,
+`Objective:`, and `merge_authority:`. Use one space after every control-field
+colon and exactly one blank line after `merge_authority:`. Do not add a
+`Targets:` control; `Items:` remains the single canonical target section.
+Use `Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
 Derive `<PROJECT>` with the abbreviation rule in **Required Interview** above,
 and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
 local shell when creating the prompt.
@@ -537,14 +550,15 @@ workflow rules instead of duplicating them.
 Use this template when creating Codex goal text:
 
 ```text
-Use $pr-batch to complete this batch with subagents.
+Use $pr-batch to complete or continue the exact requested batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+Repo: OWNER/REPO
+Objective: ...
+merge_authority: <none|ask|auto>
+
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
-Repo:OWNER/REPO
-Objective:...
-merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.

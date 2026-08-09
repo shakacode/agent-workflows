@@ -81,7 +81,7 @@ COMPACT_CONTRACT_INVARIANTS = [
 GMCC_ALIGNMENT_SENTENCE = "`GMCC-v3` is a version key that pins drift, not an external-only pointer; " \
                           "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
-OBJECTIVE_PROMPT_LINE = "Objective:..."
+OBJECTIVE_PROMPT_LINE = "Objective: ..."
 LANE_CARD_URLS_GRAMMAR = "holder/branch/PR/phase/URLs/UNKNOWN"
 CANONICAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
@@ -131,8 +131,23 @@ COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE = "If marker parsing fails, replay `we
 PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. #{COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE} #{COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE} #{COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE} #{COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE} #{TERMINAL_FOLLOW_UP_EVIDENCE_RULE} #{UNRESOLVED_HANDOFF_NON_CLEAN_RULE} #{OUTSTANDING_MARKER_FINDINGS_RULE} The parent only reconciles this handoff; it never reruns or owns the audit.".freeze
 BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
-PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
+PLAN_PR_BATCH_INVOCATION_LINE =
+  "Use $pr-batch to complete or continue the exact requested batch with subagents.\n"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
+REPO_CONTROL_LINE = "Repo: OWNER/REPO"
+MERGE_AUTHORITY_CONTROL_LINE = "merge_authority: <none|ask|auto>"
+EDITABLE_CONTROL_BLOCK = [
+  BATCH_TITLE_LINE,
+  REPO_CONTROL_LINE,
+  OBJECTIVE_PROMPT_LINE,
+  MERGE_AUTHORITY_CONTROL_LINE
+].join("\n").freeze
+MERGE_AUTHORITY_NORMALIZATION_RULE =
+  "Immediately after resolving the visible value, normalize `auto` to `auto_merge_when_gates_pass`"
+MERGE_AUTHORITY_FAIL_CLOSED_RULE =
+  "A missing value, an unresolved placeholder, or any other value is invalid"
+MERGE_AUTHORITY_DURABLE_RULE =
+  "worker prompts, manifests, handoffs, merge-assurance contexts or receipts, audits, helper inputs"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
                       "`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII " \
@@ -718,19 +733,86 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_goal_prompts_put_batch_title_after_target_invocation
+  def test_goal_prompts_put_editable_controls_first_with_one_blank_separator
     {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
-             "#{label} must put the standard batch title line after the invocation"
+      expected_start = "#{PLAN_PR_BATCH_INVOCATION_LINE}#{EDITABLE_CONTROL_BLOCK}\n\n" \
+                       "Thread handle: <batch-short>-<lane>-<word>\n"
+      assert text.start_with?(expected_start),
+             "#{label} must put the editable control block first with exactly one blank separator"
+      assert_equal 1, text.scan(/^Items:$/).length, "#{label} must retain exactly one Items section"
+      assert_equal 0, text.scan(/^Targets:/).length, "#{label} must not add a duplicate Targets field"
     end
 
     codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
-    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
-           "skills/plan-pr-batch Codex goal prompt must put the standard batch title line after the Codex prefix"
+    assert codex_goal_prompt.start_with?(
+      "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}#{EDITABLE_CONTROL_BLOCK}\n\n"
+    ), "skills/plan-pr-batch Codex goal prompt must put editable controls after the Codex prefix"
+
+    assert_equal 1,
+                 [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].map(&:rstrip).uniq.length,
+                 "primary goal prompt templates must stay byte-for-byte synchronized"
+  end
+
+  def test_merge_authority_alias_is_compatible_normalized_and_fail_closed
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
+    }.each do |label, text|
+      normalized = squish(text)
+      assert_text_includes normalized, MERGE_AUTHORITY_NORMALIZATION_RULE, label
+      assert_text_includes normalized, "`none`", label
+      assert_text_includes normalized, "`ask`", label
+      assert_text_includes normalized, "`auto_merge_when_gates_pass`", label
+      assert_text_includes normalized, MERGE_AUTHORITY_FAIL_CLOSED_RULE, label
+    end
+
+    assert_squished_includes @workflow,
+                             "accept `none`, `ask`, `auto`, and the compatible canonical value " \
+                             "`auto_merge_when_gates_pass`",
+                             "workflows/pr-processing.md"
+    assert_squished_includes @pr_batch_skill,
+                             "Continue accepting `auto_merge_when_gates_pass` for compatibility",
+                             "skills/pr-batch/SKILL.md"
+    assert_squished_includes @plan_pr_batch_skill,
+                             "Accept `none`, `ask`, the editable alias `auto`, and the compatible " \
+                             "canonical value `auto_merge_when_gates_pass`",
+                             "skills/plan-pr-batch/SKILL.md"
+    assert_squished_includes @workflow,
+                             "preserve the other canonical values unchanged",
+                             "workflows/pr-processing.md"
+
+    assert_squished_includes @pr_batch_skill, MERGE_AUTHORITY_DURABLE_RULE, "skills/pr-batch/SKILL.md"
+    assert_squished_includes @workflow,
+                             "Before constructing any worker prompt or writing manifests, handoffs, " \
+                             "merge-assurance contexts or receipts, audits, helper inputs, or other durable evidence, " \
+                             "require the canonical value `auto_merge_when_gates_pass`.",
+                             "workflows/pr-processing.md"
+
+    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
+      assert_equal 1, prompt.scan(/^#{Regexp.escape(MERGE_AUTHORITY_CONTROL_LINE)}$/).length
+      refute_match(/^merge_authority: .*auto_merge_when_gates_pass/, prompt)
+      assert_text_includes prompt, "merge iff `merge_authority` is `auto_merge_when_gates_pass`",
+                           "durable execution contract"
+    end
+
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+    assert_text_includes continuation, "use auto only when the visible request explicitly grants it",
+                         "continuation prompt"
+    assert_text_includes continuation,
+                         "normalize auto to auto_merge_when_gates_pass before workers or durable evidence",
+                         "continuation prompt"
+
+    assert_text_includes @changelog, "Put editable PR-batch controls", "CHANGELOG.md"
+    assert_text_includes @changelog, "[issue 386]", "CHANGELOG.md"
   end
 
   def test_batch_title_instructions_pin_local_date_source

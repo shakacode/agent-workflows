@@ -212,8 +212,12 @@ omit the queue summary and note that queue state is unavailable.
    ambiguity, scope/risk growth, weakened verification, or consequential judgment.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
-   `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
-   line using the optional validated `repo_prefix` from
+   `Use $pr-batch...` for Claude/generic), then put the editable controls first:
+   `Batch title:`, `Repo:`, `Objective:`, and `merge_authority:`. Use a space
+   after each control-field colon and one blank line before `Thread handle:`,
+   which remains the first worker-specific line. Do not add `Targets:`; retain
+   the single canonical `Items:` target section. Build the batch-title value
+   using the optional validated `repo_prefix` from
    `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
    repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
    multiple prompts are produced, `MM-DD HH:MM` from
@@ -246,6 +250,13 @@ host supports it, a separate coordinator, the canonical staged cost-aware worker
 route, and an explicit `merge_authority` choice before launch. It collapses only
 multi-lane packing and collision mechanics; QA, validation, review, CI,
 readiness, handoff, and closeout remain unchanged.
+
+Editable prompts accept `auto` as the short form of
+`auto_merge_when_gates_pass`, while the canonical long value remains compatible.
+The executor normalizes `auto` immediately after reading the visible field and
+before worker prompts or durable evidence. Missing, unresolved, or invalid
+authority stops launch; manifests, handoffs, merge-assurance and audit evidence,
+and helper inputs always retain the canonical long value.
 
 Choose `ask` when a human should understand the exact-diff PR before deciding:
 after ordinary gates are clean, the coordinator automatically starts
