@@ -54,6 +54,12 @@ case-insensitive exact repository identities. Wildcards, organization-wide
 trust, refs, subpaths, aliases, and `UNKNOWN` are invalid. Allowlisting never
 waives the full-SHA or readable-version-comment rules.
 
+A digest establishes container-image immutability, not image trust. `docker://`
+references are intentionally outside the exact GitHub `owner/repository`
+`trusted_actions` seam, so maintainers must review the registry, image, and
+digest manually. A mechanical `trusted_container_images` seam or a Docker ban
+is separate product-policy scope.
+
 ## When NOT to Use
 
 - Do not use this gate as proof that arbitrary PR content is trusted or safe to

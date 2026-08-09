@@ -10,6 +10,8 @@ for every affected workflow:
 - scope AI action tools when processing untrusted input;
 - avoid mutable runtime dependencies such as `npx ...@latest` or a repository
   clone at an unpinned head;
+- manually review the exact registry, image, and digest for every `docker://`
+  use;
 - do not write attacker-controlled values to `GITHUB_ENV` or `GITHUB_PATH`;
 - confirm triggers, conditions, environments, and credential flows match the
   intended trust boundary; and

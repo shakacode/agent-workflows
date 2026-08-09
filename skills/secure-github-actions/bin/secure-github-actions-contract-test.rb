@@ -197,6 +197,29 @@ class SecureGitHubActionsContractTest < Minitest::Test
     assert_includes changelog, "issue 273"
   end
 
+  def test_downstream_rollout_docs_keep_missing_trusted_actions_fail_closed
+    downstream = read_project("docs/downstream-sync.md").gsub(/\s+/, " ")
+
+    assert_includes downstream, "A missing `trusted_actions` key is the closed empty allowlist"
+    assert_includes downstream,
+                    "Generic sync and direct seam-doctor checks stop on an unremediated consumer before mutation"
+    assert_includes downstream, "`gate_activation` describes the ordered adoption boundary"
+    assert_includes downstream, "Omitting or deleting the key is not an opt-out"
+  end
+
+  def test_docs_define_digest_pinned_container_trust_boundary
+    skill = File.read(File.join(ROOT, "SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+    public_rules = File.read(File.join(ROOT, "references/public-repo-rules.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+
+    assert_includes skill, "A digest establishes container-image immutability, not image trust"
+    assert_includes skill,
+                    "`docker://` references are intentionally outside the exact GitHub `owner/repository` `trusted_actions` seam"
+    assert_includes skill,
+                    "A mechanical `trusted_container_images` seam or a Docker ban is separate product-policy scope"
+    assert_includes public_rules,
+                    "manually review the exact registry, image, and digest for every `docker://` use"
+  end
+
   private
 
   def write_scanner(path, marker)

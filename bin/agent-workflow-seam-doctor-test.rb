@@ -119,6 +119,30 @@ module AgentWorkflowSeamDoctorTestHelpers
       }
     }
   end
+
+  def fake_scanner_source(findings)
+    <<~RUBY
+      module SecureGitHubActions
+        ScanResult = Struct.new(:findings)
+
+        class Scanner
+          def initialize(_root); end
+
+          def scan
+            ScanResult.new(#{findings.inspect})
+          end
+        end
+      end
+    RUBY
+  end
+
+  def scanner_finding(rule_id)
+    {
+      "location" => { "file" => ".github/workflows/fixture.yml", "line" => 1 },
+      "rule_id" => rule_id,
+      "title" => "scanner selected"
+    }
+  end
 end
 
 class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
@@ -351,6 +375,41 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       refute status.success?
       assert_includes out, "secure-github-actions/expression-in-run"
       assert_includes out, "components/example/action.yml"
+    end
+  end
+
+  def test_explicit_shared_scanner_precedes_installed_companion
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+
+      Dir.mktmpdir("agent-workflow-seam-doctor-installed") do |installed_root|
+        Dir.mktmpdir("agent-workflow-seam-doctor-shared") do |shared_root|
+          installed_script = File.join(installed_root, "bin/agent-workflow-seam-doctor")
+          companion_scanner = File.join(installed_root, "lib/agent-workflows/secure_github_actions_scanner.rb")
+          shared_scanner = File.join(
+            shared_root, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb"
+          )
+          shared_skill = File.join(shared_root, "skills/secure-github-actions/SKILL.md")
+          [installed_script, companion_scanner, shared_scanner, shared_skill].each do |path|
+            FileUtils.mkdir_p(File.dirname(path))
+          end
+          FileUtils.cp_r(File.join(__dir__, "agent_doctor"), File.dirname(installed_script))
+          FileUtils.cp(SCRIPT, installed_script)
+          File.write(companion_scanner, fake_scanner_source([]))
+          File.write(shared_scanner, fake_scanner_source([scanner_finding("explicit-shared-scanner")]))
+          File.write(shared_skill, "# Secure GitHub Actions\n")
+
+          shared_argument = File.basename(shared_root)
+          out, status = Open3.capture2e(
+            "ruby", installed_script, "--root", root, "--shared", shared_argument,
+            chdir: File.dirname(shared_root)
+          )
+
+          refute status.success?, out
+          assert_includes out, "explicit-shared-scanner"
+        end
+      end
     end
   end
 

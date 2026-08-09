@@ -195,11 +195,19 @@ bin/push-downstream \
   --only shakapacker
 ```
 
-`--apply` is rejected in this mode. Each report records the intended next
-boundary: a coordinator-owned targeted remediation PR, maintainer review for
-each allowlisted action, an explicit repository decision about Dependabot, and
-gate activation only after remediation and validation. Expanding the fleet or
-mutating any consumer remains a separate coordinator decision.
+`--apply` is rejected in this mode. A missing `trusted_actions` key is the
+closed empty allowlist; it trusts no external GitHub action. Omitting or
+deleting the key is not an opt-out. Generic sync and direct seam-doctor checks
+stop on an unremediated consumer before mutation.
+
+Each report records the intended next boundary. `gate_activation` describes the
+ordered adoption boundary: land the source-pack gate atomically with targeted
+remediation and validation for the selected consumer, then activate that
+consumer's normal validation. It is not a runtime switch that makes missing
+policy permissive. Maintainer review for each allowlisted action and an explicit
+repository decision about Dependabot remain part of the targeted remediation.
+Expanding the fleet or mutating any consumer remains a separate coordinator
+decision.
 
 Seed a repo-local trust config locally:
 
