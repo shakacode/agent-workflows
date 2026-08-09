@@ -212,22 +212,13 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       [],
       batch_id: input.fetch("batch_id")
     )
-    body = <<~BODY
-      Maintainer acceptance of immutable legacy reconciliation.
-
-      <!-- completed-batch-legacy-reconciliation v1
-      batch_id: #{input.fetch('batch_id')}
-      repository: #{canonical_reconciliation.fetch('repository')}
-      batch_status: #{canonical_reconciliation.fetch('batch_status')}
-      workflow_version: #{canonical_reconciliation.fetch('workflow_version')}
-      created_at: #{canonical_reconciliation.fetch('created_at')}
-      source_input_digest: #{CompletedBatchPublicationPreflight.digest(source_input)}
-      expected_targets: #{JSON.generate(targets.map { |target| CompletedBatchPublicationPreflight.target_base_url(target) })}
-      missing_facts: #{JSON.generate(canonical_reconciliation.fetch('missing_facts'))}
-      target_dispositions: #{JSON.generate(canonical_reconciliation.fetch('target_dispositions'))}
-      decision: accepted_legacy_reconciliation
-      -->
-    BODY
+    marker = CompletedBatchPublicationPreflight.legacy_decision_marker(
+      batch_id: input.fetch("batch_id"),
+      expected_targets: targets,
+      source_input_digest: CompletedBatchPublicationPreflight.digest(source_input),
+      reconciliation: canonical_reconciliation
+    )
+    body = "Maintainer acceptance of immutable legacy reconciliation.\n\n#{marker}\n"
     {
       "id" => 6_000_000_000,
       "html_url" => legacy_decision_url,
@@ -637,6 +628,36 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_legacy_reconciliation_decision_rejects_semantically_equal_noncanonical_marker_bytes
+    mutations = {
+      "reordered fields" => lambda do |body|
+        body.sub(/repository: ([^\n]+)\nbatch_status: ([^\n]+)/, "batch_status: \\2\nrepository: \\1")
+      end,
+      "alternate JSON whitespace" => lambda do |body|
+        body.sub(/expected_targets: \[/, "expected_targets: [ ")
+      end,
+      "duplicate JSON key" => lambda do |body|
+        body.sub('"fact":"batch.completed"', '"fact":"batch.completed","fact":"batch.completed"')
+      end,
+      "alternate JSON Unicode escape" => lambda do |body|
+        body.sub('expected_targets: ["https', 'expected_targets: ["\\u0068ttps')
+      end
+    }
+
+    mutations.each do |label, mutate|
+      input = legacy_input
+      comment = valid_legacy_decision_comment(input)
+      comment["body"] = mutate.call(comment.fetch("body"))
+
+      result = assess_legacy(input, decision_comment: comment)
+
+      refute result.fetch("eligible"), label
+      assert_includes result.fetch("blockers"),
+                      "authenticated legacy reconciliation decision is absent, stale, or mismatched",
+                      label
+    end
+  end
+
   def test_legacy_reconciliation_decision_requires_a_trusted_human_with_write_authority
     mutations = [
       ->(comment) { comment.fetch("user")["type"] = "Bot" },
@@ -693,16 +714,77 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_includes result.fetch("blockers"), "legacy reconciliation contradicts a completed coordination batch"
   end
 
+  def test_legacy_reconciliation_rejects_a_completion_timestamp_without_completed_status
+    input = legacy_input
+    input.dig("coordination_status", "batches", 0)["completed_at"] = "2026-08-09T04:00:00Z"
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "legacy reconciliation batch completion timestamp contradicts its declared missing fact"
+  end
+
   def test_legacy_reconciliation_rejects_coordination_projection_that_contradicts_authenticated_terminal_audit
     input = legacy_input
-    lane = input.dig("coordination_status", "batches", 0, "lanes").find { |row| row["name"] == "d4279" }
+    lane = input.dig("coordination_status", "batches", 0, "lanes").find { |row| row["name"] == "d4605" }
     lane["status"] = "abandoned"
 
     result = assess_legacy(input)
 
     refute result.fetch("eligible")
     assert_includes result.fetch("blockers"),
-                    "shakacode/react_on_rails#issue:4279 coordination projection contradicts its terminal audit"
+                    "shakacode/react_on_rails#issue:4605 coordination projection contradicts its terminal audit"
+  end
+
+  def test_legacy_reconciliation_rejects_an_undeclared_missing_lane_close_timestamp
+    input = legacy_input
+    input.fetch("legacy_reconciliation").fetch("missing_facts")
+         .reject! { |row| row["fact"] == "lane.closed_at" && row["lane"] == "d4279" }
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane d4279 close timestamp is absent without an accepted legacy missing fact"
+  end
+
+  def test_legacy_reconciliation_rejects_a_lane_close_timestamp_that_contradicts_the_declared_gap
+    input = legacy_input
+    input.dig("coordination_status", "batches", 0, "lanes")
+         .find { |lane| lane.fetch("name") == "d4279" }["closed_at"] = "2026-08-03T09:35:00Z"
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane d4279 close timestamp contradicts its accepted legacy missing fact"
+  end
+
+  def test_legacy_reconciliation_rejects_nonfinite_or_terminally_contradictory_lane_outcomes
+    %w[closed blocked-user-input].each do |outcome|
+      input = legacy_input
+      input.dig("coordination_status", "batches", 0, "lanes")
+           .find { |lane| lane.fetch("name") == "d4271" }["pr_state"] = outcome
+
+      result = assess_legacy(input)
+
+      refute result.fetch("eligible"), outcome
+      assert_includes result.fetch("blockers"),
+                      "coordination lane d4271 legacy target outcome is invalid or contradicts its terminal state",
+                      outcome
+    end
+  end
+
+  def test_legacy_reconciliation_rejects_an_invalid_lane_evidence_url
+    input = legacy_input
+    input.dig("coordination_status", "batches", 0, "lanes")
+         .find { |lane| lane.fetch("name") == "d4271" }["evidence_url"] = "file:///tmp/not-durable"
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "coordination lane d4271 legacy evidence URL is absent or invalid"
   end
 
   def test_open_issue_remains_rejected_without_authenticated_accepted_deferral
@@ -722,8 +804,9 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input.fetch("qa_evidence").reject! { |row| row.dig("target", "number") == 4282 }
     reconciliation = input.fetch("legacy_reconciliation")
     reconciliation.fetch("target_dispositions").reject! { |row| row.dig("target", "number") == 4282 }
-    reconciliation.fetch("missing_facts").find { |row| row["lane"] == "d4274" }
-                                         .fetch("targets").reject! { |target| target.fetch("number") == 4282 }
+    reconciliation.fetch("missing_facts").select { |row| row["lane"] == "d4274" }.each do |row|
+      row.fetch("targets").reject! { |target| target.fetch("number") == 4282 }
+    end
 
     result = assess_legacy(input)
 
@@ -731,6 +814,19 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_includes result.fetch("blockers"), "coordination lane d4274 target is absent or ambiguous"
     assert_includes result.fetch("blockers"),
                     "shakacode/react_on_rails#issue:4274 is absent from resolved coordination scope"
+  end
+
+  def test_legacy_missing_fact_must_bind_the_exact_multi_target_lane_set
+    input = legacy_input
+    fact = input.fetch("legacy_reconciliation").fetch("missing_facts")
+                .find { |row| row["fact"] == "lane.closed_at" && row["lane"] == "d4274" }
+    fact.fetch("targets").reject! { |target| target.fetch("number") == 4282 }
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "legacy reconciliation missing fact does not match the exact coordination lane target set"
   end
 
   def test_legacy_missing_facts_require_exact_path_reason_and_ordinary_gate

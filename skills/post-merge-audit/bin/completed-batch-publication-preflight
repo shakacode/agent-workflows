@@ -30,7 +30,8 @@ module CompletedBatchPublicationPreflight
   WRITE_PERMISSIONS = %w[write maintain admin].freeze
   LEGACY_COMPLETION_MODE = "accepted_legacy_reconciliation"
   LEGACY_WORKFLOW_VERSION = "completed-batch-publication-preflight:v1"
-  LEGACY_MISSING_FACTS = %w[batch.completed claim.acquired lane.terminal].freeze
+  LEGACY_MISSING_FACTS = %w[batch.completed claim.acquired lane.closed_at lane.terminal].freeze
+  LEGACY_LANE_OUTCOMES = %w[blocked-user-input merged no-pr].freeze
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
   RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned superseded].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
@@ -480,9 +481,14 @@ module CompletedBatchPublicationPreflight
                     else
                       raw_fact = fact == "lane.terminal" ? "terminal" : fact
                       lane = normalized_known_string(row["lane"])
+                      expected_path = if fact == "lane.closed_at"
+                                        "coordination_status.batches[#{batch_id}].lanes[#{lane}].closed_at"
+                                      else
+                                        "coordination_audit.lanes[#{lane}].missing[#{raw_fact}]"
+                                      end
                       row.keys.sort == %w[fact lane ordinary_gate path reason targets] &&
-                        %w[claim.acquired lane.terminal].include?(fact) && lane &&
-                        row["path"] == "coordination_audit.lanes[#{lane}].missing[#{raw_fact}]" &&
+                        %w[claim.acquired lane.closed_at lane.terminal].include?(fact) && lane && batch_id &&
+                        row["path"] == expected_path &&
                         fact_target_blockers.empty? && targets&.all? { |target| expected_keys.key?(target_key(target)) }
                     end
       unless valid_shape && reason && ordinary_gate && LEGACY_MISSING_FACTS.include?(fact)
@@ -578,6 +584,14 @@ module CompletedBatchPublicationPreflight
     end
   end
 
+  def legacy_missing_lane_fact?(reconciliation, fact, lane_name)
+    return false unless reconciliation
+
+    reconciliation.fetch("missing_facts").any? do |row|
+      row.fetch("fact") == fact && row["lane"] == lane_name
+    end
+  end
+
   def legacy_target_disposition(reconciliation, target)
     return unless reconciliation
 
@@ -665,7 +679,7 @@ module CompletedBatchPublicationPreflight
     end
     observed_missing_facts.sort_by! { |row| [row.fetch("fact"), row.fetch("lane")] }
     declared_missing_facts = reconciliation.fetch("missing_facts").filter_map do |row|
-      next unless row.key?("targets")
+      next unless %w[claim.acquired lane.terminal].include?(row.fetch("fact"))
 
       { "fact" => row.fetch("fact"), "lane" => row.fetch("lane"), "targets" => row.fetch("targets") }
     end
@@ -736,6 +750,14 @@ module CompletedBatchPublicationPreflight
     return unless author && TRUSTED_ASSOCIATIONS.include?(association)
 
     body = comment["body"]
+    expected_marker = legacy_decision_marker(
+      batch_id:,
+      expected_targets:,
+      source_input_digest:,
+      reconciliation:
+    )
+    return unless legacy_decision_marker_bytes(body) == expected_marker
+
     fields = legacy_decision_marker_fields(body)
     return unless fields
     return unless fields.fetch("batch_id") == batch_id
@@ -773,16 +795,15 @@ module CompletedBatchPublicationPreflight
   end
 
   def legacy_decision_marker_fields(body)
-    return unless body.is_a?(String) && body.scan("<!-- completed-batch-legacy-reconciliation v1").length == 1
-
-    matches = body.scan(/<!-- completed-batch-legacy-reconciliation v1\n(.*?)\n-->/m)
-    return unless matches.one?
+    marker = legacy_decision_marker_bytes(body)
+    return unless marker
 
     allowed = %w[
       batch_id batch_status created_at decision expected_targets missing_facts repository source_input_digest
       target_dispositions workflow_version
     ]
-    raw_fields = matches.first.fetch(0).lines(chomp: true).each_with_object({}) do |line, parsed|
+    marker_body = marker.delete_prefix("<!-- completed-batch-legacy-reconciliation v1\n").delete_suffix("\n-->")
+    raw_fields = marker_body.lines(chomp: true).each_with_object({}) do |line, parsed|
       match = line.match(/\A([a-z_]+): (.+)\z/)
       break unless match && allowed.include?(match[1]) && !parsed.key?(match[1])
 
@@ -804,6 +825,13 @@ module CompletedBatchPublicationPreflight
     }
   rescue JSON::ParserError
     nil
+  end
+
+  def legacy_decision_marker_bytes(body)
+    return unless body.is_a?(String) && body.scan("<!-- completed-batch-legacy-reconciliation v1").length == 1
+
+    matches = body.scan(/<!-- completed-batch-legacy-reconciliation v1\n.*?\n-->/m)
+    matches.first if matches.one?
   end
 
   def legacy_decision_marker(batch_id:, expected_targets:, source_input_digest:, reconciliation:)
@@ -999,6 +1027,9 @@ module CompletedBatchPublicationPreflight
     missing_completion = legacy_missing_fact?(legacy_reconciliation, "batch.completed")
     if missing_completion
       blockers << "legacy reconciliation contradicts a completed coordination batch" if batch["status"] == "completed"
+      unless batch["completed_at"].nil?
+        blockers << "legacy reconciliation batch completion timestamp contradicts its declared missing fact"
+      end
     else
       blockers << "coordination batch is not completed" unless batch["status"] == "completed"
     end
@@ -1009,6 +1040,8 @@ module CompletedBatchPublicationPreflight
   end
 
   def canonical_lane_snapshots(entries, authenticated_later_target_keys, blockers, legacy_reconciliation: nil)
+    validate_legacy_lane_missing_fact_targets(entries, legacy_reconciliation, blockers) if legacy_reconciliation
+
     entries.map do |entry|
       lane = entry.fetch("lane")
       target = entry.fetch("target")
@@ -1016,20 +1049,34 @@ module CompletedBatchPublicationPreflight
       terminal = valid_terminal_lane?(lane)
       missing_terminal = legacy_missing_fact?(legacy_reconciliation, "lane.terminal", target:)
       if legacy_reconciliation
-        unless missing_terminal || (TERMINAL_LANE_STATES.include?(terminal_state) && lane["status"] == terminal_state)
+        lane_name = entry.fetch("name")
+        missing_closed_at = legacy_missing_lane_fact?(legacy_reconciliation, "lane.closed_at", lane_name)
+        unless TERMINAL_LANE_STATES.include?(terminal_state) && lane["status"] == terminal_state
           blockers << "#{target_label(target)} coordination projection contradicts its terminal audit"
         end
+        if missing_closed_at
+          unless lane["closed_at"].nil?
+            blockers << "coordination lane #{lane_name} close timestamp contradicts its accepted legacy missing fact"
+          end
+        elsif !valid_timestamp?(lane["closed_at"])
+          blockers << "coordination lane #{lane_name} close timestamp is absent without an accepted legacy missing fact"
+        end
+        unless valid_legacy_lane_outcome?(lane)
+          blockers << "coordination lane #{lane_name} legacy target outcome is invalid or contradicts its terminal state"
+        end
+        evidence = durable_reference_url(lane["evidence_url"])
+        blockers << "coordination lane #{lane_name} legacy evidence URL is absent or invalid" unless evidence
         next(
           {
-            "name" => entry.fetch("name"),
+            "name" => lane_name,
             "target" => target,
             "status" => scalar_or_nil(lane["status"]),
             "terminal" => scalar_or_nil(lane["terminal"]),
             "closed_at" => scalar_or_nil(lane["closed_at"]),
             "target_state" => scalar_or_nil(lane["pr_state"]),
-            "evidence" => normalized_known_string(lane["evidence_url"]),
-            "completion_mode" => if missing_terminal
-                                   "accepted_missing_legacy_terminal_event"
+            "evidence" => evidence,
+            "completion_mode" => if missing_terminal || missing_closed_at
+                                   "accepted_missing_legacy_lane_facts"
                                  else
                                    "authenticated_raw_batch_audit_terminal_event"
                                  end
@@ -1069,6 +1116,35 @@ module CompletedBatchPublicationPreflight
         snapshot["completion_mode"] = "accepted_missing_legacy_terminal_fact"
       end
       snapshot
+    end
+  end
+
+  def validate_legacy_lane_missing_fact_targets(entries, reconciliation, blockers)
+    targets_by_lane = entries.group_by { |entry| entry.fetch("name") }.transform_values do |lane_entries|
+      lane_entries.map { |entry| entry.fetch("target") }.sort_by { |target| target_sort_key(target) }
+    end
+    reconciliation.fetch("missing_facts").each do |row|
+      next unless row.key?("lane")
+
+      expected = targets_by_lane[row.fetch("lane")]
+      declared = row.fetch("targets").sort_by { |target| target_sort_key(target) }
+      unless expected && declared.map { |target| target_key(target) } == expected.map { |target| target_key(target) }
+        blockers << "legacy reconciliation missing fact does not match the exact coordination lane target set"
+      end
+    end
+  end
+
+  def valid_legacy_lane_outcome?(lane)
+    outcome = lane["pr_state"]
+    return false unless LEGACY_LANE_OUTCOMES.include?(outcome)
+
+    case lane["terminal"]
+    when "done"
+      %w[merged no-pr].include?(outcome)
+    when "abandoned", "superseded"
+      outcome == "blocked-user-input"
+    else
+      false
     end
   end
 

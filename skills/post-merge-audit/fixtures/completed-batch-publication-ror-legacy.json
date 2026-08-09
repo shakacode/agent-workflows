@@ -27,7 +27,8 @@
             "status": "done",
             "terminal": "done",
             "pr_state": "merged",
-            "evidence_url": "https://github.com/shakacode/react_on_rails/pull/4809"
+            "evidence_url": "https://github.com/shakacode/react_on_rails/pull/4809",
+            "closed_at": null
           },
           {
             "name": "d4279",
@@ -35,7 +36,8 @@
             "status": "done",
             "terminal": "done",
             "pr_state": "no-pr",
-            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4279#issuecomment-4990619015"
+            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4279#issuecomment-4990619015",
+            "closed_at": null
           },
           {
             "name": "d4274",
@@ -43,7 +45,8 @@
             "status": "done",
             "terminal": "done",
             "pr_state": "merged",
-            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4274#issuecomment-4990651445"
+            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4274#issuecomment-4990651445",
+            "closed_at": null
           },
           {
             "name": "d4271",
@@ -51,7 +54,8 @@
             "status": "done",
             "terminal": "done",
             "pr_state": "no-pr",
-            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4271#issuecomment-4990717300"
+            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4271#issuecomment-4990717300",
+            "closed_at": null
           },
           {
             "name": "d4073",
@@ -59,7 +63,8 @@
             "status": "abandoned",
             "terminal": "abandoned",
             "pr_state": "blocked-user-input",
-            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4073#issuecomment-5164689602"
+            "evidence_url": "https://github.com/shakacode/react_on_rails/issues/4073#issuecomment-5164689602",
+            "closed_at": null
           }
         ]
       }
@@ -181,11 +186,16 @@
     "missing_facts": [
       { "fact": "batch.completed", "path": "coordination_status.batches[ror-d-roadmap-evidence-20260715].completed_at", "reason": "the immutable legacy batch has no truthful completion event to replay", "ordinary_gate": "ordinary publication requires completed batch status and timestamp" },
       { "fact": "claim.acquired", "lane": "d4605", "path": "coordination_audit.lanes[d4605].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 }] },
+      { "fact": "lane.closed_at", "lane": "d4605", "path": "coordination_status.batches[ror-d-roadmap-evidence-20260715].lanes[d4605].closed_at", "reason": "the immutable legacy coordination projection does not contain the lane close timestamp", "ordinary_gate": "ordinary batch lifecycle requires a terminal lane close timestamp", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 }] },
       { "fact": "lane.terminal", "lane": "d4605", "path": "coordination_audit.lanes[d4605].missing[terminal]", "reason": "the immutable legacy event log does not contain the original terminal event", "ordinary_gate": "ordinary batch lifecycle requires a terminal lane event", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 }] },
       { "fact": "claim.acquired", "lane": "d4279", "path": "coordination_audit.lanes[d4279].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4279 }] },
+      { "fact": "lane.closed_at", "lane": "d4279", "path": "coordination_status.batches[ror-d-roadmap-evidence-20260715].lanes[d4279].closed_at", "reason": "the immutable legacy coordination projection does not contain the lane close timestamp", "ordinary_gate": "ordinary batch lifecycle requires a terminal lane close timestamp", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4279 }] },
       { "fact": "claim.acquired", "lane": "d4274", "path": "coordination_audit.lanes[d4274].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "pull_request", "number": 4282 }, { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4274 }] },
+      { "fact": "lane.closed_at", "lane": "d4274", "path": "coordination_status.batches[ror-d-roadmap-evidence-20260715].lanes[d4274].closed_at", "reason": "the immutable legacy coordination projection does not contain the lane close timestamp", "ordinary_gate": "ordinary batch lifecycle requires a terminal lane close timestamp", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "pull_request", "number": 4282 }, { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4274 }] },
       { "fact": "claim.acquired", "lane": "d4271", "path": "coordination_audit.lanes[d4271].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4271 }] },
-      { "fact": "claim.acquired", "lane": "d4073", "path": "coordination_audit.lanes[d4073].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 }] }
+      { "fact": "lane.closed_at", "lane": "d4271", "path": "coordination_status.batches[ror-d-roadmap-evidence-20260715].lanes[d4271].closed_at", "reason": "the immutable legacy coordination projection does not contain the lane close timestamp", "ordinary_gate": "ordinary batch lifecycle requires a terminal lane close timestamp", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4271 }] },
+      { "fact": "claim.acquired", "lane": "d4073", "path": "coordination_audit.lanes[d4073].missing[claim.acquired]", "reason": "the immutable legacy event log does not contain the original acquisition event", "ordinary_gate": "ordinary batch lifecycle requires claim.acquired", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 }] },
+      { "fact": "lane.closed_at", "lane": "d4073", "path": "coordination_status.batches[ror-d-roadmap-evidence-20260715].lanes[d4073].closed_at", "reason": "the immutable legacy coordination projection does not contain the lane close timestamp", "ordinary_gate": "ordinary batch lifecycle requires a terminal lane close timestamp", "targets": [{ "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 }] }
     ],
     "target_dispositions": [
       { "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "pull_request", "number": 4282 }, "disposition": "completed", "expected_state": "merged", "owner": "RORD coordinator", "evidence": "https://github.com/shakacode/react_on_rails/pull/4282" },

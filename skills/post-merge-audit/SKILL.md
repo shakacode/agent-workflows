@@ -438,7 +438,13 @@ also include the raw `agent-coord batch-audit --batch-id <id> --json` response
 as `coordination_audit`. The helper freshly reruns both targeted coordination
 status and raw batch audit. The authenticated audit must be exact, incomplete,
 non-malformed, lane-bound, and match every declared `claim.acquired` or
-`lane.terminal` gap; contradictions or additional gaps block.
+`lane.terminal` gap; contradictions or additional gaps block. Missing fresh
+projection timestamps are separate typed facts: `batch.completed` requires the
+fresh batch status to differ from `completed` and exact `completed_at: null`,
+while each absent lane timestamp requires one `lane.closed_at` record whose path
+is `coordination_status.batches[<batch>].lanes[<lane>].closed_at`. A declared
+`lane.closed_at` gap contradicts a present timestamp, and an absent timestamp
+without that exact declaration blocks.
 Each missing-fact record names its exact lane target set (or exact batch path),
 the raw status/audit path, why the immutable fact cannot be reconstructed, and
 the ordinary gate that requires it. Related targets are never silently
@@ -457,6 +463,10 @@ outside the canonical source input so it cannot create a self-referential
 digest. The helper fetches the comment and current author write permission; a
 bot/untrusted author, moved or edited comment, stale digest, wrong target or
 batch, missing permission, malformed marker, or any live contradiction blocks.
+Authentication compares the exact emitted marker bytes, not only parsed field
+values. Reordered fields, alternate JSON whitespace or Unicode escapes,
+duplicate JSON keys, and any other semantically equivalent re-encoding are not
+the authorized marker and block.
 
 The only supported open-target exception is an issue disposition of
 `accepted_deferral` with `expected_state: open`, exact durable evidence, and the
@@ -465,6 +475,12 @@ disposition, and an open issue without this mode remains blocked. Pull requests
 cannot use accepted deferral. Publish and replay re-fetch the decision, targets,
 targeted coordination status, raw batch audit, and QA/waiver evidence before
 accepting the bound snapshot.
+
+Legacy lane projections still require an explicit terminal/status pair with the
+same finite terminal value, a finite truthful target outcome, and a durable
+HTTPS evidence URL. Supported legacy outcomes are `merged` or `no-pr` for
+`done`, and `blocked-user-input` for `abandoned` or `superseded`. A missing raw
+terminal event does not waive contradictions in the explicit fresh projection.
 
 A normal terminal `done` lane still requires its coordination target state and
 terminal evidence. An immutable terminal `abandoned` or `superseded` lane may
@@ -564,9 +580,18 @@ Replay the final visible status line from the normalized blocker union: render a
 
 Use exactly `Conversation status: Ready for archiving.` only when archive-ready and the blocker union is empty. Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`
 
-In final chat, this compact receipt line immediately precedes the exact `Conversation status` final line; never include the full wrapper:
+In final chat, this compact receipt line immediately precedes the exact
+`Conversation status` final line; never include the full wrapper. Ordinary
+completion uses:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
+
+Accepted legacy reconciliation never renders as `clean`. Its compact line uses
+this distinct canonical form, with every waived fact/path and every accepted
+deferral's exact target, named owner, and evidence URL listed from the bound
+publication snapshot:
+
+Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
 Give this local receipt to the helper. It publishes one concise header, one
 blank line, and exactly one canonical v1 wrapper; the helper injects the
@@ -600,6 +625,13 @@ the markers, and never reruns `publish` to retry description sync:
 **Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](<exact-comment-url>).
 <!-- completed-batch-audit-summary:end -->
 ```
+
+For `audit_status: accepted_legacy_reconciliation`, the managed section instead
+uses `**Status:** Accepted legacy reconciliation — ordinary coordination
+completion was not proven.` (or the distinct follow-ups form when blockers
+remain), followed by `**Waived missing facts:**` and `**Accepted deferrals:**`
+lists. It includes exact fact/path entries plus each deferral's target, owner,
+and evidence, and never uses the ordinary `Clean` label.
 
 For `non-backend` and `not-applicable`, the structured `scope_evidence` grammar is `targets=<exact refs>; source=<durable ref>`: name the exact verified target set and durable evidence source. `batch_id: UNKNOWN` is allowed only for genuinely unresolved batch identity, never for release/archive readiness.
 

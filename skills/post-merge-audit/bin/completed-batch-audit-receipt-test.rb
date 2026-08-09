@@ -230,6 +230,160 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_legacy_publish_and_replay_outputs_expose_waived_facts_and_owned_deferrals
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    deferred_target = {
+      "host" => "github.com", "repo" => "shakacode/react_on_rails", "type" => "issue", "number" => 4279
+    }
+    preflight = publication_preflight
+    preflight["completion_mode"] = "accepted_legacy_reconciliation"
+    preflight.fetch("snapshot")["completion_mode"] = "accepted_legacy_reconciliation"
+    preflight.fetch("snapshot")["legacy_reconciliation"] = {
+      "missing_facts" => [
+        {
+          "fact" => "batch.completed",
+          "path" => "coordination_status.batches[batch-184].completed_at",
+          "reason" => "immutable history",
+          "ordinary_gate" => "ordinary completion gate"
+        },
+        {
+          "fact" => "lane.closed_at",
+          "lane" => "lane-184",
+          "path" => "coordination_status.batches[batch-184].lanes[lane-184].closed_at",
+          "reason" => "immutable history",
+          "ordinary_gate" => "ordinary lane close gate",
+          "targets" => [target]
+        }
+      ],
+      "target_dispositions" => [{
+        "target" => deferred_target,
+        "disposition" => "accepted_deferral",
+        "expected_state" => "open",
+        "owner" => "justin808",
+        "evidence" => "https://github.com/shakacode/react_on_rails/issues/4279#issuecomment-5210877432"
+      }]
+    }
+    preflight["snapshot"] = CompletedBatchPublicationPreflight.canonicalize(preflight.fetch("snapshot"))
+    preflight["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(preflight.fetch("snapshot"))
+    preflight["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      preflight.reject { |key, _value| key == "receipt_digest" }
+    )
+    accepted_marker = ready_marker.sub("audit_status: complete", "audit_status: accepted_legacy_reconciliation")
+    bound = CompletedBatchAuditReceipt.bind_publication_snapshot(accepted_marker, preflight)
+
+    result = nil
+    with_stubbed_publication_preflight_reassessment(->(_preflight, **) { true }) do
+      result = CompletedBatchAuditReceipt.replay_marker(
+        bound,
+        expected_batch_id: "batch-184",
+        publication_preflight: preflight,
+        expected_targets: [target],
+        coordination_backend: "n/a"
+      )
+    end
+    assert result.fetch("ready"), result.fetch("blockers").join("\n")
+    receipt = {
+      "url" => "https://github.com/acme/widgets/pull/184#issuecomment-9001",
+      "sha256" => "a" * 64,
+      "author" => "justin808",
+      "created_at" => "2026-07-18T18:00:00Z",
+      "updated_at" => "2026-07-18T18:00:00Z"
+    }
+
+    reference = CompletedBatchAuditReceipt.compact_reference("clean", receipt, result:)
+    summary = CompletedBatchAuditReceipt.canonical_pr_description_summary(
+      result:,
+      receipt_url: receipt.fetch("url")
+    )
+
+    assert_includes reference, "Completed-batch audit: accepted-legacy-reconciliation"
+    assert_includes reference, "ordinary coordination completion was not proven"
+    assert_includes reference, "batch.completed at coordination_status.batches[batch-184].completed_at"
+    assert_includes reference, "lane.closed_at at coordination_status.batches[batch-184].lanes[lane-184].closed_at"
+    assert_includes reference, "owner justin808"
+    assert_includes reference, "issues/4279#issuecomment-5210877432"
+    refute_includes reference, "Completed-batch audit: clean"
+    assert_includes summary, "**Status:** Accepted legacy reconciliation — ordinary coordination completion was not proven."
+    assert_includes summary, "**Waived missing facts:**"
+    assert_includes summary, "**Accepted deferrals:**"
+    assert_includes summary, "justin808"
+    refute_includes summary, "**Status:** Clean"
+    assert_equal "accepted-legacy-reconciliation", CompletedBatchAuditReceipt.parse_reference(reference)["display_status"]
+  end
+
+  def test_accepted_legacy_publish_and_reference_replay_preserve_distinct_human_output
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    preflight = accepted_legacy_output_preflight
+    supplied_marker = ready_marker.sub("audit_status: complete", "audit_status: accepted_legacy_reconciliation")
+    posted_body = nil
+    comment = lambda do
+      {
+        "id" => 9001,
+        "html_url" => "https://github.com/acme/widgets/pull/184#issuecomment-9001",
+        "issue_url" => "https://api.github.com/repos/acme/widgets/issues/184",
+        "body" => posted_body,
+        "user" => { "login" => "justin808", "type" => "User" },
+        "author_association" => "MEMBER",
+        "created_at" => "2026-07-18T18:00:00Z",
+        "updated_at" => "2026-07-18T18:00:00Z"
+      }
+    end
+    api = lambda do |_host, endpoint, method: "GET", input: nil|
+      case [method, endpoint]
+      when %w[GET user]
+        { "login" => "justin808", "type" => "User" }
+      when ["GET", "repos/acme/widgets/issues/184"]
+        {
+          "number" => 184,
+          "html_url" => "https://github.com/acme/widgets/pull/184",
+          "locked" => false,
+          "pull_request" => {}
+        }
+      when ["GET", "repos/acme/widgets/collaborators/justin808/permission"]
+        { "permission" => "write", "user" => { "login" => "justin808", "type" => "User" } }
+      when ["POST", "repos/acme/widgets/issues/184/comments"]
+        posted_body = JSON.parse(input).fetch("body")
+        comment.call
+      when ["GET", "repos/acme/widgets/issues/comments/9001"]
+        comment.call
+      else
+        flunk "unexpected API request: #{method} #{endpoint}"
+      end
+    end
+
+    published = nil
+    replayed = nil
+    with_stubbed_publication_preflight_reassessment(->(_preflight, **) { true }) do
+      with_stubbed_gh_api(api) do
+        published = CompletedBatchAuditReceipt.publish(
+          expected_batch_id: "batch-184",
+          targets: [target],
+          receipt: supplied_marker,
+          publication_preflight: preflight,
+          coordination_backend: "n/a"
+        )
+        replayed = CompletedBatchAuditReceipt.replay_reference(
+          expected_batch_id: "batch-184",
+          targets: [target],
+          reference: published.fetch("chat_reference"),
+          publication_preflight: preflight,
+          coordination_backend: "n/a"
+        )
+      end
+    end
+
+    [published, replayed].each do |result|
+      assert result.fetch("ready")
+      assert_includes result.fetch("chat_reference"), "accepted-legacy-reconciliation"
+      assert_includes result.fetch("chat_reference"), "ordinary coordination completion was not proven"
+      assert_includes result.dig("pr_description_summary", "section"), "**Waived missing facts:**"
+      assert_includes result.dig("pr_description_summary", "section"), "**Accepted deferrals:**"
+      refute_includes result.dig("pr_description_summary", "section"), "**Status:** Clean"
+    end
+    assert_equal published.fetch("chat_reference"), replayed.fetch("chat_reference")
+    assert_equal published.dig("pr_description_summary", "section"), replayed.dig("pr_description_summary", "section")
+  end
+
   def test_real_premature_hichee_marker_replays_invalid_and_nonready
     marker = File.read(
       File.join(FIXTURES, "completed-batch-publication-hichee-premature-marker.txt"),
@@ -2751,6 +2905,38 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         coordination_status if backend == coordination_backend && batch_id == "batch-184"
       end
     )
+  end
+
+  def accepted_legacy_output_preflight
+    preflight = publication_preflight
+    preflight["completion_mode"] = "accepted_legacy_reconciliation"
+    preflight.fetch("snapshot")["completion_mode"] = "accepted_legacy_reconciliation"
+    preflight.fetch("snapshot")["legacy_reconciliation"] = {
+      "missing_facts" => [{
+        "fact" => "batch.completed",
+        "path" => "coordination_status.batches[batch-184].completed_at",
+        "reason" => "immutable history",
+        "ordinary_gate" => "ordinary completion gate"
+      }],
+      "target_dispositions" => [{
+        "target" => {
+          "host" => "github.com",
+          "repo" => "shakacode/react_on_rails",
+          "type" => "issue",
+          "number" => 4279
+        },
+        "disposition" => "accepted_deferral",
+        "expected_state" => "open",
+        "owner" => "justin808",
+        "evidence" => "https://github.com/shakacode/react_on_rails/issues/4279#issuecomment-5210877432"
+      }]
+    }
+    preflight["snapshot"] = CompletedBatchPublicationPreflight.canonicalize(preflight.fetch("snapshot"))
+    preflight["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(preflight.fetch("snapshot"))
+    preflight["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      preflight.reject { |key, _value| key == "receipt_digest" }
+    )
+    preflight
   end
 
   def publication_target_payload(head_sha: "a" * 40)

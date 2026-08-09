@@ -216,7 +216,7 @@ module CompletedBatchAuditReceipt
     )
     raise Error, "readback completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
 
-    reference = compact_reference(remote.fetch("fields").fetch("verdict"), verified)
+    reference = compact_reference(remote.fetch("fields").fetch("verdict"), verified, result: remote)
     remote.merge(
       "publication_snapshot_digest" => publication_snapshot_digest(remote.fetch("fields")),
       "final_status" => final_status(remote),
@@ -283,7 +283,7 @@ module CompletedBatchAuditReceipt
     raise Error, "compact reference result does not match receipt verdict" unless
       remote.fetch("fields").fetch("verdict") == parsed.fetch("verdict")
 
-    canonical = compact_reference(remote.fetch("fields").fetch("verdict"), verified)
+    canonical = compact_reference(remote.fetch("fields").fetch("verdict"), verified, result: remote)
     raise Error, "compact receipt reference is noncanonical" unless reference.chomp == canonical
 
     remote.merge(
@@ -304,11 +304,14 @@ module CompletedBatchAuditReceipt
 
   def parse_reference(reference)
     match = reference.to_s.match(
-      %r{\ACompleted-batch audit: (clean|follow-ups-remain|UNKNOWN) — \[durable v1 receipt\]\((https://[^\s)]+)\); SHA-256 `([0-9a-f]{64})`; author `([A-Za-z0-9_-]+)`; version `([0-9TZ:.-]+)/([0-9TZ:.-]+)`\.\n?\z}
+      %r{\ACompleted-batch audit: (clean|follow-ups-remain|UNKNOWN|accepted-legacy-reconciliation)(?: — ([^\n]+?))? — \[durable v1 receipt\]\((https://[^\s)]+)\); SHA-256 `([0-9a-f]{64})`; author `([A-Za-z0-9_-]+)`; version `([0-9TZ:.-]+)/([0-9TZ:.-]+)`\.\n?\z}
     )
     raise Error, "compact receipt reference is malformed" unless match
 
-    url = URI.parse(match[2])
+    accepted_legacy = match[1] == "accepted-legacy-reconciliation"
+    raise Error, "compact receipt reference is malformed" unless accepted_legacy == !match[2].nil?
+
+    url = URI.parse(match[3])
     raise Error, "receipt reference URL must use HTTPS" unless url.scheme == "https"
     raise Error, "receipt reference URL must not contain userinfo or query" if url.userinfo || url.query
 
@@ -318,12 +321,12 @@ module CompletedBatchAuditReceipt
     path = url.path.match(%r{\A/([^/\s]+)/([^/\s]+)/(pull|issues)/(\d+)\z})
     raise Error, "receipt reference target path is invalid" unless path
 
-    {
-      "verdict" => match[1],
-      "sha256" => match[3],
-      "author" => match[4],
-      "created_at" => match[5],
-      "updated_at" => match[6],
+    parsed = {
+      "verdict" => accepted_legacy ? "clean" : match[1],
+      "sha256" => match[4],
+      "author" => match[5],
+      "created_at" => match[6],
+      "updated_at" => match[7],
       "comment_id" => Integer(fragment[1], 10),
       "target" => {
         "host" => canonical_host("#{url.host}:#{url.port}"),
@@ -332,6 +335,11 @@ module CompletedBatchAuditReceipt
         "number" => Integer(path[4], 10)
       }
     }
+    if accepted_legacy
+      parsed["display_status"] = match[1]
+      parsed["legacy_details"] = match[2]
+    end
+    parsed
   rescue URI::InvalidURIError, ArgumentError
     raise Error, "receipt reference URL is invalid"
   end
@@ -484,7 +492,12 @@ module CompletedBatchAuditReceipt
   end
 
   def canonical_pr_description_summary(result:, receipt_url:)
-    status = if result.fetch("ready") && result.fetch("blockers").empty?
+    legacy = legacy_human_evidence(result)
+    status = if legacy && result.fetch("ready") && result.fetch("blockers").empty?
+               "Accepted legacy reconciliation — ordinary coordination completion was not proven."
+             elsif legacy
+               "Follow-ups remain — accepted legacy reconciliation; ordinary coordination completion was not proven."
+             elsif result.fetch("ready") && result.fetch("blockers").empty?
                "Clean — no outstanding findings or follow-ups."
              elsif result.dig("fields", "verdict") == "UNKNOWN"
                "Unknown — see the durable receipt."
@@ -492,11 +505,32 @@ module CompletedBatchAuditReceipt
                "Follow-ups remain — see the durable receipt."
              end
 
+    legacy_details = if legacy
+                       facts = legacy.fetch("missing_facts").map do |row|
+                         "- `#{row.fetch('fact')}` at `#{row.fetch('path')}`"
+                       end
+                       deferrals = legacy.fetch("accepted_deferrals").map do |row|
+                         "- #{target_base_url(row.fetch('target'))}; owner #{row.fetch('owner')}; " \
+                           "evidence #{row.fetch('evidence')}"
+                       end
+                       deferrals = ["- none"] if deferrals.empty?
+                       <<~DETAILS.chomp
+
+                         **Waived missing facts:**
+                         #{facts.join("\n")}
+
+                         **Accepted deferrals:**
+                         #{deferrals.join("\n")}
+                       DETAILS
+                     else
+                       ""
+                     end
+
     <<~MARKDOWN.chomp
       #{PR_SUMMARY_START}
       #### Completed-batch audit
 
-      **Status:** #{status} [Durable receipt](#{receipt_url}).
+      **Status:** #{status} [Durable receipt](#{receipt_url}).#{legacy_details}
       #{PR_SUMMARY_END}
     MARKDOWN
   end
@@ -705,10 +739,42 @@ module CompletedBatchAuditReceipt
     login
   end
 
-  def compact_reference(verdict, receipt)
-    "Completed-batch audit: #{verdict} — [durable v1 receipt](#{receipt.fetch('url')}); " \
+  def compact_reference(verdict, receipt, result: nil)
+    legacy = legacy_human_evidence(result)
+    display = if legacy
+                facts = legacy.fetch("missing_facts").map do |row|
+                  "#{row.fetch('fact')} at #{row.fetch('path')}"
+                end
+                deferrals = legacy.fetch("accepted_deferrals").map do |row|
+                  "#{target_base_url(row.fetch('target'))} " \
+                    "(owner #{row.fetch('owner')}; evidence #{row.fetch('evidence')})"
+                end
+                deferrals = ["none"] if deferrals.empty?
+                "accepted-legacy-reconciliation — ordinary coordination completion was not proven; " \
+                  "waived missing facts: #{facts.join(', ')}; accepted deferrals: #{deferrals.join(', ')}"
+              else
+                verdict
+              end
+    "Completed-batch audit: #{display} — [durable v1 receipt](#{receipt.fetch('url')}); " \
       "SHA-256 `#{receipt.fetch('sha256')}`; author `#{receipt.fetch('author')}`; " \
       "version `#{receipt.fetch('created_at')}/#{receipt.fetch('updated_at')}`."
+  end
+
+  def legacy_human_evidence(result)
+    return unless result.is_a?(Hash) && result.dig("fields", "audit_status") == "accepted_legacy_reconciliation"
+
+    snapshot = publication_snapshot(result.dig("fields", "publication_snapshot"))
+    reconciliation = snapshot&.dig("legacy_reconciliation")
+    missing_facts = reconciliation&.fetch("missing_facts", nil)
+    dispositions = reconciliation&.fetch("target_dispositions", nil)
+    unless missing_facts.is_a?(Array) && !missing_facts.empty? && dispositions.is_a?(Array)
+      raise Error, "accepted legacy reconciliation publication snapshot is invalid"
+    end
+
+    {
+      "missing_facts" => missing_facts,
+      "accepted_deferrals" => dispositions.select { |row| row["disposition"] == "accepted_deferral" }
+    }
   end
 
   def final_status(result)
