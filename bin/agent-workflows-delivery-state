@@ -430,35 +430,23 @@ module AgentWorkflowsDeliveryState
 
   def flat_skill_ownership_conflict(source:, metadata:, present:, revision:)
     _recorded_names, snapshot = skill_names(source, metadata)
-    case snapshot&.fetch(:type)
-    when :git
-      blocking = present.reject do |path|
-        flat_skill_path_owned?(path:, source:, snapshot:, metadata:)
-      end
-      return if blocking.empty?
-
-      {
-        "state" => "ambiguous", "paths" => present.sort,
-        "removable" => [], "blocking" => blocking.sort
-      }
-    when :directory
-      blocking = present.reject do |path|
-        flat_skill_path_owned?(path:, source:, snapshot:, metadata:)
-      end
-      return if blocking.empty?
-
-      {
-        "state" => "ambiguous", "paths" => present.sort,
-        "removable" => [], "blocking" => blocking.sort,
-        "reason" => "recorded source revision is unavailable: #{revision}"
-      }
-    else
-      {
+    unless snapshot
+      return {
         "state" => "unknown", "paths" => present.sort,
         "removable" => [], "blocking" => present.sort,
         "reason" => "recorded source revision is unavailable: #{revision}"
       }
     end
+
+    blocking = present.reject do |path|
+      flat_skill_path_owned?(path:, source:, snapshot:, metadata:)
+    end
+    return if blocking.empty?
+
+    {
+      "state" => "ambiguous", "paths" => present.sort,
+      "removable" => [], "blocking" => blocking.sort
+    }
   end
 
   def managed_flat_inventory(target:, source:, delivery_mode:, collision_names: [])

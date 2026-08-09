@@ -1011,6 +1011,37 @@ test_repeat_flat_copy_install_uses_fingerprints_without_git_history() {
     fail "blocked non-git upgrade changed install metadata"
 }
 
+test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
+  local tmp source target recorded_fingerprint verified_fingerprint
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  mkdir -p "$source/skills/fingerprint-fixture/bin"
+  mkdir -p "$source/skills/fingerprint-fixture/empty/nested"
+  printf '%s\n' '---' 'name: fingerprint-fixture' 'description: Fingerprint fixture.' '---' > \
+    "$source/skills/fingerprint-fixture/SKILL.md"
+  printf '#!/bin/sh\nexit 0\n' > "$source/skills/fingerprint-fixture/bin/run"
+  chmod +x "$source/skills/fingerprint-fixture/bin/run"
+  ln -s SKILL.md "$source/skills/fingerprint-fixture/skill-link"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+
+  recorded_fingerprint="$(jq -r '.managed_skill_copy_fingerprints["fingerprint-fixture"]' \
+    "$target/.agent-workflows-install.json")"
+  verified_fingerprint="$(ruby -e \
+    'load ARGV.shift; puts AgentWorkflowsDeliveryState.directory_fingerprint(ARGV.fetch(0))' \
+    "$source/bin/agent-workflows-delivery-state" "$target/skills/fingerprint-fixture")"
+
+  [[ "$recorded_fingerprint" != "null" && -n "$recorded_fingerprint" ]] || \
+    fail "installer metadata omitted the fixture skill fingerprint"
+  [[ "$recorded_fingerprint" = "$verified_fingerprint" ]] || \
+    fail "installer and delivery-state directory fingerprints drifted"
+}
+
 test_installation_docs_describe_managed_coordination_doc_fingerprints() {
   local docs changelog
   docs="$(cat "$ROOT/docs/installation-and-upgrades.md")"
@@ -2311,6 +2342,7 @@ main() {
     test_repeat_flat_copy_install_blocks_modified_installer_created_uncommitted_skill
     test_repeat_flat_copy_install_blocks_modified_recorded_targets
     test_repeat_flat_copy_install_uses_fingerprints_without_git_history
+    test_copy_metadata_fingerprint_matches_delivery_state_verifier
     test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
     test_installation_docs_describe_managed_coordination_doc_fingerprints
     test_flat_upgrade_refuses_newly_packaged_skill_collision

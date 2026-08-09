@@ -32,8 +32,10 @@ ownership, and automations are wake-up mechanisms only. Use
 authority, new decisions, and materially separate scope.
 
 For a heartbeat or monitor, a no-change wake produces no user-visible
-notification. Notify only for a material state change, a required decision, a
-durable blocker, or completion; delete the heartbeat when its gate clears or
+notification. Notify only for an HST-v1 actionable material state change: a
+decision or action is required, a target is ready for walkthrough or approval,
+a blocker exhausted its bounded retries and needs intervention, or
+closeout/archive completed; delete the heartbeat when its gate clears or
 becomes durably terminal. The automation never owns the task or next action.
 
 ## Default Operating Model

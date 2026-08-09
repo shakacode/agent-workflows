@@ -99,13 +99,14 @@ invalidates both the walkthrough identity and the approval request.
 ## Heartbeat And Automation Lifecycle
 
 A heartbeat automation is only a wake-up mechanism. On a no-change wake, emit
-no user-visible notification. Notify only for a material state change, a
-required decision, a durable blocker, or completion. Automatically delete the
-heartbeat after its gate clears or becomes durably terminal. The automation
-never owns the PR, task, decision, or next action, and its output must not imply
-that ownership moved. For `blocked-user-input`, do not create or retain a
-heartbeat or monitor; preserve one exact question and manual resume
-instructions.
+no user-visible notification. Notify only for an HST-v1 actionable material
+state change: a decision or action is required, a target is ready for walkthrough
+or approval, a blocker exhausted its bounded retries and needs intervention, or
+closeout/archive completed. Automatically delete the heartbeat after its gate
+clears or becomes durably terminal. The automation never owns the PR, task,
+decision, or next action, and its output must not imply that ownership moved.
+For `blocked-user-input`, do not create or retain a heartbeat or monitor;
+preserve one exact question and manual resume instructions.
 
 ## Ambiguity Guard
 

@@ -19,6 +19,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
             "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
             "durable-decision(proven-human+merge-authority); else ready-human-review-required|" \
             "autonomous-merge-evidence-unknown; merge+close PR/target/issue."
+  HST_ACTIONABLE_SUMMARY = "HST-v1 actionable material state change: a decision or action is required, " \
+                           "a target is ready for walkthrough or approval, a blocker exhausted its bounded " \
+                           "retries and needs intervention, or closeout/archive completed"
 
   def normalized(path)
     full_path = File.join(ROOT, path)
@@ -166,9 +169,8 @@ class UserFacingCoordinationContractTest < Minitest::Test
       text = normalized(path)
       assert_includes text, "no-change wake", path
       assert_includes text, "no user-visible notification", path
-      assert_includes text,
-                      "material state change, a required decision, a durable blocker, or completion",
-                      path
+      assert_includes text, HST_ACTIONABLE_SUMMARY, path
+      refute_includes text, "material state change, a required decision, a durable blocker, or completion", path
       assert_includes text, "delete", path
       assert_includes text, "gate clears or becomes durably terminal", path
       assert_includes text, "automation never owns", path

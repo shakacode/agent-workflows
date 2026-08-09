@@ -9,6 +9,7 @@ require "rbconfig"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflows-delivery-state", __dir__)
+load SCRIPT
 
 class AgentWorkflowsDeliveryStateTest < Minitest::Test
   def setup
@@ -112,6 +113,35 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
   def write_metadata(target, metadata)
     File.write(File.join(target, ".agent-workflows-install.json"), "#{JSON.pretty_generate(metadata)}\n")
+  end
+
+  def test_directory_snapshot_conflict_does_not_report_revision_unavailable
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      installed = File.join(tmp, "target/skills/alpha")
+      FileUtils.mkdir_p(source)
+      recorded_revision = create_source(source)
+      FileUtils.remove_entry(File.join(source, ".git"))
+      FileUtils.mkdir_p(installed)
+      FileUtils.cp(File.join(source, "skills/alpha/SKILL.md"), installed)
+      File.open(File.join(installed, "SKILL.md"), "a") { |file| file << "personal edit\n" }
+      metadata = {
+        "mode" => "copy",
+        "source" => source,
+        "source_revision" => recorded_revision
+      }
+
+      result = AgentWorkflowsDeliveryState.flat_skill_ownership_conflict(
+        source: source,
+        metadata: metadata,
+        present: [installed],
+        revision: recorded_revision
+      )
+
+      assert_equal "ambiguous", result.fetch("state")
+      assert_equal [installed], result.fetch("blocking")
+      refute result.key?("reason"), result.inspect
+    end
   end
 
   def test_detects_active_native_plugin_from_real_host_state_shapes
