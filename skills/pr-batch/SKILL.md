@@ -1017,7 +1017,7 @@ the `goal-state-change-monitor` helper in this skill's `bin` directory, and do n
 `baseline-recorded`, `suppress-unchanged`, `suppress-stale-probe`,
 `suppress-replayed-probe`, or `suppress-acknowledgement-retry`. Treat
 `wake_parent: true` as authoritative and resume on `wake-state-change`,
-`stop-dependency-terminal`, or `redeliver-pending-wake` with its compact delta
+`fallback-model-poll`, `stop-dependency-terminal`, or `redeliver-pending-wake` with its compact delta
 when present, durably enqueue that resume, and then acknowledge its `wake_id`;
 acknowledgement retries are idempotent. Redeliver an unacknowledged pending
 wake after restart, then rerun every

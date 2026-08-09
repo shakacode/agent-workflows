@@ -148,7 +148,7 @@ def compact_changes(previous, current, path = "")
     end
   end
 
-  [{ "path" => path.empty? ? "/" : path, "previous" => previous, "current" => current }]
+  [{ "path" => path, "previous" => previous, "current" => current }]
 end
 
 state_path = options[:state_path]
@@ -230,7 +230,7 @@ digest_observation = observation.reject do |key, _value|
 end
 observation_digest = Digest::SHA256.hexdigest(canonical_json(digest_observation))
 legacy_digest_observation = observation.reject { |key, _value| key == "acknowledged_wake_id" }
-legacy_observation_digest = Digest::SHA256.hexdigest(canonical_json(legacy_digest_observation))
+legacy_observation_digest = nil
 
 FileUtils.mkdir_p(File.dirname(state_path))
 File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
@@ -245,11 +245,27 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   fail_json("corrupt-persisted-state") if previous && !persisted_state?(previous)
   fail_json("monitor-id-collision") if previous && previous["monitor_id"] != monitor_id
 
+  validate_same_sequence_replay = lambda do
+    if previous["observation_digest_version"] == OBSERVATION_DIGEST_VERSION
+      fail_json("probe-replay-mismatch") if previous["last_observation_digest"] != observation_digest
+    else
+      legacy_observation_digest ||= Digest::SHA256.hexdigest(canonical_json(legacy_digest_observation))
+      fail_json("probe-replay-mismatch") if previous["last_observation_digest"] != legacy_observation_digest
+
+      previous = previous.merge(
+        "last_observation_digest" => observation_digest,
+        "observation_digest_version" => OBSERVATION_DIGEST_VERSION
+      )
+      persist_state(state_path, previous)
+    end
+  end
+
   pending_wake = previous&.fetch("pending_wake", nil)
   acknowledged_wake_ids = previous.to_h.fetch("acknowledged_wake_ids", [])
   fail_json("corrupt-persisted-state") unless acknowledged_wake_ids.is_a?(Array)
   recognized_acknowledgement = false
   if acknowledged_wake_id
+    validate_same_sequence_replay.call if previous && probe_sequence == previous.fetch("probe_sequence")
     if pending_wake.is_a?(Hash) && pending_wake["wake_id"] == acknowledged_wake_id
       previous = previous.reject { |key, _value| key == "pending_wake" }
                          .merge("acknowledged_wake_ids" => (acknowledged_wake_ids + [acknowledged_wake_id]).uniq)
@@ -265,7 +281,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     pending_wake = previous&.fetch("pending_wake", nil)
   end
   terminal_observation = TASK_ACTIONS.key?(task_status) || dependency_status == "terminal"
-  terminal_observation_supersedes_pending = terminal_observation && previous &&
+  terminal_observation_supersedes_pending = pending_wake && terminal_observation && previous &&
                                             probe_sequence > previous.fetch("probe_sequence")
   if pending_wake && terminal_observation_supersedes_pending
     acknowledged_wake_ids = (acknowledged_wake_ids + [pending_wake.fetch("wake_id")]).uniq
@@ -299,17 +315,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
 
   if previous && probe_sequence <= previous.fetch("probe_sequence")
     if probe_sequence == previous.fetch("probe_sequence")
-      if previous["observation_digest_version"] == OBSERVATION_DIGEST_VERSION
-        fail_json("probe-replay-mismatch") if previous["last_observation_digest"] != observation_digest
-      else
-        fail_json("probe-replay-mismatch") if previous["last_observation_digest"] != legacy_observation_digest
-
-        previous = previous.merge(
-          "last_observation_digest" => observation_digest,
-          "observation_digest_version" => OBSERVATION_DIGEST_VERSION
-        )
-        persist_state(state_path, previous)
-      end
+      validate_same_sequence_replay.call
 
       previous_decision = previous.fetch("last_decision")
       decision = previous_decision.merge(
@@ -338,7 +344,10 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
 
   task_action = TASK_ACTIONS[task_status]
   sticky_monitor_status = previous&.fetch("monitor_status", nil)
-  if previous && (sticky_monitor_status == "stopped" ||
+  previous_handoff = previous&.dig("last_decision", "handoff")
+  task_handoff_supersedes_dependency_stop = task_action && sticky_monitor_status == "stopped" && !previous_handoff
+  if previous && ((sticky_monitor_status == "stopped" && !task_handoff_supersedes_dependency_stop &&
+                    !terminal_observation_supersedes_pending) ||
                   (sticky_monitor_status == "paused" && !terminal_observation))
     monitor_status = previous.fetch("monitor_status")
     decision = {
@@ -351,7 +360,6 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
       "wake_parent" => false,
       "monitor_status" => monitor_status
     }
-    previous_handoff = previous.dig("last_decision", "handoff")
     decision["handoff"] = previous_handoff if previous_handoff
     state = previous.merge(
       "probe_sequence" => probe_sequence,
@@ -369,11 +377,14 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
      (previous["limits"] != limits || previous["polling_policy"] != polling_policy)
     fail_json("monitor-configuration-drift")
   end
+  if previous && terminal_observation
+    limits = previous.fetch("limits")
+    polling_policy = previous.fetch("polling_policy")
+  end
 
   changed = !previous.nil? && previous["fingerprint"] != fingerprint
   dependency_terminal = dependency_status == "terminal"
   task_monitor_status = task_status == "blocked-user-input" ? "paused" : "stopped" if task_action
-  new_terminal_transition = dependency_terminal && (!previous || previous["monitor_status"] != "stopped")
   unchanged_runs = if previous && !changed
                      previous.fetch("unchanged_runs", 0) + 1
                    else
@@ -408,7 +419,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   wake_parent = if capability == "unsupported" || task_action
                   false
                 elsif dependency_terminal
-                  new_terminal_transition
+                  true
                 elsif changed
                   true
                 elsif budget_pause
@@ -424,7 +435,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     "action" => if task_action
                   task_action
                 elsif dependency_terminal
-                  new_terminal_transition ? "stop-dependency-terminal" : "already-stopped"
+                  "stop-dependency-terminal"
                 elsif capability == "unsupported"
                   "manual-resume-required"
                 elsif changed
@@ -508,6 +519,11 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
       "resume_instruction" => resume_instruction,
       "resume" => "manual-resume-required"
     }
+    if budget_pause
+      decision["handoff"]["budget_reason"] = budget_reason
+      decision["handoff"]["usage"] = usage
+      decision["handoff"]["limits"] = limits
+    end
     if changed
       decision["handoff"]["state_delta"] = {
         "changes" => compact_changes(previous.fetch("blocker_state"), normalized_blocker_state)

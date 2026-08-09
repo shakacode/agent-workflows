@@ -76,6 +76,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
       )
     end
 
+    # Synthetic worst case: every scheduled probe reloads the full parent context.
     baseline_unchanged_wakes = observations.length
     puts "BASELINE_UNCHANGED_WAKE_COUNT=#{baseline_unchanged_wakes}"
     assert_operator baseline_unchanged_wakes, :>, 0
@@ -118,6 +119,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
         decision
       end
     end
+    # Synthetic worst case: every scheduled probe reloads the modeled parent token count.
     scheduled_probe_tokens = parent_context_tokens.drop(1)
     baseline_tokens = scheduled_probe_tokens.sum
     candidate_tokens = candidate_decisions.drop(1).each_with_index.sum do |decision, index|
@@ -178,7 +180,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
   def test_changed_fingerprint_emits_only_compact_leaf_changes
     checks = (1..100).to_h { |index| ["check-#{index}", "pending"] }
     initial_state = { "head" => "a" * 40, "checks" => checks }
-    changed_state = Marshal.load(Marshal.dump(initial_state))
+    changed_state = JSON.parse(JSON.generate(initial_state))
     changed_state.fetch("checks")["check-1"] = "passed"
 
     Dir.mktmpdir do |directory|
@@ -238,6 +240,32 @@ class GoalStateChangeMonitorTest < Minitest::Test
       end
 
       assert_equal [900, 1800, 3600, 7200, 7200], intervals
+    end
+  end
+
+  def test_model_polling_fallback_defaults_to_four_fast_polls_then_the_four_hour_cap
+    fallback = observation("capability" => "model-polling-only")
+
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      baseline, baseline_stderr, baseline_status = run_helper(state_path, fallback)
+      assert baseline_status.success?, baseline_stderr
+      intervals = [baseline.fetch("next_interval_seconds")]
+
+      8.times do |index|
+        current_observation = fallback.merge(
+          "probe_sequence" => index + 1,
+          "observed_at" => format("2026-08-09T%02d:00:00Z", index + 1)
+        )
+        decision, stderr, status = run_helper(state_path, current_observation)
+        assert status.success?, stderr
+        assert_equal "fallback-model-poll", decision.fetch("action")
+        assert decision.fetch("wake_parent")
+        intervals << decision.fetch("next_interval_seconds")
+        acknowledge_wake(state_path, current_observation, decision)
+      end
+
+      assert_equal [900, 900, 900, 900, 1800, 3600, 7200, 14_400, 14_400], intervals
     end
   end
 
@@ -314,6 +342,110 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert_equal "already-stopped", later.fetch("action")
       assert_equal "stopped", later.fetch("monitor_status")
       assert_equal false, later.fetch("wake_parent")
+    end
+  end
+
+  def test_task_handoffs_supersede_an_acknowledged_dependency_stop
+    {
+      "terminal" => %w[stop-task-terminal stopped],
+      "not-resumable" => %w[stop-task-not-resumable stopped],
+      "blocked-user-input" => %w[pause-user-input paused]
+    }.each do |task_status, (expected_action, expected_monitor_status)|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+        assert baseline_status.success?, baseline_stderr
+        dependency_observation = observation(
+          "dependency_status" => "terminal",
+          "blocker_state" => { "head" => "a" * 40, "pending" => [], "result" => "passed" },
+          "probe_sequence" => 1,
+          "observed_at" => "2026-08-09T00:15:00Z"
+        )
+        dependency_stop, stop_stderr, stop_status = run_helper(state_path, dependency_observation)
+        assert stop_status.success?, stop_stderr
+        assert_equal "stop-dependency-terminal", dependency_stop.fetch("action")
+        acknowledge_wake(state_path, dependency_observation, dependency_stop)
+
+        blocker_state = if task_status == "blocked-user-input"
+                          { "question" => "Which terminal outcome should be recorded?" }
+                        else
+                          { "head" => "b" * 40, "pending" => [] }
+                        end
+        resume_instruction = "Resume task thread-393 after #{task_status}."
+        current, current_stderr, current_status = run_helper(
+          state_path,
+          observation(
+            "task_status" => task_status,
+            "dependency_status" => "terminal",
+            "blocker_state" => blocker_state,
+            "resume_instruction" => resume_instruction,
+            "probe_sequence" => 2,
+            "observed_at" => "2026-08-09T00:30:00Z"
+          )
+        )
+
+        assert current_status.success?, current_stderr
+        assert_equal expected_action, current.fetch("action")
+        assert_equal expected_monitor_status, current.fetch("monitor_status")
+        refute current.fetch("wake_parent")
+        assert_equal "task-#{task_status}", current.dig("handoff", "reason") unless task_status == "blocked-user-input"
+        assert_equal "blocked-user-input", current.dig("handoff", "reason") if task_status == "blocked-user-input"
+        assert_equal blocker_state, current.dig("handoff", "blocker_state")
+        assert_equal resume_instruction, current.dig("handoff", "resume_instruction")
+        assert_equal current.fetch("handoff"), JSON.parse(File.read(state_path)).dig("last_decision", "handoff")
+      end
+    end
+  end
+
+  def test_task_handoffs_supersede_an_unacknowledged_dependency_stop
+    {
+      "terminal" => %w[stop-task-terminal stopped],
+      "not-resumable" => %w[stop-task-not-resumable stopped],
+      "blocked-user-input" => %w[pause-user-input paused]
+    }.each do |task_status, (expected_action, expected_monitor_status)|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+        assert baseline_status.success?, baseline_stderr
+        dependency_observation = observation(
+          "dependency_status" => "terminal",
+          "blocker_state" => { "head" => "a" * 40, "pending" => [], "result" => "passed" },
+          "probe_sequence" => 1,
+          "observed_at" => "2026-08-09T00:15:00Z"
+        )
+        dependency_stop, stop_stderr, stop_status = run_helper(state_path, dependency_observation)
+        assert stop_status.success?, stop_stderr
+        assert_equal "stop-dependency-terminal", dependency_stop.fetch("action")
+
+        blocker_state = if task_status == "blocked-user-input"
+                          { "question" => "Which terminal outcome should be recorded?" }
+                        else
+                          { "head" => "b" * 40, "pending" => [] }
+                        end
+        resume_instruction = "Resume task thread-393 after #{task_status}."
+        current, current_stderr, current_status = run_helper(
+          state_path,
+          observation(
+            "task_status" => task_status,
+            "dependency_status" => "terminal",
+            "blocker_state" => blocker_state,
+            "resume_instruction" => resume_instruction,
+            "probe_sequence" => 2,
+            "observed_at" => "2026-08-09T00:30:00Z"
+          )
+        )
+
+        assert current_status.success?, current_stderr
+        assert_equal expected_action, current.fetch("action")
+        assert_equal expected_monitor_status, current.fetch("monitor_status")
+        refute current.fetch("wake_parent")
+        assert_equal blocker_state, current.dig("handoff", "blocker_state")
+        assert_equal resume_instruction, current.dig("handoff", "resume_instruction")
+        persisted = JSON.parse(File.read(state_path))
+        refute persisted.key?("pending_wake")
+        assert_includes persisted.fetch("acknowledged_wake_ids"), dependency_stop.fetch("wake_id")
+        assert_equal current.fetch("handoff"), persisted.dig("last_decision", "handoff")
+      end
     end
   end
 
@@ -395,6 +527,37 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_task_stopped_monitor_does_not_replace_its_terminal_handoff
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      terminal, terminal_stderr, terminal_status = run_helper(
+        state_path,
+        observation(
+          "task_status" => "terminal",
+          "resume_instruction" => "Resume after the terminal task is reopened."
+        )
+      )
+      assert terminal_status.success?, terminal_stderr
+
+      later, later_stderr, later_status = run_helper(
+        state_path,
+        observation(
+          "task_status" => "blocked-user-input",
+          "blocker_state" => { "question" => "Should this task be reopened?" },
+          "resume_instruction" => "Answer to reopen the task.",
+          "probe_sequence" => 1,
+          "observed_at" => "2026-08-09T00:15:00Z"
+        )
+      )
+
+      assert later_status.success?, later_stderr
+      assert_equal "already-stopped", later.fetch("action")
+      assert_equal "stopped", later.fetch("monitor_status")
+      assert_equal terminal.fetch("handoff"), later.fetch("handoff")
+      assert_equal terminal.fetch("handoff"), JSON.parse(File.read(state_path)).dig("last_decision", "handoff")
+    end
+  end
+
   def test_stopped_monitor_ignores_later_configuration_framing_drift
     Dir.mktmpdir do |directory|
       state_path = File.join(directory, "monitor.json")
@@ -422,6 +585,52 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert_equal "already-stopped", later.fetch("action")
       assert_equal "stopped", later.fetch("monitor_status")
       refute later.fetch("wake_parent")
+    end
+  end
+
+  def test_task_handoff_after_dependency_stop_preserves_monitor_configuration
+    original_limits = { "max_unchanged_runs" => 32, "max_model_calls" => 16, "max_tokens" => 1_000_000 }
+    original_polling_policy = {
+      "fast_interval_seconds" => 900,
+      "fast_attempts" => 4,
+      "max_interval_seconds" => 14_400
+    }
+
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      terminal_observation = observation(
+        "dependency_status" => "terminal",
+        "probe_sequence" => 1,
+        "observed_at" => "2026-08-09T00:15:00Z"
+      )
+      dependency_stop, stop_stderr, stop_status = run_helper(state_path, terminal_observation)
+      assert stop_status.success?, stop_stderr
+      acknowledge_wake(state_path, terminal_observation, dependency_stop)
+
+      current, current_stderr, current_status = run_helper(
+        state_path,
+        observation(
+          "task_status" => "blocked-user-input",
+          "blocker_state" => { "question" => "Should this task be reopened?" },
+          "resume_instruction" => "Resume after answering the question.",
+          "limits" => { "max_unchanged_runs" => 2, "max_model_calls" => 2, "max_tokens" => 2 },
+          "polling_policy" => {
+            "fast_interval_seconds" => 60,
+            "fast_attempts" => 1,
+            "max_interval_seconds" => 120
+          },
+          "probe_sequence" => 2,
+          "observed_at" => "2026-08-09T00:30:00Z"
+        )
+      )
+      assert current_status.success?, current_stderr
+      assert_equal "pause-user-input", current.fetch("action")
+
+      persisted = JSON.parse(File.read(state_path))
+      assert_equal original_limits, persisted.fetch("limits")
+      assert_equal original_polling_policy, persisted.fetch("polling_policy")
     end
   end
 
@@ -690,6 +899,32 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_unsupported_capability_preserves_exhausted_budget_context
+    limits = {
+      "max_unchanged_runs" => 10,
+      "max_model_calls" => 1,
+      "max_tokens" => 1_000
+    }
+
+    Dir.mktmpdir do |directory|
+      decision, stderr, status = run_helper(
+        File.join(directory, "monitor.json"),
+        observation(
+          "capability" => "unsupported",
+          "limits" => limits,
+          "usage_delta" => { "model_calls" => 1, "tokens" => 100 }
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "manual-resume-required", decision.fetch("action")
+      assert_equal "unsupported-capability", decision.dig("handoff", "reason")
+      assert_equal "model-calls-ceiling", decision.dig("handoff", "budget_reason")
+      assert_equal({ "model_calls" => 1, "tokens" => 100 }, decision.dig("handoff", "usage"))
+      assert_equal limits, decision.dig("handoff", "limits")
+    end
+  end
+
   def test_capability_loss_preserves_changed_and_terminal_transitions_in_the_handoff
     {
       "state-change-while-unsupported" => {
@@ -776,6 +1011,37 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert post_ack_status.success?, post_ack_stderr
       assert_equal "suppress-replayed-probe", post_ack.fetch("action")
       assert_equal false, post_ack.fetch("wake_parent")
+    end
+  end
+
+  def test_same_sequence_acknowledgement_rejects_a_substantive_replay_change
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      changed_observation = observation(
+        "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+        "probe_sequence" => 1,
+        "observed_at" => "2026-08-09T00:15:00Z"
+      )
+      wake, wake_stderr, wake_status = run_helper(state_path, changed_observation)
+      assert wake_status.success?, wake_stderr
+
+      decision, stderr, status = run_helper(
+        state_path,
+        changed_observation.merge(
+          "blocker_state" => { "head" => "c" * 40, "pending" => ["new-check"] },
+          "resume_instruction" => "A different instruction at the same sequence.",
+          "acknowledged_wake_id" => wake.fetch("wake_id")
+        )
+      )
+
+      assert_nil decision
+      refute status.success?
+      assert_includes stderr, '"reason":"probe-replay-mismatch"'
+      persisted = JSON.parse(File.read(state_path))
+      assert_equal wake.fetch("wake_id"), persisted.dig("pending_wake", "wake_id")
+      refute persisted.key?("acknowledged_wake_ids")
     end
   end
 
@@ -1059,6 +1325,43 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert_equal "stopped", terminal.fetch("monitor_status")
       assert terminal.fetch("wake_parent")
       refute terminal.key?("handoff")
+    end
+  end
+
+  def test_newer_dependency_terminal_replaces_the_unacknowledged_terminal_wake
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      first_observation = observation(
+        "dependency_status" => "terminal",
+        "blocker_state" => { "result" => "failed" },
+        "probe_sequence" => 1,
+        "observed_at" => "2026-08-09T00:15:00Z"
+      )
+      first, first_stderr, first_status = run_helper(state_path, first_observation)
+      assert first_status.success?, first_stderr
+      assert_equal "stop-dependency-terminal", first.fetch("action")
+
+      second, second_stderr, second_status = run_helper(
+        state_path,
+        observation(
+          "dependency_status" => "terminal",
+          "blocker_state" => { "result" => "passed" },
+          "probe_sequence" => 2,
+          "observed_at" => "2026-08-09T00:30:00Z"
+        )
+      )
+
+      assert second_status.success?, second_stderr
+      assert_equal "stop-dependency-terminal", second.fetch("action")
+      assert second.fetch("wake_parent")
+      refute_equal first.fetch("wake_id"), second.fetch("wake_id")
+      persisted = JSON.parse(File.read(state_path))
+      assert_equal second.fetch("wake_id"), persisted.dig("pending_wake", "wake_id")
+      assert_includes persisted.fetch("acknowledged_wake_ids"), first.fetch("wake_id")
+      assert_equal 2, persisted.fetch("probe_sequence")
+      assert_equal({ "result" => "passed" }, persisted.fetch("blocker_state"))
     end
   end
 
@@ -1413,7 +1716,16 @@ class GoalStateChangeMonitorTest < Minitest::Test
       ),
       "resume-instruction-required" => observation(
         "resume_instruction" => ""
-      )
+      ),
+      "wrong-contract" => observation("contract" => "goal-state-change-observation-v2"),
+      "invalid-monitor-id" => observation("monitor_id" => ""),
+      "invalid-capability" => observation("capability" => "watcher"),
+      "invalid-task-status" => observation("task_status" => "running"),
+      "invalid-dependency-status" => observation("dependency_status" => "pending"),
+      "blocker-state-object-required" => observation("blocker_state" => []),
+      "invalid-probe-sequence" => observation("probe_sequence" => -1),
+      "invalid-limits" => observation("limits" => { "max_unchanged_runs" => 0 }),
+      "invalid-usage-delta" => observation("usage_delta" => { "tokens" => -1 })
     }
 
     invalid_inputs.each do |expected_reason, input|

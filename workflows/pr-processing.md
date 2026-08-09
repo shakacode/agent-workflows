@@ -1758,7 +1758,7 @@ qualifying state-change watcher:
 - treats `baseline-recorded`, `suppress-unchanged`, `suppress-stale-probe`,
   `suppress-replayed-probe`, and `suppress-acknowledgement-retry` as
   no-continuation outcomes; treats `wake_parent: true` as authoritative and
-  durably enqueues one resume for `wake-state-change`,
+  durably enqueues one resume for `wake-state-change`, `fallback-model-poll`,
   `stop-dependency-terminal`, or `redeliver-pending-wake`, with compact
   `state_delta` when present, then acknowledges its `wake_id`.
   Acknowledgement retries are idempotent. Until acknowledgement,

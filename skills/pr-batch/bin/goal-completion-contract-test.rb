@@ -512,6 +512,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_contract, "Acknowledgement retries are idempotent",
                          "canonical completion contract"
     assert_text_includes normalized_contract, "`stop-dependency-terminal`", "canonical completion contract"
+    assert_text_includes normalized_contract, "`fallback-model-poll`", "canonical completion contract"
     assert_text_includes normalized_contract, "redeliver-pending-wake", "canonical completion contract"
     assert_text_includes normalized_contract, "`suppress-replayed-probe`", "canonical completion contract"
     assert_text_includes normalized_contract, "`suppress-acknowledgement-retry`", "canonical completion contract"
@@ -544,7 +545,17 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_host_adapter, "model-polling-only", "host-adapter contract"
     assert_text_includes normalized_host_adapter, "acknowledging its `wake_id`", "host-adapter contract"
     assert_text_includes normalized_host_adapter, "Acknowledgement is idempotent", "host-adapter contract"
+    assert_text_includes normalized_host_adapter,
+                         "same `probe_sequence` must replay a canonical-equivalent observation payload",
+                         "host-adapter replay identity contract"
+    assert_text_includes normalized_host_adapter,
+                         "Legacy state without `observation_digest_version` must first replay the exact prior `observed_at`",
+                         "host-adapter legacy replay migration"
+    assert_text_includes normalized_host_adapter,
+                         "unsupported handoff also preserves `budget_reason`, `usage`, and `limits`",
+                         "host-adapter combined unsupported budget handoff"
     assert_text_includes normalized_host_adapter, "`stop-dependency-terminal`", "host-adapter contract"
+    assert_text_includes normalized_host_adapter, "`fallback-model-poll`", "host-adapter contract"
     assert_text_includes normalized_host_adapter, "`wake_parent: true` is authoritative", "host-adapter contract"
     assert_text_includes normalized_host_adapter, "`redeliver-pending-wake`", "host-adapter contract"
     assert_text_includes normalized_host_adapter,
@@ -555,10 +566,27 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes text, "state-change", "state-change consumer guidance"
     end
     assert_text_includes @pr_batch_skill, "`suppress-replayed-probe`", "pr-batch no-continuation guidance"
+    assert_text_includes @pr_batch_skill, "`fallback-model-poll`", "pr-batch fallback wake guidance"
     assert_text_includes @pr_batch_skill, "`suppress-acknowledgement-retry`",
                          "pr-batch acknowledgement retry guidance"
     assert_text_includes @continue_skill, "typed terminal action",
                          "terminal continuation without a fingerprint delta"
+    assert_text_includes @continue_skill.gsub(/\s+/, " "),
+                         "A `model-polling-only` fallback wake refreshes the minimal live blocker evidence",
+                         "model-polling continuation refresh"
+    assert_text_includes @continue_skill.gsub(/\s+/, " "),
+                         "acknowledge its `wake_id` before submitting the next observation",
+                         "model-polling continuation acknowledgement"
+    normalized_pr_monitoring = @pr_monitoring_skill.gsub(/\s+/, " ")
+    assert_text_includes normalized_pr_monitoring,
+                         "persist the reducer's exact restart-safe handoff",
+                         "standalone monitor handoff persistence"
+    assert_text_includes normalized_pr_monitoring,
+                         "exact blocked-user-input question",
+                         "standalone monitor user-input persistence"
+    assert_text_includes normalized_pr_monitoring,
+                         "`stop-dependency-terminal` is a waking outcome and does not require a manual handoff",
+                         "standalone dependency-terminal delivery"
   end
 
   def test_state_change_monitor_regressions_are_part_of_the_canonical_goal_contract_gate

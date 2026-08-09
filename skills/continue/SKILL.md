@@ -55,8 +55,13 @@ for what to continue.
 - Before another bounded poll or sleep, finish every runnable in-scope closeout task; wait only when no such work remains.
 - When continuation is driven by a Goal monitor, require a material state-change
   delta or a typed terminal action with `wake_parent: true` before rebuilding
-  task context. An unchanged deterministic probe is a persisted heartbeat, not
-  a reason to continue. On a changed fingerprint or typed terminal action,
+  task context for `deterministic-watcher` decisions. An unchanged deterministic
+  probe is a persisted heartbeat, not a reason to continue. A `model-polling-only`
+  fallback wake refreshes the minimal live blocker evidence, submits the next
+  observation, and follows that decision; do not suppress the bounded fallback
+  merely because its prior fingerprint was unchanged. After durably enqueuing
+  each fallback continuation, acknowledge its `wake_id` before submitting the next observation;
+  otherwise restart-safe redelivery intentionally fences newer evidence. On a changed fingerprint or typed terminal action,
   accept only the compact decision, refresh live dependencies, and rerun the
   task's security, origin, coordination, overlap, review, readiness, and
   exact-head gates before acting. A stale or duplicate probe remains suppressed;

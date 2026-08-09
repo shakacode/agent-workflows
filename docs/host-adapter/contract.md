@@ -148,7 +148,7 @@ invoke `"${PR_BATCH_SKILL_DIR}/bin/goal-state-change-monitor" --state <path>`
 outside parent task context, before any model continuation. `suppress-unchanged`,
 `suppress-stale-probe`, `suppress-replayed-probe`, and
 `suppress-acknowledgement-retry` must not re-enter the parent task.
-`wake_parent: true` is authoritative: `wake-state-change`,
+`wake_parent: true` is authoritative: `wake-state-change`, `fallback-model-poll`,
 `stop-dependency-terminal`, and `redeliver-pending-wake` re-enter it with the
 compact `state_delta` when present and then rerun all mandatory gates. The
 adapter must durably
@@ -162,10 +162,21 @@ must encode ordered sequences as keyed objects. The reducer canonicalizes object
 keys and set members before hashing so API result order alone cannot wake the
 parent task.
 
+A retry with the same `probe_sequence` must replay a canonical-equivalent observation payload.
+For state carrying the current `observation_digest_version`, only `observed_at` and
+`acknowledged_wake_id` may differ. Legacy state without `observation_digest_version`
+must first replay the exact prior `observed_at` and payload so the reducer can migrate it;
+a restamped legacy retry fails closed. A substantive change to
+`blocker_state`, `resume_instruction`, limits, polling policy, capability, or task/dependency
+status at the same sequence fails closed as `probe-replay-mismatch`; advance the sequence for
+new evidence.
+
 Adapters must provide a nonempty `resume_instruction` for every observation so
 any terminal or budget handoff remains actionable. A blocked-user-input
 `blocker_state` must also carry the exact nonempty `question`; the reducer
 persists both values in its non-waking manual handoff.
+When an unsupported capability and a budget ceiling coincide, the unsupported
+handoff also preserves `budget_reason`, `usage`, and `limits`.
 
 This source pack defines the portable reducer verb and adapter contract; it
 does not implement a live host scheduler. Current-thread scheduling alone is
