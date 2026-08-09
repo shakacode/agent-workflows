@@ -2,9 +2,11 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "etc"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 require "yaml"
 
@@ -44,6 +46,16 @@ class HostedQaReadinessTest < Minitest::Test
     raise "git fixture failed: #{out}" unless status.success?
 
     out
+  end
+
+  def with_environment(overrides)
+    originals = overrides.to_h { |name, _value| [name, ENV[name]] }
+    overrides.each { |name, value| ENV[name] = value }
+    yield
+  ensure
+    originals&.each do |name, value|
+      value.nil? ? ENV.delete(name) : ENV[name] = value
+    end
   end
 
   def run_readiness(root, base_sha:, head_sha:, evidence: "", env: {})
@@ -121,6 +133,79 @@ class HostedQaReadinessTest < Minitest::Test
       assert_equal "trusted_base", result.fetch("policy_source")
       assert_equal base_sha, result.fetch("base_sha")
       assert_equal head_sha, result.fetch("head_sha")
+    end
+  end
+
+  def test_git_capture_uses_only_a_sanitized_guarded_direct_environment
+    with_repo do |root|
+      captured = nil
+      successful_status = Struct.new(:success?).new(true)
+      original_capture = Open3.method(:capture3)
+      capture = lambda do |environment, command, *arguments, **options|
+        captured = { environment:, command:, arguments:, options: }
+        ["", "", successful_status]
+      end
+      hostile_environment = {
+        "PATH" => File.join(root, "repo-bin"),
+        "GIT_SSH_COMMAND" => File.join(root, "steal-ssh"),
+        "GIT_ASKPASS" => File.join(root, "steal-credentials"),
+        "GIT_CONFIG_GLOBAL" => File.join(root, "hostile.gitconfig"),
+        "GIT_CONFIG_SYSTEM" => File.join(root, "hostile-system.gitconfig"),
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "alias.status",
+        "GIT_CONFIG_VALUE_0" => "!false",
+        "GIT_CONFIG_PARAMETERS" => "'alias.status=!false'"
+      }
+
+      begin
+        Open3.singleton_class.send(:define_method, :capture3, capture)
+        with_environment(hostile_environment) do
+          HostedQaReadiness.git_capture(root, "status", "--short")
+        end
+      ensure
+        Open3.singleton_class.send(:define_method, :capture3, original_capture)
+      end
+
+      account = Etc.getpwuid(Process.uid)
+      expected_environment = {
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => %w[/opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin].join(File::PATH_SEPARATOR),
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => File::NULL,
+        "GIT_NO_REPLACE_OBJECTS" => "1",
+        "GIT_OPTIONAL_LOCKS" => "0",
+        "GIT_TERMINAL_PROMPT" => "0"
+      }
+      assert_equal expected_environment, captured.fetch(:environment)
+      assert_equal ["-C", root, "status", "--short"], captured.fetch(:arguments)
+      assert_equal({ chdir: root, unsetenv_others: true }, captured.fetch(:options))
+      refute_includes captured.dig(:environment, "PATH").split(File::PATH_SEPARATOR), File.join(root, "repo-bin")
+    end
+  end
+
+  def test_git_capture_rejects_system_git_resolving_inside_the_candidate_repository
+    with_repo do |root|
+      repository_git = File.join(root, "repo-controlled-git")
+      outside_link = "#{root}-system-git"
+      write(root, "repo-controlled-git", "#!/bin/sh\nexit 0\n", executable: true)
+      File.symlink(repository_git, outside_link)
+      original_system_git = HostedQaReadiness::SYSTEM_GIT
+
+      begin
+        HostedQaReadiness.send(:remove_const, :SYSTEM_GIT)
+        HostedQaReadiness.const_set(:SYSTEM_GIT, outside_link)
+
+        error = assert_raises(Errno::ENOENT) do
+          HostedQaReadiness.git_capture(root, "status", "--short")
+        end
+        assert_includes error.message, "trusted system git is unavailable"
+      ensure
+        HostedQaReadiness.send(:remove_const, :SYSTEM_GIT)
+        HostedQaReadiness.const_set(:SYSTEM_GIT, original_system_git)
+        FileUtils.rm_f(outside_link)
+      end
     end
   end
 
@@ -251,6 +336,46 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_trusted_policy_changes_are_always_applicable
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", hosted_policy(change_paths: ["app/**"]))
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/env ruby\n", executable: true)
+      base_sha = commit!(root, "base with hosted policy")
+      write(
+        root,
+        ".agents/agent-workflow.yml",
+        hosted_policy(change_paths: ["app/**"], waiver_mode: "maintainer")
+      )
+      head_sha = commit!(root, "change hosted policy")
+
+      result, status = run_readiness(root, base_sha:, head_sha:)
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_equal [".agents/agent-workflow.yml"], result.fetch("applicable_paths")
+      assert_includes result.fetch("blockers"), "hosted-qa-evidence v1 marker is required; " \
+                                                "qa-evidence markers are not hosted deployment proof"
+    end
+  end
+
+  def test_trusted_deployment_verifier_changes_are_always_applicable
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", hosted_policy(change_paths: ["app/**"]))
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/env ruby\nputs 'base'\n", executable: true)
+      base_sha = commit!(root, "base with hosted policy")
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/env ruby\nputs 'head'\n", executable: true)
+      head_sha = commit!(root, "change hosted deployment verifier")
+
+      result, status = run_readiness(root, base_sha:, head_sha:)
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_equal [".agents/bin/verify-hosted-deployment"], result.fetch("applicable_paths")
+      assert_includes result.fetch("blockers"), "hosted-qa-evidence v1 marker is required; " \
+                                                "qa-evidence markers are not hosted deployment proof"
+    end
+  end
+
   def test_deployed_head_must_equal_the_exact_current_head
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", hosted_policy)
@@ -321,11 +446,12 @@ class HostedQaReadinessTest < Minitest::Test
 
   def test_invokes_only_the_trusted_base_verifier_with_explicit_argv
     with_repo do |root|
+      argv_log = File.join(root, "verifier-argv.json")
       verifier = <<~RUBY
         #!/usr/bin/env ruby
         require "json"
         arguments = ARGV.each_slice(2).to_h
-        File.write(ENV.fetch("HOSTED_QA_ARGV_LOG"), JSON.generate(ARGV))
+        File.write(#{argv_log.dump}, JSON.generate(ARGV))
         puts JSON.generate(
           "version" => 1,
           "verified" => true,
@@ -347,7 +473,6 @@ class HostedQaReadinessTest < Minitest::Test
         executable: true
       )
       head_sha = commit!(root, "runtime and untrusted verifier changes")
-      argv_log = File.join(root, "verifier-argv.json")
       deployment_id = "production-#{head_sha}"
       deployment_url = "https://deployments.example.test/#{head_sha}"
 
@@ -355,8 +480,7 @@ class HostedQaReadinessTest < Minitest::Test
         root,
         base_sha:,
         head_sha:,
-        evidence: hosted_evidence(head_sha:, deployment_id:, deployment_url:),
-        env: { "HOSTED_QA_ARGV_LOG" => argv_log }
+        evidence: hosted_evidence(head_sha:, deployment_id:, deployment_url:)
       )
 
       assert status.success?, result
@@ -390,7 +514,7 @@ class HostedQaReadinessTest < Minitest::Test
     success_status = Object.new
     success_status.define_singleton_method(:success?) { true }
     test_case = self
-    capture = lambda do |command, input:, timeout:|
+    capture = lambda do |command, input:, timeout:, **_options|
       test_case.assert_equal observed_tempfile.path, command.first
       test_case.assert observed_tempfile.closed?, "verifier tempfile must be closed before execution"
       test_case.assert_equal "", input
@@ -413,7 +537,7 @@ class HostedQaReadinessTest < Minitest::Test
       CompletedBatchPublicationPreflight.singleton_class.send(:define_method, :capture_process, capture)
 
       verification, error = HostedQaReadiness.verify_deployment(
-        repo: "/unused",
+        repo: Dir.tmpdir,
         base_sha: "0" * 40,
         verifier_path: ".agents/bin/verify-hosted-deployment",
         fields:
@@ -427,6 +551,81 @@ class HostedQaReadinessTest < Minitest::Test
     assert_nil error
     assert_equal "trusted_base", verification.fetch("verifier_source")
     refute_path_exists observed_tempfile.path
+  end
+
+  def test_trusted_verifier_runs_with_only_controlled_environment_in_a_safe_temporary_directory
+    with_repo do |root|
+      environment_log = File.join(root, "verifier-environment.json")
+      verifier = <<~RUBY
+        #!/usr/bin/env ruby
+        require "json"
+        arguments = ARGV.each_slice(2).to_h
+        File.write(
+          #{environment_log.dump},
+          JSON.generate("cwd" => Dir.pwd, "environment" => ENV.to_h)
+        )
+        puts JSON.generate(
+          "version" => 1,
+          "verified" => true,
+          "deployment_id" => arguments.fetch("--deployment-id"),
+          "deployment_url" => arguments.fetch("--deployment-url"),
+          "deployed_head_sha" => arguments.fetch("--expected-head-sha"),
+          "target" => arguments.fetch("--target")
+        )
+      RUBY
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", verifier, executable: true)
+      base_sha = commit!(root, "base with hosted verifier")
+      repo_bin = File.join(root, "repo-bin")
+      FileUtils.mkdir_p(repo_bin)
+      fields = {
+        "deployment_id" => "production-#{base_sha}",
+        "deployment_url" => "https://deployments.example.test/#{base_sha}",
+        "head_sha" => base_sha,
+        "target" => "production"
+      }
+
+      verification = error = nil
+      with_environment(
+        "PATH" => [repo_bin, ENV.fetch("PATH")].join(File::PATH_SEPARATOR),
+        "RUBYOPT" => "-W0",
+        "RUBYLIB" => File.join(root, "repo-lib"),
+        "BUNDLE_GEMFILE" => File.join(root, "Gemfile.hostile")
+      ) do
+        verification, error = HostedQaReadiness.verify_deployment(
+          repo: root,
+          base_sha:,
+          verifier_path: ".agents/bin/verify-hosted-deployment",
+          fields:
+        )
+      end
+
+      assert_nil error
+      assert_equal "trusted_base", verification.fetch("verifier_source")
+      observed = JSON.parse(File.read(environment_log))
+      observed_cwd = observed.fetch("cwd")
+      account = Etc.getpwuid(Process.uid)
+      assert_equal observed_cwd, observed.dig("environment", "HOME")
+      assert_equal account.name, observed.dig("environment", "USER")
+      assert_equal account.name, observed.dig("environment", "LOGNAME")
+      expected_path = [
+        File.dirname(File.realpath(RbConfig.ruby)),
+        "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"
+      ].filter_map do |directory|
+        File.realpath(directory)
+      rescue Errno::ENOENT, Errno::EACCES
+        nil
+      end.uniq.join(File::PATH_SEPARATOR)
+      assert_equal expected_path, observed.dig("environment", "PATH")
+      %w[BUNDLE_GEMFILE RUBYLIB RUBYOPT].each do |name|
+        refute observed.fetch("environment").key?(name), name
+      end
+      refute_includes observed.dig("environment", "PATH").split(File::PATH_SEPARATOR), repo_bin
+      repository_realpath = File.realpath(root)
+      refute_equal repository_realpath, observed_cwd
+      refute observed_cwd.start_with?("#{repository_realpath}#{File::SEPARATOR}"), observed_cwd
+      refute_path_exists observed_cwd
+    end
   end
 
   def test_forbidden_waiver_mode_blocks_a_hosted_qa_waiver

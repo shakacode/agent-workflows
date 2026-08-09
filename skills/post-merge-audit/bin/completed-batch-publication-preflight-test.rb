@@ -399,6 +399,34 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_capture_process_accepts_a_closed_environment_and_explicit_working_directory
+    Dir.mktmpdir("completed-batch-closed-environment") do |directory|
+      original_ambient = ENV["CAPTURE_PROCESS_AMBIENT"]
+      ENV["CAPTURE_PROCESS_AMBIENT"] = "must-not-leak"
+      program = <<~'RUBY'
+        require "json"
+        puts JSON.generate("cwd" => Dir.pwd, "environment" => ENV.to_h)
+      RUBY
+
+      stdout, stderr, status = CompletedBatchPublicationPreflight.capture_process(
+        [RbConfig.ruby, "-e", program],
+        input: "",
+        timeout: 2,
+        environment: { "ONLY_CONTROLLED" => "yes" },
+        chdir: directory,
+        unsetenv_others: true
+      )
+
+      payload = JSON.parse(stdout)
+      assert status.success?, stderr
+      assert_equal File.realpath(directory), payload.fetch("cwd")
+      assert_equal "yes", payload.dig("environment", "ONLY_CONTROLLED")
+      refute payload.fetch("environment").key?("CAPTURE_PROCESS_AMBIENT")
+    ensure
+      original_ambient.nil? ? ENV.delete("CAPTURE_PROCESS_AMBIENT") : ENV["CAPTURE_PROCESS_AMBIENT"] = original_ambient
+    end
+  end
+
   def test_public_claim_comment_fallback_never_invokes_private_coordination
     calls = []
     capture = lambda do |command, input:, timeout:|

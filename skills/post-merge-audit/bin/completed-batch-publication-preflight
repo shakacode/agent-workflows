@@ -1053,12 +1053,15 @@ module CompletedBatchPublicationPreflight
     nil
   end
 
-  def capture_process(command, input:, timeout:)
+  def capture_process(command, input:, timeout:, environment: nil, chdir: nil, unsetenv_others: false)
     stdin = stdout = stderr = wait_thread = nil
     workers = []
     process_group_id = nil
     completed = false
-    stdin, stdout, stderr, wait_thread = Open3.popen3(*command, pgroup: true)
+    popen_arguments = environment ? [environment, *command] : command
+    popen_options = { pgroup: true, unsetenv_others: }
+    popen_options[:chdir] = chdir if chdir
+    stdin, stdout, stderr, wait_thread = Open3.popen3(*popen_arguments, **popen_options)
     process_group_id = wait_thread.pid
     writer = Thread.new do
       stdin.write(input)
