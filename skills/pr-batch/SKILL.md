@@ -924,6 +924,19 @@ accepted deferral; open pull requests and all unbound, contradictory, stale, or
 `UNKNOWN` facts remain blockers. Publish and replay must freshly reauthenticate
 the decision, coordination inputs, targets, and QA.
 
+Missing fresh projection timestamps are separate typed facts: `batch.completed`
+requires the fresh batch status to differ from `completed` and exact
+`completed_at: null`, while each absent lane timestamp requires one
+`lane.closed_at` record whose path is
+`coordination_status.batches[<batch>].lanes[<lane>].closed_at`. Authentication
+compares the exact emitted marker bytes, not only parsed field values; reordered
+fields, alternate JSON whitespace or Unicode escapes, duplicate JSON keys, and
+any other semantically equivalent re-encoding are not authorized and block.
+Accepted legacy reconciliation never renders as `clean`; its compact and
+managed summaries say ordinary coordination completion was not proven and list
+every waived fact/path and each accepted deferral's exact target, owner, and
+evidence URL.
+
 Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.

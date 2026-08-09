@@ -261,7 +261,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "\n",
       "    #{COMPLETED_BATCH_AUDIT_MARKER_HEADER}\n",
       "    #{REQUIRED_BATCH_IDENTITY_FIELD}\n",
-      "    audit_status: <complete|blocked|UNKNOWN>\n",
+      "    audit_status: <complete|accepted_legacy_reconciliation|blocked|UNKNOWN>\n",
       "    verdict: <clean|follow-ups-remain|UNKNOWN>\n",
       "    scope_evidence: <concise refs|UNKNOWN>\n",
       "    checker_evidence: <identity/route/independence refs|UNKNOWN>\n",

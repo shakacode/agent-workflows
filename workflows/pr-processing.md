@@ -2315,6 +2315,19 @@ decision and current author permission, targeted status, raw batch audit, every
 target/head, and QA before accepting
 `audit_status: accepted_legacy_reconciliation`.
 
+Missing fresh projection timestamps are separate typed facts: `batch.completed`
+requires the fresh batch status to differ from `completed` and exact
+`completed_at: null`, while each absent lane timestamp requires one
+`lane.closed_at` record whose path is
+`coordination_status.batches[<batch>].lanes[<lane>].closed_at`. Authentication
+compares the exact emitted marker bytes, not only parsed field values; reordered
+fields, alternate JSON whitespace or Unicode escapes, duplicate JSON keys, and
+any other semantically equivalent re-encoding are not authorized and block.
+Accepted legacy reconciliation never renders as `clean`; its compact and
+managed summaries say ordinary coordination completion was not proven and list
+every waived fact/path and each accepted deferral's exact target, owner, and
+evidence URL.
+
 Each `qa_evidence` row must carry a coordinator-owned
 `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's
 canonical target and publication snapshot; `yes` requires strict visual-evidence

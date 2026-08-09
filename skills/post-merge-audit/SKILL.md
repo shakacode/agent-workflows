@@ -464,9 +464,9 @@ digest. The helper fetches the comment and current author write permission; a
 bot/untrusted author, moved or edited comment, stale digest, wrong target or
 batch, missing permission, malformed marker, or any live contradiction blocks.
 Authentication compares the exact emitted marker bytes, not only parsed field
-values. Reordered fields, alternate JSON whitespace or Unicode escapes,
+values; reordered fields, alternate JSON whitespace or Unicode escapes,
 duplicate JSON keys, and any other semantically equivalent re-encoding are not
-the authorized marker and block.
+authorized and block.
 
 The only supported open-target exception is an issue disposition of
 `accepted_deferral` with `expected_state: open`, exact durable evidence, and the
@@ -586,10 +586,11 @@ completion uses:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
-Accepted legacy reconciliation never renders as `clean`. Its compact line uses
-this distinct canonical form, with every waived fact/path and every accepted
-deferral's exact target, named owner, and evidence URL listed from the bound
-publication snapshot:
+Accepted legacy reconciliation never renders as `clean`; its compact and
+managed summaries say ordinary coordination completion was not proven and list
+every waived fact/path and each accepted deferral's exact target, owner, and
+evidence URL. Its compact line uses this distinct canonical form, with those
+facts listed from the bound publication snapshot:
 
 Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
