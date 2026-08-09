@@ -81,7 +81,10 @@ COMPACT_CONTRACT_INVARIANTS = [
 GMCC_ALIGNMENT_SENTENCE = "`GMCC-v3` is a version key that pins drift, not an external-only pointer; " \
                           "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
-CANONICAL_CLOSEOUT_PROMPT_LINE = "Final: canonical closeout;"
+OBJECTIVE_PROMPT_LINE = "Objective:..."
+LANE_CARD_URLS_GRAMMAR = "holder/branch/PR/phase/URLs/UNKNOWN"
+CANONICAL_CLOSEOUT_PROMPT_LINE =
+  "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
 BATCH_COORDINATOR_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
 OBSOLETE_PARENT_AUDIT_OWNERSHIP = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
 PROMPT_ONLY_ARCHIVE_RULE = "Do not archive if an unhanded-off question or planner-owned `UNKNOWN` remains. A durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive."
@@ -567,6 +570,17 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes text, "PR-open", label
       assert_text_includes text, "UNKNOWN", label
     end
+
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt,
+      "skills/triage/SKILL.md canonical Lane Card" => @triage_skill
+    }.each do |label, text|
+      assert_text_includes text, LANE_CARD_URLS_GRAMMAR, label
+      refute_includes text, "holder/branch/PR/phase/URL/UNKNOWN",
+                      "#{label} must not collapse the URL collection to a singular field"
+    end
   end
 
   def test_workflow_defines_canonical_readiness_vocabulary
@@ -838,6 +852,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
+      assert_text_includes text, OBJECTIVE_PROMPT_LINE, label
       assert_text_includes text, CANONICAL_CLOSEOUT_PROMPT_LINE, label
     end
   end
@@ -1595,11 +1610,17 @@ class GoalCompletionContractTest < Minitest::Test
     pending_marker = completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #118\nfollowups_dispositions: ref: #118; owner: maintainer; current status: pending; disposition: await-input; evidence: issue #118")
     unknown_marker = completed_batch_audit_marker("batch_id: UNKNOWN\naudit_status: UNKNOWN\nverdict: UNKNOWN\nscope_evidence: UNKNOWN\nchecker_evidence: UNKNOWN\nfindings: UNKNOWN\nfollowups_dispositions: none")
 
-    assert completed_batch_audit_final_status_replays?(ready_marker, "Conversation status: Ready for archiving.")
+    refute completed_batch_audit_final_status_replays?(ready_marker, "Conversation status: Ready for archiving.")
+    assert completed_batch_audit_final_status_replays?(
+      ready_marker,
+      "Conversation status: Follow-ups remain — " \
+      "completed-batch-audit publication snapshot refresh required."
+    )
     refute completed_batch_audit_final_status_replays?(ready_marker, "Conversation status: Follow-ups remain — #117 (open): fix and verify.")
     assert completed_batch_audit_final_status_replays?(
       ready_marker,
-      "Conversation status: Follow-ups remain — release owner confirmation.",
+      "Conversation status: Follow-ups remain — " \
+      "completed-batch-audit publication snapshot refresh required; release owner confirmation.",
       other_blockers: ["release owner confirmation"]
     )
     refute completed_batch_audit_final_status_replays?(
@@ -1614,7 +1635,8 @@ class GoalCompletionContractTest < Minitest::Test
     )
     assert completed_batch_audit_final_status_replays?(
       pending_marker,
-      "Conversation status: Follow-ups remain — #118 (pending): await-input."
+      "Conversation status: Follow-ups remain — #118 (pending): await-input; " \
+      "completed-batch-audit publication snapshot refresh required."
     )
     assert completed_batch_audit_final_status_replays?(
       unknown_marker,
@@ -1656,13 +1678,13 @@ class GoalCompletionContractTest < Minitest::Test
         completed_batch_audit_marker("batch_id: backend:team;wave:117\naudit_status: complete\nverdict: clean\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: none"),
         true,
         true,
-        []
+        ["completed-batch-audit publication snapshot refresh required"]
       ],
       "case-varied typed prefix is opaque rather than typed" => [
         completed_batch_audit_marker("batch_id: Non-backend: docs;wave:117\naudit_status: complete\nverdict: clean\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: none"),
         true,
         true,
-        []
+        ["completed-batch-audit publication snapshot refresh required"]
       ],
       "nonterminal terminal enum is invalid" => [
         completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #117; owner: maintainer; current status: open; disposition: resolved; evidence: issue #117"),
@@ -1828,7 +1850,14 @@ class GoalCompletionContractTest < Minitest::Test
     end
     assert completed_batch_audit_marker_well_formed?(mixed)
     refute completed_batch_audit_release_or_archive_ready?(mixed)
-    assert_equal ["#117", "#118 (pending): await-input"], completed_batch_audit_marker_blockers(mixed)
+    assert_equal(
+      [
+        "#117",
+        "#118 (pending): await-input",
+        "completed-batch-audit publication snapshot refresh required"
+      ],
+      completed_batch_audit_marker_blockers(mixed)
+    )
     assert completed_batch_audit_marker_well_formed?(outstanding_without_record)
     assert_equal ["#117"], completed_batch_audit_marker_blockers(outstanding_without_record)
     refute completed_batch_audit_marker_well_formed?(malformed_record)
@@ -1923,14 +1952,18 @@ class GoalCompletionContractTest < Minitest::Test
 
     assert well_formed_other_blocker?(raw_unknown)
     assert well_formed_other_blocker?(fullwidth_unknown)
-    assert_equal ["release state UNKNOWN"],
+    assert_equal [
+      "completed-batch-audit publication snapshot refresh required",
+      "release state UNKNOWN"
+    ],
                  completed_batch_audit_replay_result(
                    ready_marker,
                    other_blockers: [raw_unknown, fullwidth_unknown]
                  ).blockers
     assert completed_batch_audit_final_status_replays?(
       ready_marker,
-      "Conversation status: Follow-ups remain — release state UNKNOWN.",
+      "Conversation status: Follow-ups remain — " \
+      "completed-batch-audit publication snapshot refresh required; release state UNKNOWN.",
       other_blockers: [raw_unknown, fullwidth_unknown]
     )
   end

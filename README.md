@@ -49,6 +49,9 @@ default.
 - Installer, status, upgrade, trust-audit, and seam-doctor helpers under `bin/`.
 - Security preflight for public issue and PR batches so untrusted GitHub text
   cannot quietly become agent instructions.
+- Full-SHA GitHub Action pins, automated update proposals, and an explicit
+  development-versus-stable trust model. See
+  [Repository Supply-Chain Policy](docs/repository-supply-chain.md).
 - Site-ready Markdown docs under the
   [ShakaCode Agent Workflow Playbook](docs/README.md).
 
@@ -81,6 +84,12 @@ bin/install-agent-workflows --host codex
 
 Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
 explicit shared agent home.
+
+Ordinary batches require no project-generated signing keys, fixed trust
+anchors, signed launch or lifecycle receipts, or human waivers. Model and
+reasoning-effort values are advisory preferences; hosts may report observed
+host/model/effort fields when available and otherwise record field-granular
+`UNKNOWN` without blocking execution.
 
 For the full ShakaCode agent stack setup (`agent-workflows`,
 `agent-coordination`, and `agent-coordination-dashboard`), see

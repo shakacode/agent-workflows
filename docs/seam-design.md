@@ -45,6 +45,7 @@ consumer repo
   .agents/bin/build                   optional build/type-check entry point
   .agents/bin/docs                    optional docs check entry point
   .agents/bin/ci-detect               optional CI routing entry point
+  .agents/bin/<merge guard>           optional guarded-direct submit adapter
   .agents/agent-workflow.yml          non-command policy
   AGENTS.md                           pointer section; no workflow policy
   CLAUDE.md                           optional thin import of @AGENTS.md
@@ -175,6 +176,71 @@ untrusted_contributor_intake:
   trusted_github_repo: "OWNER/REPO"
 ```
 
+`merge_submission` is an optional closed mapping. Its portable default is
+queue-only whether the mapping is absent or explicitly selects
+`merge_queue_only`. The sole direct-submit exception is an explicit
+`merge_queue_or_guarded_direct` opt-in whose executable is one fixed
+repository-root-relative file under `.agents/bin`:
+
+```yaml
+merge_submission:
+  mode: merge_queue_or_guarded_direct
+  guarded_direct:
+    executable: ".agents/bin/merge-pr-after-checks"
+    method: squash
+    non_atomic_base:
+      acknowledged: true
+      rationale: "The repository guard revalidates local policy immediately before direct squash."
+```
+
+The executable value is a path, never a command string: arguments, shell
+fragments, interpolation, and paths outside `.agents/bin` are invalid. The
+guard must exist as an executable regular file in the trusted-base tree and in
+the invoking checkout with identical bytes. At runtime, `pr-merge-submit` does
+not reopen that configured live path: it materializes the validated trusted-base
+bytes as a private executable and invokes them from an isolated private Git
+root whose detached `HEAD`, index, and working files all bind the receipt-base
+commit and tree. This contract isolates HEAD/index/worktree state; it does not
+promise object/ref confidentiality, and the materialized repository preserves
+the source `origin`. PR identity exists only in revalidated live GitHub metadata and
+the fixed argv; `git show HEAD` inside the guard cannot expose PR-tree bytes.
+Repository-relative delegation therefore resolves trusted-base dependencies.
+Every guard must have a supported explicit shebang; shebang-less files,
+including native magic prefixes, fail closed before spawn. The helper parses
+the trusted shebang and invokes an
+identity-recorded absolute interpreter outside the consumer repository
+directly; `/usr/bin/env PROGRAM` is resolved through a fixed trusted path rather
+than the caller's `PATH`. The identity check and later absolute-path spawn have
+a known filesystem TOCTOU window. The guard
+receives a closed environment containing the explicit GitHub host/repository,
+OS-account home and identity, fixed path, and supported GitHub token variables,
+so variables such as `BASH_ENV`, `RUBYOPT`, and loader injection settings are
+not inherited. The private executable and Git root are removed afterward;
+cleanup failure after launch is an `UNKNOWN` outcome. Runtime `$0` and `__dir__`
+identify the private copy, so guard adapters must resolve repository files from
+the private working directory or passed argv. Internal validation and
+materialization Git receives no GitHub tokens, SSH agent, or caller
+credential/config controls. Preserved `origin` is metadata for the trusted
+consumer guard; only that authorized guard receives supported GitHub token
+variables. The helper supplies this fixed
+argv contract, in order:
+
+```text
+--repo OWNER/REPO --host HOST --pr NUMBER
+--expected-head SHA --expected-base BRANCH --expected-base-sha SHA
+--method METHOD --merge-assurance-receipt ABSOLUTE_PATH
+[--subject SUBJECT] [--body BODY]
+```
+
+The guard owns any additional direct-merge policy. Its exit status and output
+do not prove a merge: the portable helper re-fetches GitHub and succeeds only
+when the authorized head is an exact terminal merge on the expected base. This
+exception explicitly acknowledges that GitHub direct merge has no atomic
+expected-base OID; it does not make direct merge equivalent to the merge queue.
+Queue-enabled PRs always use canonical enqueue and never invoke the guard.
+On a queue-disabled base, an absent or queue-only seam is a deterministic
+configuration error (exit 1), not an `UNKNOWN` mutation outcome.
+
 ## AGENTS Pointer
 
 Each consumer `AGENTS.md` owns a section named
@@ -211,8 +277,9 @@ verbatim and must include `"$@"` themselves when forwarding is wanted. `env -S`
 and `env --split-string` commands are likewise caller-controlled because their
 split payload owns argument placement. Missing
 policy or trust keys are appended to existing block mappings so comments and
-formatting remain intact; initialization fails closed before writing when a
-safe append is not possible.
+formatting remain intact. Initialization also adds an explicit
+`merge_submission.mode: merge_queue_only` default. It fails closed before
+writing when a safe append is not possible.
 
 The init marker is the ownership boundary for generated wrappers. Explicit
 commands replace both marked wrappers on a later run, while an unmarked valid
@@ -232,6 +299,9 @@ remove the marker deliberately before taking direct ownership.
   resolved values
 - an optional `autonomous_merge` mapping conforms to the shared closed schema;
   malformed policy is reported instead of silently falling back
+- an optional `merge_submission` mapping uses the closed queue-only or
+  guarded-direct schema, and any configured guard is a present executable
+  regular file under `.agents/bin`
 - an optional `.agents/trusted-github-actors.yml` parses as a mapping and has no
   normalized bot login in both actionable and metadata-only roles; regular
   checks and `--init` preserve preflight compatibility with legacy scalar

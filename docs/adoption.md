@@ -85,6 +85,47 @@ notes.
    override the deterministic repository-name abbreviation used in batch titles
    and thread handles. The initializer does not add this optional key.
 
+   Initialization adds the optional merge-submission seam in its portable,
+   fail-closed form:
+
+   ```yaml
+   merge_submission:
+     mode: merge_queue_only
+   ```
+
+   Keep that value, or omit the mapping, unless the consumer deliberately owns
+   a guarded direct-merge exception. Such a consumer may select
+   `merge_queue_or_guarded_direct` and name one executable guard under
+   `.agents/bin`, an exact merge method, and an explicit acknowledgement plus
+   rationale for the non-atomic base binding. The guard is a path, not a shell
+   command. It receives the fixed argv contract documented in
+   [seam-design.md](seam-design.md), and its return value is accepted only after
+   live GitHub state proves the authorized head merged exactly. Queue-enabled
+   PRs continue through canonical enqueue and never invoke the guard. A
+   queue-disabled PR without this opt-in returns a deterministic configuration
+   error before mutation. The
+   helper executes a private copy of the validated trusted-base bytes from an
+   isolated Git root whose detached `HEAD`, index, and working files all bind
+   the receipt-base commit and tree. This is HEAD/index/worktree isolation, not
+   object/ref confidentiality: the materialized repository preserves its
+   source `origin`, and Git objects or refs may remain observable. The exact PR identity is supplied only by
+   live GitHub metadata and fixed argv. Guards may delegate to trusted-base
+   repository files from that private working directory; they must not infer PR
+   identity from local Git state. Every guard must have a supported explicit
+   shebang; shebang-less files, including native magic prefixes, fail closed
+   before spawn. Script interpreters are resolved from the
+   trusted shebang through a fixed path and invoked by absolute identity under
+   a closed environment; caller-controlled `PATH`, `BASH_ENV`, `RUBYOPT`, and
+   loader settings are not inherited. An absolute shebang interpreter inside
+   the consumer repository is invalid. The recorded absolute-path interpreter
+   check and later spawn retain a known filesystem TOCTOU window. Runtime `$0`
+   and `__dir__` point at the
+   private guard copy. Internal validation and materialization Git runs without
+   GitHub tokens, SSH agent access, or caller credential/config controls.
+   Preserved `origin` is metadata for the trusted consumer guard, which
+   intentionally receives only supported GitHub token variables for the
+   authorized submission.
+
    The optional `autonomous_merge` mapping is seeded as an empty mapping by
    downstream presets without overwriting repo-owned policy. An empty or absent
    mapping uses portable defaults. Add only repository-specific critical paths,
@@ -166,9 +207,10 @@ For repos that keep the checker in the checkout:
 ```
 
 The checker fails when the pointer section is missing, core scripts are missing
-or malformed, policy YAML is incomplete, or executable snippets in repo-local or
-installed shared skill Markdown still contain unresolved placeholders such as
-`<follow-up prefix>`.
+or malformed, policy YAML is incomplete, a configured guarded-direct merge
+guard is malformed, missing, or non-executable, or executable snippets in
+repo-local or installed shared skill Markdown still contain unresolved
+placeholders such as `<follow-up prefix>`.
 
 ## Keeping The Installed Pack Current
 

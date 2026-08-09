@@ -16,6 +16,8 @@ ci_parity_environment: "n/a"
 hosted_ci_trigger: "n/a"
 hosted_qa_gate: "n/a — this source pack has no deployed application runtime"
 ci_change_detector: "n/a"
+merge_submission:
+  mode: merge_queue_only
 autonomous_merge:
   thresholds:
     max_changed_files: 29

@@ -73,6 +73,15 @@ facts remain fail-closed and stop before mutation.
   ambiguity, risk, blast radius, reversibility, and verification difficulty—not
   merely the cheapest model—and require the canonical evidence before a stronger
   route or replacement.
+  Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+  Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
+  Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+  Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+  A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+  Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback.
+  When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
+  Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
+  Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
 - **Recommended Codex GPT-5.6 profile**: apply only after verifying the exact
   routes on the actual host; portable classes remain the fallback elsewhere.
   - Multi-lane coordinator: Sol/xhigh
@@ -98,12 +107,15 @@ facts remain fail-closed and stop before mutation.
   records with durable evidence references. A rejection launches nothing; an
   acceptance permits only the returned eligible lanes.
 - **Dispatcher capability preflight**: before launch, pass the requested
-  route/dispatcher, explicit authority, ordered candidates, and preserved lane
-  state to `bin/dispatcher-capability-preflight`. It records a bound, attested
-  exact tuple or first explicitly authorized fallback; it never launches or
-  mutates coordination. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice. Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. `selected` resumes Goal mode; `blocked-user-input`
+  route preference/dispatcher, explicit dispatch authority, ordered candidates,
+  and preserved lane state to `bin/dispatcher-capability-preflight`. It records
+  the preferred dispatcher or first explicitly authorized dispatcher fallback; it never launches or
+  mutates coordination. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. An `UNKNOWN` prospective instance is unusable. `selected` resumes Goal mode; `blocked-user-input`
   carries one `dispatch-decision-request v1` with canonical viable fallback choices and stops.
-  Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload. The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature. The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it. The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`. Resolve `<installation-root>` from the real helper path; require the root, `.agents` directory, and trust file to be owned by the helper owner and not group- or world-writable, require the directory and file to be real non-symlink paths of the expected type, and require a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
+  Replay identity is `lane_id`, dispatcher, `instance_id`, and launch token; route preference, observed host fields, and `candidate_index` are metadata and never trigger replacement.
+  Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active.
+  Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
+  A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
   visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
   for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
@@ -202,16 +214,11 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    same conditions. Items with `UNKNOWN` path evidence stay serial discovery
    lanes. Use the Claude-sized 5/3 limit for `generic` unless a larger host
    capacity is explicitly verified.
-9. **Launch assurance**: exact initiating coordinator model/effort plus its
-   host/runtime or explicit operator-selected binding source, and the exact
-   independent-checker model/effort plus its qualifying binding source. Record
-   assurance before target interpretation, planning, or dispatch. When operator policy requires an exact
-   parent or checker, prompt text, model self-report, installed rosters, and a
-   dispatch-resolved class are not proof. A parent mismatch or `UNKNOWN`
-   requires a correctly bound coordinator relaunch; a checker mismatch or
-   `UNKNOWN` requires reserving a fresh qualifying checker. Without an
-   exact-parent or exact-checker policy, preserve unavailable binding as
-   `UNKNOWN` and continue portable class-based planning.
+9. **Routing preferences and observations**: record coordinator, worker, and
+   checker model/effort preferences before target interpretation. These are
+   advisory. Host-observed host/model/effort fields are optional and remain
+   field-granular `UNKNOWN` when unavailable. Checker independence and evidence
+   quality remain mandatory regardless of the observed route.
 10. **Lane split**: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
 11. **Permissions**: confirm the current session can run without blocking worker approval prompts.
 12. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
@@ -317,11 +324,13 @@ Before implementation or worker launch, produce:
    - Include any `needs-customer-feedback` targets skipped from implementation, with that label as the reason.
 3. A repo preflight: resolve the base branch from `AGENTS.md`, run `git fetch --prune origin <base-branch>`, confirm the expected repository root, verify resolved workflow files, and verify nested repo paths before assigning work.
 4. For public issue/PR targets, a security preflight: run the following and report `SECURITY_PREFLIGHT_OK`, including any acknowledged findings, or stop on `SECURITY_PREFLIGHT_BLOCKED` with the exact finding.
+
    ```bash
    # Resolve PR_BATCH_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
    PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
    "${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo <OWNER/REPO> <ISSUE_OR_PR...>
    ```
+
    Add `--fail-on-high-risk-files` when high-risk workflow, script, hook, or
    agent-instruction diffs should block worker launch instead of being reported
    as advisory exact-target context.
@@ -342,18 +351,42 @@ Before implementation or worker launch, produce:
 10. The selected batch-size target and wave split: `codex` up to 10/8,
     `claude` up to 5/3, or `generic` up to 5/3, with spillover assigned to
     later waves instead of overfilling the current one.
-11. A launch-assurance record, coordinator model/effort assignment, exact
-    independent-checker assignment, plus a separate staged worker
-    model/effort route for every lane, grouped by initial/escalation pair with
+11. A coordinator model/effort preference, independent-checker preference,
+    plus a separate staged worker model/effort preference for every lane,
+    grouped by initial/escalation pair with
     the planner's rationale. Require `MODEL_ESCALATION_REQUEST` before a worker
     uses the stronger route. Revalidate every supplied exact pair on the actual
-    host; bind any dispatch-resolved class before work starts. Workers must not
-    inherit the coordinator pair. Every lower-capability worker gets the
-    coordinator-approved execution envelope from the canonical workflow. If a
-    route or exact-policy launch assurance is unavailable, stop and re-plan;
-    otherwise preserve unavailable binding as `UNKNOWN`.
+    host; carry any dispatch-resolved class as an advisory preference before work starts. Keep worker
+    requested preferences distinct from the coordinator preference; if the
+    dispatcher or runtime inherits or defaults to that route, record it honestly
+    and continue unless an independent gate blocks. Every lane whose risk or
+    bounded delegation requires an execution envelope gets one from the
+    coordinator role under the canonical workflow, regardless of route. If a
+    route preference is unavailable, preserve it as `UNKNOWN` and continue with
+    the same ownership, verification, and review gates.
+12. Batch-registration provenance: verified loaded-pack `pack_sha` (or verified
+    installed-release identifier), coordinator and worker route preferences,
+    and each lane's optional observed host/model/effort. A dirty or unverifiable pack and every
+    unverifiable scalar stay literal `UNKNOWN`. Persist the manifest after
+    dispatcher selection and before worker launch when registration is
+    supported; backend `n/a` keeps it in durable coordinator state. Follow the
+    canonical example and resolution rules in `docs/coordination-backend.md`.
+    When host-observed metadata becomes available, reconcile each observed
+    host/model/effort field changed by fallback, escalation, or replacement,
+    preserve known fields, and use `UNKNOWN` only per unavailable field.
+    Missing observation never blocks ordinary active lifecycle. Before
+    reconciliation, detect advertised registration
+    update/upsert/reconciliation capability. An unadvertised or unsupported
+    create-only backend records each affected field `UNKNOWN`. An advertised update
+    uses the bounded safe executable-plus-opaque-argv contract; failure records
+    affected fields `UNKNOWN` without wedging. Every advertised registration invocation resolves a
+    backend-advertised safe executable plus ordered opaque argv without shell
+    evaluation and runs with a finite hard deadline in its own process group;
+    timeout or whole-group `TERM` then `KILL` records best-effort
+    field-granular `UNKNOWN`, names reconciliation, and does not block worker
+    launch.
 <!-- host-branch: codex-only start -->
-12. A final `/goal` prompt when the user asked for Goal mode.
+13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
 After any target-specific invocation line, each pasteable batch prompt must put
@@ -515,43 +548,39 @@ Use this template when creating Codex goal text:
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
-Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN
-
-Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override
-
-Repo: OWNER/REPO
-Objective: ...
-merge_authority: <none | ask | auto_merge_when_gates_pass>.
-Batch size target: <codex|claude|generic>; wave: <cap/items>.
-Coordinator model/effort: <model/class>/<effort>.
-Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
-Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
-- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.
+Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
+Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
+Repo:OWNER/REPO
+Objective:...
+merge_authority:<none|ask|auto_merge_when_gates_pass>
+Batch size target: <codex|claude|generic>;wave: <cap/items>
+Coordinator model/effort preference: <model/class>/<effort>.
+Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
+Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
+Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
+- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
-Batch QA Lane: <owner/scope|none+rationale>.
-Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.
-
+Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
+Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original: trusted ad-hoc prompt; else n/a.
-  Goal: one-line outcome.
-  Notes: scope/branch/dependency.
-  Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
-
+  Original:trusted ad-hoc prompt|n/a
+  Goal:one-line outcome
+  Notes:scope/branch/dependency
+  Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
-- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.
+Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
-- Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
+- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
-- Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
-- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
+Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
-- Apply Batch QA Lane; include QA Evidence.
-- Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
+Apply Batch QA Lane;include QA Evidence
+merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
-- Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
+Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 
 ```
 
@@ -560,7 +589,26 @@ Execution rules:
 Classify every unresolved question before continuing:
 
 - **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine batches, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. A worker handoff should include the question/comment URL as that target's blocked final state.
-- **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note to the PR description so later review across merged PRs can surface these items quickly.
+- **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note inside the PR description's `Agent details` disclosure so later review across merged PRs can surface these items quickly.
+
+For a private-backend blocking stop, emit `help_requested` alongside the prose
+handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
+When a worker verifies a P0/P1 finding, confirmed regression, or required
+revert, emit `error` with `severity`, `category`, and `message`. Backend `n/a`
+skips these signals. Typed-event transport is optional: when an active private
+backend does not advertise it or reports it unsupported, record
+`typed event transport: unavailable`, skip the emission, and continue without
+marking the event emission `UNKNOWN`. Only after the transport is advertised
+does an attempted write that fails, degrades, or is rejected become `UNKNOWN`
+handoff evidence. Every attempted advertised typed-event write must resolve the
+backend-advertised event executable and ordered opaque argv; a missing,
+malformed, or unsafe advertisement is an attempted-write failure. Run that
+exact executable and separate argv without shell evaluation, with a finite
+deadline in its own process group, preserving each opaque argument; on expiry
+terminate the whole group with `TERM`, then `KILL` after a finite grace period.
+A deadline expiry, forced termination, or any other advertised-support write
+failure records best-effort `UNKNOWN` event evidence; the primary operation
+continues immediately without waiting further on the event.
 
 <!-- Keep this hosted-CI uncertainty rule in sync with `.agents/workflows/pr-processing.md`. -->
 
@@ -575,18 +623,12 @@ status first when state is unclear, and do not substitute a direct hosted-CI-rea
 label from automation for the trigger command; direct labels are only the human/local
 user-token path.
 
-Suggested PR description section:
-
-```markdown
-## Codex Decision Log
-
-- **Non-blocking:** <question or fork in approach>
-  - **Decision:** <what was chosen>
-  - **Why:** <evidence or nearby pattern>
-  - **Review later:** <what a maintainer may want to revisit, or "None">
-```
-
-Before merge or final readiness, scan the PR description for the decision log and make sure each non-blocking decision is still accurate after review changes.
+Use the canonical [Human-First PR Description Contract](../../workflows/pr-processing.md#human-first-pr-description-contract).
+Keep the human-visible why, change summary, review path, and genuine maintainer
+questions or blockers outside its one `Agent details` disclosure; put the
+decision log and all agent evidence inside it. Before merge or final readiness,
+scan the decision log and make sure each non-blocking decision is still accurate
+after review changes.
 
 ## Maintainer Attention Contract
 
@@ -688,6 +730,13 @@ remove on release for this lane's own claim; hint not lock; skip when backend
 n/a), and selection/triage skip claimed items — see the canonical rule in
 `pr-processing.md`.
 
+The same canonical section defines provenance and operational telemetry. Batch
+registration carries `pack_sha`, `coordinator_preference`, and per-lane
+`worker_preference` plus optional `observed_host`. Workers emit `help_requested`,
+`escalation_requested`, `error`, and `human_intervention` at the existing
+checkpoints without replacing prose packets. Do not duplicate auto lifecycle
+events `claim.acquired`, `claim.released`, or `phase.changed`.
+
 ## Worker Rules
 
 Follow the canonical
@@ -702,23 +751,27 @@ blocked/cancelled state, and as the final handoff header. The actor that opens
 or updates the PR emits the PR-open Lane Card when the PR is opened. The card
 shows claim holder and `dashboard_url` from backend metadata or `UNKNOWN`;
 `pr_url` comes from backend metadata, verified GitHub PR state, or `UNKNOWN`.
-It also records the active exact model/effort, binding source, and whether the
-coordinator-approved execution envelope was received; prompt text or worker
-self-report alone is not binding evidence.
+It also records preferred model/effort, optional observed host/model/effort, and
+whether a coordinator-role-approved execution envelope was received when lane
+risk or bounded delegation required one. Unavailable
+observations remain field-granular `UNKNOWN`.
 For host-aware sizing, Codex-targeted waves may use up to 10 independent
 file-disjoint lanes, or 8 when shared/risky conditions apply.
 Claude and generic waves use up to 5 lanes, or up to 3 under those same
 conditions. Keep `UNKNOWN` path lanes serial until discovery resolves their real
 paths. Queue spillover as later waves rather than overfilling the active worker
-set. Preserve the coordinator model/effort assignment and each lane's staged
-worker model/effort route at dispatch; bind dispatch-resolved classes to exact
-pairs first, and revalidate them on their actual hosts. Workers must not inherit
-the coordinator pair. Model collation does not combine lane ownership, and an
-unavailable route requires re-planning. Workers remain on the initial route for
+set. Preserve the coordinator model/effort preference and each lane's staged
+worker model/effort preference at dispatch. Keep worker requested preferences
+distinct from the coordinator preference; if the dispatcher or runtime inherits
+or defaults to that route, record it honestly and continue. Model collation does not combine lane ownership, and an
+unavailable preference remains `UNKNOWN` without blocking. Workers remain on the initial route for
 a focused correction after a small first failure and emit
 `MODEL_ESCALATION_REQUEST` only at the canonical evidence threshold.
-Before editing, lower-capability workers restate the coordinator-approved
-execution envelope. Contradictory evidence, ambiguous criteria, scope/risk
+Alongside that packet, a private-backend worker emits
+`escalation_requested` with `from_route`, `to_route`, and `evidence`.
+Before editing, workers in lanes whose risk or bounded delegation requires an
+execution envelope restate the coordinator-role-approved envelope regardless of
+route. Contradictory evidence, ambiguous criteria, scope/risk
 growth, weakened verification, or consequential judgment returns control to the
 coordinator immediately rather than authorizing worker re-planning.
 
@@ -734,6 +787,9 @@ instead of cancelling the batch. Stop the old worker, capture or reconstruct its
 start the replacement only after fencing prevents overlap. For already-running
 batches that need the staged route policy, use the canonical
 [Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
+After the prior instance is stopped and ownership is reconciled, emit
+`human_intervention` with `kind: supersede` (or `kind: takeover` for abandoned
+ownership) when a private backend is active.
 
 ### Normal Agent-Runner Restart
 
@@ -759,6 +815,30 @@ then release the coordination claim and exit; wedged workers are stopped at the
 process level. Restarting with updated skills requires launching fresh workers
 from a checkout that already has the updated `.agents/skills/...` and
 `.agents/workflows/...` files — a still-running worker keeps its old skill text.
+When a worker first observes cancellation at its cooperative drain checkpoint,
+that worker emits one lane-scoped typed `human_intervention` event with
+`kind: drain` when the active private coordination backend advertises
+typed-event support. The coordinator/operator must not emit a duplicate for
+that cooperative path. The cooperative worker path remains worker-owned at
+that checkpoint; the coordinator/operator neither re-emits nor duplicates it.
+Immediately before terminating a worker that cannot
+reach that checkpoint, the coordinator/operator instead emits one lane-scoped
+typed `human_intervention` event with `kind: drain` when the active private
+coordination backend advertises typed-event support. For either drain path,
+backend `n/a` skips the emission; unadvertised or unsupported typed-event
+capability records `typed event transport: unavailable` and remains
+nonblocking. For either drain path with advertised support, resolve the active
+backend's advertised drain-event executable and ordered opaque argv;
+reject a missing, malformed, or unsafe advertisement as an emission failure.
+Run that exact executable and separate argv without shell evaluation, with a
+finite deadline in its own process group, preserving each opaque argument; on
+expiry terminate the whole group with `TERM`, then `KILL` after a finite grace
+period. No `agent-coord` compatibility or generic private typed-event transport
+is required. A deadline expiry, forced termination, or any other
+advertised-support emission failure records best-effort `UNKNOWN` evidence; the
+worker continues its cooperative drain and claim release, while the
+coordinator/operator hard-escape path proceeds immediately to worker process
+termination and claim release, without waiting further on the drain event.
 
 ## Coordinator Closeout Lane
 
@@ -772,10 +852,31 @@ per-PR merge-ledger run, stale release-mode classification updates and the final
 distinct), hosted-CI request and waitback when uncertainty remains, and any
 authorized ready/merge action, required QA Evidence verification, and the late
 post-merge bot-finding sweep before final batch handoff. Once every batch target
-has a final state, the batch coordinator must run its completed-batch audit
-before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff. The qualifying checker must
-match launch assurance and be independent from every maker; an unverified,
-below-policy, or non-independent checker keeps the audit verdict `UNKNOWN`. The audit deep-audits only
+has a final state, run a read-only check after terminal releases only when the
+active backend advertises an `agent-coord`-compatible telemetry-completeness
+audit capability bound to the following process contract. Executable:
+`agent-coord`. Arguments, in order and as separate
+values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`. Pass the
+opaque batch ID as exactly one argument value through a process/argument-vector
+API. Shell interpolation, `eval`, `sh -c`, and equivalent shell-evaluation
+paths are forbidden. Run that exact child contract through the resolved
+pr-batch `bin/agent-coord-bounded` process-control seam with a positive hard
+deadline; the helper must preserve the exact child executable and separate
+argument vector, launch it in its own process group, and terminate the whole
+process group when the deadline expires. A timeout or forced termination is a
+command failure: record best-effort `UNKNOWN` telemetry-audit evidence and
+continue closeout through steps 13-14 with that blocker; the audit subprocess
+must never wedge merge closeout. When that compatible capability is advertised, incomplete
+coverage, command failure, or `UNKNOWN` readback blocks telemetry closeout. If
+the active backend does not advertise
+that compatible capability or its advertisement is `UNKNOWN`, record
+`telemetry audit: unavailable` in the durable handoff and continue; backend
+`n/a` skips the check. Once every batch target has a
+final state, the batch coordinator must run its completed-batch audit before
+its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff. The qualifying checker must
+be independent from every maker and satisfy the evidence-quality contract; a
+preferred checker route is advisory, while a non-independent or unevidenced
+checker keeps the audit verdict `UNKNOWN`. The audit deep-audits only
 the verified batch subset; coverage catch-up mode handles user-requested
 un-audited PR/commit ranges; release/range audit remains reserved for
 final-release readiness, suspected bad merges, unverified batch scope, or
@@ -785,7 +886,7 @@ follow-ups, unresolved questions, pending work, or `UNKNOWN` facts ends with
 line must be `Conversation status: Follow-ups remain — <each exact action or
 blocker>.` A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
@@ -829,12 +930,38 @@ then submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
 receipt unconditionally. The helper preserves read-only, idempotent observation
 of an exact terminal merge and uses GitHub's `enqueuePullRequest` only when the
-base branch is controlled by a merge queue. An exact open PR on a queue-disabled
-base fails closed before mutation because GitHub's direct mutation has no atomic
-expected-base OID; migrate that base to a merge queue, then restart the readiness
-and receipt gates. Treat helper exit 2 as an `UNKNOWN` mutation or cleanup
-outcome and never retry it blindly. Queue submission is not terminal: continue
-closeout until GitHub reports the PR merged or exposes a real blocker.
+base is queue-controlled. Queue-disabled submission without an enabled
+guarded-direct seam fails before mutation as a deterministic configuration
+error (exit 1), not an `UNKNOWN` mutation outcome.
+Only a validated trusted-base `merge_submission` opt-in may delegate direct
+submission to one repository-owned executable guard under `.agents/bin`; the
+portable helper never performs a generic direct merge. The fixed-argv guard is
+executed from private identity-bound trusted bytes in an isolated Git root
+whose detached `HEAD`, index, and working files all bind the receipt-base
+commit and tree. This is HEAD/index/worktree isolation, not object/ref
+confidentiality; the materialized repository preserves the source `origin`.
+Exact PR identity comes only from revalidated live GitHub
+metadata and fixed argv, never local Git state. Repository-relative delegation
+therefore resolves trusted-base dependencies. Every guard requires a supported
+explicit shebang; shebang-less files, including native magic prefixes, fail
+closed before spawn. Trusted script shebangs resolve
+to identity-recorded absolute interpreters outside the consumer repository
+through a fixed path, and the guard runs with a closed environment that does not inherit caller-controlled
+interpreter or loader injection variables. The identity check and later
+absolute-path interpreter spawn retain a known filesystem TOCTOU window.
+Runtime `$0` and `__dir__` identify
+the private guard copy. The guard is still bound to the fresh receipt and exact
+live head/base facts, and
+its result is accepted only after live GitHub state proves an exact terminal
+merge of the authorized head. This consumer-owned exception acknowledges that
+direct merge has no atomic expected-base OID. Treat helper exit 2 as an
+`UNKNOWN` mutation or cleanup outcome and never retry it blindly. Queue
+submission is not terminal: continue closeout until GitHub reports the PR
+merged or exposes a real blocker.
+Internal validation/materialization Git receives no GitHub tokens, SSH agent,
+or caller credential/config controls. Preserved `origin` is metadata for the
+trusted consumer guard, which intentionally receives only supported GitHub
+token variables for its authorized submission.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 Do not invoke coordinated `address-review` on an original PR whose verified head cannot be pushed; first use the replacement branch/PR fallback, then invoke it only for the PR whose verified head is pushable and owned.
@@ -852,6 +979,16 @@ For every PR-batch target whose visible task directly authorizes updating the
 PR, invoke the canonical `address-review` closeout with trusted parent state
 `COORDINATED_AUTOFIX=1` so verified review fixes run through action `f` without an extra quick-action pause.
 Coordinated review-decision authority comes from direct authorization to update the PR and is independent of `merge_authority`; merge authority governs merge only.
+Coordinated review-remediation authority is outcome-bound across convergence
+cycles, not pass-count-bound. A verified correctness/security/contract
+regression caused by the authorized lane may be repaired without a fresh
+maintainer prompt if and only if the repair stays within the already-authorized
+path envelope, preserves the accepted outcome, and changes no unrelated
+semantics. Fresh authority is mandatory for a new path, unrelated behavior or
+product semantics, a material tradeoff or judgment, a new security, release, or
+merge-policy expansion, destructive or risky publication not already
+authorized, or a new actor, replacement, or resource. `Bounded pass` binds
+paths/semantics/risk; pass count alone does not expire authority.
 Complete the coordinated verification checkpoint before final triage display, TodoWrite construction, coordinated executable-work construction, or action `f`.
 If verification changes any tier or recommendation, rebuild and re-number the triage, rebuild the TodoWrite `MUST-FIX` list and coordinated executable-work list from verified classifications, and remove stale work items.
 For every coordinated `DISCUSS` outcome, record one evidence-backed recommendation: `fix now`, `defer`, `decline`, or `ask user`.

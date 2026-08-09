@@ -26,6 +26,27 @@ repeat:
    independent in-scope steps while an external command, check, review, or agent is pending. Stop
    after completing the objective.
 
+For a resumed PR-batch lane, complete bounded ownership recovery before any
+write. If a new actor takes over abandoned ownership, emit private-backend
+`human_intervention` with `kind: takeover`; if a fenced replacement supersedes
+the prior actor, use `kind: supersede`. A routine same-thread resume with the
+same verified holder is neither a takeover nor a supersede and emits no event.
+Backend `n/a` skips silently. Typed-event transport is optional: when an active
+private backend does not advertise it or reports it
+unsupported, record `typed event transport: unavailable`, skip the emission,
+and continue without marking the event emission `UNKNOWN`. Only after the
+transport is advertised does an attempted write that fails, degrades, or is
+rejected become `UNKNOWN` handoff evidence. Every attempted advertised
+typed-event write must resolve the backend-advertised event executable and
+ordered opaque argv; a missing, malformed, or unsafe advertisement is an
+attempted-write failure. Run that exact executable and separate argv without
+shell evaluation, with a finite deadline in its own process group, preserving
+each opaque argument; on expiry terminate the whole group with `TERM`, then
+`KILL` after a finite grace period. A deadline expiry, forced termination, or
+any other advertised-support write failure records best-effort `UNKNOWN` event
+evidence; the primary operation continues immediately without waiting further
+on the event.
+
 If the user supplied focus text or arguments, treat it as additional direction or a narrowed scope
 for what to continue.
 

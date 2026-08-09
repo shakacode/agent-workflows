@@ -1,12 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require "base64"
 require "json"
 require "date"
 require "digest"
-require "openssl"
-require "time"
 require "uri"
 
 module BatchPlanPreflight
@@ -41,33 +38,17 @@ module BatchPlanPreflight
     state
     status
   ].freeze
-  LIFECYCLE_RECEIPT_KEYS = %w[
+  LIFECYCLE_STATE_KEYS = %w[
     batch_plan_id
-    completed_at
-    key_id
     lane_id
-    producer
-    receipt_ref
-    recorded_at
-    signature
     stage_dependency_plan_id
     state
+    state_ref
     type
     version
     wave
   ].freeze
-  LIFECYCLE_FUTURE_SKEW_SECONDS = 300
-  HELPER_PATH = File.realpath(__FILE__)
-  INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
-  WORKFLOW_CONTROL_TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
-  WORKFLOW_CONTROL_TRUST_CONFIG_PATH = File.join(
-    WORKFLOW_CONTROL_TRUST_CONFIG_DIR,
-    "workflow-control-lifecycle-trust.json"
-  )
-  WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD =
-    "agent_workflow_control_lifecycle_trusted_key_id"
-  WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD =
-    "agent_workflow_control_lifecycle_trusted_public_key_pem"
+  LIFECYCLE_STATES = %w[planned claimed active blocked completed].freeze
   GATE_PERMISSIONS = %w[
     read_only_discovery
     branch_worktree_create
@@ -124,9 +105,11 @@ module BatchPlanPreflight
     lane_ids_valid = !plan_violation_codes.include?("lane-id-invalid-or-duplicate")
     changed_surfaces_valid = !plan_violation_codes.include?("changed-surfaces-invalid")
     completed_lane_ids = []
+    active_lane_ids = []
+    blocked_lane_ids = []
     if lane_ids_valid
-      lifecycle_violations, completed_lane_ids = validate_lane_lifecycle_receipts(
-        input["lane_lifecycle_receipts"],
+      lifecycle_violations, completed_lane_ids, active_lane_ids, blocked_lane_ids = validate_lane_lifecycle_states(
+        input["lane_lifecycle_states"],
         input["plan"],
         input["stage_dependency_plan"]
       )
@@ -169,7 +152,9 @@ module BatchPlanPreflight
           input["stage_dependency_gate"],
           input["plan"]["active_wave"],
           input["plan"]["serialization_groups"],
-          completed_lane_ids
+          completed_lane_ids,
+          active_lane_ids,
+          blocked_lane_ids
         )
       else
         [[], []]
@@ -203,7 +188,7 @@ module BatchPlanPreflight
         violations << violation(
           "inline-lane-lifecycle-forbidden",
           path,
-          "Lane lifecycle cannot be declared inline; provide a workflow-control lifecycle receipt.",
+          "Lane lifecycle cannot be declared inline; provide separate durable lane lifecycle state.",
           lane_ids: [lane["id"]].compact
         )
       end
@@ -240,132 +225,76 @@ module BatchPlanPreflight
     violations
   end
 
-  def validate_lane_lifecycle_receipts(receipts, plan, stage_dependency_plan)
-    unless receipts.is_a?(Array)
+  def validate_lane_lifecycle_states(states, plan, stage_dependency_plan)
+    unless states.is_a?(Array)
       return [
         [violation(
-          "lane-lifecycle-receipts-array-required",
-          "$.lane_lifecycle_receipts",
-          "Provide the workflow-control lifecycle receipt collection, even when empty."
+          "lane-lifecycle-states-array-required",
+          "$.lane_lifecycle_states",
+          "Provide the separate durable lane lifecycle state collection, even when empty."
         )],
+        [],
+        [],
         []
       ]
     end
 
     lanes_by_id = plan.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
     completed_lane_ids = []
+    active_lane_ids = []
+    blocked_lane_ids = []
     violations = []
-    receipts.each_with_index do |receipt, index|
-      path = "$.lane_lifecycle_receipts[#{index}]"
-      unless valid_lane_lifecycle_receipt?(
-        receipt,
+    seen_lane_ids = []
+    states.each_with_index do |state, index|
+      path = "$.lane_lifecycle_states[#{index}]"
+      unless valid_lane_lifecycle_state?(
+        state,
         plan["id"],
         stage_dependency_plan["id"],
         lanes_by_id
       )
         violations << violation(
-          "lane-lifecycle-receipt-invalid",
+          "lane-lifecycle-state-invalid",
           path,
-          "Require the exact workflow-control receipt with canonical durable-state reference, " \
-          "matching identities, terminal state, and completed-at/recorded-at chronology."
+          "Require an ordinary durable lane state with matching plan, dependency-plan, lane, and wave identities."
         )
         next
       end
 
-      completed_lane_ids << receipt["lane_id"]
+      seen_lane_ids << state["lane_id"]
+      completed_lane_ids << state["lane_id"] if state["state"] == "completed"
+      active_lane_ids << state["lane_id"] if state["state"] == "active"
+      blocked_lane_ids << state["lane_id"] if state["state"] == "blocked"
     end
-    if completed_lane_ids.uniq.length != completed_lane_ids.length
+    if seen_lane_ids.uniq.length != seen_lane_ids.length
       violations << violation(
-        "lane-lifecycle-receipt-duplicate",
-        "$.lane_lifecycle_receipts",
-        "Provide at most one completed lifecycle receipt per lane."
+        "lane-lifecycle-state-duplicate",
+        "$.lane_lifecycle_states",
+        "Provide at most one durable lifecycle state per lane."
       )
     end
-    [violations, completed_lane_ids.uniq]
+    [violations, completed_lane_ids.uniq, active_lane_ids.uniq, blocked_lane_ids.uniq]
   end
 
-  def valid_lane_lifecycle_receipt?(receipt, batch_plan_id, stage_dependency_plan_id, lanes_by_id)
-    return false unless receipt.is_a?(Hash) && receipt.keys.sort == LIFECYCLE_RECEIPT_KEYS
-    return false unless receipt["type"] == "workflow-control-lane-lifecycle-receipt" &&
-                        receipt["version"] == 1 &&
-                        receipt["producer"] == "pr-batch-workflow-control"
-    return false unless receipt["batch_plan_id"] == batch_plan_id &&
-                        receipt["stage_dependency_plan_id"] == stage_dependency_plan_id
+  def valid_lane_lifecycle_state?(state, batch_plan_id, stage_dependency_plan_id, lanes_by_id)
+    return false unless state.is_a?(Hash) && state.keys.sort == LIFECYCLE_STATE_KEYS
+    return false unless state["type"] == "lane-lifecycle-state" && state["version"] == 1
+    return false unless state["batch_plan_id"] == batch_plan_id &&
+                        state["stage_dependency_plan_id"] == stage_dependency_plan_id
 
-    lane = lanes_by_id[receipt["lane_id"]]
-    return false unless lane && receipt["wave"] == lane["wave"] && receipt["state"] == "completed"
-    return false unless utc_timestamp?(receipt["completed_at"]) && utc_timestamp?(receipt["recorded_at"])
-    return false unless Time.iso8601(receipt["completed_at"]) <= Time.iso8601(receipt["recorded_at"])
-    return false unless Time.iso8601(receipt["recorded_at"]) <= Time.now.utc + LIFECYCLE_FUTURE_SKEW_SECONDS
-    return false unless receipt["receipt_ref"] == workflow_control_receipt_ref(receipt)
+    lane = lanes_by_id[state["lane_id"]]
+    return false unless lane && state["wave"] == lane["wave"] && LIFECYCLE_STATES.include?(state["state"])
 
-    workflow_control_receipt_signature_verified?(receipt)
+    durable_state_ref?(state["state_ref"])
   end
 
-  def workflow_control_receipt_ref(receipt)
-    "workflow-control-state://#{receipt['batch_plan_id']}/stage-dependency-plans/" \
-      "#{receipt['stage_dependency_plan_id']}/waves/#{receipt['wave']}/lanes/" \
-      "#{receipt['lane_id']}/#{receipt['state']}"
-  end
+  def durable_state_ref?(value)
+    return false unless nonempty_identity?(value)
 
-  def utc_timestamp?(value)
-    value.is_a?(String) &&
-      value.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/) &&
-      Time.iso8601(value).utc.iso8601 == value
-  rescue ArgumentError
+    parsed = URI.parse(value)
+    !parsed.scheme.to_s.empty? && !parsed.host.to_s.empty?
+  rescue URI::InvalidURIError
     false
-  end
-
-  def workflow_control_receipt_signature_verified?(receipt)
-    trust_anchor = workflow_control_trust_anchor
-    return false unless trust_anchor &&
-                        nonempty_identity?(receipt["key_id"]) &&
-                        receipt["key_id"] == trust_anchor[WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD]
-
-    public_key = OpenSSL::PKey.read(
-      trust_anchor.fetch(WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD)
-    )
-    return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private?
-
-    signature = Base64.strict_decode64(receipt["signature"])
-    payload = JSON.generate(canonicalize(receipt.reject { |key, _value| key == "signature" }))
-    public_key.verify(OpenSSL::Digest.new("SHA256"), signature, payload)
-  rescue ArgumentError, TypeError, OpenSSL::PKey::PKeyError
-    false
-  end
-
-  def workflow_control_trust_anchor
-    helper_uid = File.stat(HELPER_PATH).uid
-    root_stat = File.lstat(INSTALLATION_ROOT)
-    config_dir_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_DIR)
-    config_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_PATH)
-    return unless root_stat.directory? &&
-                  root_stat.uid == helper_uid &&
-                  (root_stat.mode & 0o022).zero? &&
-                  config_dir_stat.directory? &&
-                  config_dir_stat.uid == helper_uid &&
-                  (config_dir_stat.mode & 0o022).zero? &&
-                  config_stat.file? &&
-                  config_stat.uid == helper_uid &&
-                  (config_stat.mode & 0o022).zero?
-
-    record = JSON.parse(File.read(WORKFLOW_CONTROL_TRUST_CONFIG_PATH, encoding: "UTF-8"))
-    expected_keys = [
-      WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD,
-      WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD,
-      "type",
-      "version"
-    ].sort
-    return unless record.is_a?(Hash) &&
-                  record.keys.sort == expected_keys &&
-                  record["type"] == "agent-workflow-control-lifecycle-trust-anchor" &&
-                  record["version"] == 1 &&
-                  nonempty_identity?(record[WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD]) &&
-                  nonempty_identity?(record[WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD])
-
-    record
-  rescue JSON::ParserError, SystemCallError
-    nil
   end
 
   def canonicalize(value)
@@ -656,13 +585,19 @@ module BatchPlanPreflight
     end
   end
 
-  def launch_partition(lanes, gate, active_wave, serialization_groups, completed_lane_ids)
+  def launch_partition(lanes, gate, active_wave, serialization_groups, completed_lane_ids, active_lane_ids,
+                       blocked_lane_ids)
     gate_lanes = gate.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
     eligible = []
     held = []
     lanes.each do |lane|
       lane_id = lane.fetch("id")
-      next if completed_lane_ids.include?(lane_id)
+      next if completed_lane_ids.include?(lane_id) || active_lane_ids.include?(lane_id)
+
+      if blocked_lane_ids.include?(lane_id)
+        held << lane_id
+        next
+      end
 
       gate_lane = gate_lanes.fetch(lane_id)
       if lane["wave"] != active_wave
@@ -688,8 +623,12 @@ module BatchPlanPreflight
       group_lane_ids = eligible.select do |lane_id|
         lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
       end.sort
-      held.concat(group_lane_ids.drop(1))
-      eligible -= group_lane_ids.drop(1)
+      group_occupied = (active_lane_ids + blocked_lane_ids).any? do |lane_id|
+        lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
+      end
+      held_group_lane_ids = group_occupied ? group_lane_ids : group_lane_ids.drop(1)
+      held.concat(held_group_lane_ids)
+      eligible -= held_group_lane_ids
     end
     [eligible.sort, held.sort]
   end

@@ -697,6 +697,8 @@ module PrCiReadiness
     # status per context, matching the current-context scope the history-list
     # dedupe previously approximated. Duplicate case-insensitive contexts now
     # fail closed because they indicate an unstable or malformed inventory.
+    # Status rows normally omit `sha`; if a server does include one, it must
+    # agree with the exact-head envelope rather than introduce a contradiction.
     def fetch_exact_head_statuses(repo, head_sha)
       combined_state = nil
       bind_head = lambda do |payload|
@@ -742,6 +744,13 @@ module PrCiReadiness
         context = row["context"]
         unless context.is_a?(String) && !context.empty?
           raise Error, "combined commit status response had an invalid context"
+        end
+
+        if row.key?("sha") && row["sha"].to_s != head_sha
+          actual = row["sha"].to_s
+          raise Error,
+                "status context contradicted exact head #{head_sha} " \
+                "(found #{actual.empty? ? 'missing' : actual})"
         end
 
         # GitHub's commit-status API defines context identity as case-insensitive.

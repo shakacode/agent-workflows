@@ -731,22 +731,21 @@ if [[ -n "$migration_staging" ]]; then
   fi
 fi
 
-cat <<MSG
-Installed ShakaCode agent workflows into:
-  $target
-
-Host:
-  $host
-
-Add this to PATH if needed:
-  export PATH="$target/bin:\$PATH"
-
-Initialize a consumer repo with:
-  agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared "$repo_root"
-
-Validate a consumer repo with:
-  agent-workflow-seam-doctor --shared "$repo_root"
-
-Check for updates with:
-  agent-workflows-status --host "$host"
-MSG
+printf '%s\n' \
+  "Installed ShakaCode agent workflows into:" \
+  "  $target" \
+  "" \
+  "Host:" \
+  "  $host" \
+  "" \
+  "Add this to PATH if needed:" \
+  "  export PATH=\"$target/bin:\$PATH\"" \
+  "" \
+  "Initialize a consumer repo with:" \
+  "  agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared \"$repo_root\"" \
+  "" \
+  "Validate a consumer repo with:" \
+  "  agent-workflow-seam-doctor --shared \"$repo_root\"" \
+  "" \
+  "Check for updates with:" \
+  "  agent-workflows-status --host \"$host\""

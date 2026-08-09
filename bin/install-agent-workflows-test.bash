@@ -54,6 +54,35 @@ assert_not_contains() {
   [[ "$haystack" != *"$needle"* ]] || fail "expected output not to contain '$needle', got: $haystack"
 }
 
+assert_unsigned_launch_helpers() {
+  local target="$1"
+  local label="$2"
+  local dispatch_output batch_output
+
+  assert_file "$target/skills/pr-batch/bin/dispatcher-capability-preflight"
+  assert_file "$target/skills/pr-batch/fixtures/unsigned-dispatch-smoke.json"
+  assert_file "$target/skills/plan-pr-batch/bin/batch-plan-preflight"
+  assert_file "$target/skills/plan-pr-batch/fixtures/unsigned-lifecycle-smoke.json"
+  [[ -z "$(find "$target" -type f \( -name 'dispatcher-launch-trust.json' -o -name 'workflow-control-lifecycle-trust.json' \) -print -quit)" ]] || \
+    fail "$label clean install generated a launch trust anchor"
+
+  dispatch_output="$("$target/skills/pr-batch/bin/dispatcher-capability-preflight" \
+    < "$target/skills/pr-batch/fixtures/unsigned-dispatch-smoke.json")"
+  ruby -rjson -e '
+    result = JSON.parse(ARGV.fetch(0))
+    abort result.inspect unless result["status"] == "selected" &&
+                                result.dig("dispatch", "lifecycle") == "launch-pending"
+  ' "$dispatch_output" || fail "$label clean install could not select an unsigned assignment"
+
+  batch_output="$("$target/skills/plan-pr-batch/bin/batch-plan-preflight" \
+    < "$target/skills/plan-pr-batch/fixtures/unsigned-lifecycle-smoke.json")"
+  ruby -rjson -e '
+    result = JSON.parse(ARGV.fetch(0))
+    abort result.inspect unless result["status"] == "accepted" &&
+                                result.dig("launch", "eligible_lane_ids") == ["install-smoke"]
+  ' "$batch_output" || fail "$label clean install could not accept unsigned lifecycle state"
+}
+
 write_native_scw_state() {
   local host="$1"
   local target="$2"
@@ -191,6 +220,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   assert_file "$target/bin/upgrade-agent-workflows"
   assert_file "$target/.agent-workflows-install.json"
+  assert_unsigned_launch_helpers "$target" "Codex"
   [[ ! -e "$target/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
@@ -1201,6 +1231,7 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/bin/agent-workflows-status"
   assert_file "$tmp/.claude/bin/agent-workflows-doctor"
   assert_file "$tmp/.claude/bin/agent-workflows-trust-audit"
+  assert_unsigned_launch_helpers "$tmp/.claude" "Claude"
   [[ ! -e "$tmp/.claude/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   [[ ! -e "$tmp/.claude/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest must not be installed into Claude home metadata"
   [[ ! -e "$tmp/.claude/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata must not be installed into Claude home metadata"
