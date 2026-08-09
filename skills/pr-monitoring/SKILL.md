@@ -62,6 +62,20 @@ closeout task; wait only when no such work remains. A push invalidates both
 review-wave and validation-CI evidence for the previous head; restart both
 cohorts on the new head.
 
+When a standalone monitor is blocked only on externally changing PR evidence,
+prefer the canonical Goal state-change watcher when the host can run its probe
+without a model continuation. The probe fingerprints only authoritative
+current-head checks, configured reviewer state, unresolved-thread state, and
+other named blockers. Persist an unchanged heartbeat without waking the parent;
+resume once with a compact delta when that fingerprint changes, then rebuild
+both cohorts and rerun security, origin, coordination, conflict, review,
+readiness, and exact-head gates. Reuse the stable monitor identity across
+restarts and suppress stale or duplicate probes. If deterministic watching is
+unsupported, use the canonical bounded fast-window/backoff fallback with finite
+unchanged-run, call, and token ceilings. Stop or pause it for terminal,
+non-resumable, user-input, or budget outcomes. These watcher decisions never
+make a pending check, missing reviewer artifact, or unresolved thread ready.
+
 ## Monitoring Loop
 
 1. **Re-fetch current PR state.**

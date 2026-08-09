@@ -536,7 +536,7 @@ Keep this template aligned with the matching plan-to-goal prompt in the
 resolved `pr-processing.md`, including the review/audit gate
 paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
-`GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
 Use this template when creating Codex goal text:
 
@@ -556,7 +556,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
@@ -1010,10 +1010,34 @@ terminal state; keep polling, triaging, and fixing, or report NOT COMPLETE /
 blocked with exact resume instructions only after a watch window or real
 external blocker.
 
+For autonomously clearable blockers, prefer a deterministic state-change
+watcher that can run without a model continuation. Bind one stable monitor
+identity and persisted state, reduce sanitized observations through
+the `goal-state-change-monitor` helper in this skill's `bin` directory, and do not wake this parent task for
+`baseline-recorded`, `suppress-unchanged`, `suppress-stale-probe`,
+`suppress-replayed-probe`, or `suppress-acknowledgement-retry`. Treat
+`wake_parent: true` as authoritative and resume on `wake-state-change`,
+`stop-dependency-terminal`, or `redeliver-pending-wake` with its compact delta
+when present, durably enqueue that resume, and then acknowledge its `wake_id`;
+acknowledgement retries are idempotent. Redeliver an unacknowledged pending
+wake after restart, then rerun every
+security, origin, coordination, overlap, review, readiness, and exact-head gate.
+If only model-mediated same-thread polling is available, use the bounded
+15-minute fast window, exponential backoff, and finite unchanged-run/call/token
+ceilings from the canonical contract; conservatively count every fallback
+continuation as at least one model call. Use the least-expensive safe configured
+route for each unavoidable probe; reserve the coordinator route for an actual
+transition or recovery decision. Stop or pause on terminal, non-resumable,
+user-input, or budget outcomes; for user input, preserve the exact question and
+manual-resume instruction in the restart-safe handoff. Rollback
+to that bounded fallback, never an indefinite 15-minute wake loop. This trades
+some detection latency for avoiding repeated full-context model work while the
+authoritative state is unchanged.
+
 When that external blocker publishes an exact future retry time and the host can
 re-enter this same thread on schedule, schedule one same-thread heartbeat for
-that time before handing off, because the 15-minute watch expires first and
-leaves resumable work stranded. Update the existing heartbeat instead of
+that time before handing off, because the bounded watch may expire first and
+leave resumable work stranded. Update the existing heartbeat instead of
 duplicating it, stop it once the target is terminal, and report in the handoff
 whether one was created, its exact scheduled time, and its durable identifier,
 or else the exact scheduling blocker. An `UNKNOWN` or absent retry time, a

@@ -53,6 +53,15 @@ for what to continue.
 - Do not re-do completed work, and do not ask the user to repeat context you can reconstruct from
   the conversation, open files, or git state.
 - Before another bounded poll or sleep, finish every runnable in-scope closeout task; wait only when no such work remains.
+- When continuation is driven by a Goal monitor, require a material state-change
+  delta or a typed terminal action with `wake_parent: true` before rebuilding
+  task context. An unchanged deterministic probe is a persisted heartbeat, not
+  a reason to continue. On a changed fingerprint or typed terminal action,
+  accept only the compact decision, refresh live dependencies, and rerun the
+  task's security, origin, coordination, overlap, review, readiness, and
+  exact-head gates before acting. A stale or duplicate probe remains suppressed;
+  a terminal, non-resumable, user-input, or budget outcome stays stopped or
+  paused with its restart-safe handoff.
 - Honor `AGENTS.md` boundaries and safety rules while resuming; never push or take irreversible
   actions unless the task already authorized them.
 - End with a `$status` report when that companion skill is installed; otherwise use the same four

@@ -1515,7 +1515,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
@@ -1733,15 +1733,60 @@ End the final user-visible message carrying the batch handoff with the exact arc
 
 ### Goal Mode Completion Contract
 
-Use this compact, self-contained `GMCC-v3` line verbatim in PR-batch goal
+Use this compact, self-contained `GMCC-v4` line verbatim in PR-batch goal
 prompts.
-`GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 
-`GMCC-v3` expands to this canonical contract:
+`GMCC-v4` expands to this canonical contract:
 
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. When the overall Goal is genuinely blocked by a condition that can clear without user input, treat the host's recurring automation/wakeup capability as available only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; create or update one active 15-minute current-thread monitor before the blocked handoff; do not create a duplicate. On each wake, refresh live blocker evidence and resume work if a blocker clears. Stop the monitor when the goal is unblocked or before completing it. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. For an autonomously clearable blocker, prefer one deduplicated deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint persists without loading parent context, while a material change resumes once with only `state_delta` and reruns security, origin, coordination, overlap, review, readiness, and exact-head gates. If deterministic watching is unavailable, use one bounded model-mediated fallback: the default fast window is four 15-minute polls, then the interval doubles to a four-hour cap, with finite unchanged-run, model-call, and token ceilings. Stop or pause on clear, done, terminal, non-resumable, `blocked-user-input`, or budget state and preserve an exact restart-safe manual-resume handoff; do not create a duplicate. If neither watcher is available, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
+
+The `auto-clear=>watch(same:0wake,delta:gates)` phrase in the compact `GMCC-v4` line
+is the preferred watcher. Before creating its bounded fallback, detect whether
+the host can run a deterministic probe without resuming the parent task. A
+qualifying state-change watcher:
+
+- binds one stable `monitor_id` to the task and authoritative blocker, persists
+  its state outside task context, and increments `probe_sequence` monotonically;
+- reduces each sanitized `goal-state-change-observation` through
+  the pr-batch `goal-state-change-monitor --state <path>` helper; the probe owns
+  live evidence collection, while the helper only fingerprints and decides.
+  Treat arrays in `blocker_state` as set-valued collections; encode any ordered
+  sequence as a keyed object so API result order cannot create a false change;
+- treats `baseline-recorded`, `suppress-unchanged`, `suppress-stale-probe`,
+  `suppress-replayed-probe`, and `suppress-acknowledgement-retry` as
+  no-continuation outcomes; treats `wake_parent: true` as authoritative and
+  durably enqueues one resume for `wake-state-change`,
+  `stop-dependency-terminal`, or `redeliver-pending-wake`, with compact
+  `state_delta` when present, then acknowledges its `wake_id`.
+  Acknowledgement retries are idempotent. Until acknowledgement,
+  `redeliver-pending-wake` preserves the wake across a runner restart;
+- reruns full security, origin, coordination, overlap, review, readiness, and
+  exact-head gates after that material transition. Prior green evidence never
+  substitutes for this replay;
+- stops or pauses on dependency/task terminal state, a non-resumable task,
+  `blocked-user-input`, or `pause-budget`. `blocked-user-input` does not start a
+  watcher. Its observation must carry the exact question and manual-resume
+  instruction. Persist the returned handoff as an exact restart-safe
+  manual-resume handoff so a runner restart neither loses the ceiling nor spends
+  it twice.
+
+If only model-mediated current-thread polling is available, select
+`model-polling-only`: the default fast window is four 15-minute polls, then the
+interval doubles to a four-hour cap. Set finite per-monitor unchanged-run,
+model-call, and token ceilings; the helper defaults are 32, 16, and 1,000,000,
+respectively. The reducer conservatively counts every fallback continuation as
+at least one model call even when the adapter reports zero usage. Route each unavoidable model probe through the least-expensive
+safe configured route; reserve the coordinator route for an actual transition
+or recovery decision. If neither mode is available, use the exact manual resume
+instructions. The state-change path can add probe-to-resume latency, and the
+fallback can spend model calls; choose the deterministic path when supported
+because it preserves transition detection without loading parent context for
+unchanged evidence. Rollback is to `model-polling-only`, not to an unbounded
+15-minute loop, and retains the same stable identity, terminal stops, backoff,
+and ceilings.
 
 Scheduled Retry Heartbeat: the 15-minute current-thread monitor above is a short poll, so it expires before any blocker whose clear time is further out, and the goal is then marked blocked with nothing scheduled to resume it. When a blocked goal's next safe retry time is exact and in the future, schedule the same-thread heartbeat for that time instead of relying on the watch window to outlast the gate. Before returning an exact manual-resume handoff or marking the goal blocked, create or update exactly one heartbeat, and only when all of these hold: the blocker is external and expected to clear without user input; the next safe retry time is exact and in the future; the current thread has a durable checkpoint; the host exposes a scheduling capability that can re-enter this same thread on schedule and be inspected, updated, and stopped; and the user has not disabled automatic follow-ups. If any condition fails — including an `UNKNOWN` or absent retry time, a `blocked-user-input` blocker, a blocker that cannot clear on its own, or an unavailable scheduling capability — create no automation and preserve the exact manual resume instructions unchanged.
 
@@ -1750,8 +1795,8 @@ The heartbeat targets the current thread rather than starting a standalone task,
 Pressure checks:
 
 - A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE.
-- An autonomously clearable blocked goal gets one 15-minute current-thread monitor when supported; do not duplicate it, and stop it when the goal unblocks or completes. `blocked-user-input` keeps its exact question and manual resume instructions without a monitor.
-- A blocker that publishes an exact future reset time gets one same-thread heartbeat scheduled for that time, because the 15-minute watch expires first; replay updates that one heartbeat instead of duplicating it, and a terminal state pauses or deletes it. An `UNKNOWN` retry time, a `blocked-user-input` blocker, or an unavailable scheduling capability creates no automation and keeps the exact manual resume instructions.
+- An autonomously clearable blocked goal gets one deterministic state-change watcher when supported; unchanged evidence does not wake the parent. A bounded, deduplicated 15-minute-fast-window/backoff monitor is the fallback. Stop or pause either mode on unblocked, terminal, non-resumable, user-input, or budget state.
+- A blocker that publishes an exact future reset time gets one same-thread heartbeat scheduled for that time, because the bounded watch may expire first; replay updates that one heartbeat instead of duplicating it, and a terminal state pauses or deletes it. An `UNKNOWN` retry time, a `blocked-user-input` blocker, or an unavailable scheduling capability creates no automation and keeps the exact manual resume instructions.
 - `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
@@ -2428,8 +2473,9 @@ Goal completion contract:
 - Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.
 - If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll. Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage. If either cohort does not settle in the bounded watch/retry window, report NOT COMPLETE as `waiting-on-checks-or-review` with exact evidence and resume command. If a check fails, inspect and fix if in scope.
 - If only a real external blocker remains after a bounded watch/retry window, report NOT COMPLETE with exact blocker, evidence, and resume command; do not call the goal complete.
-- When the overall goal is genuinely blocked by a condition that can clear without user input, treat the host's recurring automation/wakeup capability as supported only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; reuse or create one 15-minute current-thread monitor before handoff and do not create a duplicate. On each wake, refresh live blocker evidence and resume if a blocker clears. Stop the monitor when the goal unblocks or before completion. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.
-- When that blocker publishes an exact future retry time, schedule the same-thread heartbeat for that time rather than the 15-minute watch, which expires first; follow the Scheduled Retry Heartbeat rule in the Goal Mode Completion Contract for its conditions, durable record, wake-time gate replay, single-instance update, and terminal cleanup.
+- GMCC-v4 compatibility fallback: When the overall goal is genuinely blocked by a condition that can clear without user input and deterministic state-change watching is unavailable, treat the host's recurring automation/wakeup capability as supported only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; reuse or create one bounded current-thread monitor before handoff and do not create a duplicate. Use at most four 15-minute fast-window polls followed by exponential backoff capped at four hours and finite unchanged-run/model-call/token ceilings. On each wake, refresh live blocker evidence and resume if a blocker clears. Stop the monitor when the goal unblocks or before completion. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.
+- State-change extension: prefer one deterministic state-change watcher that runs a minimal authoritative probe without a model continuation; bind its stable identity and persisted state, suppress unchanged fingerprints, and wake once with a compact state delta when the fingerprint changes or for a typed dependency-terminal action with `wake_parent: true`. Rerun full security, origin, coordination, overlap, review, readiness, and exact-head preflights after that transition. Use the compatibility monitor only as a bounded fallback with at most four 15-minute fast-window polls, exponential backoff capped at four hours, and finite unchanged-run/model-call/token ceilings. Terminal, non-resumable, user-input, or budget states stop or pause the watcher and preserve an exact restart-safe manual-resume handoff. `blocked-user-input` does not start a watcher. If neither mode is available, preserve exact manual resume instructions.
+- When that blocker publishes an exact future retry time, schedule the same-thread heartbeat for that time rather than relying on the bounded watch to outlast the gate; follow the Scheduled Retry Heartbeat rule in the Goal Mode Completion Contract for its conditions, durable record, wake-time gate replay, single-instance update, and terminal cleanup.
 - Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 - With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
