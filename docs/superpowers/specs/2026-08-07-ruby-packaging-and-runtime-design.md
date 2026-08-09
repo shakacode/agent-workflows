@@ -63,6 +63,16 @@ Public package names match repository and CLI branding:
 | Agent Coordination | RubyGems | `agent-coordination` |
 | Agent Coordination Dashboard | npm | `agent-coordination-dashboard` |
 
+The dashboard name is intentionally unscoped to match the repository and CLI
+brand and to keep the default install command discoverable. npm organizations
+can manage unscoped packages and grant teams package access, so this package's
+ownership proof uses the exact approved human-owner list, the verified GitHub
+trusted publisher, and the exact ShakaCode organization/team access that live
+authenticated capability checks support. It must not claim an
+`@shakacode`-scoped package or confuse a team access row with package scope.
+Moving to `@shakacode/agent-coordination-dashboard` would be a separately
+reviewed package-name migration, not an implicit ownership fix.
+
 Ruby require paths and constants use underscores and CamelCase:
 
 ```ruby
@@ -93,7 +103,9 @@ Each public package must have:
 - MFA-required metadata where the registry supports it;
 - GitHub OIDC trusted publishing;
 - at least two confirmed human owners plus the appropriate ShakaCode
-  organization ownership when supported;
+  organization/team ownership or access when supported, including authenticated
+  capability detection and read-back for the intentionally unscoped npm
+  dashboard package;
 - an immutable release tag and changelog entry;
 - build, install, smoke, and package-content evidence before publication.
 
@@ -205,9 +217,12 @@ GitHub client.
 
 ### D8. Ruby version and dependencies
 
-The initial gem declares Ruby `>= 3.2`, matching the existing package-ready
-Agent Coordination gem. CI tests the lowest supported Ruby and the current
-project Ruby. Raising the floor requires a documented compatibility decision.
+The initial Agent Workflows gem declares Ruby `>= 3.3`; Ruby 3.2 reached end of
+life before this decision and is covered only by the negative launcher guard.
+The existing package-ready Agent Coordination gem retains its separately owned
+`>= 3.2` compatibility contract until that repository makes a coordinated
+floor change. Agent Workflows CI tests Ruby 3.3 and the exact current project
+Ruby, 3.4.6. Raising either floor requires a documented compatibility decision.
 
 The new `agent-workflows` gem initially uses only the Ruby standard library.
 The existing `agent-coordination` package retains its separately reviewed
@@ -296,14 +311,14 @@ concise actionable diagnostic.
    library, partial library, rollback, and offline cases.
 7. Differential tests run legacy and extracted implementations against the
    same non-mutating corpus until each cutover.
-8. Linux CI runs required, separately named jobs on the Ruby 3.2 floor and the
-   current project Ruby; both run the package and installer suites. A recorded
+8. Linux CI runs required, separately named jobs on the Ruby 3.3 floor and the
+   exact current project Ruby 3.4.6; both run the package and installer suites. A recorded
    macOS smoke validates platform-specific packaging.
 9. The repository's `bin/validate` remains the canonical aggregate local gate
    and invokes isolated gem build/install tests plus source, copy, symlink,
    flat, plugin-companion, missing/partial-library, rollback, and offline
    installer scenarios. Release readiness additionally requires both exact-head
-   Linux Ruby-matrix jobs and the macOS packaging smoke; a single Ruby 3.4 job
+   Linux Ruby-matrix jobs and the macOS packaging smoke; a single Ruby 3.4.6 job
    cannot substitute for that matrix.
 
 ## Migration Program

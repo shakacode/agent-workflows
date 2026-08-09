@@ -8,7 +8,7 @@
 
 **Architecture:** Each repository builds and verifies its own native package: `agent-workflows` and `agent-coordination` on RubyGems, `agent-coordination-dashboard` on npm. Registry mutation remains a separately approved release action. A bounded Tebako evaluation consumes the already verified `agent-workflows` gem and may add native release assets without changing the canonical Ruby source or gem.
 
-**Tech Stack:** RubyGems, npm, GitHub Actions OIDC trusted publishing, GitHub Releases, Ruby 3.2/3.4, Node 22.12+ runtime smoke, a pinned Node 24.8.0/npm 11.5.1 publication toolchain, Tebako evaluation, SHA-256 artifact manifests.
+**Tech Stack:** RubyGems, npm, GitHub Actions OIDC trusted publishing, GitHub Releases, Ruby 3.2 for the existing Agent Coordination compatibility floor, Ruby 3.3 for the new Agent Workflows floor, a pinned Ruby 3.4.6 build, Node 22.12+ runtime smoke, a pinned Node 24.8.0/npm 11.5.1 publication toolchain, Tebako evaluation, SHA-256 artifact manifests.
 
 ## Global Constraints
 
@@ -16,21 +16,33 @@
 - Do not publish underscore aliases or a dashboard Ruby gem.
 - A pending trusted publisher does not prove registry ownership; a successful legitimate package publication does.
 - Do not publish an empty, placeholder, alias-only, or name-squatting package.
-- For every previously unclaimed package, a successful first publication is
-  immediately followed by authenticated owner grants from the bootstrap owner
-  to every approved backup human and every organization/team role the registry
-  supports for that package type. Use the registry's distinct access operation
-  and read-back when organization/team access is not represented in its owner
-  list. If the registry does not support such a role, record the authenticated
-  capability evidence and the registry-specific disposition instead of
-  requiring an impossible grant. Always read the human owner list back and
+- Every release authorization contains a versioned grant manifest. Each row
+  names the exact human or organization/team principal, registry operation,
+  package, role, and access level being approved. For a previously unclaimed
+  package, a successful first publication is immediately followed by
+  authenticated grants for exactly those manifest rows; no open-ended "all
+  supported roles" grant is permitted. Validate every requested row against
+  live registry capabilities, reject a supported grant that is absent from or
+  inconsistent with the manifest, and record unsupported rows with authenticated
+  capability evidence and a registry-specific disposition. Use the registry's
+  distinct access operation and read-back when organization/team access is not
+  represented in its owner list. Always read the human owner list back and
   require at least two confirmed human owners before the release is complete.
-  If any supported grant or required read-back fails, stop with publication
-  recorded but release completion blocked; verification alone never substitutes
-  for a supported grant operation.
+  Carry the complete grant manifest, observed grants, and read-back result into
+  the release receipt. If any approved supported grant or required read-back
+  fails, stop with publication recorded but release completion blocked;
+  verification alone never substitutes for a supported grant operation.
+- Store each manifest as
+  `release/grants/<package>-<version>.v1.json`. Its canonical JSON contains
+  `schema_version`, package, registry, version, and sorted rows with
+  `principal_type`, `principal`, `operation`, `role`, `access`, and
+  `capability_status`; an unsupported row also carries its authenticated
+  capability-evidence reference and disposition. Authorization names the path
+  and SHA-256. The workflow verifies both before publication, and the release
+  receipt embeds that digest plus the observed result for every row.
 - Do not publish without explicit release authorization naming the package,
   version, commit, registry, workflow path and ref, workflow-file digest, and
-  rollback/disposition.
+  rollback/remediation disposition, plus the exact grant manifest.
 - The specified stable releases (`agent-coordination` and dashboard `0.1.0`,
   Agent Workflows `0.2.0`) proceed only after the release owner explicitly
   accepts the compatibility commitment. Otherwise stop and write a
@@ -76,7 +88,8 @@ does not replace registry read-back.
 
 Each first-release workflow is protected `workflow_dispatch` only and requires
 exact package, version, release branch, commit, artifact SHA-256, workflow path,
-workflow ref, and workflow-file SHA-256 authorization inputs. Dispatch only
+workflow ref, workflow-file SHA-256, and grant-manifest path/SHA-256
+authorization inputs. Dispatch only
 from that exact authorized branch ref. Configure the protected `release`
 environment with a deployment-branch rule admitting only that branch and
 required human review. Before approving the environment deployment, the
@@ -109,6 +122,45 @@ checksum, and concurrent-run/tag collision as release-stopping cases. A later
 tag-triggered release is a separate design change unless an immutable
 authorization manifest supplies the same bindings.
 
+Human owners are recovery principals, not an alternate routine publication
+path. The authorization explicitly forbids local `gem push` and token-based npm
+publication except for the one-time, separately authorized first-dashboard
+bootstrap below. That exception permits only the exact reviewed `0.1.0` tarball,
+tag, checksum, maintainer identity, and interactive-2FA npm session after all
+prepublication gates pass. It never exposes or persists credential values, runs
+in CI, creates a reusable automation token, or applies to a later version.
+Before opening the session, the maintainer installs an unconditional cleanup
+trap/ensure step that logs out or revokes it after every bootstrap attempt,
+including publish, grant, trusted-publisher attachment, verification, interrupt,
+and error paths. Cleanup is not conditional on the trusted publisher being
+attached; a retry opens a new interactive-2FA session. All routine releases
+require no standing publish token in CI and record the trusted publisher identity
+used for the release.
+Registries cannot technically prevent every credentialed owner from publishing
+locally, so post-release verification must compare the registry version history
+and provenance with the authorized receipt. An unexplained version or provenance
+mismatch is a security incident: revoke affected credentials, freeze further
+publication, preserve registry and workflow evidence, and require a new
+maintainer authorization before recovery.
+
+Rollback means remediation, never tag or version reuse. For RubyGems, preserve
+the immutable tag and published bytes; yank only with explicit maintainer
+authorization when RubyGems permits and the compatibility/security impact
+justifies it, then publish a new corrective version. For npm, unpublish only
+when the registry still permits it and a maintainer explicitly authorizes that
+destructive action; otherwise deprecate the affected version with an actionable
+message and publish a new corrective version. After any failure following tag
+creation, reconcile the registry before acting. If the exact authorized artifact
+was published successfully, do not republish or bump merely because an owner
+grant, trusted-publisher attachment, read-back, smoke, or GitHub Release closeout
+step failed; resume those incomplete steps against the published version. If no
+publication occurred, the immutable tag and same authorized artifact may be
+retried under the existing authorization. Require a new version only when the
+published artifact is defective, replacement bytes are required, or live state
+shows an ambiguous or mismatched publication. Every authorization selects one
+of these registry-specific outcomes, and the closeout receipt records the action
+actually taken.
+
 ---
 
 ## Repository Package Map
@@ -124,12 +176,16 @@ authorization manifest supplies the same bindings.
 **Files:**
 
 - Create in each repository: `docs/package-release-checklist.md`.
+- Create in each repository:
+  `release/grants/<package>-<version>.v1.json`.
 - Modify in each repository: package metadata only when a check below reveals a real gap.
 
 **Interfaces:**
 
 - Consumes: RubyGems exact-name API, npm registry exact-name API, repository package metadata, authenticated owner identity.
-- Produces: a timestamped release preflight recording availability/ownership without credentials.
+- Produces: a timestamped release preflight and reviewed v1 grant manifest
+  recording availability, intended ownership, capability dispositions, and no
+  credentials.
 
 - [ ] **Step 1: Recheck exact names immediately before release work**
 
@@ -154,7 +210,16 @@ Use registry account pages or identity commands that print only account handles.
 
 - [ ] **Step 3: Record intended ownership**
 
-The release checklist names at least two human owner handles and the ShakaCode organization role. Missing confirmed backup ownership is a release blocker, not a post-release reminder.
+Create the canonical v1 grant manifest from the release checklist. Both RubyGems
+manifests name at least two human owners and the exact supported ShakaCode
+organization access. The unscoped npm manifest names at least two human owners
+and the trusted-publisher attachment. It also names the exact ShakaCode npm team
+and requested package access, with capability status initially `unknown` until
+the authenticated preflight proves whether the registry supports that row for
+the unscoped package. A supported row is mandatory and uses npm's distinct team
+access grant plus authenticated read-back; only a genuinely unavailable row may
+be recorded unsupported with evidence. Missing confirmed backup human ownership
+or a supported team grant is a release blocker, not a post-release reminder.
 
 - [ ] **Step 4: Configure RubyGems publishers and prepare npm bootstrap**
 
@@ -167,7 +232,10 @@ separately authorized, interactive-2FA bootstrap publication required in Task 4.
 
 - [ ] **Step 5: Review the preflight**
 
-Confirm package spelling, registry, repository, workflow, environment, and owners. A reviewer explicitly verifies that no underscore alias or dashboard gem is included.
+Confirm package spelling, registry, repository, workflow, environment, owners,
+and every canonicalized grant-manifest row. Record and independently verify the
+manifest SHA-256. A reviewer explicitly verifies that no underscore alias,
+dashboard gem, or unsupported-by-assumption npm team disposition is included.
 
 ### Task 2: Prepare and release `agent-coordination` 0.1.0
 
@@ -280,7 +348,7 @@ Run the repository's configured validate/test wrappers, packaging test, RuboCop,
 
 Present exact package `agent-coordination`, version `0.1.0`, attached release
 branch, commit SHA, artifact SHA-256, workflow path/ref and file digest, owners,
-and rollback/disposition. No tag or registry mutation occurs before
+grant-manifest path and SHA-256, and rollback/disposition. No tag or registry mutation occurs before
 authorization.
 
 - [ ] **Step 8: Publish and verify only after authorization**
@@ -289,8 +357,9 @@ Create/push the signed or protected release tag through the authorized workflow;
 the workflow must verify that tag before it permits the gem-push hook. Verify
 RubyGems metadata, the checksum of the bytes actually published, owners, MFA
 status, and install from RubyGems into a clean gem home. For a first
-publication, execute the global post-publication owner-grant contract before
-continuing. Then create the GitHub
+publication, execute the global post-publication owner-grant contract, record
+every manifest row's result in the release receipt, and verify the receipt binds
+the authorized manifest digest before continuing. Then create the GitHub
 Release explicitly from the verified tag and commit, attach the checksum
 manifest and versioned changelog notes, and read it back. A failed or ambiguous
 push or release creation is investigated through live registry and GitHub state
@@ -364,7 +433,9 @@ configuring RubyGems OIDC.
 - [ ] **Step 5: Run current-head release gates and stop for authorization**
 
 Present exact package, version, attached release branch, commit, artifact
-checksum, workflow path/ref and file digest, executables, owners, and evidence.
+checksum, workflow path/ref and file digest, executables, owners, grant-manifest
+path and SHA-256, and evidence. The workflow and release receipt must bind that
+exact digest.
 Publication approval for `agent-coordination` does not authorize
 `agent-workflows`.
 
@@ -447,25 +518,37 @@ that version for trusted publication.
 
 Present exact npm name, version, commit, tarball integrity/checksum, Node floor,
 bootstrap method, future workflow path/ref and file digest, pinned publication
-Node/npm pair, owners, and smoke evidence. RubyGems approvals do not authorize
+Node/npm pair, owners, grant-manifest path and SHA-256, and smoke evidence.
+RubyGems approvals do not authorize
 npm publication.
 
 - [ ] **Step 5: Bootstrap, secure, and verify only after authorization**
 
 Fetch tags, require `v0.1.0` to be absent or already dereference to the
 authorized commit, then create/push and read back the protected tag before npm
-publication. A tag at another commit is a terminal collision. Publish the exact
+publication. A tag at another commit is a terminal collision. Before login,
+install the global bootstrap contract's unconditional cleanup trap and test its
+success, grant-failure, attachment-failure, verification-failure, interrupt, and
+unexpected-exit cases with a fake npm credential store. Publish the exact
 reviewed tarball interactively with 2FA only after the tag is verified. Verify
 npm registry metadata, owners, and tarball integrity; install the downloaded
 `agent-coordination-dashboard@0.1.0` tarball whose integrity matches the reviewed
 artifact, then run its installed `--help` and lifecycle smoke without resolving
-an unversioned `latest`. Use the authenticated bootstrap owner to grant every
-approved backup npm owner/team role, then read the owner list back under the
-global post-publication owner-grant contract. Immediately attach the protected release workflow as
+an unversioned `latest`. Use the authenticated bootstrap owner to grant exactly
+the approved backup human-owner rows and every supported ShakaCode team-access
+row. Read the owner list and each distinct team access row back through
+authenticated registry interfaces. Record an organization/team row as
+unsupported only when the live preflight proved that exact operation unavailable
+for this package and preserved the capability evidence in the manifest.
+Immediately attach the protected release workflow as
 the package's trusted publisher, restrict token-based publishing, and read the
 publisher configuration back. The release is incomplete until that attachment
-is verified. Record that OIDC provenance starts with the next release because
-the bootstrap version was not workflow-published.
+is verified. The cleanup trap logs out or revokes the interactive session before
+Step 5 returns on either success or failure; read back the absence of reusable
+local credentials without printing values. Record every grant-manifest row's
+result and manifest digest in the release receipt. Record that OIDC provenance
+starts with the next release because the bootstrap version was not
+workflow-published.
 Create the GitHub Release explicitly from the already verified tag with tarball
 integrity, checksum, and `0.1.0` changelog notes, then read back the tag and
 release. If publication fails after the tag is created, do not move or reuse the
@@ -602,7 +685,13 @@ evaluation evidence without public artifacts.
 
 - [ ] **Step 1: Confirm owners and trusted publishers**
 
-Verify at least two confirmed human owners, intended organization roles, MFA requirements, protected release environments, and exact repository/workflow bindings on each registry.
+Verify at least two confirmed human owners, MFA requirements, protected release
+environments, and exact repository/workflow bindings on each registry. Verify
+supported organization roles for both RubyGems packages. For the unscoped npm
+package, verify the trusted publisher and read back every supported ShakaCode
+team access row. Accept an unsupported disposition only with authenticated live
+capability evidence for that exact operation; unscoped naming alone is not such
+evidence.
 
 - [ ] **Step 2: Verify clean-machine installation**
 

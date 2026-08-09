@@ -10,7 +10,7 @@ single-skill helper boundary, and safety contract.
 
 **Architecture:** Apply branch-by-abstraction one domain at a time after the gem-foundation plan lands. Each task first characterizes the current executable, adds direct domain tests, moves behavior behind an injected CLI adapter, proves differential compatibility, and only then replaces the legacy file with a thin wrapper.
 
-**Tech Stack:** Ruby 3.2+, Minitest, Open3-based CLI contract harness, injected Git/GitHub/process adapters, existing source-pack fixtures and `bin/validate`.
+**Tech Stack:** Ruby 3.3+, Minitest, Open3-based CLI contract harness, injected Git/GitHub/process adapters, existing source-pack fixtures and `bin/validate`.
 
 ## Global Constraints
 
@@ -35,6 +35,18 @@ single-skill helper boundary, and safety contract.
   only `spec.files`; the runtime manifest drives only source-pack completeness
   and may additionally contain source-pack wrappers/resources. Each consumer
   fails for an omitted, duplicate, missing, absolute, or parent-traversing entry.
+- Every task that adds a canonical class or CLI modifies
+  `lib/agent_workflows.rb` in the same change, registers each public entrypoint
+  explicitly, and updates `test/packaging/public_entrypoints_test.rb`. That test
+  builds and installs the gem into an isolated home, disables the source
+  checkout, and resolves every registered constant after only
+  `require "agent_workflows"`. Ad hoc direct requires in executables are not a
+  substitute for the package entrypoint.
+- Every extracted root or skill-relative launcher performs the foundation's
+  stdlib-free Ruby-version check before requiring package code. The shared
+  `ruby32-source-pack-guard` corpus invokes every extracted launcher from
+  source-pack and Codex/Claude native-plugin layouts under Ruby 3.2 and requires
+  the single documented diagnostic, no backtrace, and exit `64`.
 - Before each wrapper cutover, inventory every runtime file read relative to the
   checkout. Package required schemas, templates, datasets, and other resources
   under a canonical data path or inject them explicitly; never leave a gem
@@ -65,7 +77,8 @@ single-skill helper boundary, and safety contract.
 | --- | --- |
 | `bin/agent-workflow-seam-doctor` | `lib/agent_workflows/seam` |
 | `skills/pr-batch/bin/pr-security-preflight` | `lib/agent_workflows/security` and `lib/agent_workflows/trust` |
-| `skills/plan-pr-batch/bin/*` | `lib/agent_workflows/batch` |
+| `skills/plan-pr-batch/bin/batch-plan-preflight` | `lib/agent_workflows/batch` |
+| `skills/plan-pr-batch/bin/pr-file-touch-map` | Retained single-skill helper owned by `plan-pr-batch` |
 | `skills/pr-batch/bin/dispatcher-*`, `stage-*`, `stale-*`, `agent-coord-*` | `lib/agent_workflows/batch` |
 | `skills/pr-batch/bin/pr-ci-readiness` | `lib/agent_workflows/readiness` |
 | `skills/pr-batch/bin/autonomous-*`, `merge-assurance`, `pr-merge-submit` | `lib/agent_workflows/merge` |
@@ -73,14 +86,19 @@ single-skill helper boundary, and safety contract.
 | root status, delivery, drift, validators | `lib/agent_workflows/distribution` |
 | `bin/push-downstream`, changelog, task-observer, review-data helpers | `lib/agent_workflows/maintainer` or owning skill domain |
 
-Every retained root or skill-relative executable becomes a launcher below 30
-lines that calls one `AgentWorkflows::CLI::<Name>.start` method. Root wrappers
+Every retained root or skill-relative executable whose implementation moves into
+the gem becomes a launcher below 30 lines that calls one
+`AgentWorkflows::CLI::<Name>.start` method. The reviewed production-boundary
+manifest explicitly exempts genuinely single-skill helpers such as
+`skills/plan-pr-batch/bin/pr-file-touch-map`; they retain their direct tested
+implementation until a second real consumer justifies extraction. Root wrappers
 load `lib/agent_workflows` from the verified installed root. A fixed trampoline
 resolved from `.agents/skills/<skill>/bin` contains the exact relative immutable
 generation identity and helper name selected when that trampoline was created.
 It invokes only that generation and never follows the mutable status pointer or
 falls back to a gem, host-global install, another generation, or source checkout.
-The generation wrapper validates its bundle manifest before loading its `lib`.
+Its pinned trusted bootstrap validates the bundle manifest and required runtime
+tree before loading the generation wrapper or its `lib`.
 
 A skill-relative launcher running from a source checkout, a flat source-pack
 install, or a Codex/Claude native-plugin cache derives one candidate package
@@ -93,19 +111,27 @@ launch paths, not aliases for `plugin-companion`.
 ### Repo-local pinned-copy bundle
 
 This exporter is the second consumer of the foundation plan's
-`AgentWorkflows::Distribution::GenerationTransaction`. Reuse that primitive for
-immutable staging, receipt/digest verification, no-follow locking, atomic
-promotion and stable-path replacement, durable journals, recovery, and
-retention. The exporter supplies its richer union/compact phase graph and
-helper-specific stable-path callbacks; it must not implement another generation
-store, pointer writer, journal parser, or rollback engine. Add shared contract
-tests that run the same fault corpus through both the source-pack installer and
-the pinned-copy exporter, plus exporter-only tests for helper-set transitions.
+`AgentWorkflows::Distribution::RuntimeBootstrap` and
+`AgentWorkflows::Distribution::GenerationTransaction`. Reuse the stdlib-only
+bootstrap for trusted pre-generation lock, direct generation/helper validation,
+lease, and child-execution behavior. Reuse the transaction for immutable
+staging, receipt/digest verification, atomic promotion and stable-path
+replacement, durable journals, recovery, and retention. The exporter supplies
+its richer union/compact phase graph and helper-specific stable-path callbacks;
+it must not implement another bootstrap, lease format, generation store, pointer
+writer, journal parser, or rollback engine. Add shared contract tests that run
+the same fault corpus through both the source-pack installer and the pinned-copy
+exporter, plus exporter-only tests for helper-set transitions.
 
 - Create `bin/export-agent-workflows-pinned-copy` as the only supported producer
   of repo-local `.agents` pins. It accepts an explicit target, helper allowlist,
   and mutually exclusive delivery mode and refuses a dirty or
-  revision-ambiguous source. `full-skill` mode is the supported fallback for a
+  revision-ambiguous source. Before loading canonical Ruby, acquiring its lock,
+  creating staging state, or changing the target, its stdlib-only pre-floor
+  guard rejects Ruby older than 3.3 with the source pack's single diagnostic and
+  exit `64`. Extend the foundation's required Ruby 3.2 source-pack guard job with
+  exporter no-mutation filesystem snapshots before this entrypoint is supported.
+  `full-skill` mode is the supported fallback for a
   host that cannot load installed or native-plugin skills: it versions the
   complete selected skill entrypoint, including `SKILL.md`, `agents/` metadata,
   helper files, and any workflow references required by that entrypoint.
@@ -137,12 +163,19 @@ the pinned-copy exporter, plus exporter-only tests for helper-set transitions.
   resolve that symlink to the generation root. In `helper-companion` mode, do not
   replace whole skill directories because they may coexist with repo-owned local
   skills and unrelated pinned helpers. Instead, create one fixed, minimal
-  trampoline per selected helper path. Each trampoline binds its helper directly
-  to one complete immutable generation. On first migration, build and select the
-  complete generation before atomically renaming each staged symlink or
-  trampoline over its legacy path. Each invocation therefore opens either the
-  complete old path or the complete new path; there is no missing-path or
-  half-written interval. Subsequent updates atomically replace each affected
+  trampoline per selected helper path. Each sub-30-line trampoline binds its
+  helper directly to one complete immutable generation and pins one immutable
+  stdlib-only bootstrap path and digest under
+  `.agents/.agent-workflows-bootstraps/`. Its minimal loader uses the foundation
+  plan's no-follow descriptor, ownership/mode, and already-open-byte digest
+  checks before evaluating that bootstrap; no selected-generation code runs
+  first. Install and fsync the immutable bootstrap before any trampoline may name
+  it, and never delete an older bootstrap during normal export. On first
+  migration, build and select the complete generation and install its bootstrap
+  before atomically renaming each staged symlink or trampoline over its legacy
+  path. Each invocation therefore opens either the complete old path or the
+  complete new path; there is no missing-path or half-written interval.
+  Subsequent updates atomically replace each affected
   generation-bound stable path and then update the single
   `.agents/agent-workflows-current` symlink used only for status and exporter
   bookkeeping; runtime launch never follows that pointer. Refuse unmanaged
@@ -169,7 +202,8 @@ the pinned-copy exporter, plus exporter-only tests for helper-set transitions.
   the new trampoline. Refuse an update when the prior receipt or managed-helper
   set cannot be reconciled exactly.
 - Every helper trampoline uses one fixed canonical template parameterized only
-  by its validated relative generation identity and helper name; every
+  by its validated relative generation identity, helper name, and immutable
+  bootstrap relative path and digest; every
   full-skill symlink uses one canonical relative-target rule. The exporter
   verifies each stable path, mode, rendered inputs or link target, and SHA-256
   before and after reconciliation. An exporter-owned
@@ -184,16 +218,15 @@ the pinned-copy exporter, plus exporter-only tests for helper-set transitions.
   paths. If neither resume nor rollback is provably safe, fail with the exact
   journal and path discrepancy for human disposition. Remove the journal only
   after the new stable receipt and desired paths read back successfully. Runtime
-  wrappers do not reread either mutable file. A trampoline validates the
-  generation identity and helper name embedded in its own already-open bytes,
-  then executes its named wrapper in that immutable generation. The selected
-  generation wrapper requires that helper
-  name in its own immutable manifest and verifies its own entry plus all runtime
-  entries required by its CLI against source revision, helper-set digest, mode,
-  and SHA-256 before loading Ruby. It does not reread or require a match with the
-  live current pointer: an invocation bound to the old complete generation
-  before an atomic update is allowed to finish while new invocations select the
-  new one. Package version alone is never accepted as a generation binding.
+  wrappers do not reread either mutable file. A trampoline validates and loads
+  its pinned bootstrap from already-open bytes, then passes the generation
+  identity and helper name embedded in its own already-open bytes. The trusted
+  bootstrap acquires the retention lock, validates the named immutable manifest
+  and required runtime tree, publishes the generation lease, and only then
+  executes the named wrapper. It does not reread or require a match with the live
+  current pointer: an invocation bound to the old complete generation before an
+  atomic update is allowed to finish while new invocations select the new one.
+  Package version alone is never accepted as a generation binding.
 - Before migration, inventory every directory entry under each consumer's pinned
   shared-helper directories, including tracked, untracked, ignored, and
   no-follow symlink entries, and compare tracked paths with the recorded source
@@ -325,10 +358,12 @@ git commit -m "test: add Ruby CLI characterization harness"
 - Create: `lib/agent_workflows/cli/seam_doctor.rb`
 - Create: `test/gem/seam/*_test.rb`
 - Create: `test/packaging/installed_seam_doctor_test.rb`
+- Modify: `test/packaging/public_entrypoints_test.rb`
 - Modify: `bin/agent-workflow-seam-doctor`
 - Modify: `bin/agent-workflow-seam-doctor-test.rb`
 - Create: `exe/agent-workflow-seam-doctor`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
+- Modify: `lib/agent_workflows.rb`
 - Modify: `agent-workflows.gemspec`
 
 **Interfaces:**
@@ -363,7 +398,7 @@ Run legacy and extracted commands over every non-mutating validation fixture and
 Create `exe/agent-workflow-seam-doctor` as the RubyGems launcher for
 `AgentWorkflows::CLI::SeamDoctor.start`; this executable does not exist in the
 foundation plan and must be added here, not treated as a pre-existing file.
-Add it to `agent-workflows.gem-manifest` and
+Register `AgentWorkflows::CLI::SeamDoctor` from `lib/agent_workflows.rb`, add it to `agent-workflows.gem-manifest` and
 `agent-workflows.runtime-manifest`, and add an isolated temporary-gem-home test
 that builds and installs the gem, runs `agent-workflow-seam-doctor --help`, and
 exercises validation and `--init` from a temporary working directory outside
@@ -372,6 +407,8 @@ the checkout. Give the child a controlled `PATH`, `RUBYLIB`, `RUBYOPT`,
 resolved executable/load paths, and assert the loaded gem path is beneath the
 temporary `GEM_HOME`. Removing only the checkout from `$LOAD_PATH` is not
 sufficient isolation.
+Extend the foundation's `test/packaging/public_entrypoints_test.rb` with the seam
+constants and run it before this task commits; retain every foundation assertion.
 Keep `bin/agent-workflow-seam-doctor` as the source-pack compatibility launcher
 and prove both launchers produce the same output and exit status for the shared
 corpus.
@@ -386,6 +423,7 @@ ruby -Ilib test/gem/seam/shell_command_test.rb
 ruby -Ilib test/gem/seam/initializer_test.rb
 ruby -Ilib test/gem/seam/validator_test.rb
 ruby -Ilib test/packaging/installed_seam_doctor_test.rb
+ruby -Ilib test/packaging/public_entrypoints_test.rb
 bin/agent-workflow-seam-doctor --root test/fixtures/consumer-repo --shared .
 bin/validate
 ```
@@ -410,14 +448,18 @@ Commit pure parsing, initializer/writes, and validator/CLI cutover separately wi
 - Create: `lib/agent_workflows/security/preflight.rb`
 - Create: `lib/agent_workflows/cli/security_preflight.rb`
 - Create: `test/gem/{github,git,trust,security}/*_test.rb`
+- Modify: `test/packaging/public_entrypoints_test.rb`
 - Create: `bin/export-agent-workflows-pinned-copy`
 - Create: `test/pinned_copy/export_test.bash`
 - Create: `test/fixtures/pinned-copy-consumer/.agents/*`
+- Modify: `lib/agent_workflows/distribution/runtime_bootstrap.rb`
 - Modify: `lib/agent_workflows/distribution/generation_transaction.rb`
+- Modify: `test/gem/distribution/runtime_bootstrap_test.rb`
 - Modify: `test/gem/distribution/generation_transaction_test.rb`
 - Modify: `skills/pr-batch/bin/pr-security-preflight`
 - Modify: `skills/pr-batch/bin/pr-security-preflight-test.rb`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
+- Modify: `lib/agent_workflows.rb`
 - Modify: pinned-copy installation and adoption documentation.
 - Delete after cutover: `skills/pr-batch/lib/git_probe_env.rb`
 
@@ -464,7 +506,16 @@ exit status. Before replacing this first skill-relative wrapper, implement the
 pinned-copy exporter and all atomicity, collision, partial-library,
 version-mismatch, source-absent, and rollback cases from the pinned-copy bundle
 contract by extending the shared `GenerationTransaction` phase graph and
-callbacks. No exporter-specific copy of its staging, journal, selector,
+callbacks. Extend
+`RuntimeBootstrap.run(request:, compatibility_json:, argv:, env:)` and its direct
+tests for the foundation's version-1 `mode: fixed` request: the trampoline passes
+its already-open embedded generation identity, helper name, manifest digest,
+compatibility digest, consumer root, and the exact authenticated compatibility
+bytes; the bootstrap validates those fields against the immutable bundle and
+compatibility matrix, publishes the lease, and then executes the helper.
+Prove it never follows `.agents/agent-workflows-current`, rejects every unknown,
+traversing, unlisted, stale-digest, or schema-incompatible request, and remains
+compatible with the foundation's `mode: current` corpus. No exporter-specific copy of its staging, journal, selector,
 recovery, or retention implementation is permitted. Run the entire existing
 3,000-plus-line test suite plus direct tests
 and a differential non-mutating corpus in source, installed-source-pack,
@@ -485,6 +536,7 @@ ruby -Ilib test/gem/github/client_test.rb
 ruby -Ilib test/gem/github/paginator_test.rb
 ruby -Ilib test/gem/trust/resolver_test.rb
 ruby -Ilib test/gem/security/preflight_test.rb
+ruby -Ilib test/packaging/public_entrypoints_test.rb
 bash test/pinned_copy/export_test.bash
 bin/validate
 ```
@@ -503,8 +555,15 @@ Use four review-sized commits. Delete `git_probe_env.rb` only in the final cutov
 - Create: `lib/agent_workflows/readiness/{check_run,decision,evaluator}.rb`
 - Create: corresponding `lib/agent_workflows/cli/*.rb`
 - Create: `test/gem/batch/*_test.rb`, `test/gem/readiness/*_test.rb`
+- Modify: `test/packaging/public_entrypoints_test.rb`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
+- Modify: `lib/agent_workflows.rb`
 - Modify wrappers and legacy tests for `batch-plan-preflight`, `dispatcher-capability-preflight`, `stage-dependency-gate`, `stale-assignment-sweep`, `agent-coord-bounded`, and `pr-ci-readiness`.
+- Retain `skills/plan-pr-batch/bin/pr-file-touch-map` and its direct tests as a
+  genuinely single-skill helper owned by `plan-pr-batch`; add it to the reviewed
+  production-boundary classification with that ownership rationale and prove no
+  second caller exists. Revisit extraction only when a second real consumer
+  appears.
 
 **Interfaces:**
 
@@ -537,7 +596,10 @@ Create typed check-run and review observations. Preserve missing required-check 
 
 - [ ] **Step 5: Cut over one command at a time**
 
-For each command, run its full legacy test, direct domain tests, differential corpus, and `bin/validate` before replacing the next body. Do not combine route selection and readiness in one review diff.
+For each command, run its full legacy test, direct domain tests, differential
+corpus, `test/packaging/public_entrypoints_test.rb`, and `bin/validate` before
+replacing the next body. Do not combine route selection and readiness in one
+review diff.
 
 - [ ] **Step 6: Commit each independently reviewable domain**
 
@@ -552,7 +614,9 @@ Use separate commits for route/assignment, dependency graph, coordination bounds
 - Create: `lib/agent_workflows/merge/{policy,evidence,eligibility,calibration,assurance,submission,trusted_snapshot}.rb`
 - Create: `lib/agent_workflows/cli/{autonomous_merge_calibrate,autonomous_merge_eligibility,merge_assurance,pr_merge_submit}.rb`
 - Create: `test/gem/merge/*_test.rb`
+- Modify: `test/packaging/public_entrypoints_test.rb`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
+- Modify: `lib/agent_workflows.rb`
 - Modify current merge wrappers and focused tests.
 - Modify runtime-trust fixture paths and provenance tests.
 
@@ -589,9 +653,17 @@ Keep queue submission and guarded direct submission separate strategies. Both re
 
 Replace old path lists with a versioned manifest of canonical library files, wrappers, and calibration fixtures. Tests prove modified, missing, extra-unexpected, and wrong-version bytes fail closed.
 
-- [ ] **Step 6: Run merge closeout gates**
+- [ ] **Step 6: Prove differential compatibility and run merge closeout gates**
 
-Run all autonomous, assurance, and submission suites, full validation, then independent adversarial review focused on authority separation, exact-head/base binding, environment closure, trusted snapshot isolation, post-mutation verification, and cleanup.
+Before each wrapper replacement, run the legacy and extracted implementation
+against the same non-mutating and fake-mutation corpus and compare stdout,
+stderr, exit status, parsed receipts, and planned GitHub operations. The fake
+adapter must prove identical operations without contacting GitHub. Then run all
+autonomous, assurance, and submission suites, the installed-gem public-entrypoint
+test, full validation, and independent
+adversarial review focused on authority separation, exact-head/base binding,
+environment closure, trusted snapshot isolation, post-mutation verification,
+and cleanup.
 
 - [ ] **Step 7: Commit policy, assurance, snapshot, and submission separately**
 
@@ -604,7 +676,9 @@ Delete old skill-local libraries only after `rg` and packaging tests prove all i
 - Create: `lib/agent_workflows/audit/{marker,follow_up,publication_snapshot,publication_preflight,replay,check_timing,renderer}.rb`
 - Create: CLI adapters for every `skills/post-merge-audit/bin/*` Ruby command.
 - Create: `test/gem/audit/*_test.rb`
+- Modify: `test/packaging/public_entrypoints_test.rb`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
+- Modify: `lib/agent_workflows.rb`
 - Modify post-merge wrappers, tests, fixtures, and package manifest.
 
 **Interfaces:**
@@ -631,9 +705,16 @@ Replay accepts parsed marker plus refreshed observations. Renderer alone produce
 
 Keep authentication, one comment POST, exact returned-ID readback, and separately retriable PR-description update in a mutation adapter. Tests retain ambiguous POST, missing readback, wrong actor, wrong repository, description retry, and no-second-comment cases.
 
-- [ ] **Step 5: Cut over commands and run full audit gates**
+- [ ] **Step 5: Prove differential compatibility and run full audit gates**
 
-Run every post-merge-audit Ruby and Bash test, direct tests, fixture replays, full validation, and adversarial review focused on normalization, freshness, target set equality, mutation ambiguity, and blocker union completeness.
+Before replacing each command, compare the legacy and extracted implementation
+over every replay fixture and a fake-publication corpus, including exact output,
+exit status, managed description section, comment payload, and ambiguous
+mutation result. Then run every post-merge-audit Ruby and Bash test, direct
+tests, fixture replays, the installed-gem public-entrypoint test, full
+validation, and adversarial review focused on
+normalization, freshness, target set equality, mutation ambiguity, and blocker
+union completeness.
 
 - [ ] **Step 6: Commit parser, preflight, publication, and replay separately**
 
@@ -649,7 +730,9 @@ Each commit leaves all command paths operational.
   foundation already removed every legacy doctor-ownership caller.
 - Create: `lib/agent_workflows/maintainer/{downstream_registry,downstream_sync,changelog,review_data,task_observer}.rb`
 - Create corresponding CLI adapters and direct tests.
+- Modify: `test/packaging/public_entrypoints_test.rb`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
+- Modify: `lib/agent_workflows.rb`
 - Modify root and skill-relative wrappers and legacy tests.
 
 **Interfaces:**
@@ -683,9 +766,15 @@ Extract registry/preset loading, contract resolution, scaffold reconciliation, p
 
 Move changelog merged-PR collection, review data collection, autoreview target state, task observer, and prompt-size validation into their owning namespaces with direct tests and thin wrappers.
 
-- [ ] **Step 5: Run focused and aggregate validation after each wrapper cutover**
+- [ ] **Step 5: Run differential, focused, and aggregate validation after each wrapper cutover**
 
 For `push-downstream`, retain dry-run as the default and run its full 2,000-plus-line test plus registry dry-run. For every validator, run its existing test and current live repository validation input.
+Before replacing any mutating wrapper, compare legacy and extracted dry-run
+plans using bounded fake Git, GitHub, filesystem, and registry adapters; require
+identical planned operations, output channels, and exit status. For read-only
+commands, run the shared differential harness over the full fixture corpus.
+Run the installed-gem public-entrypoint test after each independently committed
+domain so a missing root require cannot survive to the next cutover.
 
 - [ ] **Step 6: Commit read-only distribution, validators, downstream sync, and small helpers separately**
 
@@ -751,7 +840,11 @@ For each test file over 800 lines, split by parser/policy/transport/rendering/CL
 
 - [ ] **Step 5: Run the complete matrix and package smoke**
 
-Run `bin/validate` on Ruby 3.2 and 3.4, build/install the gem, run every gem executable, run flat/plugin copy and symlink installer suites, and run `git diff --check`.
+Run `bin/validate` on Ruby 3.3 and 3.4.6, build/install the gem, run the shared
+installed-gem public-entrypoint test and every gem executable, run flat/plugin
+copy and symlink installer suites, run `ruby32-source-pack-guard` against every
+extracted root and skill-relative launcher in source-pack and both native-plugin
+layouts, and run `git diff --check`.
 
 - [ ] **Step 6: Perform final architecture and adversarial reviews**
 
@@ -770,10 +863,11 @@ with message `refactor: complete agent workflows Ruby domain extraction`.
 - All shared production Ruby behavior lives under `AgentWorkflows`; each
   retained skill-local helper has one invoking-skill owner, direct tests, and no
   cross-skill caller.
-- Root and skill-relative Ruby commands are thin launchers.
+- Root and extracted skill-relative Ruby commands are thin launchers; reviewed
+  single-skill helpers remain direct implementations under their invoking skill.
 - Every old focused test and new direct-domain test passes.
 - Security, merge, and audit independent reviews report no unresolved blocking finding.
 - Package content contains every runtime file and no repository-only tests.
-- Full Ruby 3.2/3.4 validation, installer modes, standalone Codex/Claude native
+- Full Ruby 3.3/3.4.6 validation, installer modes, standalone Codex/Claude native
   plugin caches, package smoke, and `git diff --check` pass.
 - No package publication occurs under this plan.

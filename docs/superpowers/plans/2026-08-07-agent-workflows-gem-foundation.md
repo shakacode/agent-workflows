@@ -8,13 +8,13 @@
 
 **Architecture:** The repository remains the source of truth. Conventional gem files under `lib/agent_workflows` and `exe` become canonical, while existing `bin` paths remain thin compatibility launchers. Copy installs select immutable complete runtime generations; symlink installs select the live editable clone through one pointer. Package tests prove source, installed-gem, flat-copy, symlink, and plugin-companion behavior.
 
-**Tech Stack:** Ruby 3.2+, RubyGems, Bundler, Rake, Minitest, RuboCop, Bash installer tests.
+**Tech Stack:** Ruby 3.3+, RubyGems, Bundler, Rake, Minitest, RuboCop, Bash installer tests.
 
 ## Global Constraints
 
 - Public RubyGems package name is exactly `agent-workflows`.
 - Ruby require path is exactly `agent_workflows`; top-level namespace is exactly `AgentWorkflows`.
-- Ruby `>= 3.2`; CI tests Ruby 3.2 and the current project Ruby.
+- Ruby `>= 3.3`; CI tests Ruby 3.3 and the exact current project Ruby, 3.4.6.
 - Runtime dependencies are Ruby standard library only.
 - Existing CLI paths, argv, stdout, stderr, JSON contracts, and exit codes remain stable.
 - Source-pack installation remains offline after the source checkout is present; it never resolves an unpinned remote gem.
@@ -22,7 +22,7 @@
 - Extraction does not change trust, mutation, timeout, or fail-closed policy.
 - Package publication is not part of this plan.
 - The development/release builder is pinned to Ruby `3.4.6`, RubyGems `3.6.9`,
-  and Bundler `4.0.10`; Ruby `3.2` remains the supported runtime floor and a CI
+  and Bundler `4.0.10`; Ruby `3.3` is the supported runtime floor and a CI
   test target.
 - Before every commit boundary below, run `bin/validate` after the focused tests
   and stop on any failure. The focused commands explain the changed behavior;
@@ -47,7 +47,7 @@
 - `agent-workflows.gem-manifest`: explicit, reviewed allowlist assigned to the
   gemspec's `spec.files`; it excludes source-pack-only wrappers and application
   files.
-- `.ruby-version`: exact `3.4.6` development and release build interpreter; it does not change the gem's Ruby 3.2 floor.
+- `.ruby-version`: exact `3.4.6` development and release build interpreter; it does not change the gem's Ruby 3.3 floor.
 - `Gemfile`: development dependencies through `gemspec`.
 - `Rakefile`: focused unit, package, and aggregate test tasks.
 - `lib/agent_workflows.rb`: canonical public require surface.
@@ -113,7 +113,7 @@ AgentWorkflows::CLI::StackDoctor.start(
 ) # => Integer
 ```
 
-Ruby 3.2 provides `Data`. Every `Result` instance validates `exit_status` as an
+Ruby 3.3 provides `Data`. Every `Result` instance validates `exit_status` as an
 integer and freezes the diagnostics collection supplied by package code before
 return.
 
@@ -164,7 +164,7 @@ class AgentWorkflowsGemspecTest < Minitest::Test
 
   def test_canonical_identity
     assert_equal "agent-workflows", SPEC.name
-    assert_equal Gem::Requirement.new(">= 3.2"), SPEC.required_ruby_version
+    assert_equal Gem::Requirement.new(">= 3.3"), SPEC.required_ruby_version
     assert_empty SPEC.runtime_dependencies
     assert_equal "true", SPEC.metadata.fetch("rubygems_mfa_required")
     assert_equal "https://rubygems.org", SPEC.metadata.fetch("allowed_push_host")
@@ -258,7 +258,7 @@ Gem::Specification.new do |spec|
   spec.description = "Ruby command implementations for the ShakaCode Agent Workflows source pack."
   spec.homepage = "https://github.com/shakacode/agent-workflows"
   spec.license = "MIT"
-  spec.required_ruby_version = ">= 3.2"
+  spec.required_ruby_version = ">= 3.3"
   spec.metadata = {
     "source_code_uri" => spec.homepage,
     "changelog_uri" => "#{spec.homepage}/blob/main/CHANGELOG.md",
@@ -296,17 +296,22 @@ gemspec
 Create `.ruby-version` containing exact `3.4.6`. Generate `Gemfile.lock` with
 Ruby 3.4.6, RubyGems 3.6.9, and Bundler 4.0.10, and require the lockfile's
 `BUNDLED WITH` value to equal `4.0.10`. Add packaging assertions for the exact
-development builder while retaining `required_ruby_version >= 3.2`. Before the
-build and again in the unprivileged release-verification job, independently
+development builder while retaining `required_ruby_version >= 3.3`. Before the
+local foundation build and again in the later release plan's unprivileged
+verification job, independently
 assert `ruby --version` is 3.4.6, `gem --version` is 3.6.9, and
 `bundle --version` is 4.0.10; do not infer the RubyGems version from
-`Gemfile.lock`. The privileged publication job executes none of these tools.
+`Gemfile.lock`. This foundation plan creates no publication workflow; the
+separate package-release plan owns the privileged/unprivileged job boundary and
+re-verifies these inputs before any release.
 CI later proves runtime behavior on the floor independently.
 
 Create `Rakefile` with `require "bundler/gem_tasks"`, named `test:gem` and
 `test:packaging` Minitest file-list tasks, and an aggregate `test` task. Add a
-test that `rake -T` exposes the Bundler build and release tasks required by the
-planned `rubygems/release-gem` workflow. Run `bundle lock`, commit
+test that `rake -T` exposes Bundler's generic build and release tasks. This only
+proves the package hook surface; it does not claim the release workflow or its
+trust boundary exists. Task 3 of the package-release plan creates and tests that
+workflow. Run `bundle lock`, commit
 `Gemfile.lock`, and prove `bundle exec rake -T` works in a clean bundle rather
 than relying on globally installed Rake. Add `/pkg/` to `.gitignore`.
 
@@ -332,7 +337,7 @@ ruby test/gem/version_test.rb
 ruby test/packaging/gemspec_test.rb
 ```
 
-Expected: build succeeds; name is `agent-workflows`; version matches `VERSION`; Ruby requirement is `>= 3.2`; executables are empty until Task 4.
+Expected: build succeeds; name is `agent-workflows`; version matches `VERSION`; Ruby requirement is `>= 3.3`; executables are empty until Task 4.
 
 - [ ] **Step 6: Commit the package skeleton**
 
@@ -435,14 +440,17 @@ until the source-pack cutover.
 - [ ] **Step 4: Scope RuboCop metrics to canonical gem code**
 
 Create `.rubocop-gem.yml` inheriting `.rubocop.yml`, override
-`AllCops/TargetRubyVersion` to the gem's declared floor of 3.2, then explicitly
-enable the design thresholds: line length 120, method length 30, cyclomatic
-complexity 8, perceived complexity 9, parameter lists 5, class length 250, and
-module length 300. Update `bin/lint` to run a second RuboCop invocation with
+`AllCops/TargetRubyVersion` to the gem's declared floor of 3.3. For every
+threshold below, set `Enabled: true` as well as `Max`; inheriting a root config
+whose cop is disabled and changing only `Max` is invalid. Explicitly enable:
+line length 120, method length 30, cyclomatic complexity 8, perceived complexity
+9, parameter lists 5, class length 250, and module length 300. Update `bin/lint`
+to run a second RuboCop invocation with
 `--config .rubocop-gem.yml` over `lib/**/*.rb`, `exe/*`,
 `test/gem/**/*_test.rb`, `test/packaging/**/*_test.rb`, the gemspec, Rakefile,
 and Gemfile. Extend `bin/lint-test.rb` to assert that this strict invocation is
-present, targets Ruby 3.2, and does not include legacy command bodies.
+present, targets Ruby 3.3, asserts each configured design cop is enabled, and
+does not include legacy command bodies.
 
 - [ ] **Step 5: Run focused tests and lint**
 
@@ -646,9 +654,9 @@ now: they read the selected runtime root's exact
 absolute or parent-traversing entries, and verify every listed `lib/` file is a
 regular file before loading Ruby. Before touching `Data` or requiring any gem
 code, a stdlib-free launcher check parses `RUBY_VERSION` and rejects anything
-older than 3.2 with one actionable diagnostic and exit `64`. Unit-test the
-predicate with 2.7, 3.1, 3.2, and 4.0 strings, and run a negative launcher
-contract under an available pre-3.2 Ruby in CI so the no-backtrace behavior is
+older than 3.3 with one actionable diagnostic and exit `64`. Unit-test the
+predicate with 2.7, 3.2, 3.3, and 4.0 strings, and run a negative launcher
+contract under an available pre-3.3 Ruby in CI so the no-backtrace behavior is
 proved in the real interpreter. The source-pack launchers verify the receipt's
 expected package version against the manifest-selected `version.rb`, prepend
 only the selected runtime root's exact `lib` to `$LOAD_PATH`, require
@@ -665,8 +673,8 @@ Both `exe/*` files use:
 # frozen_string_literal: true
 
 ruby_major, ruby_minor = RUBY_VERSION.split(".").first(2).map(&:to_i)
-if ruby_major < 3 || (ruby_major == 3 && ruby_minor < 2)
-  warn "agent-workflows requires Ruby 3.2 or newer"
+if ruby_major < 3 || (ruby_major == 3 && ruby_minor < 3)
+  warn "agent-workflows requires Ruby 3.3 or newer"
   exit 64
 end
 
@@ -733,12 +741,20 @@ git commit -m "feat: expose doctor commands through agent workflows gem"
 
 - Modify: `bin/install-agent-workflows`
 - Modify: `bin/install-agent-workflows-test.bash`
+- Modify: `bin/upgrade-agent-workflows`
+- Modify: `bin/agent-stack`
+- Modify: `bin/agent_stack/sync.bash`
 - Modify: `bin/agent-workflows-doctor`
 - Modify: `bin/agent-stack-doctor`
 - Modify: `bin/agent_stack/installers.bash`
 - Modify: `bin/agent_stack/module_install.bash`
+- Create: `agent-workflows.bootstrap-compatibility.json`
+- Create: `lib/agent_workflows/distribution/runtime_bootstrap.rb`
 - Create: `lib/agent_workflows/distribution/generation_transaction.rb`
+- Create: `test/gem/distribution/runtime_bootstrap_test.rb`
 - Create: `test/gem/distribution/generation_transaction_test.rb`
+- Create: `test/packaging/public_entrypoints_test.rb`
+- Modify: `lib/agent_workflows.rb`
 - Modify: `agent-workflows.gem-manifest`
 - Create: `agent-workflows.runtime-manifest`
 - Modify: `test/agent_doctor/launcher_test.rb`
@@ -756,12 +772,13 @@ git commit -m "feat: expose doctor commands through agent workflows gem"
   pointer to the live source clone, preserving the documented edit-in-place
   development workflow.
 - Produces a reusable
-  `AgentWorkflows::Distribution::GenerationTransaction` primitive for immutable
-  staging, manifest/receipt validation, no-follow locking, atomic generation
-  promotion and selector replacement, durable phase journals, idempotent
-  resume/rollback, and quiescence-gated retention. The source-pack installer is
-  its first consumer; the pinned-copy exporter in the domain-extraction plan is
-  its second.
+  `AgentWorkflows::Distribution::RuntimeBootstrap` trust anchor plus
+  `AgentWorkflows::Distribution::GenerationTransaction` for immutable staging,
+  manifest/receipt validation, no-follow locking, atomic generation promotion
+  and selector replacement, durable phase journals, idempotent resume/rollback,
+  and quiescence-gated retention. The source-pack installer is their first
+  consumer; the pinned-copy exporter in the domain-extraction plan is their
+  second.
 
 - [ ] **Step 1: Add failing copy and symlink layout tests**
 
@@ -781,11 +798,43 @@ editing files inside the selected developer clone is intentionally outside the
 installer transaction. Every installer failure preserves or restores the prior
 pointer, launchers, ownership markers, and metadata.
 
+Add Ruby 3.2 no-mutation cases for the two installed top-level orchestration
+commands as part of this task. `upgrade-agent-workflows` rejects the unsupported
+interpreter before fetching, fast-forwarding, backing up a target, invoking
+status, or calling the installer. `agent-stack sync` rejects before preparing
+runtime paths, updating any repository, linking compatibility paths, or
+installing any command. The guard runs after shell-only command/option parsing
+but before the first mutation, and applies even when a later option would skip
+workflow installation so an invocation cannot partially update the surrounding
+stack under an unsupported Agent Workflows runtime. Snapshot source repositories,
+runtime/compat roots, installed homes, and network-fake call logs to prove zero
+mutation or fetch on rejection.
+
 Drive these cases through `GenerationTransaction`, with a small source-pack
 phase graph (`prepared`, `generation_promoted`, `pointer_selected`,
-`committed`). Test the primitive directly with injected filesystem failures;
-installer tests assert delegation to the same implementation instead of a
-second installer-specific atomic-write state machine.
+`launchers_migrated`, `committed`). The `launchers_migrated` phase journals a
+complete prior and desired node descriptor for both fixed launchers: node type,
+regular-file bytes or symlink target, file mode including executable bits, and
+the surrounding ownership metadata. It advances only after both atomic
+replacements are durable. Fault-inject before, between, and after the two
+replacements; rollback recreates regular files as regular files and symlinks as
+symlinks with their exact targets and modes, then restores the prior selected
+generation as one consistent state. Test the primitive directly with injected
+filesystem failures and both prior launcher node types; installer tests assert
+delegation to the same implementation instead of a second installer-specific
+atomic-write state machine.
+
+When compatibility requires a bridge bootstrap, use a distinct expanded graph:
+`prepared`, `generation_promoted`, `bridge_bootstrap_installed`,
+`bridge_launchers_migrated`, `desired_pointer_selected`,
+`final_bootstrap_installed`, `final_launchers_migrated`, `committed`. The journal
+records authenticated prior, bridge, and final launcher descriptors, bootstrap
+and compatibility-file digests, the prior and desired pointer descriptors, and
+the matrix row authorizing each reachable pairing. A phase advances only after
+all of its durable postconditions verify. Startup reconciliation can therefore
+identify whether the live state is prior, bridge, or final and either resume the
+next authenticated transition or restore the complete prior state; it never
+maps a partial bridge cutover onto the ordinary `launchers_migrated` phase.
 
 - [ ] **Step 2: Add failing partial-install and version-mismatch tests**
 
@@ -815,8 +864,14 @@ allowlist for the canonical library, source-pack wrappers, and required runtime
 resources. It is separate from `agent-workflows.gem-manifest`; source-pack-only
 paths never enter `spec.files`, and the gem manifest never substitutes for
 source-pack completeness validation. In the same change, add
+`agent-workflows.bootstrap-compatibility.json`,
+`lib/agent_workflows/distribution/runtime_bootstrap.rb` and
 `lib/agent_workflows/distribution/generation_transaction.rb` to the sorted gem
-manifest so the built gem and source pack ship the same canonical primitive.
+manifest so the built gem and source pack ship the same canonical primitives.
+Require both distribution classes from `lib/agent_workflows.rb`. Create
+`test/packaging/public_entrypoints_test.rb` and prove a cold
+`require "agent_workflows"` defines every foundation constant, including
+`RuntimeBootstrap` and `GenerationTransaction`, in an isolated installed gem.
 
 In copy mode, stage the complete runtime manifest, library tree, executable wrappers,
 resources, and generation-local receipt under a temporary directory. The
@@ -824,10 +879,80 @@ receipt records `ruby_package_name`, `ruby_package_version`, the full source
 revision, and sorted path/mode/SHA-256 entries; its digest names the immutable
 generation. Validate every entry, then atomically rename the complete directory
 to `.agent-workflows-generations/<runtime-digest>`. Fixed installed launchers
-resolve `.agent-workflows-current` exactly once to an immutable generation,
-validate that generation's receipt and full library-tree digest before
-requiring Ruby, and never fall back to a gem or source checkout. Retain the
-prior generation while any invocation can still use it.
+pin one immutable stdlib-only bootstrap at
+`.agent-workflows-bootstraps/<bootstrap-digest>.rb`. The canonical source is
+`AgentWorkflows::Distribution::RuntimeBootstrap`, which has no package requires
+and owns no-follow lock acquisition, selector resolution, receipt/tree
+validation, lease publication/release, and child execution. Install and fsync
+that bootstrap before a launcher can name it; normal installation never deletes
+an older bootstrap. Each sub-30-line launcher contains only the pinned bootstrap
+relative path and SHA-256 plus a stdlib-only loader. The loader opens the
+bootstrap with `NOFOLLOW`, verifies from the already-open descriptor that it is
+a regular installer-owned file with the required non-writable mode, hashes the
+already-open bytes against the embedded digest, and evaluates those same bytes.
+It never loads code from the selected generation first. A launcher opened before
+replacement therefore remains bound to its complete old bootstrap, while a new
+launcher pins the complete new bootstrap.
+
+The stable callable boundary is
+`RuntimeBootstrap.run(request:, compatibility_json:, argv:, env:)`. A version-1
+request is canonical data with `schema_version`, `mode`, `root`, `command`, and
+`compatibility_sha256`; `mode: current` names the source-pack current selector,
+while `mode: fixed` additionally requires a validated relative
+`generation_identity`, `manifest_sha256`, and `helper_name`. The minimal loader
+passes the exact frozen bytes read from the authenticated compatibility-file
+descriptor as `compatibility_json`; the bootstrap recomputes and compares their
+SHA-256 with `request[:compatibility_sha256]` before parsing the canonical JSON
+or trusting a protocol row. Reject unknown keys, modes, schemas, absolute or
+traversing identities, an unlisted helper, malformed/noncanonical compatibility
+JSON, or any digest mismatch before lease publication or generation code loading.
+Foundation tests implement both request modes against fixture generations even
+though Task 5 launchers use only `current`; they also prove changed bytes, a
+changed request digest, a second-read race, and an unknown matrix field all fail
+before generation loading. This makes the fixed-generation seam real before the
+pinned-copy exporter consumes it.
+
+Create canonical `agent-workflows.bootstrap-compatibility.json` with
+`schema_version: 1` and sorted rows keyed by bootstrap protocol version. Each row
+lists accepted request-schema versions, generation-receipt schema versions, and
+runtime-manifest schema versions. `RuntimeBootstrap::PROTOCOL_VERSION`, every
+generation receipt's `required_bootstrap_protocol`, and each launcher's pinned
+protocol are checked against that file. The installer records the compatibility
+file SHA-256 in the generation receipt and launcher descriptor; each immutable
+bootstrap is installed with a same-basename compatibility file, and the minimal
+loader verifies its already-open bytes against the pinned digest before passing
+those same bytes and digest through the stable API above. Thus neither a mutable
+matrix, a path reopened by the bootstrap, nor package version alone can authorize
+a pairing.
+
+The trusted bootstrap resolves `.agent-workflows-current` exactly once to an
+immutable generation, validates that generation's receipt and full library-tree
+digest before requiring any generation Ruby, and never falls back to a gem or
+source checkout. Retain the prior generation while any invocation can still use
+it. The bootstrap resolves the selector and publishes a durable generation lease
+while holding the same no-follow lock that retention uses to enumerate leases
+and delete generations; it releases that lock only after validating the selected
+generation and making the lease visible. Cleanup therefore cannot interleave
+between selection and lease publication. The bootstrap releases its lease after
+the command exits.
+Lease records bind PID, process-start identity, and generation. A matching live
+process identity is an unconditional hard pin regardless of lease age. A dead
+or reused process identity becomes reclaimable only after a bounded stale-lease
+grace period; an unknown liveness result retains the generation and fails
+closed. Tests force cleanup at the selector/lease boundary, keep a launcher
+alive beyond the stale-lease grace period, and prove both generations remain.
+They then prove a released lease and a dead or reused process identity become
+eligible for reclamation after the grace period.
+
+`RuntimeBootstrap` is also the only implementation of lease parsing, live
+process-identity comparison, and the retention lock protocol used by
+`GenerationTransaction`; the transaction requires this canonical file directly
+while running from the trusted source checkout and never reimplements those
+rules. Direct tests run the same corrupt-node, selector race, live/stale/unknown
+identity, and lease cleanup corpus against both the installed immutable bootstrap
+and the transaction caller. Tests also tamper with the bootstrap path, node type,
+mode, ownership fixture, and bytes and prove the launcher exits `64` before any
+generation code loads.
 
 `GenerationTransaction` owns the staging directory, canonical receipt and
 digest calculation, atomic rename, journal writes, current-pointer replacement,
@@ -846,11 +971,31 @@ existing marker/digest compatibility corpus against both implementations before
 the cutover and only the canonical implementation afterward.
 
 For the first migration, create and validate the complete generation and
-current pointer before atomically replacing each legacy launcher with its fixed
-trampoline; an invocation therefore opens either the complete legacy launcher
-or the complete new trampoline. After migration, publish an upgrade with one
-atomic relative-symlink replacement of `.agent-workflows-current`; do not
-promote manifest, library, metadata, or wrappers as separate live paths.
+current pointer, then install the immutable bootstrap before atomically replacing
+each legacy launcher with its bootstrap-pinning trampoline; an invocation
+therefore opens either the complete legacy launcher or a complete new launcher
+whose bootstrap already exists and verifies. Journal each prior and desired
+launcher descriptor and pinned bootstrap digest through `launchers_migrated`.
+Rollback restores the old launcher but retains any installed bootstrap. After
+migration, publish an upgrade with one atomic relative-symlink replacement of
+`.agent-workflows-current`; when the bootstrap contract itself changes, install
+the new immutable bootstrap and compatibility file first. Before mutation,
+require the recorded matrix to prove that both old and new bootstrap protocols
+accept both prior and desired generation/request schemas. Then atomically replace
+each launcher and the pointer in either order while journaling every phase. If
+the full cross-product is not compatible, require a reviewed bridge bootstrap
+whose matrix row accepts both generations, install and cut over to that bridge
+before selecting the desired generation, and only then cut over to the final
+bootstrap through the explicit bridge phase graph above; if no such row exists,
+fail before mutation. Fault tests pause or crash before and after bootstrap
+install, each launcher replacement, pointer selection, and journal write in both
+graphs, and run every reachable old/bridge/new launcher, bootstrap, and
+generation pairing. They also restart from every durable bridge phase and from
+each injected partial launcher replacement. Recovery must resume or restore one
+matrix-accepted complete pairing with a matching authenticated journal state. Do
+not promote
+manifest, library, metadata, bootstrap, or wrappers as separate mutable live
+paths.
 
 In symlink mode, preserve the existing live-development contract: atomically
 point `.agent-workflows-current` at the canonical root of the explicitly chosen
@@ -876,7 +1021,9 @@ without rejecting intentional edits. Preserve unrelated files and the existing
 
 - [ ] **Step 6: Run installer and rollback suites**
 
-Run the three focused scripts from Step 3 and then `bash bin/agent-stack-test.bash`.
+Run the three focused scripts from Step 3,
+`ruby -Ilib test/packaging/public_entrypoints_test.rb`, and then
+`bash bin/agent-stack-test.bash`.
 
 Expected: copy, symlink, flat, plugin-companion, relocated-source, partial-install, mismatch, upgrade, and rollback cases pass.
 
@@ -884,12 +1031,19 @@ Expected: copy, symlink, flat, plugin-companion, relocated-source, partial-insta
 
 ```bash
 git add -- agent-workflows.gem-manifest agent-workflows.runtime-manifest \
+  agent-workflows.bootstrap-compatibility.json \
   bin/install-agent-workflows \
-  bin/install-agent-workflows-test.bash bin/agent-workflows-doctor \
+  bin/install-agent-workflows-test.bash bin/upgrade-agent-workflows \
+  bin/agent-stack bin/agent-workflows-doctor \
   bin/agent-stack-doctor bin/agent_stack/installers.bash \
+  bin/agent_stack/sync.bash \
   bin/agent_stack/module_install.bash \
+  lib/agent_workflows/distribution/runtime_bootstrap.rb \
   lib/agent_workflows/distribution/generation_transaction.rb \
+  lib/agent_workflows.rb \
+  test/gem/distribution/runtime_bootstrap_test.rb \
   test/gem/distribution/generation_transaction_test.rb \
+  test/packaging/public_entrypoints_test.rb \
   test/agent_doctor/launcher_test.rb \
   test/agent_stack/module_install_test.bash \
   test/agent_stack/doctor_install_test.bash \
@@ -973,16 +1127,28 @@ Run `ruby -Ilib` gem tests, package tests, `gem build`, and an isolated local in
 
 - [ ] **Step 2: Add Linux Ruby matrix and macOS packaging smoke jobs**
 
-On Linux, use a matrix with explicit `3.2` and the repository's pinned `3.4.6`
+On Linux, use a matrix with explicit `3.3` and the repository's pinned `3.4.6`
 target. Both run `bin/validate`; lint may remain on `3.4.6` because syntax and
 package compatibility are proven by validate on both versions.
 
-Add a separately required `ruby31-launcher-guard` Linux job that explicitly
-provisions Ruby 3.1 and runs only the source-pack launcher compatibility corpus.
-It must prove that each launcher detects the unsupported interpreter before
-requiring gem code, writes the one documented diagnostic to stderr, emits no
-backtrace, and exits `64`. This job does not build or install the Ruby-3.2-floor
-gem; its sole purpose is to exercise the pre-floor guard under a real runtime.
+Add a separately required `ruby32-source-pack-guard` Linux job that explicitly
+provisions Ruby 3.2 and runs only the source-pack pre-floor compatibility corpus.
+Apply the same stdlib-only guard to every source-pack entrypoint that loads or
+invokes canonical Ruby, or can mutate an installation based on it. In the
+foundation this includes both doctor launchers, `bin/install-agent-workflows`,
+`bin/upgrade-agent-workflows`, `bin/agent-stack sync`, and the stack installer
+adapters; the domain-extraction plan must add the guard to
+`bin/export-agent-workflows-pinned-copy` before that exporter becomes supported.
+For upgrade, rejection precedes fetch, fast-forward, backup, status, or installer
+invocation. For stack sync, rejection precedes runtime preparation, repository
+updates, compatibility linking, or command installation, including `--no-install`
+runs. The job proves each entrypoint detects the unsupported interpreter before
+requiring gem code, creating staging state, taking an installation lock, making
+a network call, or changing any source/target byte; writes the one documented
+diagnostic to stderr; emits no backtrace; and exits `64`. Include before/after
+filesystem and fake-network snapshots for every mutating entrypoint. This job
+does not build or install the Ruby-3.3-floor gem; its sole purpose is to exercise
+every pre-floor guard under a real runtime.
 
 Add a required `macos-packaging-smoke` job on the current supported macOS runner
 and Ruby 3.4.6. It builds and installs the gem into an isolated gem home, runs both
@@ -1046,6 +1212,6 @@ The foundation is complete only when:
 - the exact-head macOS packaging-smoke job passes and records its receipt;
 - only the three explicitly deferred autonomous-merge policy files remain under
   `bin/agent_doctor`, with their removal owned by the merge-domain task;
-- Ruby 3.2 and 3.4 validation pass;
+- Ruby 3.3 and 3.4.6 validation pass;
 - no package was published;
 - current-head independent review and full `bin/validate` pass.
