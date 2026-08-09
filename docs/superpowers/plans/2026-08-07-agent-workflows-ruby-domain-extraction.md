@@ -312,9 +312,10 @@ git commit -m "test: add Ruby CLI characterization harness"
 - Create: `lib/agent_workflows/seam/renderer.rb`
 - Create: `lib/agent_workflows/cli/seam_doctor.rb`
 - Create: `test/gem/seam/*_test.rb`
+- Create: `test/packaging/installed_seam_doctor_test.rb`
 - Modify: `bin/agent-workflow-seam-doctor`
 - Modify: `bin/agent-workflow-seam-doctor-test.rb`
-- Modify: `exe/agent-workflow-seam-doctor`
+- Create: `exe/agent-workflow-seam-doctor`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
 - Modify: `agent-workflows.gemspec`
 
@@ -343,9 +344,20 @@ Characterize exact created bytes, file modes, preservation of unmanaged files, p
 
 `Initializer` owns writes and accepts a filesystem collaborator. `Validator` returns an array of typed findings and performs no writes. `Renderer.text(findings)` and `Renderer.json(findings)` preserve current output. `Policy` owns `.agents/agent-workflow.yml` and trust mapping validation.
 
-- [ ] **Step 5: Add the CLI and differential corpus**
+- [ ] **Step 5: Add both installed and source-pack CLIs and the differential corpus**
 
 Run legacy and extracted commands over every non-mutating validation fixture and `--init` over independent identical fixture copies. Normalize only temporary absolute roots. Assert exact channels and exit statuses.
+
+Create `exe/agent-workflow-seam-doctor` as the RubyGems launcher for
+`AgentWorkflows::CLI::SeamDoctor.start`; this executable does not exist in the
+foundation plan and must be added here, not treated as a pre-existing file.
+Add it to `agent-workflows.gem-manifest` and
+`agent-workflows.runtime-manifest`, and add an isolated temporary-gem-home test
+that builds and installs the gem, runs `agent-workflow-seam-doctor --help`, and
+exercises one validation fixture without the source checkout on `$LOAD_PATH`.
+Keep `bin/agent-workflow-seam-doctor` as the source-pack compatibility launcher
+and prove both launchers produce the same output and exit status for the shared
+corpus.
 
 - [ ] **Step 6: Replace the legacy body and run the full seam suite**
 
@@ -356,6 +368,7 @@ ruby bin/agent-workflow-seam-doctor-test.rb
 ruby -Ilib test/gem/seam/shell_command_test.rb
 ruby -Ilib test/gem/seam/initializer_test.rb
 ruby -Ilib test/gem/seam/validator_test.rb
+ruby -Ilib test/packaging/installed_seam_doctor_test.rb
 bin/agent-workflow-seam-doctor --root test/fixtures/consumer-repo --shared .
 bin/validate
 ```
