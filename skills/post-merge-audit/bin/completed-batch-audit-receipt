@@ -672,6 +672,7 @@ module CompletedBatchAuditReceipt
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
       coordination_verifier: method(:authenticated_publication_coordination_status),
+      coordination_claim_verifier: method(:authenticated_publication_coordination_claim_status),
       coordination_audit_verifier: method(:authenticated_publication_coordination_audit)
     )
   end
@@ -700,6 +701,10 @@ module CompletedBatchAuditReceipt
 
   def authenticated_publication_coordination_status(backend:, batch_id:)
     CompletedBatchPublicationPreflight.authenticated_coordination_status(backend:, batch_id:)
+  end
+
+  def authenticated_publication_coordination_claim_status(backend:, target:)
+    CompletedBatchPublicationPreflight.authenticated_coordination_claim_status(backend:, target:)
   end
 
   def authenticated_publication_coordination_audit(backend:, batch_id:)

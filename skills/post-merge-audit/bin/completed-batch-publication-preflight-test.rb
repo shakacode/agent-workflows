@@ -250,7 +250,23 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
-  def assess_legacy(input, decision_comment: valid_legacy_decision_comment(input), audit_verifier: nil)
+  def valid_coordination_claim_verifier(input, backend)
+    expected_backend = backend
+    lambda do |backend:, target:|
+      next unless backend == expected_backend
+
+      input.fetch("coordination_claim_statuses")
+           .find { |row| row.fetch("target") == target }
+           &.fetch("status")
+    end
+  end
+
+  def assess_legacy(
+    input,
+    decision_comment: valid_legacy_decision_comment(input),
+    audit_verifier: nil,
+    claim_verifier: valid_coordination_claim_verifier(input, BACKEND)
+  )
     audit_verifier ||= valid_coordination_audit_verifier(input, BACKEND)
     CompletedBatchPublicationPreflight.assess(
       input,
@@ -258,6 +274,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       waiver_verifier: ->(**) {},
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      coordination_claim_verifier: claim_verifier,
       coordination_audit_verifier: audit_verifier,
       reconciliation_decision_url: legacy_decision_url,
       reconciliation_verifier: ->(**) { decision_comment }
@@ -537,6 +554,34 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture) if original_capture
   end
 
+  def test_authenticated_claim_status_uses_a_bounded_exact_target_read
+    input = legacy_input
+    row = input.fetch("coordination_claim_statuses").find do |candidate|
+      candidate.dig("target", "number") == 4279
+    end
+    calls = []
+    capture = lambda do |command, input:, timeout:|
+      calls << { "command" => command, "input" => input, "timeout" => timeout }
+      [JSON.generate(row.fetch("status")), "", Struct.new(:success?).new(true)]
+    end
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
+
+    result = CompletedBatchPublicationPreflight.authenticated_coordination_claim_status(
+      backend: BACKEND,
+      target: row.fetch("target")
+    )
+
+    assert_equal row.fetch("status"), result
+    assert_equal [
+      CompletedBatchPublicationPreflight::AGENT_COORD_BOUNDED,
+      "--timeout", CompletedBatchPublicationPreflight::COORDINATION_TIMEOUT_SECONDS.to_s,
+      "status", "--repo", "shakacode/react_on_rails", "--target", "4279", "--json"
+    ], calls.fetch(0).fetch("command")
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture) if original_capture
+  end
+
   def test_premature_hichee_publication_replays_blocked_for_coordination_target_and_qa
     result = assess_input(fixture("completed-batch-publication-hichee-premature.json"))
 
@@ -564,6 +609,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       waiver_verifier: ->(**) {},
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      coordination_claim_verifier: valid_coordination_claim_verifier(input, BACKEND),
       coordination_audit_verifier: valid_coordination_audit_verifier(input, BACKEND),
       reconciliation_decision_url: legacy_decision_url,
       reconciliation_verifier: valid_legacy_decision_verifier(input)
@@ -584,8 +630,80 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       waiver_verifier: valid_legacy_decision_verifier(input),
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      coordination_claim_verifier: valid_coordination_claim_verifier(input, BACKEND),
       coordination_audit_verifier: valid_coordination_audit_verifier(input, BACKEND)
     )
+  end
+
+  def test_legacy_claim_gap_rejects_degraded_batch_claims_without_targeted_claim_evidence
+    input = legacy_input
+    input.delete("coordination_claim_statuses")
+
+    result = assess_legacy(input, claim_verifier: nil)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "legacy reconciliation claims evidence is absent or does not cover the exact target manifest"
+  end
+
+  def test_legacy_claim_gap_requires_targeted_claim_evidence_for_every_manifest_target
+    input = legacy_input
+    input.fetch("coordination_claim_statuses").pop
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "legacy reconciliation claims evidence is absent or does not cover the exact target manifest"
+  end
+
+  def test_legacy_claim_gap_rejects_a_stale_targeted_claim_snapshot
+    input = legacy_input
+    captured = valid_coordination_claim_verifier(input, BACKEND)
+    verifier = lambda do |backend:, target:|
+      fresh = JSON.parse(JSON.generate(captured.call(backend:, target:)))
+      fresh["events"] = [{ "kind" => "claim.released", "target" => target.fetch("number").to_s }]
+      fresh
+    end
+
+    result = assess_legacy(input, claim_verifier: verifier)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "legacy reconciliation targeted claims evidence is not authenticated or fresh"
+  end
+
+  def test_legacy_claim_gap_cannot_mask_an_active_claim_from_another_batch
+    input = legacy_input
+    target_status = input.fetch("coordination_claim_statuses")
+                         .find { |row| row.dig("target", "number") == 4279 }
+                         .fetch("status")
+    target_status["claims"] = [{
+      "repo" => "shakacode/react_on_rails",
+      "target" => "4279",
+      "status" => "active",
+      "batch_id" => "another-live-batch"
+    }]
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/react_on_rails#issue:4279 has active coordination claim from batch another-live-batch"
+    assert_equal [], input.dig("coordination_status", "claims"),
+                 "the degraded batch-scoped omission must not mask the targeted active claim"
+  end
+
+  def test_legacy_claim_gap_rejects_a_target_read_whose_claims_section_is_degraded
+    input = legacy_input
+    target_status = input.fetch("coordination_claim_statuses").first.fetch("status")
+    target_status.fetch("section_notes")["claims"] = "not checked in target scope"
+
+    result = assess_legacy(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "legacy reconciliation targeted claims evidence is malformed or degraded"
   end
 
   def test_legacy_reconciliation_rejects_missing_raw_batch_audit
@@ -598,6 +716,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       waiver_verifier: ->(**) {},
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      coordination_claim_verifier: valid_coordination_claim_verifier(input, BACKEND),
       reconciliation_decision_url: legacy_decision_url,
       reconciliation_verifier: valid_legacy_decision_verifier(input)
     )

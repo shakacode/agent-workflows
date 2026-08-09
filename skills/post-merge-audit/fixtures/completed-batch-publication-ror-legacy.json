@@ -11,7 +11,10 @@
     { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 }
   ],
   "coordination_status": {
+    "version": "0.1.0",
     "scope": { "kind": "batch", "batch_id": "ror-d-roadmap-evidence-20260715" },
+    "degraded": ["not checked in batch scope"],
+    "section_notes": { "claims": "not checked in batch scope" },
     "claims": [],
     "batches": [
       {
@@ -81,6 +84,32 @@
       { "name": "d4073", "owner": "rord-d4073-strongest", "targets": ["4073"], "event_count": 4, "missing": ["claim.acquired"], "complete": false, "malformed": false }
     ]
   },
+  "coordination_claim_statuses": [
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "pull_request", "number": 4282 },
+      "status": { "version": "0.1.0", "scope": { "kind": "target", "repo": "shakacode/react_on_rails", "target": "4282" }, "degraded": ["not checked in target scope"], "section_notes": { "batches": "not checked in target scope", "events": "not checked in target scope" }, "claims": [], "heartbeats": [], "batches": [], "events": [] }
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4605 },
+      "status": { "version": "0.1.0", "scope": { "kind": "target", "repo": "shakacode/react_on_rails", "target": "4605" }, "degraded": ["not checked in target scope"], "section_notes": { "batches": "not checked in target scope", "events": "not checked in target scope" }, "claims": [], "heartbeats": [], "batches": [], "events": [] }
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4279 },
+      "status": { "version": "0.1.0", "scope": { "kind": "target", "repo": "shakacode/react_on_rails", "target": "4279" }, "degraded": ["not checked in target scope"], "section_notes": { "batches": "not checked in target scope", "events": "not checked in target scope" }, "claims": [], "heartbeats": [], "batches": [], "events": [] }
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4274 },
+      "status": { "version": "0.1.0", "scope": { "kind": "target", "repo": "shakacode/react_on_rails", "target": "4274" }, "degraded": ["not checked in target scope"], "section_notes": { "batches": "not checked in target scope", "events": "not checked in target scope" }, "claims": [], "heartbeats": [], "batches": [], "events": [] }
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4271 },
+      "status": { "version": "0.1.0", "scope": { "kind": "target", "repo": "shakacode/react_on_rails", "target": "4271" }, "degraded": ["not checked in target scope"], "section_notes": { "batches": "not checked in target scope", "events": "not checked in target scope" }, "claims": [], "heartbeats": [], "batches": [], "events": [] }
+    },
+    {
+      "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "issue", "number": 4073 },
+      "status": { "version": "0.1.0", "scope": { "kind": "target", "repo": "shakacode/react_on_rails", "target": "4073" }, "degraded": ["not checked in target scope"], "section_notes": { "batches": "not checked in target scope", "events": "not checked in target scope" }, "claims": [], "heartbeats": [], "batches": [], "events": [] }
+    }
+  ],
   "target_snapshots": [
     {
       "target": { "host": "github.com", "repo": "shakacode/react_on_rails", "type": "pull_request", "number": 4282 },

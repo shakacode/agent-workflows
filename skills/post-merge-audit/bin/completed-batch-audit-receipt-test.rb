@@ -655,6 +655,32 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal [[REAL_BACKEND, "batch-184"]], coordination_calls
   end
 
+  def test_publication_claim_refresh_delegates_to_targeted_coordination_status
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "issue",
+      "number" => 184
+    }
+    calls = []
+    verifier = lambda do |backend:, target:|
+      calls << [backend, target]
+      { "scope" => { "kind" => "target", "repo" => "acme/widgets", "target" => "184" }, "claims" => [] }
+    end
+    original = CompletedBatchPublicationPreflight.method(:authenticated_coordination_claim_status)
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_coordination_claim_status, verifier)
+
+    result = CompletedBatchAuditReceipt.authenticated_publication_coordination_claim_status(
+      backend: REAL_BACKEND,
+      target:
+    )
+
+    assert_equal [[REAL_BACKEND, target]], calls
+    assert_equal [], result.fetch("claims")
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_coordination_claim_status, original)
+  end
+
   def test_complete_publication_blocks_public_claim_fallback_without_private_coordination
     backend = " Public　claim-comment \n fallback. "
     preflight = publication_preflight(coordination_backend: backend)

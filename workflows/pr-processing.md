@@ -2328,6 +2328,16 @@ managed summaries say ordinary coordination completion was not proven and list
 every waived fact/path and each accepted deferral's exact target, owner, and
 evidence URL.
 
+A batch-scoped `claims: []` accompanied by a degraded or not-checked claims section is not evidence that targets are unclaimed.
+For each declared `claim.acquired` gap, the preflight input includes one raw
+bounded exact-target status per manifest target in `coordination_claim_statuses`;
+publish and replay rerun every same target read, and missing, degraded,
+mismatched, active, nonreleased, or stale claim evidence blocks.
+
+The distinct accepted-legacy compact receipt form is:
+
+Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
+
 Each `qa_evidence` row must carry a coordinator-owned
 `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's
 canonical target and publication snapshot; `yes` requires strict visual-evidence

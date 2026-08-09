@@ -445,6 +445,12 @@ while each absent lane timestamp requires one `lane.closed_at` record whose path
 is `coordination_status.batches[<batch>].lanes[<lane>].closed_at`. A declared
 `lane.closed_at` gap contradicts a present timestamp, and an absent timestamp
 without that exact declaration blocks.
+For every declared `claim.acquired` gap, include one raw targeted
+`agent-coord status --repo <repo> --target <number> --json` result per exact
+manifest target as `coordination_claim_statuses`; publish and replay rerun each
+same bounded target read and require byte-equivalent canonical data. A batch-scoped `claims: []` accompanied by a degraded or not-checked claims section is not evidence that targets are unclaimed.
+Any missing target, active or nonreleased claim, claim-section degradation,
+target mismatch, or fresh-read mismatch blocks.
 Each missing-fact record names its exact lane target set (or exact batch path),
 the raw status/audit path, why the immutable fact cannot be reconstructed, and
 the ordinary gate that requires it. Related targets are never silently
@@ -517,6 +523,7 @@ canonical target and publication snapshot; `yes` requires strict visual-evidence
 v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or
 v2-contradictory classification blocks.
 Legacy mode additionally requires `coordination_audit` plus
+`coordination_claim_statuses` when any missing fact is `claim.acquired`, and
 `legacy_reconciliation` with `contract:
 completed-batch-legacy-reconciliation`, `version: 1`, nonempty typed
 `missing_facts`, and exact-manifest `target_dispositions`. Each disposition has

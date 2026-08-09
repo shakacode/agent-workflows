@@ -40,6 +40,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_PR_DESCRIPTION_SUMMARY_START = "<!-- completed-batch-audit-summary:start -->"
   REQUIRED_PR_DESCRIPTION_SUMMARY_END = "<!-- completed-batch-audit-summary:end -->"
   REQUIRED_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
+  REQUIRED_ACCEPTED_LEGACY_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: accepted-legacy-reconciliation — ordinary coordination completion was not proven; waived missing facts: <fact at exact-path, ...>; accepted deferrals: <exact-target (owner <owner>; evidence <url>), ...> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
+  REQUIRED_LEGACY_TARGETED_CLAIMS_RULE = "A batch-scoped `claims: []` accompanied by a degraded or not-checked claims section is not evidence that targets are unclaimed."
   REQUIRED_RECEIPT_PUBLISH_ORDER = "Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync."
   REQUIRED_RECEIPT_REPLAY_RULE = "Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result."
   REQUIRED_RECEIPT_HELPER_RULE = "Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects."
@@ -216,10 +218,26 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should repeat outstanding follow-ups in the final status"
       assert_includes normalized_text, REQUIRED_COMPACT_RECEIPT_FORMAT,
                       "#{relative_path} should expose only the compact durable receipt reference in chat"
+      assert_includes normalized_text, REQUIRED_ACCEPTED_LEGACY_COMPACT_RECEIPT_FORMAT,
+                      "#{relative_path} should expose the distinct accepted-legacy compact receipt form"
       assert_includes normalized_text, REQUIRED_RECEIPT_PUBLISH_ORDER,
                       "#{relative_path} should require safe publish ordering"
       assert_includes normalized_text, REQUIRED_RECEIPT_REPLAY_RULE,
                       "#{relative_path} should require direct exact-ID replay"
+    end
+  end
+
+  def test_legacy_claim_gaps_require_fresh_targeted_claims_capable_reads
+    [
+      "skills/post-merge-audit/SKILL.md",
+      "workflows/post-merge-audit.md",
+      "workflows/pr-processing.md",
+      "skills/pr-batch/SKILL.md"
+    ].each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_LEGACY_TARGETED_CLAIMS_RULE,
+                      "#{relative_path} should reject degraded batch-scoped claim omissions"
     end
   end
 

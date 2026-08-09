@@ -50,6 +50,7 @@ module CompletedBatchPublicationPreflight
     waiver_verifier: nil,
     target_verifier: nil,
     coordination_verifier: nil,
+    coordination_claim_verifier: nil,
     coordination_audit_verifier: nil,
     reconciliation_decision_url: nil,
     reconciliation_verifier: nil
@@ -107,6 +108,14 @@ module CompletedBatchPublicationPreflight
         reconciliation: legacy_reconciliation,
         backend:,
         verifier: coordination_audit_verifier,
+        blockers:
+      )
+      legacy_claim_statuses = canonical_legacy_claim_statuses(
+        input["coordination_claim_statuses"],
+        expected_targets:,
+        reconciliation: legacy_reconciliation,
+        backend:,
+        verifier: coordination_claim_verifier,
         blockers:
       )
     end
@@ -168,6 +177,7 @@ module CompletedBatchPublicationPreflight
         "created_at" => legacy_reconciliation.fetch("created_at"),
         "missing_facts" => legacy_reconciliation.fetch("missing_facts"),
         "target_dispositions" => legacy_reconciliation.fetch("target_dispositions"),
+        "coordination_claim_statuses" => legacy_claim_statuses,
         "coordination_audit" => legacy_coordination_audit,
         "decision" => decision
       }
@@ -261,6 +271,8 @@ module CompletedBatchPublicationPreflight
       return false unless legacy_snapshot.dig("decision", "workflow_version") == legacy_snapshot["workflow_version"]
       return false unless legacy_snapshot.dig("decision", "artifact_created_at") == legacy_snapshot["created_at"]
       return false unless legacy_snapshot["coordination_audit"] == canonicalize(receipt.dig("source_input", "coordination_audit"))
+      return false unless legacy_snapshot["coordination_claim_statuses"] ==
+                          canonical_claim_status_rows(receipt.dig("source_input", "coordination_claim_statuses"))
       return false unless legacy_snapshot["missing_facts"] ==
                           canonical_legacy_reconciliation(
                             receipt.dig("source_input", "legacy_reconciliation"),
@@ -386,7 +398,8 @@ module CompletedBatchPublicationPreflight
     waiver_verifier:,
     target_verifier:,
     coordination_verifier:,
-    coordination_audit_verifier: coordination_verifier
+    coordination_audit_verifier: coordination_verifier,
+    coordination_claim_verifier: nil
   )
     return false unless valid_receipt?(receipt)
 
@@ -401,6 +414,7 @@ module CompletedBatchPublicationPreflight
       waiver_verifier:,
       target_verifier:,
       coordination_verifier:,
+      coordination_claim_verifier:,
       coordination_audit_verifier:,
       reconciliation_decision_url: receipt.dig("snapshot", "legacy_reconciliation", "decision", "url"),
       reconciliation_verifier: waiver_verifier
@@ -607,6 +621,88 @@ module CompletedBatchPublicationPreflight
     return unless missing_claims && (!status.is_a?(Hash) || status["claims"] != [])
 
     blockers << "legacy reconciliation claim gap contradicts current coordination claim evidence"
+  end
+
+  def canonical_legacy_claim_statuses(value, expected_targets:, reconciliation:, backend:, verifier:, blockers:)
+    claim_gap = reconciliation.fetch("missing_facts").any? { |row| row.fetch("fact") == "claim.acquired" }
+    return [] unless claim_gap
+
+    unless value.is_a?(Array) && value.all? { |row| row.is_a?(Hash) } && verifier.respond_to?(:call)
+      blockers << "legacy reconciliation claims evidence is absent or does not cover the exact target manifest"
+      return nil
+    end
+
+    expected_by_key = expected_targets.to_h { |target| [target_key(target), target] }
+    parsed = value.filter_map do |row|
+      unless row.keys.sort == %w[status target]
+        blockers << "legacy reconciliation targeted claims evidence is malformed"
+        next
+      end
+      target = validated_target(row["target"])
+      status = row["status"]
+      unless target && expected_by_key.key?(target_key(target)) && claims_capable_target_status?(status, target)
+        blockers << "legacy reconciliation targeted claims evidence is malformed or degraded"
+        next
+      end
+      authenticated = verifier.call(backend:, target:)
+      unless authenticated == status
+        blockers << "legacy reconciliation targeted claims evidence is not authenticated or fresh"
+        next
+      end
+
+      status.fetch("claims").each do |claim|
+        claim_state = normalized_known_string(claim["status"])
+        next if claim_state == "released"
+
+        claim_batch = normalized_known_string(claim["batch_id"])
+        blocker = if claim_state == "active" && claim_batch
+                    "#{target_label(target)} has active coordination claim from batch #{claim_batch}"
+                  else
+                    "#{target_label(target)} has a nonreleased or UNKNOWN coordination claim"
+                  end
+        blockers << blocker
+      end
+      { "target" => target, "status" => canonicalize(status) }
+    end
+    keys = parsed.map { |row| target_key(row.fetch("target")) }
+    unless parsed.length == value.length && keys.uniq.length == keys.length && keys.sort == expected_by_key.keys.sort
+      blockers << "legacy reconciliation claims evidence is absent or does not cover the exact target manifest"
+      return nil
+    end
+
+    parsed.sort_by { |row| target_sort_key(row.fetch("target")) }
+  end
+
+  def claims_capable_target_status?(status, target)
+    return false unless status.is_a?(Hash)
+    return false unless status["scope"] == {
+      "kind" => "target",
+      "repo" => target.fetch("repo"),
+      "target" => target.fetch("number").to_s
+    }
+    return false unless status["degraded"].is_a?(Array) && status["degraded"].all? { |item| item.is_a?(String) }
+    return false unless status["section_notes"].is_a?(Hash)
+    return false if status.fetch("section_notes").keys.any? { |key| key.to_s.casecmp?("claims") }
+    return false if status.fetch("degraded").any? { |item| item.match?(/claim/i) }
+    return false unless status["claims"].is_a?(Array) && status.fetch("claims").all? { |claim| claim.is_a?(Hash) }
+
+    status.fetch("claims").all? do |claim|
+      claim["repo"].to_s.casecmp?(target.fetch("repo")) &&
+        Integer(claim["target"], exception: false) == target.fetch("number") &&
+        normalized_known_string(claim["status"])
+    end
+  end
+
+  def canonical_claim_status_rows(value)
+    return unless value.is_a?(Array) && value.all? { |row| row.is_a?(Hash) && row.keys.sort == %w[status target] }
+
+    rows = value.filter_map do |row|
+      target = validated_target(row["target"])
+      next unless target && row["status"].is_a?(Hash)
+
+      { "target" => target, "status" => canonicalize(row.fetch("status")) }
+    end
+    rows.sort_by { |row| target_sort_key(row.fetch("target")) }
   end
 
   def validate_legacy_metadata(batch, reconciliation, blockers)
@@ -1724,6 +1820,32 @@ module CompletedBatchPublicationPreflight
     nil
   end
 
+  def authenticated_coordination_claim_status(backend:, target:)
+    normalized_backend = normalized_known_string(backend)
+    canonical_target = validated_target(target)
+    return unless normalized_backend && canonical_target && normalized_backend.downcase != "n/a"
+    return if normalized_backend.match?(PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN)
+
+    command = [
+      AGENT_COORD_BOUNDED,
+      "--timeout", COORDINATION_TIMEOUT_SECONDS.to_s,
+      "status", "--repo", canonical_target.fetch("repo"),
+      "--target", canonical_target.fetch("number").to_s,
+      "--json"
+    ]
+    stdout, _stderr, status = capture_process(
+      command,
+      input: "",
+      timeout: COORDINATION_CAPTURE_TIMEOUT_SECONDS
+    )
+    return unless status.success?
+
+    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
+    payload if payload.is_a?(Hash)
+  rescue JSON::ParserError, SystemCallError, Timeout::Error
+    nil
+  end
+
   def authenticated_coordination_audit(backend:, batch_id:)
     normalized_backend = normalized_known_string(backend)
     return unless normalized_backend && normalized_backend.downcase != "n/a"
@@ -2078,6 +2200,7 @@ module CompletedBatchPublicationPreflight
       waiver_verifier: method(:authenticated_waiver_comment),
       target_verifier: method(:authenticated_target_snapshot),
       coordination_verifier: method(:authenticated_coordination_status),
+      coordination_claim_verifier: method(:authenticated_coordination_claim_status),
       coordination_audit_verifier: method(:authenticated_coordination_audit),
       reconciliation_decision_url: options["legacy_reconciliation_decision_url"],
       reconciliation_verifier: method(:authenticated_waiver_comment)
