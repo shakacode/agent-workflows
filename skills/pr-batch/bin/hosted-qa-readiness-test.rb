@@ -144,6 +144,22 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_first_adoption_does_not_treat_managed_bootstrap_paths_as_broad_runtime_changes
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      base_sha = commit!(root, "base")
+      write(root, ".agents/agent-workflow.yml", hosted_policy(change_paths: ["**"]))
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/env ruby\n", executable: true)
+      head_sha = commit!(root, "bootstrap broad hosted QA policy")
+
+      result, status = run_readiness(root, base_sha:, head_sha:)
+
+      assert status.success?, result
+      assert_equal "BOOTSTRAP_ALLOWED", result.fetch("verdict")
+      assert_empty result.fetch("blockers")
+    end
+  end
+
   def test_first_adoption_blocks_mixed_policy_and_runtime_changes
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
@@ -177,6 +193,37 @@ class HostedQaReadinessTest < Minitest::Test
       assert_includes result.fetch("blockers"),
                       "hosted QA policy bootstrap must add or update its declared verifier: .agents/bin/verify-hosted-deployment"
     end
+  end
+
+  def test_first_adoption_requires_the_candidate_verifier_to_be_present_and_executable_at_head
+    observed = []
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      base_sha = commit!(root, "base")
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/env ruby\n")
+      head_sha = commit!(root, "bootstrap with non-executable verifier")
+
+      result, status = run_readiness(root, base_sha:, head_sha:)
+      observed << [result.fetch("verdict"), status.success?, result.fetch("blockers")]
+    end
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/env ruby\n", executable: true)
+      base_sha = commit!(root, "base with an unconfigured verifier")
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      FileUtils.rm_f(File.join(root, ".agents/bin/verify-hosted-deployment"))
+      head_sha = commit!(root, "bootstrap deleting the declared verifier")
+
+      result, status = run_readiness(root, base_sha:, head_sha:)
+      observed << [result.fetch("verdict"), status.success?, result.fetch("blockers")]
+    end
+
+    expected_blocker = "candidate hosted QA deployment verifier must be a tracked executable regular file"
+    assert_equal [
+      ["BLOCKED", false, [expected_blocker]],
+      ["BLOCKED", false, [expected_blocker]]
+    ], observed
   end
 
   def test_generic_qa_evidence_cannot_satisfy_an_applicable_hosted_gate

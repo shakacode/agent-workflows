@@ -66,14 +66,21 @@ module HostedQaReadiness
         parsed_policy = candidate_policy.policy
 
         paths = changed_paths(repo, resolved_base, resolved_head)
-        runtime_paths = paths.select { |path| policy_applies_to_path?(parsed_policy, path) }
         allowed_paths = [POLICY_PATH, parsed_policy.fetch("deployment_verifier")]
+        runtime_paths = (paths - allowed_paths).select { |path| policy_applies_to_path?(parsed_policy, path) }
         unmanaged_paths = paths - allowed_paths - runtime_paths
         bootstrap_blockers = []
         unless paths.include?(parsed_policy.fetch("deployment_verifier"))
           bootstrap_blockers << "hosted QA policy bootstrap must add or update its declared verifier: " \
                                 "#{parsed_policy.fetch('deployment_verifier')}"
         end
+        _candidate_verifier_blob, candidate_verifier_error = executable_blob_at(
+          repo,
+          resolved_head,
+          parsed_policy.fetch("deployment_verifier"),
+          label: "candidate hosted QA deployment verifier"
+        )
+        bootstrap_blockers << candidate_verifier_error if candidate_verifier_error
         unless runtime_paths.empty?
           bootstrap_blockers << "hosted QA policy bootstrap is mixed with configured runtime changes: #{runtime_paths.join(', ')}"
         end
@@ -233,7 +240,7 @@ module HostedQaReadiness
         ).merge("hosted_qa_evidence" => hosted)
       end
 
-      return {
+      {
         "eligible" => true,
         "verdict" => "READY",
         "policy_source" => "trusted_base",
@@ -246,8 +253,6 @@ module HostedQaReadiness
         "blockers" => []
       }
     end
-
-    blocked_result(resolved_base, resolved_head, ["hosted QA evidence validation is not yet supported"])
   rescue Psych::Exception, SystemCallError, IOError, TypeError => e
     blocked_result(base_sha, head_sha, ["hosted QA readiness input could not be read"], errors: [e.message])
   end
@@ -310,18 +315,22 @@ module HostedQaReadiness
   end
 
   def trusted_executable_blob(repo, base_sha, verifier_path)
-    listing, _error, status = git_capture(repo, "ls-tree", base_sha, "--", verifier_path)
-    return [nil, "trusted-base deployment verifier metadata is unavailable"] unless status.success?
+    executable_blob_at(repo, base_sha, verifier_path, label: "trusted-base deployment verifier")
+  end
+
+  def executable_blob_at(repo, sha, verifier_path, label:)
+    listing, _error, status = git_capture(repo, "ls-tree", sha, "--", verifier_path)
+    return [nil, "#{label} metadata is unavailable"] unless status.success?
 
     match = listing.lines(chomp: true).one? && listing.lines(chomp: true).first.match(
       /\A(?<mode>\d{6}) (?<type>blob) [0-9a-f]+\t(?<path>[^\r\n]+)\z/
     )
     unless match && match[:path] == verifier_path && match[:mode] == "100755"
-      return [nil, "trusted-base deployment verifier must be a tracked executable regular file"]
+      return [nil, "#{label} must be a tracked executable regular file"]
     end
 
-    blob, _error, blob_status = git_capture(repo, "show", "#{base_sha}:#{verifier_path}")
-    return [nil, "trusted-base deployment verifier blob is unavailable"] unless blob_status.success?
+    blob, _error, blob_status = git_capture(repo, "show", "#{sha}:#{verifier_path}")
+    return [nil, "#{label} blob is unavailable"] unless blob_status.success?
 
     [blob, nil]
   end
