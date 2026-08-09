@@ -1978,6 +1978,30 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_equal_directory_device_and_inode_do_not_define_an_excluded_root_alias
+    fake_stat = Struct.new(:dev, :ino) do
+      def directory? = true
+      def symlink? = false
+    end.new(7, 11)
+    unresolved_root = "/unresolved/repository"
+    resolved_root = "/resolved/repository"
+    canonical_paths = {
+      unresolved_root => resolved_root,
+      File.join(resolved_root, "tmp") => File.join(resolved_root, "tmp"),
+      File.join(resolved_root, "TMP") => File.join(resolved_root, "TMP")
+    }
+    original_realpath = File.method(:realpath)
+    File.singleton_class.define_method(:realpath) { |path| canonical_paths.fetch(path) }
+
+    begin
+      refute SecureGitHubActions.excluded_action_root?(
+        unresolved_root, "TMP/local", lstat: ->(*) { fake_stat }
+      )
+    ensure
+      File.singleton_class.define_method(:realpath, original_realpath)
+    end
+  end
+
   def test_step_local_action_requires_a_regular_descriptor
     with_repository(<<~YAML) do |root|
       jobs:

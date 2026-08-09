@@ -178,8 +178,10 @@ notes.
    After resolving any fail-closed wrapper guidance, rerun
    `agent-workflow-seam-doctor` with `--shared` pointing at the cloned or
    installed pack root. The doctor scans `.github/workflows/*.{yml,yaml}` and
-   every nested `action.yml` or `action.yaml`; workflow/action changes also
-   activate the same checks in `$autoreview` and `$adversarial-pr-review`.
+   recursively discovers eligible tracked or unignored `action.yml` / `action.yaml` descriptors.
+   Unreferenced ignored descriptors and excluded roots are not discovered. Any
+   explicitly referenced ignored local actions are resolved separately and scanned.
+   Workflow/action changes also activate the same checks in `$autoreview` and `$adversarial-pr-review`.
    A clean mechanical scan is necessary but not sufficient: review permissions,
    triggers, untrusted checkout/execution, and credential persistence manually.
    Then run one dry workflow pass without making changes.

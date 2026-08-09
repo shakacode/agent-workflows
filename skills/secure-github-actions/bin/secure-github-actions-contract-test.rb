@@ -160,6 +160,10 @@ class SecureGitHubActionsContractTest < Minitest::Test
     assert_includes audit, "Excluded roots are not discovered"
     assert_includes adoption, "case-insensitive"
     refute_includes adoption, "lowercase-insensitive"
+    refute_includes adoption, "every nested `action.yml` or `action.yaml`"
+    assert_includes adoption, "eligible tracked or unignored `action.yml` / `action.yaml` descriptors"
+    assert_includes adoption, "Unreferenced ignored descriptors and excluded roots are not discovered"
+    assert_includes adoption, "explicitly referenced ignored local actions are resolved separately and scanned"
     assert_includes adoption,
                     "/path/to/trusted/agent-workflows/skills/secure-github-actions/bin/secure-github-actions-scan"
   end

@@ -15,17 +15,25 @@ module SecureGitHubActions
     normalized = root_segment.downcase
     return false unless EXCLUDED_ACTION_ROOTS.include?(normalized)
 
+    resolved_root = File.realpath(root)
     begin
-      normalized_stat = lstat.call(File.join(root, normalized))
+      normalized_path = File.join(resolved_root, normalized)
+      normalized_stat = lstat.call(normalized_path)
     rescue Errno::ENOENT, Errno::ENOTDIR
       return false
     end
     return false unless normalized_stat.directory? && !normalized_stat.symlink?
 
-    candidate_stat = lstat.call(File.join(root, root_segment))
+    candidate_path = File.join(resolved_root, root_segment)
+    candidate_stat = lstat.call(candidate_path)
     return false unless candidate_stat.directory? && !candidate_stat.symlink?
 
-    [candidate_stat.dev, candidate_stat.ino] == [normalized_stat.dev, normalized_stat.ino]
+    normalized_canonical = File.realpath(normalized_path)
+    candidate_canonical = File.realpath(candidate_path)
+    return false unless File.dirname(normalized_canonical) == resolved_root
+    return false unless File.dirname(candidate_canonical) == resolved_root
+
+    candidate_canonical == normalized_canonical
   rescue SystemCallError
     true
   end

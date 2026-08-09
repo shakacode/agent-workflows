@@ -123,6 +123,7 @@ class RepositorySecurityPolicyTest < Minitest::Test
       File.rename(intermediate, uppercase_root)
 
       refute_includes action_paths(root), File.join(uppercase_root, "action.yml")
+      refute acceptable_action_reference?("./TMP/action", root: root)
     end
   end
 
@@ -139,6 +140,7 @@ class RepositorySecurityPolicyTest < Minitest::Test
 
       refute_includes action_paths(root), excluded_action
       assert_includes action_paths(root), distinct_action
+      assert acceptable_action_reference?("./TMP/action", root: root)
     end
   end
 
@@ -219,12 +221,12 @@ class RepositorySecurityPolicyTest < Minitest::Test
     end
   end
 
-  def acceptable_action_reference?(reference)
+  def acceptable_action_reference?(reference, root: ROOT)
     return false unless reference.is_a?(String)
 
     if reference.start_with?("./")
       segments = reference.delete_prefix("./").split("/")
-      return !segments.empty? && !%w[.codex .git .tmp tmp].include?(segments.first) &&
+      return !segments.empty? && !SecureGitHubActions.excluded_action_root?(root, segments.join("/")) &&
              segments.none? { |segment| segment.empty? || %w[. ..].include?(segment) }
     end
     return true if reference.match?(%r{\Adocker://[^\s@]+@sha256:[0-9a-fA-F]{64}\z})
