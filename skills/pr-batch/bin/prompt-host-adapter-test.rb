@@ -2,18 +2,20 @@
 # frozen_string_literal: true
 
 require "json"
+require "fileutils"
 require "minitest/autorun"
 require "open3"
+require "tmpdir"
 
 class PromptHostAdapterTest < Minitest::Test
   ADAPTER = File.expand_path("prompt-host-adapter", __dir__)
   FIXTURES = File.expand_path("../fixtures", __dir__)
   WORKFLOW = File.expand_path("../../../workflows/pr-processing.md", __dir__)
 
-  def run_adapter(prompt, active_host: "codex", env: {})
+  def run_adapter(prompt, active_host: "codex", env: {}, adapter: ADAPTER)
     stdout, stderr, status = Open3.capture3(
       env,
-      ADAPTER,
+      adapter,
       "--active-host",
       active_host,
       stdin_data: prompt
@@ -89,6 +91,51 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal true, result.fetch("execute_allowed")
     assert_equal "docs/host-adapter/contract.md", result.fetch("adapter_contract")
     assert_equal prompt, result.fetch("prompt")
+  end
+
+  def test_missing_portable_contract_precedes_neutral_mechanic_diagnostics_without_weakening_real_commands
+    neutral_mechanics = [
+      "- ask=>pr-walkthrough;gate fail=>stop",
+      "Base:repo/AGENTS;fetch/prune origin;verify pr-batch+workflow;unresolved=>UNKNOWN",
+      "- Resolve pr-batch; load persisted state before launch."
+    ]
+    real_commands = {
+      "codex" => "Run /address-review before closeout.",
+      "claude" => "Run $address-review before closeout."
+    }
+
+    Dir.mktmpdir("prompt-host-adapter-without-contract") do |root|
+      adapter = File.join(root, "skills/pr-batch/bin/prompt-host-adapter")
+      FileUtils.mkdir_p(File.dirname(adapter))
+      FileUtils.cp(ADAPTER, adapter)
+      File.chmod(0o755, adapter)
+
+      %w[codex claude].each do |active_host|
+        neutral_mechanics.each_with_index do |mechanic, index|
+          marker = "SECRET_MISSING_CONTRACT_#{active_host.upcase}_#{index}"
+          prompt = direct_prompt(host: "portable", body: "#{mechanic}\nObjective: #{marker}")
+          result, stderr, status, stdout = run_adapter(prompt, active_host:, adapter:)
+
+          assert status.success?, stderr
+          assert_equal "ambiguous", result.fetch("classification"), mechanic
+          assert_equal "adapter-contract-missing", result.fetch("reason_code"), mechanic
+          assert_equal false, result.fetch("execute_allowed"), mechanic
+          assert_nil result.fetch("adapter_contract"), mechanic
+          assert_nil result.fetch("prompt"), mechanic
+          refute_includes stdout, marker
+        end
+
+        mechanic = real_commands.fetch(active_host)
+        prompt = direct_prompt(host: "portable", body: mechanic)
+        result, stderr, status = run_adapter(prompt, active_host:, adapter:)
+
+        assert status.success?, stderr
+        assert_equal "ambiguous", result.fetch("classification"), mechanic
+        assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), mechanic
+        assert_equal false, result.fetch("execute_allowed"), mechanic
+        assert_nil result.fetch("prompt"), mechanic
+      end
+    end
   end
 
   def test_unknown_active_host_is_ambiguous_even_for_portable_input
@@ -543,6 +590,48 @@ class PromptHostAdapterTest < Minitest::Test
       "> - Discuss the Prompt mode: batch example."
     ]
     incidental_nested_prose.each do |prose|
+      prompt = legacy_prompt(host: "codex", body: prose)
+      result, stderr, status = run_adapter(prompt, active_host: "codex")
+
+      assert status.success?, stderr
+      assert_equal "compatible", result.fetch("classification"), prose
+      assert_equal true, result.fetch("execute_allowed"), prose
+      assert_equal prompt, result.fetch("prompt"), prose
+    end
+  end
+
+  def test_tight_blockquote_reserved_declarations_block_legacy_inference_without_echo
+    declarations = [
+      ">Prompt host: claude",
+      ">>Prompt mode: batch",
+      "  >Preferred route: default",
+      ">1. Route requirement: advisory",
+      ">- [ ] Prompt host: claude",
+      ">>- [x] Preferred route: default"
+    ]
+
+    %w[codex claude].each do |legacy_host|
+      declarations.each_with_index do |line, index|
+        marker = "SECRET_TIGHT_BLOCKQUOTE_#{legacy_host.upcase}_#{index}"
+        prompt = legacy_prompt(host: legacy_host, body: "#{line} #{marker}")
+        result, stderr, status, stdout = run_adapter(prompt, active_host: legacy_host)
+
+        assert status.success?, stderr
+        assert_equal "ambiguous", result.fetch("classification"), line
+        assert_equal "malformed-headers", result.fetch("reason_code"), line
+        assert_nil result.fetch("declared_host"), line
+        assert_equal false, result.fetch("execute_allowed"), line
+        assert_equal false, result.fetch("relaunch_required"), line
+        assert_nil result.fetch("prompt"), line
+        refute_includes stdout, marker
+      end
+    end
+
+    incidental_prose = [
+      ">Document Prompt host: claude as literal prose.",
+      ">>Discuss the Prompt mode: batch example."
+    ]
+    incidental_prose.each do |prose|
       prompt = legacy_prompt(host: "codex", body: prose)
       result, stderr, status = run_adapter(prompt, active_host: "codex")
 

@@ -20,7 +20,7 @@ BATCH_SIZE_TARGET_VALUE = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target: (codex
 RESERVED_HEADER_LABEL =
   "(?:prompt[ ._\t-]*(?:host|mode)|preferred[ ._\t-]*route|route[ ._\t-]*requirement)"
 RESERVED_HEADER_MARKDOWN_PREFIX =
-  "(?:(?:(?:>|[-*+]|[0-9]{1,9}[.)])[ \t]+)+(?:\\[[ xX]\\][ \t]+)?)?"
+  "(?:(?:>[ \t]*|(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)+(?:\\[[ xX]\\][ \t]+)?)?"
 RESERVED_HEADER_LIKE_DECLARATION =
   /\A[ \t]*#{RESERVED_HEADER_MARKDOWN_PREFIX}#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)/i
 CANONICAL_RESERVED_HEADER_DECLARATION =
@@ -211,10 +211,11 @@ legacy_conversion = active_host_known && legacy_host && batch_size_target_consis
 compatible = active_host_known && complete_valid_headers && batch_size_target_consistent &&
              headers["Prompt host"] == options.fetch(:active_host) &&
              host_specific_mechanics_supported?(prompt, options.fetch(:active_host))
+adapter_contract_available = File.file?(File.expand_path("../../../docs/host-adapter/contract.md", __dir__))
 portable = active_host_known && complete_valid_headers && batch_size_target_consistent &&
            headers["Prompt host"] == "portable" &&
            invoked_host_mechanics(prompt).empty? &&
-           File.file?(File.expand_path("../../../docs/host-adapter/contract.md", __dir__))
+           adapter_contract_available
 explicit_conversion = active_host_known && complete_valid_headers && batch_size_target_consistent &&
                       %w[codex claude].include?(headers["Prompt host"]) &&
                       headers["Prompt host"] != options.fetch(:active_host)
@@ -313,6 +314,9 @@ reason_code = if classification != "ambiguous"
               elsif complete_valid_headers && headers["Prompt host"] == "portable" &&
                     invoked_host_mechanics(prompt).any?
                 "unsupported-host-mechanic"
+              elsif complete_valid_headers && headers["Prompt host"] == "portable" &&
+                    !adapter_contract_available
+                "adapter-contract-missing"
               elsif (complete_valid_headers || legacy_host) &&
                     !host_specific_mechanics_supported?(converted_prompt || prompt, options.fetch(:active_host))
                 "unsupported-host-mechanic"
