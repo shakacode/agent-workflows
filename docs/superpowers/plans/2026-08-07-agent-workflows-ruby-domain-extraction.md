@@ -172,25 +172,36 @@ exporter, plus exporter-only tests for helper-set transitions.
   generation root. A portable POSIX filesystem cannot atomically replace a
   non-empty legacy directory with a symlink. Treat that conversion as an
   explicit one-time offline migration, never as an online atomic update: require
-  a reviewed maintenance grant naming the consumer, skill, host/supervisor, and
-  exact `LegacyConsumerFence` adapter path and SHA-256. The injected adapter must
-  acquire a supervisor-level stop-and-inhibit fence that prevents new host
+  a reviewed maintenance grant naming the consumer, skill, and every source,
+  flat-copy, Codex, Claude, native-plugin, or other host/supervisor capable of
+  resolving the exact legacy path. The grant binds the complete supervisor
+  inventory and each exact `LegacyConsumerFence` adapter path and SHA-256;
+  unknown or unfenced supervisors block migration. Each injected adapter must
+  acquire its supervisor-level stop-and-inhibit fence, prevent new host
   invocations, enumerate that supervisor's active invocations, and return a
   canonical receipt binding consumer root, skill, supervisor identity, fence
   token digest, `active_invocation_count: 0`, observation time, and expiry. The
-  exporter verifies the granted adapter bytes, acquires that fence while holding
-  its no-follow lock, independently requires zero current generation leases,
-  and keeps both locks until the new path and receipt verify. A consumer without
-  a reviewed adapter that can both inhibit starts and prove zero active
-  invocations is not migratable in place; leave it on the legacy layout or use a
-  fresh consumer root. Journal and
+  exporter verifies every granted adapter, acquires every listed fence while
+  holding its no-follow lock, independently requires zero current generation
+  leases, and keeps all locks until the new path and receipts verify. A consumer
+  whose complete resolver inventory is unknown, or whose supervisors cannot all
+  inhibit starts and prove zero active invocations, is not migratable in place;
+  leave it on the legacy layout or use a fresh consumer root. Journal and
   fsync the exact legacy directory descriptor, adjacent backup path, staged
   symlink, desired generation, and phases `prepared`, `legacy_backed_up`,
-  `symlink_selected`, `verified`, `committed`. Rename the legacy directory to the
+  `symlink_selected`, `verified`, `committed`. Immediately before the destructive
+  legacy-directory rename, re-read canonical UTC and require every quiescence
+  receipt to remain strictly before expiry. If any receipt is equal to or past
+  expiry, refresh every zero-active receipt while all fences remain held. An
+  adapter that cannot refresh under its held fence must cause the exporter to
+  release the complete fence set without mutation, then reacquire every fence
+  in canonical supervisor-identity order and obtain fresh receipts for all;
+  never recursively acquire a held adapter or release/reacquire only a subset.
+  Rename the legacy directory to the
   backup, install the staged symlink, and verify before releasing quiescence;
-  startup recovery must reacquire the no-follow lock and a fresh adapter fence,
-  require a new zero-active receipt, and prove that the named consumer remains
-  stopped under the offline grant before restoring the
+  startup recovery must reacquire the no-follow lock and every inventoried
+  adapter fence, require fresh zero-active receipts from all supervisors, and
+  prove that the named consumer remains stopped under the offline grant before restoring the
   directory or finishing the symlink selection. If fresh quiescence cannot be
   proved, fail closed without another mutation and require renewed maintenance
   fencing; never reuse a pre-crash proof. Consumers may resume only after
@@ -308,8 +319,15 @@ exporter, plus exporter-only tests for helper-set transitions.
   both helper addition and removal, including a process paused after opening a
   soon-to-be-unlinked trampoline. A non-empty legacy `full-skill` fixture must
   refuse migration before mutation without the exact maintenance grant,
-  digest-bound `LegacyConsumerFence`, held stop-and-inhibit fence, zero-active
-  canonical receipt, and empty generation-lease scan. With all present, fault injection at every
+  complete resolver inventory, digest-bound `LegacyConsumerFence` for every
+  supervisor, all held stop-and-inhibit fences, all fresh zero-active canonical
+  receipts, and an empty generation-lease scan. A second active supervisor and
+  a receipt that expires after journaling but before the destructive rename must
+  each fail closed before mutation; the latter must refresh all receipts under
+  held fences or release and deterministically reacquire the complete set rather
+  than recursively acquiring a held adapter or refreshing only the expired
+  member. With all present,
+  fault injection at every
   `prepared`, `legacy_backed_up`, `symlink_selected`, `verified`, and `committed`
   boundary must prove startup recovery restores the legacy directory or finishes
   the symlink selection before quiescence is released. A restart fixture where

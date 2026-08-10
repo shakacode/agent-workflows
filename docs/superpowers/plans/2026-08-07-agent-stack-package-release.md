@@ -85,14 +85,27 @@ repository write permission. It runs at the exact approved commit and accepts
 the canonical durable GitHub approval URL plus package,
 version, registry, tag, commit, artifact digest, workflow path/ref/file digest,
 grant-manifest path/digest, expiry, and rollback disposition. For RubyGems only,
-it also requires the publisher, grant-capture, and credential-lifecycle action
-full commits plus each action's provenance producer run/artifact ID/service
-digest/file SHA-256. It binds the credential-finalizer and sweeper workflow
-paths/refs/file digests as well; the schema forbids those RubyGems-only fields
-for npm. A reviewed writer
+it also requires the publisher action full commit and provenance producer
+run/artifact ID/service digest/file SHA-256, the exact human grant operator's
+GitHub login and RubyGems handle, the exact human observer's GitHub login and
+RubyGems handle, and the grant-preparation, observation-PR, and post-grant
+capture workflow paths/refs/file digests. It also binds the independently
+reviewed `shakacode/agent-release-mutator` full commit, provenance receipt
+producer run/artifact ID/service digest/file SHA-256, and action/source/
+distribution/`open-closeout-pr` mode/result-schema digests. The observer must differ from the
+operator/attestor, release approver, and observation PR's exact-head reviewer;
+the schema forbids those
+RubyGems-only fields for npm. A reviewed writer
 creates canonical JSON in `RUNNER_TEMP`, binds the capture run ID and immutable
 capture-workflow path/ref/file digest, and validates it against the repository's
 fixed package-release-authorization schema.
+
+A renewed RubyGems recovery authorization that permits orphan acceptance also
+binds the exact `orphan_acceptance_principal` GitHub login and recovery reason.
+That principal must differ from the original operator, observer, and observation
+PR's exact-head reviewer. Ordinary authorizations and late attestations by the
+already-bound original operator omit this field; an orphan-acceptance object by
+any other author is rejected.
 
 The capture does not accept a free-form approver identity or approval body. The
 only accepted object types are a pull-request review or an issue comment on that
@@ -204,119 +217,160 @@ any broader issue or pull-request permission.
 
 For a first RubyGems publication, `AW-RELEASE-GRANTS-V1` starts only after that
 provisional receipt is uploaded and verified by exact producer run, artifact
-ID, service digest, and file SHA-256. Before either package release, independently
-build and review `shakacode/agent-release-grant-capture`. Its reproduced
-`dist/index.js`, root action/interface digests, fixed schemas, full action
-commit, and independent-review URL are carried by a provenance artifact whose
-producer run, artifact ID, service digest, and file SHA-256 are bound by the
-package authorization and protected-environment review. The grant job may
+ID, service digest, and file SHA-256. Version 1 deliberately uses an attended
+RubyGems administration ceremony rather than assuming an unconfirmed API can
+issue short-lived, owner-only credentials. No grant credential, browser
+session, or registry mutation runs in CI.
+
+The authorization-bound `prepare-rubygems-grant-ceremony.yml` workflow has only
+`contents: read`, `actions: read`, `issues: read`, and `pull-requests: read`.
+It receives the authorization-capture and provisional-receipt exact selectors,
+freshly downloads and schema-validates both, verifies the grant manifest bytes,
+re-fetches the canonical approval object and exact-commit approver allowlist,
+and compares its own canonical UTC clock with `expires_at` immediately before
+writing a short-lived preparation receipt. Edited/deleted approval, changed
+allowlist, expiry equality/past, or any selector/digest mismatch fails before
+the human acts. The receipt binds the authorization, provisional publication,
+manifest, exact package/version, named grant operator, pre-ceremony live owner
+and organization/team access observations, complete version/yank/artifact state,
+issued-at, and a tighter ceremony expiry. Full-SHA-pinned generic actions upload
+it and capture its exact producer run, artifact ID, service digest, and file
+SHA-256.
+
+While that preparation receipt and authorization remain valid, the named human
+operator downloads and verifies them, authenticates directly to RubyGems with
+MFA, rechecks canonical UTC immediately before the first registry mutation, and
+applies only the supported manifest rows in the registry UI. Each preparation
+receipt authorizes exactly one attended attempt; any second or later attempt
+must rerun preparation and its approval/allowlist/expiry checks even when the
+outer authorization has not yet expired. The plan
+does not pretend the human recovery principal is technically unable to perform
+other owner operations; instead it records the attended boundary, forbids gem
+upload/yank/version changes during the ceremony, and requires an independent
+observer. No credential value or authenticated browser artifact is copied into
+the repository, GitHub, logs, or receipts.
+
+Immediately after the attempt, the operator posts a canonical durable GitHub
+attestation naming the preparation-receipt selectors and manifest rows
+attempted. Its derived creation timestamp must be no later than the ceremony
+expiry. The separately authorized observer then authenticates directly to
+RubyGems, freshly captures the complete owner/MFA, organization/team access,
+version/yank, and artifact-digest state, and posts a canonical durable GitHub
+observation object containing the exact UI controls, values, observation time,
+and authentication method. Caller-authored owner lists, screenshots alone, and an
+observer equal to the operator/attestor, release approver, or PR reviewer are
+never accepted.
+
+The observation PR opener receives only the attestation or authorized
+orphan-acceptance URL, observation-object URL, and exact
+authorization/provisional/preparation/prior-chain selectors; it has
+`contents: read`, `actions: read`, `issues: read`, and `pull-requests: read` in
+its evidence-verification job, derives both objects' authors and immutable body
+digests through the GitHub API, and renders the verified observation bytes at
+the one fixed-schema path. Only a separate closed job with `actions: read`,
+`contents: write`, and `pull-requests: write` may download that exact verified
+payload and open the observation-only PR. That write job has no checkout,
+persisted credential, shell, inline code, or repository execution. It verifies
+the authorization-bound mutator provenance receipt by exact selectors and may
 invoke only
-`shakacode/agent-release-grant-capture@<authorization-bound-full-commit>` in its
-single closed `apply-rubygems-grants` mode. Inputs are limited to the freshly
-verified authorization, exact provisional-receipt selectors, exact grant
-manifest, fixed package/version, and either an explicit genesis marker or the
-prior post-grant receipt's exact selectors; there is no command, script,
-endpoint, arbitrary body, principal, operation-result, or registry-response
-input.
+`shakacode/agent-release-mutator@<authorization-bound-full-commit>` in its
+closed `open-closeout-pr` mode. The fixed manifest binds the exact repository,
+base commit, deterministic branch, sole observation path, payload SHA-256, and
+PR title; none is caller-selectable outside the schema. The action's canonical
+result binds the PR number/URL, base/head refs and SHAs, committed path/blob
+digest, operation identity, and every provenance selector/digest. A separate
+full-SHA-pinned generic upload records it under the one fixed expected artifact
+name derived from package, version, and attempt. The opener lists the run's
+artifact inventory, requires exactly one artifact with that name, and records
+its exact opener run ID, numeric artifact ID, service digest, and file SHA-256.
+A separate read-only job with a complete permission block of exactly
+`actions: read`, `contents: read`, and `pull-requests: read` downloads only those
+four exact selectors, verifies the single-artifact inventory, file digest, and
+schema, and reads the branch and PR back through GitHub before the PR can be
+trusted. It has no write, OIDC, environment, release, package, checkout
+credential, or registry credential. Tests
+reject checkout or executable code in the write job, mutable/substituted action
+or provenance, changed base/branch/path/payload, extra files, cross-run,
+name-selected, duplicate/missing artifact, selector/digest substitution, an
+omitted or expanded verifier permission block, and missing or mismatched
+operation-result read-back. The PR
+verifier runs untrusted-head-safe from the trusted base, executes no candidate
+code, permits only the one schema-bound observation file, requires the
+authorization-bound observer and a distinct allowlisted exact-head reviewer,
+and invalidates approval after any head change. After merge, the trusted-base
+observation finalizer reads only the exact merge commit, verifies that the
+merged final head equals the approved review `commit_id`, and emits the durable
+observation selectors/digest. Both verifier and finalizer declare complete
+job-level permission blocks containing exactly `contents: read` and
+`pull-requests: read`; only a separate job that downloads an exact artifact may
+add `actions: read`. Neither has OIDC, release, package, environment,
+registry-mutation, or reusable registry-credential permission. Static tests
+reject an omitted permission block, any missing/expanded scope, and unnecessary
+`actions: read`.
 
-The job uses the separately protected `release-grants` environment and a
-just-in-time RubyGems credential whose authenticated scope read-back proves it
-can perform only the exact owner or organization/team access operations in the
-manifest and cannot push, yank, replace, or delete package bytes. Its issuer
-must enforce a non-extendable short expiry bounded to the grant attempt and
-persist an issuance ID, exact scopes, issued-at, and expires-at receipt before
-returning the capability. If RubyGems cannot issue that technically restricted,
-issuer-expiring capability for every supported row, the automated grant path
-is forbidden and release authorization stops for a new reviewed grant design;
-a broad or merely runner-timed owner token is not an accepted fallback. The
-action receives the credential only after all artifact, provenance, scope,
-expiry, and environment checks pass, never returns or logs it, and requests
-revocation in its cleanup path.
+`capture-rubygems-post-grant.yml` has only `contents: read`, `actions: read`,
+`issues: read`, and `pull-requests: read`. It accepts the attestation or
+orphan-acceptance object URL, merged observation PR identity, and exact
+authorization, provisional, preparation, and prior-chain selectors. It derives
+object author/timestamps through the GitHub API, requires the authorized
+operator on the ordinary path and the independently authorized observer on both
+paths, re-fetches
+the unchanged approval object and exact-commit allowlist, rechecks the outer
+authorization expiry against canonical UTC immediately before capture, verifies
+that the operator attested within the preparation window, and never trusts an
+attested result as registry evidence. For a recovery path, it instead verifies
+the renewed authorization and either the original operator's explicitly late
+attestation or the separate maintainer's orphan acceptance, including author,
+exact delta, lateness or missing-operator reason, and recovery disposition. It
+requires an orphan acceptance author to equal the renewed authorization's exact
+`orphan_acceptance_principal` and to differ from the operator, observer, and
+observation PR reviewer; any other author fails closed. It
+compares the complete pre/post registry state
+and rejects any new, removed, or changed principal/role/access row not exactly
+authorized by the manifest, plus any gem upload, yank, version, or artifact-
+digest change during the ceremony. Only the exact expected manifest delta and
+unchanged package bytes may proceed.
 
-Runner cleanup is not the credential-lifetime boundary. Before the issuer may
-deliver a capability, the workflow pre-registers an attempt handle bound to the
-authorization digest, repository, protected workflow run/job, package/version,
-and attempt identity. The issuer atomically appends the issuance under that
-handle to its own durable open-issuance ledger and acknowledges the
-pre-dispatched finalizer before returning the credential; a failure at either
-write returns no capability. The finalizer and sweeper discover work by
-enumerating the issuer-owned ledger for the exact authorization/run binding,
-never from a caller-selected issuance ID, workflow output, or grant-runner
-artifact. Tests kill the grant runner immediately after issuer acknowledgement
-and before any local output or artifact, and require the issuance to remain
-discoverable.
+The reviewed post-grant writer emits an append-only receipt that binds its fixed
+schema, attempt identity, authorization/provisional/preparation selectors and
+digests, attestation or orphan-acceptance object identity/body digest, every
+manifest row, observed pre/post state, authenticated observation identity, and
+resulting state. It
+distinguishes a registry-provided operation result from a human-attested
+operation; it never invents a machine operation ID. Expired, edited, deleted,
+missing, failed, or ambiguous evidence yields
+`PUBLISHED_GRANTS_RECONCILIATION_REQUIRED`; only complete fresh observations may
+claim `PUBLISHED_CLOSEOUT_PENDING`.
 
-Independently build and review
-`shakacode/agent-release-credential-lifecycle`; bind its reproduced
-distribution, fixed schemas, full action commit, provenance selectors/digests,
-and independent review in the authorization. The local
-`rubygems-grant-credential-finalizer.yml` and
-`rubygems-grant-credential-sweeper.yml` workflows are authorization-bound by
-exact path/ref/file digest and may invoke that action only at the authorized
-full commit in closed `finalize-rubygems-grant-credential` or
-`sweep-rubygems-grant-credentials` mode. The out-of-process finalizer requests
-revocation independently of the grant runner and queries the issuer until it
-proves the credential inactive by revocation or issuer-enforced expiry. The
-bounded scheduled sweeper reconciles any ledger issuance lacking terminal
-proof after runner cancellation or loss. Neither lifecycle mode receives a
-caller-selected issuance, arbitrary endpoint/body, command, or script. Their
-closed GitHub permissions are `contents: read` and `actions: read`, with no
-checkout, registry grant capability, OIDC, or repository/package/release write.
-The attempt records the finalizer/sweeper receipt by exact producer run,
-artifact ID, service digest, and file SHA-256. Missing,
-stale, or ambiguous inactivity proof yields
-`PUBLISHED_GRANT_CREDENTIAL_UNKNOWN`, blocks every successor and closeout, and
-requires operator reconciliation; neither action success nor local cleanup can
-substitute for issuer read-back. Fault tests kill the runner after issuance,
-after each grant, before cleanup, and during revocation, and prove expiry or the
-out-of-process finalizer leaves no usable credential before processing resumes.
-The job's closed GitHub permission block is only `contents: read` and
-`actions: read`; it has no OIDC, repository write, issue, pull-request, package,
-or release permission. Static tests reject a floating/substituted action,
-provenance mismatch, broader GitHub permission, persisted checkout credential,
-repository or inline execution, caller-selected or undiscoverable issuance,
-missing issuer expiry/finalizer/sweeper or scope/revocation checks, and any
-credential capable of package publication or deletion.
+Recovery enumerates the exact preparation receipts, attestations, observation
+PRs, post-grant receipts, and current live registry state for the authorized
+package/version. If a human operation succeeded but the runner or operator
+stopped before attesting, recovery remains fail closed until either the original
+operator posts a late attestation bound to the exact preparation and observed
+rows, or a renewed authorization carries a separate maintainer's explicit
+orphan-acceptance object naming the unexplained live delta and why operator
+attestation is unavailable. Recovery never synthesizes either object. After
+that evidence exists, a renewed authorization may create a ledger-derived
+recovery attempt that imports the orphaned preparation, late attestation or
+orphan acceptance, and merged observation, re-observes live state, and appends
+it to the existing chain; it never starts a replacement genesis or repeats a
+grant already present. Every
+successor binds the prior receipt's exact producer run, artifact ID, service
+digest, file SHA-256, and receipt digest and preserves prior evidence
+byte-for-byte. Recovery never republishes the gem.
 
-The closed action freshly downloads the provisional receipt, authorization,
-and any predecessor receipt, verifies the manifest bytes/digest, performs only
-still-missing supported access operations, captures each authenticated
-operation response, and queries fresh RubyGems capability, owner, MFA, and
-distinct organization/team access read-backs. Its append-only post-grant
-receipt binds its fixed schema path/version/digest, attempt identity, the
-authorization capture selectors/digest, provisional receipt selectors/digest,
-authorized grant-action full commit, provenance producer run/artifact
-ID/service digest/file SHA-256 and action/source/distribution/mode/schema
-digests, authorized credential-lifecycle action/workflow identities and
-provenance/workflow digests, protected run/job/action identity, every manifest row, every
-authenticated operation identity/result, capability disposition, fresh
-read-back value/timestamp, credential issuance/expiry/scope receipt
-selectors/digest plus independent inactivity-receipt selectors/digest, and
-resulting state. A genesis attempt
-records no predecessor; every successor binds the
-prior receipt's producer run, artifact ID, service digest, file SHA-256, and
-receipt digest and preserves all prior operations/read-backs byte-for-byte.
-Any required row or read-back that is missing, failed, or ambiguous yields
-`PUBLISHED_GRANTS_BLOCKED`; only a complete chain tip may claim
-`PUBLISHED_CLOSEOUT_PENDING`. Recovery resumes only the missing grant or
-read-back against the already published version and never republishes the gem.
-
-A full-SHA-pinned generic artifact step uploads the exact post-grant receipt,
-queries its numeric artifact ID and service digest, downloads it into a fresh
-directory, and verifies its file SHA-256. A separate unprivileged verifier job
-with only `contents: read` and `actions: read`, no environment, registry
-credential, checkout credential, or write scope, freshly downloads the
-authorization, provisional receipt, grant-action provenance, and complete
-post-grant predecessor chain by exact selectors. It schema-validates every
-receipt, replays the chain, verifies all manifest rows, operation results,
-authorization, grant-action, and credential-lifecycle provenance/execution identity,
-scope/expiry/inactivity evidence, and bound live read-back records, and rejects
-stale read-back timestamps before exposing only the verified chain tip's producer
-run, artifact ID, service digest, and file SHA-256 to closeout. Tests reject a
-post-grant receipt created before all operations; omitted, extra, substituted,
-skipped, or rewritten predecessor attempts; stale or caller-supplied read-backs;
-wrong provisional or action-provenance selectors/digests; manifest or schema
-substitution; and a completion state with any unresolved required row.
+Full-SHA-pinned generic actions upload each post-grant receipt, query its exact
+artifact ID/service digest, download it fresh, and verify its file SHA-256. A
+separate unprivileged verifier with only `contents: read` and `actions: read`
+downloads the complete preparation/attestation/observation/post-grant chain by
+exact selectors, schema-validates and replays it, and exposes only the verified
+chain tip's four selectors to closeout. Tests cover approval edit/deletion or
+expiry before preparation and immediately before observation, operator/attestor
+or observer substitution, unauthorized pre/post registry deltas, late-
+attestation and explicit-orphan-acceptance recovery after every stop point,
+omitted/extra manifest
+rows, stale or caller-supplied observations, skipped/rewritten predecessors,
+tip-only retention, and premature completion.
 
 The captured JSON's canonical eventual repository path remains
 `release/authorizations/<package>-<version>.v1.json`, but a later reviewed
@@ -417,8 +471,9 @@ downloads and verifies every predecessor by its bound selectors/digest before
 freshly downloading the published gem by exact name/version.
 It records the original provisional publication-operation receipt, the
 complete post-grant receipt chain, authorization-capture selectors and digest,
-the byte-identical credential issuance and inactivity receipts for every
-attempt,
+the byte-identical preparation receipts, operator attestations or authorized
+orphan-acceptance records, and authenticated observation records or merged
+observation-PR evidence for every attempt,
 the freshly downloaded byte-identical authorization JSON itself, published-gem
 SHA-256, RubyGems metadata and provenance, tag and GitHub Release commit,
 grant-manifest results, owner/MFA read-back, toolchain, and clean-install smoke
@@ -432,13 +487,16 @@ receipt chain, byte-identical authorization JSON, canonical manifest, and
 detached verification record. Its schema binds the authorization file SHA-256
 to the capture selectors, provisional receipt, and complete post-grant chain,
 and binds the genesis and every successor to the exact provisional and
-predecessor selector/digest tuples plus the complete authorized grant-action
-and credential-lifecycle provenance/execution identities. The candidate
+predecessor selector/digest tuples plus the authorization-bound preparation
+workflow identity, attestation object identity/body digest, and authenticated
+observation workflow or merged observation-PR identity. An orphan-recovery
+successor binds the authorized orphan-acceptance identity/body digest in place
+of a missing operator attestation. The candidate
 contains a canonical chain index and the byte-identical genesis receipt, every
-successor receipt, and every attempt's schema-valid issuance and
-finalizer/sweeper inactivity receipts—not only the tip, selector references,
-or copied-forward fields—so the PR workflow and trusted-base finalizer can
-replay the entire credential and grant chain from merged bytes after Actions
+successor receipt, and every attempt's schema-valid preparation, attestation,
+observation, and post-grant receipt bytes—not only the tip, selector references,
+or copied-forward fields—so the PR workflow and trusted-base closeout finalizer
+can replay the entire human-grant evidence chain from merged bytes after Actions
 artifacts expire. The PR workflow executes
 no candidate code, rejects executable or workflow changes, re-downloads the
 authorization capture, candidate bundle, and public gem, and checks every
@@ -679,17 +737,23 @@ dashboard gem, or unsupported-by-assumption npm team disposition is included.
 - Create/modify: `Rakefile`
 - Create/modify: `.github/workflows/release-gem.yml`
 - Create: `.github/workflows/rubygems-release-closeout.yml`.
-- Create: `.github/workflows/rubygems-grant-credential-finalizer.yml` and
-  `.github/workflows/rubygems-grant-credential-sweeper.yml`, bound to the
-  authorization-approved credential-lifecycle action full commit and workflow
+- Create: `.github/workflows/prepare-rubygems-grant-ceremony.yml` and
+  `.github/workflows/open-rubygems-grant-observation-pr.yml`,
+  `.github/workflows/verify-rubygems-grant-observation-pr.yml`,
+  `.github/workflows/finalize-rubygems-grant-observation.yml`, and
+  `.github/workflows/capture-rubygems-post-grant.yml`, bound to the authorized
+  operator and independent observer, exact approval and allowlist objects, and workflow
   path/ref/file digests.
 - Create: `release/schemas/rubygems-publication-operation-v1.schema.json`,
-  `release/schemas/rubygems-grant-issuance-v1.schema.json`,
-  `release/schemas/rubygems-grant-inactivity-v1.schema.json`,
+  `release/schemas/rubygems-grant-preparation-v1.schema.json`,
+  `release/schemas/rubygems-grant-attestation-v1.schema.json`,
+  `release/schemas/rubygems-grant-orphan-acceptance-v1.schema.json`,
+  `release/schemas/rubygems-grant-observation-v1.schema.json`,
   `release/schemas/rubygems-post-grant-receipt-v1.schema.json`,
   `release/schemas/rubygems-grant-chain-index-v1.schema.json`, and
   `release/schemas/rubygems-release-closeout-v1.schema.json`, with reviewed
-  writer/verifier, crash-recovery, and retained-chain replay tests for
+  writer/verifier, approval-revalidation, orphan-recovery, and retained-chain
+  replay tests for
   `AW-RELEASE-GRANTS-V1` and
   `AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`.
 - Create after publication through the reviewed closeout PR:
@@ -839,17 +903,23 @@ unassigned note does not satisfy this follow-up.
   `CHANGELOG.md`.
 - Create: `.github/workflows/release-gem.yml`.
 - Create: `.github/workflows/rubygems-release-closeout.yml`.
-- Create: `.github/workflows/rubygems-grant-credential-finalizer.yml` and
-  `.github/workflows/rubygems-grant-credential-sweeper.yml`, bound to the
-  authorization-approved credential-lifecycle action full commit and workflow
+- Create: `.github/workflows/prepare-rubygems-grant-ceremony.yml` and
+  `.github/workflows/open-rubygems-grant-observation-pr.yml`,
+  `.github/workflows/verify-rubygems-grant-observation-pr.yml`,
+  `.github/workflows/finalize-rubygems-grant-observation.yml`, and
+  `.github/workflows/capture-rubygems-post-grant.yml`, bound to the authorized
+  operator and independent observer, exact approval and allowlist objects, and workflow
   path/ref/file digests.
 - Create: `release/schemas/rubygems-publication-operation-v1.schema.json`,
-  `release/schemas/rubygems-grant-issuance-v1.schema.json`,
-  `release/schemas/rubygems-grant-inactivity-v1.schema.json`,
+  `release/schemas/rubygems-grant-preparation-v1.schema.json`,
+  `release/schemas/rubygems-grant-attestation-v1.schema.json`,
+  `release/schemas/rubygems-grant-orphan-acceptance-v1.schema.json`,
+  `release/schemas/rubygems-grant-observation-v1.schema.json`,
   `release/schemas/rubygems-post-grant-receipt-v1.schema.json`,
   `release/schemas/rubygems-grant-chain-index-v1.schema.json`, and
   `release/schemas/rubygems-release-closeout-v1.schema.json`, with reviewed
-  writer/verifier, crash-recovery, and retained-chain replay tests for
+  writer/verifier, approval-revalidation, orphan-recovery, and retained-chain
+  replay tests for
   `AW-RELEASE-GRANTS-V1` and
   `AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`.
 - Create after publication through the reviewed closeout PR:
@@ -1150,7 +1220,8 @@ resume the draft standalone release. A public GitHub Release for `v0.2.0` does
 not conflict with `prepare-publication`'s rejection of a public or unowned
 release for the distinct standalone tag. Neither tag may be moved or reused.
 
-**External protected-mutator prerequisite:** before Step 6, create and
+**Shared external protected-mutator prerequisite:** before either RubyGems
+observation-PR opener or this task's Step 6, create and
 independently review the dedicated repository
 `shakacode/agent-release-mutator`. Its root `action.yml` loads only the reviewed,
 checked-in `dist/index.js` built from `src/index.ts`; tests prove the distribution

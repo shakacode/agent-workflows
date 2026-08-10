@@ -256,7 +256,7 @@ resolved_manifest_entry = lambda do |root_dir, relative_path|
 
   resolved = File.realpath(current)
   resolved if resolved.start_with?("#{canonical_root}#{File::SEPARATOR}")
-rescue Errno::ENOENT, Errno::ELOOP
+rescue Errno::ENOENT, Errno::ENOTDIR, Errno::EACCES, Errno::ELOOP
   nil
 end
 
@@ -295,7 +295,12 @@ to be tracked by Git with an index type for a regular file, reject untracked,
 duplicate, symlink, or gitlink entries, and assert the built gem contains the
 license, README, and changelog. Construct temporary in-tree and out-of-tree
 symlink entries at both the final component and a parent directory to prove
-gemspec loading and `gem build` fail before packaging any linked bytes.
+gemspec loading and `gem build` fail before packaging any linked bytes. Add a
+regular file in place of an intermediate directory and an access-denied fixture
+(using a filesystem adapter when the test user can bypass mode bits) to prove
+`ENOTDIR` and `EACCES` are converted into the same clean
+`Missing, duplicate, or non-regular agent-workflows manifest entry` failure,
+without leaking a raw system exception.
 
 Create `Gemfile`:
 
@@ -404,6 +409,16 @@ class AgentWorkflowsResultTest < Minitest::Test
       AgentWorkflows::Result.new(exit_status: "2", payload: nil, diagnostics: [])
     end
   end
+
+  def test_result_owns_a_frozen_diagnostics_copy
+    diagnostics = ["missing"]
+    result = AgentWorkflows::Result.new(exit_status: 2, diagnostics: diagnostics)
+
+    refute_same diagnostics, result.diagnostics
+    assert_predicate result.diagnostics, :frozen?
+    diagnostics << "caller remains mutable"
+    assert_equal ["missing"], result.diagnostics
+  end
 end
 ```
 
@@ -432,7 +447,7 @@ module AgentWorkflows
     def initialize(exit_status:, payload: nil, diagnostics: [])
       raise ArgumentError, "exit_status must be an Integer" unless exit_status.is_a?(Integer)
 
-      super(exit_status:, payload:, diagnostics: diagnostics.freeze)
+      super(exit_status:, payload:, diagnostics: diagnostics.dup.freeze)
     end
   end
 end

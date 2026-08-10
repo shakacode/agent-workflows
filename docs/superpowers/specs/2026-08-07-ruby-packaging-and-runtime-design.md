@@ -94,6 +94,18 @@ The project will not publish RubyGems packages with underscore names such as
 packages would split documentation, create permanent security and ownership
 surface, and conflict with the registries' anti-squatting intent.
 
+Until every canonical useful first release is published, the release owner
+named in `docs/package-release-checklist.md` owns an interim name-monitoring
+control. Once per week, and once per day during an authorized release window,
+that owner records exact-name RubyGems and npm API checks for
+`agent-workflows`, `agent-coordination`, `agent-coordination-dashboard`,
+`agent_workflows`, and `agent_coordination` in the durable release-tracking
+issue. The underscore names remain intentionally unpublished, not reserved. If
+any monitored name is acquired or its metadata changes, the owner opens a
+linked incident, blocks publication and documentation that assume ownership,
+and brings the naming or recovery decision back for explicit product review;
+the project does not silently publish an alias or placeholder as a workaround.
+
 ### D3. Package ownership
 
 A name is claimed only by publishing a useful, installable release. Use a
