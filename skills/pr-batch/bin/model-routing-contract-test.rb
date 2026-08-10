@@ -165,6 +165,14 @@ EXPECTED_ROUTE_DISPOSITIONS = {
   "coordinator-pair-inheritance" => "MODEL_ROUTE_MISMATCH",
   "authorized-fallback" => "proceed-as-fallback"
 }.freeze
+ROUTINE_COORDINATOR_ROUTE_RULE =
+  "Routine bounded planning, dispatch bookkeeping, status reconciliation, evidence collation, and routine coordination use the `balanced`/high class. Name the exact `Terra/high` pair only when the active host has verified that pair; otherwise preserve the requested preference and record host-observed values as `UNKNOWN` when unavailable."
+SOL_XHIGH_RESERVATION_RULE =
+  "Reserve Sol/xhigh for a pinned high-risk trigger, a bounded plan challenge, repeated credible failures, or an evidence-backed `MODEL_ESCALATION_REQUEST`."
+SOL_XHIGH_NONTRIGGERS_RULE =
+  "Polling, deterministic aggregation, receipt construction, unchanged-state checks, context pollution, and topology alone do not justify Sol/xhigh."
+MEASURED_PROMOTION_DEFERRAL_RULE =
+  "No ten-batch measured promotion decision may be made before #398 execution-provenance receipts exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -232,6 +240,18 @@ def assert_aw_d_route_replay(test, text, label)
 
     test.assert_includes FAIL_CLOSED_ROUTE_CASES, row.fetch(:case_id),
                          "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} replays a non-satisfied outcome, so #{row.fetch(:case_id)} must be a fail-closed case"
+  end
+end
+
+def assert_constrained_routine_routing(test, text, label)
+  guide = normalized(text)
+  [
+    ROUTINE_COORDINATOR_ROUTE_RULE,
+    SOL_XHIGH_RESERVATION_RULE,
+    SOL_XHIGH_NONTRIGGERS_RULE,
+    MEASURED_PROMOTION_DEFERRAL_RULE
+  ].each do |rule|
+    test.assert_includes guide, rule, "#{label} is missing constrained-routing rule: #{rule}"
   end
 end
 
@@ -515,6 +535,41 @@ class ModelRoutingContractTest < Minitest::Test
       "Route adherence is itself an outcome measure"
     ].each do |phrase|
       assert_includes guide, phrase, "model-routing guide is missing evidence-status rule: #{phrase}"
+    end
+  end
+
+  def test_routine_coordinator_routing_and_measured_promotion_remain_constrained
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_constrained_routine_routing(self, text, MODEL_ROUTING_GUIDE_PATH)
+
+    mutants = {
+      "routine coordination defaults to strongest" => text.sub(
+        "routine coordination use the `balanced`/high class",
+        "routine coordination use Sol/xhigh by default"
+      ),
+      "unverified Terra pair named as exact" => text.sub(
+        "only when the active host has verified that pair",
+        "whenever the coordinator requests it"
+      ),
+      "Sol/xhigh reservation broadened" => text.sub(
+        "Reserve Sol/xhigh for a pinned high-risk trigger",
+        "Use Sol/xhigh for ordinary coordination or a pinned high-risk trigger"
+      ),
+      "mechanical activity treated as a Sol/xhigh trigger" => text.sub(
+        "topology alone do not justify Sol/xhigh",
+        "topology alone justify Sol/xhigh"
+      ),
+      "promotion decision made before #398 receipts" => text.sub(
+        "No ten-batch measured promotion decision may be made before #398\nexecution-provenance receipts exist",
+        "A ten-batch measured promotion decision may be made before #398\nexecution-provenance receipts exist"
+      )
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal text, mutant, "#{mutation} mutant did not change the guide text"
+      assert_raises(Minitest::Assertion, "model-routing guide accepted #{mutation}") do
+        assert_constrained_routine_routing(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
     end
   end
 

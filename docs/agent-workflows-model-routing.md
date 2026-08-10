@@ -58,6 +58,17 @@ plan is the high-leverage work. They do not imply maximum effort for every
 worker or for routine deterministic QA; task-specific routing still follows
 ambiguity, consequence, and verification strength.
 
+Routine bounded planning, dispatch bookkeeping, status reconciliation, evidence
+collation, and routine coordination use the `balanced`/high class. Name the
+exact `Terra/high` pair only when the active host has verified that pair;
+otherwise preserve the requested preference and record host-observed values as
+`UNKNOWN` when unavailable.
+
+Reserve Sol/xhigh for a pinned high-risk trigger, a bounded plan challenge,
+repeated credible failures, or an evidence-backed `MODEL_ESCALATION_REQUEST`.
+Polling, deterministic aggregation, receipt construction, unchanged-state
+checks, context pollution, and topology alone do not justify Sol/xhigh.
+
 GPT-5.5 is recommended for an explicitly requested independent comparison or
 family-specific fallback. Selecting it elsewhere remains permitted but falls
 outside this profile's evidence-backed recommendation.
@@ -395,6 +406,11 @@ scenario class below carries sample count 0 and evidence strength `UNKNOWN`
 until observed receipts exist for it; do not cite a profile route as measured
 evidence, and do not compare a requested route that lacks an observed receipt
 against one that has one.
+
+No ten-batch measured promotion decision may be made before #398
+execution-provenance receipts exist. A promotion experiment must use matched
+task classes and context topology, record requested-versus-observed execution
+evidence, and publish its comparison results; this evidence is not complete.
 
 | Scenario class | Risk | Recommended route | Samples | Evidence strength |
 | --- | --- | --- | --- | --- |
