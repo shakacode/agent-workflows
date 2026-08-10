@@ -140,6 +140,30 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", data.fetch("overall_verdict")
   end
 
+  def test_hosted_v1_accepts_n_a_as_a_criterion_evidence_url_path_segment
+    evidence_urls = [
+      "https://evidence.example.test/runs/n/a/sign-in-abc123",
+      "https://evidence.example.test/run/artifact/sign-in-abc123"
+    ]
+
+    evidence_urls.each do |evidence_url|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence_url)
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), evidence_url
+      assert_empty hosted.fetch("missing"), evidence_url
+    end
+  end
+
+  def test_hosted_v1_rejects_an_exact_n_a_criterion_evidence_field
+    body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", "n/a")
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert_includes hosted.fetch("missing"), "criterion[0].evidence"
+  end
+
   def test_generic_qa_evidence_alone_never_replays_as_hosted_qa
     data = run_replay(v2_marker)
 

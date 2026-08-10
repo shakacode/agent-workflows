@@ -121,6 +121,35 @@ class HostedQaReadinessTest < Minitest::Test
     MARKDOWN
   end
 
+  def authenticating_verifier
+    <<~'RUBY'
+      #!/usr/bin/env ruby
+      require "json"
+      arguments = {}
+      criteria = []
+      ARGV.each_slice(2) do |name, value|
+        if name == "--criterion"
+          criteria << {
+            "id" => value,
+            "status" => "passed",
+            "evidence" => "https://evidence.example.test/#{value}-" + arguments.fetch("--expected-head-sha")
+          }
+        else
+          arguments[name] = value
+        end
+      end
+      puts JSON.generate(
+        "version" => 1,
+        "verified" => true,
+        "deployment_id" => arguments.fetch("--deployment-id"),
+        "deployment_url" => arguments.fetch("--deployment-url"),
+        "deployed_head_sha" => arguments.fetch("--expected-head-sha"),
+        "target" => arguments.fetch("--target"),
+        "criteria" => criteria
+      )
+    RUBY
+  end
+
   def hosted_waiver_evidence(head_sha:, waiver_url:)
     <<~MARKDOWN
       <!-- hosted-qa-evidence v1
@@ -534,6 +563,35 @@ class HostedQaReadinessTest < Minitest::Test
       assert_equal [".agents/bin/verify-hosted-deployment"], result.fetch("applicable_paths")
       assert_includes result.fetch("blockers"), "hosted-qa-evidence v1 marker is required; " \
                                                 "qa-evidence markers are not hosted deployment proof"
+    end
+  end
+
+  def test_changed_verifier_requires_a_supported_candidate_interpreter_without_executing_it
+    with_repo do |root|
+      execution_log = File.join(root, "candidate-verifier-executed")
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", authenticating_verifier, executable: true)
+      base_sha = commit!(root, "base with hosted policy")
+      write(
+        root,
+        ".agents/bin/verify-hosted-deployment",
+        "#!/usr/bin/env -S ruby\nFile.write(#{execution_log.dump}, 'executed')\n",
+        executable: true
+      )
+      head_sha = commit!(root, "unsupported candidate verifier change")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "candidate hosted QA deployment verifier has an unsupported shebang"
+      refute_path_exists execution_log
     end
   end
 

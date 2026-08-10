@@ -71,21 +71,13 @@ module HostedQaReadiness
                                 "#{parsed_policy.fetch('deployment_verifier')}"
         end
         candidate_verifier_label = "candidate hosted QA deployment verifier"
-        candidate_verifier_blob, candidate_verifier_error = executable_blob_at(
+        candidate_verifier_error = verifier_interpreter_error_at(
           repo,
           resolved_head,
           parsed_policy.fetch("deployment_verifier"),
           label: candidate_verifier_label
         )
         bootstrap_blockers << candidate_verifier_error if candidate_verifier_error
-        unless candidate_verifier_error
-          _candidate_interpreter, candidate_interpreter_error = trusted_verifier_interpreter(
-            repo,
-            candidate_verifier_blob,
-            label: candidate_verifier_label
-          )
-          bootstrap_blockers << candidate_interpreter_error if candidate_interpreter_error
-        end
         unless runtime_paths.empty?
           bootstrap_blockers << "hosted QA policy bootstrap is mixed with configured runtime changes: #{runtime_paths.join(', ')}"
         end
@@ -128,6 +120,21 @@ module HostedQaReadiness
     governing_paths = [POLICY_PATH, parsed_policy.fetch("deployment_verifier")]
     applicable_paths = paths.select do |path|
       governing_paths.include?(path) || policy_applies_to_path?(parsed_policy, path)
+    end
+    if paths.include?(parsed_policy.fetch("deployment_verifier"))
+      candidate_verifier_label = "candidate hosted QA deployment verifier"
+      candidate_verifier_error = verifier_interpreter_error_at(
+        repo,
+        resolved_head,
+        parsed_policy.fetch("deployment_verifier"),
+        label: candidate_verifier_label
+      )
+      if candidate_verifier_error
+        return blocked_result(resolved_base, resolved_head, [candidate_verifier_error]).merge(
+          "changed_paths" => paths,
+          "applicable_paths" => applicable_paths
+        )
+      end
     end
     if applicable_paths.empty?
       return {
@@ -442,6 +449,14 @@ module HostedQaReadiness
 
   def trusted_executable_blob(repo, base_sha, verifier_path)
     executable_blob_at(repo, base_sha, verifier_path, label: "trusted-base deployment verifier")
+  end
+
+  def verifier_interpreter_error_at(repo, sha, verifier_path, label:)
+    blob, error = executable_blob_at(repo, sha, verifier_path, label:)
+    return error if error
+
+    _interpreter, interpreter_error = trusted_verifier_interpreter(repo, blob, label:)
+    interpreter_error
   end
 
   def executable_blob_at(repo, sha, verifier_path, label:)

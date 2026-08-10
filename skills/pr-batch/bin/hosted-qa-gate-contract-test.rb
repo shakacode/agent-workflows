@@ -2,6 +2,11 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "etc"
+require "fileutils"
+require "open3"
+require "rbconfig"
+require "tmpdir"
 require "yaml"
 require_relative "../lib/hosted_qa_runtime_trust"
 
@@ -44,8 +49,9 @@ class HostedQaGateContractTest < Minitest::Test
     assert_includes section, "--trusted-helper-provenance"
     assert_includes section, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness"'
     refute_includes section, '"${PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness"'
-    assert_includes section, 'trusted_git -C "${REPO_ROOT}" cat-file -e'
+    assert_includes section, 'trusted_git -C "${REPO_ROOT}" ls-tree'
     assert_includes section, 'trusted_git -C "${REPO_ROOT}" archive'
+    assert_includes section, "stat.file? && stat.nlink == 1"
     assert_includes section, "trap cleanup_trusted_runtime EXIT"
     refute_includes section, ["rm", ["-", "r", "f"].join].join(" ")
     assert_includes section, "--criterion <configured-id>"
@@ -66,13 +72,73 @@ class HostedQaGateContractTest < Minitest::Test
     assert_includes normalized, "requested path and realpath"
     assert_includes normalized, "executable regular file outside `REPO_ROOT`"
     assert_includes normalized, 'trusted_host_tool "${TRUSTED_MKTEMP}"'
-    assert_includes normalized, 'trusted_git -C "${REPO_ROOT}" cat-file -e'
+    assert_includes normalized, 'trusted_git -C "${REPO_ROOT}" ls-tree'
     assert_includes normalized, 'trusted_git -C "${REPO_ROOT}" archive'
     assert_includes normalized, 'trusted_host_tool "${TRUSTED_TAR}"'
     assert_includes normalized, 'trusted_host_tool "${TRUSTED_RM}"'
     refute_match(/^TRUSTED_RUNTIME_ROOT="\$\(mktemp /, section)
+    refute_includes normalized, 'cat-file -e "${TRUSTED_BASE_SHA}:${path}"'
     refute_match(/^\s*tar -x /, section)
     refute_match(/trap ['"]rm /, section)
+  end
+
+  def test_canonical_materialization_rejects_symlink_runtime_entries_before_extraction
+    Dir.mktmpdir("hosted-qa-materialization-contract") do |root|
+      repository = File.join(root, "repository")
+      FileUtils.mkdir_p(repository)
+      HostedQaRuntimeTrust::RUNTIME_SOURCES.each_value do |source|
+        destination = File.join(repository, source.fetch(:tree_paths).first)
+        FileUtils.mkdir_p(File.dirname(destination))
+        FileUtils.cp(source.fetch(:path), destination)
+      end
+      helper_path = File.join(repository, "skills/pr-batch/bin/hosted-qa-readiness")
+      FileUtils.rm_f(helper_path)
+      File.symlink("../../../../outside-hosted-helper", helper_path)
+
+      git = File.realpath("/usr/bin/git")
+      run_git!(git, repository, "init", "-q")
+      run_git!(git, repository, "config", "user.name", "Test User")
+      run_git!(git, repository, "config", "user.email", "test@example.test")
+      run_git!(git, repository, "add", "--all")
+      run_git!(git, repository, "commit", "-q", "-m", "trusted base with runtime symlink")
+      base_sha = run_git!(git, repository, "rev-parse", "HEAD").strip
+
+      script = read("workflows/pr-processing.md").match(
+        /```bash\n(?<script>set -o pipefail.*?HOSTED_HELPER_PROVENANCE="trusted-base:\$\{TRUSTED_BASE_SHA\}"\n)```/m
+      )&.[](:script)
+      refute_nil script
+
+      tool_home = File.join(root, "tool-home")
+      temporary_root = File.join(root, "temporary")
+      FileUtils.mkdir_p([tool_home, temporary_root], mode: 0o700)
+      tools = {
+        "TRUSTED_GIT" => git,
+        "TRUSTED_TAR" => File.realpath("/usr/bin/tar"),
+        "TRUSTED_MKTEMP" => File.realpath("/usr/bin/mktemp"),
+        "TRUSTED_RM" => File.realpath("/bin/rm"),
+        "TRUSTED_ENV" => File.realpath("/usr/bin/env"),
+        "TRUSTED_RUBY" => File.realpath(RbConfig.ruby)
+      }
+      account = Etc.getpwuid
+      environment = tools.merge(
+        "REPO_ROOT" => repository,
+        "TRUSTED_BASE_SHA" => base_sha,
+        "TRUSTED_SYSTEM_PATH" => (tools.values.map { |path| File.dirname(path) } + %w[/usr/bin /bin]).uniq.join(":"),
+        "TRUSTED_USER" => account.name,
+        "TRUSTED_LOGNAME" => account.name,
+        "TRUSTED_TOOL_HOME" => tool_home,
+        "TRUSTED_TEMP_ROOT" => temporary_root
+      )
+
+      _stdout, stderr, status = Open3.capture3(
+        environment,
+        "/bin/bash", "--noprofile", "--norc", "-c", script,
+        unsetenv_others: true
+      )
+
+      refute status.success?
+      assert_includes stderr, "UNKNOWN: trusted base lacks the complete hosted QA runtime"
+    end
   end
 
   def test_canonical_helper_launcher_uses_sanitized_absolute_ruby_from_a_trusted_cwd
@@ -125,5 +191,17 @@ class HostedQaGateContractTest < Minitest::Test
       assert_includes text, DELEGATION, path
       refute_includes text, "criterion: id=", path
     end
+  end
+
+  private
+
+  def run_git!(git, repository, *arguments)
+    output, status = Open3.capture2e(
+      { "GIT_CONFIG_NOSYSTEM" => "1", "GIT_CONFIG_GLOBAL" => File::NULL },
+      git, "-C", repository, *arguments
+    )
+    raise "git fixture failed: #{output}" unless status.success?
+
+    output
   end
 end

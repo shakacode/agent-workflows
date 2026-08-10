@@ -1004,8 +1004,10 @@ missing or unsafe binding leaves readiness `UNKNOWN`.
 Materialize either the source-pack or installed `.agents` layout from the exact
 trusted base. Use only the prebound tools under an empty environment so ambient
 Git configuration, tar options, shell loaders, and repository shims cannot
-affect materialization. The trusted coordinator shell itself must not import
-candidate functions or startup files:
+affect materialization. Every manifest entry must be an exact `100644` or
+`100755` regular blob in the trusted tree. After extraction, reject symlinks,
+hardlinks, and non-regular files before using the runtime. The trusted
+coordinator shell itself must not import candidate functions or startup files:
 
 ```bash
 set -o pipefail
@@ -1057,6 +1059,7 @@ INSTALLED_RUNTIME_PATHS=".agents/skills/pr-batch/bin/hosted-qa-readiness
 .agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb
 .agents/skills/post-merge-audit/bin/closeout-evidence-replay
 .agents/skills/post-merge-audit/bin/completed-batch-publication-preflight"
+RUNTIME_TAB="$(builtin printf '\t')"
 
 runtime_layout=""
 for candidate_layout in source installed; do
@@ -1066,11 +1069,26 @@ for candidate_layout in source installed; do
   esac
   candidate_complete=1
   for path in ${candidate_paths}; do
-    trusted_git -C "${REPO_ROOT}" cat-file -e "${TRUSTED_BASE_SHA}:${path}" || candidate_complete=0
+    runtime_entry="$(trusted_git -C "${REPO_ROOT}" ls-tree "${TRUSTED_BASE_SHA}" -- "${path}")" ||
+      candidate_complete=0
+    case "${runtime_entry}" in
+      100644\ blob\ *"${RUNTIME_TAB}${path}"|100755\ blob\ *"${RUNTIME_TAB}${path}") ;;
+      *) candidate_complete=0 ;;
+    esac
   done
   if [ "${candidate_complete}" -eq 1 ]; then
     trusted_git -C "${REPO_ROOT}" archive "${TRUSTED_BASE_SHA}" -- ${candidate_paths} |
       trusted_host_tool "${TRUSTED_TAR}" -x -C "${TRUSTED_RUNTIME_ROOT}" || exit 1
+    trusted_host_tool "${TRUSTED_RUBY}" -e '
+      root = File.realpath(ARGV.shift)
+      ARGV.each do |relative|
+        path = File.join(root, relative)
+        stat = File.lstat(path)
+        resolved = File.realpath(path)
+        exit 1 unless stat.file? && stat.nlink == 1 &&
+          resolved.start_with?("#{root}#{File::SEPARATOR}")
+      end
+    ' "${TRUSTED_RUNTIME_ROOT}" ${candidate_paths} || exit 1
     runtime_layout="${candidate_layout}"
     break
   fi
