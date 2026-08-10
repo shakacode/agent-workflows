@@ -1075,6 +1075,34 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_waiver_verifier_binds_the_evaluated_repository_root
+    Dir.mktmpdir("hosted-qa-waiver-repository") do |repository|
+      observed = nil
+      original = CompletedBatchPublicationPreflight.method(:authenticated_waiver_comment)
+      CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_waiver_comment) do |**arguments|
+        observed = arguments
+        { "authenticated" => true }
+      end
+
+      verifier = HostedQaReadiness.waiver_verifier_for(repository)
+      result = verifier.call(
+        host: "github.com",
+        repo: "shakacode/agent-workflows",
+        comment_id: 123
+      )
+
+      assert_equal({ "authenticated" => true }, result)
+      assert_equal File.realpath(repository), File.realpath(observed.fetch(:repository_root))
+      assert_equal "github.com", observed.fetch(:host)
+      assert_equal "shakacode/agent-workflows", observed.fetch(:repo)
+      assert_equal 123, observed.fetch(:comment_id)
+    ensure
+      if original
+        CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_waiver_comment, &original)
+      end
+    end
+  end
+
   def test_forbidden_waiver_mode_blocks_a_hosted_qa_waiver
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", hosted_policy(waiver_mode: "forbidden"))

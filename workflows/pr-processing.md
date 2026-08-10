@@ -990,16 +990,57 @@ repository head being evaluated.
 The hosted runtime closure is exactly the helper,
 `hosted_qa_runtime_trust.rb`, `hosted_qa_policy.rb`, the autonomous policy's
 main/glob/YAML libraries, `closeout-evidence-replay`, and
-`completed-batch-publication-preflight`. Materialize either the source-pack or
-installed `.agents` layout from the exact trusted base with a coordinator-owned
-`TRUSTED_GIT` whose executable and realpath are outside the repository; a
-missing path or failed archive leaves readiness
-`UNKNOWN`:
+`completed-batch-publication-preflight`. Before executing any repository
+content, the trusted coordinator resolves and binds absolute `TRUSTED_GIT`,
+`TRUSTED_TAR`, `TRUSTED_MKTEMP`, `TRUSTED_RM`, `TRUSTED_ENV`, and
+`TRUSTED_RUBY` paths without consulting the candidate `PATH`. Each requested
+path and realpath must remain outside `REPO_ROOT`, and each resolved target must
+be an executable regular file outside `REPO_ROOT`. The coordinator also binds a
+fixed `TRUSTED_SYSTEM_PATH`, account `TRUSTED_USER` and `TRUSTED_LOGNAME`, a
+coordinator-owned empty `TRUSTED_TOOL_HOME` with mode `0700`, and a
+`TRUSTED_TEMP_ROOT`; every directory is resolved outside the repository. A
+missing or unsafe binding leaves readiness `UNKNOWN`.
+
+Materialize either the source-pack or installed `.agents` layout from the exact
+trusted base. Use only the prebound tools under an empty environment so ambient
+Git configuration, tar options, shell loaders, and repository shims cannot
+affect materialization. The trusted coordinator shell itself must not import
+candidate functions or startup files:
 
 ```bash
 set -o pipefail
-TRUSTED_RUNTIME_ROOT="$(mktemp -d)"
-trap 'rm -r -- "$TRUSTED_RUNTIME_ROOT"' EXIT
+trusted_host_tool() {
+  "${TRUSTED_ENV}" -i \
+    HOME="${TRUSTED_TOOL_HOME}" \
+    USER="${TRUSTED_USER}" \
+    LOGNAME="${TRUSTED_LOGNAME}" \
+    PATH="${TRUSTED_SYSTEM_PATH}" \
+    "$@"
+}
+trusted_git() {
+  "${TRUSTED_ENV}" -i \
+    HOME="${TRUSTED_TOOL_HOME}" \
+    USER="${TRUSTED_USER}" \
+    LOGNAME="${TRUSTED_LOGNAME}" \
+    PATH="${TRUSTED_SYSTEM_PATH}" \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_OPTIONAL_LOCKS=0 \
+    GIT_TERMINAL_PROMPT=0 \
+    "${TRUSTED_GIT}" "$@"
+}
+
+TRUSTED_RUNTIME_ROOT="$(
+  trusted_host_tool "${TRUSTED_MKTEMP}" -d \
+    "${TRUSTED_TEMP_ROOT%/}/hosted-qa-runtime.XXXXXX"
+)" || exit 1
+cleanup_trusted_runtime() {
+  if [ -n "${TRUSTED_RUNTIME_ROOT:-}" ]; then
+    trusted_host_tool "${TRUSTED_RM}" -r -- "${TRUSTED_RUNTIME_ROOT}"
+  fi
+}
+trap cleanup_trusted_runtime EXIT
 SOURCE_RUNTIME_PATHS="skills/pr-batch/bin/hosted-qa-readiness
 skills/pr-batch/lib/hosted_qa_runtime_trust.rb
 bin/agent_doctor/hosted_qa_policy.rb
@@ -1025,11 +1066,11 @@ for candidate_layout in source installed; do
   esac
   candidate_complete=1
   for path in ${candidate_paths}; do
-    "${TRUSTED_GIT}" -C "${REPO_ROOT}" cat-file -e "${TRUSTED_BASE_SHA}:${path}" || candidate_complete=0
+    trusted_git -C "${REPO_ROOT}" cat-file -e "${TRUSTED_BASE_SHA}:${path}" || candidate_complete=0
   done
   if [ "${candidate_complete}" -eq 1 ]; then
-    "${TRUSTED_GIT}" -C "${REPO_ROOT}" archive "${TRUSTED_BASE_SHA}" -- ${candidate_paths} |
-      tar -x -C "${TRUSTED_RUNTIME_ROOT}" || exit 1
+    trusted_git -C "${REPO_ROOT}" archive "${TRUSTED_BASE_SHA}" -- ${candidate_paths} |
+      trusted_host_tool "${TRUSTED_TAR}" -x -C "${TRUSTED_RUNTIME_ROOT}" || exit 1
     runtime_layout="${candidate_layout}"
     break
   fi
@@ -1038,8 +1079,10 @@ done
 case "${runtime_layout}" in
   source) TRUSTED_PR_BATCH_SKILL_DIR="${TRUSTED_RUNTIME_ROOT}/skills/pr-batch" ;;
   installed) TRUSTED_PR_BATCH_SKILL_DIR="${TRUSTED_RUNTIME_ROOT}/.agents/skills/pr-batch" ;;
-  *) echo "UNKNOWN: trusted base lacks the complete hosted QA runtime" >&2; exit 1 ;;
+  *) builtin printf '%s\n' "UNKNOWN: trusted base lacks the complete hosted QA runtime" >&2; exit 1 ;;
 esac
+TRUSTED_HELPER_CWD="${TRUSTED_RUNTIME_ROOT}"
+TRUSTED_HELPER_HOME="${TRUSTED_RUNTIME_ROOT}"
 HOSTED_HELPER_PROVENANCE="trusted-base:${TRUSTED_BASE_SHA}"
 ```
 
@@ -1051,13 +1094,37 @@ directory to `TRUSTED_PR_BATCH_SKILL_DIR` and pass the independently established
 `HOSTED_HELPER_PROVENANCE`. The helper recomputes the same length-framed
 eight-file manifest; the claim cannot create trust and a missing, mismatched,
 inside-repository, or incomplete runtime returns `UNKNOWN`.
+Also bind `TRUSTED_HELPER_CWD` to that verified pack's outside-repository root
+and `TRUSTED_HELPER_HOME` to a fresh coordinator-owned empty `0700` directory
+created through the same trusted tool envelope.
+
+After either trust route, invoke the helper through the prebound absolute Ruby
+interpreter from the trusted runtime directory. Do not execute its shebang.
+`TRUSTED_ENV -i` supplies the complete launcher environment, so ambient
+`RUBYOPT`, `RUBYLIB`, dynamic-loader variables, repository `PATH` entries, and
+shell startup state are absent:
+
+```bash
+run_hosted_qa_readiness() {
+  (
+    builtin cd -- "${TRUSTED_HELPER_CWD}" || exit 1
+    "${TRUSTED_ENV}" -i \
+      HOME="${TRUSTED_HELPER_HOME}" \
+      USER="${TRUSTED_USER}" \
+      LOGNAME="${TRUSTED_LOGNAME}" \
+      PATH="${TRUSTED_SYSTEM_PATH}" \
+      "${TRUSTED_RUBY}" \
+      "${TRUSTED_PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" "$@"
+  )
+}
+```
 
 Supply the repository, full trusted-base and current-head SHAs, and the file or
 stdin text containing closeout evidence. The standard satisfied-evidence
 invocation is:
 
 ```bash
-"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" \
+run_hosted_qa_readiness \
   --repo "${REPO_ROOT}" \
   --base-sha "${TRUSTED_BASE_SHA}" \
   --head-sha "${CURRENT_HEAD_SHA}" \
@@ -1069,7 +1136,7 @@ Only when replaying a maintainer-waiver receipt, supply
 `--review-target-url` with the exact PR or issue URL:
 
 ```bash
-"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" \
+run_hosted_qa_readiness \
   --repo "${REPO_ROOT}" \
   --base-sha "${TRUSTED_BASE_SHA}" \
   --head-sha "${CURRENT_HEAD_SHA}" \

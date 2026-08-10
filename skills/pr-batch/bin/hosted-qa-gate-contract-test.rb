@@ -44,13 +44,56 @@ class HostedQaGateContractTest < Minitest::Test
     assert_includes section, "--trusted-helper-provenance"
     assert_includes section, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness"'
     refute_includes section, '"${PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness"'
-    assert_includes section, '"${TRUSTED_GIT}" -C "${REPO_ROOT}" cat-file -e'
-    assert_includes section, '"${TRUSTED_GIT}" -C "${REPO_ROOT}" archive'
-    assert_includes section, 'trap \'rm -r -- "$TRUSTED_RUNTIME_ROOT"\' EXIT'
+    assert_includes section, 'trusted_git -C "${REPO_ROOT}" cat-file -e'
+    assert_includes section, 'trusted_git -C "${REPO_ROOT}" archive'
+    assert_includes section, "trap cleanup_trusted_runtime EXIT"
     refute_includes section, ["rm", ["-", "r", "f"].join].join(" ")
     assert_includes section, "--criterion <configured-id>"
     assert_includes section, '"criteria"'
     assert_includes section, "exact ordered rows"
+  end
+
+  def test_canonical_materialization_uses_only_coordinator_verified_outer_tools
+    workflow = read("workflows/pr-processing.md")
+    section = workflow[/### Hosted Runtime QA Gate\n(.*?)\n### QA Evidence/m, 1]
+    normalized = section&.gsub(/\s+/, " ")
+
+    refute_nil section
+    %w[GIT TAR MKTEMP RM ENV RUBY].each do |name|
+      assert_includes normalized, "`TRUSTED_#{name}`", name
+    end
+    assert_includes normalized, "Before executing any repository content"
+    assert_includes normalized, "requested path and realpath"
+    assert_includes normalized, "executable regular file outside `REPO_ROOT`"
+    assert_includes normalized, 'trusted_host_tool "${TRUSTED_MKTEMP}"'
+    assert_includes normalized, 'trusted_git -C "${REPO_ROOT}" cat-file -e'
+    assert_includes normalized, 'trusted_git -C "${REPO_ROOT}" archive'
+    assert_includes normalized, 'trusted_host_tool "${TRUSTED_TAR}"'
+    assert_includes normalized, 'trusted_host_tool "${TRUSTED_RM}"'
+    refute_match(/^TRUSTED_RUNTIME_ROOT="\$\(mktemp /, section)
+    refute_match(/^\s*tar -x /, section)
+    refute_match(/trap ['"]rm /, section)
+  end
+
+  def test_canonical_helper_launcher_uses_sanitized_absolute_ruby_from_a_trusted_cwd
+    workflow = read("workflows/pr-processing.md")
+    section = workflow[/### Hosted Runtime QA Gate\n(.*?)\n### QA Evidence/m, 1]
+    normalized = section&.gsub(/\s+/, " ")
+
+    refute_nil section
+    assert_includes normalized, "run_hosted_qa_readiness()"
+    assert_includes normalized, 'builtin cd -- "${TRUSTED_HELPER_CWD}"'
+    assert_includes normalized, '"${TRUSTED_ENV}" -i'
+    assert_includes normalized, 'HOME="${TRUSTED_HELPER_HOME}"'
+    assert_includes normalized, 'USER="${TRUSTED_USER}"'
+    assert_includes normalized, 'LOGNAME="${TRUSTED_LOGNAME}"'
+    assert_includes normalized, 'PATH="${TRUSTED_SYSTEM_PATH}"'
+    assert_includes normalized, '"${TRUSTED_RUBY}"'
+    assert_includes normalized, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" "$@"'
+    assert_includes normalized, "RUBYOPT"
+    assert_includes normalized, "RUBYLIB"
+    assert_equal 2, section.scan(/^run_hosted_qa_readiness \\$/).length
+    refute_match(%r{^"\$\{TRUSTED_PR_BATCH_SKILL_DIR\}/bin/hosted-qa-readiness"}, section)
   end
 
   def test_runtime_trust_manifest_covers_the_exact_loaded_eight_file_closure

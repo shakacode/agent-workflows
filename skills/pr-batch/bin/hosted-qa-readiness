@@ -577,6 +577,12 @@ module HostedQaReadiness
     CompletedBatchPublicationPreflight.authenticated_waiver_comment(**arguments)
   end
 
+  def waiver_verifier_for(repository_root)
+    lambda do |**arguments|
+      authenticated_waiver_comment(repository_root:, **arguments)
+    end
+  end
+
   def blocked_result(base_sha, head_sha, blockers, errors: nil)
     result = {
       "eligible" => false,
@@ -663,7 +669,7 @@ module HostedQaReadiness
       head_sha: options.fetch(:head_sha).downcase,
       evidence:,
       review_target_url: options[:review_target_url],
-      waiver_verifier: method(:authenticated_waiver_comment)
+      waiver_verifier: waiver_verifier_for(options.fetch(:repo))
     )
     result["helper_provenance"] = runtime_trust.provenance
     result["helper_trust"] = {
