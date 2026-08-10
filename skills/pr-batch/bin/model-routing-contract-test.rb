@@ -170,7 +170,9 @@ ROUTINE_COORDINATOR_ROUTE_RULE =
 SOL_XHIGH_RESERVATION_RULE =
   "Reserve Sol/xhigh for a pinned high-risk trigger, a bounded plan challenge, repeated credible failures, or an evidence-backed `MODEL_ESCALATION_REQUEST`."
 SOL_XHIGH_NONTRIGGERS_RULE =
-  "Polling, deterministic aggregation, receipt construction, unchanged-state checks, context pollution, and topology alone do not justify Sol/xhigh."
+  "Polling, mechanical work, deterministic aggregation, receipt construction, unchanged-state checks, context pollution, and topology alone do not justify Sol/xhigh."
+USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
+  "An explicitly user-selected Sol/xhigh override is honored and reported as an override, not silently rewritten."
 MEASURED_PROMOTION_DEFERRAL_RULE =
   "No ten-batch measured promotion decision may be made before #398 execution-provenance receipts exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
 
@@ -188,6 +190,10 @@ def extract_markdown_section(text, heading)
   text[body_start...body_end]
 end
 
+def strip_html_comments(text)
+  text.gsub(/<!--.*?-->/m, "")
+end
+
 def normalized(text)
   text.gsub(/\s+/, " ").strip
 end
@@ -197,6 +203,11 @@ def route_dispositions(text)
   rows = section.scan(/^\|\s*`([a-z-]+)`\s*\|[^|\n]*\|[^|\n]*\|\s*`([A-Za-z_-]+)`\s*\|\s*$/)
   raise "missing route disposition rows under #{ROUTE_DISPOSITION_TABLE_HEADING}" if rows.empty?
 
+  duplicate_case_ids = rows.group_by(&:first).select { |_case_id, entries| entries.length > 1 }.keys
+  unless duplicate_case_ids.empty?
+    raise "duplicate route disposition case ids: #{duplicate_case_ids.join(', ')}"
+  end
+
   rows.to_h
 end
 
@@ -204,6 +215,15 @@ def mutate_route_disposition(text, case_id, disposition)
   text.sub(/(^\|\s*`#{Regexp.escape(case_id)}`[^\n]*\|\s*)`[A-Za-z_-]+`(\s*\|\s*$)/) do
     "#{Regexp.last_match(1)}`#{disposition}`#{Regexp.last_match(2)}"
   end
+end
+
+def duplicate_route_disposition(text, case_id, disposition)
+  row_pattern = /^\|\s*`#{Regexp.escape(case_id)}`[^\n]*\n/
+  row = text.match(row_pattern)&.to_s
+  raise "missing route disposition row for #{case_id}" unless row
+
+  duplicate = "| `#{case_id}` | duplicate requested tuple | duplicate observed tuple | `#{disposition}` |\n"
+  text.sub(row, "#{row}#{duplicate}")
 end
 
 def assert_route_provenance_contract(test, text, label)
@@ -244,11 +264,12 @@ def assert_aw_d_route_replay(test, text, label)
 end
 
 def assert_constrained_routine_routing(test, text, label)
-  guide = normalized(text)
+  guide = normalized(strip_html_comments(text))
   [
     ROUTINE_COORDINATOR_ROUTE_RULE,
     SOL_XHIGH_RESERVATION_RULE,
     SOL_XHIGH_NONTRIGGERS_RULE,
+    USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE,
     MEASURED_PROMOTION_DEFERRAL_RULE
   ].each do |rule|
     test.assert_includes guide, rule, "#{label} is missing constrained-routing rule: #{rule}"
@@ -525,6 +546,17 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
+  def test_duplicate_route_dispositions_fail_closed
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    mutant = duplicate_route_disposition(text, "silent-substitution", "proceed")
+
+    refute_equal text, mutant, "duplicate disposition mutant did not change the guide text"
+    error = assert_raises(RuntimeError, "duplicate route disposition row was accepted") do
+      route_dispositions(mutant)
+    end
+    assert_includes error.message, "duplicate route disposition case ids: silent-substitution"
+  end
+
   def test_routing_guide_marks_scenario_recommendations_unmeasured
     guide = normalized(read_repo_file(MODEL_ROUTING_GUIDE_PATH))
 
@@ -547,6 +579,11 @@ class ModelRoutingContractTest < Minitest::Test
         "routine coordination use the `balanced`/high class",
         "routine coordination use Sol/xhigh by default"
       ),
+      "routine coordination defaults to strongest only in an HTML comment" =>
+        text.sub(
+          "routine coordination use the `balanced`/high class",
+          "routine coordination use Sol/xhigh by default"
+        ) + "\n<!-- #{ROUTINE_COORDINATOR_ROUTE_RULE} -->\n",
       "unverified Terra pair named as exact" => text.sub(
         "only when the active host has verified that pair",
         "whenever the coordinator requests it"
@@ -556,8 +593,12 @@ class ModelRoutingContractTest < Minitest::Test
         "Use Sol/xhigh for ordinary coordination or a pinned high-risk trigger"
       ),
       "mechanical activity treated as a Sol/xhigh trigger" => text.sub(
-        "topology alone do not justify Sol/xhigh",
-        "topology alone justify Sol/xhigh"
+        "mechanical work",
+        "high-risk mechanical work"
+      ),
+      "user-selected Sol/xhigh override silently rewritten" => text.sub(
+        "An explicitly user-selected Sol/xhigh override is honored and\nreported as an override, not silently rewritten",
+        "An explicitly user-selected Sol/xhigh override is silently\nrewritten"
       ),
       "promotion decision made before #398 receipts" => text.sub(
         "No ten-batch measured promotion decision may be made before #398\nexecution-provenance receipts exist",

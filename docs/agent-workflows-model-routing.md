@@ -66,8 +66,10 @@ otherwise preserve the requested preference and record host-observed values as
 
 Reserve Sol/xhigh for a pinned high-risk trigger, a bounded plan challenge,
 repeated credible failures, or an evidence-backed `MODEL_ESCALATION_REQUEST`.
-Polling, deterministic aggregation, receipt construction, unchanged-state
-checks, context pollution, and topology alone do not justify Sol/xhigh.
+Polling, mechanical work, deterministic aggregation, receipt construction,
+unchanged-state checks, context pollution, and topology alone do not justify
+Sol/xhigh. An explicitly user-selected Sol/xhigh override is honored and
+reported as an override, not silently rewritten.
 
 GPT-5.5 is recommended for an explicitly requested independent comparison or
 family-specific fallback. Selecting it elsewhere remains permitted but falls
