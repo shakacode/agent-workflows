@@ -900,6 +900,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "not applicable: unavailable",
       "not applicable: evidence missing",
       "not applicable: N/A",
+      "not applicable: n/a pending",
+      "not applicable: see n/a",
       "not applicable: unmeasured",
       "not applicable: not measured",
       "not_applicable: not available"
