@@ -983,8 +983,18 @@ backend schema.
 Use the resolved pr-batch `bin/hosted-qa-readiness` helper as the sole portable
 decision seam for `hosted_qa_gate`. Supply the repository, full trusted-base
 and current-head SHAs, and the file or stdin text containing closeout evidence.
-Supply `--review-target-url` with the exact PR or issue URL only for a
-maintainer waiver:
+The standard satisfied-evidence invocation is:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" \
+  --repo "${REPO_ROOT}" \
+  --base-sha "${TRUSTED_BASE_SHA}" \
+  --head-sha "${CURRENT_HEAD_SHA}" \
+  --evidence "${QA_EVIDENCE_PATH}"
+```
+
+Only when replaying a maintainer-waiver receipt, supply
+`--review-target-url` with the exact PR or issue URL:
 
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" \
@@ -1021,11 +1031,24 @@ candidate state, and no shell interpolation is used:
 <resolved interpreter> <trusted verifier> --deployment-id <id> --deployment-url <url> --expected-head-sha <head> --target <target>
 ```
 
+Repository-excluded interpreters and system tools are trusted host OS/toolchain
+state. The helper prevents candidate-repository control of those paths, but
+arbitrary same-user replacement of executables outside the repository is
+outside this helper's boundary.
+
 The verifier returns exactly one JSON object with `version: 1`, `verified:
 true`, and the identical `deployment_id`, `deployment_url`,
 `deployed_head_sha`, and `target`. Nonzero exit, timeout, extra or missing output
 keys, or any identity/head/target mismatch blocks. Deployment success by itself
 is not QA evidence.
+
+Version 1 exposes no ambient-environment or file-based credential channel to
+the verifier. It supports credential-free verification of public or otherwise
+immutable deployment identity. A private provider that requires credentials
+has no portable v1 route: it blocks until a separate credential seam is
+designed, security-reviewed, and explicitly approved. Do not improvise secret
+injection through environment variables, repository files, the temporary HOME,
+or verifier arguments.
 
 A satisfied receipt uses exactly one marker and exactly one passed row with
 nonempty evidence for each configured criterion, with no missing, duplicate,
@@ -1042,6 +1065,10 @@ target: <configured target ID>
 criterion: id=<configured-id> | status=passed | evidence=<nonempty evidence>
 -->
 ```
+
+Each `criterion:` row's `evidence` value is one scalar field. It must not
+contain an unescaped `|`; v1 defines no pipe-escaping form, so any `|` in that
+value is parsed as another field delimiter and the marker fails closed.
 
 Generic `qa-evidence v2` never proves a hosted deployment and cannot satisfy
 this gate. Keep it when the ordinary/manual QA contract also applies; the

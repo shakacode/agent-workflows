@@ -128,6 +128,12 @@ than `forbidden` or `maintainer` fail closed. The verifier and policy used for
 runtime readiness always come from the trusted base. The two-phase bootstrap
 and exact verifier receipt contracts are canonical in
 [`workflows/pr-processing.md`](../workflows/pr-processing.md).
+Version 1 exposes no ambient environment or file credential channel and
+supports public or otherwise credential-free immutable deployment verification;
+private-provider credentials require a separately designed and approved seam
+and currently block. Repository-excluded
+interpreters and system tools are trusted host OS/toolchain state; arbitrary
+same-user replacement outside the repository is out of scope for this helper.
 
 `autonomous_merge` is an optional closed mapping. When absent, the shared
 workflow uses its portable thresholds and common hard-risk categories. When
