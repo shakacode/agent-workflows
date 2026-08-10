@@ -365,6 +365,31 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_first_adoption_requires_a_supported_candidate_verifier_interpreter_without_executing_it
+    with_repo do |root|
+      execution_log = File.join(root, "candidate-verifier-executed")
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      base_sha = commit!(root, "base")
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(
+        root,
+        ".agents/bin/verify-hosted-deployment",
+        "#!/usr/bin/env -S ruby\nFile.write(#{execution_log.dump}, 'executed')\n",
+        executable: true
+      )
+      head_sha = commit!(root, "bootstrap with unsupported verifier interpreter")
+
+      result, status = run_readiness(root, base_sha:, head_sha:)
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_equal [
+        "candidate hosted QA deployment verifier has an unsupported shebang"
+      ], result.fetch("blockers")
+      refute_path_exists execution_log
+    end
+  end
+
   def test_first_adoption_does_not_treat_managed_bootstrap_paths_as_broad_runtime_changes
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")

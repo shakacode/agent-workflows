@@ -70,13 +70,22 @@ module HostedQaReadiness
           bootstrap_blockers << "hosted QA policy bootstrap must add or update its declared verifier: " \
                                 "#{parsed_policy.fetch('deployment_verifier')}"
         end
-        _candidate_verifier_blob, candidate_verifier_error = executable_blob_at(
+        candidate_verifier_label = "candidate hosted QA deployment verifier"
+        candidate_verifier_blob, candidate_verifier_error = executable_blob_at(
           repo,
           resolved_head,
           parsed_policy.fetch("deployment_verifier"),
-          label: "candidate hosted QA deployment verifier"
+          label: candidate_verifier_label
         )
         bootstrap_blockers << candidate_verifier_error if candidate_verifier_error
+        unless candidate_verifier_error
+          _candidate_interpreter, candidate_interpreter_error = trusted_verifier_interpreter(
+            repo,
+            candidate_verifier_blob,
+            label: candidate_verifier_label
+          )
+          bootstrap_blockers << candidate_interpreter_error if candidate_interpreter_error
+        end
         unless runtime_paths.empty?
           bootstrap_blockers << "hosted QA policy bootstrap is mixed with configured runtime changes: #{runtime_paths.join(', ')}"
         end
@@ -348,22 +357,22 @@ module HostedQaReadiness
     end
   end
 
-  def trusted_verifier_interpreter(repo, blob)
+  def trusted_verifier_interpreter(repo, blob, label: "trusted-base deployment verifier")
     shebang = blob.lines.first
     unless shebang&.start_with?("#!")
-      return [nil, "trusted-base deployment verifier must have a supported explicit shebang"]
+      return [nil, "#{label} must have a supported explicit shebang"]
     end
 
     match = shebang.match(%r{\A#!(?<interpreter>/\S+?)(?:[ \t]+(?<argument>\S+))?\r?\n?\z})
-    return [nil, "trusted-base deployment verifier has an unsupported shebang"] unless match
+    return [nil, "#{label} has an unsupported shebang"] unless match
 
     requested_interpreter = match[:interpreter]
     argument = match[:argument]
     unless requested_interpreter == ENV_INTERPRETER
-      return [nil, "trusted-base deployment verifier absolute shebang must not include arguments"] if argument
+      return [nil, "#{label} absolute shebang must not include arguments"] if argument
 
       if path_within_repository?(repo, requested_interpreter)
-        return [nil, "trusted-base deployment verifier interpreter must resolve outside the candidate repository"]
+        return [nil, "#{label} interpreter must resolve outside the candidate repository"]
       end
 
       interpreter, resolution_error = resolve_interpreter(repo, requested_interpreter)
@@ -377,16 +386,16 @@ module HostedQaReadiness
                else
                  "is unavailable: #{requested_interpreter}"
                end
-      return [nil, "trusted-base deployment verifier interpreter #{detail}"]
+      return [nil, "#{label} interpreter #{detail}"]
     end
     unless argument&.match?(ENV_PROGRAM)
-      return [nil, "trusted-base deployment verifier /usr/bin/env shebang must name one fixed program"]
+      return [nil, "#{label} /usr/bin/env shebang must name one fixed program"]
     end
 
-    resolve_env_interpreter(repo, argument)
+    resolve_env_interpreter(repo, argument, label:)
   end
 
-  def resolve_env_interpreter(repo, program)
+  def resolve_env_interpreter(repo, program, label:)
     candidates = if program == File.basename(RbConfig.ruby)
                    [RbConfig.ruby]
                  else
@@ -399,7 +408,7 @@ module HostedQaReadiness
       return [interpreter, nil] if interpreter
     end
 
-    [nil, "trusted-base deployment verifier interpreter is unavailable: #{program}"]
+    [nil, "#{label} interpreter is unavailable: #{program}"]
   end
 
   def resolve_interpreter(repo, path)
