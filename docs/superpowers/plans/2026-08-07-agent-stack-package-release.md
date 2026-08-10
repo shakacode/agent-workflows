@@ -1077,14 +1077,20 @@ service digest, and authorization-file SHA-256 may launch publication.
 
 Dispatch the release workflow with those four exact authorization selectors.
 After the workflow reports success, independently query RubyGems, install the
-public gem, run each executable, verify tag/release SHA, and confirm the
-source-pack installer still uses its own pinned library bytes. For a first
-RubyGems publication under this name, execute and read back the global
-`AW-RELEASE-GRANTS-V1`, verify its post-grant release receipt binds the exact
-provisional publication-operation receipt, then run
-`AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`. Treat the
-release as `PUBLISHED_CLOSEOUT_PENDING` until the exact evidence PR is merged
-and its trusted-base finalizer reports `RELEASE_COMPLETE`.
+public gem, run each executable, verify the protected tag's exact target SHA,
+and confirm the source-pack installer still uses its own pinned library bytes.
+For a first RubyGems publication under this name, execute and read back the
+global `AW-RELEASE-GRANTS-V1` and verify its post-grant release receipt binds the
+exact provisional publication-operation receipt. Then create the GitHub Release
+explicitly from that already verified tag and commit, attach the checksum
+manifest and versioned changelog notes, and read back its numeric release ID,
+tag, target commit, attachment digests, and release-metadata digest. A failed or
+ambiguous release creation is reconciled against live GitHub state before any
+retry; neither a tag alone nor a locally prepared release body satisfies this
+gate. Only after that read-back passes, run `AW-RELEASE-RUBYGEMS-CLOSEOUT-V1`
+with the exact GitHub Release record. Treat the release as
+`PUBLISHED_CLOSEOUT_PENDING` until the exact evidence PR is merged and its
+trusted-base finalizer reports `RELEASE_COMPLETE`.
 
 ### Task 4: Prepare and release npm `agent-coordination-dashboard` 0.1.0
 
