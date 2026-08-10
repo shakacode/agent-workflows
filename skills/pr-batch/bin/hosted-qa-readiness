@@ -197,11 +197,12 @@ module HostedQaReadiness
           ["--review-target-url must identify the exact GitHub pull request or issue for a maintainer waiver"]
         ).merge("hosted_qa_evidence" => hosted)
       end
-      waiver = CompletedBatchPublicationPreflight.canonical_waiver(
+      waiver = CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
         { "url" => hosted.dig("fields", "maintainer_waiver") },
         review_target,
         evidence,
         head_sha: resolved_head,
+        hosted_target: parsed_policy.fetch("target"),
         verifier: waiver_verifier
       )
       unless waiver

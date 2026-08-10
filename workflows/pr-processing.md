@@ -1267,13 +1267,24 @@ maintainer_waiver: <exact same-target #issuecomment-ID URL>
 ```
 
 `waived` blocks when trusted-base `waiver_mode` is `forbidden`. With
-`maintainer`, the helper delegates to the existing authenticated exact-head
-`qa-maintainer-waiver v1` machinery: it fetches the comment and author
-permission through authenticated `gh api`, binds the same target and head,
-requires a human trusted association with write permission, and snapshots the
-comment identity, body digest, author, and timestamps. No receipt text,
-application-level risk acceptance, or hosted-CI waiver substitutes for that
-authentication.
+`maintainer`, the linked comment must contain this distinct closed marker:
+
+```text
+<!-- hosted-qa-maintainer-waiver v1
+target: <exact pull request or issue URL>
+head_sha: <full current head SHA>
+hosted_target: <configured hosted QA target ID>
+decision: waived
+-->
+```
+
+The helper fetches the comment and author permission through authenticated
+`gh api`, binds the exact pull request or issue, current head, and configured
+hosted QA target, requires a human trusted association with write permission,
+and snapshots the comment identity, body digest, author, and timestamps. A
+generic `qa-maintainer-waiver v1` marker cannot satisfy a hosted QA waiver,
+even on the same pull request and head. No receipt text, application-level risk
+acceptance, or hosted-CI waiver substitutes for that authentication.
 
 First adoption is deliberately two-phase. When trusted base omits the key or
 sets `n/a`, a head mapping cannot govern its own runtime changes. The helper

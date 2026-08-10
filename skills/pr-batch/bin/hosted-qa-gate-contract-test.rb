@@ -36,7 +36,9 @@ class HostedQaGateContractTest < Minitest::Test
     assert_includes workflow, "Generic `qa-evidence v2` never proves a hosted deployment"
     assert_includes workflow, "hosted-qa-readiness"
     assert_includes workflow, "BOOTSTRAP_ALLOWED"
+    assert_includes workflow, "hosted-qa-maintainer-waiver v1"
     assert_includes workflow, "qa-maintainer-waiver v1"
+    assert_includes workflow, "cannot satisfy a hosted QA waiver"
   end
 
   def test_canonical_workflow_requires_pre_execution_runtime_trust_and_criteria_authentication

@@ -30,6 +30,8 @@ module CompletedBatchPublicationPreflight
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
   TRUSTED_HUMAN_TYPES = %w[User].freeze
   WRITE_PERMISSIONS = %w[write maintain admin].freeze
+  QA_WAIVER_MARKER = "qa-maintainer-waiver v1"
+  HOSTED_QA_WAIVER_MARKER = "hosted-qa-maintainer-waiver v1"
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
   RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned superseded].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
@@ -703,7 +705,15 @@ module CompletedBatchPublicationPreflight
     { "url" => value.fetch("url"), "rationale" => rationale, "target" => evidence_target }
   end
 
-  def canonical_waiver(value, target, evidence, head_sha:, verifier:)
+  def canonical_waiver(
+    value,
+    target,
+    evidence,
+    head_sha:,
+    verifier:,
+    marker_name: QA_WAIVER_MARKER,
+    marker_bindings: {}
+  )
     return unless value.is_a?(Hash)
     return unless value.keys == ["url"]
     return unless verifier.respond_to?(:call)
@@ -716,9 +726,21 @@ module CompletedBatchPublicationPreflight
       repo: target.fetch("repo"),
       comment_id: reference.fetch("comment_id")
     )
-    verified_waiver_comment(comment, reference:, target:, head_sha:)
+    verified_waiver_comment(comment, reference:, target:, head_sha:, marker_name:, marker_bindings:)
   rescue KeyError, URI::InvalidURIError, ArgumentError
     nil
+  end
+
+  def canonical_hosted_qa_waiver(value, target, evidence, head_sha:, hosted_target:, verifier:)
+    canonical_waiver(
+      value,
+      target,
+      evidence,
+      head_sha:,
+      verifier:,
+      marker_name: HOSTED_QA_WAIVER_MARKER,
+      marker_bindings: { "hosted_target" => hosted_target }
+    )
   end
 
   def waiver_comment_reference(value, target)
@@ -743,7 +765,14 @@ module CompletedBatchPublicationPreflight
     nil
   end
 
-  def verified_waiver_comment(comment, reference:, target:, head_sha:)
+  def verified_waiver_comment(
+    comment,
+    reference:,
+    target:,
+    head_sha:,
+    marker_name: QA_WAIVER_MARKER,
+    marker_bindings: {}
+  )
     return unless comment.is_a?(Hash)
     return unless Integer(comment["id"], exception: false) == reference.fetch("comment_id")
     return unless comment["html_url"] == reference.fetch("url")
@@ -759,13 +788,14 @@ module CompletedBatchPublicationPreflight
     body = comment["body"]
     return unless body.is_a?(String) && !body.empty?
 
-    fields = waiver_marker_fields(body)
+    fields = waiver_marker_fields(body, marker_name:, marker_bindings:)
     return unless fields
     return unless fields.fetch("target") == target_base_url(target)
     return unless fields.fetch("head_sha").casecmp?(head_sha)
     return unless fields.fetch("decision") == "waived"
+    return unless marker_bindings.all? { |key, value| fields.fetch(key) == value }
 
-    {
+    canonical = {
       "url" => reference.fetch("url"),
       "comment_id" => reference.fetch("comment_id"),
       "author" => author,
@@ -778,26 +808,29 @@ module CompletedBatchPublicationPreflight
       "decision" => "waived",
       "verification_source" => "authenticated gh api"
     }
+    canonical.merge(marker_bindings)
   rescue KeyError, NoMethodError, TypeError
     nil
   end
 
-  def waiver_marker_fields(body)
-    return unless body.scan("<!-- qa-maintainer-waiver v1").length == 1
+  def waiver_marker_fields(body, marker_name: QA_WAIVER_MARKER, marker_bindings: {})
+    return unless body.scan("<!-- #{marker_name}").length == 1
 
-    matches = body.scan(/<!-- qa-maintainer-waiver v1\n(.*?)\n-->/m)
+    matches = body.scan(/<!-- #{Regexp.escape(marker_name)}\n(.*?)\n-->/m)
     return unless matches.one?
 
     lines = matches.first.fetch(0).lines(chomp: true)
     return if lines.empty? || lines.any? { |line| line.include?("<!--") || line.include?("-->") }
 
+    expected_fields = %w[target head_sha decision] + marker_bindings.keys
+    field_pattern = Regexp.union(expected_fields)
     fields = lines.each_with_object({}) do |line, parsed|
-      match = line.match(/\A(target|head_sha|decision): (.+)\z/)
+      match = line.match(/\A(#{field_pattern}): (.+)\z/)
       break unless match && !parsed.key?(match[1])
 
       parsed[match[1]] = match[2]
     end
-    fields if fields&.keys&.sort == %w[decision head_sha target]
+    fields if fields&.keys&.sort == expected_fields.sort
   end
 
   def issue_api_url_matches_target?(value, target)

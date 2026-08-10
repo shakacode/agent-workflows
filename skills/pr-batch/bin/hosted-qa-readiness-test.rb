@@ -1209,7 +1209,7 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
-  def test_maintainer_waiver_uses_the_existing_authenticated_exact_head_machinery
+  def test_maintainer_waiver_accepts_an_authenticated_hosted_marker_for_the_exact_policy_target
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", hosted_policy(waiver_mode: "maintainer"))
       write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/env ruby\n", executable: true)
@@ -1220,9 +1220,10 @@ class HostedQaReadinessTest < Minitest::Test
       review_target_url = "https://github.com/example/repo/pull/123"
       waiver_url = "#{review_target_url}#issuecomment-456"
       waiver_marker = <<~MARKDOWN.chomp
-        <!-- qa-maintainer-waiver v1
+        <!-- hosted-qa-maintainer-waiver v1
         target: #{review_target_url}
         head_sha: #{head_sha}
+        hosted_target: production
         decision: waived
         -->
       MARKDOWN
@@ -1256,6 +1257,48 @@ class HostedQaReadinessTest < Minitest::Test
       assert_equal [["github.com", "example/repo", 456]], verifier_calls
       assert_equal "authenticated gh api", result.dig("maintainer_waiver", "verification_source")
       assert_equal head_sha, result.dig("maintainer_waiver", "head_sha")
+      assert_equal "production", result.dig("maintainer_waiver", "hosted_target")
+
+      authenticated_comment["body"] = <<~MARKDOWN.chomp
+        <!-- qa-maintainer-waiver v1
+        target: #{review_target_url}
+        head_sha: #{head_sha}
+        decision: waived
+        -->
+      MARKDOWN
+      generic_result = HostedQaReadiness.assess(
+        repo: root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_waiver_evidence(head_sha:, waiver_url:),
+        review_target_url:,
+        waiver_verifier:
+      )
+
+      refute generic_result.fetch("eligible"), generic_result
+      assert_equal "BLOCKED", generic_result.fetch("verdict")
+      assert_includes generic_result.fetch("blockers"),
+                      "maintainer hosted QA waiver is not authenticated and replayable for the exact current head"
+
+      [
+        waiver_marker.sub("hosted_target: production\n", "hosted_target: staging\n"),
+        waiver_marker.sub("hosted_target: production\n", "")
+      ].each do |invalid_marker|
+        authenticated_comment["body"] = invalid_marker
+        invalid_result = HostedQaReadiness.assess(
+          repo: root,
+          base_sha:,
+          head_sha:,
+          evidence: hosted_waiver_evidence(head_sha:, waiver_url:),
+          review_target_url:,
+          waiver_verifier:
+        )
+
+        refute invalid_result.fetch("eligible"), invalid_result
+        assert_equal "BLOCKED", invalid_result.fetch("verdict")
+        assert_includes invalid_result.fetch("blockers"),
+                        "maintainer hosted QA waiver is not authenticated and replayable for the exact current head"
+      end
     end
   end
 
