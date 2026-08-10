@@ -49,6 +49,7 @@ effort token on the selected runtime before launch:
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
 - Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
 Sol/xhigh is reserved for the listed exceptions; it is not the routine

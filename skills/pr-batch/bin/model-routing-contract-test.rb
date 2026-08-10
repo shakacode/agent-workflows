@@ -110,18 +110,11 @@ ROUTE_AUTHORITY_ENFORCEMENT_PATTERNS = {
 }.freeze
 
 CODEX_RECOMMENDATIONS = [
-  "Multi-lane coordinator: Sol/xhigh",
-  "Simple, positively classified worker: Terra/high",
-  "Unknown or uncertain worker: Sol/high",
-  "High-risk or escalated work: Sol/xhigh",
-  "Independent adversarial QA: Sol/xhigh",
-  "Routine deterministic QA: Sol/high"
-].freeze
-GUIDE_CODEX_RECOMMENDATIONS = [
   "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
   "Simple, positively classified worker: Terra/high",
   "Unknown or uncertain worker: Sol/high",
   "Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`",
+  "Independent adversarial QA: Sol/xhigh",
   "Routine deterministic QA: Sol/high"
 ].freeze
 
@@ -178,6 +171,8 @@ ROUTINE_MULTI_LANE_COORDINATOR_ROUTE_RULE =
   "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)"
 SOL_XHIGH_EXCEPTION_ROUTE_RULE =
   "Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`"
+AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE =
+  "authorized fallback tuple with recorded authority"
 SOL_XHIGH_RESERVATION_RULE =
   "Reserve Sol/xhigh for a pinned high-risk trigger, a bounded plan challenge, repeated credible failures, or an evidence-backed `MODEL_ESCALATION_REQUEST`."
 SOL_XHIGH_NONTRIGGERS_RULE =
@@ -252,6 +247,8 @@ end
 
 def assert_aw_d_route_replay(test, text, label)
   dispositions = route_dispositions(text)
+  test.assert_includes normalized(text), AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE,
+                       "#{label}: authorized fallback must retain its recorded-authority requirement"
   FAIL_CLOSED_ROUTE_CASES.each do |case_id|
     test.assert_equal "MODEL_ROUTE_MISMATCH", dispositions[case_id],
                       "#{label}: #{case_id} must stay fail-closed"
@@ -272,6 +269,14 @@ def assert_aw_d_route_replay(test, text, label)
     test.assert_includes FAIL_CLOSED_ROUTE_CASES, row.fetch(:case_id),
                          "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} replays a non-satisfied outcome, so #{row.fetch(:case_id)} must be a fail-closed case"
   end
+end
+
+def assert_recommended_profiles(test, text, label)
+  guide = normalized(text)
+  (CODEX_RECOMMENDATIONS + CLAUDE_RECOMMENDATIONS).each do |recommendation|
+    test.assert_includes guide, recommendation, "#{label} is missing #{recommendation}"
+  end
+  test.assert_includes guide, "advisory", label
 end
 
 def assert_constrained_routine_routing(test, text, label)
@@ -457,12 +462,34 @@ class ModelRoutingContractTest < Minitest::Test
     ]
 
     paths.each do |path|
-      text = normalized(read_repo_file(path))
-      codex_recommendations = path == MODEL_ROUTING_GUIDE_PATH ? GUIDE_CODEX_RECOMMENDATIONS : CODEX_RECOMMENDATIONS
-      (codex_recommendations + CLAUDE_RECOMMENDATIONS).each do |recommendation|
-        assert_includes text, recommendation, "#{path} is missing #{recommendation}"
+      assert_recommended_profiles(self, read_repo_file(path), path)
+    end
+  end
+
+  def test_profile_surfaces_reject_the_former_sol_xhigh_coordinator_default
+    paths = %w[
+      docs/agent-workflows-model-routing.md
+      docs/pr-batch-skills.md
+      skills/plan-pr-batch/SKILL.md
+      skills/post-merge-audit/SKILL.md
+      skills/pr-batch/SKILL.md
+      skills/triage/SKILL.md
+      workflows/post-merge-audit.md
+      workflows/pr-processing.md
+    ]
+
+    paths.each do |path|
+      text = read_repo_file(path)
+      assert_recommended_profiles(self, text, path)
+      mutant = text.sub(
+        "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
+        "Multi-lane coordinator: Sol/xhigh"
+      )
+
+      refute_equal text, mutant, "#{path} former coordinator-default mutant did not change the profile"
+      assert_raises(Minitest::Assertion, "#{path} accepted the former Sol/xhigh coordinator default") do
+        assert_recommended_profiles(self, mutant, "#{path} former coordinator-default mutant")
       end
-      assert_includes text, "advisory", path
     end
   end
 
@@ -550,6 +577,8 @@ class ModelRoutingContractTest < Minitest::Test
         mutate_route_disposition(text, "unbound-exact-route", "proceed"),
       "authorized fallback stripped of its recorded-authority requirement" =>
         mutate_route_disposition(text, "authorized-fallback", "proceed"),
+      "authorized fallback tuple loses recorded authority" =>
+        text.sub(AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE, "authorized fallback tuple"),
       "bound exact match downgraded to a mismatch" =>
         mutate_route_disposition(text, "bound-exact-match", "MODEL_ROUTE_MISMATCH")
     }

@@ -15,10 +15,10 @@ group counts, inbox names, or model or tool names as portable defaults.
 Capacity and routing come from the selected backend and operator config. When
 the verified target is Codex GPT-5.6, use this informative recommended binding:
 
-- Multi-lane coordinator: Sol/xhigh
+- Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
-- High-risk or escalated work: Sol/xhigh
+- Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
