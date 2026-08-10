@@ -53,6 +53,8 @@ helper is still missing.
 For a verified Codex GPT-5.6 host, use this recommended exact profile while
 keeping provider-neutral classes for other runtimes:
 
+- Routine single-target planner: Terra/high
+- Ambiguous or higher-risk single-target planner: Sol/high
 - Multi-lane coordinator: Sol/xhigh
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -63,6 +65,8 @@ keeping provider-neutral classes for other runtimes:
 For a verified Claude host, use this provisional recommended exact profile
 (`claude-profile v0`):
 
+- Routine single-target planner: Sonnet 5/high
+- Ambiguous or higher-risk single-target planner: Opus 4.8/high
 - Multi-lane coordinator: Opus 4.8/xhigh
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 4.8/xhigh
@@ -82,6 +86,24 @@ Plan a PR batch
 1. Intake
    - Before reading GitHub targets or shaping the batch, record coordinator,
      worker, and checker model/effort preferences. Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+     A one-issue or one-PR batch is single-target even when its coordinator
+     later delegates bounded implementation, review, or QA lanes. Prefer the
+     routine single-target planner route when the target has explicit acceptance
+     criteria, bounded scope, no unresolved design or dependency question, no
+     security/release/high-consequence boundary, and strong verification. Use
+     the ambiguous or higher-risk single-target route when any of those facts is
+     missing or disputed. Reserve the multi-lane coordinator route for planning
+     multiple interacting targets or retained cross-batch orchestration; do not
+     select it merely because one target will use subagents.
+     When the host exposes the current planner route and it materially differs
+     from this recommendation, include one concise non-blocking advisory in the
+     Batch Plan: current route, recommended route, and the risk or cost reason.
+     A materially lower route is worth flagging when ambiguity, consequence, or
+     weak verification needs more planning capability; a strongest-route planner
+     is worth flagging as potentially unnecessary only after the target is
+     affirmatively classified as routine. Do not advise from `UNKNOWN`, repeat
+     the advisory, stop planning, ask for a restart, or treat the mismatch as a
+     readiness gate. Continue on the current route or closest available route.
      Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
      Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
      Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
@@ -528,7 +550,8 @@ backend must say so in the declaration.
 - Dependencies and sequencing:
 - Subagent split:
 - Coordinator model/effort preference: exact pair or dispatch-resolved class,
-  effort, rationale, and availability evidence.
+  effort, rationale, availability evidence, and any one-time non-blocking route
+  advisory (or `none`).
 - Worker model/effort preferences: initial and escalation pairs or classes,
   lane ids, escalation threshold and maximum, and availability evidence;
   unavailable preferences remain advisory and never alone block readiness.

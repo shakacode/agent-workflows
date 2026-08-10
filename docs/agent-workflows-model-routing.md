@@ -46,11 +46,23 @@ expose these models. `Sol` means GPT-5.6 Sol, `Terra` means GPT-5.6 Terra, and
 effort token on the selected runtime before launch:
 
 - Multi-lane coordinator: Sol/xhigh
+- Routine single-target planner: Terra/high
+- Ambiguous or higher-risk single-target planner: Sol/high
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
 - High-risk or escalated work: Sol/xhigh
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
+
+One issue or PR remains single-target even when its coordinator delegates
+bounded implementation, review, or QA lanes. Use Terra/high to plan a routine
+single target only after positively establishing explicit acceptance criteria,
+bounded scope, no unresolved design or dependency question, no
+security/release/high-consequence boundary, and strong verification. Use
+Sol/high when one of those planning facts is missing or disputed. Reserve
+Sol/xhigh for multiple interacting targets, retained cross-batch orchestration,
+or a present or disputed high-risk boundary; subagents alone do not make a plan
+multi-lane for routing purposes.
 
 The Sol/xhigh choices are deliberate conservative baselines for multi-lane
 coordination and independent adversarial QA, where shaping or challenging the
@@ -105,6 +117,8 @@ the host-observed effort when exposed and otherwise use `UNKNOWN` without
 blocking launch:
 
 - Multi-lane coordinator: Opus 4.8/xhigh
+- Routine single-target planner: Sonnet 5/high
+- Ambiguous or higher-risk single-target planner: Opus 4.8/high
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 4.8/xhigh
 - High-risk or escalated work: Opus 4.8/xhigh

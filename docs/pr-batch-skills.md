@@ -19,6 +19,8 @@ for cancellation, see
 
 For a verified Codex GPT-5.6 host, the recommended exact routing profile is:
 
+- Routine single-target planner: Terra/high
+- Ambiguous or higher-risk single-target planner: Sol/high
 - Multi-lane coordinator: Sol/xhigh
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -29,6 +31,8 @@ For a verified Codex GPT-5.6 host, the recommended exact routing profile is:
 For a verified Claude host, the provisional recommended exact routing profile
 (`claude-profile v0`) is:
 
+- Routine single-target planner: Sonnet 5/high
+- Ambiguous or higher-risk single-target planner: Opus 4.8/high
 - Multi-lane coordinator: Opus 4.8/xhigh
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 4.8/xhigh
@@ -168,6 +172,17 @@ omit the queue summary and note that queue state is unavailable.
    When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
    Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
    Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
+   Treat one issue or PR as a single-target plan even when `$pr-batch` will use
+   bounded implementation, review, or QA subagents. On Codex, default routine
+   single-target `$plan-pr-batch` work to Terra/high, move to Sol/high for
+   ambiguity or higher risk, and reserve Sol/xhigh for interacting targets,
+   retained cross-batch orchestration, or a present/disputed high-risk boundary.
+   A straightforward exact target may go directly to `$pr-batch` when no
+   selection, shaping, dependency, or planning decision remains.
+   If the host exposes a materially different current planner route,
+   `$plan-pr-batch` reports one concise advisory with the current and recommended
+   routes plus its risk or cost rationale. The advisory never blocks, requests a
+   restart, or repeats; `UNKNOWN` route observations produce no advisory.
    Before worker launch, resolve `PR_BATCH_SKILL_DIR` through the explicit
    env-var / loaded-skill / repo-local pinned-copy chain, then use
    `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`: a
