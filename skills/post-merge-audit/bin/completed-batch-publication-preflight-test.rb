@@ -453,9 +453,14 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         FileUtils.chmod(0o755, path)
       end
 
-      ambient = %w[PATH GH_TOKEN GIT_SSH_COMMAND GIT_ASKPASS RUBYOPT RUBYLIB GH_CONFIG_DIR].to_h do |name|
+      ambient = %w[PATH GIT_SSH_COMMAND GIT_ASKPASS RUBYOPT RUBYLIB GH_CONFIG_DIR].to_h do |name|
         [name, ENV[name]]
       end
+      credential_environment = CompletedBatchPublicationPreflight::GH_CREDENTIAL_ENV_KEYS.to_h do |name|
+        [name, ENV[name]]
+      end
+      ENV["GITHUB_TOKEN"] = "ambient-non-gh-token"
+      CompletedBatchPublicationPreflight::GH_CREDENTIAL_ENV_KEYS.each { |name| ENV.delete(name) }
       ENV.update(
         "PATH" => "#{candidate_bin}:#{ENV.fetch('PATH')}",
         "GH_TOKEN" => "approved-token",
@@ -524,6 +529,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       refute observed.fetch(:chdir).start_with?("#{File.realpath(repository)}#{File::SEPARATOR}")
     ensure
       ambient&.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
+      credential_environment&.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
       if original_capture
         CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)
       end
