@@ -45,18 +45,15 @@ expose these models. `Sol` means GPT-5.6 Sol, `Terra` means GPT-5.6 Terra, and
 `xhigh` is the extra-high reasoning-effort tier above `high`; verify that exact
 effort token on the selected runtime before launch:
 
-- Multi-lane coordinator: Sol/xhigh
+- Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
-- High-risk or escalated work: Sol/xhigh
-- Independent adversarial QA: Sol/xhigh
+- Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
 - Routine deterministic QA: Sol/high
 
-The Sol/xhigh choices are deliberate conservative baselines for multi-lane
-coordination and independent adversarial QA, where shaping or challenging the
-plan is the high-leverage work. They do not imply maximum effort for every
-worker or for routine deterministic QA; task-specific routing still follows
-ambiguity, consequence, and verification strength.
+Sol/xhigh is reserved for the listed exceptions; it is not the routine
+multi-lane coordinator default. Task-specific routing still follows ambiguity,
+consequence, and verification strength.
 
 Routine bounded planning, dispatch bookkeeping, status reconciliation, evidence
 collation, and routine coordination use the `balanced`/high class. Name the
@@ -79,9 +76,9 @@ Prefer Sol at the stated effort for the initiating parent. If the host exposes
 the running model or effort, record it as observed metadata; otherwise keep the
 field `UNKNOWN` and continue with the same safeguards.
 
-The preferred independent adversarial checker route is a fresh Sol/xhigh
-instance, distinct from every maker. The preferred routine deterministic QA
-route is Sol/high. Terra may gather mechanical evidence or serve as the
+The preferred independent adversarial checker is a fresh instance distinct from
+every maker. The preferred routine deterministic QA route is Sol/high. Terra
+may gather mechanical evidence or serve as the
 independent checker; either route's verdict qualifies only when the checker
 role, independence, scope, current-head evidence, and evidence quality qualify.
 
@@ -93,9 +90,9 @@ change, and easy failure detection and rollback. When lane risk or bounded
 delegation requires an execution envelope, the coordinator role supplies the
 exact goal and non-goals, owned paths, supported diagnosis, invariants,
 acceptance criteria, required verification, and stop conditions regardless of
-the selected model. The recommended route is Sol/xhigh for a present or disputed
-high-risk boundary and Sol/high for other unknown or uncertainty; if unavailable,
-use the closest available route or runtime default and record it honestly. Every
+the selected model. A pinned high-risk boundary uses Sol/xhigh; other unknown or
+uncertainty uses Sol/high. If unavailable, use the closest available route or
+runtime default and record it honestly. Every
 worker stops without editing further and returns to the coordinator when evidence
 contradicts the diagnosis, scope or blast radius grows, a high-risk boundary
 appears, verification weakens, or consequential judgment is required. Sol/xhigh

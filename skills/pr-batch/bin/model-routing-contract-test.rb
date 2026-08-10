@@ -117,6 +117,13 @@ CODEX_RECOMMENDATIONS = [
   "Independent adversarial QA: Sol/xhigh",
   "Routine deterministic QA: Sol/high"
 ].freeze
+GUIDE_CODEX_RECOMMENDATIONS = [
+  "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
+  "Simple, positively classified worker: Terra/high",
+  "Unknown or uncertain worker: Sol/high",
+  "Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`",
+  "Routine deterministic QA: Sol/high"
+].freeze
 
 CLAUDE_RECOMMENDATIONS = [
   "Multi-lane coordinator: Opus 4.8/xhigh",
@@ -149,8 +156,8 @@ AW_D_ROUTE_REPLAY = [
   { pr: 148, role: "implementation", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" },
   { pr: 148, role: "QA", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" }
 ].freeze
-# Pins the audited record itself, so the replay cannot be emptied or quietly
-# rewritten to claim #148 ran its requested route. Sorted so row order is free.
+# Internal consistency and mutation guard for the audited replay fixture; it is
+# not an independent tamper-proof immutable oracle. Sorted so row order is free.
 AW_D_ROUTE_REPLAY_FINGERPRINT = [
   "146|implementation|bound-exact-match|proceed",
   "146|review and QA|bound-exact-match|proceed",
@@ -167,6 +174,10 @@ EXPECTED_ROUTE_DISPOSITIONS = {
 }.freeze
 ROUTINE_COORDINATOR_ROUTE_RULE =
   "Routine bounded planning, dispatch bookkeeping, status reconciliation, evidence collation, and routine coordination use the `balanced`/high class. Name the exact `Terra/high` pair only when the active host has verified that pair; otherwise preserve the requested preference and record host-observed values as `UNKNOWN` when unavailable."
+ROUTINE_MULTI_LANE_COORDINATOR_ROUTE_RULE =
+  "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)"
+SOL_XHIGH_EXCEPTION_ROUTE_RULE =
+  "Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`"
 SOL_XHIGH_RESERVATION_RULE =
   "Reserve Sol/xhigh for a pinned high-risk trigger, a bounded plan challenge, repeated credible failures, or an evidence-backed `MODEL_ESCALATION_REQUEST`."
 SOL_XHIGH_NONTRIGGERS_RULE =
@@ -250,7 +261,7 @@ def assert_aw_d_route_replay(test, text, label)
                       "#{label}: #{case_id} must dispose as #{expected}"
   end
   test.assert_equal AW_D_ROUTE_REPLAY_FINGERPRINT, aw_d_replay_fingerprint,
-                    "#{label}: the AW D replay rows changed; the audited #146-#148 record is the regression this contract exists to hold"
+                    "#{label}: the internal AW D replay fixture changed; keep this consistency and mutation guard aligned with the audited record"
   AW_D_ROUTE_REPLAY.each do |row|
     expected = row.fetch(:disposition)
     actual = dispositions[row.fetch(:case_id)]
@@ -267,6 +278,8 @@ def assert_constrained_routine_routing(test, text, label)
   guide = normalized(strip_html_comments(text))
   [
     ROUTINE_COORDINATOR_ROUTE_RULE,
+    ROUTINE_MULTI_LANE_COORDINATOR_ROUTE_RULE,
+    SOL_XHIGH_EXCEPTION_ROUTE_RULE,
     SOL_XHIGH_RESERVATION_RULE,
     SOL_XHIGH_NONTRIGGERS_RULE,
     USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE,
@@ -274,6 +287,8 @@ def assert_constrained_routine_routing(test, text, label)
   ].each do |rule|
     test.assert_includes guide, rule, "#{label} is missing constrained-routing rule: #{rule}"
   end
+  test.refute_includes guide, "Multi-lane coordinator: Sol/xhigh",
+                       "#{label} must not present Sol/xhigh as the multi-lane coordinator default"
 end
 
 def extract_prompt(text, heading)
@@ -443,7 +458,8 @@ class ModelRoutingContractTest < Minitest::Test
 
     paths.each do |path|
       text = normalized(read_repo_file(path))
-      (CODEX_RECOMMENDATIONS + CLAUDE_RECOMMENDATIONS).each do |recommendation|
+      codex_recommendations = path == MODEL_ROUTING_GUIDE_PATH ? GUIDE_CODEX_RECOMMENDATIONS : CODEX_RECOMMENDATIONS
+      (codex_recommendations + CLAUDE_RECOMMENDATIONS).each do |recommendation|
         assert_includes text, recommendation, "#{path} is missing #{recommendation}"
       end
       assert_includes text, "advisory", path
@@ -578,6 +594,10 @@ class ModelRoutingContractTest < Minitest::Test
       "routine coordination defaults to strongest" => text.sub(
         "routine coordination use the `balanced`/high class",
         "routine coordination use Sol/xhigh by default"
+      ),
+      "routine multi-lane coordinator defaults to Sol/xhigh" => text.sub(
+        "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
+        "Multi-lane coordinator: Sol/xhigh"
       ),
       "routine coordination defaults to strongest only in an HTML comment" =>
         text.sub(
