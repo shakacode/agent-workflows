@@ -296,6 +296,46 @@ def assert_constrained_routine_routing(test, text, label)
                        "#{label} must not present Sol/xhigh as the multi-lane coordinator default"
 end
 
+def evidence_status_rows(text)
+  section = extract_markdown_section(text, "### Evidence Status")
+  lines = section.lines
+  header_index = lines.index { |line| line.strip == "| Scenario class | Risk | Recommended route | Samples | Evidence strength |" }
+  raise "missing Evidence Status table header" unless header_index
+
+  data_lines = lines[(header_index + 2)..].take_while { |line| line.start_with?("|") }
+  raise "missing Evidence Status scenario rows" if data_lines.empty?
+
+  data_lines.map do |line|
+    cells = line.strip.split("|", -1)[1...-1].map(&:strip)
+    raise "malformed Evidence Status scenario row: #{line.strip}" unless cells.length == 5
+
+    {
+      scenario: cells[0],
+      samples: cells[3],
+      evidence_strength: cells[4].delete("`")
+    }
+  end
+end
+
+def mutate_evidence_status_row(text, scenario, samples: nil, evidence_strength: nil)
+  row = text.each_line.find { |line| line.start_with?("| #{scenario} |") }
+  raise "missing Evidence Status scenario row for #{scenario}" unless row
+
+  cells = row.strip.split("|", -1)[1...-1].map(&:strip)
+  cells[3] = samples if samples
+  cells[4] = "`#{evidence_strength}`" if evidence_strength
+  text.sub(row, "| #{cells.join(' | ')} |\n")
+end
+
+def assert_evidence_status_table_unmeasured(test, text, label)
+  evidence_status_rows(text).each do |row|
+    test.assert_equal "0", row.fetch(:samples),
+                      "#{label}: #{row.fetch(:scenario)} must retain Samples: 0"
+    test.assert_equal "UNKNOWN", row.fetch(:evidence_strength),
+                      "#{label}: #{row.fetch(:scenario)} must retain Evidence strength: UNKNOWN"
+  end
+end
+
 def extract_prompt(text, heading)
   heading_index = text.index(heading)
   raise "missing #{heading}" unless heading_index
@@ -612,6 +652,27 @@ class ModelRoutingContractTest < Minitest::Test
       "Route adherence is itself an outcome measure"
     ].each do |phrase|
       assert_includes guide, phrase, "model-routing guide is missing evidence-status rule: #{phrase}"
+    end
+  end
+
+  def test_evidence_status_table_keeps_every_scenario_unmeasured
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_evidence_status_table_unmeasured(self, text, MODEL_ROUTING_GUIDE_PATH)
+
+    mutants = {
+      "nonzero scenario samples" => mutate_evidence_status_row(text, "Adversarial review", samples: "1"),
+      "known scenario evidence strength" => mutate_evidence_status_row(
+        text,
+        "Exact-head QA and replay",
+        evidence_strength: "MEASURED"
+      )
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal text, mutant, "#{mutation} mutant did not change the evidence-status table"
+      assert_raises(Minitest::Assertion, "evidence-status table accepted #{mutation}") do
+        assert_evidence_status_table_unmeasured(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
     end
   end
 
