@@ -8,6 +8,7 @@ require "timeout"
 require "minitest/autorun"
 
 SCRIPT = File.expand_path("closeout-evidence-replay", __dir__)
+load SCRIPT unless defined?(CloseoutEvidenceReplay)
 
 class CloseoutEvidenceReplayTest < Minitest::Test
   def run_replay(body, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
@@ -140,9 +141,31 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", data.fetch("overall_verdict")
   end
 
-  def test_hosted_v1_accepts_n_a_as_a_criterion_evidence_url_path_segment
+  def test_hosted_v1_rejects_multiple_conflicting_same_head_markers
+    conflicting_marker = hosted_v1_marker
+                         .sub("production-20260808-abc123", "production-20260808-other")
+                         .sub("production-20260808-abc123", "production-20260808-other")
+
+    hosted = run_replay(hosted_v1_marker + conflicting_marker).fetch("hosted_qa_evidence")
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert_equal 2, hosted.fetch("marker_count")
+    assert_includes hosted.fetch("missing"), "exactly one hosted-qa-evidence v1 marker is required"
+  end
+
+  def test_standalone_hosted_v1_replay_requires_one_marker
+    hosted = CloseoutEvidenceReplay.replay_hosted_qa_markers([])
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert_equal 0, hosted.fetch("marker_count")
+    assert_includes hosted.fetch("missing"), "exactly one hosted-qa-evidence v1 marker is required"
+  end
+
+  def test_hosted_v1_accepts_placeholder_words_as_criterion_evidence_url_path_segments
     evidence_urls = [
       "https://evidence.example.test/runs/n/a/sign-in-abc123",
+      "https://evidence.example.test/runs/unknown/sign-in-abc123",
+      "https://evidence.example.test/runs/tbd/sign-in-abc123",
       "https://evidence.example.test/run/artifact/sign-in-abc123"
     ]
 
@@ -155,13 +178,23 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
-  def test_hosted_v1_rejects_an_exact_n_a_criterion_evidence_field
-    body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", "n/a")
+  def test_hosted_v1_rejects_non_url_placeholders_and_malformed_evidence_urls
+    invalid_evidence = [
+      "n/a",
+      "unknown pending",
+      "TBD",
+      "proof unavailable",
+      "http://evidence.example.test/run/sign-in-abc123",
+      "https://bad host/run/sign-in-abc123"
+    ]
 
-    hosted = run_replay(body).fetch("hosted_qa_evidence")
+    invalid_evidence.each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
 
-    assert_equal "UNKNOWN", hosted.fetch("verdict")
-    assert_includes hosted.fetch("missing"), "criterion[0].evidence"
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
   end
 
   def test_generic_qa_evidence_alone_never_replays_as_hosted_qa
