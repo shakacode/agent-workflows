@@ -10,12 +10,14 @@ require "tempfile"
 require "tmpdir"
 require "yaml"
 require File.expand_path("../../../bin/agent_doctor/hosted_qa_policy", __dir__)
+require File.expand_path("../lib/hosted_qa_runtime_trust", __dir__)
 load File.expand_path("../../post-merge-audit/bin/closeout-evidence-replay", __dir__)
 load File.expand_path("../../post-merge-audit/bin/completed-batch-publication-preflight", __dir__)
 
 module HostedQaReadiness
   POLICY_PATH = ".agents/agent-workflow.yml"
   SHA_PATTERN = /\A[0-9a-f]{40}\z/i
+  HELPER_PROVENANCE_PATTERN = /\A(?:trusted-base:[0-9a-f]{40}|verified-installed-pack:[0-9a-f]{64})\z/
   ENV_INTERPRETER = "/usr/bin/env"
   ENV_PROGRAM = /\A[A-Za-z0-9][A-Za-z0-9_.+-]*\z/
   SYSTEM_TOOL_DIRS = %w[/opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin].freeze
@@ -212,10 +214,11 @@ module HostedQaReadiness
       observed_ids = hosted.fetch("criteria").map { |row| row.fetch("id") }
       missing_ids = configured_ids - observed_ids
       extra_ids = observed_ids - configured_ids
-      unless missing_ids.empty? && extra_ids.empty?
+      unless observed_ids == configured_ids
         details = []
         details << "missing #{missing_ids.join(', ')}" unless missing_ids.empty?
         details << "unexpected #{extra_ids.join(', ')}" unless extra_ids.empty?
+        details << "criterion order does not match trusted-base policy" if missing_ids.empty? && extra_ids.empty?
         return blocked_result(
           resolved_base,
           resolved_head,
@@ -227,7 +230,9 @@ module HostedQaReadiness
         repo:,
         base_sha: resolved_base,
         verifier_path: parsed_policy.fetch("deployment_verifier"),
-        fields: hosted.fetch("fields")
+        fields: hosted.fetch("fields"),
+        criterion_ids: configured_ids,
+        criteria: hosted.fetch("criteria")
       )
       if verification_error
         return blocked_result(
@@ -258,7 +263,7 @@ module HostedQaReadiness
     HostedQaPolicy.match?(policy, path)
   end
 
-  def verify_deployment(repo:, base_sha:, verifier_path:, fields:)
+  def verify_deployment(repo:, base_sha:, verifier_path:, fields:, criterion_ids:, criteria:)
     blob, error = trusted_executable_blob(repo, base_sha, verifier_path)
     return [nil, error] if error
 
@@ -271,6 +276,7 @@ module HostedQaReadiness
       "--expected-head-sha", fields.fetch("head_sha"),
       "--target", fields.fetch("target")
     ]
+    criterion_ids.each { |criterion_id| arguments.concat(["--criterion", criterion_id]) }
     stdout = stderr = nil
     status = nil
     with_safe_verifier_directory(repo) do |directory|
@@ -297,9 +303,18 @@ module HostedQaReadiness
     end
 
     payload = JSON.parse(stdout)
-    expected_keys = %w[deployed_head_sha deployment_id deployment_url target verified version]
+    unless payload.is_a?(Hash) && payload.key?("criteria")
+      return [nil, "trusted-base deployment verifier did not authenticate the exact configured acceptance criteria"]
+    end
+
+    expected_keys = %w[criteria deployed_head_sha deployment_id deployment_url target verified version]
     unless payload.is_a?(Hash) && payload.keys.all?(String) && payload.keys.sort == expected_keys
       return [nil, "trusted-base deployment verifier returned an invalid closed receipt"]
+    end
+
+    verified_criteria = payload.fetch("criteria")
+    unless valid_verified_criteria?(verified_criteria, criterion_ids) && verified_criteria == criteria
+      return [nil, "trusted-base deployment verifier did not authenticate the exact configured acceptance criteria"]
     end
 
     expected = {
@@ -308,7 +323,8 @@ module HostedQaReadiness
       "deployment_id" => fields.fetch("deployment_id"),
       "deployment_url" => fields.fetch("deployment_url"),
       "deployed_head_sha" => fields.fetch("head_sha"),
-      "target" => fields.fetch("target")
+      "target" => fields.fetch("target"),
+      "criteria" => verified_criteria
     }
     unless payload == expected
       return [nil, "trusted-base deployment verifier did not authenticate the exact deployment, head, and target"]
@@ -317,6 +333,19 @@ module HostedQaReadiness
     [payload.merge("verifier_source" => "trusted_base", "verifier_path" => verifier_path), nil]
   rescue JSON::ParserError, KeyError, SystemCallError, Timeout::Error => e
     [nil, "trusted-base deployment verifier could not be replayed: #{e.message.lines.first.to_s.strip}"]
+  end
+
+  def valid_verified_criteria?(criteria, criterion_ids)
+    return false unless criteria.is_a?(Array) && criteria.length == criterion_ids.length
+
+    criteria.each_with_index.all? do |row, index|
+      next false unless row.is_a?(Hash) && row.keys.all?(String) && row.keys.sort == %w[evidence id status]
+      next false unless row.fetch("id") == criterion_ids.fetch(index) && row.fetch("status") == "passed"
+
+      evidence = row.fetch("evidence")
+      evidence.is_a?(String) && !evidence.empty? && evidence == evidence.strip &&
+        !evidence.match?(/[|\r\n]/) && !evidence.include?("<!--") && !evidence.include?("-->")
+    end
   end
 
   def trusted_verifier_interpreter(repo, blob)
@@ -561,14 +590,28 @@ module HostedQaReadiness
     result
   end
 
+  def unknown_runtime_result(base_sha, head_sha, blockers)
+    {
+      "eligible" => false,
+      "verdict" => "UNKNOWN",
+      "policy_source" => "UNKNOWN",
+      "helper_provenance" => "UNKNOWN",
+      "helper_trust" => { "status" => "unverified", "manifest" => {} },
+      "base_sha" => base_sha,
+      "head_sha" => head_sha,
+      "blockers" => blockers.uniq
+    }
+  end
+
   def run(argv)
     options = {}
     parser = OptionParser.new do |opts|
-      opts.banner = "Usage: hosted-qa-readiness --repo PATH --base-sha SHA --head-sha SHA --evidence PATH|- [--review-target-url URL]"
+      opts.banner = "Usage: hosted-qa-readiness --repo PATH --base-sha SHA --head-sha SHA --evidence PATH|- --trusted-helper-provenance PROVENANCE [--review-target-url URL]"
       opts.on("--repo PATH") { |value| options[:repo] = value }
       opts.on("--base-sha SHA") { |value| options[:base_sha] = value }
       opts.on("--head-sha SHA") { |value| options[:head_sha] = value }
       opts.on("--evidence PATH") { |value| options[:evidence_path] = value }
+      opts.on("--trusted-helper-provenance PROVENANCE") { |value| options[:trusted_helper_provenance] = value }
       opts.on("--review-target-url URL") { |value| options[:review_target_url] = value }
       opts.on("-h", "--help") do
         puts opts
@@ -585,6 +628,34 @@ module HostedQaReadiness
       raise OptionParser::InvalidArgument, "--base-sha and --head-sha must be full 40-character hex SHAs"
     end
 
+    unless options[:trusted_helper_provenance]&.match?(HELPER_PROVENANCE_PATTERN)
+      puts JSON.pretty_generate(
+        unknown_runtime_result(
+          options.fetch(:base_sha).downcase,
+          options.fetch(:head_sha).downcase,
+          ["trusted hosted QA helper provenance is missing or invalid"]
+        )
+      )
+      return 1
+    end
+
+    runtime_trust = HostedQaRuntimeTrust.verify(
+      repo_root: options.fetch(:repo),
+      base_sha: options.fetch(:base_sha).downcase,
+      claim: options.fetch(:trusted_helper_provenance),
+      git_capture: method(:git_capture)
+    )
+    unless runtime_trust.accepted
+      puts JSON.pretty_generate(
+        unknown_runtime_result(
+          options.fetch(:base_sha).downcase,
+          options.fetch(:head_sha).downcase,
+          runtime_trust.errors
+        )
+      )
+      return 1
+    end
+
     evidence = options.fetch(:evidence_path) == "-" ? $stdin.read : File.read(options.fetch(:evidence_path), encoding: "UTF-8")
     result = assess(
       repo: options.fetch(:repo),
@@ -594,6 +665,11 @@ module HostedQaReadiness
       review_target_url: options[:review_target_url],
       waiver_verifier: method(:authenticated_waiver_comment)
     )
+    result["helper_provenance"] = runtime_trust.provenance
+    result["helper_trust"] = {
+      "status" => "mechanically-verified",
+      "manifest" => runtime_trust.manifest
+    }
     puts JSON.pretty_generate(result)
     result.fetch("eligible") ? 0 : 1
   rescue OptionParser::ParseError => e

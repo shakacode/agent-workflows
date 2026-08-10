@@ -144,6 +144,12 @@ module CloseoutEvidenceReplay
   end
 
   def marker_bodies(text, name)
+    if name == "hosted-qa-evidence v1"
+      return text.scan(
+        /<!--\s*#{Regexp.escape(name)}(?=\s|-->)\s*(.*?)^[ \t]*-->[ \t]*\r?$/m
+      ).map(&:first)
+    end
+
     text.scan(/<!--\s*#{Regexp.escape(name)}(?=\s|-->)\s*(.*?)-->/m).map(&:first)
   end
 
@@ -267,6 +273,10 @@ module CloseoutEvidenceReplay
       errors.concat(unknown_keys.map { |key| "criterion[#{criteria.length}].unknown key: #{key}" })
       errors << "criterion[#{criteria.length}] keys must be exactly evidence, id, status" unless
         row.keys.sort == %w[evidence id status]
+      evidence = row.fetch("evidence", "")
+      if evidence.include?("<!--") || evidence.include?("-->")
+        errors << "criterion[#{criteria.length}].evidence contains an HTML comment delimiter"
+      end
       criteria << row
     end
     [criteria, errors]

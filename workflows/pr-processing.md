@@ -980,28 +980,101 @@ backend schema.
 
 ### Hosted Runtime QA Gate
 
-Use the resolved pr-batch `bin/hosted-qa-readiness` helper as the sole portable
-decision seam for `hosted_qa_gate`. Supply the repository, full trusted-base
-and current-head SHAs, and the file or stdin text containing closeout evidence.
-The standard satisfied-evidence invocation is:
+Use `bin/hosted-qa-readiness` as the sole portable decision seam for
+`hosted_qa_gate`, but establish its complete runtime before executing it. Use a
+trusted-base materialization outside the evaluated repository, or a verified
+installed Agent Workflows pack whose expected digest was established
+independently of the PR. Never fall back to a helper or dependency from the
+repository head being evaluated.
+
+The hosted runtime closure is exactly the helper,
+`hosted_qa_runtime_trust.rb`, `hosted_qa_policy.rb`, the autonomous policy's
+main/glob/YAML libraries, `closeout-evidence-replay`, and
+`completed-batch-publication-preflight`. Materialize either the source-pack or
+installed `.agents` layout from the exact trusted base with a coordinator-owned
+`TRUSTED_GIT` whose executable and realpath are outside the repository; a
+missing path or failed archive leaves readiness
+`UNKNOWN`:
 
 ```bash
-"${PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" \
+set -o pipefail
+TRUSTED_RUNTIME_ROOT="$(mktemp -d)"
+trap 'rm -rf "$TRUSTED_RUNTIME_ROOT"' EXIT
+SOURCE_RUNTIME_PATHS="skills/pr-batch/bin/hosted-qa-readiness
+skills/pr-batch/lib/hosted_qa_runtime_trust.rb
+bin/agent_doctor/hosted_qa_policy.rb
+bin/agent_doctor/autonomous_merge_policy.rb
+bin/agent_doctor/autonomous_merge_policy_globs.rb
+bin/agent_doctor/autonomous_merge_policy_yaml.rb
+skills/post-merge-audit/bin/closeout-evidence-replay
+skills/post-merge-audit/bin/completed-batch-publication-preflight"
+INSTALLED_RUNTIME_PATHS=".agents/skills/pr-batch/bin/hosted-qa-readiness
+.agents/skills/pr-batch/lib/hosted_qa_runtime_trust.rb
+.agents/bin/agent_doctor/hosted_qa_policy.rb
+.agents/bin/agent_doctor/autonomous_merge_policy.rb
+.agents/bin/agent_doctor/autonomous_merge_policy_globs.rb
+.agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb
+.agents/skills/post-merge-audit/bin/closeout-evidence-replay
+.agents/skills/post-merge-audit/bin/completed-batch-publication-preflight"
+
+runtime_layout=""
+for candidate_layout in source installed; do
+  case "${candidate_layout}" in
+    source) candidate_paths="${SOURCE_RUNTIME_PATHS}" ;;
+    installed) candidate_paths="${INSTALLED_RUNTIME_PATHS}" ;;
+  esac
+  candidate_complete=1
+  for path in ${candidate_paths}; do
+    "${TRUSTED_GIT}" -C "${REPO_ROOT}" cat-file -e "${TRUSTED_BASE_SHA}:${path}" || candidate_complete=0
+  done
+  if [ "${candidate_complete}" -eq 1 ]; then
+    "${TRUSTED_GIT}" -C "${REPO_ROOT}" archive "${TRUSTED_BASE_SHA}" -- ${candidate_paths} |
+      tar -x -C "${TRUSTED_RUNTIME_ROOT}" || exit 1
+    runtime_layout="${candidate_layout}"
+    break
+  fi
+done
+
+case "${runtime_layout}" in
+  source) TRUSTED_PR_BATCH_SKILL_DIR="${TRUSTED_RUNTIME_ROOT}/skills/pr-batch" ;;
+  installed) TRUSTED_PR_BATCH_SKILL_DIR="${TRUSTED_RUNTIME_ROOT}/.agents/skills/pr-batch" ;;
+  *) echo "UNKNOWN: trusted base lacks the complete hosted QA runtime" >&2; exit 1 ;;
+esac
+HOSTED_HELPER_PROVENANCE="trusted-base:${TRUSTED_BASE_SHA}"
+```
+
+When the trusted base lacks that closure, including during first adoption, use
+only an installed pack selected and digest-verified by trusted coordinator or
+installation state before helper launch. Bind its outside-repository pr-batch
+directory to `TRUSTED_PR_BATCH_SKILL_DIR` and pass the independently established
+`verified-installed-pack:<64-lowercase-sha256>` claim as
+`HOSTED_HELPER_PROVENANCE`. The helper recomputes the same length-framed
+eight-file manifest; the claim cannot create trust and a missing, mismatched,
+inside-repository, or incomplete runtime returns `UNKNOWN`.
+
+Supply the repository, full trusted-base and current-head SHAs, and the file or
+stdin text containing closeout evidence. The standard satisfied-evidence
+invocation is:
+
+```bash
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" \
   --repo "${REPO_ROOT}" \
   --base-sha "${TRUSTED_BASE_SHA}" \
   --head-sha "${CURRENT_HEAD_SHA}" \
-  --evidence "${QA_EVIDENCE_PATH}"
+  --evidence "${QA_EVIDENCE_PATH}" \
+  --trusted-helper-provenance "${HOSTED_HELPER_PROVENANCE}"
 ```
 
 Only when replaying a maintainer-waiver receipt, supply
 `--review-target-url` with the exact PR or issue URL:
 
 ```bash
-"${PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" \
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness" \
   --repo "${REPO_ROOT}" \
   --base-sha "${TRUSTED_BASE_SHA}" \
   --head-sha "${CURRENT_HEAD_SHA}" \
   --evidence "${QA_EVIDENCE_PATH}" \
+  --trusted-helper-provenance "${HOSTED_HELPER_PROVENANCE}" \
   --review-target-url "${PR_URL}"
 ```
 
@@ -1028,7 +1101,7 @@ vector; neither the kernel nor `/usr/bin/env` resolves an interpreter from
 candidate state, and no shell interpolation is used:
 
 ```text
-<resolved interpreter> <trusted verifier> --deployment-id <id> --deployment-url <url> --expected-head-sha <head> --target <target>
+<resolved interpreter> <trusted verifier> --deployment-id <id> --deployment-url <url> --expected-head-sha <head> --target <target> --criterion <configured-id> [--criterion <configured-id> ...]
 ```
 
 Repository-excluded interpreters and system tools are trusted host OS/toolchain
@@ -1036,11 +1109,33 @@ state. The helper prevents candidate-repository control of those paths, but
 arbitrary same-user replacement of executables outside the repository is
 outside this helper's boundary.
 
-The verifier returns exactly one JSON object with `version: 1`, `verified:
-true`, and the identical `deployment_id`, `deployment_url`,
-`deployed_head_sha`, and `target`. Nonzero exit, timeout, extra or missing output
-keys, or any identity/head/target mismatch blocks. Deployment success by itself
-is not QA evidence.
+The helper appends one `--criterion <configured-id>` pair per trusted-policy
+criterion in policy order. It passes no marker status or evidence to the
+verifier. The verifier returns exactly one JSON object with `version: 1`,
+`verified: true`, the identical `deployment_id`, `deployment_url`,
+`deployed_head_sha`, and `target`, plus a `"criteria"` array:
+
+```json
+{
+  "version": 1,
+  "verified": true,
+  "deployment_id": "<identical immutable deployment ID>",
+  "deployment_url": "<identical immutable deployment URL>",
+  "deployed_head_sha": "<identical expected head SHA>",
+  "target": "<identical target>",
+  "criteria": [
+    {"id": "<configured-id>", "status": "passed", "evidence": "<authenticated scalar evidence>"}
+  ]
+}
+```
+
+Every criterion object has exactly `id`, `status`, and `evidence`; IDs appear
+exactly once in trusted-policy order, every status is `passed`, and evidence is
+a nonempty trimmed scalar containing no pipe, newline, `<!--`, or `-->`.
+Verifier rows and marker rows must be exact ordered rows. Nonzero exit, timeout,
+extra or missing keys, identity mismatch, criterion mismatch, or reordering
+blocks. Deployment success or an identity-only verifier receipt is not QA
+evidence.
 
 Version 1 exposes no ambient-environment or file-based credential channel to
 the verifier. It supports credential-free verification of public or otherwise
@@ -1067,8 +1162,8 @@ criterion: id=<configured-id> | status=passed | evidence=<nonempty evidence>
 ```
 
 Each `criterion:` row's `evidence` value is one scalar field. It must not
-contain an unescaped `|`; v1 defines no pipe-escaping form, so any `|` in that
-value is parsed as another field delimiter and the marker fails closed.
+contain an unescaped `|`, a newline, `<!--`, or `-->`; v1 defines no pipe
+escaping or multiline/comment-delimiter form, so those values fail closed.
 
 Generic `qa-evidence v2` never proves a hosted deployment and cannot satisfy
 this gate. Keep it when the ordinary/manual QA contract also applies; the
@@ -1103,6 +1198,9 @@ configured runtime path in the same diff blocks as mixed bootstrap/runtime;
 any other path blocks as unmanaged bootstrap scope. Land that bootstrap first,
 then evaluate runtime PRs against the now-trusted base policy. Do not promote
 `hosted_qa_gate` into the globally required seam keys during this phase.
+Bootstrap never executes the candidate verifier. The candidate verifier must
+already implement the ordered criterion argument and receipt contract; review
+and focused repository tests must establish that before landing it.
 
 Coordinate QA with the same primitives as other batch lanes:
 

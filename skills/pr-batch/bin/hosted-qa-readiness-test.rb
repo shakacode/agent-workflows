@@ -58,17 +58,30 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
-  def run_readiness(root, base_sha:, head_sha:, evidence: "", env: {})
-    out, status = Open3.capture2e(
-      env,
+  def run_readiness(root, base_sha:, head_sha:, evidence: "", env: {}, helper_provenance: :installed_pack)
+    command = [
       "ruby", SCRIPT,
       "--repo", root,
       "--base-sha", base_sha,
       "--head-sha", head_sha,
-      "--evidence", "-",
-      stdin_data: evidence
-    )
+      "--evidence", "-"
+    ]
+    resolved_provenance = helper_provenance == :installed_pack ? installed_pack_provenance : helper_provenance
+    command.concat(["--trusted-helper-provenance", resolved_provenance]) if resolved_provenance
+    out, status = Open3.capture2e(env, *command, stdin_data: evidence)
     [JSON.parse(out), status]
+  end
+
+  def installed_pack_provenance
+    "verified-installed-pack:#{HostedQaRuntimeTrust.installed_pack_digest}"
+  end
+
+  def copy_runtime_sources(root)
+    HostedQaRuntimeTrust::RUNTIME_SOURCES.each_value do |source|
+      destination = File.join(root, source.fetch(:tree_paths).first)
+      FileUtils.mkdir_p(File.dirname(destination))
+      FileUtils.cp(source.fetch(:path), destination)
+    end
   end
 
   def hosted_policy(change_paths: ["app/**"], waiver_mode: "forbidden")
@@ -134,6 +147,129 @@ class HostedQaReadinessTest < Minitest::Test
       assert_equal base_sha, result.fetch("base_sha")
       assert_equal head_sha, result.fetch("head_sha")
     end
+  end
+
+  def test_missing_runtime_provenance_returns_unknown
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      base_sha = commit!(root, "base")
+      write(root, "README.md", "documentation only\n")
+      head_sha = commit!(root, "head")
+
+      result, status = run_readiness(root, base_sha:, head_sha:, helper_provenance: nil)
+
+      refute status.success?
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert_equal "UNKNOWN", result.fetch("helper_provenance")
+      assert_equal "unverified", result.dig("helper_trust", "status")
+      assert_includes result.fetch("blockers"), "trusted hosted QA helper provenance is missing or invalid"
+    end
+  end
+
+  def test_trusted_base_claim_requires_the_complete_runtime_closure
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      base_sha = commit!(root, "base without hosted QA runtime")
+      write(root, "README.md", "documentation only\n")
+      head_sha = commit!(root, "head")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        helper_provenance: "trusted-base:#{base_sha}"
+      )
+
+      refute status.success?
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert_equal "unverified", result.dig("helper_trust", "status")
+      assert result.fetch("blockers").any? { |blocker| blocker.include?("byte-identical") }, result
+    end
+  end
+
+  def test_trusted_base_claim_reports_all_eight_byte_identical_runtime_sources
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      copy_runtime_sources(root)
+      base_sha = commit!(root, "base with hosted QA runtime")
+      write(root, "README.md", "documentation only\n")
+      head_sha = commit!(root, "head")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        helper_provenance: "trusted-base:#{base_sha}"
+      )
+
+      assert status.success?, result
+      assert_equal "NOT_APPLICABLE", result.fetch("verdict")
+      assert_equal "trusted-base:#{base_sha}", result.fetch("helper_provenance")
+      assert_equal 8, result.dig("helper_trust", "manifest").length
+      assert_equal HostedQaRuntimeTrust::RUNTIME_SOURCES.transform_values { |source| source.fetch(:tree_paths).first },
+                   result.dig("helper_trust", "manifest")
+    end
+  end
+
+  def test_verified_installed_pack_digest_establishes_the_exact_runtime_manifest
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      base_sha = commit!(root, "base")
+      write(root, "README.md", "documentation only\n")
+      head_sha = commit!(root, "head")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        helper_provenance: installed_pack_provenance
+      )
+
+      assert status.success?, result
+      assert_equal "NOT_APPLICABLE", result.fetch("verdict")
+      assert_equal installed_pack_provenance, result.fetch("helper_provenance")
+      assert_equal "mechanically-verified", result.dig("helper_trust", "status")
+      assert_equal HostedQaRuntimeTrust::RUNTIME_SOURCES.keys.sort,
+                   result.dig("helper_trust", "manifest").keys.sort
+      assert_equal 8, result.dig("helper_trust", "manifest").length
+    end
+  end
+
+  def test_installed_pack_digest_mismatch_returns_unknown
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      base_sha = commit!(root, "base")
+      write(root, "README.md", "documentation only\n")
+      head_sha = commit!(root, "head")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        helper_provenance: "verified-installed-pack:#{'0' * 64}"
+      )
+
+      refute status.success?
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert_equal "unverified", result.dig("helper_trust", "status")
+      assert_includes result.fetch("blockers"), "installed-pack runtime digest mismatch"
+    end
+  end
+
+  def test_runtime_sources_inside_the_evaluated_repository_are_untrusted
+    repository_root = File.expand_path("../../..", __dir__)
+    head_sha = run_git!(repository_root, "rev-parse", "HEAD").strip
+
+    result, status = run_readiness(
+      repository_root,
+      base_sha: head_sha,
+      head_sha:,
+      helper_provenance: installed_pack_provenance
+    )
+
+    refute status.success?
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert result.fetch("blockers").any? { |error| error.include?("must be outside the evaluated repository") }, result
   end
 
   def test_git_capture_uses_only_a_sanitized_guarded_direct_environment
@@ -422,6 +558,29 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_marker_criterion_rows_must_follow_trusted_policy_order
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/env ruby\n", executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with hosted policy")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:, criteria: %w[checkout sign-in])
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "hosted QA criterion coverage mismatch: criterion order does not match trusted-base policy"
+    end
+  end
+
   def test_duplicate_acceptance_criterion_rows_fail_closed
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", hosted_policy)
@@ -444,14 +603,12 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
-  def test_invokes_only_the_trusted_base_verifier_with_explicit_argv
+  def test_identity_only_verifier_cannot_authenticate_acceptance_criteria
     with_repo do |root|
-      argv_log = File.join(root, "verifier-argv.json")
       verifier = <<~RUBY
         #!/usr/bin/env ruby
         require "json"
         arguments = ARGV.each_slice(2).to_h
-        File.write(#{argv_log.dump}, JSON.generate(ARGV))
         puts JSON.generate(
           "version" => 1,
           "verified" => true,
@@ -459,6 +616,57 @@ class HostedQaReadinessTest < Minitest::Test
           "deployment_url" => arguments.fetch("--deployment-url"),
           "deployed_head_sha" => arguments.fetch("--expected-head-sha"),
           "target" => arguments.fetch("--target")
+        )
+      RUBY
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", verifier, executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with identity-only hosted verifier")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "trusted-base deployment verifier did not authenticate the exact configured acceptance criteria"
+    end
+  end
+
+  def test_invokes_only_the_trusted_base_verifier_with_explicit_argv
+    with_repo do |root|
+      argv_log = File.join(root, "verifier-argv.json")
+      verifier = <<~RUBY
+        #!/usr/bin/env ruby
+        require "json"
+        arguments = {}
+        criteria = []
+        ARGV.each_slice(2) do |name, value|
+          if name == "--criterion"
+            criteria << {
+              "id" => value,
+              "status" => "passed",
+              "evidence" => "https://evidence.example.test/\#{value}-" + arguments.fetch("--expected-head-sha")
+            }
+          else
+            arguments[name] = value
+          end
+        end
+        File.write(#{argv_log.dump}, JSON.generate(ARGV))
+        puts JSON.generate(
+          "version" => 1,
+          "verified" => true,
+          "deployment_id" => arguments.fetch("--deployment-id"),
+          "deployment_url" => arguments.fetch("--deployment-url"),
+          "deployed_head_sha" => arguments.fetch("--expected-head-sha"),
+          "target" => arguments.fetch("--target"),
+          "criteria" => criteria
         )
       RUBY
       write(root, ".agents/agent-workflow.yml", hosted_policy)
@@ -489,9 +697,100 @@ class HostedQaReadinessTest < Minitest::Test
         "--deployment-id", deployment_id,
         "--deployment-url", deployment_url,
         "--expected-head-sha", head_sha,
-        "--target", "production"
+        "--target", "production",
+        "--criterion", "sign-in",
+        "--criterion", "checkout"
       ], JSON.parse(File.read(argv_log))
       assert_equal "trusted_base", result.dig("deployment_verification", "verifier_source")
+      verified_criterion_ids = result.dig("deployment_verification", "criteria").map { |row| row.fetch("id") }
+      assert_equal %w[sign-in checkout], verified_criterion_ids
+    end
+  end
+
+  def test_verifier_criterion_rows_must_exactly_equal_the_marker_rows
+    with_repo do |root|
+      verifier = <<~'RUBY'
+        #!/usr/bin/env ruby
+        require "json"
+        arguments = {}
+        criterion_ids = []
+        ARGV.each_slice(2) do |name, value|
+          name == "--criterion" ? criterion_ids << value : arguments[name] = value
+        end
+        puts JSON.generate(
+          "version" => 1,
+          "verified" => true,
+          "deployment_id" => arguments.fetch("--deployment-id"),
+          "deployment_url" => arguments.fetch("--deployment-url"),
+          "deployed_head_sha" => arguments.fetch("--expected-head-sha"),
+          "target" => arguments.fetch("--target"),
+          "criteria" => criterion_ids.map do |id|
+            { "id" => id, "status" => "passed", "evidence" => "https://different.example.test/#{id}" }
+          end
+        )
+      RUBY
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", verifier, executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with hosted verifier")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "trusted-base deployment verifier did not authenticate the exact configured acceptance criteria"
+    end
+  end
+
+  def test_matching_verifier_rows_reject_comment_delimiters_in_evidence
+    with_repo do |root|
+      verifier = <<~'RUBY'
+        #!/usr/bin/env ruby
+        require "json"
+        arguments = {}
+        criterion_ids = []
+        ARGV.each_slice(2) do |name, value|
+          name == "--criterion" ? criterion_ids << value : arguments[name] = value
+        end
+        puts JSON.generate(
+          "version" => 1,
+          "verified" => true,
+          "deployment_id" => arguments.fetch("--deployment-id"),
+          "deployment_url" => arguments.fetch("--deployment-url"),
+          "deployed_head_sha" => arguments.fetch("--expected-head-sha"),
+          "target" => arguments.fetch("--target"),
+          "criteria" => criterion_ids.map do |id|
+            { "id" => id, "status" => "passed", "evidence" => "proof<!--fragment-#{id}" }
+          end
+        )
+      RUBY
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", verifier, executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with hosted verifier")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+      evidence = hosted_evidence(head_sha:)
+      %w[sign-in checkout].each do |id|
+        evidence = evidence.sub(
+          "https://evidence.example.test/#{id}-#{head_sha}",
+          "proof<!--fragment-#{id}"
+        )
+      end
+
+      result, status = run_readiness(root, base_sha:, head_sha:, evidence:)
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert result.fetch("blockers").any? { |blocker| blocker.include?("HTML comment delimiter") }, result
     end
   end
 
@@ -550,14 +849,25 @@ class HostedQaReadinessTest < Minitest::Test
       verifier = <<~RUBY
         #!#{File.realpath(RbConfig.ruby)}
         require "json"
-        arguments = ARGV.each_slice(2).to_h
+        arguments = {}
+        criterion_ids = []
+        ARGV.each_slice(2) do |name, value|
+          name == "--criterion" ? criterion_ids << value : arguments[name] = value
+        end
         puts JSON.generate(
           "version" => 1,
           "verified" => true,
           "deployment_id" => arguments.fetch("--deployment-id"),
           "deployment_url" => arguments.fetch("--deployment-url"),
           "deployed_head_sha" => arguments.fetch("--expected-head-sha"),
-          "target" => arguments.fetch("--target")
+          "target" => arguments.fetch("--target"),
+          "criteria" => criterion_ids.map do |id|
+            {
+              "id" => id,
+              "status" => "passed",
+              "evidence" => "https://evidence.example.test/\#{id}-" + arguments.fetch("--expected-head-sha")
+            }
+          end
         )
       RUBY
       write(root, ".agents/agent-workflow.yml", hosted_policy)
@@ -615,6 +925,10 @@ class HostedQaReadinessTest < Minitest::Test
       "head_sha" => head_sha,
       "target" => "production"
     }
+    criterion_ids = %w[sign-in checkout]
+    criteria = criterion_ids.map do |id|
+      { "id" => id, "status" => "passed", "evidence" => "https://evidence.example.test/#{id}-#{head_sha}" }
+    end
     observed_tempfile = nil
     original_tempfile_create = Tempfile.method(:create)
     tempfile_create = lambda do |*arguments, &block|
@@ -635,7 +949,8 @@ class HostedQaReadinessTest < Minitest::Test
       receipt = fields.slice("deployment_id", "deployment_url", "target").merge(
         "version" => 1,
         "verified" => true,
-        "deployed_head_sha" => head_sha
+        "deployed_head_sha" => head_sha,
+        "criteria" => criteria
       )
       [JSON.generate(receipt), "", success_status]
     end
@@ -653,7 +968,9 @@ class HostedQaReadinessTest < Minitest::Test
         repo: Dir.tmpdir,
         base_sha: "0" * 40,
         verifier_path: ".agents/bin/verify-hosted-deployment",
-        fields:
+        fields:,
+        criterion_ids:,
+        criteria:
       )
     ensure
       Tempfile.singleton_class.send(:define_method, :create, original_tempfile_create)
@@ -672,7 +989,11 @@ class HostedQaReadinessTest < Minitest::Test
       verifier = <<~RUBY
         #!/usr/bin/env ruby
         require "json"
-        arguments = ARGV.each_slice(2).to_h
+        arguments = {}
+        criterion_ids = []
+        ARGV.each_slice(2) do |name, value|
+          name == "--criterion" ? criterion_ids << value : arguments[name] = value
+        end
         File.write(
           #{environment_log.dump},
           JSON.generate("cwd" => Dir.pwd, "environment" => ENV.to_h)
@@ -683,7 +1004,14 @@ class HostedQaReadinessTest < Minitest::Test
           "deployment_id" => arguments.fetch("--deployment-id"),
           "deployment_url" => arguments.fetch("--deployment-url"),
           "deployed_head_sha" => arguments.fetch("--expected-head-sha"),
-          "target" => arguments.fetch("--target")
+          "target" => arguments.fetch("--target"),
+          "criteria" => criterion_ids.map do |id|
+            {
+              "id" => id,
+              "status" => "passed",
+              "evidence" => "https://evidence.example.test/\#{id}-" + arguments.fetch("--expected-head-sha")
+            }
+          end
         )
       RUBY
       write(root, ".agents/agent-workflow.yml", hosted_policy)
@@ -697,6 +1025,10 @@ class HostedQaReadinessTest < Minitest::Test
         "head_sha" => base_sha,
         "target" => "production"
       }
+      criterion_ids = %w[sign-in checkout]
+      criteria = criterion_ids.map do |id|
+        { "id" => id, "status" => "passed", "evidence" => "https://evidence.example.test/#{id}-#{base_sha}" }
+      end
 
       verification = error = nil
       with_environment(
@@ -709,7 +1041,9 @@ class HostedQaReadinessTest < Minitest::Test
           repo: root,
           base_sha:,
           verifier_path: ".agents/bin/verify-hosted-deployment",
-          fields:
+          fields:,
+          criterion_ids:,
+          criteria:
         )
       end
 

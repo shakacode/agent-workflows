@@ -128,6 +128,11 @@ than `forbidden` or `maintainer` fail closed. The verifier and policy used for
 runtime readiness always come from the trusted base. The two-phase bootstrap
 and exact verifier receipt contracts are canonical in
 [`workflows/pr-processing.md`](../workflows/pr-processing.md).
+The readiness runtime itself must be an outside-repository trusted-base
+materialization or an externally digest-verified installed pack; repository-head
+fallback, missing provenance, and an incomplete eight-file runtime stay
+`UNKNOWN`. The trusted verifier receives ordered policy criterion IDs and must
+return exact ordered closed criterion rows identical to the hosted marker.
 Version 1 exposes no ambient environment or file credential channel and
 supports public or otherwise credential-free immutable deployment verification;
 private-provider credentials require a separately designed and approved seam

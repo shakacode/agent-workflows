@@ -183,6 +183,45 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_hosted_v1_rejects_a_comment_opener_inside_criterion_evidence
+    body = hosted_v1_marker.sub(
+      "https://evidence.example.test/sign-in-abc123",
+      "proof<!--injected"
+    )
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert hosted.fetch("errors").any? { |error| error.include?("criterion[0].evidence") }, hosted
+  end
+
+  def test_hosted_v1_rejects_a_comment_closer_inside_criterion_evidence
+    body = hosted_v1_marker.sub(
+      "https://evidence.example.test/sign-in-abc123",
+      "proof-->injected"
+    )
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert hosted.fetch("errors").any? { |error| error.include?("criterion[0].evidence") }, hosted
+  end
+
+  def test_hosted_v1_keeps_pipe_and_multiline_criterion_evidence_fail_closed
+    unsafe_values = {
+      "pipe" => "proof|injected",
+      "newline" => "proof\ninjected"
+    }
+
+    unsafe_values.each do |label, value|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", value)
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), label
+      refute_empty hosted.fetch("errors"), label
+    end
+  end
+
   def test_hosted_v1_requires_an_immutable_deployment_url
     body = hosted_v1_marker.sub(
       "https://deployments.example.test/production-20260808-abc123",

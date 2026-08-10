@@ -3,6 +3,7 @@
 
 require "minitest/autorun"
 require "yaml"
+require_relative "../lib/hosted_qa_runtime_trust"
 
 ROOT = File.expand_path("../../..", __dir__)
 DELEGATION = "Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA contract " \
@@ -31,6 +32,41 @@ class HostedQaGateContractTest < Minitest::Test
     assert_includes workflow, "hosted-qa-readiness"
     assert_includes workflow, "BOOTSTRAP_ALLOWED"
     assert_includes workflow, "qa-maintainer-waiver v1"
+  end
+
+  def test_canonical_workflow_requires_pre_execution_runtime_trust_and_criteria_authentication
+    workflow = read("workflows/pr-processing.md")
+    section = workflow[/### Hosted Runtime QA Gate\n(.*?)\n### QA Evidence/m, 1]&.gsub(/\s+/, " ")
+
+    refute_nil section
+    assert_includes section, "trusted-base materialization"
+    assert_includes section, "verified installed Agent Workflows pack"
+    assert_includes section, "--trusted-helper-provenance"
+    assert_includes section, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness"'
+    refute_includes section, '"${PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness"'
+    assert_includes section, '"${TRUSTED_GIT}" -C "${REPO_ROOT}" cat-file -e'
+    assert_includes section, '"${TRUSTED_GIT}" -C "${REPO_ROOT}" archive'
+    assert_includes section, "--criterion <configured-id>"
+    assert_includes section, '"criteria"'
+    assert_includes section, "exact ordered rows"
+  end
+
+  def test_runtime_trust_manifest_covers_the_exact_loaded_eight_file_closure
+    expected_tree_paths = {
+      "helper" => %w[skills/pr-batch/bin/hosted-qa-readiness .agents/skills/pr-batch/bin/hosted-qa-readiness],
+      "runtime-trust-library" => %w[skills/pr-batch/lib/hosted_qa_runtime_trust.rb .agents/skills/pr-batch/lib/hosted_qa_runtime_trust.rb],
+      "hosted-policy-library" => %w[bin/agent_doctor/hosted_qa_policy.rb .agents/bin/agent_doctor/hosted_qa_policy.rb],
+      "autonomous-policy-library" => %w[bin/agent_doctor/autonomous_merge_policy.rb .agents/bin/agent_doctor/autonomous_merge_policy.rb],
+      "autonomous-policy-glob-library" => %w[bin/agent_doctor/autonomous_merge_policy_globs.rb .agents/bin/agent_doctor/autonomous_merge_policy_globs.rb],
+      "autonomous-policy-yaml-library" => %w[bin/agent_doctor/autonomous_merge_policy_yaml.rb .agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb],
+      "closeout-replay-helper" => %w[skills/post-merge-audit/bin/closeout-evidence-replay .agents/skills/post-merge-audit/bin/closeout-evidence-replay],
+      "completed-publication-preflight-helper" => %w[skills/post-merge-audit/bin/completed-batch-publication-preflight .agents/skills/post-merge-audit/bin/completed-batch-publication-preflight]
+    }
+    actual_tree_paths = HostedQaRuntimeTrust::RUNTIME_SOURCES.transform_values do |source|
+      source.fetch(:tree_paths)
+    end
+
+    assert_equal expected_tree_paths, actual_tree_paths
   end
 
   def test_entry_point_skills_delegate_without_copying_the_contract
