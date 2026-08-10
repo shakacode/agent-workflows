@@ -548,6 +548,143 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_changed_candidate_policy_must_be_structurally_valid
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", authenticating_verifier, executable: true)
+      base_sha = commit!(root, "base with hosted policy")
+      write(root, ".agents/agent-workflow.yml", hosted_policy.sub("waiver_mode: forbidden", "waiver_mode: typo"))
+      head_sha = commit!(root, "malformed hosted policy update")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "invalid candidate hosted_qa_gate policy: waiver_mode must be forbidden or maintainer"
+    end
+  end
+
+  def test_changed_candidate_policy_rejects_missing_deleted_duplicate_and_symlink_states
+    observed = {}
+    {
+      "missing key" => lambda do |root|
+        write(root, ".agents/agent-workflow.yml", hosted_policy.sub("  waiver_mode: forbidden\n", ""))
+      end,
+      "deleted" => lambda do |root|
+        FileUtils.rm_f(File.join(root, ".agents/agent-workflow.yml"))
+      end,
+      "duplicate key" => lambda do |root|
+        write(
+          root,
+          ".agents/agent-workflow.yml",
+          hosted_policy.sub("  waiver_mode: forbidden\n", "  waiver_mode: forbidden\n  waiver_mode: maintainer\n")
+        )
+      end,
+      "symlink" => lambda do |root|
+        policy_path = File.join(root, ".agents/agent-workflow.yml")
+        FileUtils.rm_f(policy_path)
+        File.symlink("../policy.yml", policy_path)
+      end
+    }.each do |label, mutate_policy|
+      with_repo do |root|
+        write(root, ".agents/agent-workflow.yml", hosted_policy)
+        write(root, ".agents/bin/verify-hosted-deployment", authenticating_verifier, executable: true)
+        base_sha = commit!(root, "base with hosted policy")
+        mutate_policy.call(root)
+        head_sha = commit!(root, "#{label} hosted policy update")
+
+        result, status = run_readiness(
+          root,
+          base_sha:,
+          head_sha:,
+          evidence: hosted_evidence(head_sha:)
+        )
+        observed[label] = [result.fetch("verdict"), status.success?, result.fetch("blockers")]
+      end
+    end
+
+    observed.each do |label, (verdict, success, blockers)|
+      assert_equal "BLOCKED", verdict, label
+      refute success, label
+      assert blockers.any? { |blocker| blocker.include?("candidate") }, "#{label}: #{blockers.inspect}"
+    end
+    assert(observed.fetch("missing key").last.any? do |blocker|
+      blocker.include?("is missing key \"waiver_mode\"")
+    end)
+    assert(observed.fetch("deleted").last.any? do |blocker|
+      blocker.include?("must remain a closed version 1 mapping")
+    end)
+    assert(observed.fetch("duplicate key").last.any? do |blocker|
+      blocker.include?("duplicate key \"waiver_mode\"")
+    end)
+    assert(observed.fetch("symlink").last.any? do |blocker|
+      blocker.include?("tracked regular non-executable file")
+    end)
+  end
+
+  def test_valid_candidate_policy_update_is_assessed_using_the_trusted_base_policy
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", authenticating_verifier, executable: true)
+      base_sha = commit!(root, "base with hosted policy")
+      write(root, ".agents/agent-workflow.yml", hosted_policy.sub("target: production", "target: staging"))
+      head_sha = commit!(root, "valid hosted policy update")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      assert status.success?, result
+      assert_equal "READY", result.fetch("verdict")
+      assert_equal "production", result.dig("hosted_qa_evidence", "fields", "target")
+      assert_equal "production", result.dig("deployment_verification", "target")
+    end
+  end
+
+  def test_changed_candidate_policy_requires_its_declared_verifier_to_be_safe_without_executing_it
+    with_repo do |root|
+      execution_log = File.join(root, "candidate-verifier-executed")
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", authenticating_verifier, executable: true)
+      base_sha = commit!(root, "base with hosted policy")
+      candidate_verifier = ".agents/bin/verify-hosted-deployment-next"
+      write(
+        root,
+        ".agents/agent-workflow.yml",
+        hosted_policy.sub(".agents/bin/verify-hosted-deployment", candidate_verifier)
+      )
+      write(
+        root,
+        candidate_verifier,
+        "#!/usr/bin/env -S ruby\nFile.write(#{execution_log.dump}, 'executed')\n",
+        executable: true
+      )
+      head_sha = commit!(root, "unsafe hosted verifier policy update")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "candidate hosted QA deployment verifier has an unsupported shebang"
+      refute_path_exists execution_log
+    end
+  end
+
   def test_trusted_deployment_verifier_changes_are_always_applicable
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", hosted_policy(change_paths: ["app/**"]))

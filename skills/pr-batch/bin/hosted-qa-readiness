@@ -53,7 +53,7 @@ module HostedQaReadiness
       return blocked_result(resolved_base, resolved_head, blockers)
     end
     if %i[absent not_applicable].include?(trusted_policy.state)
-      candidate_policy = policy_at(repo, resolved_head)
+      candidate_policy = policy_at(repo, resolved_head, label: "candidate policy")
       unless candidate_policy.errors.empty?
         blockers = candidate_policy.errors.map { |error| "invalid candidate hosted_qa_gate policy: #{error}" }
         return blocked_result(resolved_base, resolved_head, blockers)
@@ -120,6 +120,30 @@ module HostedQaReadiness
     governing_paths = [POLICY_PATH, parsed_policy.fetch("deployment_verifier")]
     applicable_paths = paths.select do |path|
       governing_paths.include?(path) || policy_applies_to_path?(parsed_policy, path)
+    end
+    if paths.include?(POLICY_PATH)
+      candidate_policy = policy_at(repo, resolved_head, label: "candidate policy")
+      candidate_policy_blockers = candidate_policy.errors.map do |error|
+        "invalid candidate hosted_qa_gate policy: #{error}"
+      end
+      unless candidate_policy.state == :configured
+        candidate_policy_blockers << "candidate hosted_qa_gate policy must remain a closed version 1 mapping"
+      end
+      if candidate_policy.state == :configured
+        candidate_verifier_error = verifier_interpreter_error_at(
+          repo,
+          resolved_head,
+          candidate_policy.policy.fetch("deployment_verifier"),
+          label: "candidate hosted QA deployment verifier"
+        )
+        candidate_policy_blockers << candidate_verifier_error if candidate_verifier_error
+      end
+      unless candidate_policy_blockers.empty?
+        return blocked_result(resolved_base, resolved_head, candidate_policy_blockers.uniq).merge(
+          "changed_paths" => paths,
+          "applicable_paths" => applicable_paths
+        )
+      end
     end
     if paths.include?(parsed_policy.fetch("deployment_verifier"))
       candidate_verifier_label = "candidate hosted QA deployment verifier"
@@ -489,18 +513,18 @@ module HostedQaReadiness
     status.success?
   end
 
-  def policy_at(repo, sha)
+  def policy_at(repo, sha, label: "trusted policy")
     listing, _error, listing_status = git_capture(repo, "ls-tree", sha, "--", POLICY_PATH)
-    return HostedQaPolicy.invalid("trusted policy metadata is unavailable") unless listing_status.success?
+    return HostedQaPolicy.invalid("#{label} metadata is unavailable") unless listing_status.success?
     return HostedQaPolicy.parse_value(nil, present: false) if listing.empty?
 
     match = listing.lines(chomp: true).one? && listing.lines(chomp: true).first.match(
       /\A100644 blob [0-9a-f]+\t#{Regexp.escape(POLICY_PATH)}\z/
     )
-    return HostedQaPolicy.invalid("trusted policy must be a tracked regular non-executable file") unless match
+    return HostedQaPolicy.invalid("#{label} must be a tracked regular non-executable file") unless match
 
     out, _error, status = git_capture(repo, "show", "#{sha}:#{POLICY_PATH}")
-    return HostedQaPolicy.invalid("trusted policy blob is unavailable") unless status.success?
+    return HostedQaPolicy.invalid("#{label} blob is unavailable") unless status.success?
 
     HostedQaPolicy.parse(out)
   end
