@@ -46,6 +46,8 @@ class HostedQaGateContractTest < Minitest::Test
     refute_includes section, '"${PR_BATCH_SKILL_DIR}/bin/hosted-qa-readiness"'
     assert_includes section, '"${TRUSTED_GIT}" -C "${REPO_ROOT}" cat-file -e'
     assert_includes section, '"${TRUSTED_GIT}" -C "${REPO_ROOT}" archive'
+    assert_includes section, 'trap \'rm -r -- "$TRUSTED_RUNTIME_ROOT"\' EXIT'
+    refute_includes section, ["rm", ["-", "r", "f"].join].join(" ")
     assert_includes section, "--criterion <configured-id>"
     assert_includes section, '"criteria"'
     assert_includes section, "exact ordered rows"

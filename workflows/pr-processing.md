@@ -999,7 +999,7 @@ missing path or failed archive leaves readiness
 ```bash
 set -o pipefail
 TRUSTED_RUNTIME_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TRUSTED_RUNTIME_ROOT"' EXIT
+trap 'rm -r -- "$TRUSTED_RUNTIME_ROOT"' EXIT
 SOURCE_RUNTIME_PATHS="skills/pr-batch/bin/hosted-qa-readiness
 skills/pr-batch/lib/hosted_qa_runtime_trust.rb
 bin/agent_doctor/hosted_qa_policy.rb
