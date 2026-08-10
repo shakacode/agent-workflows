@@ -222,20 +222,35 @@ RubyGems administration ceremony rather than assuming an unconfirmed API can
 issue short-lived, owner-only credentials. No grant credential, browser
 session, or registry mutation runs in CI.
 
+Before preparation, the authorization-bound independent observer authenticates
+directly to RubyGems and posts a canonical durable pre-ceremony observation
+object. Its fixed schema contains the complete owner/MFA, organization/team
+access, version/yank, and artifact-digest state plus the exact UI controls,
+values, observation time, and authentication method. The object contains no
+credential or browser-session material. Screenshots alone, caller-supplied
+owner lists, an observer other than the authorization-bound principal, or an
+observation outside the fixed freshness window fail closed.
+
 The authorization-bound `prepare-rubygems-grant-ceremony.yml` workflow has only
 `contents: read`, `actions: read`, `issues: read`, and `pull-requests: read`.
-It receives the authorization-capture and provisional-receipt exact selectors,
-freshly downloads and schema-validates both, verifies the grant manifest bytes,
-re-fetches the canonical approval object and exact-commit approver allowlist,
-and compares its own canonical UTC clock with `expires_at` immediately before
-writing a short-lived preparation receipt. Edited/deleted approval, changed
-allowlist, expiry equality/past, or any selector/digest mismatch fails before
-the human acts. The receipt binds the authorization, provisional publication,
-manifest, exact package/version, named grant operator, pre-ceremony live owner
-and organization/team access observations, complete version/yank/artifact state,
-issued-at, and a tighter ceremony expiry. Full-SHA-pinned generic actions upload
-it and capture its exact producer run, artifact ID, service digest, and file
-SHA-256.
+It receives the pre-observation object URL plus the authorization-capture and
+provisional-receipt exact selectors, freshly downloads and schema-validates the
+artifacts, verifies the grant manifest bytes, and fetches the observation
+object through the GitHub API. It derives and verifies the exact observer,
+creation/update timestamps, immutable body digest, schema, completeness, and
+freshness; it never invents or accepts registry state from workflow inputs. It
+then re-fetches the canonical approval object and exact-commit approver
+allowlist and compares its own canonical UTC clock with `expires_at`
+immediately before writing a short-lived preparation receipt. Edited/deleted
+approval or observation, changed allowlist, stale observation, expiry
+equality/past, or any selector/digest mismatch fails before the human acts. The
+receipt binds the authorization, provisional publication, manifest, exact
+package/version, named grant operator, the byte-identical fetched canonical
+pre-observation bytes, derived author/object type/object ID, creation/update
+timestamps, schema path/version/digest, body digest, verification time,
+freshness result, complete registry state, issued-at, and a tighter ceremony expiry.
+Full-SHA-pinned generic actions upload it and capture its exact producer run,
+artifact ID, service digest, and file SHA-256.
 
 While that preparation receipt and authorization remain valid, the named human
 operator downloads and verifies them, authenticates directly to RubyGems with
@@ -259,14 +274,22 @@ version/yank, and artifact-digest state, and posts a canonical durable GitHub
 observation object containing the exact UI controls, values, observation time,
 and authentication method. Caller-authored owner lists, screenshots alone, and an
 observer equal to the operator/attestor, release approver, or PR reviewer are
-never accepted.
+never accepted. This post-ceremony object must have a distinct object ID and
+body digest. Its GitHub-derived creation time and claimed observation time must
+both be strictly after preparation issuance and the applicable operation-
+evidence object: the ordinary operator attestation, recovery late attestation,
+or authorized orphan acceptance. Its
+creation time must be no earlier than its claimed observation time.
 
 The observation PR opener receives only the attestation or authorized
 orphan-acceptance URL, observation-object URL, and exact
 authorization/provisional/preparation/prior-chain selectors; it has
 `contents: read`, `actions: read`, `issues: read`, and `pull-requests: read` in
 its evidence-verification job, derives both objects' authors and immutable body
-digests through the GitHub API, and renders the verified observation bytes at
+digests through the GitHub API, rejects any post object created before
+preparation or the applicable operation-evidence object or carrying a backdated
+claimed observation, and
+renders the verified observation bytes plus derived creation/update metadata at
 the one fixed-schema path. Only a separate closed job with `actions: read`,
 `contents: write`, and `pull-requests: write` may download that exact verified
 payload and open the observation-only PR. That write job has no checkout,
@@ -299,20 +322,48 @@ code, permits only the one schema-bound observation file, requires the
 authorization-bound observer and a distinct allowlisted exact-head reviewer,
 and invalidates approval after any head change. After merge, the trusted-base
 observation finalizer reads only the exact merge commit, verifies that the
-merged final head equals the approved review `commit_id`, and emits the durable
-observation selectors/digest. Both verifier and finalizer declare complete
-job-level permission blocks containing exactly `contents: read` and
-`pull-requests: read`; only a separate job that downloads an exact artifact may
-add `actions: read`. Neither has OIDC, release, package, environment,
-registry-mutation, or reusable registry-credential permission. Static tests
-reject an omitted permission block, any missing/expanded scope, and unnecessary
-`actions: read`.
+merged final head equals the approved review `commit_id`, renders the fixed
+handoff schema, computes its file SHA-256, and uses a full-SHA-pinned generic
+upload under the one fixed expected artifact name derived from the attempt ID.
+A separate selector job lists that finalizer run's artifact inventory through
+the GitHub API and verifies that the producer belongs to the expected
+repository, used the authorization-bound finalizer workflow path, trusted-base
+ref, and workflow-file digest, was triggered by the expected merged-PR event,
+and binds the exact approved head and merge SHA. It does not claim that its
+containing run is terminal. It then requires exactly one artifact with the
+expected name, downloads only its numeric artifact ID, verifies the service
+digest and file SHA-256 by fresh read-back, and emits the exact producer run,
+numeric artifact ID, service digest, and file SHA-256 as the only cross-workflow
+handoff tuple. The later capture workflow alone independently requires that
+producer run to have reached a successful terminal state. Both verifier
+and finalizer declare complete job-level permission blocks containing exactly
+`contents: read` and `pull-requests: read`; the separate selector job declares
+exactly `actions: read` and `contents: read`. Neither has OIDC, release, package,
+environment, registry-mutation, or reusable registry-credential permission.
+Static tests reject an omitted permission block, any missing/expanded scope,
+unnecessary `actions: read`, a mutable upload/download action, a changed
+expected artifact name, missing or duplicate artifacts, name-selected download,
+cross-run selection, wrong repository/workflow/event/ref/head/merge SHA or
+selector, service-digest, or file-digest substitution. Capture tests separately
+reject a cancelled, failed, skipped, timed-out, or still-running producer.
 
 `capture-rubygems-post-grant.yml` has only `contents: read`, `actions: read`,
-`issues: read`, and `pull-requests: read`. It accepts the attestation or
-orphan-acceptance object URL, merged observation PR identity, and exact
-authorization, provisional, preparation, and prior-chain selectors. It derives
-object author/timestamps through the GitHub API, requires the authorized
+`issues: read`, and `pull-requests: read`. It accepts the attestation or orphan-
+acceptance object URL, merged observation PR identity, the merged-observation
+handoff's exact producer run, numeric artifact ID, service digest, and file
+SHA-256, and exact authorization, provisional, preparation, and prior-chain
+selectors. It derives the one expected handoff artifact name from the verified
+attempt ID and independently queries the producer run. It requires the expected
+repository, authorization-bound finalizer workflow path/ref/file digest, merged-
+PR trigger, exact approved head and merge SHA, and successful terminal state;
+then it lists that run's complete artifact inventory, requires exactly one
+artifact with the expected name and numeric ID, downloads only that ID, and
+verifies the service digest, file SHA-256, repository-owned schema path/version/
+digest, and byte-identical read-back before using the handoff. It derives object
+author/timestamps through the GitHub API, re-fetches the post-observation object,
+and requires its update timestamp and body digest to equal the values bound into
+the merged observation PR. Edited or deleted evidence fails closed.
+It requires the authorized
 operator on the ordinary path and the independently authorized observer on both
 paths, re-fetches
 the unchanged approval object and exact-commit allowlist, rechecks the outer
@@ -325,17 +376,22 @@ exact delta, lateness or missing-operator reason, and recovery disposition. It
 requires an orphan acceptance author to equal the renewed authorization's exact
 `orphan_acceptance_principal` and to differ from the operator, observer, and
 observation PR reviewer; any other author fails closed. It
-compares the complete pre/post registry state
-and rejects any new, removed, or changed principal/role/access row not exactly
+compares the preparation-bound authenticated pre-observation with the distinct
+merged post-observation, verifies both the GitHub-derived creation time and
+claimed observation time are strictly after preparation issuance and the
+applicable ordinary attestation, late attestation, or orphan acceptance, and
+rejects any new, removed, or changed
+principal/role/access row not exactly
 authorized by the manifest, plus any gem upload, yank, version, or artifact-
 digest change during the ceremony. Only the exact expected manifest delta and
 unchanged package bytes may proceed.
 
 The reviewed post-grant writer emits an append-only receipt that binds its fixed
 schema, attempt identity, authorization/provisional/preparation selectors and
-digests, attestation or orphan-acceptance object identity/body digest, every
-manifest row, observed pre/post state, authenticated observation identity, and
-resulting state. It
+digests, attestation or orphan-acceptance object identity/body digest, the full
+pre-observation verification metadata, post-observation author/object ID/
+creation/update timestamps/schema/body digest, every manifest row, observed
+pre/post state, and resulting state. It
 distinguishes a registry-provided operation result from a human-attested
 operation; it never invents a machine operation ID. Expired, edited, deleted,
 missing, failed, or ambiguous evidence yields
@@ -352,8 +408,19 @@ orphan-acceptance object naming the unexplained live delta and why operator
 attestation is unavailable. Recovery never synthesizes either object. After
 that evidence exists, a renewed authorization may create a ledger-derived
 recovery attempt that imports the orphaned preparation, late attestation or
-orphan acceptance, and merged observation, re-observes live state, and appends
-it to the existing chain; it never starts a replacement genesis or repeats a
+orphan acceptance, and any earlier discovery observation only as non-terminal
+forensic evidence. The authorized observer then re-observes live state and
+posts a new post-observation object bound to and created after the late
+attestation or orphan acceptance. The closed opener creates the observation-
+only PR, but a distinct exact-head reviewer approval and the repository's human
+merge gate remain mandatory; only the trusted-base finalizer after that merge
+may upload the fixed-name durable merged-observation handoff and its separate
+selector job may emit the verified four-selector tuple. Then `capture-rubygems-
+post-grant.yml` accepts that exact tuple, rejects a tuple from another run or a
+name-selected artifact, downloads and verifies the handoff and complete prior
+chain, and writes the append-only successor receipt. An earlier
+ordinary or orphan-discovery observation cannot be reused. It never starts a
+replacement genesis or repeats a
 grant already present. Every
 successor binds the prior receipt's exact producer run, artifact ID, service
 digest, file SHA-256, and receipt digest and preserves prior evidence
@@ -366,7 +433,17 @@ downloads the complete preparation/attestation/observation/post-grant chain by
 exact selectors, schema-validates and replays it, and exposes only the verified
 chain tip's four selectors to closeout. Tests cover approval edit/deletion or
 expiry before preparation and immediately before observation, operator/attestor
-or observer substitution, unauthorized pre/post registry deltas, late-
+or observer substitution, missing/stale/edited/caller-supplied pre-observation,
+pre/post object reuse, a post object created before preparation or its
+applicable operation-evidence object,
+edited post bytes/update metadata, a backdated claimed observation, reuse of a
+pre-recovery post observation, and both late-attestation and orphan-acceptance
+ordering,
+missing or duplicate fixed-name merged-observation handoffs, name-selected or
+cross-run handoff retrieval, and producer-run, numeric-artifact-ID, service-
+digest, file-SHA-256, repository, finalizer-workflow path/ref/file-digest,
+trigger event, approved-head/merge-SHA, terminal-state, or schema substitution,
+unauthorized registry deltas, late-
 attestation and explicit-orphan-acceptance recovery after every stop point,
 omitted/extra manifest
 rows, stale or caller-supplied observations, skipped/rewritten predecessors,
@@ -472,8 +549,9 @@ freshly downloading the published gem by exact name/version.
 It records the original provisional publication-operation receipt, the
 complete post-grant receipt chain, authorization-capture selectors and digest,
 the byte-identical preparation receipts, operator attestations or authorized
-orphan-acceptance records, and authenticated observation records or merged
-observation-PR evidence for every attempt,
+orphan-acceptance records, byte-identical canonical pre-observation objects plus
+their derived author/type/ID/timestamps/schema/body-digest/verification/freshness
+metadata, and merged post-observation-PR evidence for every attempt,
 the freshly downloaded byte-identical authorization JSON itself, published-gem
 SHA-256, RubyGems metadata and provenance, tag and GitHub Release commit,
 grant-manifest results, owner/MFA read-back, toolchain, and clean-install smoke
@@ -489,12 +567,14 @@ to the capture selectors, provisional receipt, and complete post-grant chain,
 and binds the genesis and every successor to the exact provisional and
 predecessor selector/digest tuples plus the authorization-bound preparation
 workflow identity, attestation object identity/body digest, and authenticated
-observation workflow or merged observation-PR identity. An orphan-recovery
+pre-observation bytes and complete derived verification metadata plus merged
+post-observation-PR identity and derived stable object metadata. An orphan-recovery
 successor binds the authorized orphan-acceptance identity/body digest in place
 of a missing operator attestation. The candidate
 contains a canonical chain index and the byte-identical genesis receipt, every
 successor receipt, and every attempt's schema-valid preparation, attestation,
-observation, and post-grant receipt bytes—not only the tip, selector references,
+pre-observation bytes and derived verification metadata, post-observation, and
+post-grant receipt bytes—not only the tip, selector references,
 or copied-forward fields—so the PR workflow and trusted-base closeout finalizer
 can replay the entire human-grant evidence chain from merged bytes after Actions
 artifacts expire. The PR workflow executes
@@ -748,7 +828,9 @@ dashboard gem, or unsupported-by-assumption npm team disposition is included.
   `release/schemas/rubygems-grant-preparation-v1.schema.json`,
   `release/schemas/rubygems-grant-attestation-v1.schema.json`,
   `release/schemas/rubygems-grant-orphan-acceptance-v1.schema.json`,
+  `release/schemas/rubygems-grant-pre-observation-v1.schema.json`,
   `release/schemas/rubygems-grant-observation-v1.schema.json`,
+  `release/schemas/rubygems-merged-observation-handoff-v1.schema.json`,
   `release/schemas/rubygems-post-grant-receipt-v1.schema.json`,
   `release/schemas/rubygems-grant-chain-index-v1.schema.json`, and
   `release/schemas/rubygems-release-closeout-v1.schema.json`, with reviewed
@@ -914,7 +996,9 @@ unassigned note does not satisfy this follow-up.
   `release/schemas/rubygems-grant-preparation-v1.schema.json`,
   `release/schemas/rubygems-grant-attestation-v1.schema.json`,
   `release/schemas/rubygems-grant-orphan-acceptance-v1.schema.json`,
+  `release/schemas/rubygems-grant-pre-observation-v1.schema.json`,
   `release/schemas/rubygems-grant-observation-v1.schema.json`,
+  `release/schemas/rubygems-merged-observation-handoff-v1.schema.json`,
   `release/schemas/rubygems-post-grant-receipt-v1.schema.json`,
   `release/schemas/rubygems-grant-chain-index-v1.schema.json`, and
   `release/schemas/rubygems-release-closeout-v1.schema.json`, with reviewed
