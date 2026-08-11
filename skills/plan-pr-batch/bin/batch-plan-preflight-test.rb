@@ -509,8 +509,8 @@ class BatchPlanPreflightTest < Minitest::Test
   def test_mixed_verified_and_reserved_overlap_requires_pair_level_max_one_serialization
     lanes = [lane("lane-a"), lane("lane-b")]
     maps = {
-      "lane-a" => touch_map(1, ["lib/lane-a.rb"]),
-      "lane-b" => touch_map(2, ["lib/expanded.rb"])
+      "lane-a" => touch_map(1, ["lib/shared.rb"]),
+      "lane-b" => touch_map(2, ["lib/shared.rb", "lib/expanded.rb"])
     }
     reservation = expansion_path_reservation(lane_id: "lane-a")
     edges = [{ "id" => "lane-a-before-lane-b", "from" => "lane-a", "to" => "lane-b", "type" => "edit" }]
@@ -530,6 +530,8 @@ class BatchPlanPreflightTest < Minitest::Test
     collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
     assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
     assert_includes collision.fetch("message"), "max-1 serialization"
+    assert_includes collision.fetch("message"), "lib/expanded.rb"
+    assert_includes collision.fetch("message"), "lib/shared.rb"
 
     lanes.each { |record| record["serialization_group"] = "expanded-path-writers" }
     groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
