@@ -175,6 +175,7 @@ SOL_XHIGH_NONTRIGGERS_RULE =
   "Polling, mechanical work, deterministic aggregation, receipt construction, unchanged-state checks, context pollution, and topology alone do not justify Sol/xhigh."
 USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
   "An explicitly user-selected Sol/xhigh override is honored and reported as an override, not silently rewritten."
+# Intentionally duplicates the exact CHANGELOG bullet; update this mirror with any copy edit.
 CODEX_CHANGELOG_ROUTING_NOTE =
   "Adopt the recommended Codex GPT-5.6 routing profile: balanced/high routine multi-lane coordination, with Terra/high for host-verified coordination and positively classified simple workers; Sol/xhigh adversarial QA and high-risk escalation; and Sol/high for uncertainty and routine deterministic QA."
 MEASURED_PROMOTION_DEFERRAL_RULE =
@@ -199,7 +200,7 @@ ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE =
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
 # This bounded, guide-derived stop/prohibition vocabulary needs matching mutation coverage whenever routing-guide phrasing changes.
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+blocked|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+blocked|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -347,6 +348,10 @@ def markdown_setext_heading_line_indexes(lines)
   end.flatten.uniq
 end
 
+def markdown_fence_line?(line)
+  line.match?(/^\s{0,3}(?:```|~~~)/)
+end
+
 def markdown_structural_segments(block)
   segments = []
   current_segment = +""
@@ -356,6 +361,10 @@ def markdown_structural_segments(block)
 
   lines.each_with_index do |line, index|
     if table_line_indexes.include?(index)
+      segments << current_segment unless current_segment.empty?
+      segments << line
+      current_segment = +""
+    elsif markdown_fence_line?(line)
       segments << current_segment unless current_segment.empty?
       segments << line
       current_segment = +""
@@ -968,6 +977,7 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch blocks replay" => "A route mismatch blocks replay.",
       "route mismatch blocks review" => "A route mismatch blocks review.",
       "route mismatch blocks audit" => "A route mismatch blocks audit.",
+      "route mismatch blocks both launch and review" => "A route mismatch blocks both launch and review.",
       "outcome-first passive blocked launch" => "When a route mismatch occurs, launch is blocked.",
       "subject-first passive blocked review" => "A route mismatch means review is blocked.",
       "outcome-first passive blocked plural" => "Launch and replay are blocked when a route mismatch occurs.",
@@ -1100,6 +1110,7 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not necessarily stop the lane before edits.",
       "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not prevent launch.",
+      "A route mismatch does not block both launch and review.",
       "An inherited route never prevents review.",
       "When a route mismatch occurs, launch is not blocked.",
       "A route mismatch means review and audit are not blocked.",
@@ -1173,6 +1184,8 @@ class ModelRoutingContractTest < Minitest::Test
       "ATX heading boundary" => "### Route mismatch\nDestructive scope expansion blocks execution.",
       "Setext dashed heading boundary" => "Route mismatch\n--------------\nDestructive scope expansion blocks execution.",
       "Setext equals heading boundary" => "Route mismatch\n==============\nDestructive scope expansion blocks execution.",
+      "backtick fenced block boundary" => "A route mismatch\n\`\`\`text\nDestructive scope expansion blocks execution.\n\`\`\`",
+      "tilde fenced block boundary" => "A route mismatch\n~~~ruby\nDestructive scope expansion blocks execution.\n~~~",
       "HTML comment" => "<!-- A route mismatch blocks launch. -->",
       "multiline HTML comment" => "<!-- A route mismatch\nblocks launch. -->",
       "Markdown list items" => "- route mismatch: record honestly\n- independent risk gate: blocks execution",
@@ -1216,6 +1229,7 @@ class ModelRoutingContractTest < Minitest::Test
       "inline-pipe prose" => "A route mismatch uses requested | observed fields and\nblocks execution before editing.",
       "ATX heading followed by route-only contradiction" => "### Advisory routing\nA route mismatch blocks execution before editing.",
       "Setext heading followed by route-only contradiction" => "Advisory routing\n----------------\nA route mismatch blocks execution before editing.",
+      "fenced route-only contradiction" => "\`\`\`text\nA route mismatch blocks launch.\n\`\`\`",
       "visible contradiction beside HTML comment" => "<!-- route metadata remains advisory -->\nA route mismatch blocks launch.\n<!-- end advisory note -->",
       "visible prose around HTML comment" => "A route mismatch <!-- advisory metadata --> blocks launch."
     }.each do |position, contradiction|
