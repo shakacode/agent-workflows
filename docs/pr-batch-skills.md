@@ -21,24 +21,24 @@ For a verified Codex GPT-5.6 host, the recommended exact routing profile is:
 
 - Default single-target planner: Sol/high
 - Affirmatively simple single-target planner: Terra/high
-- Multi-lane coordinator: Sol/xhigh
+- Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
-- High-risk or escalated work: Sol/xhigh
+- Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
 For a verified Claude host, the provisional recommended exact routing profile
-(`claude-profile v0`) is:
+(`claude-profile v1`) is:
 
-- Default single-target planner: Opus 4.8/high
+- Default single-target planner: Opus 5/high
 - Affirmatively simple single-target planner: Sonnet 5/high
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
 
 Other runtimes continue to use the portable `fastest-low-cost`, `balanced`, and
 `strongest` classes as advisory preferences. Dispatch may bind an exact
@@ -175,9 +175,13 @@ omit the queue summary and note that queue state is unavailable.
    Treat one issue or PR as a single-target plan even when `$pr-batch` will use
    bounded implementation, review, or QA subagents. On Codex, default
    single-target `$plan-pr-batch` work to Sol/high. Use Terra/high only after an
-   affirmative simple classification, and reserve Sol/xhigh for interacting
-   targets, retained cross-batch orchestration, or a present/disputed high-risk
-   boundary.
+   affirmative simple classification, and reserve Sol/xhigh for a
+   present/disputed high-risk boundary or another listed exception. Multiple
+   interacting targets use the routine multi-lane balanced/high route unless an
+   exception applies.
+   On Claude, use Opus 5/high by default, Sonnet 5/high only after the same
+   affirmative simple classification, and Opus 5/xhigh for the corresponding
+   high-risk or escalation exceptions.
    A straightforward exact target may go directly to `$pr-batch` when no
    selection, shaping, dependency, or planning decision remains.
    If the host exposes a materially different current planner route,
@@ -337,7 +341,7 @@ record it and proceed to consolidated triage instead of parking in
 - Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 - Use `$replicate-ci` when local validation is green but hosted CI is red, or
   when a failing hosted check appears to depend on runner/toolchain parity.
-- Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, and explicit `UNKNOWN` entries.
+- Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, explicit `UNKNOWN` entries, and the exact archive-readiness status line required by [`workflows/pr-processing.md` -> Batch Handoff Format](../workflows/pr-processing.md#batch-handoff-format), either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`. That status line belongs to the batch-level final message only; a lane-level worker handoff does not carry it.
 
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 

@@ -110,10 +110,10 @@ ROUTE_AUTHORITY_ENFORCEMENT_PATTERNS = {
 }.freeze
 
 CODEX_RECOMMENDATIONS = [
-  "Multi-lane coordinator: Sol/xhigh",
+  "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
   "Simple, positively classified worker: Terra/high",
   "Unknown or uncertain worker: Sol/high",
-  "High-risk or escalated work: Sol/xhigh",
+  "Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`",
   "Independent adversarial QA: Sol/xhigh",
   "Routine deterministic QA: Sol/high"
 ].freeze
@@ -127,19 +127,220 @@ CLAUDE_RECOMMENDATIONS = [
   "Routine deterministic QA: Opus 4.8/high"
 ].freeze
 
+MODEL_ROUTING_GUIDE_PATH = "docs/agent-workflows-model-routing.md"
+ROUTE_DISPOSITION_TABLE_HEADING = "### Disposition Table"
+ROUTE_PROVENANCE_RULES = [
+  "A requested route is an instruction; an observed route is host-reported evidence of what actually executed. The two are separate fields and never collapse into one.",
+  "Requested-route prose in a plan, handoff, comment, or PR description is never presentable as observed execution evidence; only host-reported session metadata binds.",
+  "When operator policy names an exact route, an unbound, unavailable, substituted, or `UNKNOWN` observed tuple stops the lane with `MODEL_ROUTE_MISMATCH` before any edit begins.",
+  "A worker never inherits the coordinator's model/effort pair, and an inherited pair is a route mismatch even when the inherited route is stronger than the requested one.",
+  "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule"
+].freeze
+SATISFIED_ROUTE_DISPOSITIONS = %w[proceed proceed-as-fallback].freeze
+FAIL_CLOSED_ROUTE_CASES = %w[
+  unbound-exact-route
+  silent-substitution
+  coordinator-pair-inheritance
+].freeze
+AW_D_ROUTE_REPLAY = [
+  { pr: 146, role: "implementation", case_id: "bound-exact-match", disposition: "proceed" },
+  { pr: 146, role: "review and QA", case_id: "bound-exact-match", disposition: "proceed" },
+  { pr: 147, role: "post-publication review fixes", case_id: "coordinator-pair-inheritance", disposition: "MODEL_ROUTE_MISMATCH" },
+  { pr: 148, role: "implementation", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" },
+  { pr: 148, role: "QA", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" }
+].freeze
+# Internal consistency and mutation guard for the audited replay fixture; it is
+# not an independent tamper-proof immutable oracle. Sorted so row order is free.
+AW_D_ROUTE_REPLAY_FINGERPRINT = [
+  "146|implementation|bound-exact-match|proceed",
+  "146|review and QA|bound-exact-match|proceed",
+  "147|post-publication review fixes|coordinator-pair-inheritance|MODEL_ROUTE_MISMATCH",
+  "148|QA|silent-substitution|MODEL_ROUTE_MISMATCH",
+  "148|implementation|silent-substitution|MODEL_ROUTE_MISMATCH"
+].freeze
+EXPECTED_ROUTE_DISPOSITIONS = {
+  "bound-exact-match" => "proceed",
+  "unbound-exact-route" => "MODEL_ROUTE_MISMATCH",
+  "silent-substitution" => "MODEL_ROUTE_MISMATCH",
+  "coordinator-pair-inheritance" => "MODEL_ROUTE_MISMATCH",
+  "authorized-fallback" => "proceed-as-fallback"
+}.freeze
+ROUTINE_COORDINATOR_ROUTE_RULE =
+  "Routine bounded planning, dispatch bookkeeping, status reconciliation, evidence collation, and routine coordination use the `balanced`/high class. Name the exact `Terra/high` pair only when the active host has verified that pair; otherwise preserve the requested preference and record host-observed values as `UNKNOWN` when unavailable."
+ROUTINE_MULTI_LANE_COORDINATOR_ROUTE_RULE =
+  "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)"
+SOL_XHIGH_EXCEPTION_ROUTE_RULE =
+  "Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`"
+AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE =
+  "authorized fallback tuple with recorded authority"
+SOL_XHIGH_RESERVATION_RULE =
+  "Reserve Sol/xhigh for a pinned high-risk trigger, a bounded plan challenge, repeated credible failures, or an evidence-backed `MODEL_ESCALATION_REQUEST`."
+SOL_XHIGH_NONTRIGGERS_RULE =
+  "Polling, mechanical work, deterministic aggregation, receipt construction, unchanged-state checks, context pollution, and topology alone do not justify Sol/xhigh."
+USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
+  "An explicitly user-selected Sol/xhigh override is honored and reported as an override, not silently rewritten."
+MEASURED_PROMOTION_DEFERRAL_RULE =
+  "No ten-batch measured promotion decision may be made before #398 execution-provenance receipts exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
+
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
+end
+
+def extract_markdown_section(text, heading)
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  raise "missing #{heading}" unless heading_match
+
+  body_start = heading_match.end(0)
+  next_heading = text.match(/^###\s+/, body_start)
+  body_end = next_heading ? next_heading.begin(0) : text.length
+  text[body_start...body_end]
+end
+
+def strip_html_comments(text)
+  text.gsub(/<!--.*?-->/m, "")
 end
 
 def normalized(text)
   text.gsub(/\s+/, " ").strip
 end
 
-def extract_prompt(text, heading)
-  heading_index = text.index(heading)
-  raise "missing #{heading}" unless heading_index
+def route_dispositions(text)
+  section = extract_markdown_section(text, ROUTE_DISPOSITION_TABLE_HEADING)
+  rows = section.scan(/^\|\s*`([a-z-]+)`\s*\|[^|\n]*\|[^|\n]*\|\s*`([A-Za-z_-]+)`\s*\|\s*$/)
+  raise "missing route disposition rows under #{ROUTE_DISPOSITION_TABLE_HEADING}" if rows.empty?
 
-  fence_start = text.index(TEXT_FENCE, heading_index)
+  duplicate_case_ids = rows.group_by(&:first).select { |_case_id, entries| entries.length > 1 }.keys
+  unless duplicate_case_ids.empty?
+    raise "duplicate route disposition case ids: #{duplicate_case_ids.join(', ')}"
+  end
+
+  rows.to_h
+end
+
+def mutate_route_disposition(text, case_id, disposition)
+  text.sub(/(^\|\s*`#{Regexp.escape(case_id)}`[^\n]*\|\s*)`[A-Za-z_-]+`(\s*\|\s*$)/) do
+    "#{Regexp.last_match(1)}`#{disposition}`#{Regexp.last_match(2)}"
+  end
+end
+
+def duplicate_route_disposition(text, case_id, disposition)
+  row_pattern = /^\|\s*`#{Regexp.escape(case_id)}`[^\n]*\n/
+  row = text.match(row_pattern)&.to_s
+  raise "missing route disposition row for #{case_id}" unless row
+
+  duplicate = "| `#{case_id}` | duplicate requested tuple | duplicate observed tuple | `#{disposition}` |\n"
+  text.sub(row, "#{row}#{duplicate}")
+end
+
+def assert_route_provenance_contract(test, text, label)
+  guide = normalized(text)
+  ROUTE_PROVENANCE_RULES.each do |rule|
+    test.assert_includes guide, rule, "#{label} must carry the exact route-provenance rule: #{rule}"
+  end
+end
+
+def aw_d_replay_fingerprint
+  AW_D_ROUTE_REPLAY.map do |row|
+    [row.fetch(:pr), row.fetch(:role), row.fetch(:case_id), row.fetch(:disposition)].join("|")
+  end.sort
+end
+
+def assert_aw_d_route_replay(test, text, label)
+  dispositions = route_dispositions(text)
+  test.assert_includes normalized(text), AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE,
+                       "#{label}: authorized fallback must retain its recorded-authority requirement"
+  FAIL_CLOSED_ROUTE_CASES.each do |case_id|
+    test.assert_equal "MODEL_ROUTE_MISMATCH", dispositions[case_id],
+                      "#{label}: #{case_id} must stay fail-closed"
+  end
+  EXPECTED_ROUTE_DISPOSITIONS.each do |case_id, expected|
+    test.assert_equal expected, dispositions[case_id],
+                      "#{label}: #{case_id} must dispose as #{expected}"
+  end
+  test.assert_equal AW_D_ROUTE_REPLAY_FINGERPRINT, aw_d_replay_fingerprint,
+                    "#{label}: the internal AW D replay fixture changed; keep this consistency and mutation guard aligned with the audited record"
+  AW_D_ROUTE_REPLAY.each do |row|
+    expected = row.fetch(:disposition)
+    actual = dispositions[row.fetch(:case_id)]
+    test.assert_equal expected, actual,
+                      "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} (#{row.fetch(:case_id)}) must dispose as #{expected}"
+    next if SATISFIED_ROUTE_DISPOSITIONS.include?(expected)
+
+    test.assert_includes FAIL_CLOSED_ROUTE_CASES, row.fetch(:case_id),
+                         "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} replays a non-satisfied outcome, so #{row.fetch(:case_id)} must be a fail-closed case"
+  end
+end
+
+def assert_recommended_profiles(test, text, label)
+  guide = normalized(text)
+  (CODEX_RECOMMENDATIONS + CLAUDE_RECOMMENDATIONS).each do |recommendation|
+    test.assert_includes guide, recommendation, "#{label} is missing #{recommendation}"
+  end
+  test.assert_includes guide, "advisory", label
+end
+
+def assert_constrained_routine_routing(test, text, label)
+  guide = normalized(strip_html_comments(text))
+  [
+    ROUTINE_COORDINATOR_ROUTE_RULE,
+    ROUTINE_MULTI_LANE_COORDINATOR_ROUTE_RULE,
+    SOL_XHIGH_EXCEPTION_ROUTE_RULE,
+    SOL_XHIGH_RESERVATION_RULE,
+    SOL_XHIGH_NONTRIGGERS_RULE,
+    USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE,
+    MEASURED_PROMOTION_DEFERRAL_RULE
+  ].each do |rule|
+    test.assert_includes guide, rule, "#{label} is missing constrained-routing rule: #{rule}"
+  end
+  test.refute_includes guide, "Multi-lane coordinator: Sol/xhigh",
+                       "#{label} must not present Sol/xhigh as the multi-lane coordinator default"
+end
+
+def evidence_status_rows(text)
+  section = extract_markdown_section(text, "### Evidence Status")
+  lines = section.lines
+  header_index = lines.index { |line| line.strip == "| Scenario class | Risk | Recommended route | Samples | Evidence strength |" }
+  raise "missing Evidence Status table header" unless header_index
+
+  data_lines = lines[(header_index + 2)..].take_while { |line| line.start_with?("|") }
+  raise "missing Evidence Status scenario rows" if data_lines.empty?
+
+  data_lines.map do |line|
+    cells = line.strip.split("|", -1)[1...-1].map(&:strip)
+    raise "malformed Evidence Status scenario row: #{line.strip}" unless cells.length == 5
+
+    {
+      scenario: cells[0],
+      samples: cells[3],
+      evidence_strength: cells[4].delete("`")
+    }
+  end
+end
+
+def mutate_evidence_status_row(text, scenario, samples: nil, evidence_strength: nil)
+  row = text.each_line.find { |line| line.start_with?("| #{scenario} |") }
+  raise "missing Evidence Status scenario row for #{scenario}" unless row
+
+  cells = row.strip.split("|", -1)[1...-1].map(&:strip)
+  cells[3] = samples if samples
+  cells[4] = "`#{evidence_strength}`" if evidence_strength
+  text.sub(row, "| #{cells.join(' | ')} |\n")
+end
+
+def assert_evidence_status_table_unmeasured(test, text, label)
+  evidence_status_rows(text).each do |row|
+    test.assert_equal "0", row.fetch(:samples),
+                      "#{label}: #{row.fetch(:scenario)} must retain Samples: 0"
+    test.assert_equal "UNKNOWN", row.fetch(:evidence_strength),
+                      "#{label}: #{row.fetch(:scenario)} must retain Evidence strength: UNKNOWN"
+  end
+end
+
+def extract_prompt(text, heading)
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  raise "missing #{heading}" unless heading_match
+
+  fence_start = text.index(TEXT_FENCE, heading_match.end(0))
   raise "missing text fence after #{heading}" unless fence_start
 
   body_start = fence_start + TEXT_FENCE.length
@@ -150,6 +351,38 @@ def extract_prompt(text, heading)
 end
 
 class ModelRoutingContractTest < Minitest::Test
+  def test_markdown_section_extractor_ignores_a_quoted_heading
+    document = <<~MARKDOWN
+      <!-- Keep `### Disposition Table` in sync. -->
+      decoy body
+
+      ### Disposition Table
+
+      real body
+
+      ### Next
+    MARKDOWN
+
+    assert_equal "\n\nreal body\n\n", extract_markdown_section(document, "### Disposition Table")
+  end
+
+  def test_prompt_extractor_ignores_a_heading_quoted_before_the_real_fence
+    document = <<~MARKDOWN
+      <!-- See `## Goal Prompt` before editing. -->
+      ```text
+      decoy prompt
+      ```
+
+      ## Goal Prompt
+
+      ```text
+      real prompt
+      ```
+    MARKDOWN
+
+    assert_equal "real prompt\n", extract_prompt(document, "## Goal Prompt")
+  end
+
   def test_active_routing_surfaces_share_the_advisory_unsigned_lifecycle_contract
     ROUTING_SURFACES.each do |path|
       text = normalized(read_repo_file(path))
@@ -301,11 +534,34 @@ class ModelRoutingContractTest < Minitest::Test
     ]
 
     paths.each do |path|
-      text = normalized(read_repo_file(path))
-      (CODEX_RECOMMENDATIONS + CLAUDE_RECOMMENDATIONS).each do |recommendation|
-        assert_includes text, recommendation, "#{path} is missing #{recommendation}"
+      assert_recommended_profiles(self, read_repo_file(path), path)
+    end
+  end
+
+  def test_profile_surfaces_reject_the_former_sol_xhigh_coordinator_default
+    paths = %w[
+      docs/agent-workflows-model-routing.md
+      docs/pr-batch-skills.md
+      skills/plan-pr-batch/SKILL.md
+      skills/post-merge-audit/SKILL.md
+      skills/pr-batch/SKILL.md
+      skills/triage/SKILL.md
+      workflows/post-merge-audit.md
+      workflows/pr-processing.md
+    ]
+
+    paths.each do |path|
+      text = read_repo_file(path)
+      assert_recommended_profiles(self, text, path)
+      mutant = text.sub(
+        "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
+        "Multi-lane coordinator: Sol/xhigh"
+      )
+
+      refute_equal text, mutant, "#{path} former coordinator-default mutant did not change the profile"
+      assert_raises(Minitest::Assertion, "#{path} accepted the former Sol/xhigh coordinator default") do
+        assert_recommended_profiles(self, mutant, "#{path} former coordinator-default mutant")
       end
-      assert_includes text, "advisory", path
     end
   end
 
@@ -338,6 +594,165 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes text, "preferred model/effort", path
       assert_includes text, "observed host/model/effort", path
       assert_includes text, "UNKNOWN", path
+    end
+  end
+
+  def test_routing_guide_pins_requested_versus_observed_route_provenance
+    assert_route_provenance_contract(self, read_repo_file(MODEL_ROUTING_GUIDE_PATH), MODEL_ROUTING_GUIDE_PATH)
+  end
+
+  def test_aw_d_route_mismatch_replays_to_fail_closed_dispositions
+    assert_aw_d_route_replay(self, read_repo_file(MODEL_ROUTING_GUIDE_PATH), MODEL_ROUTING_GUIDE_PATH)
+  end
+
+  def test_route_provenance_rule_mutants_fail_closed
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_route_provenance_contract(self, text, MODEL_ROUTING_GUIDE_PATH)
+    guide = normalized(text)
+    mutants = {
+      "collapsed requested into observed" => guide.sub("never collapse into one", "may be recorded as one field"),
+      "prose accepted as evidence" => guide.sub(
+        "is never presentable as observed execution evidence",
+        "should not usually be presented as observed execution evidence"
+      ),
+      "unbound exact route allowed to proceed" => guide.sub(
+        "stops the lane with `MODEL_ROUTE_MISMATCH` before any edit begins",
+        "is recorded as a note and the lane proceeds"
+      ),
+      "inheritance permitted when stronger" => guide.sub(
+        "an inherited pair is a route mismatch even when the inherited route is stronger than the requested one",
+        "an inherited pair is acceptable when the inherited route is stronger than the requested one"
+      ),
+      "nested spawns exempted" => guide.sub(
+        "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule",
+        "Nested subagents are exempt from this rule"
+      )
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal guide, mutant, "#{mutation} mutant did not change the guide text"
+      assert_raises(Minitest::Assertion, "model-routing guide accepted #{mutation}") do
+        assert_route_provenance_contract(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
+    end
+  end
+
+  def test_aw_d_replay_mutants_fail_closed_on_silent_inheritance
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_aw_d_route_replay(self, text, MODEL_ROUTING_GUIDE_PATH)
+    mutants = {
+      "inherited coordinator pair allowed to proceed" =>
+        mutate_route_disposition(text, "coordinator-pair-inheritance", "proceed"),
+      "silent substitution downgraded to a fallback" =>
+        mutate_route_disposition(text, "silent-substitution", "proceed-as-fallback"),
+      "unbound exact route allowed to proceed" =>
+        mutate_route_disposition(text, "unbound-exact-route", "proceed"),
+      "authorized fallback stripped of its recorded-authority requirement" =>
+        mutate_route_disposition(text, "authorized-fallback", "proceed"),
+      "authorized fallback tuple loses recorded authority" =>
+        text.sub(AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE, "authorized fallback tuple"),
+      "bound exact match downgraded to a mismatch" =>
+        mutate_route_disposition(text, "bound-exact-match", "MODEL_ROUTE_MISMATCH")
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal text, mutant, "#{mutation} mutant did not change the disposition table"
+      assert_raises(Minitest::Assertion, "AW D replay accepted #{mutation}") do
+        assert_aw_d_route_replay(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
+    end
+  end
+
+  def test_duplicate_route_dispositions_fail_closed
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    mutant = duplicate_route_disposition(text, "silent-substitution", "proceed")
+
+    refute_equal text, mutant, "duplicate disposition mutant did not change the guide text"
+    error = assert_raises(RuntimeError, "duplicate route disposition row was accepted") do
+      route_dispositions(mutant)
+    end
+    assert_includes error.message, "duplicate route disposition case ids: silent-substitution"
+  end
+
+  def test_routing_guide_marks_scenario_recommendations_unmeasured
+    guide = normalized(read_repo_file(MODEL_ROUTING_GUIDE_PATH))
+
+    [
+      "No measured route recommendation is published yet",
+      "priors chosen for fail-closed safety, not measurements",
+      "do not compare a requested route that lacks an observed receipt against one that has one",
+      "Route adherence is itself an outcome measure"
+    ].each do |phrase|
+      assert_includes guide, phrase, "model-routing guide is missing evidence-status rule: #{phrase}"
+    end
+  end
+
+  def test_evidence_status_table_keeps_every_scenario_unmeasured
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_evidence_status_table_unmeasured(self, text, MODEL_ROUTING_GUIDE_PATH)
+
+    mutants = {
+      "nonzero scenario samples" => mutate_evidence_status_row(text, "Adversarial review", samples: "1"),
+      "known scenario evidence strength" => mutate_evidence_status_row(
+        text,
+        "Exact-head QA and replay",
+        evidence_strength: "MEASURED"
+      )
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal text, mutant, "#{mutation} mutant did not change the evidence-status table"
+      assert_raises(Minitest::Assertion, "evidence-status table accepted #{mutation}") do
+        assert_evidence_status_table_unmeasured(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
+    end
+  end
+
+  def test_routine_coordinator_routing_and_measured_promotion_remain_constrained
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_constrained_routine_routing(self, text, MODEL_ROUTING_GUIDE_PATH)
+
+    mutants = {
+      "routine coordination defaults to strongest" => text.sub(
+        "routine coordination use the `balanced`/high class",
+        "routine coordination use Sol/xhigh by default"
+      ),
+      "routine multi-lane coordinator defaults to Sol/xhigh" => text.sub(
+        "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
+        "Multi-lane coordinator: Sol/xhigh"
+      ),
+      "routine coordination defaults to strongest only in an HTML comment" =>
+        text.sub(
+          "routine coordination use the `balanced`/high class",
+          "routine coordination use Sol/xhigh by default"
+        ) + "\n<!-- #{ROUTINE_COORDINATOR_ROUTE_RULE} -->\n",
+      "unverified Terra pair named as exact" => text.sub(
+        "only when the active host has verified that pair",
+        "whenever the coordinator requests it"
+      ),
+      "Sol/xhigh reservation broadened" => text.sub(
+        "Reserve Sol/xhigh for a pinned high-risk trigger",
+        "Use Sol/xhigh for ordinary coordination or a pinned high-risk trigger"
+      ),
+      "mechanical activity treated as a Sol/xhigh trigger" => text.sub(
+        "mechanical work",
+        "high-risk mechanical work"
+      ),
+      "user-selected Sol/xhigh override silently rewritten" => text.sub(
+        "An explicitly user-selected Sol/xhigh override is honored and\nreported as an override, not silently rewritten",
+        "An explicitly user-selected Sol/xhigh override is silently\nrewritten"
+      ),
+      "promotion decision made before #398 receipts" => text.sub(
+        "No ten-batch measured promotion decision may be made before #398\nexecution-provenance receipts exist",
+        "A ten-batch measured promotion decision may be made before #398\nexecution-provenance receipts exist"
+      )
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal text, mutant, "#{mutation} mutant did not change the guide text"
+      assert_raises(Minitest::Assertion, "model-routing guide accepted #{mutation}") do
+        assert_constrained_routine_routing(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
     end
   end
 

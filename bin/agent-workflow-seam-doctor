@@ -129,7 +129,7 @@ module AgentWorkflowSeamDoctor
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
   REPO_PREFIX_PATTERN = /\A[A-Z0-9]{1,6}\z/
   MERGE_SUBMISSION_POLICY_KEY = "merge_submission"
-  MERGE_SUBMISSION_MODES = %w[merge_queue_only merge_queue_or_guarded_direct].freeze
+  MERGE_SUBMISSION_MODES = %w[direct merge_queue_only merge_queue_or_guarded_direct].freeze
   MERGE_SUBMISSION_KEYS = %w[mode guarded_direct].freeze
   GUARDED_DIRECT_KEYS = %w[executable method non_atomic_base].freeze
   NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
@@ -1473,7 +1473,7 @@ module AgentWorkflowSeamDoctor
   def prepare_init_policy(root, base_branch, existing)
     defaults = REQUIRED_POLICY_KEYS.to_h { |key| [key, key == "base_branch" ? base_branch : "n/a"] }
     defaults["follow_up_prefix"] = "Follow-up:"
-    defaults[MERGE_SUBMISSION_POLICY_KEY] = { "mode" => "merge_queue_only" }
+    defaults[MERGE_SUBMISSION_POLICY_KEY] = { "mode" => "direct" }
     prepare_init_mapping(File.join(root, POLICY_CONFIG), existing, defaults, "policy config")
   end
 
@@ -1749,14 +1749,14 @@ module AgentWorkflowSeamDoctor
 
     mode = seam["mode"]
     unless MERGE_SUBMISSION_MODES.include?(mode)
-      return ["invalid merge_submission policy: mode must be merge_queue_only or " \
+      return ["invalid merge_submission policy: mode must be direct, merge_queue_only, or " \
               "merge_queue_or_guarded_direct"]
     end
-    expected_keys = mode == "merge_queue_only" ? ["mode"] : MERGE_SUBMISSION_KEYS
+    expected_keys = %w[direct merge_queue_only].include?(mode) ? ["mode"] : MERGE_SUBMISSION_KEYS
     unless exact_string_keys?(seam, expected_keys)
       return ["invalid merge_submission policy: keys must be exactly #{expected_keys.sort.join(', ')}"]
     end
-    return [] if mode == "merge_queue_only"
+    return [] if %w[direct merge_queue_only].include?(mode)
 
     direct = seam["guarded_direct"]
     unless exact_string_keys?(direct, GUARDED_DIRECT_KEYS)

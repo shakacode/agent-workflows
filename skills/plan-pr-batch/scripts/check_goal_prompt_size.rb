@@ -338,10 +338,10 @@ def reject_phrases(text, phrases, label)
 end
 
 def extract_goal_prompt_template(text, heading, label:)
-  heading_index = text.index(heading)
-  abort_with_failure("missing #{heading} section") unless heading_index
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  abort_with_failure("missing #{heading} section") unless heading_match
 
-  fence_start = text.index(TEXT_FENCE, heading_index)
+  fence_start = text.index(TEXT_FENCE, heading_match.end(0))
   abort_with_failure("missing text fence in #{heading} section") unless fence_start
 
   fence_body_start = fence_start + TEXT_FENCE.length
@@ -353,6 +353,29 @@ def extract_goal_prompt_template(text, heading, label:)
     label,
     missing_closing_message: "missing closing fence in #{heading} section"
   )
+end
+
+def assert_goal_prompt_heading_is_line_anchored
+  fixture = <<~MARKDOWN
+    <!-- See `## Goal Prompt for pr-batch` before editing. -->
+    ```text
+    decoy prompt
+    ```
+
+    ## Goal Prompt for pr-batch
+
+    ```text
+    real prompt
+    ```
+  MARKDOWN
+  extracted = extract_goal_prompt_template(
+    fixture,
+    "## Goal Prompt for pr-batch",
+    label: "heading-anchor fixture"
+  )
+  return if extracted == "real prompt\n"
+
+  abort_with_failure("goal prompt extractor must ignore headings quoted outside a real heading line")
 end
 
 def with_items(prompt_template, items)
@@ -427,6 +450,7 @@ skill_path = File.expand_path("../SKILL.md", __dir__)
 abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(skill_path)
 
 skill_text = File.read(skill_path, encoding: "UTF-8")
+assert_goal_prompt_heading_is_line_anchored
 workflow_text = read_repo_file("workflows/pr-processing.md")
 pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill_text = read_repo_file("skills/triage/SKILL.md")
@@ -568,7 +592,11 @@ host_aware_batch_sizing_phrase_checks = {
     ["less than 300 characters of headroom", 1],
     ["Default single-target planner: Sol/high", 1],
     ["Affirmatively simple single-target planner: Terra/high", 1],
-    ["Subagents alone do not require the multi-lane", 1]
+    ["Default single-target planner: Opus 5/high", 1],
+    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Opus 5/xhigh exception:", 1],
+    ["`claude-profile v1`", 1],
+    ["subagents alone do", 1]
   ],
   "skills/plan-pr-batch/SKILL.md" => [
     ["`codex`: up to 10 independent items, or 8", 1],
@@ -576,7 +604,11 @@ host_aware_batch_sizing_phrase_checks = {
     ["`generic`: use the Claude-sized 5/3", 1],
     ["Default single-target planner: Sol/high", 1],
     ["Affirmatively simple single-target planner: Terra/high", 1],
-    ["Do not advise from `UNKNOWN`, repeat", 1]
+    ["Default single-target planner: Opus 5/high", 1],
+    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Opus 5/xhigh exception:", 1],
+    ["`claude-profile v1`", 1],
+    ["advise from `UNKNOWN`, repeat", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
     ["Use `codex` for up to 10", 1],
@@ -627,6 +659,10 @@ if enforce_restart_docs_drift
     ["Claude and generic waves use up to 5", 1],
     ["Default single-target planner: Sol/high", 1],
     ["Affirmatively simple single-target planner: Terra/high", 1],
+    ["Default single-target planner: Opus 5/high", 1],
+    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Opus 5/xhigh exception:", 1],
+    ["`claude-profile v1`", 1],
     ["The advisory never blocks, requests a", 1]
   ]
   host_aware_batch_sizing_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text
