@@ -216,10 +216,11 @@ NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
       \b(?:is|are|was|were)n['’]?t\s+sufficient\s+to\s+ |
       \b(?:do|does|did|should|must|may|can|will|would|could|shall)\s+
       not(?:\s+|,\s*)(?:(?:by\s+itself|alone)(?:\s+|,\s*)|(?:necessarily|automatically)\s+)? |
-      \b(?:do|does|did|should|must|may|can|would|could|shall)n['’]?t\s+ |
-      \bwon['’]?t\s+ |
-      \bcannot\s+ |
-      \bcan['’]?t\s+
+      \b(?:do|does|did|should|must|may|can|would|could|shall)n['’]?t(?:\s+|,\s*)
+      (?:(?:by\s+itself|alone|necessarily|automatically)(?:\s+|,\s*))? |
+      \bwon['’]?t(?:\s+|,\s*)(?:(?:by\s+itself|alone|necessarily|automatically)(?:\s+|,\s*))? |
+      \bcannot(?:\s+|,\s*)(?:(?:by\s+itself|alone|necessarily|automatically)(?:\s+|,\s*))? |
+      \bcan['’]?t(?:\s+|,\s*)(?:(?:by\s+itself|alone|necessarily|automatically)(?:\s+|,\s*))?
     )
     \b(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b
   /ix
@@ -1055,6 +1056,7 @@ class ModelRoutingContractTest < Minitest::Test
       "No-subject negation followed by pronoun outcome" => "No route mismatch blocks launch; it prevents review.",
       "Neither-subject negation followed by pronoun outcome" => "Neither a route mismatch nor an inherited route blocks launch; it prevents review.",
       "Neither-predicate negation followed by pronoun outcome" => "A route mismatch neither blocks launch nor prevents review; it blocks audit.",
+      "closed-form negation followed by unconditional outcome" => "A route mismatch cannot by itself block launch, but it blocks audit.",
       "same-paragraph pronoun outcome" => "A route mismatch occurs. It stops the lane before any edit begins.",
       "same-paragraph pronoun prohibition" => "A route mismatch occurs. It prohibits launch.",
       "same-paragraph This outcome" => "A route mismatch occurs. This stops the lane before editing.",
@@ -1069,7 +1071,7 @@ class ModelRoutingContractTest < Minitest::Test
       "evidence gate-first trailing outcome" => "Only an independent evidence gate blocks execution when a different route occurs, then halts the lane before editing.",
       "authority gate-first trailing outcome" => "Only an independent authority gate blocks execution when an UNKNOWN model occurs, then prevents editing until relaunch."
     }.each do |case_name, contradiction|
-      mutant = "#{text}\n#{contradiction}\n"
+      mutant = "#{text}\n\n#{contradiction}\n"
 
       assert_raises(Minitest::Assertion, "advisory continuation accepted #{case_name} as an unconditional route-only stop") do
         assert_route_provenance_contract(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{case_name} unconditional-stop mutant")
@@ -1084,6 +1086,9 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not by itself block execution before edits.",
       "A route mismatch cannot stop the lane before edits.",
       "A route mismatch can't block execution before edits.",
+      "A route mismatch cannot by itself block launch.",
+      "A route mismatch cannot alone block launch.",
+      "An inherited route won't automatically block review.",
       "A route mismatch doesn't stop the lane before edits.",
       "An inherited route shouldn't disqualify the lane before edits.",
       "A route mismatch is not sufficient to stop the lane before edits.",
