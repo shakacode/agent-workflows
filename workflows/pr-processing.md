@@ -793,11 +793,27 @@ Every lane whose risk or bounded delegation requires an execution envelope
 receives one from the coordinator role before editing, regardless of route:
 exact goal and non-goals, owned paths, supported diagnosis, invariants,
 acceptance criteria, required verification, and stop conditions. The worker
-does not redefine scope or substitute a new diagnosis. Contradictory evidence,
-ambiguity, scope or blast-radius growth, a new high-risk boundary, weakened
-verification, or architecture, security, performance, compatibility, or product
-judgment triggers an immediate stop and return to the coordinator; it does not
-wait for two failed implementation attempts.
+does not redefine scope or substitute a new diagnosis. Necessary in-repository
+path expansion defaults to allowed when repository evidence shows an added path
+is reasonably necessary to complete the already-authorized goal or its required
+validation. Treat owned paths and the execution envelope as coordination and
+collision controls, not as a user-permission boundary. Before changing the
+added path, record the path and reason in the lane envelope, refresh active-lane
+claim and collision checks, and continue without user approval when they are
+clear. A missing path alone is not material scope growth and must not produce
+`blocked-user-input`.
+Necessary additions can include contract or type files, tests or fixtures,
+offline demo stubs, and build or generated integration surfaces when repository
+evidence makes them necessary.
+Contradictory evidence remains an immediate stop. Stop and return control for
+path expansion that changes the approved goal, accepted behavior, or acceptance
+criteria; adds unrelated work; crosses a repository or trust boundary; requires
+a destructive or difficult-to-reverse action; introduces secrets, permissions,
+deployments, billing, or other external effects; requires consequential
+architecture, performance, compatibility, or product judgment; materially
+changes security, privacy, compliance, or release policy; collides with another
+active lane and cannot be safely coordinated; exposes consequential ambiguity;
+or weakens verification.
 
 Before escalating, the worker stops at a safe checkpoint and emits a
 `MODEL_ESCALATION_REQUEST` with lane/claim state, branch/worktree/HEAD, current
@@ -1572,7 +1588,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=permission;path+log/check/go;contradiction/material risk/ambiguity/weakened verify=>stop;Verify live GitHub before edits;unverified facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
@@ -2122,10 +2138,14 @@ When worker subagents are explicitly authorized:
 - Before editing, when lane risk or bounded delegation requires an execution
   envelope, restate the coordinator-role-approved goal/non-goals, owned paths,
   supported diagnosis, invariants, acceptance criteria, verification, and stop
-  conditions regardless of route. With or without an envelope, stop and return
-  control rather than re-plan when evidence contradicts the diagnosis, criteria
-  are ambiguous, scope or risk grows, a security boundary appears, verification
-  weakens, or consequential judgment is required.
+  conditions regardless of route. Expand owned paths without user approval when
+  repository evidence makes an in-repository path reasonably necessary for the
+  authorized goal or required validation: record the path and reason, refresh
+  active claims and collision checks, then continue when clear. With or without
+  an envelope, stop and return control for the material goal, behavior, risk,
+  trust-boundary, external-effect, unresolved-collision, consequential-ambiguity,
+  and weaker-verification conditions above; an omitted path alone is not such a
+  condition.
 - Refresh that worker's heartbeat whenever it starts an item, pushes or updates a
   PR, completes a review pass, becomes blocked, resumes, or finishes the lane.
 - Emit a portable Lane Card after a successful claim, on blocked/cancelled state,

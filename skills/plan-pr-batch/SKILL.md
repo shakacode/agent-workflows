@@ -352,9 +352,27 @@ Plan a PR batch
      envelope a coordinator-role-approved envelope containing goal/non-goals,
      owned paths, supported diagnosis, invariants, acceptance criteria,
      verification, and immediate stop conditions regardless of route.
-     Contradictory evidence, ambiguous criteria,
-     scope or risk growth, weakened verification, or consequential judgment
-     returns control to the coordinator before further edits.
+     Necessary in-repository path expansion defaults to allowed when repository
+     evidence shows an added path is reasonably necessary to complete the
+     already-authorized goal or its required validation. Treat owned paths and
+     the execution envelope as coordination and collision controls, not as a
+     user-permission boundary. Before changing the added path, record the path
+     and reason in the lane envelope, refresh active-lane claim and collision
+     checks, and continue without user approval when they are clear. A missing
+     path alone is not material scope growth and must not produce
+     `blocked-user-input`.
+     Necessary additions can include contract or type files, tests or fixtures,
+     offline demo stubs, and build or generated integration surfaces when
+     repository evidence makes them necessary.
+     Contradictory evidence remains an immediate stop. Stop and return control
+     for path expansion that changes the approved goal, accepted behavior, or
+     acceptance criteria; adds unrelated work; crosses a repository or trust
+     boundary; requires a destructive or difficult-to-reverse action; introduces
+     secrets, permissions, deployments, billing, or other external effects;
+     requires consequential architecture, performance, compatibility, or product
+     judgment; materially changes security, privacy, compliance, or release
+     policy; collides with another active lane and cannot be safely coordinated;
+     exposes consequential ambiguity; or weakens verification.
      Before any worker launch, resolve `PLAN_PR_BATCH_SKILL_DIR` through the
      explicit env-var / loaded-skill / repo-local pinned-copy chain and pass a
      `batch-plan-preflight` v1 envelope on stdin to
@@ -702,7 +720,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=permission;path+log/check/go;contradiction/material risk/ambiguity/weakened verify=>stop;Verify live GitHub before edits;unverified facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
