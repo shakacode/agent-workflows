@@ -175,8 +175,7 @@ USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
   "An explicitly user-selected Sol/xhigh override is honored and reported as an override, not silently rewritten."
 MEASURED_PROMOTION_DEFERRAL_RULE =
   "No ten-batch measured promotion decision may be made before #398 usage/cost receipts, #333 execution-provenance receipts, and #335 evaluation runner exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
-ROUTE_ONLY_CONTRADICTION_PATTERN = /
-  MODEL_ROUTE_MISMATCH |
+ROUTE_ONLY_SUBJECT_PATTERN = /
   (?:
     route\ mismatch |
     unavailable\ (?:observed\ )?route |
@@ -184,13 +183,13 @@ ROUTE_ONLY_CONTRADICTION_PATTERN = /
     inherited\ route |
     `UNKNOWN`\ (?:observation|observed\ tuple)
   )
-  (?!
-    [^.!?]*(?:\bnever\b|\bnot\b)[^.!?]*
-    \b(?:stops?|blocks?|disqualifies)\b
-  )
-  [^.!?]*
-  \b(?:stops?\ the\ lane|blocks?\ execution|disqualifies\ the\ lane)\b
 /imx
+ROUTE_ONLY_OUTCOME_SOURCE = "stops? the lane|blocks? execution|disqualifies the lane"
+ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
+ROUTE_ONLY_CONTRADICTION_PATTERN =
+  /#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}/im
+NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
+  /\b(?:never|not)\b(?:\s+\w+){0,3}\s+\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -212,6 +211,17 @@ end
 
 def normalized(text)
   text.gsub(/\s+/, " ").strip
+end
+
+def strip_negated_route_only_outcome_clauses(text)
+  text.gsub(NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN, "")
+end
+
+def forbidden_route_only_contradiction?(text)
+  text.split(/(?<=[.!?])\s+/).any? do |sentence|
+    unnegated_sentence = strip_negated_route_only_outcome_clauses(sentence)
+    unnegated_sentence.match?(ROUTE_ONLY_CONTRADICTION_PATTERN)
+  end
 end
 
 def route_dispositions(text)
@@ -247,8 +257,10 @@ def assert_route_provenance_contract(test, text, label)
   ROUTE_PROVENANCE_RULES.each do |rule|
     test.assert_includes guide, rule, "#{label} must carry the exact route-provenance rule: #{rule}"
   end
-  test.refute_match(ROUTE_ONLY_CONTRADICTION_PATTERN, guide,
-                    "#{label} must not pair advisory continuation with an unconditional route-only stop")
+  test.refute_includes guide, "MODEL_ROUTE_MISMATCH",
+                       "#{label} must not restore the former hard route-mismatch disposition"
+  test.refute forbidden_route_only_contradiction?(guide),
+              "#{label} must not pair advisory continuation with an unconditional route-only stop"
 end
 
 def aw_d_replay_fingerprint
@@ -682,7 +694,9 @@ class ModelRoutingContractTest < Minitest::Test
       "inherited route" => "An inherited route stops the lane before any edit begins.",
       "UNKNOWN observed tuple" => "An `UNKNOWN` observed tuple stops the lane before any edit begins.",
       "route mismatch blocks execution" => "A route mismatch blocks execution before any edit begins.",
-      "UNKNOWN observed tuple disqualifies the lane" => "An `UNKNOWN` observed tuple disqualifies the lane before any edit begins."
+      "UNKNOWN observed tuple disqualifies the lane" => "An `UNKNOWN` observed tuple disqualifies the lane before any edit begins.",
+      "unrelated not before route mismatch stop" => "A route mismatch does not always occur, and it stops the lane before any edit begins.",
+      "not authorized before route mismatch stop" => "A route mismatch, when not authorized, stops the lane before any edit begins."
     }.each do |case_name, contradiction|
       mutant = "#{text}\n#{contradiction}\n"
 
@@ -695,8 +709,8 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch never blocks execution before any edit begins.",
       "An `UNKNOWN` observed tuple is not a condition that disqualifies the lane before any edit begins."
     ].each do |advisory_negation|
-      refute_match ROUTE_ONLY_CONTRADICTION_PATTERN, advisory_negation,
-                   "advisory negation must not be treated as an unconditional route-only stop"
+      refute forbidden_route_only_contradiction?(advisory_negation),
+             "advisory negation must not be treated as an unconditional route-only stop"
     end
   end
 
