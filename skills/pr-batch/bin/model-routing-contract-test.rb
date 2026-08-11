@@ -252,16 +252,29 @@ def strip_negated_route_outcome_with_independent_gate_clause(sentence)
   "#{sentence[0...subject.begin(0)]}#{sentence[independent_gate.end(0)..]}"
 end
 
-def route_only_contradiction_segments(text)
-  text.split(/\n\s*\n/).flat_map do |block|
-    if block.each_line.any? { |line| line.lstrip.start_with?("|") }
-      block.lines
-    elsif block.each_line.any? { |line| line.match?(/^\s*[-*+]\s+/) }
-      block.split(/(?=^\s*[-*+]\s+)/)
+def markdown_structural_segments(block)
+  segments = []
+  current_segment = +""
+
+  block.each_line do |line|
+    if line.lstrip.start_with?("|")
+      segments << current_segment unless current_segment.empty?
+      segments << line
+      current_segment = +""
+    elsif line.match?(/^\s*[-*+]\s+/)
+      segments << current_segment unless current_segment.empty?
+      current_segment = line.dup
     else
-      [block]
+      current_segment << line
     end
   end
+
+  segments << current_segment unless current_segment.empty?
+  segments
+end
+
+def route_only_contradiction_segments(text)
+  text.split(/\n\s*\n/).flat_map { |block| markdown_structural_segments(block) }
 end
 
 def forbidden_route_only_contradiction?(text)
@@ -816,6 +829,19 @@ class ModelRoutingContractTest < Minitest::Test
         "#{guide}\n\n- route mismatch: stops the lane before editing\n",
         "#{MODEL_ROUTING_GUIDE_PATH} Markdown list item"
       )
+    end
+
+    {
+      "wrapped prose before a table" => "A route mismatch\nblocks execution before editing.\n| Gate | advisory |",
+      "wrapped prose after a table" => "| Gate | advisory |\nA route mismatch\nblocks execution before editing."
+    }.each do |position, contradiction|
+      assert_raises(Minitest::Assertion, "a #{position} must remain forbidden") do
+        assert_route_provenance_contract(
+          self,
+          "#{guide}\n\n#{contradiction}\n",
+          "#{MODEL_ROUTING_GUIDE_PATH} #{position}"
+        )
+      end
     end
   end
 
