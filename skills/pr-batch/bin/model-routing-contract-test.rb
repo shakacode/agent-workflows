@@ -196,7 +196,7 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
 ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE = "launch|replay|review|audit|planning|coordination|execution|escalation|fallback"
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:launch|replay|review|audit)|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -223,8 +223,10 @@ NEGATED_ROUTE_ONLY_SUBJECT_OUTCOME_CLAUSE_PATTERN =
   /imx
 INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN =
   /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+if\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\b/i
-INDEPENDENT_GATE_BLOCKS_EXECUTION_PATTERN =
-  /(?:\b(?:but|and|yet)\b|;)\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\b/i
+DIRECT_INDEPENDENT_BLOCKER_SOURCE =
+  "(?:an?\\s+)?(?:independent\\s+(?:risk|scope|evidence|authority)(?:\\s+gate)?|(?:risk|scope|evidence|authority)\\s+gate|(?:destructive\\s+)?scope\\s+expansion)"
+DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN =
+  /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks\s+execution\b/i
 INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN =
   /\bonly\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\s+when\s+/i
 def read_repo_file(path)
@@ -256,16 +258,16 @@ def strip_allowed_route_only_outcome_clauses(text)
     .gsub(INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN, "")
 end
 
-def strip_negated_route_outcome_with_independent_gate_clause(sentence)
+def strip_negated_route_outcome_with_independent_blocker_clause(sentence)
   subject = sentence.match(ROUTE_ONLY_SUBJECT_PATTERN)
   negated_outcome = sentence.match(NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN)
-  independent_gate = sentence.match(INDEPENDENT_GATE_BLOCKS_EXECUTION_PATTERN)
+  independent_blocker = sentence.match(DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN)
 
-  return sentence unless subject && negated_outcome && independent_gate
-  return sentence unless subject.begin(0) < negated_outcome.begin(0) && negated_outcome.end(0) <= independent_gate.begin(0)
+  return sentence unless subject && negated_outcome && independent_blocker
+  return sentence unless subject.begin(0) < negated_outcome.begin(0) && negated_outcome.end(0) <= independent_blocker.begin(0)
   return sentence if sentence[subject.end(0)...negated_outcome.begin(0)].match?(ROUTE_ONLY_OUTCOME_PATTERN)
 
-  "#{sentence[0...subject.begin(0)]}#{sentence[independent_gate.end(0)..]}"
+  "#{sentence[0...subject.begin(0)]}#{sentence[independent_blocker.end(0)..]}"
 end
 
 def strip_independent_gate_first_clause(sentence)
@@ -350,7 +352,7 @@ def forbidden_route_only_contradiction?(text)
   route_only_contradiction_segments(text).any? do |segment|
     segment.split(/(?<=[.!?])\s+/).any? do |sentence|
       gate_first_clause_stripped = strip_independent_gate_first_clause(sentence)
-      permitted_clause_stripped = strip_negated_route_outcome_with_independent_gate_clause(gate_first_clause_stripped)
+      permitted_clause_stripped = strip_negated_route_outcome_with_independent_blocker_clause(gate_first_clause_stripped)
       unguarded_sentence = strip_allowed_route_only_outcome_clauses(permitted_clause_stripped)
       unguarded_sentence.match?(ROUTE_ONLY_CONTRADICTION_PATTERN)
     end
@@ -884,6 +886,10 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch blocks replay" => "A route mismatch blocks replay.",
       "route mismatch blocks review" => "A route mismatch blocks review.",
       "route mismatch blocks audit" => "A route mismatch blocks audit.",
+      "route mismatch prevents launch" => "A route mismatch prevents launch.",
+      "route mismatch prevents replay" => "A route mismatch prevents replay.",
+      "route mismatch prevents review" => "A route mismatch prevents review.",
+      "route mismatch prevents audit" => "A route mismatch prevents audit.",
       "unavailable route blocks planning" => "An unavailable route blocks planning.",
       "inherited route blocks coordination" => "An inherited route blocks coordination.",
       "different tuple blocks escalation" => "A different tuple blocks escalation.",
@@ -896,6 +902,7 @@ class ModelRoutingContractTest < Minitest::Test
       "outcome-first replay" => "Block replay when there is a route mismatch.",
       "outcome-first review" => "Block review when there is a route mismatch.",
       "outcome-first audit" => "Block audit when there is a route mismatch.",
+      "outcome-first prevention" => "Prevent launch when there is a route mismatch.",
       "outcome-first planning" => "Block planning when there is an unavailable route.",
       "outcome-first coordination" => "Block coordination when there is an inherited route.",
       "outcome-first escalation" => "Block escalation when there is a different tuple.",
@@ -922,6 +929,8 @@ class ModelRoutingContractTest < Minitest::Test
       "unconditional outcome before independent-yet gate clause" => "A different route disqualifies the lane, yet a route mismatch does not stop the lane, yet an independent risk gate blocks execution.",
       "semicolon gate followed by unconditional different route" => "A route mismatch does not stop the lane; an independent risk gate blocks execution, yet a different route disqualifies the lane.",
       "unconditional outcome before semicolon gate clause" => "A different route disqualifies the lane; a route mismatch does not stop the lane; an independent risk gate blocks execution.",
+      "direct blocker followed by unconditional different route" => "A route mismatch does not stop the lane; destructive scope expansion blocks execution, yet a different route disqualifies the lane.",
+      "unconditional outcome before direct blocker" => "A different route disqualifies the lane; a route mismatch does not stop the lane; destructive scope expansion blocks execution.",
       "No-subject negation followed by unconditional different route" => "No route mismatch blocks execution, but a different route stops the lane.",
       "Neither-subject negation followed by unconditional different route" => "Neither a route mismatch nor an inherited route blocks execution, but a different tuple disqualifies the lane.",
       "risk gate-first trailing outcome" => "Only an independent risk gate blocks execution when a route mismatch occurs, then stops the lane before editing.",
@@ -954,6 +963,8 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch never by itself stops the lane before edits.",
       "A route mismatch does not necessarily stop the lane before edits.",
       "A route mismatch does not automatically block execution before edits.",
+      "A route mismatch does not prevent launch.",
+      "An inherited route never prevents review.",
       "A route mismatch never blocks launch.",
       "A route mismatch does not block replay.",
       "A different route cannot block review.",
@@ -967,6 +978,9 @@ class ModelRoutingContractTest < Minitest::Test
       "An inherited route does not block execution; an independent scope gate blocks execution.",
       "An unavailable route does not block execution; an independent evidence gate blocks execution.",
       "An UNKNOWN model does not block execution; an independent authority gate blocks execution.",
+      "A route mismatch does not stop the lane; destructive scope expansion blocks execution.",
+      "A route mismatch does not stop the lane, but destructive scope expansion blocks execution.",
+      "A route mismatch does not stop the lane and an independent risk blocks execution.",
       "No route mismatch blocks execution.",
       "Neither a route mismatch nor an inherited route blocks execution.",
       "Only an independent risk gate blocks execution when a route mismatch occurs.",
