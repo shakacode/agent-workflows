@@ -187,10 +187,10 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
     `UNKNOWN`\ (?:observation|observed\ tuple)
   )
 /imx
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|blocks?\\s+execution|disqualifies\\s+the\\s+lane"
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|blocks?\\s+execution|disqualif(?:y|ies)\\s+the\\s+lane"
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
-  /#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}/im
+  /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
 NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
   /
     (?:
@@ -713,6 +713,9 @@ class ModelRoutingContractTest < Minitest::Test
       "different route" => "A different route blocks execution before editing.",
       "different tuple" => "A different tuple disqualifies the lane before editing.",
       "UNKNOWN observed tuple" => "An `UNKNOWN` observed tuple stops the lane before any edit begins.",
+      "outcome-first route mismatch" => "Stop the lane before editing when there is a route mismatch.",
+      "outcome-first different observed route" => "Block execution whenever there is a different observed route.",
+      "outcome-first UNKNOWN observed tuple" => "Disqualify the lane when an `UNKNOWN` observed tuple appears.",
       "route mismatch blocks execution" => "A route mismatch blocks execution before any edit begins.",
       "UNKNOWN observed tuple disqualifies the lane" => "An `UNKNOWN` observed tuple disqualifies the lane before any edit begins.",
       "unrelated not before route mismatch stop" => "A route mismatch does not always occur, and it stops the lane before any edit begins.",
