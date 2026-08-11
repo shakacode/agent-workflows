@@ -216,10 +216,15 @@ NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
     )
     \b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b
   /ix
+NEGATED_ROUTE_ONLY_SUBJECT_OUTCOME_CLAUSE_PATTERN =
+  /
+    \bno\s+(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b |
+    \bneither\s+(?:an?\s+)?(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+nor\s+(?:an?\s+)?(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b
+  /imx
 INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN =
   /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+if\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\b/i
 INDEPENDENT_GATE_BLOCKS_EXECUTION_PATTERN =
-  /\b(?:but|and|yet)\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\b/i
+  /(?:\b(?:but|and|yet)\b|;)\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\b/i
 INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN =
   /\bonly\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\s+when\s+/i
 def read_repo_file(path)
@@ -247,6 +252,7 @@ end
 def strip_allowed_route_only_outcome_clauses(text)
   text
     .gsub(NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN, "")
+    .gsub(NEGATED_ROUTE_ONLY_SUBJECT_OUTCOME_CLAUSE_PATTERN, "")
     .gsub(INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN, "")
 end
 
@@ -892,6 +898,10 @@ class ModelRoutingContractTest < Minitest::Test
       "unconditional outcome before independent-gate clause" => "A different route disqualifies the lane, but a route mismatch does not stop the lane, but an independent risk gate blocks execution.",
       "independent-and gate followed by unconditional different route" => "A route mismatch does not stop the lane, and an independent risk gate blocks execution, yet a different route disqualifies the lane.",
       "unconditional outcome before independent-yet gate clause" => "A different route disqualifies the lane, yet a route mismatch does not stop the lane, yet an independent risk gate blocks execution.",
+      "semicolon gate followed by unconditional different route" => "A route mismatch does not stop the lane; an independent risk gate blocks execution, yet a different route disqualifies the lane.",
+      "unconditional outcome before semicolon gate clause" => "A different route disqualifies the lane; a route mismatch does not stop the lane; an independent risk gate blocks execution.",
+      "No-subject negation followed by unconditional different route" => "No route mismatch blocks execution, but a different route stops the lane.",
+      "Neither-subject negation followed by unconditional different route" => "Neither a route mismatch nor an inherited route blocks execution, but a different tuple disqualifies the lane.",
       "risk gate-first trailing outcome" => "Only an independent risk gate blocks execution when a route mismatch occurs, then stops the lane before editing.",
       "scope gate-first trailing outcome" => "Only an independent scope gate blocks execution when an effort mismatch occurs, then requires relaunch before editing.",
       "evidence gate-first trailing outcome" => "Only an independent evidence gate blocks execution when a different route occurs, then halts the lane before editing.",
@@ -931,6 +941,12 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not stop the lane, but an independent risk gate blocks execution.",
       "A route mismatch does not stop the lane, and an independent scope gate blocks execution.",
       "A route mismatch does not stop the lane, yet an independent evidence gate blocks execution.",
+      "A route mismatch does not stop the lane; an independent risk gate blocks execution.",
+      "An inherited route does not block execution; an independent scope gate blocks execution.",
+      "An unavailable route does not block execution; an independent evidence gate blocks execution.",
+      "An UNKNOWN model does not block execution; an independent authority gate blocks execution.",
+      "No route mismatch blocks execution.",
+      "Neither a route mismatch nor an inherited route blocks execution.",
       "Only an independent risk gate blocks execution when a route mismatch occurs.",
       "Only an independent scope gate blocks execution when an effort mismatch occurs.",
       "Only an independent evidence gate blocks execution when a different route occurs.",
