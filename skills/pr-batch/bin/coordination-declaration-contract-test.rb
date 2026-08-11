@@ -147,6 +147,37 @@ class CoordinationDeclarationContractTest < Minitest::Test
     end
   end
 
+  def test_declaration_is_accepted_as_ordinary_list_content
+    [
+      "- Lane Card:\n    coordination: registered aw-unordered-content\n",
+      "1. Lane Card:\n    coordination: registered aw-ordered-content\n"
+    ].each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "ordinary visible list content must not be mistaken for standalone indented code"
+    end
+  end
+
+  def test_list_content_indentation_boundary_is_context_relative
+    visible = [
+      "- Lane Card:\n     coordination: registered aw-unordered-visible-boundary\n",
+      "1. Lane Card:\n      coordination: registered aw-ordered-visible-boundary\n"
+    ]
+    code = [
+      "- Lane Card:\n      coordination: registered example-unordered-code-boundary\n",
+      "1. Lane Card:\n       coordination: registered example-ordered-code-boundary\n",
+      "- Lane Card:\n# Outside list\n    coordination: registered example-after-list-reset\n"
+    ]
+
+    visible.each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "up to three spaces relative to list content remains visible Markdown"
+    end
+    code.each do |handoff|
+      assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                   "four relative spaces or reset list state must remain indented code"
+    end
+  end
+
   def test_declarations_inside_markdown_code_are_ignored
     [
       "```text\ncoordination: registered example-backtick\n```\n",

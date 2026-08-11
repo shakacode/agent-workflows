@@ -59,6 +59,7 @@ module CoordinationDeclaration
 
       normalized_line = line
       valid_list_item = false
+      visible_list_continuation = false
       if (list_item = line.match(LIST_ITEM))
         item_indent = list_item[1].length
         parent_index = list_content_indents.rindex do |content_indent|
@@ -73,7 +74,15 @@ module CoordinationDeclaration
         end
       elsif !line.strip.empty? && list_content_indents.any?
         line_indent = line[/\A */].length
-        list_content_indents.clear if line_indent < list_content_indents.first
+        list_indent = list_content_indents.reverse.find do |content_indent|
+          line_indent.between?(content_indent, content_indent + 3)
+        end
+        if list_indent
+          visible_list_continuation = true
+          normalized_line = line.delete_prefix(" " * list_indent)
+        elsif line_indent < list_content_indents.first
+          list_content_indents.clear
+        end
       end
 
       marker = nil
@@ -102,7 +111,7 @@ module CoordinationDeclaration
         next
       end
 
-      next if line.start_with?("    ", "\t") && !valid_list_item
+      next if line.start_with?("    ", "\t") && !valid_list_item && !visible_list_continuation
 
       normalized_line
     end
