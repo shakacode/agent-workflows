@@ -1512,12 +1512,18 @@ class PrMergeSubmitTest < Minitest::Test
 
   def run_cli_with_interrupt(mode:, wait_for: "enqueuePullRequest", after_stub_warmup: nil)
     Dir.mktmpdir("pr-merge-submit-interrupt-test") do |dir|
+      repo_root, base_sha, = prepare_consumer_repo(
+        dir,
+        merge_submission: { "mode" => "merge_queue_only" },
+        policy_fixture: :present,
+        guard_fixture: :executable
+      )
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
       File.write(
         gh_path,
         fake_gh(
-          mode:, head: HEAD_SHA, base: "main", base_sha: BASE_SHA,
+          mode:, head: HEAD_SHA, base: "main", base_sha:,
           url_host: HOST, repo: "owner/repo"
         )
       )
@@ -1527,7 +1533,7 @@ class PrMergeSubmitTest < Minitest::Test
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       write_merge_assurance_receipt(
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
-                      base_ref: "main", base_sha: BASE_SHA, host: HOST, pr_number: 42, gh_dir: dir
+                      base_ref: "main", base_sha:, host: HOST, pr_number: 42, gh_dir: dir
       )
       result = Open3.popen3(
         cli_environment(
@@ -1538,7 +1544,8 @@ class PrMergeSubmitTest < Minitest::Test
         *cli_arguments(
           "owner/repo", HEAD_SHA, true, true,
           include_merge_assurance_receipt: true, receipt_path:, gh_path:
-        )
+        ),
+        chdir: repo_root
       ) do |stdin, stdout, stderr, wait_thread|
         stdin.close
         stdout_reader = Thread.new { stdout.read }
