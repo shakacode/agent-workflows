@@ -157,6 +157,16 @@ class CoordinationDeclarationContractTest < Minitest::Test
     end
   end
 
+  def test_declaration_is_accepted_as_genuine_inner_list_content
+    [
+      "- Outer:\n    - Inner:\n      coordination: registered aw-inner-unordered-content\n",
+      "1. Outer:\n   1. Inner:\n      coordination: registered aw-inner-ordered-content\n"
+    ].each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "continuation content at the active inner list column must remain visible"
+    end
+  end
+
   def test_list_content_indentation_boundary_is_context_relative
     visible = [
       "- Lane Card:\n     coordination: registered aw-unordered-visible-boundary\n",
@@ -176,6 +186,22 @@ class CoordinationDeclarationContractTest < Minitest::Test
       assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
                    "four relative spaces or reset list state must remain indented code"
     end
+  end
+
+  def test_unordered_dedent_to_outer_list_content_discards_inner_list_ancestry
+    handoff = "- Outer:\n    - Inner\n\n  Outer continuation\n\n" \
+              "      coordination: registered aw-hidden-code\n"
+
+    assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                 "a code block relative to outer list content must not match a stale inner content column"
+  end
+
+  def test_ordered_dedent_to_outer_list_content_discards_inner_list_ancestry
+    handoff = "1. Outer:\n   1. Inner\n\n   Outer continuation\n\n" \
+              "       coordination: registered aw-hidden-ordered-code\n"
+
+    assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                 "an ordered-list code block must not match a stale inner content column"
   end
 
   def test_declarations_inside_markdown_code_are_ignored

@@ -74,10 +74,12 @@ module CoordinationDeclaration
         end
       elsif !line.strip.empty? && list_content_indents.any?
         line_indent = line[/\A */].length
-        list_indent = list_content_indents.reverse.find do |content_indent|
+        list_index = list_content_indents.rindex do |content_indent|
           line_indent.between?(content_indent, content_indent + 3)
         end
-        if list_indent
+        if list_index
+          list_content_indents = list_content_indents[0..list_index]
+          list_indent = list_content_indents.last
           visible_list_continuation = true
           normalized_line = line.delete_prefix(" " * list_indent)
         elsif line_indent < list_content_indents.first
