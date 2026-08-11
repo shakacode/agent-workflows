@@ -189,6 +189,8 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
     unavailable\ (?:observed\ )?(?:#{ROUTE_ONLY_FIELD_SOURCE}) |
     different\ (?:observed\ )?(?:#{ROUTE_ONLY_FIELD_SOURCE}) |
     `?UNKNOWN`?\s+(?:observed\ )?(?:#{ROUTE_ONLY_FIELD_SOURCE}|observation) |
+    observed\ route\s+differs\s+from\s+(?:the\ )?requested\ route |
+    requested\ route\s+differs\s+from\s+(?:the\ )?observed\ route |
     inherited\ route |
     silent[-\s]substitution |
     substituted\ route
@@ -200,7 +202,7 @@ ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE =
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
 # This bounded, guide-derived stop/prohibition vocabulary needs matching mutation coverage whenever routing-guide phrasing changes.
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+blocked|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+blocked|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -986,6 +988,10 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch blocks review" => "A route mismatch blocks review.",
       "route mismatch blocks audit" => "A route mismatch blocks audit.",
       "route mismatch blocks both launch and review" => "A route mismatch blocks both launch and review.",
+      "observed requested routes differ passive blocked launch" => "When the observed route differs from the requested route, launch is blocked.",
+      "requested observed routes differ passive blocked review" => "When the requested route differs from the observed route, review is blocked.",
+      "route mismatch prevents both launch and review" => "A route mismatch prevents both launch and review.",
+      "outcome-first prevents both planning and fallback" => "Prevent both planning and fallback when a route mismatch occurs.",
       "outcome-first passive blocked launch" => "When a route mismatch occurs, launch is blocked.",
       "subject-first passive blocked review" => "A route mismatch means review is blocked.",
       "outcome-first passive blocked plural" => "Launch and replay are blocked when a route mismatch occurs.",
@@ -1120,6 +1126,9 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not prevent launch.",
       "A route mismatch does not block both launch and review.",
+      "When the observed route differs from the requested route, launch is not blocked.",
+      "When the requested route differs from the observed route, review is not blocked.",
+      "A route mismatch does not prevent both launch and review.",
       "A route mismatch does not block launch or prevent review.",
       "A route mismatch does not block launch nor prevent review.",
       "A route mismatch does not block launch and prevent review.",
