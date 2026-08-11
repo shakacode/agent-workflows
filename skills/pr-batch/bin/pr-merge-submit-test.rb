@@ -767,7 +767,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_enqueue_graphql_failure_with_unresolved_state_is_unknown
-    result, log = run_cli(mode: "enqueue_graphql_error")
+    result, log = run_cli(mode: "enqueue_graphql_error", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "do not retry blindly"
@@ -803,7 +803,7 @@ class PrMergeSubmitTest < Minitest::Test
   def test_repository_name_and_head_oid_are_sent_as_raw_strings
     result, log = run_cli(
       mode: "queue", repo: "owner/123", head: NUMERIC_SHA,
-      expected_head: NUMERIC_SHA
+      expected_head: NUMERIC_SHA, merge_submission: merge_queue_policy
     )
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
@@ -814,14 +814,14 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_queue_response_without_entry_fails_closed
-    result, = run_cli(mode: "queue_missing_entry")
+    result, = run_cli(mode: "queue_missing_entry", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "outcome could not be proven"
   end
 
   def test_existing_exact_queue_entry_is_idempotent
-    result, log = run_cli(mode: "already_queued")
+    result, log = run_cli(mode: "already_queued", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
@@ -832,7 +832,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_initial_queue_membership_with_a_merge_commit_is_not_exact_queue_proof
-    result, log = run_cli(mode: "already_queued_with_commit")
+    result, log = run_cli(mode: "already_queued_with_commit", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "lacks strict proof"
@@ -898,7 +898,7 @@ class PrMergeSubmitTest < Minitest::Test
       "enqueue_transport_queued_base_advanced" => "enqueuePullRequest",
       "queue_post_queued_base_advanced" => "enqueuePullRequest"
     }.each do |mode, attempted_mutation|
-      result, log = run_cli(mode:)
+      result, log = run_cli(mode:, merge_submission: merge_queue_policy)
 
       assert_equal 2, result.fetch(:status).exitstatus, mode
       assert_includes log, attempted_mutation, mode
@@ -907,7 +907,10 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_initial_open_or_queued_base_advancement_stops_before_any_mutation
     %w[initial_open_base_advanced already_queued_base_advanced].each do |mode|
-      result, log = run_cli(mode:)
+      result, log = run_cli(
+        mode:,
+        merge_submission: queue_submission_mode?(mode) ? merge_queue_policy : SOURCE_REPO_POLICY
+      )
 
       refute result.fetch(:status).success?, mode
       assert_includes result.fetch(:stderr), "receipt base SHA mismatch", mode
@@ -917,7 +920,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_enqueue_transport_failure_reconciles_an_exact_queue_entry
-    result, = run_cli(mode: "enqueue_transport_queued")
+    result, = run_cli(mode: "enqueue_transport_queued", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
@@ -926,7 +929,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_enqueue_transport_failure_keeps_merge_provenance_unknown
-    result, = run_cli(mode: "enqueue_transport_merged")
+    result, = run_cli(mode: "enqueue_transport_merged", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_unknown_reconciled_merge(
@@ -935,7 +938,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_enqueue_graphql_errors_keep_merge_provenance_unknown
-    result, = run_cli(mode: "enqueue_graphql_error_merged")
+    result, = run_cli(mode: "enqueue_graphql_error_merged", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_unknown_reconciled_merge(
@@ -944,7 +947,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_valid_merge_proof_wins_when_queue_fields_coexist
-    result, = run_cli(mode: "enqueue_graphql_error_merged_queued")
+    result, = run_cli(mode: "enqueue_graphql_error_merged_queued", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
@@ -955,7 +958,10 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_terminal_queue_fields_with_an_invalid_commit_prove_neither_outcome
     %w[UNKNOWN malformed].each do |merge_commit_oid|
-      result, = run_cli(mode: "enqueue_graphql_error_merged_queued", merge_commit_oid:)
+      result, = run_cli(
+        mode: "enqueue_graphql_error_merged_queued", merge_commit_oid:,
+        merge_submission: merge_queue_policy
+      )
 
       assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
       assert_includes result.fetch(:stderr), "outcome could not be proven", merge_commit_oid
@@ -967,7 +973,7 @@ class PrMergeSubmitTest < Minitest::Test
       "enqueue_transport_queued_with_commit" => "enqueuePullRequest",
       "enqueue_graphql_error_queued_with_commit" => "enqueuePullRequest"
     }.each do |mode, attempted_mutation|
-      result, log = run_cli(mode:)
+      result, log = run_cli(mode:, merge_submission: merge_queue_policy)
 
       assert_equal 2, result.fetch(:status).exitstatus, mode
       assert_includes result.fetch(:stderr), "could not be proven", mode
@@ -976,14 +982,14 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_successful_enqueue_response_preserves_queue_provenance_after_fast_merge
-    result, = run_cli(mode: "queue_fast_merged")
+    result, = run_cli(mode: "queue_fast_merged", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_reconciled_queue_merge(JSON.parse(result.fetch(:stdout)))
   end
 
   def test_fast_post_enqueue_merge_accepts_an_advanced_base_oid_before_old_base_guard
-    result, = run_cli(mode: "queue_fast_merged_base_advanced")
+    result, = run_cli(mode: "queue_fast_merged_base_advanced", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_reconciled_queue_merge(JSON.parse(result.fetch(:stdout)))
@@ -991,7 +997,7 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_fast_post_enqueue_merge_requires_a_full_hex_merge_commit_oid
     ["", "malformed", "UNKNOWN"].each do |merge_commit_oid|
-      result, = run_cli(mode: "queue_fast_merged", merge_commit_oid:)
+      result, = run_cli(mode: "queue_fast_merged", merge_commit_oid:, merge_submission: merge_queue_policy)
 
       assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
       assert_includes result.fetch(:stderr), "live membership could not be confirmed", merge_commit_oid
@@ -999,7 +1005,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_fast_post_enqueue_queue_with_a_merge_commit_is_not_exact_queue_proof
-    result, = run_cli(mode: "queue_post_queued_with_commit")
+    result, = run_cli(mode: "queue_post_queued_with_commit", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "live membership could not be confirmed"
@@ -1101,7 +1107,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_non_object_enqueue_response_reconciles_an_exact_queue_entry
-    result, = run_cli(mode: "enqueue_non_object_response_queued")
+    result, = run_cli(mode: "enqueue_non_object_response_queued", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
@@ -1118,7 +1124,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_post_enqueue_base_mismatch_reports_unknown_without_dequeue
-    result, log = run_cli(mode: "queue_base_race")
+    result, log = run_cli(mode: "queue_base_race", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "PR base moved"
@@ -1127,7 +1133,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_post_enqueue_replacement_entry_is_not_dequeued
-    result, log = run_cli(mode: "queue_entry_replaced")
+    result, log = run_cli(mode: "queue_entry_replaced", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "automatic queue cleanup is unsafe"
@@ -1135,7 +1141,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_post_enqueue_exact_replacement_reports_the_live_queue_entry
-    result, log = run_cli(mode: "queue_entry_replaced_same_target")
+    result, log = run_cli(mode: "queue_entry_replaced_same_target", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
@@ -1169,7 +1175,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_authenticated_semantic_tracker_receipt_reaches_the_merge_mutation
-    result, log = run_cli(mode: "queue", receipt_mode: :semantic)
+    result, log = run_cli(mode: "queue", receipt_mode: :semantic, merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_includes log, "repos/owner/repo/issues/1"
@@ -1311,6 +1317,10 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
+  def merge_queue_policy
+    { "mode" => "merge_queue_only" }
+  end
+
   def assert_reconciled_queue_merge(payload)
     assert_equal "merge_queue", payload.fetch("submission")
     assert_equal "repository_configured", payload.fetch("queue_method")
@@ -1332,7 +1342,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def assert_retargeted_queue_entry_is_not_dequeued(mode)
-    result, log = run_cli(mode:)
+    result, log = run_cli(mode:, merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "PR base moved"
@@ -1356,7 +1366,7 @@ class PrMergeSubmitTest < Minitest::Test
   def run_mutation_timeout_cli(mode)
     result = nil
     MUTATION_TIMEOUT_ATTEMPTS.times do
-      result, = run_cli(mode:)
+      result, = run_cli(mode:, merge_submission: merge_queue_policy)
       break unless setup_query_timed_out?(result)
     end
 
@@ -1403,19 +1413,20 @@ class PrMergeSubmitTest < Minitest::Test
     interrupt_guard: false
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
-      if merge_submission.equal?(SOURCE_REPO_POLICY)
+      source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
+      if source_repo_policy
         merge_submission = {
           "mode" => queue_submission_mode?(mode) ? "merge_queue_only" : "direct"
         }
       end
-      repo_root, base_sha, fixture_head = if merge_submission.equal?(SOURCE_REPO_POLICY)
+      repo_root, base_sha, fixture_head = if source_repo_policy
                                             [File.expand_path("../../..", __dir__), BASE_SHA, HEAD_SHA]
                                           else
                                             prepare_consumer_repo(
                                               dir, merge_submission:, policy_fixture:, guard_fixture:
                                             )
                                           end
-      if !merge_submission.equal?(SOURCE_REPO_POLICY) &&
+      if !source_repo_policy &&
          (mode.start_with?("guard") || mode == "hichee_replay")
         head = fixture_head
         expected_head = fixture_head
@@ -2228,7 +2239,6 @@ class PrMergeSubmitTest < Minitest::Test
         puts #{JSON.generate(queue_payload).inspect}
         exit 0
       end
-
 
       if ARGV.any? { |arg| arg.include?("mergePullRequest") }
         if ["direct_transport_merged", "direct_transport_unknown"].include?(#{mode.inspect})
