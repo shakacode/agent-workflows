@@ -451,6 +451,11 @@ def assert_codex_changelog_routing_note(test, text, label)
                        "#{label} must retain the exact Codex routing release note"
 end
 
+def assert_no_route_only_contradiction(test, text, label)
+  test.refute forbidden_route_only_contradiction?(text),
+              "#{label} must not pair advisory continuation with an unconditional route-only outcome"
+end
+
 def evidence_status_rows(text)
   section = extract_markdown_section(text, "### Evidence Status")
   lines = section.lines
@@ -540,7 +545,8 @@ class ModelRoutingContractTest < Minitest::Test
 
   def test_active_routing_surfaces_share_the_advisory_unsigned_lifecycle_contract
     ROUTING_SURFACES.each do |path|
-      text = normalized(read_repo_file(path))
+      raw_text = read_repo_file(path)
+      text = normalized(raw_text)
 
       [
         ADVISORY_ROUTE_RULE,
@@ -552,6 +558,7 @@ class ModelRoutingContractTest < Minitest::Test
       ].each do |rule|
         assert_includes text, rule, "#{path} is missing: #{rule}"
       end
+      assert_no_route_only_contradiction(self, raw_text, path)
     end
   end
 
@@ -600,10 +607,25 @@ class ModelRoutingContractTest < Minitest::Test
 
   def test_checker_surfaces_preserve_independence_and_quality_without_route_blocking
     CHECKER_SURFACES.each do |path|
-      text = normalized(read_repo_file(path))
+      raw_text = read_repo_file(path)
+      text = normalized(raw_text)
 
       assert_includes text, CHECKER_RULE, path
       assert_includes text.downcase, "independent", path
+      assert_no_route_only_contradiction(self, raw_text, path)
+    end
+  end
+
+  def test_active_routing_and_checker_surfaces_reject_route_only_contradiction_mutants
+    {
+      "routing" => ["skills/pr-batch/SKILL.md", "A route mismatch blocks launch."],
+      "checker" => ["skills/adversarial-pr-review/SKILL.md", "A route mismatch disqualifies a checker verdict."]
+    }.each do |surface, (path, contradiction)|
+      mutant = "#{read_repo_file(path)}\n\n#{contradiction}\n"
+
+      assert_raises(Minitest::Assertion, "#{surface} surface accepted an unconditional route-only outcome") do
+        assert_no_route_only_contradiction(self, mutant, "#{path} #{surface} mutant")
+      end
     end
   end
 
