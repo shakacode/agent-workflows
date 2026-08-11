@@ -955,7 +955,7 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
-  def test_invokes_only_the_trusted_base_verifier_with_explicit_argv
+  def test_invokes_only_the_trusted_base_verifier_with_explicit_argv_for_a_root_deployment_url
     with_repo do |root|
       argv_log = File.join(root, "verifier-argv.json")
       verifier = <<~RUBY
@@ -998,7 +998,7 @@ class HostedQaReadinessTest < Minitest::Test
       )
       head_sha = commit!(root, "runtime and untrusted verifier changes")
       deployment_id = "production-#{head_sha}"
-      deployment_url = "https://deployments.example.test/#{head_sha}"
+      deployment_url = "https://#{head_sha}.deployments.example.test/"
 
       result, status = run_readiness(
         root,

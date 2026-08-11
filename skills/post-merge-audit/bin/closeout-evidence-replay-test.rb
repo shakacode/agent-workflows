@@ -305,16 +305,34 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
-  def test_hosted_v1_requires_an_immutable_deployment_url
-    body = hosted_v1_marker.sub(
-      "https://deployments.example.test/production-20260808-abc123",
-      "https://deployments.example.test/current?head=abc123"
-    )
+  def test_hosted_v1_rejects_unsafe_or_mutable_deployment_urls
+    invalid_urls = {
+      "userinfo" => "https://user@deployments.example.test/build-abc123",
+      "query" => "https://deployments.example.test/current?head=abc123",
+      "fragment" => "https://deployments.example.test/build-abc123#logs",
+      "empty path" => "https://build-abc123.deployments.example.test",
+      "malformed" => "https://[invalid",
+      "non-HTTPS" => "http://deployments.example.test/build-abc123",
+      "placeholder" => "n/a",
+      "comment opener" => "https://deployments.example.test/build-abc123<!--comment",
+      "comment closer" => "https://deployments.example.test/build-abc123-->comment",
+      "pipe" => "https://deployments.example.test/build-abc123|injected",
+      "newline" => "https://deployments.example.test/build-abc123\ninjected"
+    }
 
-    hosted = run_replay(body).fetch("hosted_qa_evidence")
+    invalid_urls.each do |label, url|
+      body = hosted_v1_marker.sub(
+        "https://deployments.example.test/production-20260808-abc123",
+        url
+      )
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
 
-    assert_equal "UNKNOWN", hosted.fetch("verdict")
-    assert_includes hosted.fetch("missing"), "deployment_url"
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), "#{label}: #{hosted}"
+      assert(
+        hosted.fetch("missing").include?("deployment_url") || hosted.fetch("errors").any?,
+        "#{label}: #{hosted}"
+      )
+    end
   end
 
   def test_current_ui_gate_rejects_v1_only_evidence

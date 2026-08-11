@@ -668,7 +668,7 @@ module CloseoutEvidenceReplay
   def immutable_deployment_url?(value)
     uri = parse_https_url(value)
     uri && uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil? &&
-      uri.path && !uri.path.empty? && uri.path != "/"
+      uri.path && !uri.path.empty?
   end
 
   def parse_https_url(value)
