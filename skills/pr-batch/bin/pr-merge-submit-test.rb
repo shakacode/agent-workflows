@@ -152,6 +152,54 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes unknown_log, "mergePullRequest"
   end
 
+  def test_direct_graphql_errors_reconcile_an_exact_merge
+    result, log, = run_cli(mode: "direct_graphql_error_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_unknown_reconciled_merge(
+      JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
+    )
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_direct_graphql_errors_pin_open_queue_configuration_failures
+    %w[direct_graphql_error_queue_enabled direct_graphql_error_in_queue].each do |mode|
+      result, log, = run_cli(mode:)
+
+      assert_equal 1, result.fetch(:status).exitstatus, mode
+      assert_equal "Error: #{DIRECT_QUEUE_ERROR}\n", result.fetch(:stderr), mode
+      assert_includes log, "mergePullRequest", mode
+    end
+  end
+
+  def test_direct_graphql_errors_with_unresolved_state_are_unknown
+    result, log, = run_cli(mode: "direct_graphql_error_unknown")
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "direct merge submission outcome could not be proven after GraphQL errors"
+    assert_includes result.fetch(:stderr), "do not retry blindly"
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_invalid_direct_merge_response_reconciles_an_exact_merge
+    result, log, = run_cli(mode: "direct_response_invalid_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_unknown_reconciled_merge(
+      JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
+    )
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_invalid_direct_merge_response_with_unresolved_state_is_unknown
+    result, log, = run_cli(mode: "direct_response_invalid_unknown")
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "direct merge response validation outcome could not be proven"
+    assert_includes result.fetch(:stderr), "do not retry blindly"
+    assert_includes log, "mergePullRequest"
+  end
+
   def test_guarded_direct_delegates_with_fixed_argv_and_reconciles_exact_merge
     result, log, guard_log, _attacker_log, fixture_head = run_cli(
       mode: "guard_success",
@@ -2106,6 +2154,7 @@ class PrMergeSubmitTest < Minitest::Test
                              "enqueue_non_object_response_queued", "queue_base_race",
                              "queue_entry_replaced", "queue_entry_replaced_same_target" then true
                         when "direct_queue_race" then query_count.positive?
+                        when "direct_graphql_error_queue_enabled" then query_count >= 2
                         else false
                         end
         queued = case current_mode
@@ -2121,6 +2170,7 @@ class PrMergeSubmitTest < Minitest::Test
                       "queue_post_queued_with_commit" then query_count.positive?
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
+                 when "direct_graphql_error_in_queue" then query_count >= 2
                  else false
                  end
         merged_after_mutation = [
@@ -2133,7 +2183,9 @@ class PrMergeSubmitTest < Minitest::Test
         ].include?(current_mode) &&
                                 guard_called
         direct_attempted = File.read(ENV.fetch("GH_LOG")).include?("mergePullRequest")
-        directly_merged = current_mode == "direct_transport_merged" && direct_attempted
+        directly_merged = %w[
+          direct_transport_merged direct_graphql_error_merged direct_response_invalid_merged
+        ].include?(current_mode) && direct_attempted
         merged = ["already_merged", "already_merged_base_advanced"].include?(current_mode) ||
                  (merged_after_mutation && query_count.positive?) || guarded_direct_merged || directly_merged
         base_race_modes = [
@@ -2245,11 +2297,26 @@ class PrMergeSubmitTest < Minitest::Test
           warn "connection reset after direct merge request"
           exit 1
         end
+        if [
+          "direct_graphql_error_merged", "direct_graphql_error_queue_enabled",
+          "direct_graphql_error_in_queue", "direct_graphql_error_unknown"
+        ].include?(#{mode.inspect})
+          puts JSON.generate(
+            "data" => { "mergePullRequest" => { "pullRequest" => nil } },
+            "errors" => [{ "message" => "nested field resolution failed" }]
+          )
+          exit 1
+        end
+        response_head = if ["direct_response_invalid_merged", "direct_response_invalid_unknown"].include?(#{mode.inspect})
+                          #{MOVED_SHA.inspect}
+                        else
+                          #{head.inspect}
+                        end
         puts JSON.generate(
           "data" => {
             "mergePullRequest" => {
               "pullRequest" => {
-                "headRefOid" => #{head.inspect},
+                "headRefOid" => response_head,
                 "baseRefName" => #{base.inspect},
                 "baseRefOid" => #{base_sha.inspect},
                 "state" => "MERGED",
