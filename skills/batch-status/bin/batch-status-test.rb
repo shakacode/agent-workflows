@@ -90,7 +90,7 @@ class BatchStatusTest < Minitest::Test
         "lanes" => [{
           "name" => "status-skill",
           "owner" => "worker-186",
-          "targets" => ["186"],
+          "targets" => ["issue:186"],
           "host" => "claude-code"
         }]
       }],
@@ -104,7 +104,12 @@ class BatchStatusTest < Minitest::Test
       }]
     }
 
-    with_fake_batch_commands(coordination:) do |env|
+    target_coordination = {
+      "claims" => [{ "agent_id" => "worker-186", "status" => "active" }],
+      "heartbeats" => coordination.fetch("heartbeats")
+    }
+
+    with_fake_batch_commands(coordination:, target_coordination:) do |env|
       stdout, stderr, status = Open3.capture3(
         env,
         RbConfig.ruby,
@@ -118,9 +123,106 @@ class BatchStatusTest < Minitest::Test
       assert_equal "aw-b", payload.fetch("batch_id")
       row = payload.fetch("items").first
       assert_equal "status-skill", row.fetch("lane")
+      assert_equal "issue", row.fetch("target").fetch("kind")
       assert_equal "Codex", row.fetch("editor"), "current heartbeat must override stale lane metadata"
       assert_equal "kona", row.fetch("machine_id")
       assert_equal "codex://threads/019feb28-f6a7-7e53-992e-09fa93633f10", row.fetch("codex_deep_link")
+    end
+  end
+
+  def test_batch_mode_does_not_turn_a_released_claim_into_a_current_task_link
+    batch_coordination = {
+      "batches" => [{
+        "batch_id" => "aw-b",
+        "repo" => "shakacode/agent-workflows",
+        "lanes" => [{ "name" => "status-skill", "owner" => "worker-186", "targets" => ["issue:186"] }]
+      }]
+    }
+    target_coordination = {
+      "claims" => [{ "agent_id" => "worker-186", "status" => "released" }],
+      "heartbeats" => [{
+        "agent_id" => "worker-186",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10",
+        "session_source" => "codex_thread_id",
+        "status" => "done"
+      }]
+    }
+
+    with_fake_batch_commands(coordination: batch_coordination, target_coordination:) do |env|
+      stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, SCRIPT, "--batch-id", "aw-b", "--json")
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      assert_equal "UNKNOWN", row.fetch("holder")
+      assert_equal "UNKNOWN", row.fetch("editor")
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link")
+    end
+  end
+
+  def test_batch_lookup_never_falls_back_to_an_unrelated_registration
+    coordination = {
+      "batches" => [{
+        "batch_id" => "different-batch",
+        "repo" => "shakacode/agent-workflows",
+        "lanes" => [{ "name" => "wrong", "owner" => "wrong-worker", "targets" => ["issue:186"] }]
+      }]
+    }
+
+    with_fake_batch_commands(coordination:, target_coordination: {}) do |env|
+      stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, SCRIPT, "--batch-id", "aw-b", "--json")
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      assert_empty payload.fetch("items")
+      assert_includes payload.fetch("unknowns"), "batch aw-b: exact registration not found"
+    end
+  end
+
+  def test_wrong_shaped_batch_json_degrades_to_unknown
+    with_fake_batch_commands(coordination: [], target_coordination: {}) do |env|
+      stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, SCRIPT, "--batch-id", "aw-b", "--json")
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      assert_empty payload.fetch("items")
+      assert_includes payload.fetch("unknowns"), "batch aw-b: response was not an object"
+    end
+  end
+
+  def test_batch_lookup_requires_the_resolved_exact_id
+    coordination = {
+      "batches" => [{
+        "batch_id" => "aw-b-0716-1535",
+        "repo" => "shakacode/agent-workflows",
+        "lanes" => [{ "name" => "status-skill", "owner" => "worker-186", "targets" => ["issue:186"] }]
+      }]
+    }
+    with_fake_batch_commands(coordination:, target_coordination: {}) do |env|
+      stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, SCRIPT, "--batch-id", "aw-b", "--json")
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      assert_empty payload.fetch("items")
+      assert_includes payload.fetch("unknowns"), "batch aw-b: exact registration not found"
+    end
+  end
+
+  def test_batch_lookup_rejects_unrelated_prefix_candidates
+    coordination = {
+      "batches" => %w[aw-b-one aw-b-two].map do |batch_id|
+        { "batch_id" => batch_id, "repo" => "shakacode/agent-workflows", "lanes" => [] }
+      end
+    }
+
+    with_fake_batch_commands(coordination:, target_coordination: {}) do |env|
+      stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, SCRIPT, "--batch-id", "aw-b", "--json")
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      assert_empty payload.fetch("items")
+      assert_includes payload.fetch("unknowns"), "batch aw-b: exact registration not found"
     end
   end
 
@@ -255,6 +357,36 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_host_names_that_only_contain_codex_are_not_classified_as_codex
+    coordination = {
+      "claims" => [{ "agent_id" => "worker-188", "status" => "active" }],
+      "heartbeats" => [{
+        "agent_id" => "worker-188",
+        "host" => "not-codex",
+        "machine_id" => "kona",
+        "session_id" => "other-session",
+        "session_source" => "agent_coord_session_id",
+        "status" => "in_progress"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "issue", number: 188) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "188",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      assert_equal "UNKNOWN", row.fetch("editor")
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link")
+    end
+  end
+
   private
 
   def with_fake_commands(coordination:, github_kind:, number:)
@@ -281,13 +413,19 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
-  def with_fake_batch_commands(coordination:)
+  def with_fake_batch_commands(coordination:, target_coordination:)
     Dir.mktmpdir("batch-status-test") do |dir|
       write_executable(File.join(dir, "agent-coord"), <<~RUBY)
         #!#{RbConfig.ruby}
         require "json"
-        abort "unexpected argv: \#{ARGV.inspect}" unless ARGV == ["status", "--batch-id", "aw-b", "--json"]
-        puts #{JSON.generate(coordination).dump}
+        case ARGV
+        when ["status", "--batch-id", "aw-b", "--json"]
+          puts #{JSON.generate(coordination).dump}
+        when ["status", "--repo", "shakacode/agent-workflows", "--target", "issue:186", "--json"]
+          puts #{JSON.generate(target_coordination).dump}
+        else
+          abort "unexpected argv: \#{ARGV.inspect}"
+        end
       RUBY
       write_executable(File.join(dir, "gh"), <<~RUBY)
         #!#{RbConfig.ruby}

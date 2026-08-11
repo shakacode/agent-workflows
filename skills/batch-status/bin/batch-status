@@ -16,12 +16,23 @@ def valid_repo?(value)
   value.is_a?(String) && value.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z})
 end
 
+def parse_batch_target(value)
+  match = value.to_s.match(/\A(?:(pr|issue):)?([1-9][0-9]*)\z/)
+  return unless match
+
+  {
+    number: Integer(match[2]),
+    requested_kind: match[1],
+    coordination_target: value.to_s
+  }
+end
+
 def runner_for(record)
   host = present_string(record["host"])&.downcase
   source = present_string(record["session_source"])
-  host_runner = if host&.include?("codex")
+  host_runner = if host == "codex"
                   "Codex"
-                elsif host&.include?("claude")
+                elsif host == "claude" || host == "claude-code" || host&.start_with?("claude-code/")
                   "Claude"
                 end
   source_runner = "Codex" if source == "codex_thread_id"
@@ -145,10 +156,15 @@ options[:batch_ids].each do |batch_id|
     next
   end
 
-  batches = batch_payload.is_a?(Hash) && batch_payload["batches"].is_a?(Array) ? batch_payload["batches"] : []
-  batch = batches.find { |candidate| candidate.is_a?(Hash) && candidate["batch_id"] == batch_id } || batches.first
+  unless batch_payload.is_a?(Hash)
+    batch_unknowns << "batch #{batch_id}: response was not an object"
+    next
+  end
+
+  batches = batch_payload["batches"].is_a?(Array) ? batch_payload["batches"].select { |item| item.is_a?(Hash) } : []
+  batch = batches.find { |candidate| candidate["batch_id"] == batch_id }
   unless batch.is_a?(Hash)
-    batch_unknowns << "batch #{batch_id}: registration not found"
+    batch_unknowns << "batch #{batch_id}: exact registration not found"
     next
   end
 
@@ -164,7 +180,6 @@ options[:batch_ids].each do |batch_id|
     next
   end
 
-  heartbeats = batch_payload["heartbeats"].is_a?(Array) ? batch_payload["heartbeats"] : []
   lanes = batch["lanes"].is_a?(Array) ? batch["lanes"] : []
   lanes.each do |lane|
     unless lane.is_a?(Hash)
@@ -173,24 +188,22 @@ options[:batch_ids].each do |batch_id|
     end
 
     owner = present_string(lane["owner"])
-    lane_heartbeats = heartbeats.select do |heartbeat|
-      heartbeat.is_a?(Hash) && owner && heartbeat["agent_id"] == owner
-    end
     targets = lane["targets"].is_a?(Array) ? lane["targets"] : []
     targets.each do |target|
-      unless target.to_s.match?(/\A[1-9][0-9]*\z/)
+      parsed_target = parse_batch_target(target)
+      unless parsed_target
         batch_unknowns << "batch #{resolved_batch_id} lane #{lane['name'] || UNKNOWN}: invalid target #{target.inspect}"
         next
       end
 
-      claim = lane.merge("agent_id" => owner, "status" => "active")
       requests << {
         repo: repo,
-        number: Integer(target),
-        requested_kind: nil,
+        number: parsed_target.fetch(:number),
+        requested_kind: parsed_target.fetch(:requested_kind),
+        coordination_target: parsed_target.fetch(:coordination_target),
+        expected_owner: owner,
         batch_id: resolved_batch_id,
-        lane: present_string(lane["name"]) || UNKNOWN,
-        coordination: { "claims" => [claim], "heartbeats" => lane_heartbeats }
+        lane: present_string(lane["name"]) || UNKNOWN
       }
     end
   end
@@ -218,15 +231,13 @@ items = requests.map do |request|
     unknowns << "target type mismatch: requested #{request[:requested_kind]}, GitHub reports #{github_kind}"
   end
 
-  coordination = request[:coordination]
+  coordination = nil
   coordination_error = nil
-  if coordination
-    # Batch-scoped API data already includes the lane owner and its current heartbeat.
-  elsif helper
+  if helper
     coordination, coordination_error = run_json(
       helper,
       "--timeout", options[:timeout].to_s,
-      "status", "--repo", repo, "--target", number.to_s, "--json"
+      "status", "--repo", repo, "--target", request.fetch(:coordination_target, number.to_s), "--json"
     )
   else
     coordination_error = "bounded agent-coordination helper unavailable"
@@ -238,6 +249,10 @@ items = requests.map do |request|
   claim = claims.find { |candidate| candidate.is_a?(Hash) && candidate["status"] == "active" } || {}
   holder = present_string(claim["agent_id"])
   unknowns << "coordination holder: no active claim" unless holder
+  expected_owner = request[:expected_owner]
+  if holder && expected_owner && holder != expected_owner
+    unknowns << "coordination holder divergence: batch owner #{expected_owner}, active claim #{holder}"
+  end
   heartbeat = heartbeats.find { |candidate| candidate.is_a?(Hash) && candidate["agent_id"] == holder }
   record = heartbeat || claim
   runner = runner_for(record)

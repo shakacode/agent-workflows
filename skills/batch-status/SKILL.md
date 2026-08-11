@@ -34,7 +34,11 @@ continue with the item refs and report coordination state `UNKNOWN`.
 
 ## Probe scope
 
-Use the executable collector as the authoritative implementation. Resolve
+Resolve a supplied prefix only against exact batch ids already present in the
+plan, dispatch result, or current conversation; never enumerate the backend to
+discover candidates. Pass that resolved exact id to the executable collector.
+The collector is authoritative for exact registration verification, per-target
+coordination joins, editor classification, and task-link fields. Resolve
 `BATCH_STATUS_SKILL_DIR` from the loaded skill directory, then repo-local
 `.agents/skills/batch-status`; treat it as unavailable if neither exists.
 
@@ -45,10 +49,12 @@ Use the executable collector as the authoritative implementation. Resolve
 "${BATCH_STATUS_SKILL_DIR}/bin/batch-status" --target <owner/repo#number> --json
 ```
 
-The collector performs bounded, argument-vector-only reads through the
-agent-coordination API client and cross-verifies every target through GitHub.
-Do not reproduce its joining, runner classification, or deep-link logic in the
-prompt.
+The collector performs bounded, argument-vector-only batch and per-target reads
+through the agent-coordination API client, then asks GitHub for each target's
+kind, state, and URL. Continue the live GitHub readiness verification below for
+merge state, checks, configured reviews, and comments; those facts deliberately
+remain outside the identity collector. Do not reproduce its batch resolution,
+coordination joining, runner classification, or deep-link logic in the prompt.
 
 Keep probes targeted and batch-scoped. **Never** perform broad backend reads,
 whole-backend listings, or enumeration beyond the batches and items you were
@@ -81,8 +87,10 @@ registration still has a real, reportable state on GitHub.
 - Helper missing, backend unreachable, degraded, timed out, or `coordination_backend`
   is `n/a` in the repo seam -> report coordination state `UNKNOWN` for the
   affected scope and continue.
-- Batch id not found -> retry once as a prefix match, then report the batch's
-  coordination state `UNKNOWN` and continue from item refs.
+- Batch id not found -> retry once by resolving the prefix against exact ids
+  already known from the plan, dispatch result, or conversation. Never list the
+  backend to discover matches. If no unique known match exists, report the
+  batch's coordination state `UNKNOWN` and continue from item refs.
 - No item refs and no resolvable batch -> report `UNKNOWN` and say exactly what
   input would resolve it. Do not guess ids and do not scrape worker comments to
   invent one.
