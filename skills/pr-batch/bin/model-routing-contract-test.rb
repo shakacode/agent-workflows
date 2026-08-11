@@ -201,6 +201,8 @@ NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
     )
     \b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b
   /ix
+INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN =
+  /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+if\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\b/i
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -224,14 +226,16 @@ def normalized(text)
   text.gsub(/\s+/, " ").strip
 end
 
-def strip_negated_route_only_outcome_clauses(text)
-  text.gsub(NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN, "")
+def strip_allowed_route_only_outcome_clauses(text)
+  text
+    .gsub(NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN, "")
+    .gsub(INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN, "")
 end
 
 def forbidden_route_only_contradiction?(text)
   text.split(/(?<=[.!?])\s+/).any? do |sentence|
-    unnegated_sentence = strip_negated_route_only_outcome_clauses(sentence)
-    unnegated_sentence.match?(ROUTE_ONLY_CONTRADICTION_PATTERN)
+    unguarded_sentence = strip_allowed_route_only_outcome_clauses(sentence)
+    unguarded_sentence.match?(ROUTE_ONLY_CONTRADICTION_PATTERN)
   end
 end
 
@@ -729,10 +733,14 @@ class ModelRoutingContractTest < Minitest::Test
       "An `UNKNOWN` observed tuple is not a condition that disqualifies the lane before any edit begins.",
       "A route mismatch does not block execution before edits.",
       "A route mismatch should not stop the lane before edits.",
-      "A route mismatch does not by itself block execution before edits."
-    ].each do |advisory_negation|
-      refute forbidden_route_only_contradiction?(advisory_negation),
-             "advisory negation must not be treated as an unconditional route-only stop: #{advisory_negation}"
+      "A route mismatch does not by itself block execution before edits.",
+      "A route mismatch stops the lane only if an independent risk gate blocks.",
+      "A route mismatch stops the lane only if an independent scope gate blocks.",
+      "A route mismatch stops the lane only if an independent evidence gate blocks.",
+      "A route mismatch stops the lane only if an independent authority gate blocks."
+    ].each do |allowed_condition|
+      refute forbidden_route_only_contradiction?(allowed_condition),
+             "allowed route condition must not be treated as an unconditional route-only stop: #{allowed_condition}"
     end
   end
 
