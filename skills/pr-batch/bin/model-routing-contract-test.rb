@@ -194,12 +194,17 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
   )
 /imx
 ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE = "launch|replay|review|audit|planning|coordination|execution|escalation|fallback"
+ROUTE_ONLY_ADVISORY_ACTIVITY_SOURCE = "launch|replay|review|audit"
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
 ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:launch|replay|review|audit)|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
+ROUTE_ONLY_PROHIBITION_SOURCE =
+  "(?:do\\s+not|never|must\\s+not)\\s+(?:#{ROUTE_ONLY_ADVISORY_ACTIVITY_SOURCE})|prohibit(?:s|ed)?\\s+(?:#{ROUTE_ONLY_ADVISORY_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_ADVISORY_ACTIVITY_SOURCE})\\s+(?:is|are)\\s+prohibited".freeze
+ROUTE_ONLY_PROHIBITION_PATTERN =
+  /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*\b(?:#{ROUTE_ONLY_PROHIBITION_SOURCE})\b|\b(?:#{ROUTE_ONLY_PROHIBITION_SOURCE})\b[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
 NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
   /
     (?:
@@ -214,12 +219,12 @@ NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
       \bcannot\s+ |
       \bcan['’]?t\s+
     )
-    \b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b
+    \b(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b
   /ix
 NEGATED_ROUTE_ONLY_SUBJECT_OUTCOME_CLAUSE_PATTERN =
   /
-    \bno\s+(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b |
-    \bneither\s+(?:an?\s+)?(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+nor\s+(?:an?\s+)?(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b
+    \bno\s+(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b |
+    \bneither\s+(?:an?\s+)?(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+nor\s+(?:an?\s+)?(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b
   /imx
 INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN =
   /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+if\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\b/i
@@ -348,14 +353,29 @@ def route_only_contradiction_segments(text)
   text.split(/\n\s*\n/).flat_map { |block| markdown_structural_segments(block) }
 end
 
+def unguarded_route_only_sentence(sentence)
+  gate_first_clause_stripped = strip_independent_gate_first_clause(sentence)
+  permitted_clause_stripped = strip_negated_route_outcome_with_independent_blocker_clause(gate_first_clause_stripped)
+  strip_allowed_route_only_outcome_clauses(permitted_clause_stripped)
+end
+
+def forbidden_route_only_sentence?(sentence)
+  unguarded_sentence = unguarded_route_only_sentence(sentence)
+  unguarded_sentence.match?(ROUTE_ONLY_CONTRADICTION_PATTERN) ||
+    unguarded_sentence.match?(ROUTE_ONLY_PROHIBITION_PATTERN)
+end
+
+def route_subject_precedes_pronoun_outcome?(previous_sentence, sentence)
+  previous_sentence.match?(ROUTE_ONLY_SUBJECT_PATTERN) &&
+    sentence.match?(/\A\s*it\b/i) &&
+    unguarded_route_only_sentence(sentence).match?(ROUTE_ONLY_OUTCOME_PATTERN)
+end
+
 def forbidden_route_only_contradiction?(text)
   route_only_contradiction_segments(text).any? do |segment|
-    segment.split(/(?<=[.!?])\s+/).any? do |sentence|
-      gate_first_clause_stripped = strip_independent_gate_first_clause(sentence)
-      permitted_clause_stripped = strip_negated_route_outcome_with_independent_blocker_clause(gate_first_clause_stripped)
-      unguarded_sentence = strip_allowed_route_only_outcome_clauses(permitted_clause_stripped)
-      unguarded_sentence.match?(ROUTE_ONLY_CONTRADICTION_PATTERN)
-    end
+    sentences = segment.split(/(?<=[.!?])\s+/)
+    sentences.any? { |sentence| forbidden_route_only_sentence?(sentence) } ||
+      sentences.each_cons(2).any? { |previous_sentence, sentence| route_subject_precedes_pronoun_outcome?(previous_sentence, sentence) }
   end
 end
 
@@ -890,6 +910,14 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch prevents replay" => "A route mismatch prevents replay.",
       "route mismatch prevents review" => "A route mismatch prevents review.",
       "route mismatch prevents audit" => "A route mismatch prevents audit.",
+      "outcome-first imperative launch" => "Do not launch when there is a route mismatch.",
+      "outcome-first imperative replay" => "Do not replay when there is an inherited route.",
+      "outcome-first imperative review" => "Do not review when there is an UNKNOWN model.",
+      "outcome-first imperative audit" => "Do not audit when there is an unavailable route.",
+      "subject-first imperative launch" => "A route mismatch means do not launch.",
+      "subject-first prohibition replay" => "An inherited route prohibits replay.",
+      "subject-first prohibition review" => "An UNKNOWN model means review is prohibited.",
+      "subject-first imperative audit" => "An unavailable route means must not audit.",
       "unavailable route blocks planning" => "An unavailable route blocks planning.",
       "inherited route blocks coordination" => "An inherited route blocks coordination.",
       "different tuple blocks escalation" => "A different tuple blocks escalation.",
@@ -933,6 +961,7 @@ class ModelRoutingContractTest < Minitest::Test
       "unconditional outcome before direct blocker" => "A different route disqualifies the lane; a route mismatch does not stop the lane; destructive scope expansion blocks execution.",
       "No-subject negation followed by unconditional different route" => "No route mismatch blocks execution, but a different route stops the lane.",
       "Neither-subject negation followed by unconditional different route" => "Neither a route mismatch nor an inherited route blocks execution, but a different tuple disqualifies the lane.",
+      "same-paragraph pronoun outcome" => "A route mismatch occurs. It stops the lane before any edit begins.",
       "risk gate-first trailing outcome" => "Only an independent risk gate blocks execution when a route mismatch occurs, then stops the lane before editing.",
       "scope gate-first trailing outcome" => "Only an independent scope gate blocks execution when an effort mismatch occurs, then requires relaunch before editing.",
       "evidence gate-first trailing outcome" => "Only an independent evidence gate blocks execution when a different route occurs, then halts the lane before editing.",
@@ -965,6 +994,7 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not prevent launch.",
       "An inherited route never prevents review.",
+      "A route mismatch does not prohibit launch.",
       "A route mismatch never blocks launch.",
       "A route mismatch does not block replay.",
       "A different route cannot block review.",
@@ -1012,7 +1042,10 @@ class ModelRoutingContractTest < Minitest::Test
       "single-column leading-pipe Markdown table rows" => "| route mismatch |\n| --- |\n| blocks execution |",
       "Markdown table rows without outer pipes" => "Route condition | route mismatch\n--- | ---\nGate result | blocks execution",
       "blank boundary" => "A route mismatch\n\nblocks execution.",
+      "blank pronoun boundary" => "A route mismatch occurs.\n\nIt stops the lane before any edit begins.",
       "Markdown list items" => "- route mismatch: record honestly\n- independent risk gate: blocks execution",
+      "Markdown list-item pronoun boundary" => "- A route mismatch occurs.\n- It stops the lane before any edit begins.",
+      "Markdown table-row pronoun boundary" => "| Route condition | A route mismatch occurs. |\n| --- | --- |\n| Gate result | It stops the lane before any edit begins. |",
       "ordered Markdown list items" => "1. route mismatch: record honestly\n2) independent risk gate: blocks execution"
     }.each do |boundary, boundary_text|
       assert_route_provenance_contract(
