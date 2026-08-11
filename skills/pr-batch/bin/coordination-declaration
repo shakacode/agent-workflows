@@ -66,10 +66,15 @@ module CoordinationDeclaration
       line = expand_leading_whitespace(raw_line)
 
       if fence
-        closing_indent = " {#{fence[:minimum_indent]},#{fence[:maximum_indent]}}"
-        marker = Regexp.escape(fence[:character])
-        fence = nil if line.match?(/\A#{closing_indent}#{marker}{#{fence[:length]},}[[:blank:]]*$/)
-        next
+        line_indent = line[/\A */].length
+        if !line.strip.empty? && fence[:minimum_indent].positive? && line_indent < fence[:minimum_indent]
+          fence = nil
+        else
+          closing_indent = " {#{fence[:minimum_indent]},#{fence[:maximum_indent]}}"
+          marker = Regexp.escape(fence[:character])
+          fence = nil if line.match?(/\A#{closing_indent}#{marker}{#{fence[:length]},}[[:blank:]]*$/)
+          next
+        end
       end
 
       normalized_line = line

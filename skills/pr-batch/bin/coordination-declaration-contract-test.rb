@@ -406,6 +406,51 @@ class CoordinationDeclarationContractTest < Minitest::Test
     end
   end
 
+  def test_dedent_closes_an_unclosed_list_fence_before_a_real_declaration
+    handoff = "- ```text\n  coordination: registered hidden\n" \
+              "coordination: registered aw-real\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "dedenting out of list content must end its fence before the real declaration"
+  end
+
+  def test_list_fence_dedent_uses_each_container_indent
+    handoffs = [
+      "1. ~~~text\n   coordination: registered hidden-ordered\n" \
+        "coordination: registered aw-real-ordered\n",
+      "- Outer:\n    - ```text\n      coordination: registered hidden-nested\n" \
+        "  coordination: registered aw-real-outer-content\n",
+      "- Outer:\n\t~~~text\n  coordination: registered hidden-tab\n" \
+        "coordination: registered aw-real-after-tab-fence\n"
+    ]
+
+    handoffs.each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "ordered, nested, tilde, and tab-indented list fences must end at their container dedent"
+    end
+  end
+
+  def test_over_indented_closer_stays_fenced_until_the_container_dedent
+    handoff = "- ```text\n  coordination: registered hidden-before\n" \
+              "      ```\n  coordination: registered hidden-after\n" \
+              "coordination: registered aw-real-after-over-indented-closer\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "an over-indented closer remains code, while the later container dedent exposes the real declaration"
+  end
+
+  def test_blank_lines_and_top_level_fences_do_not_implicitly_dedent
+    handoffs = [
+      "- ```text\n\n  coordination: registered hidden-after-blank\n",
+      "```text\ncoordination: registered hidden-in-top-level-fence\n"
+    ]
+
+    handoffs.each do |handoff|
+      assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                   "blank lines preserve list fences, and top-level unclosed fences remain fail-closed"
+    end
+  end
+
   def test_tilde_fence_info_may_contain_tildes
     [
       "~~~ruby~bad\ncoordination: registered example-top-level-tilde-info\n~~~\n",
