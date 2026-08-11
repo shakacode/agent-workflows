@@ -506,6 +506,48 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
   end
 
+  def test_mixed_verified_and_reserved_overlap_requires_pair_level_max_one_serialization
+    lanes = [lane("lane-a"), lane("lane-b")]
+    maps = {
+      "lane-a" => touch_map(1, ["lib/lane-a.rb"]),
+      "lane-b" => touch_map(2, ["lib/expanded.rb"])
+    }
+    reservation = expansion_path_reservation(lane_id: "lane-a")
+    edges = [{ "id" => "lane-a-before-lane-b", "from" => "lane-a", "to" => "lane-b", "type" => "edit" }]
+    gate_lanes = [gate_lane("lane-a"), gate_lane("lane-b", patch_edit: false)]
+    input = input_for(
+      lanes: lanes,
+      maps: maps,
+      reservations: [reservation],
+      edges: edges,
+      gate_lanes: gate_lanes
+    )
+    input.fetch("stage_dependency_gate")["status"] = "gated"
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
+    assert_includes collision.fetch("message"), "max-1 serialization"
+
+    lanes.each { |record| record["serialization_group"] = "expanded-path-writers" }
+    groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
+    result, stderr, status = evaluate(
+      input_for(
+        lanes: lanes,
+        maps: maps,
+        groups: groups,
+        reservations: [reservation],
+        edges: edges,
+        gate_lanes: gate_lanes
+      )
+    )
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+  end
+
   def test_reserved_path_collides_with_another_lanes_verified_file_touch_path
     lanes = [lane("lane-a"), lane("lane-b")]
     maps = {
@@ -592,6 +634,29 @@ class BatchPlanPreflightTest < Minitest::Test
     )
     assert status.success?, stderr
     assert_includes result.dig("launch", "completed_lane_ids"), "lane-holder"
+    assert_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
+    refute_includes result.dig("launch", "held_lane_ids"), "lane-requester"
+  end
+
+  def test_blocked_disjoint_requester_remains_held_until_requester_transitions
+    lanes = [lane("lane-holder"), lane("lane-requester")]
+    reservation = expansion_path_reservation(lane_id: "lane-requester")
+    blocked = [lane_lifecycle_state(lane_id: "lane-requester", state: "blocked")]
+
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, lifecycle_states: blocked, reservations: [reservation])
+    )
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_includes result.dig("launch", "held_lane_ids"), "lane-requester"
+    refute_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
+
+    planned = [lane_lifecycle_state(lane_id: "lane-requester", state: "planned")]
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, lifecycle_states: planned, reservations: [reservation])
+    )
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
     assert_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
     refute_includes result.dig("launch", "held_lane_ids"), "lane-requester"
   end
@@ -1241,6 +1306,28 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_includes codes, "lane-record-invalid"
     refute_includes codes, "invalid-envelope"
     assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_invalid_lane_ids_gate_reservations_and_preserve_invalid_stage_plan_violations
+    {
+      "missing stage plan" => ->(input) { input.delete("stage_dependency_plan") },
+      "malformed stage plan" => ->(input) { input["stage_dependency_plan"] = { "contract" => "UNKNOWN" } }
+    }.each do |label, invalidate_stage_plan|
+      input = input_for(reservations: [expansion_path_reservation])
+      input.dig("plan", "lanes", 0).delete("id")
+      invalidate_stage_plan.call(input)
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, label
+      codes = result.fetch("violations").map { |item| item.fetch("code") }
+      assert_includes codes, "lane-id-invalid-or-duplicate", label
+      assert_includes codes, "lane-record-invalid", label
+      assert_includes codes, "stage-dependency-plan-invalid", label
+      refute_includes codes, "expansion-path-reservations-invalid", label
+      refute_includes codes, "invalid-envelope", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
   end
 
   def test_multiple_malformed_lane_ids_preserve_the_structured_lane_identity_violation

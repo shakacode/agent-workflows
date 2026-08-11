@@ -128,13 +128,18 @@ module BatchPlanPreflight
     end
     file_touch_violations = validate_file_touch_maps(input["file_touch_map"], lane_ids)
     violations.concat(file_touch_violations)
-    reservation_violations, expansion_path_reservations = validate_expansion_path_reservations(
-      input["expansion_path_reservations"],
-      input["plan"],
-      input["stage_dependency_plan"],
-      input["file_touch_map"],
-      completed_lane_ids
-    )
+    reservation_violations, expansion_path_reservations =
+      if lane_ids_valid
+        validate_expansion_path_reservations(
+          input["expansion_path_reservations"],
+          input["plan"],
+          input["stage_dependency_plan"],
+          input["file_touch_map"],
+          completed_lane_ids
+        )
+      else
+        [[], []]
+      end
     violations.concat(reservation_violations)
     violations.concat(validate_stage_dependencies(
                         input["stage_dependency_plan"],
