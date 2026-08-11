@@ -171,15 +171,22 @@ ARCHIVE_READINESS_HANDOFF_RULE = "End the final user-visible message carrying th
 ARCHIVE_READINESS_UNQUALIFIED_SENTENCE = "A final handoff without one of those two exact lines is incomplete"
 ARCHIVE_READINESS_WORKER_SCOPE_RULE = "A lane-level worker handoff never carries an archive-readiness status line"
 
-# #277: the 15-minute watch is a short poll, so a blocker with a known future
-# reset time strands resumable work -- the watch expires, the same condition
-# repeats, and the goal is marked blocked with nothing scheduled to resume it.
+# #277: neither the deterministic watcher nor the bounded fallback cadence
+# guarantees a probe at a blocker's exact published retry time, so a dedicated
+# heartbeat is still required for that precise wakeup.
 # Each clause below is one acceptance path from the issue, pinned so a future
 # edit cannot quietly drop a path while leaving the rule looking present.
 SCHEDULED_RETRY_HEARTBEAT_PATHS = {
   "names the rule" => "Scheduled Retry Heartbeat:",
-  "schedules at the exact retry time rather than the expiring watch" =>
-    "schedule the same-thread heartbeat for that time instead of relying on the watch window",
+  "schedules at the exact retry time despite watcher cadence" =>
+    "neither the no-fixed-expiry deterministic watcher nor the bounded four-poll/backoff fallback " \
+    "guarantees a probe at a blocker's exact published retry time",
+  "uses one exclusive scheduled mechanism for the blocker and gate" =>
+    "single scheduled mechanism for that blocker and gate",
+  "does not retain a redundant watcher" =>
+    "do not start or retain either watcher mode for the same gate",
+  "replaces the watcher without losing a wake" =>
+    "before stopping or replacing any existing watcher so no wake is lost",
   "creates exactly one heartbeat before the blocked handoff" =>
     "create or update exactly one heartbeat",
   "requires an exact future retry time" =>
@@ -256,6 +263,11 @@ LAUNCH_MODE_WORKFLOW_CLAUSES = {
 # points at the canonical contract, so the two cannot drift into rival rules.
 PR_BATCH_HEARTBEAT_SUMMARY_CLAUSES = [
   "schedule one same-thread heartbeat for that time before handing off",
+  "neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that " \
+  "exact published time",
+  "single scheduled mechanism for that blocker and gate",
+  "do not start or retain either watcher mode for the same gate",
+  "before stopping or replacing any existing watcher so no wake is lost",
   "Update the existing heartbeat instead of duplicating it",
   "never becomes an unbounded polling loop",
   "The canonical rule is the Scheduled Retry Heartbeat paragraph in that contract"
@@ -472,6 +484,11 @@ class GoalCompletionContractTest < Minitest::Test
     @workflow_goal_prompt = extract_goal_prompt_template(
       @workflow,
       "### Plan To Goal Handoff",
+      end_heading: /^###\s+/
+    )
+    @workflow_resume_prompt = extract_goal_prompt_template(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
       end_heading: /^###\s+/
     )
     @pr_batch_goal_prompt = extract_goal_prompt_template(@pr_batch_skill, "## Goal Prompt Template")
@@ -1164,8 +1181,27 @@ class GoalCompletionContractTest < Minitest::Test
   def test_scheduled_retry_heartbeat_has_a_pressure_check
     assert_squished_includes @workflow_contract_section,
                              "A blocker that publishes an exact future reset time gets one same-thread " \
-                             "heartbeat scheduled for that time, because the 15-minute watch expires first",
+                             "heartbeat scheduled for that time, because neither the deterministic watcher " \
+                             "nor the bounded fallback cadence guarantees a probe at that exact published time",
                              "workflows/pr-processing.md Goal Mode Completion Contract pressure checks"
+    assert_squished_includes @workflow_contract_section,
+                             "single scheduled mechanism for that blocker and gate; do not start or retain " \
+                             "either watcher mode for the same gate, and create or update its durable record " \
+                             "before stopping or replacing any existing watcher so no wake is lost",
+                             "workflows/pr-processing.md heartbeat exclusivity pressure check"
+  end
+
+  def test_goal_resume_prompt_preserves_the_scheduled_retry_heartbeat
+    assert_squished_includes @workflow_resume_prompt,
+                             "schedule the same-thread heartbeat for that time because neither the " \
+                             "deterministic watcher nor the bounded fallback cadence guarantees a probe at " \
+                             "that exact published time",
+                             "workflows/pr-processing.md goal resume prompt heartbeat summary"
+    assert_squished_includes @workflow_resume_prompt,
+                             "single scheduled mechanism for that blocker and gate; do not start or retain " \
+                             "either watcher mode for the same gate, and create or update its durable record " \
+                             "before stopping or replacing any existing watcher so no wake is lost",
+                             "workflows/pr-processing.md goal resume prompt heartbeat exclusivity"
   end
 
   def test_pr_batch_skill_carries_the_concise_heartbeat_requirement

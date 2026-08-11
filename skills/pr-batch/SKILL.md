@@ -1041,8 +1041,12 @@ authoritative state is unchanged.
 
 When that external blocker publishes an exact future retry time and the host can
 re-enter this same thread on schedule, schedule one same-thread heartbeat for
-that time before handing off, because the 15-minute watch expires first and
-leaves resumable work stranded. Update the existing heartbeat instead of
+that time before handing off, because neither the deterministic watcher nor the
+bounded fallback cadence guarantees a probe at that exact published time.
+Use it as the single scheduled mechanism for that blocker and gate; do not start
+or retain either watcher mode for the same gate, and create or update its durable
+record before stopping or replacing any existing watcher so no wake is lost.
+Update the existing heartbeat instead of
 duplicating it, stop it once the target is terminal, and report in the handoff
 whether one was created, its exact scheduled time, and its durable identifier,
 or else the exact scheduling blocker. An `UNKNOWN` or absent retry time, a
