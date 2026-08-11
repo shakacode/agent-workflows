@@ -93,6 +93,18 @@ def coordination_declaration_blockers(handoff_text)
   CoordinationDeclaration.blockers(handoff_text)
 end
 
+def batch_handoff_format_section(workflow)
+  extract_anchored_section(
+    workflow,
+    "### Batch Handoff Format",
+    end_heading: /^###[[:blank:]]+/
+  )
+end
+
+def handoff_prompt_section(workflow, heading)
+  extract_anchored_section(workflow, heading, end_heading: /^###[[:blank:]]+/)
+end
+
 class CoordinationDeclarationContractTest < Minitest::Test
   # --- Gate behavior: the declared forms the contract accepts -----------------
 
@@ -123,6 +135,18 @@ class CoordinationDeclarationContractTest < Minitest::Test
 
     assert_empty coordination_declaration_blockers(handoff),
                  "a Lane Card bullet is a valid place to declare coordination"
+  end
+
+  def test_declarations_inside_markdown_code_are_ignored
+    [
+      "```text\ncoordination: registered example-backtick\n```\n",
+      "````markdown\ncoordination: registered example-long-backtick\n````\n",
+      "~~~text\ncoordination: unavailable #{EM_DASH} example tilde fence\n~~~\n",
+      "    coordination: registered example-indented\n"
+    ].each do |handoff|
+      assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                   "a declaration shown as Markdown code must not satisfy the runtime gate: #{handoff.inspect}"
+    end
   end
 
   # --- The actual bug: silence must fail loudly ------------------------------
@@ -219,6 +243,24 @@ class CoordinationDeclarationContractTest < Minitest::Test
     assert_includes blockers.first, "unrecognized"
   end
 
+  def test_near_miss_declarations_are_rejected_with_an_exact_correction
+    [
+      "`coordination: registered aw-1`",
+      "**coordination:** registered aw-1",
+      "Coordination: registered aw-1",
+      "coordination - registered aw-1",
+      "coordination – registered aw-1"
+    ].each do |near_miss|
+      blockers = coordination_declaration_blockers("#{near_miss}\n")
+
+      refute_empty blockers, "#{near_miss.inspect} must remain rejected"
+      assert_includes blockers.first, "near-miss"
+      assert_includes blockers.first, near_miss
+      assert_includes blockers.first, "coordination: registered <batch-id>"
+      assert_includes blockers.first, "coordination: unavailable #{EM_DASH} <reason>"
+    end
+  end
+
   def test_both_forms_on_one_line_fail
     handoff = "coordination: registered aw-1 unavailable #{EM_DASH} backend flaky\n"
     blockers = coordination_declaration_blockers(handoff)
@@ -268,14 +310,28 @@ class CoordinationDeclarationContractTest < Minitest::Test
 
   def test_canonical_rule_lives_in_the_batch_handoff_format_section
     workflow = read_repo_file(WORKFLOW_PATH)
-    start_index = workflow.index("### Batch Handoff Format")
-    refute_nil start_index, "workflows/pr-processing.md must keep the canonical Batch Handoff Format section"
-
-    end_match = workflow.match(/^###\s+/, start_index + 1)
-    section = workflow[start_index...(end_match ? end_match.begin(0) : workflow.length)]
+    section = batch_handoff_format_section(workflow)
 
     assert_includes normalize_prose(section), normalize_prose(COORDINATION_DECLARATION_RULE),
                     "the declaration belongs in the canonical handoff contract the goal prompt routes to"
+  end
+
+  def test_batch_handoff_extractor_ignores_a_quoted_heading
+    workflow = <<~MARKDOWN
+      <!-- Keep `### Batch Handoff Format` synchronized. -->
+      decoy body
+
+      ### Batch Handoff Format
+
+      real body
+
+      ### Next
+    MARKDOWN
+
+    section = batch_handoff_format_section(workflow)
+
+    assert_includes section, "real body"
+    refute_includes section, "decoy body"
   end
 
   # Every prompt that tells a coordinator what its own final handoff must contain
@@ -288,11 +344,7 @@ class CoordinationDeclarationContractTest < Minitest::Test
       "### Generic PR-Batch Continuation Prompt",
       "### Model-Routing Recovery Prompt"
     ].each do |heading|
-      start_index = workflow.index(heading)
-      refute_nil start_index, "workflows/pr-processing.md must keep #{heading}"
-
-      end_match = workflow.match(/^###\s+/, start_index + 1)
-      section = normalize_prose(workflow[start_index...(end_match ? end_match.begin(0) : workflow.length)])
+      section = normalize_prose(handoff_prompt_section(workflow, heading))
 
       assert_includes section, "coordination: registered <batch-id>",
                       "#{heading} must require the registered form"
@@ -301,6 +353,25 @@ class CoordinationDeclarationContractTest < Minitest::Test
       assert_includes section, "A missing declaration is a hard blocker, not a clean handoff.",
                       "#{heading} must make an absent declaration a blocker"
     end
+  end
+
+  def test_handoff_prompt_extractor_ignores_a_quoted_heading
+    heading = "### Generic PR-Batch Continuation Prompt"
+    workflow = <<~MARKDOWN
+      <!-- See `#{heading}` for the canonical prompt. -->
+      decoy prompt
+
+      #{heading}
+
+      real prompt
+
+      ### Next
+    MARKDOWN
+
+    section = handoff_prompt_section(workflow, heading)
+
+    assert_includes section, "real prompt"
+    refute_includes section, "decoy prompt"
   end
 
   def test_rule_states_both_declared_forms_verbatim
@@ -392,7 +463,29 @@ class CoordinationDeclarationContractTest < Minitest::Test
     _out, err, status = Open3.capture3("ruby", COORDINATION_DECLARATION_HELPER)
 
     assert_equal 64, status.exitstatus
-    assert_includes err, "--handoff"
+    assert_equal "Error: missing argument: --handoff\n#{CoordinationDeclaration.usage}\n", err
+  end
+
+  def test_helper_cli_reports_invalid_utf8_as_a_clean_input_error
+    invalid_handoff = "coordination: registered aw-1\ninvalid: \xFF\n".b
+
+    Dir.mktmpdir("coordination-declaration-invalid-utf8") do |directory|
+      path = File.join(directory, "handoff.md")
+      File.binwrite(path, invalid_handoff)
+
+      [
+        ["stdin", ["--handoff", "-"], { stdin_data: invalid_handoff }],
+        ["file", ["--handoff", path], {}]
+      ].each do |label, arguments, options|
+        out, err, status = Open3.capture3("ruby", COORDINATION_DECLARATION_HELPER, *arguments, **options)
+
+        assert_equal 64, status.exitstatus, "#{label}: invalid UTF-8 is an input error"
+        assert_empty out, "#{label}: an input error must not emit a misleading JSON report"
+        assert_match(/\AError: .*invalid UTF-8/i, err, "#{label}: stderr must identify the invalid input")
+        refute_match(/coordination-declaration:\d+:in|Traceback|from .*coordination-declaration/, err,
+                     "#{label}: the helper must not leak a Ruby stack trace")
+      end
+    end
   end
 
   def test_missing_runtime_helper_companion_stops_with_a_precise_blocker

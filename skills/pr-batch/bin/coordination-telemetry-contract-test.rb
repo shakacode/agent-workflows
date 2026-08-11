@@ -227,10 +227,10 @@ def parse_operational_signal_rows(section)
 end
 
 def extract_json_fence(text, heading)
-  heading_index = text.index(heading)
-  raise "missing heading #{heading.inspect}" unless heading_index
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  raise "missing heading #{heading.inspect}" unless heading_match
 
-  fence_start = text.index("```json\n", heading_index)
+  fence_start = text.index("```json\n", heading_match.end(0))
   raise "missing JSON fence after #{heading.inspect}" unless fence_start
 
   body_start = fence_start + "```json\n".length
@@ -448,6 +448,23 @@ def assert_remediation_authority_section_contract(section, location)
 end
 
 class CoordinationTelemetryContractTest < Minitest::Test
+  def test_json_fence_extractor_ignores_a_quoted_heading
+    fixture = <<~MARKDOWN
+      <!-- Keep `## Batch Provenance Manifest` synchronized. -->
+      ```json
+      {"source":"decoy"}
+      ```
+
+      ## Batch Provenance Manifest
+
+      ```json
+      {"source":"real"}
+      ```
+    MARKDOWN
+
+    assert_equal({ "source" => "real" }, extract_json_fence(fixture, "## Batch Provenance Manifest"))
+  end
+
   def test_extract_section_stops_at_a_parent_heading
     fixture = <<~MARKDOWN
       ### Target

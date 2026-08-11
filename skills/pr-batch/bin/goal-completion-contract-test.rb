@@ -172,10 +172,10 @@ def read_repo_file(path)
 end
 
 def extract_goal_prompt_template(skill_text, heading, end_heading: /^##\s+/)
-  heading_index = skill_text.index(heading)
-  raise "missing #{heading} section" unless heading_index
+  heading_match = skill_text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  raise "missing #{heading} section" unless heading_match
 
-  fence_start = skill_text.index(TEXT_FENCE, heading_index)
+  fence_start = skill_text.index(TEXT_FENCE, heading_match.end(0))
   raise "missing text fence in Goal Prompt section" unless fence_start
 
   fence_body_start = fence_start + TEXT_FENCE.length
@@ -234,16 +234,18 @@ def assert_squished_includes(text, phrase, label)
 end
 
 # The canonical rule is the only place `<PROJECT>` may be tied to the repository
-# name. Strip the pinned rule, and any sentence that still pairs the two is a
+# name. Strip the pinned rule, and any paragraph that still pairs the two is a
 # permissive alternative added *alongside* the rule rather than replacing it --
 # the realistic regression, since an exact revert is already caught by the
-# positive pin. A literal phrase list is always one paraphrase behind.
-PROJECT_REPOSITORY_NAME_PATTERN = /reposit(?:ory|ories)[[:space:]-]name/i
+# positive pin. Paragraph scope also catches cross-sentence guidance without
+# conflating unrelated sections. A literal phrase list is always one paraphrase
+# behind.
+PROJECT_REPOSITORY_NAME_PATTERN = /(?:\brepo(?:sitory)?[[:space:]-]+name\b|\bname[[:space:]]+of[[:space:]]+(?:the[[:space:]]+)?repository\b)/i
 
 def permissive_project_name_sentences(text, pinned_rule)
-  remainder = squish(text).gsub(squish(pinned_rule), " ")
-  remainder.split(/(?<=\.)[[:space:]]+/).select do |sentence|
-    sentence.include?("<PROJECT>") && sentence.match?(PROJECT_REPOSITORY_NAME_PATTERN)
+  text.split(/\n[[:blank:]]*\n+/).filter_map do |paragraph|
+    remainder = squish(paragraph).gsub(squish(pinned_rule), " ")
+    remainder if remainder.include?("<PROJECT>") && remainder.match?(PROJECT_REPOSITORY_NAME_PATTERN)
   end
 end
 
@@ -738,6 +740,25 @@ class GoalCompletionContractTest < Minitest::Test
     assert_match(/missing ### Batch Handoff Format section/, error.message)
   end
 
+  def test_goal_prompt_extractor_ignores_a_heading_quoted_before_the_real_section
+    document = <<~MARKDOWN
+      <!-- See `## Goal Prompt` before editing. -->
+      ```text
+      decoy prompt
+      ```
+
+      ## Goal Prompt
+
+      ```text
+      real prompt
+      ```
+
+      ## Next
+    MARKDOWN
+
+    assert_equal "real prompt\n", extract_goal_prompt_template(document, "## Goal Prompt")
+  end
+
   # #244's verified failure scenario: move a comment quoting the heading above the
   # real heading and delete the in-section copy of the rule. Under substring
   # matching the extractor bound to the comment and the suite stayed green, so the
@@ -780,7 +801,10 @@ class GoalCompletionContractTest < Minitest::Test
       "`<PROJECT>` may be the current repository name when it is short.",
       "Use the current repository name for `<PROJECT>` when no prefix exists.",
       "`<PROJECT>` is a short abbreviation of the current repository name.",
-      "Derive the `<PROJECT>` value from the current repository name."
+      "Derive the `<PROJECT>` value from the current repository name.",
+      "Derive `<PROJECT>` from the repo name when convenient.",
+      "Use the name of the repository as `<PROJECT>` when no prefix exists.",
+      "Choose `<PROJECT>` when no prefix exists. Use the repo name for that value."
     ].each do |escape_hatch|
       tampered = "#{@workflow}\n\n#{escape_hatch}\n"
 

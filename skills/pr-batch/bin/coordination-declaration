@@ -30,7 +30,8 @@ module CoordinationDeclaration
 
   # Accepts an optional list marker so a declaration reads naturally inside a
   # bulleted Lane Card or handoff section.
-  DECLARATION_LINE = /^[[:space:]]*(?:[-*+][[:space:]]+)?coordination:[[:space:]]*(.*?)[[:space:]]*$/
+  DECLARATION_LINE = /^ {0,3}(?:[-*+][[:space:]]+)?coordination:[[:space:]]*(.*?)[[:space:]]*$/
+  NEAR_MISS_LINE = /^ {0,3}(?:[-*+][[:space:]]+)?(?:`coordination:.*`|\*\*coordination:\*\*.*|Coordination:.*|coordination[[:blank:]]+[-–][[:blank:]]+.*)[[:blank:]]*$/
 
   module_function
 
@@ -38,8 +39,35 @@ module CoordinationDeclaration
     value.strip.casecmp("UNKNOWN").zero?
   end
 
+  def visible_lines(handoff_text)
+    fence = nil
+
+    handoff_text.to_s.lines.filter_map do |line|
+      if fence
+        fence = nil if line.match?(/^ {0,3}#{Regexp.escape(fence[:character])}{#{fence[:length]},}[[:blank:]]*$/)
+        next
+      end
+
+      if (opening = line.match(/^ {0,3}(`{3,}|~{3,})/))
+        marker = opening[1]
+        fence = { character: marker[0], length: marker.length }
+        next
+      end
+
+      next if line.start_with?("    ", "\t")
+
+      line
+    end
+  end
+
   def declared_values(handoff_text)
-    handoff_text.to_s.lines.filter_map { |line| line[DECLARATION_LINE, 1] }
+    visible_lines(handoff_text).filter_map { |line| line[DECLARATION_LINE, 1] }
+  end
+
+  def near_miss_lines(handoff_text)
+    visible_lines(handoff_text).filter_map do |line|
+      line.strip if line.match?(NEAR_MISS_LINE)
+    end
   end
 
   # The gate itself. Returns the list of blockers for a candidate final handoff;
@@ -47,7 +75,16 @@ module CoordinationDeclaration
   def blockers(handoff_text)
     values = declared_values(handoff_text)
 
-    return [MISSING_DECLARATION_BLOCKER] if values.empty?
+    if values.empty?
+      near_misses = near_miss_lines(handoff_text)
+      unless near_misses.empty?
+        return ["final handoff contains a near-miss coordination declaration #{near_misses.first.inspect}; " \
+                "use exact `coordination: registered <batch-id>` or " \
+                "`coordination: unavailable #{EM_DASH} <reason>` syntax"]
+      end
+
+      return [MISSING_DECLARATION_BLOCKER]
+    end
 
     if values.length > 1
       return ["final handoff declares `coordination:` #{values.length} times; exactly one declaration is allowed"]
@@ -151,9 +188,14 @@ module CoordinationDeclaration
   # dash, so a default US-ASCII external encoding would crash the gate on exactly
   # the declaration it exists to validate.
   def read_handoff(source)
-    return $stdin.set_encoding(Encoding::UTF_8).read if source == "-"
+    text = if source == "-"
+             $stdin.set_encoding(Encoding::UTF_8).read
+           else
+             File.read(source, encoding: "UTF-8")
+           end
+    raise Encoding::InvalidByteSequenceError, "handoff input is invalid UTF-8" unless text.valid_encoding?
 
-    File.read(source, encoding: "UTF-8")
+    text
   end
 
   def usage
@@ -174,7 +216,7 @@ module CoordinationDeclaration
     end
     parser.parse!(argv)
 
-    raise OptionParser::MissingArgument, "--handoff is required" unless options[:handoff]
+    raise OptionParser::MissingArgument, "--handoff" unless options[:handoff]
 
     result = report(read_handoff(options[:handoff]))
     puts JSON.pretty_generate(result)
@@ -184,6 +226,9 @@ module CoordinationDeclaration
     warn usage
     64
   rescue SystemCallError => e
+    warn "Error: #{e.message}"
+    64
+  rescue EncodingError => e
     warn "Error: #{e.message}"
     64
   end
