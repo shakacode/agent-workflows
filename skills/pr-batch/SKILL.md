@@ -1039,7 +1039,7 @@ authoritative state is unchanged.
 
 When that external blocker publishes an exact future retry time and the host can
 re-enter this same thread on schedule, schedule one same-thread heartbeat for
-that time before handing off, because the bounded watch may expire first and
+that time before handing off, because the 15-minute watch expires first and
 leave resumable work stranded. Update the existing heartbeat instead of
 duplicating it, stop it once the target is terminal, and report in the handoff
 whether one was created, its exact scheduled time, and its durable identifier,
