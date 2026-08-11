@@ -652,6 +652,23 @@ unsupported states are invalid. A rejected result launches nothing; an accepted
 result permits only `launch.eligible_lane_ids` and leaves
 `launch.held_lane_ids` unlaunched.
 
+The optional top-level `expansion_path_reservations` array is additive to v1;
+omitting it or providing an empty array preserves existing inputs. Each active
+reservation is one exact `expansion-path-reservation` v1 record containing
+`batch_plan_id`, `stage_dependency_plan_id`, `lane_id`, `wave`, one canonical
+repository-relative `path`, a known `reason`, and a durable `evidence_ref`.
+Presence is the active state; cancellation removes the record, so no independent
+status boolean or dependency edge is introduced. The preflight binds each record
+to known plan and lane identities, rejects malformed, `UNKNOWN`, noncanonical,
+duplicate, mismatched, completed-lane, or already-reflected reservations, and
+derives collision and risky-capacity inputs from the union of verified
+`file_touch_map.paths` and active reservations. Reserved-path overlap between
+same-wave lanes requires an explicit shared serialization group whose
+`max_concurrency` is one; a typed edit edge alone is insufficient. Keep the
+reservation until the request is cancelled or the verified PR map contains the
+path, then remove it before the next preflight because a reflected reservation is
+stale.
+
 ### Model And Effort Routing
 
 Route the parent coordinator separately from implementation, discovery, review,
@@ -797,29 +814,37 @@ does not redefine scope or substitute a new diagnosis. Necessary in-repository
 path expansion defaults to allowed when repository evidence shows an added path
 is reasonably necessary to complete the already-authorized goal or its required
 validation. Treat owned paths and the execution envelope as coordination and
-collision controls, not as a user-permission boundary. When a lane is the sole
-active editor, it may record the path and reason in the lane envelope, refresh
-active-lane claim and collision checks, and continue without user approval when
-they are clear. Before a worker in a multi-editor wave changes an added path,
-it records an expansion request and pauses at a safe checkpoint. The coordinator
-processes expansion requests serially, refreshes authoritative file-touch maps
-and lane lifecycle state, reruns `batch-plan-preflight`, and resumes the worker
-only after accepting the path as disjoint or serializing the affected work at
-maximum concurrency one. A collision or `UNKNOWN` collision state remains
-stopped until then. A missing path alone is not material scope growth and must
-not produce `blocked-user-input`.
+collision controls, not as a user-permission boundary. Before editing, record
+each added path and reason in the lane envelope when one is present; otherwise
+use a durable coordinator-owned lane record or Lane Card that the coordinator
+can read. When a lane is the sole active editor, it may refresh active-lane claim
+and collision checks and continue without user approval when they are clear.
+Before a worker in a multi-editor wave changes an added path, it persists a typed
+expansion request, marks its durable lane lifecycle blocked, refreshes its
+heartbeat, emits a Lane Card with the path, reason, and request evidence
+reference, and pauses at a safe checkpoint. The coordinator processes expansion
+requests serially, records an active `expansion_path_reservations` entry,
+refreshes authoritative file-touch maps and lane lifecycle state, reruns
+`batch-plan-preflight`, and resumes the worker only after the preflight accepts
+the path as disjoint or under maximum-concurrency-one serialization. The
+reservation persists until the verified PR file-touch map contains the path or
+the request is cancelled, and it is removed once reflected or cancelled. A
+collision or `UNKNOWN` collision state remains stopped until then. A missing
+path alone is not material scope growth and must not produce
+`blocked-user-input`.
 Necessary additions can include contract or type files, tests or fixtures,
 offline demo stubs, and build or generated integration surfaces when repository
 evidence makes them necessary.
-Contradictory evidence remains an immediate stop. Stop and return control for
-path expansion that changes the approved goal, accepted behavior, or acceptance
-criteria; adds unrelated work; crosses a repository or trust boundary; requires
-a destructive or difficult-to-reverse action; introduces secrets, permissions,
-deployments, billing, or other external effects; requires consequential
-architecture, performance, compatibility, or product judgment; materially
-changes security, privacy, compliance, or release policy; collides with another
-active lane and cannot be safely coordinated; exposes consequential ambiguity;
-or weakens verification.
+Contradictory evidence remains an immediate stop. Stop and return control when
+any of the following applies: the approved goal, accepted behavior, or acceptance
+criteria changes; the work adds unrelated work; it crosses a repository or trust
+boundary; it requires a destructive or difficult-to-reverse action; it introduces
+secrets, permissions, deployments, billing, or other external effects; it
+requires consequential architecture, performance, compatibility, or product
+judgment; it materially changes security, privacy, compliance, or release policy;
+it collides with another active lane and cannot be safely coordinated; it exposes
+consequential ambiguity; or it weakens verification. An omitted path alone is not
+such a condition.
 
 Before escalating, the worker stops at a safe checkpoint and emits a
 `MODEL_ESCALATION_REQUEST` with lane/claim state, branch/worktree/HEAD, current
@@ -2147,23 +2172,26 @@ When worker subagents are explicitly authorized:
   conditions regardless of route. Expand owned paths without user approval when
   repository evidence makes an in-repository path reasonably necessary for the
   authorized goal or required validation. A sole active editor records the path
-  and reason, refreshes active claims and collision checks, then continues when
-  clear. In a multi-editor wave, the worker records an expansion request and
-  pauses at a safe checkpoint before changing the path. The coordinator
-  processes expansion requests serially, refreshes authoritative file-touch
-  maps and lane lifecycle state, reruns `batch-plan-preflight`, and resumes only
-  after accepting disjointness or maximum-concurrency-one serialization. A
-  collision or `UNKNOWN` collision state remains stopped. With or without an envelope,
-  contradictory evidence remains an immediate stop. Stop and return
-  control when path expansion changes the approved goal, accepted behavior,
-  or acceptance criteria; adds unrelated work; crosses a repository or trust
-  boundary; requires a destructive or difficult-to-reverse action; introduces
-  secrets, permissions, deployments, billing, or other external effects; requires
-  consequential architecture, performance, compatibility, or product judgment;
-  materially changes security, privacy, compliance, or release policy; collides
-  with another active lane and cannot be safely coordinated; exposes
-  consequential ambiguity; or weakens verification. An omitted path alone is not
-  such a condition.
+  and reason in the envelope or durable coordinator-owned lane record, refreshes
+  active claims and collision checks, then continues when clear. In a multi-editor
+  wave, the worker persists a typed expansion request, marks its durable lifecycle
+  blocked, refreshes its heartbeat, emits a Lane Card with path, reason, and request
+  evidence reference, and pauses before changing the path. The coordinator
+  processes requests serially, records the active reservation, refreshes
+  authoritative file-touch maps and lane lifecycle state, reruns
+  `batch-plan-preflight`, and resumes only after an accepted disjoint or
+  maximum-concurrency-one result. A collision or `UNKNOWN` collision state remains
+  stopped. With or without an envelope, contradictory evidence remains an
+  immediate stop. Stop and return control when any of the following applies: the
+  approved goal, accepted behavior, or acceptance criteria changes; the work adds
+  unrelated work; it crosses a repository or trust boundary; it requires a
+  destructive or difficult-to-reverse action; it introduces secrets, permissions,
+  deployments, billing, or other external effects; it requires consequential
+  architecture, performance, compatibility, or product judgment; it materially
+  changes security, privacy, compliance, or release policy; it collides with
+  another active lane and cannot be safely coordinated; it exposes consequential
+  ambiguity; or it weakens verification. An omitted path alone is not such a
+  condition.
 - Refresh that worker's heartbeat whenever it starts an item, pushes or updates a
   PR, completes a review pass, becomes blocked, resumes, or finishes the lane.
 - Emit a portable Lane Card after a successful claim, on blocked/cancelled state,
@@ -2180,6 +2208,8 @@ When worker subagents are explicitly authorized:
   - `Branch:` `<branch>`; `pr_url`: `<verified GitHub PR url|backend url|UNKNOWN>`
   - `Phase:` `<phase>`; `claim:` `<holder|UNKNOWN>/<generation|UNKNOWN>/<instance|UNKNOWN>`;
     `coordinator:` `<coordinator-id|UNKNOWN>`
+  - `Path expansion:` `<canonical path|none>`; `reason:` `<known reason|n/a>`;
+    `request_ref:` `<durable evidence ref|n/a>`
     Never infer observed values from prompt text or worker self-report. If the
     backend does not provide `dashboard_url`, generation, or instance
     metadata, show `UNKNOWN` and continue with the available GitHub links. If the

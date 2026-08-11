@@ -83,6 +83,23 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
+  def expansion_path_reservation(lane_id: "lane-a", wave: "wave-a", path: "lib/expanded.rb",
+                                 reason: "Required by the authorized implementation.",
+                                 batch_plan_id: "batch-plan-1",
+                                 stage_dependency_plan_id: "trusted-plan-1")
+    {
+      "type" => "expansion-path-reservation",
+      "version" => 1,
+      "batch_plan_id" => batch_plan_id,
+      "stage_dependency_plan_id" => stage_dependency_plan_id,
+      "lane_id" => lane_id,
+      "wave" => wave,
+      "path" => path,
+      "reason" => reason,
+      "evidence_ref" => "coordination-state://#{batch_plan_id}/lanes/#{lane_id}/path-expansions/1"
+    }
+  end
+
   def canonicalize(value)
     case value
     when Hash
@@ -132,7 +149,7 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def input_for(lanes: [lane], maps: nil, edges: [], groups: [], premises: [], gate_lanes: nil,
                 backend: "generic", active_wave: "wave-a", batch_plan_id: "batch-plan-1",
-                lifecycle_states: [])
+                lifecycle_states: [], reservations: nil)
     maps ||= lanes.each_with_index.to_h { |record, index| [record.fetch("id"), touch_map(index + 1, ["lib/#{record.fetch('id')}.rb"])] }
     gate_lanes ||= lanes.map { |record| gate_lane(record.fetch("id")) }
     plan_id = "trusted-plan-1"
@@ -176,6 +193,7 @@ class BatchPlanPreflightTest < Minitest::Test
     }
     input.fetch("stage_dependency_gate")["trusted_plan_binding"] =
       stage_dependency_plan_binding(input.fetch("stage_dependency_plan"))
+    input["expansion_path_reservations"] = reservations unless reservations.nil?
     input
   end
 
@@ -436,6 +454,144 @@ class BatchPlanPreflightTest < Minitest::Test
     collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
     assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
     assert_includes collision.fetch("message"), "CHANGELOG.md"
+  end
+
+  def test_expansion_path_reservations_are_optional_and_disjoint_reservations_are_accepted
+    without_reservations = input_for
+    refute_includes without_reservations.keys, "expansion_path_reservations"
+    result, stderr, status = evaluate(without_reservations)
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+
+    result, stderr, status = evaluate(input_for(reservations: [expansion_path_reservation]))
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+  end
+
+  def test_same_wave_reservation_overlap_collides_unless_explicitly_serialized_at_max_one
+    lanes = [lane("lane-a"), lane("lane-b")]
+    reservations = [
+      expansion_path_reservation(lane_id: "lane-a"),
+      expansion_path_reservation(lane_id: "lane-b")
+    ]
+
+    result, _stderr, status = evaluate(input_for(lanes: lanes, reservations: reservations))
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
+    assert_includes collision.fetch("message"), "lib/expanded.rb"
+
+    lanes.each { |record| record["serialization_group"] = "expanded-path-writers" }
+    groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
+    result, stderr, status = evaluate(input_for(lanes: lanes, groups: groups, reservations: reservations))
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+  end
+
+  def test_typed_edit_edge_does_not_replace_max_one_serialization_for_reserved_paths
+    lanes = [lane("lane-a"), lane("lane-b")]
+    reservations = [
+      expansion_path_reservation(lane_id: "lane-a"),
+      expansion_path_reservation(lane_id: "lane-b")
+    ]
+    edges = [{ "id" => "lane-a-before-lane-b", "from" => "lane-a", "to" => "lane-b", "type" => "edit" }]
+    gate_lanes = [gate_lane("lane-a"), gate_lane("lane-b", patch_edit: false)]
+    input = input_for(lanes: lanes, reservations: reservations, edges: edges, gate_lanes: gate_lanes)
+    input.fetch("stage_dependency_gate")["status"] = "gated"
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
+  end
+
+  def test_reserved_path_collides_with_another_lanes_verified_file_touch_path
+    lanes = [lane("lane-a"), lane("lane-b")]
+    maps = {
+      "lane-a" => touch_map(1, ["lib/lane-a.rb"]),
+      "lane-b" => touch_map(2, ["lib/expanded.rb"])
+    }
+
+    result, _stderr, status = evaluate(
+      input_for(lanes: lanes, maps: maps, reservations: [expansion_path_reservation])
+    )
+
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
+    assert_includes collision.fetch("message"), "lib/expanded.rb"
+  end
+
+  def test_expansion_path_reservations_fail_closed_on_invalid_identity_shape_or_evidence
+    valid = expansion_path_reservation
+    cases = {
+      "not an array" => "UNKNOWN",
+      "malformed record" => [valid.merge("extra" => true)],
+      "UNKNOWN reason" => [valid.merge("reason" => "UNKNOWN")],
+      "multiline reason" => [valid.merge("reason" => "Required\nfor another file")],
+      "UNKNOWN evidence" => [valid.merge("evidence_ref" => "UNKNOWN")],
+      "noncanonical path" => [valid.merge("path" => "../outside.rb")],
+      "unknown lane" => [valid.merge("lane_id" => "lane-z")],
+      "foreign batch" => [valid.merge("batch_plan_id" => "other-batch")],
+      "foreign dependency plan" => [valid.merge("stage_dependency_plan_id" => "other-plan")],
+      "wrong wave" => [valid.merge("wave" => "wave-z")]
+    }
+
+    cases.each do |label, reservations|
+      result, _stderr, status = evaluate(input_for(reservations: reservations))
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "expansion-path-reservations-invalid", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+  end
+
+  def test_duplicate_completed_or_reflected_expansion_path_reservations_are_stale
+    reservation = expansion_path_reservation
+
+    duplicate = input_for(reservations: [reservation, reservation.dup])
+    result, _stderr, status = evaluate(duplicate)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-duplicate"
+
+    completed = input_for(
+      reservations: [reservation],
+      lifecycle_states: [lane_lifecycle_state]
+    )
+    result, _stderr, status = evaluate(completed)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-stale"
+
+    reflected = input_for(
+      maps: { "lane-a" => touch_map(1, ["lib/lane-a.rb", "lib/expanded.rb"]) },
+      reservations: [reservation]
+    )
+    result, _stderr, status = evaluate(reflected)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-stale"
+  end
+
+  def test_backend_risky_capacity_uses_verified_paths_union_active_reservations
+    lanes = Array.new(4) do |index|
+      lane("lane-#{index}").merge("serialization_group" => "expanded-path-writers")
+    end
+    groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
+    reservations = [
+      expansion_path_reservation(lane_id: "lane-0", path: "lib/shared-expanded.rb"),
+      expansion_path_reservation(lane_id: "lane-1", path: "lib/shared-expanded.rb")
+    ]
+
+    result, _stderr, status = evaluate(
+      input_for(lanes: lanes, groups: groups, reservations: reservations, backend: "generic")
+    )
+
+    refute status.success?
+    cap = result.fetch("violations").find { |item| item.fetch("code") == "backend-risky-cap-exceeded" }
+    assert_equal lanes.map { |record| record.fetch("id") }, cap.fetch("lane_ids")
   end
 
   def test_directory_rename_endpoints_collide_with_descendant_touches

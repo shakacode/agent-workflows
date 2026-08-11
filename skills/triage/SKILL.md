@@ -220,29 +220,38 @@ precise blocker.
    evidence shows an added path is reasonably necessary to complete the
    already-authorized goal or its required validation. Treat owned paths and
    the execution envelope as coordination and collision controls, not as a
-   user-permission boundary. When a lane is the sole active editor, it may
-   record the path and reason in the lane envelope, refresh active-lane claim
-   and collision checks, and continue without user approval when they are
-   clear. Before a worker in a multi-editor wave changes an added path, it
-   records an expansion request and pauses at a safe checkpoint. The
-   coordinator processes expansion requests serially, refreshes authoritative
-   file-touch maps and lane lifecycle state, reruns `batch-plan-preflight`, and
-   resumes the worker only after accepting the path as disjoint or serializing
-   the affected work at maximum concurrency one. A collision or `UNKNOWN`
+   user-permission boundary. Before editing, record each added path and reason
+   in the lane envelope when one is present; otherwise use a durable
+   coordinator-owned lane record or Lane Card that the coordinator can read.
+   When a lane is the sole active editor, it may refresh active-lane claim and
+   collision checks and continue without user approval when they are clear.
+   Before a worker in a multi-editor wave changes an added path, it persists a
+   typed expansion request, marks its durable lane lifecycle blocked, refreshes
+   its heartbeat, emits a Lane Card with the path, reason, and request evidence
+   reference, and pauses at a safe checkpoint. The coordinator processes
+   expansion requests serially, records an active
+   `expansion_path_reservations` entry, refreshes authoritative file-touch maps
+   and lane lifecycle state, reruns `batch-plan-preflight`, and resumes the
+   worker only after the preflight accepts the path as disjoint or under
+   maximum-concurrency-one serialization. The reservation persists until the
+   verified PR file-touch map contains the path or the request is cancelled,
+   and it is removed once reflected or cancelled. A collision or `UNKNOWN`
    collision state remains stopped until then. A missing path alone is not
    material scope growth and must not produce `blocked-user-input`.
    Necessary additions can include contract or type files, tests or fixtures,
    offline demo stubs, and build or generated integration surfaces when
    repository evidence makes them necessary.
    Contradictory evidence remains an immediate stop. Stop and return control
-   for path expansion that changes the approved goal, accepted behavior, or
-   acceptance criteria; adds unrelated work; crosses a repository or trust
-   boundary; requires a destructive or difficult-to-reverse action; introduces
-   secrets, permissions, deployments, billing, or other external effects;
-   requires consequential architecture, performance, compatibility, or product
-   judgment; materially changes security, privacy, compliance, or release
-   policy; collides with another active lane and cannot be safely coordinated;
-   exposes consequential ambiguity; or weakens verification.
+   when any of the following applies: the approved goal, accepted behavior, or
+   acceptance criteria changes; the work adds unrelated work; it crosses a
+   repository or trust boundary; it requires a destructive or
+   difficult-to-reverse action; it introduces secrets, permissions,
+   deployments, billing, or other external effects; it requires consequential
+   architecture, performance, compatibility, or product judgment; it
+   materially changes security, privacy, compliance, or release policy; it
+   collides with another active lane and cannot be safely coordinated; it
+   exposes consequential ambiguity; or it weakens verification. An omitted
+   path alone is not such a condition.
    The current-wave item cap applies across all generated groups in aggregate;
    never multiply it by `N`, registered profiles, inboxes, or machines. If
    actionable work exceeds the capped current wave, report the remaining
