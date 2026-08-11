@@ -132,37 +132,33 @@ ROUTE_DISPOSITION_TABLE_HEADING = "### Disposition Table"
 ROUTE_PROVENANCE_RULES = [
   "A requested route is an instruction; an observed route is host-reported evidence of what actually executed. The two are separate fields and never collapse into one.",
   "Requested-route prose in a plan, handoff, comment, or PR description is never presentable as observed execution evidence; only host-reported session metadata binds.",
-  "When operator policy names an exact route, an unbound, unavailable, substituted, or `UNKNOWN` observed tuple stops the lane with `MODEL_ROUTE_MISMATCH` before any edit begins.",
-  "A worker never inherits the coordinator's model/effort pair, and an inherited pair is a route mismatch even when the inherited route is stronger than the requested one.",
+  "A route mismatch, unavailability, inherited route, or `UNKNOWN` observed tuple must be recorded honestly and must exclude that execution from route-measurement evidence; it never alone stops otherwise valid work.",
+  "A worker records its own observed model/effort separately from the coordinator; an inherited pair is a route mismatch even when the inherited route is stronger than the requested one.",
   "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule"
 ].freeze
-SATISFIED_ROUTE_DISPOSITIONS = %w[proceed proceed-as-fallback].freeze
-FAIL_CLOSED_ROUTE_CASES = %w[
-  unbound-exact-route
-  silent-substitution
-  coordinator-pair-inheritance
-].freeze
+MEASURED_ROUTE_DISPOSITIONS = %w[proceed].freeze
+UNMEASURED_ROUTE_DISPOSITIONS = %w[proceed-unmeasured proceed-as-fallback].freeze
 AW_D_ROUTE_REPLAY = [
   { pr: 146, role: "implementation", case_id: "bound-exact-match", disposition: "proceed" },
   { pr: 146, role: "review and QA", case_id: "bound-exact-match", disposition: "proceed" },
-  { pr: 147, role: "post-publication review fixes", case_id: "coordinator-pair-inheritance", disposition: "MODEL_ROUTE_MISMATCH" },
-  { pr: 148, role: "implementation", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" },
-  { pr: 148, role: "QA", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" }
+  { pr: 147, role: "post-publication review fixes", case_id: "coordinator-pair-inheritance", disposition: "proceed-unmeasured" },
+  { pr: 148, role: "implementation", case_id: "silent-substitution", disposition: "proceed-unmeasured" },
+  { pr: 148, role: "QA", case_id: "silent-substitution", disposition: "proceed-unmeasured" }
 ].freeze
 # Internal consistency and mutation guard for the audited replay fixture; it is
 # not an independent tamper-proof immutable oracle. Sorted so row order is free.
 AW_D_ROUTE_REPLAY_FINGERPRINT = [
   "146|implementation|bound-exact-match|proceed",
   "146|review and QA|bound-exact-match|proceed",
-  "147|post-publication review fixes|coordinator-pair-inheritance|MODEL_ROUTE_MISMATCH",
-  "148|QA|silent-substitution|MODEL_ROUTE_MISMATCH",
-  "148|implementation|silent-substitution|MODEL_ROUTE_MISMATCH"
+  "147|post-publication review fixes|coordinator-pair-inheritance|proceed-unmeasured",
+  "148|QA|silent-substitution|proceed-unmeasured",
+  "148|implementation|silent-substitution|proceed-unmeasured"
 ].freeze
 EXPECTED_ROUTE_DISPOSITIONS = {
   "bound-exact-match" => "proceed",
-  "unbound-exact-route" => "MODEL_ROUTE_MISMATCH",
-  "silent-substitution" => "MODEL_ROUTE_MISMATCH",
-  "coordinator-pair-inheritance" => "MODEL_ROUTE_MISMATCH",
+  "unbound-exact-route" => "proceed-unmeasured",
+  "silent-substitution" => "proceed-unmeasured",
+  "coordinator-pair-inheritance" => "proceed-unmeasured",
   "authorized-fallback" => "proceed-as-fallback"
 }.freeze
 ROUTINE_COORDINATOR_ROUTE_RULE =
@@ -180,7 +176,7 @@ SOL_XHIGH_NONTRIGGERS_RULE =
 USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
   "An explicitly user-selected Sol/xhigh override is honored and reported as an override, not silently rewritten."
 MEASURED_PROMOTION_DEFERRAL_RULE =
-  "No ten-batch measured promotion decision may be made before #398 execution-provenance receipts exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
+  "No ten-batch measured promotion decision may be made before #398 usage/cost receipts, #333 execution-provenance receipts, and #335 evaluation runner exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -237,6 +233,8 @@ def assert_route_provenance_contract(test, text, label)
   ROUTE_PROVENANCE_RULES.each do |rule|
     test.assert_includes guide, rule, "#{label} must carry the exact route-provenance rule: #{rule}"
   end
+  test.refute_match(/MODEL_ROUTE_MISMATCH|route mismatch.{0,120}\bstops?\b/im, guide,
+                    "#{label} must not pair advisory continuation with an unconditional route-only stop")
 end
 
 def aw_d_replay_fingerprint
@@ -249,10 +247,6 @@ def assert_aw_d_route_replay(test, text, label)
   dispositions = route_dispositions(text)
   test.assert_includes normalized(text), AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE,
                        "#{label}: authorized fallback must retain its recorded-authority requirement"
-  FAIL_CLOSED_ROUTE_CASES.each do |case_id|
-    test.assert_equal "MODEL_ROUTE_MISMATCH", dispositions[case_id],
-                      "#{label}: #{case_id} must stay fail-closed"
-  end
   EXPECTED_ROUTE_DISPOSITIONS.each do |case_id, expected|
     test.assert_equal expected, dispositions[case_id],
                       "#{label}: #{case_id} must dispose as #{expected}"
@@ -264,10 +258,10 @@ def assert_aw_d_route_replay(test, text, label)
     actual = dispositions[row.fetch(:case_id)]
     test.assert_equal expected, actual,
                       "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} (#{row.fetch(:case_id)}) must dispose as #{expected}"
-    next if SATISFIED_ROUTE_DISPOSITIONS.include?(expected)
+    next if MEASURED_ROUTE_DISPOSITIONS.include?(expected)
 
-    test.assert_includes FAIL_CLOSED_ROUTE_CASES, row.fetch(:case_id),
-                         "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} replays a non-satisfied outcome, so #{row.fetch(:case_id)} must be a fail-closed case"
+    test.assert_includes UNMEASURED_ROUTE_DISPOSITIONS, expected,
+                         "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} must continue but stay excluded from route measurement"
   end
 end
 
@@ -601,11 +595,11 @@ class ModelRoutingContractTest < Minitest::Test
     assert_route_provenance_contract(self, read_repo_file(MODEL_ROUTING_GUIDE_PATH), MODEL_ROUTING_GUIDE_PATH)
   end
 
-  def test_aw_d_route_mismatch_replays_to_fail_closed_dispositions
+  def test_aw_d_route_mismatches_continue_without_route_measurement_evidence
     assert_aw_d_route_replay(self, read_repo_file(MODEL_ROUTING_GUIDE_PATH), MODEL_ROUTING_GUIDE_PATH)
   end
 
-  def test_route_provenance_rule_mutants_fail_closed
+  def test_route_provenance_rule_mutants_preserve_advisory_continuation
     text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
     assert_route_provenance_contract(self, text, MODEL_ROUTING_GUIDE_PATH)
     guide = normalized(text)
@@ -615,13 +609,17 @@ class ModelRoutingContractTest < Minitest::Test
         "is never presentable as observed execution evidence",
         "should not usually be presented as observed execution evidence"
       ),
-      "unbound exact route allowed to proceed" => guide.sub(
-        "stops the lane with `MODEL_ROUTE_MISMATCH` before any edit begins",
-        "is recorded as a note and the lane proceeds"
+      "mismatch admitted as route-measurement evidence" => guide.sub(
+        "must exclude that execution from route-measurement evidence",
+        "may include that execution as route-measurement evidence"
       ),
-      "inheritance permitted when stronger" => guide.sub(
-        "an inherited pair is a route mismatch even when the inherited route is stronger than the requested one",
-        "an inherited pair is acceptable when the inherited route is stronger than the requested one"
+      "mismatch stops otherwise valid work" => guide.sub(
+        "never alone stops otherwise valid work",
+        "stops otherwise valid work"
+      ),
+      "worker provenance inherits coordinator observation" => guide.sub(
+        "A worker records its own observed model/effort separately from the coordinator",
+        "A worker records the coordinator's observed model/effort as its own"
       ),
       "nested spawns exempted" => guide.sub(
         "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule",
@@ -637,22 +635,22 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
-  def test_aw_d_replay_mutants_fail_closed_on_silent_inheritance
+  def test_aw_d_replay_mutants_keep_mismatches_unmeasured_and_fallback_authorized
     text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
     assert_aw_d_route_replay(self, text, MODEL_ROUTING_GUIDE_PATH)
     mutants = {
-      "inherited coordinator pair allowed to proceed" =>
+      "inherited coordinator pair admitted as measured" =>
         mutate_route_disposition(text, "coordinator-pair-inheritance", "proceed"),
-      "silent substitution downgraded to a fallback" =>
+      "silent substitution treated as authorized fallback" =>
         mutate_route_disposition(text, "silent-substitution", "proceed-as-fallback"),
-      "unbound exact route allowed to proceed" =>
+      "unbound exact route admitted as measured" =>
         mutate_route_disposition(text, "unbound-exact-route", "proceed"),
       "authorized fallback stripped of its recorded-authority requirement" =>
         mutate_route_disposition(text, "authorized-fallback", "proceed"),
       "authorized fallback tuple loses recorded authority" =>
         text.sub(AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE, "authorized fallback tuple"),
-      "bound exact match downgraded to a mismatch" =>
-        mutate_route_disposition(text, "bound-exact-match", "MODEL_ROUTE_MISMATCH")
+      "bound exact match excluded from measurement" =>
+        mutate_route_disposition(text, "bound-exact-match", "proceed-unmeasured")
     }
 
     mutants.each do |mutation, mutant|
@@ -660,6 +658,16 @@ class ModelRoutingContractTest < Minitest::Test
       assert_raises(Minitest::Assertion, "AW D replay accepted #{mutation}") do
         assert_aw_d_route_replay(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
       end
+    end
+  end
+
+  def test_advisory_continuation_rejects_an_unconditional_route_only_stop_mutant
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_route_provenance_contract(self, text, MODEL_ROUTING_GUIDE_PATH)
+    mutant = text + "\nA route mismatch stops the lane before any edit begins.\n"
+
+    assert_raises(Minitest::Assertion, "advisory continuation accepted an unconditional route-only stop") do
+      assert_route_provenance_contract(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} unconditional-stop mutant")
     end
   end
 
@@ -742,9 +750,9 @@ class ModelRoutingContractTest < Minitest::Test
         "An explicitly user-selected Sol/xhigh override is honored and\nreported as an override, not silently rewritten",
         "An explicitly user-selected Sol/xhigh override is silently\nrewritten"
       ),
-      "promotion decision made before #398 receipts" => text.sub(
-        "No ten-batch measured promotion decision may be made before #398\nexecution-provenance receipts exist",
-        "A ten-batch measured promotion decision may be made before #398\nexecution-provenance receipts exist"
+      "promotion decision made before all prerequisite receipts and runner" => text.sub(
+        "#398 usage/cost\nreceipts, #333 execution-provenance receipts, and #335 evaluation runner exist",
+        "#398 usage/cost receipts alone exist"
       )
     }
 
