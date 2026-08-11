@@ -196,8 +196,14 @@ NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
     (?:
       \bnever\s+ |
       \bnot\s+a\s+condition\s+that\s+ |
-      \b(?:do|does|did|should|must|may|can|will|would|could)\s+
-      not\s+(?:(?:by\s+itself|alone)\s+)?
+      \b(?:is|are|was|were)\s+not\s+sufficient\s+to\s+ |
+      \b(?:is|are|was|were)n['’]?t\s+sufficient\s+to\s+ |
+      \b(?:do|does|did|should|must|may|can|will|would|could|shall)\s+
+      not(?:\s+|,\s*)(?:(?:by\s+itself|alone)(?:\s+|,\s*))? |
+      \b(?:do|does|did|should|must|may|can|would|could|shall)n['’]?t\s+ |
+      \bwon['’]?t\s+ |
+      \bcannot\s+ |
+      \bcan['’]?t\s+
     )
     \b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b
   /ix
@@ -737,6 +743,12 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not block execution before edits.",
       "A route mismatch should not stop the lane before edits.",
       "A route mismatch does not by itself block execution before edits.",
+      "A route mismatch cannot stop the lane before edits.",
+      "A route mismatch can't block execution before edits.",
+      "A route mismatch doesn't stop the lane before edits.",
+      "An inherited route shouldn't disqualify the lane before edits.",
+      "A route mismatch is not sufficient to stop the lane before edits.",
+      "A route mismatch does not, by itself, block execution before edits.",
       "A route mismatch stops the lane only if an independent risk gate blocks.",
       "A route mismatch stops the lane only if an independent scope gate blocks.",
       "A route mismatch stops the lane only if an independent evidence gate blocks.",
