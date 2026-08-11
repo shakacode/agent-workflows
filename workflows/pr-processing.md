@@ -1159,12 +1159,12 @@ Resolve `<PROJECT>` from the optional `repo_prefix` in
 letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
 deterministically from the repository name: use the basename of the `origin`
 remote after stripping `.git`, or the repository root basename when `origin` is
-unavailable; for a multi-segment name take the first letter of each of the first
-six `-`, `_`, or space-separated segments, and for a single-segment name take
-its first 4 letters or the whole name when shorter, then uppercase the result
-(`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`,
-`go` -> `GO`). An invalid configured `repo_prefix` is a blocker; do not silently
-fall back.
+unavailable; for a multi-segment name take the first character of each of the
+first six `-`, `_`, or space-separated segments, and for a single-segment name
+take its first 4 characters or the whole name when shorter, then uppercase the
+result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` ->
+`SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid
+configured `repo_prefix` is a blocker; do not silently fall back.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
 from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
@@ -2400,7 +2400,7 @@ The closeout lane is:
     coordination/target/exact-head-QA publication preflight described above;
     do not emit a complete receipt while it is blocked or reuse a prior
     snapshot after any lane, target head/state, or QA evidence changes.
-14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` only when archive-ready and the union is empty. Otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line, with every normalized blocker.
+14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` only when archive-ready and the union is empty. Otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line, with every normalized blocker. Before emitting that final message, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff.
 
 ## Self-Review Gate
 
