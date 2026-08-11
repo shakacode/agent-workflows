@@ -215,10 +215,28 @@ precise blocker.
    intent, risk, or readiness verdict when the checker role, independence,
    scope, current-head evidence, and evidence quality qualify. Every lane whose
    risk or bounded delegation requires an execution envelope receives the
-   canonical coordinator-role-approved envelope regardless of route and returns
-   control before further edits on contradictory evidence,
-   ambiguous criteria, scope or risk growth, weakened verification, or
-   consequential judgment.
+   canonical coordinator-role-approved envelope regardless of route.
+   Necessary in-repository path expansion defaults to allowed when repository
+   evidence shows an added path is reasonably necessary to complete the
+   already-authorized goal or its required validation. Treat owned paths and
+   the execution envelope as coordination and collision controls, not as a
+   user-permission boundary. Before changing the added path, record the path
+   and reason in the lane envelope, refresh active-lane claim and collision
+   checks, and continue without user approval when they are clear. A missing
+   path alone is not material scope growth and must not produce
+   `blocked-user-input`.
+   Necessary additions can include contract or type files, tests or fixtures,
+   offline demo stubs, and build or generated integration surfaces when
+   repository evidence makes them necessary.
+   Contradictory evidence remains an immediate stop. Stop and return control
+   for path expansion that changes the approved goal, accepted behavior, or
+   acceptance criteria; adds unrelated work; crosses a repository or trust
+   boundary; requires a destructive or difficult-to-reverse action; introduces
+   secrets, permissions, deployments, billing, or other external effects;
+   requires consequential architecture, performance, compatibility, or product
+   judgment; materially changes security, privacy, compliance, or release
+   policy; collides with another active lane and cannot be safely coordinated;
+   exposes consequential ambiguity; or weakens verification.
    The current-wave item cap applies across all generated groups in aggregate;
    never multiply it by `N`, registered profiles, inboxes, or machines. If
    actionable work exceeds the capped current wave, report the remaining

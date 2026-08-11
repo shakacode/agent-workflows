@@ -228,8 +228,26 @@ omit the queue summary and note that queue state is unavailable.
    classes. Keep an unresolved preference `UNKNOWN`; it never alone blocks the
    prompt, launch, or readiness. Give every lane whose risk or bounded delegation
    requires an execution envelope a coordinator-role-approved envelope regardless
-   of route. Require immediate return to the coordinator on contradictory evidence,
-   ambiguity, scope/risk growth, weakened verification, or consequential judgment.
+   of route. Necessary in-repository path expansion defaults to allowed when
+   repository evidence shows an added path is reasonably necessary to complete the
+   already-authorized goal or its required validation. Treat owned paths and the
+   execution envelope as coordination and collision controls, not as a
+   user-permission boundary. Before changing the added path, record the path and
+   reason in the lane envelope, refresh active-lane claim and collision checks, and
+   continue without user approval when they are clear. A missing path alone is not
+   material scope growth and must not produce `blocked-user-input`.
+   Necessary additions can include contract or type files, tests or fixtures,
+   offline demo stubs, and build or generated integration surfaces when repository
+   evidence makes them necessary.
+   Contradictory evidence remains an immediate stop. Stop and return control for
+   path expansion that changes the approved goal, accepted behavior, or acceptance
+   criteria; adds unrelated work; crosses a repository or trust boundary; requires
+   a destructive or difficult-to-reverse action; introduces secrets, permissions,
+   deployments, billing, or other external effects; requires consequential
+   architecture, performance, compatibility, or product judgment; materially
+   changes security, privacy, compliance, or release policy; collides with another
+   active lane and cannot be safely coordinated; exposes consequential ambiguity;
+   or weakens verification.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
