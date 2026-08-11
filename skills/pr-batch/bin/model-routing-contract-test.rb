@@ -186,12 +186,20 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
     `UNKNOWN`\ (?:observation|observed\ tuple)
   )
 /imx
-ROUTE_ONLY_OUTCOME_SOURCE = "stops? the lane|blocks? execution|disqualifies the lane"
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|blocks?\\s+execution|disqualifies\\s+the\\s+lane"
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}/im
 NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
-  /(?:\bnever\s+|\bnot\s+a\s+condition\s+that\s+)\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
+  /
+    (?:
+      \bnever\s+ |
+      \bnot\s+a\s+condition\s+that\s+ |
+      \b(?:do|does|did|should|must|may|can|will|would|could)\s+
+      not\s+(?:(?:by\s+itself|alone)\s+)?
+    )
+    \b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b
+  /ix
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -714,10 +722,13 @@ class ModelRoutingContractTest < Minitest::Test
 
     [
       "A route mismatch never blocks execution before any edit begins.",
-      "An `UNKNOWN` observed tuple is not a condition that disqualifies the lane before any edit begins."
+      "An `UNKNOWN` observed tuple is not a condition that disqualifies the lane before any edit begins.",
+      "A route mismatch does not block execution before edits.",
+      "A route mismatch should not stop the lane before edits.",
+      "A route mismatch does not by itself block execution before edits."
     ].each do |advisory_negation|
       refute forbidden_route_only_contradiction?(advisory_negation),
-             "advisory negation must not be treated as an unconditional route-only stop"
+             "advisory negation must not be treated as an unconditional route-only stop: #{advisory_negation}"
     end
   end
 
