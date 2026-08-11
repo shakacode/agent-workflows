@@ -94,11 +94,12 @@ notes.
 
    Keep that value, or omit the mapping, for the normal GitHub direct-merge
    path. A repository that enables Merge Queue must explicitly select
-   `merge_queue_only`; direct mode fails deterministically before mutation when
-   the live base is queue-controlled so the repository policy cannot silently
-   change the submission route. A consumer that deliberately owns a guarded
-   direct-merge exception may instead select
-   `merge_queue_or_guarded_direct` and name one executable guard under
+   `merge_queue_only` or `merge_queue_or_guarded_direct`; both modes use
+   canonical enqueue while the live base is queue-controlled. Direct mode fails
+   deterministically before mutation in that state so the repository policy
+   cannot silently change the submission route. A consumer that deliberately
+   owns a guarded direct-merge exception may select the latter mode and name one
+   executable guard under
    `.agents/bin`, an exact merge method, and an explicit acknowledgement plus
    rationale for the non-atomic base binding. The guard is a path, not a shell
    command. It receives the fixed argv contract documented in

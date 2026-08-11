@@ -173,10 +173,11 @@ untrusted_contributor_intake:
 
 `merge_submission` is an optional closed mapping. Its portable default is
 `direct` when the mapping is absent or explicitly selects `direct`. A
-queue-enabled repository must explicitly select `merge_queue_only`; live queue
-control under direct mode fails before mutation with a configuration error.
-Repositories that need both queue submission and a repository-owned direct
-guard may select `merge_queue_or_guarded_direct`, whose executable is one fixed
+queue-enabled repository must explicitly select `merge_queue_only` or
+`merge_queue_or_guarded_direct`; both modes use canonical enqueue while queue
+control is active. Live queue control under direct mode fails before mutation
+with a configuration error. Repositories that also need a repository-owned
+direct guard may select the latter mode, whose executable is one fixed
 repository-root-relative file under `.agents/bin`:
 
 ```yaml
