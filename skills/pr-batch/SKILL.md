@@ -76,10 +76,10 @@ facts remain fail-closed and stop before mutation.
   Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
 - **Recommended Codex GPT-5.6 profile**: apply only after verifying the exact
   routes on the actual host; portable classes remain the fallback elsewhere.
-  - Multi-lane coordinator: Sol/xhigh
+  - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
   - Simple, positively classified worker: Terra/high
   - Unknown or uncertain worker: Sol/high
-  - High-risk or escalated work: Sol/xhigh
+  - Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
   - Independent adversarial QA: Sol/xhigh
   - Routine deterministic QA: Sol/high
 - **Provisional Claude profile** (`claude-profile v0`): apply only after
