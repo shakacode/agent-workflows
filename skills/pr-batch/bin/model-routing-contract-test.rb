@@ -194,9 +194,8 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
   )
 /imx
 ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE = "launch|replay|review|audit|planning|coordination|execution|escalation|fallback"
-ROUTE_ONLY_ADVISORY_ACTIVITY_SOURCE = "launch|replay|review|audit"
-ROUTE_ONLY_STANDALONE_ADVISORY_ACTIVITY_SOURCE =
-  "(?:#{ROUTE_ONLY_ADVISORY_ACTIVITY_SOURCE})(?=\\s*(?:[.!?,;:]|\\z|when\\b|if\\b|whenever\\b|unless\\b))".freeze
+ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE =
+  "(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?=\\s*(?:[.!?,;:]|\\z|when\\b|if\\b|whenever\\b|unless\\b))".freeze
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
 # This bounded, guide-derived stop/prohibition vocabulary needs matching mutation coverage whenever routing-guide phrasing changes.
@@ -205,7 +204,7 @@ ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
 ROUTE_ONLY_PROHIBITION_SOURCE =
-  "(?:do\\s+not|never|must\\s+not|should\\s+not|cannot|may\\s+not|shall\\s+not)\\s+#{ROUTE_ONLY_STANDALONE_ADVISORY_ACTIVITY_SOURCE}|(?:forbid(?:s)?|prohibit(?:s|ed)?)\\s+(?:#{ROUTE_ONLY_ADVISORY_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_ADVISORY_ACTIVITY_SOURCE})\\s+(?:is|are)\\s+(?:prohibited|not\\s+allowed)".freeze
+  "(?:do\\s+not|never|must\\s+not|should\\s+not|cannot|may\\s+not|shall\\s+not)\\s+#{ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE}|(?:forbid(?:s)?|prohibit(?:s|ed)?)\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+(?:is|are)\\s+(?:prohibited|not\\s+allowed)".freeze
 ROUTE_ONLY_PROHIBITION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*\b(?:#{ROUTE_ONLY_PROHIBITION_SOURCE})\b|\b(?:#{ROUTE_ONLY_PROHIBITION_SOURCE})\b[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
 NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
@@ -337,6 +336,10 @@ def markdown_structural_segments(block)
 
   lines.each_with_index do |line, index|
     if table_line_indexes.include?(index)
+      segments << current_segment unless current_segment.empty?
+      segments << line
+      current_segment = +""
+    elsif line.match?(/^\s{0,3}\#{1,6}(?:\s|$)/)
       segments << current_segment unless current_segment.empty?
       segments << line
       current_segment = +""
@@ -940,6 +943,8 @@ class ModelRoutingContractTest < Minitest::Test
       "subject-first prohibition replay" => "An inherited route prohibits replay.",
       "subject-first prohibition review" => "An UNKNOWN model means review is prohibited.",
       "subject-first imperative audit" => "An unavailable route means must not audit.",
+      "subject-first prohibition coordination" => "A route mismatch prohibits coordination.",
+      "subject-first forbids escalation" => "An inherited route forbids escalation.",
       "subject-first standalone must-not launch" => "A route mismatch must not launch.",
       "subject-first should-not launch" => "A route mismatch should not launch.",
       "subject-first cannot replay" => "An inherited route cannot replay.",
@@ -1098,6 +1103,7 @@ class ModelRoutingContractTest < Minitest::Test
       "Markdown table rows without outer pipes" => "Route condition | route mismatch\n--- | ---\nGate result | blocks execution",
       "blank boundary" => "A route mismatch\n\nblocks execution.",
       "blank pronoun boundary" => "A route mismatch occurs.\n\nIt stops the lane before any edit begins.",
+      "ATX heading boundary" => "### Route mismatch\nDestructive scope expansion blocks execution.",
       "Markdown list items" => "- route mismatch: record honestly\n- independent risk gate: blocks execution",
       "Markdown list-item pronoun boundary" => "- A route mismatch occurs.\n- It stops the lane before any edit begins.",
       "Markdown table-row pronoun boundary" => "| Route condition | A route mismatch occurs. |\n| --- | --- |\n| Gate result | It stops the lane before any edit begins. |",
@@ -1136,7 +1142,8 @@ class ModelRoutingContractTest < Minitest::Test
       "wrapped prose after a table" => "| Gate | advisory |\n| --- | --- |\n| status | recorded |\nA route mismatch\nblocks execution before editing.",
       "wrapped prose before a table without outer pipes" => "A route mismatch\nblocks execution before editing.\nGate | advisory\n--- | ---\nstatus | recorded",
       "wrapped prose after a table without outer pipes" => "Gate | advisory\n--- | ---\nstatus | recorded\nA route mismatch\nblocks execution before editing.",
-      "inline-pipe prose" => "A route mismatch uses requested | observed fields and\nblocks execution before editing."
+      "inline-pipe prose" => "A route mismatch uses requested | observed fields and\nblocks execution before editing.",
+      "ATX heading followed by route-only contradiction" => "### Advisory routing\nA route mismatch blocks execution before editing."
     }.each do |position, contradiction|
       assert_raises(Minitest::Assertion, "a #{position} must remain forbidden") do
         assert_route_provenance_contract(
