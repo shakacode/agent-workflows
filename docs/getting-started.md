@@ -147,8 +147,11 @@ In plain words:
 - `.agents/agent-workflow.yml` holds non-command policy: base branch, changelog
   rules, review gates, and similar. Generated values default to `main` and
   `n/a`; fill in real values as you need them.
-- `.agents/trusted-github-actors.yml` starts empty and fail-closed. Add only
-  maintainers and bots this repository deliberately trusts.
+- `.agents/trusted-github-actors.yml` starts fail-closed: the trusted user,
+  bot, and team lists are empty, and only `trusted_metadata_bots` is
+  pre-populated (with `github-actions`, whose comments count as CI status
+  evidence, never as instructions). Add only maintainers and bots this
+  repository deliberately trusts.
 - `AGENTS.md` gains a short `## Agent Workflow Configuration` section pointing
   agents at the two sources above.
 
