@@ -127,6 +127,20 @@ CLAUDE_RECOMMENDATIONS = [
   "Routine deterministic QA: Opus 5/high"
 ].freeze
 
+LIVE_CLAUDE_PROFILE_SURFACES = %w[
+  docs/agent-workflows-model-routing.md
+  docs/pr-batch-skills.md
+  skills/adversarial-pr-review/SKILL.md
+  skills/plan-pr-batch/SKILL.md
+  skills/post-merge-audit/SKILL.md
+  skills/pr-batch/SKILL.md
+  skills/triage/SKILL.md
+  workflows/adversarial-pr-review.md
+  workflows/continuous-evaluation-loop.md
+  workflows/post-merge-audit.md
+  workflows/pr-processing.md
+].freeze
+
 MODEL_ROUTING_GUIDE_PATH = "docs/agent-workflows-model-routing.md"
 ROUTE_DISPOSITION_TABLE_HEADING = "### Disposition Table"
 ROUTE_PROVENANCE_RULES = [
@@ -535,6 +549,13 @@ class ModelRoutingContractTest < Minitest::Test
 
     paths.each do |path|
       assert_recommended_profiles(self, read_repo_file(path), path)
+    end
+  end
+
+  def test_live_claude_routing_surfaces_reject_legacy_profile
+    LIVE_CLAUDE_PROFILE_SURFACES.each do |path|
+      text = read_repo_file(path)
+      refute_match(/claude-profile v0|Opus 4\.8/, text, "#{path} contains legacy Claude routing guidance")
     end
   end
 

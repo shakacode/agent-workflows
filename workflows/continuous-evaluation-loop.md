@@ -18,10 +18,10 @@ role, not a maker role.
   routes:
   - Independent adversarial QA: Sol/xhigh
   - Routine deterministic QA: Sol/high
-  Under the provisional Claude profile (`claude-profile v0`), prefer these
+  Under the Claude profile (`claude-profile v1`), prefer these
   recommended advisory QA routes:
-  - Independent adversarial QA: Opus 4.8/xhigh
-  - Routine deterministic QA: Opus 4.8/high
+  - Independent adversarial QA: Opus 5/xhigh
+  - Routine deterministic QA: Opus 5/high
   Terra and Sonnet are lower-cost route recommendations; either may collect
   mechanical evidence or issue an intent-achievement or final-risk verdict when
   the checker role, independence, scope, current-head evidence, and evidence

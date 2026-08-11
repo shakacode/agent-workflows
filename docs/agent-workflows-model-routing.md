@@ -129,9 +129,9 @@ Opus 5 (`claude-opus-5`), Sonnet 5 (`claude-sonnet-5`), and Fable 5
 but that does not prove availability on the active host; record host-observed
 effort when exposed and otherwise use `UNKNOWN` without blocking launch:
 
-- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Default single-target planner: Opus 5/high
 - Affirmatively simple single-target planner: Sonnet 5/high
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 5/high
 - Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`

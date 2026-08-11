@@ -54,9 +54,9 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
   A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
   Under the conservative GPT-5.6 profile, prefer Sol/xhigh for independent
-  adversarial QA and Sol/high for routine deterministic QA. Under the provisional
-  Claude profile (`claude-profile v0`), prefer Opus 4.8/xhigh for independent
-  adversarial QA and Opus 4.8/high for routine deterministic QA. Terra and Sonnet
+  adversarial QA and Sol/high for routine deterministic QA. Under the Claude
+  profile (`claude-profile v1`), prefer Opus 5/xhigh for independent adversarial
+  QA and Opus 5/high for routine deterministic QA. Terra and Sonnet
   may collect mechanical evidence or serve as the qualifying checker when the
   role, independence, scope, current-head evidence, and evidence quality qualify.
   Non-independent or `UNKNOWN` checker identity makes the audit non-clean.
@@ -206,8 +206,8 @@ If you do not know or cannot verify an item from GitHub/local git, say UNKNOWN r
 Run this separately in Codex and Claude. For completed-batch audit, designate
 one fresh run independent from every maker as the qualifying checker and the
 other run as an advisory auditor. The preferred qualifying-checker routes are
-Sol/xhigh under the conservative GPT-5.6 profile and Opus 4.8/xhigh under the
-provisional Claude profile, but route does not determine qualification. Do not
+Sol/xhigh under the conservative GPT-5.6 profile and Opus 5/xhigh under the
+Claude profile, but route does not determine qualification. Do not
 share one agent's output with the other until both are done.
 
 ```text
@@ -225,9 +225,9 @@ on role separation, independence, scope, current-head evidence, and evidence
 quality.
 Never infer observed values from preferences, prompt text, or model self-report.
 Under the conservative GPT-5.6 profile, prefer Sol/xhigh for independent
-adversarial QA and Sol/high for routine deterministic QA. Under the provisional
-Claude profile, prefer Opus 4.8/xhigh for independent adversarial QA and Opus
-4.8/high for routine deterministic QA. Terra and Sonnet may collect mechanical
+adversarial QA and Sol/high for routine deterministic QA. Under the Claude
+profile, prefer Opus 5/xhigh for independent adversarial QA and Opus 5/high for
+routine deterministic QA. Terra and Sonnet may collect mechanical
 evidence or serve as the checker; qualification depends on role, independence,
 scope, current-head evidence, and evidence quality. If checker identity or
 independence is unavailable or `UNKNOWN`, do not return a clean verdict. An
