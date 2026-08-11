@@ -199,7 +199,7 @@ ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE =
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
 # This bounded, guide-derived stop/prohibition vocabulary needs matching mutation coverage whenever routing-guide phrasing changes.
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:launch|replay|review|audit)|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -227,6 +227,12 @@ NEGATED_ROUTE_ONLY_SUBJECT_OUTCOME_CLAUSE_PATTERN =
   /
     \bno\s+(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b |
     \bneither\s+(?:an?\s+)?(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+nor\s+(?:an?\s+)?(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b
+  /imx
+NEGATED_ROUTE_ONLY_PREDICATE_OUTCOME_CLAUSE_PATTERN =
+  /
+    (?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+neither\s+
+    (?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\s+nor\s+
+    (?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b
   /imx
 DIRECT_INDEPENDENT_BLOCKER_SOURCE =
   "(?:an?\\s+)?(?:independent\\s+(?:risk|scope|evidence|authority)(?:\\s+gate)?|(?:risk|scope|evidence|authority)\\s+gate|(?:destructive\\s+)?scope\\s+expansion)"
@@ -262,6 +268,7 @@ def strip_allowed_route_only_outcome_clauses(text)
   text
     .gsub(NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN, "")
     .gsub(NEGATED_ROUTE_ONLY_SUBJECT_OUTCOME_CLAUSE_PATTERN, "")
+    .gsub(NEGATED_ROUTE_ONLY_PREDICATE_OUTCOME_CLAUSE_PATTERN, "")
     .gsub(INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN, "")
 end
 
@@ -389,7 +396,9 @@ def forbidden_route_only_sentence?(sentence)
 end
 
 def negated_subject_precedes_pronoun_contradiction?(sentence)
-  negated_subject_outcome = sentence.match(NEGATED_ROUTE_ONLY_SUBJECT_OUTCOME_CLAUSE_PATTERN)
+  negated_subject_outcome =
+    sentence.match(NEGATED_ROUTE_ONLY_SUBJECT_OUTCOME_CLAUSE_PATTERN) ||
+    sentence.match(NEGATED_ROUTE_ONLY_PREDICATE_OUTCOME_CLAUSE_PATTERN)
   return false unless negated_subject_outcome
 
   sentence[negated_subject_outcome.end(0)..].match?(
@@ -961,6 +970,11 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch prevents replay" => "A route mismatch prevents replay.",
       "route mismatch prevents review" => "A route mismatch prevents review.",
       "route mismatch prevents audit" => "A route mismatch prevents audit.",
+      "route mismatch prevents planning" => "A route mismatch prevents planning.",
+      "route mismatch prevents coordination" => "A route mismatch prevents coordination.",
+      "route mismatch prevents execution" => "A route mismatch prevents execution.",
+      "route mismatch prevents escalation" => "A route mismatch prevents escalation.",
+      "route mismatch prevents fallback" => "A route mismatch prevents fallback.",
       "outcome-first imperative launch" => "Do not launch when there is a route mismatch.",
       "outcome-first imperative replay" => "Do not replay when there is an inherited route.",
       "outcome-first imperative review" => "Do not review when there is an UNKNOWN model.",
@@ -997,6 +1011,11 @@ class ModelRoutingContractTest < Minitest::Test
       "outcome-first review" => "Block review when there is a route mismatch.",
       "outcome-first audit" => "Block audit when there is a route mismatch.",
       "outcome-first prevention" => "Prevent launch when there is a route mismatch.",
+      "outcome-first prevention planning" => "Prevent planning when there is a route mismatch.",
+      "outcome-first prevention coordination" => "Prevent coordination when there is an inherited route.",
+      "outcome-first prevention execution" => "Prevent execution when there is an UNKNOWN model.",
+      "outcome-first prevention escalation" => "Prevent escalation when there is an unavailable route.",
+      "outcome-first prevention fallback" => "Prevent fallback when there is a different tuple.",
       "outcome-first planning" => "Block planning when there is an unavailable route.",
       "outcome-first coordination" => "Block coordination when there is an inherited route.",
       "outcome-first escalation" => "Block escalation when there is a different tuple.",
@@ -1031,6 +1050,7 @@ class ModelRoutingContractTest < Minitest::Test
       "Neither-subject negation followed by unconditional different route" => "Neither a route mismatch nor an inherited route blocks execution, but a different tuple disqualifies the lane.",
       "No-subject negation followed by pronoun outcome" => "No route mismatch blocks launch; it prevents review.",
       "Neither-subject negation followed by pronoun outcome" => "Neither a route mismatch nor an inherited route blocks launch; it prevents review.",
+      "Neither-predicate negation followed by pronoun outcome" => "A route mismatch neither blocks launch nor prevents review; it blocks audit.",
       "same-paragraph pronoun outcome" => "A route mismatch occurs. It stops the lane before any edit begins.",
       "same-paragraph pronoun prohibition" => "A route mismatch occurs. It prohibits launch.",
       "same-paragraph This outcome" => "A route mismatch occurs. This stops the lane before editing.",
@@ -1072,6 +1092,8 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not prevent launch.",
       "An inherited route never prevents review.",
+      "A route mismatch does not prevent planning.",
+      "An inherited route never prevents fallback.",
       "A route mismatch does not prohibit launch.",
       "A route mismatch must not launch a replacement worker.",
       "An inherited route cannot replay the recorded task.",
@@ -1105,6 +1127,7 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not stop the lane and an independent risk blocks execution.",
       "No route mismatch blocks execution.",
       "Neither a route mismatch nor an inherited route blocks execution.",
+      "A route mismatch neither blocks launch nor prevents review.",
       "Only an independent risk gate blocks execution when a route mismatch occurs.",
       "Only an independent scope gate blocks execution when an effort mismatch occurs.",
       "Only an independent evidence gate blocks execution when a different route occurs.",
