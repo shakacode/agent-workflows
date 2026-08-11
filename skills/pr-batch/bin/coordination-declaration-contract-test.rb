@@ -137,12 +137,27 @@ class CoordinationDeclarationContractTest < Minitest::Test
                  "a Lane Card bullet is a valid place to declare coordination"
   end
 
+  def test_declaration_is_accepted_in_a_nested_lane_card_list
+    [
+      "- Lane Card:\n    - coordination: registered aw-nested-unordered-lane\n",
+      "1. Lane Card:\n   - coordination: unavailable #{EM_DASH} backend not configured\n"
+    ].each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "a nested Lane Card bullet must not be mistaken for standalone indented code"
+    end
+  end
+
   def test_declarations_inside_markdown_code_are_ignored
     [
       "```text\ncoordination: registered example-backtick\n```\n",
       "````markdown\ncoordination: registered example-long-backtick\n````\n",
       "~~~text\ncoordination: unavailable #{EM_DASH} example tilde fence\n~~~\n",
-      "    coordination: registered example-indented\n"
+      "- ```text\n  coordination: registered example-unordered-list-fence\n  ```\n",
+      "1. ~~~~text\n   coordination: registered example-ordered-list-fence\n   ~~~~\n",
+      "- Examples:\n    - ```text\n      - coordination: registered example-nested-list-fence\n      ```\n",
+      "1. Examples:\n      1. ~~~~text\n         - coordination: registered example-nested-ordered-list-fence\n         ~~~~\n",
+      "    coordination: registered example-indented\n",
+      "    - coordination: registered example-indented-list-item\n"
     ].each do |handoff|
       assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
                    "a declaration shown as Markdown code must not satisfy the runtime gate: #{handoff.inspect}"

@@ -32,6 +32,9 @@ module CoordinationDeclaration
   # bulleted Lane Card or handoff section.
   DECLARATION_LINE = /^ {0,3}(?:[-*+][[:space:]]+)?coordination:[[:space:]]*(.*?)[[:space:]]*$/
   NEAR_MISS_LINE = /^ {0,3}(?:[-*+][[:space:]]+)?(?:`coordination:.*`|\*\*coordination:\*\*.*|Coordination:.*|coordination[[:blank:]]+[-–][[:blank:]]+.*)[[:blank:]]*$/
+  FENCE_MARKER = /\A(`{3,}|~{3,})/
+  INDENTED_FENCE_MARKER = /\A( *)(`{3,}|~{3,})/
+  LIST_ITEM = /\A( *)([-+*]|\d{1,9}[.)])( {1,4})(.*)/
 
   module_function
 
@@ -41,22 +44,67 @@ module CoordinationDeclaration
 
   def visible_lines(handoff_text)
     fence = nil
+    # Content columns for the currently open list-item ancestry. They let an
+    # indented child bullet remain a declaration while the same indentation
+    # without a parent list item remains an indented code block.
+    list_content_indents = []
 
     handoff_text.to_s.lines.filter_map do |line|
       if fence
-        fence = nil if line.match?(/^ {0,3}#{Regexp.escape(fence[:character])}{#{fence[:length]},}[[:blank:]]*$/)
+        closing_indent = " {#{fence[:minimum_indent]},#{fence[:maximum_indent]}}"
+        marker = Regexp.escape(fence[:character])
+        fence = nil if line.match?(/\A#{closing_indent}#{marker}{#{fence[:length]},}[[:blank:]]*$/)
         next
       end
 
-      if (opening = line.match(/^ {0,3}(`{3,}|~{3,})/))
+      normalized_line = line
+      valid_list_item = false
+      if (list_item = line.match(LIST_ITEM))
+        item_indent = list_item[1].length
+        parent_index = list_content_indents.rindex do |content_indent|
+          item_indent.between?(content_indent, content_indent + 3)
+        end
+        valid_list_item = item_indent <= 3 || !parent_index.nil?
+
+        if valid_list_item
+          list_content_indents = parent_index.nil? ? [] : list_content_indents[0..parent_index]
+          list_content_indents << item_indent + list_item[2].length + list_item[3].length
+          normalized_line = line.delete_prefix(list_item[1])
+        end
+      elsif !line.strip.empty? && list_content_indents.any?
+        line_indent = line[/\A */].length
+        list_content_indents.clear if line_indent < list_content_indents.first
+      end
+
+      marker = nil
+      fence_indent = nil
+      if valid_list_item && (opening = list_item[4].match(FENCE_MARKER))
         marker = opening[1]
-        fence = { character: marker[0], length: marker.length }
+        fence_indent = list_content_indents.last
+      elsif (opening = line.match(INDENTED_FENCE_MARKER))
+        opening_indent = opening[1].length
+        list_indent = list_content_indents.reverse.find do |content_indent|
+          opening_indent.between?(content_indent, content_indent + 3)
+        end
+        if opening_indent <= 3 || list_indent
+          marker = opening[2]
+          fence_indent = list_indent || 0
+        end
+      end
+
+      if marker
+        fence = {
+          character: marker[0],
+          length: marker.length,
+          minimum_indent: fence_indent,
+          maximum_indent: fence_indent + 3
+        }
         next
       end
 
-      next if line.start_with?("    ", "\t")
+      next if line.start_with?("    ", "\t") && !valid_list_item
 
-      line
+      normalized_line
     end
   end
 
