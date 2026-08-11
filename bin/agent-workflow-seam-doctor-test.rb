@@ -449,10 +449,14 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
-  def test_optional_merge_submission_accepts_queue_only_and_guarded_direct_modes
+  def test_optional_merge_submission_accepts_direct_queue_only_and_guarded_direct_modes
     with_repo do |root|
       write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
+
+      write_policy(root, POLICY.merge("merge_submission" => { "mode" => "direct" }))
+      direct_out, direct_status = run_doctor(root)
+      assert direct_status.success?, direct_out
 
       write_policy(
         root,
@@ -463,15 +467,15 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       write_script(root, "merge-pr-after-checks", "exec true\n")
       write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
-      direct_out, direct_status = run_doctor(root)
-      assert direct_status.success?, direct_out
+      guarded_out, guarded_status = run_doctor(root)
+      assert guarded_status.success?, guarded_out
     end
   end
 
   def test_guarded_direct_merge_submission_uses_a_closed_fail_closed_schema
     cases = {
       "unknown mode" => {
-        "mode" => "direct"
+        "mode" => "unknown"
       },
       "queue-only extra key" => {
         "mode" => "merge_queue_only", "guarded_direct" => {}
@@ -1588,7 +1592,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert File.executable?(File.join(root, ".agents/bin/test"))
       policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")))
       assert_equal "main", policy.fetch("base_branch")
-      assert_equal({ "mode" => "merge_queue_only" }, policy.fetch("merge_submission"))
+      assert_equal({ "mode" => "direct" }, policy.fetch("merge_submission"))
       trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")))
       assert_equal [], trust.fetch("trusted_users")
       assert_equal [], trust.fetch("trusted_bots")
@@ -4736,7 +4740,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
         after_first.reject { |path, _content| path == ".agents/agent-workflow.yml" }
       )
       first_policy = YAML.safe_load(after_first.fetch(".agents/agent-workflow.yml"))
-      assert_equal({ "mode" => "merge_queue_only" }, first_policy.fetch("merge_submission"))
+      assert_equal({ "mode" => "direct" }, first_policy.fetch("merge_submission"))
 
       second_out, second_status = run_doctor(root, "--init")
       assert second_status.success?, second_out

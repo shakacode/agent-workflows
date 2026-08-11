@@ -3145,15 +3145,23 @@ chain, then run:
 bindings and freshness before any mutation.
 
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
-preserves read-only, idempotent observation when the exact reviewed PR is
-already merged, preserves an exact existing queue entry, and uses
-`enqueuePullRequest` only for an exact open PR on a queue-controlled base. With
-no trusted-base `merge_submission` policy, or with explicit
-`mode: merge_queue_only`, a queue-disabled PR fails closed before any merge
-mutation or repository guard invocation with deterministic error exit 1. This
-pre-mutation policy rejection is not an `UNKNOWN` outcome.
+always preserves read-only, idempotent observation when the exact reviewed PR
+is already merged. With no trusted-base `merge_submission` policy, or with
+explicit `mode: direct`, it uses GitHub's expected-head-bound
+`mergePullRequest` mutation on a queue-disabled base. It re-fetches immediately
+before mutation and revalidates the receipt-bound base SHA, base branch, and
+exact head; GitHub's mutation has no atomic expected-base-OID input, which the
+result records. A live queue-enabled base under direct mode fails before
+mutation with deterministic error exit 1 and tells the repository to opt into
+a queue mode. This pre-mutation policy rejection is not an `UNKNOWN` outcome.
 
-The only direct-submit exception is this closed trusted-base mapping:
+Explicit `mode: merge_queue_only` preserves an exact existing queue entry and
+uses `enqueuePullRequest` only for an exact open PR on a queue-controlled base.
+A queue-disabled PR in that mode fails closed before mutation. Direct mode
+never silently enrolls a PR in Merge Queue, including when queue control changes
+during submission.
+
+The optional guarded-direct mode remains this closed trusted-base mapping:
 
 ```yaml
 merge_submission:
@@ -3214,12 +3222,13 @@ head and expected base. The output records the trusted guard path/blob identity,
 configured method, explicit non-atomic-base acknowledgement and rationale, and
 `atomic_expected_base_oid: false`. Failed, ambiguous, moved-head, or
 unreconciled outcomes are `UNKNOWN` and must not be retried blindly. A
-queue-enabled PR always follows canonical enqueue and never invokes the guard.
-The helper never issues generic `mergePullRequest`, invokes `gh pr merge`,
-enables auto-merge, or enables a merge queue.
+queue-enabled PR in `merge_queue_or_guarded_direct` mode always follows
+canonical enqueue and never invokes the guard. The helper never invokes `gh pr
+merge`, enables auto-merge, or enables a merge queue.
 
-Submission is restart-safe for an exact head already merged or already present
-in the queue. After an ambiguous enqueue response, the helper re-reads the PR
+Submission is restart-safe for an exact head already merged, and for an exact
+head already present in the queue when a queue-capable mode is configured.
+After an ambiguous direct or enqueue response, the helper re-reads the PR
 and reports success only when that exact expected head and base are proven
 merged or queued. Exit 2 reports an `UNKNOWN` mutation outcome: stop and
 reconcile live state rather than retrying blindly. If post-enqueue verification detects a

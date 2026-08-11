@@ -921,13 +921,12 @@ When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
 then submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
 receipt unconditionally. The helper preserves read-only, idempotent observation
-of an exact terminal merge and uses GitHub's `enqueuePullRequest` only when the
-base is queue-controlled. Queue-disabled submission without an enabled
-guarded-direct seam fails before mutation as a deterministic configuration
-error (exit 1), not an `UNKNOWN` mutation outcome.
-Only a validated trusted-base `merge_submission` opt-in may delegate direct
-submission to one repository-owned executable guard under `.agents/bin`; the
-portable helper never performs a generic direct merge. The fixed-argv guard is
+of an exact terminal merge. Absent policy and explicit `mode: direct` use an
+expected-head-bound direct merge on a queue-disabled base; a queue-enabled base
+fails before mutation until the repository explicitly opts into
+`merge_queue_only` or `merge_queue_or_guarded_direct`. The latter may delegate
+queue-disabled submission to one repository-owned executable guard under
+`.agents/bin`. The fixed-argv guard is
 executed from private identity-bound trusted bytes in an isolated Git root
 whose detached `HEAD`, index, and working files all bind the receipt-base
 commit and tree. This is HEAD/index/worktree isolation, not object/ref

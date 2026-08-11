@@ -47,6 +47,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Make receipt-bound direct merge the simplest portable merge-submission default, require each queue-enabled repository to opt into Merge Queue through its `merge_submission` seam, and preserve the explicit queue-only and guarded-direct modes.**
 - **Make pull request descriptions human-first by keeping the rationale, change summary, review path, and maintainer questions visible while collapsing all agent artifacts into exactly one canonical `Agent details` disclosure.** [PR 377](https://github.com/shakacode/agent-workflows/pull/377) by [justin808](https://github.com/justin808).
 - **Remove unsupported project-level signed launch and lifecycle enforcement, fixed trust anchors, hard model/effort binding, and waiver paths; restore advisory routing and ordinary durable lane state while preserving duplicate-launch prevention, replacement fencing, batch serialization, exact-head CI, merge assurance, and guarded merge submission.** [issue 299](https://github.com/shakacode/agent-workflows/issues/299).
 - **Make `merge_authority: ask` automatically run the exact-diff `$pr-walkthrough` after ordinary readiness is clean—full and interactive for large or complex PRs, concise for smaller cohesive PRs—then refresh the diff identity/readiness before asking the one explicit merge question.**
