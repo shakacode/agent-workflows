@@ -698,8 +698,8 @@ escalation assignment, its evidence gate, and a maximum escalation count.
 
 For a Codex GPT-5.6 host, use this recommended advisory profile:
 
-- Routine single-target planner: Terra/high
-- Ambiguous or higher-risk single-target planner: Sol/high
+- Default single-target planner: Sol/high
+- Affirmatively simple single-target planner: Terra/high
 - Multi-lane coordinator: Sol/xhigh
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -715,17 +715,18 @@ change, and easy failure detection and rollback. Sol/xhigh is the recommended
 route for a present or disputed high-risk boundary, and Sol/high is the
 recommendation for another missing or disputed simplicity criterion. If either
 is unavailable, use the closest available route or runtime default and record it
-honestly. Sol/xhigh is the preferred initiating/coordinating route; Terra or
-Luna may still serve as a fallback coordinator or worker, with the actual route
-recorded honestly. Luna remains outside this profile's recommended worker
-roster. Shared workflow text remains portable for other providers and model
-generations.
+honestly. Sol/xhigh is the preferred multi-target or high-risk
+initiating/coordinating route; Terra or Luna may still serve as a fallback
+coordinator or worker, with the actual route recorded honestly. Luna remains
+outside this profile's recommended worker roster. Shared workflow text remains
+portable for other providers and model generations.
 
 For planning, one issue or PR remains single-target even when its coordinator
-delegates bounded implementation, review, or QA lanes. Prefer Terra/high after
-an affirmative routine classification, Sol/high when scope, design,
-dependencies, consequence, or verification is uncertain, and Sol/xhigh for
-multiple interacting targets, retained cross-batch orchestration, or a present
+delegates bounded implementation, review, or QA lanes. Default to Sol/high
+because one issue may still require difficult diagnosis, design, or verification
+planning. Prefer Terra/high only after an affirmative simple classification,
+and Sol/xhigh for multiple interacting targets, retained cross-batch
+orchestration, or a present
 or disputed high-risk boundary. Subagents alone do not require the multi-lane
 route. When the host exposes a materially different current planner route,
 report one concise non-blocking current-versus-recommended advisory with the
@@ -736,8 +737,8 @@ For a Claude host, use this provisional recommended advisory profile
 (`claude-profile v0`; see the Conservative Claude Profile in
 `docs/agent-workflows-model-routing.md`):
 
-- Routine single-target planner: Sonnet 5/high
-- Ambiguous or higher-risk single-target planner: Opus 4.8/high
+- Default single-target planner: Opus 4.8/high
+- Affirmatively simple single-target planner: Sonnet 5/high
 - Multi-lane coordinator: Opus 4.8/xhigh
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 4.8/xhigh
@@ -751,7 +752,7 @@ envelope, the coordinator role supplies it regardless of the selected model.
 Opus 4.8/xhigh is the recommended route for a present or disputed high-risk
 boundary or another missing or disputed simplicity criterion; if unavailable,
 use the closest available route or runtime default and record it honestly. Opus
-4.8/xhigh is the preferred initiating/coordinating route; Sonnet or Haiku may
+4.8/xhigh is the preferred multi-target or high-risk initiating/coordinating route; Sonnet or Haiku may
 still serve as a fallback coordinator or worker, with the actual route recorded
 honestly. Haiku remains outside this profile's recommended worker roster. Fable
 5 stays an experimental candidate, never a default route.

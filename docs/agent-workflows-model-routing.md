@@ -46,8 +46,8 @@ expose these models. `Sol` means GPT-5.6 Sol, `Terra` means GPT-5.6 Terra, and
 effort token on the selected runtime before launch:
 
 - Multi-lane coordinator: Sol/xhigh
-- Routine single-target planner: Terra/high
-- Ambiguous or higher-risk single-target planner: Sol/high
+- Default single-target planner: Sol/high
+- Affirmatively simple single-target planner: Terra/high
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
 - High-risk or escalated work: Sol/xhigh
@@ -55,11 +55,12 @@ effort token on the selected runtime before launch:
 - Routine deterministic QA: Sol/high
 
 One issue or PR remains single-target even when its coordinator delegates
-bounded implementation, review, or QA lanes. Use Terra/high to plan a routine
-single target only after positively establishing explicit acceptance criteria,
-bounded scope, no unresolved design or dependency question, no
-security/release/high-consequence boundary, and strong verification. Use
-Sol/high when one of those planning facts is missing or disputed. Reserve
+bounded implementation, review, or QA lanes. Default to Sol/high because one
+issue may still require difficult diagnosis, design, or verification planning.
+Use Terra/high only after positively establishing explicit acceptance criteria,
+a known bounded file surface, no unresolved design or dependency question, no
+security/release/high-consequence boundary, easy failure detection and rollback,
+and a strong deterministic verification oracle. Reserve
 Sol/xhigh for multiple interacting targets, retained cross-batch orchestration,
 or a present or disputed high-risk boundary; subagents alone do not make a plan
 multi-lane for routing purposes.
@@ -74,7 +75,7 @@ GPT-5.5 is recommended for an explicitly requested independent comparison or
 family-specific fallback. Selecting it elsewhere remains permitted but falls
 outside this profile's evidence-backed recommendation.
 
-Prefer Sol at the stated effort for the initiating parent. If the host exposes
+Prefer the classified Sol or Terra route above for the initiating parent. If the host exposes
 the running model or effort, record it as observed metadata; otherwise keep the
 field `UNKNOWN` and continue with the same safeguards.
 
@@ -117,8 +118,8 @@ the host-observed effort when exposed and otherwise use `UNKNOWN` without
 blocking launch:
 
 - Multi-lane coordinator: Opus 4.8/xhigh
-- Routine single-target planner: Sonnet 5/high
-- Ambiguous or higher-risk single-target planner: Opus 4.8/high
+- Default single-target planner: Opus 4.8/high
+- Affirmatively simple single-target planner: Sonnet 5/high
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 4.8/xhigh
 - High-risk or escalated work: Opus 4.8/xhigh
@@ -136,7 +137,7 @@ coordination, but it stays experimental until the
 shakacode/agent-workflows#151 evidence supports promotion. Never make Fable 5
 or `max` effort a default route.
 
-Prefer Opus 4.8 at the recommended effort for the initiating parent. Record
+Prefer the classified Opus 4.8 or Sonnet 5 route above for the initiating parent. Record
 host-observed parent metadata only from runtime state the host exposes; mutable
 defaults, prompt text, model self-report, and an installed model list are not
 observations. A different or `UNKNOWN` parent route does not alone block target

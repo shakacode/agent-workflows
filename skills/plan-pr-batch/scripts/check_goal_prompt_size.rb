@@ -566,16 +566,16 @@ host_aware_batch_sizing_phrase_checks = {
     ["`generic`: use the Claude-sized 5/3", 1],
     ["- Batch size target: `codex`, `claude`, or `generic`", 1],
     ["less than 300 characters of headroom", 1],
-    ["Routine single-target planner: Terra/high", 1],
-    ["Ambiguous or higher-risk single-target planner: Sol/high", 1],
+    ["Default single-target planner: Sol/high", 1],
+    ["Affirmatively simple single-target planner: Terra/high", 1],
     ["Subagents alone do not require the multi-lane", 1]
   ],
   "skills/plan-pr-batch/SKILL.md" => [
     ["`codex`: up to 10 independent items, or 8", 1],
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
-    ["Routine single-target planner: Terra/high", 1],
-    ["Ambiguous or higher-risk single-target planner: Sol/high", 1],
+    ["Default single-target planner: Sol/high", 1],
+    ["Affirmatively simple single-target planner: Terra/high", 1],
     ["Do not advise from `UNKNOWN`, repeat", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
@@ -625,8 +625,8 @@ if enforce_restart_docs_drift
   host_aware_batch_sizing_phrase_checks["docs/pr-batch-skills.md"] = [
     ["Codex-targeted waves may use up to 10", 1],
     ["Claude and generic waves use up to 5", 1],
-    ["Routine single-target planner: Terra/high", 1],
-    ["Ambiguous or higher-risk single-target planner: Sol/high", 1],
+    ["Default single-target planner: Sol/high", 1],
+    ["Affirmatively simple single-target planner: Terra/high", 1],
     ["The advisory never blocks, requests a", 1]
   ]
   host_aware_batch_sizing_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text
