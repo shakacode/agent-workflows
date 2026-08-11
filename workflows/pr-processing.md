@@ -1972,10 +1972,10 @@ goal; its objective, targets, `merge_authority`, QA decision, and completion
 contract remain authoritative.
 
 For a conservative GPT-5.6 recovery explicitly requested by an operator, use
-the recommended profile: multi-lane coordinator and independent adversarial QA
-on Sol/xhigh; positively classified simple workers on Terra/high; unknown or
-uncertain workers and routine deterministic QA on Sol/high; and high-risk or
-escalated work on Sol/xhigh. Shared workflow text stays portable: exact names
+the recommended profile: routine multi-lane coordination on balanced/high;
+independent adversarial QA on Sol/xhigh; positively classified simple workers
+on Terra/high; unknown or uncertain workers and routine deterministic QA on
+Sol/high; and high-risk or escalated work on Sol/xhigh. Shared workflow text stays portable: exact names
 always come from the operator or verified runtime roster.
 
 Use this prompt after filling the route placeholders:
