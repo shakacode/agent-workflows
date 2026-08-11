@@ -329,14 +329,28 @@ def markdown_table_line_indexes(lines)
   table_line_indexes.uniq
 end
 
+def markdown_setext_heading_line_indexes(lines)
+  lines.each_with_index.filter_map do |underline, index|
+    next unless index.positive? && underline.match?(/^\s{0,3}(?:=+|-+)\s*$/)
+    next if lines[index - 1].strip.empty?
+
+    [index - 1, index]
+  end.flatten.uniq
+end
+
 def markdown_structural_segments(block)
   segments = []
   current_segment = +""
   lines = block.lines
   table_line_indexes = markdown_table_line_indexes(lines)
+  setext_heading_line_indexes = markdown_setext_heading_line_indexes(lines)
 
   lines.each_with_index do |line, index|
     if table_line_indexes.include?(index)
+      segments << current_segment unless current_segment.empty?
+      segments << line
+      current_segment = +""
+    elsif setext_heading_line_indexes.include?(index)
       segments << current_segment unless current_segment.empty?
       segments << line
       current_segment = +""
@@ -1123,6 +1137,8 @@ class ModelRoutingContractTest < Minitest::Test
       "blank boundary" => "A route mismatch\n\nblocks execution.",
       "blank pronoun boundary" => "A route mismatch occurs.\n\nIt stops the lane before any edit begins.",
       "ATX heading boundary" => "### Route mismatch\nDestructive scope expansion blocks execution.",
+      "Setext dashed heading boundary" => "Route mismatch\n--------------\nDestructive scope expansion blocks execution.",
+      "Setext equals heading boundary" => "Route mismatch\n==============\nDestructive scope expansion blocks execution.",
       "Markdown list items" => "- route mismatch: record honestly\n- independent risk gate: blocks execution",
       "Markdown list-item pronoun boundary" => "- A route mismatch occurs.\n- It stops the lane before any edit begins.",
       "Markdown table-row pronoun boundary" => "| Route condition | A route mismatch occurs. |\n| --- | --- |\n| Gate result | It stops the lane before any edit begins. |",
@@ -1162,7 +1178,8 @@ class ModelRoutingContractTest < Minitest::Test
       "wrapped prose before a table without outer pipes" => "A route mismatch\nblocks execution before editing.\nGate | advisory\n--- | ---\nstatus | recorded",
       "wrapped prose after a table without outer pipes" => "Gate | advisory\n--- | ---\nstatus | recorded\nA route mismatch\nblocks execution before editing.",
       "inline-pipe prose" => "A route mismatch uses requested | observed fields and\nblocks execution before editing.",
-      "ATX heading followed by route-only contradiction" => "### Advisory routing\nA route mismatch blocks execution before editing."
+      "ATX heading followed by route-only contradiction" => "### Advisory routing\nA route mismatch blocks execution before editing.",
+      "Setext heading followed by route-only contradiction" => "Advisory routing\n----------------\nA route mismatch blocks execution before editing."
     }.each do |position, contradiction|
       assert_raises(Minitest::Assertion, "a #{position} must remain forbidden") do
         assert_route_provenance_contract(
