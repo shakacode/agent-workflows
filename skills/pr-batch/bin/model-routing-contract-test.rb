@@ -187,7 +187,7 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
     `UNKNOWN`\ (?:observation|observed\ tuple)
   )
 /imx
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|blocks?\\s+execution|disqualif(?:y|ies)\\s+the\\s+lane"
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+execution|disqualif(?:y|ies)\\s+the\\s+lane|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch"
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -303,7 +303,7 @@ def assert_route_provenance_contract(test, text, label)
   end
   test.refute_includes guide, "MODEL_ROUTE_MISMATCH",
                        "#{label} must not restore the former hard route-mismatch disposition"
-  test.refute forbidden_route_only_contradiction?(guide),
+  test.refute forbidden_route_only_contradiction?(text),
               "#{label} must not pair advisory continuation with an unconditional route-only stop"
 end
 
@@ -742,7 +742,11 @@ class ModelRoutingContractTest < Minitest::Test
       "different route" => "A different route blocks execution before editing.",
       "different tuple" => "A different tuple disqualifies the lane before editing.",
       "UNKNOWN observed tuple" => "An `UNKNOWN` observed tuple stops the lane before any edit begins.",
+      "route mismatch requires relaunch before editing" => "A route mismatch requires relaunch before editing.",
+      "route mismatch halts the lane before editing" => "A route mismatch halts the lane before editing.",
+      "route mismatch prevents editing until relaunch" => "A route mismatch prevents editing until relaunch.",
       "outcome-first route mismatch" => "Stop the lane before editing when there is a route mismatch.",
+      "outcome-first relaunch before route mismatch" => "Require relaunch before editing when there is a route mismatch.",
       "outcome-first different observed route" => "Block execution whenever there is a different observed route.",
       "outcome-first UNKNOWN observed tuple" => "Disqualify the lane when an `UNKNOWN` observed tuple appears.",
       "route mismatch blocks execution" => "A route mismatch blocks execution before any edit begins.",
@@ -786,12 +790,17 @@ class ModelRoutingContractTest < Minitest::Test
   end
 
   def test_route_only_contradictions_do_not_cross_markdown_rows_or_blank_boundaries
+    guide = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+
     {
       "Markdown table rows" => "| Route condition | route mismatch |\n| Gate result | blocks execution |",
       "blank boundary" => "A route mismatch\n\nblocks execution."
-    }.each do |boundary, text|
-      refute forbidden_route_only_contradiction?(text),
-             "route-only contradiction must not cross a #{boundary}"
+    }.each do |boundary, boundary_text|
+      assert_route_provenance_contract(
+        self,
+        "#{guide}\n\n#{boundary_text}\n",
+        "#{MODEL_ROUTING_GUIDE_PATH} #{boundary} boundary"
+      )
     end
   end
 
