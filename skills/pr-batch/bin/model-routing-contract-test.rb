@@ -664,7 +664,7 @@ class ModelRoutingContractTest < Minitest::Test
   def test_advisory_continuation_rejects_an_unconditional_route_only_stop_mutant
     text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
     assert_route_provenance_contract(self, text, MODEL_ROUTING_GUIDE_PATH)
-    mutant = text + "\nA route mismatch stops the lane before any edit begins.\n"
+    mutant = "#{text}\nA route mismatch stops the lane before any edit begins.\n"
 
     assert_raises(Minitest::Assertion, "advisory continuation accepted an unconditional route-only stop") do
       assert_route_provenance_contract(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} unconditional-stop mutant")
