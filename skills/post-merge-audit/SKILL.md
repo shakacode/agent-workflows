@@ -36,14 +36,14 @@ this recommended advisory route profile:
 - Routine deterministic QA: Sol/high
 
 For a verified Claude batch, record the originating preferences and use this
-provisional recommended advisory route profile (`claude-profile v0`):
+recommended advisory route profile (`claude-profile v1`):
 
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
 
 When emitting a structured `review-findings` block, set `review_receipt.source`
 to `post-merge-audit` and follow `docs/review-finding-schema.md`.
