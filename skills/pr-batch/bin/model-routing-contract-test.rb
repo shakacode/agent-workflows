@@ -134,7 +134,9 @@ ROUTE_PROVENANCE_RULES = [
   "Requested-route prose in a plan, handoff, comment, or PR description is never presentable as observed execution evidence; only host-reported session metadata binds.",
   "A route mismatch, unavailability, inherited route, or `UNKNOWN` observed tuple must be recorded honestly and must exclude that execution from route-measurement evidence; it never alone stops otherwise valid work.",
   "A worker records its own observed model/effort separately from the coordinator; an inherited pair is a route mismatch even when the inherited route is stronger than the requested one.",
-  "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule"
+  "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule",
+  "An explicitly user-selected override remains a user override rather than an implicit fallback, and its requested and observed tuples are recorded separately.",
+  "An authorized fallback is explicit, recorded before launch, and names the authority that approved it. An unrecorded fallback is a silent substitution and takes that row's disposition."
 ].freeze
 AW_D_ROUTE_REPLAY = [
   { pr: 146, role: "implementation", case_id: "bound-exact-match", disposition: "proceed" },
@@ -173,6 +175,8 @@ SOL_XHIGH_NONTRIGGERS_RULE =
   "Polling, mechanical work, deterministic aggregation, receipt construction, unchanged-state checks, context pollution, and topology alone do not justify Sol/xhigh."
 USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
   "An explicitly user-selected Sol/xhigh override is honored and reported as an override, not silently rewritten."
+CODEX_CHANGELOG_ROUTING_NOTE =
+  "Adopt the recommended Codex GPT-5.6 routing profile: balanced/high routine multi-lane coordination, with Terra/high when host-verified; Sol/xhigh adversarial QA and high-risk escalation; Terra/high for positively classified simple workers; and Sol/high for uncertainty and routine deterministic QA."
 MEASURED_PROMOTION_DEFERRAL_RULE =
   "No ten-batch measured promotion decision may be made before #398 usage/cost receipts, #333 execution-provenance receipts, and #335 evaluation runner exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
 ROUTE_ONLY_FIELD_SOURCE = "model|effort|reasoning[-\\s]effort|route|tuple"
@@ -189,7 +193,10 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
     substituted\ route
   )
 /imx
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+execution|disqualif(?:y|ies)\\s+the\\s+lane|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch"
+ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE = "launch|replay|review|audit|planning|coordination|execution|escalation|fallback"
+ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
+  "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -431,6 +438,11 @@ def assert_constrained_routine_routing(test, text, label)
   end
   test.refute_includes guide, "Multi-lane coordinator: Sol/xhigh",
                        "#{label} must not present Sol/xhigh as the multi-lane coordinator default"
+end
+
+def assert_codex_changelog_routing_note(test, text, label)
+  test.assert_includes text, CODEX_CHANGELOG_ROUTING_NOTE,
+                       "#{label} must retain the exact Codex routing release note"
 end
 
 def evidence_status_rows(text)
@@ -767,6 +779,18 @@ class ModelRoutingContractTest < Minitest::Test
       "nested spawns exempted" => guide.sub(
         "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule",
         "Nested subagents are exempt from this rule"
+      ),
+      "user override reduced to generic handling" => guide.sub(
+        "An explicitly user-selected override remains a user override rather than an implicit fallback, and its requested and observed tuples are recorded separately.",
+        "User overrides are handled separately."
+      ),
+      "authorized fallback recorded after launch" => guide.sub(
+        "An authorized fallback is explicit, recorded before launch, and names the authority that approved it. An unrecorded fallback is a silent substitution and takes that row's disposition.",
+        "An authorized fallback is explicit, recorded after launch, and names the authority that approved it. An unrecorded fallback is a silent substitution and takes that row's disposition."
+      ),
+      "unrecorded fallback treated as authorized" => guide.sub(
+        "An authorized fallback is explicit, recorded before launch, and names the authority that approved it. An unrecorded fallback is a silent substitution and takes that row's disposition.",
+        "An authorized fallback is explicit, recorded before launch, and names the authority that approved it. An unrecorded fallback is an authorized fallback and takes that row's disposition."
       )
     }
 
@@ -828,6 +852,28 @@ class ModelRoutingContractTest < Minitest::Test
       "effort is different" => "An effort is different and blocks execution before editing.",
       "reasoning effort is UNKNOWN" => "A reasoning effort is UNKNOWN and requires relaunch before editing.",
       "preferred route is unavailable" => "A preferred route is unavailable and stops the lane before editing.",
+      "route mismatch blocks launch" => "A route mismatch blocks launch.",
+      "route mismatch blocks replay" => "A route mismatch blocks replay.",
+      "route mismatch blocks review" => "A route mismatch blocks review.",
+      "route mismatch blocks audit" => "A route mismatch blocks audit.",
+      "unavailable route blocks planning" => "An unavailable route blocks planning.",
+      "inherited route blocks coordination" => "An inherited route blocks coordination.",
+      "different tuple blocks escalation" => "A different tuple blocks escalation.",
+      "UNKNOWN model blocks fallback" => "An UNKNOWN model blocks fallback.",
+      "route mismatch disqualifies review" => "A route mismatch disqualifies review.",
+      "route mismatch disqualifies audit" => "A route mismatch disqualifies an independent audit.",
+      "route mismatch disqualifies readiness" => "A route mismatch disqualifies readiness.",
+      "route mismatch disqualifies checker verdict" => "A route mismatch disqualifies a checker verdict.",
+      "outcome-first launch" => "Block launch when there is a route mismatch.",
+      "outcome-first replay" => "Block replay when there is a route mismatch.",
+      "outcome-first review" => "Block review when there is a route mismatch.",
+      "outcome-first audit" => "Block audit when there is a route mismatch.",
+      "outcome-first planning" => "Block planning when there is an unavailable route.",
+      "outcome-first coordination" => "Block coordination when there is an inherited route.",
+      "outcome-first escalation" => "Block escalation when there is a different tuple.",
+      "outcome-first fallback" => "Block fallback when there is an UNKNOWN model.",
+      "outcome-first review disqualification" => "Disqualify review when there is a route mismatch.",
+      "outcome-first audit disqualification" => "Disqualify an independent audit when there is a route mismatch.",
       "route mismatch requires relaunch before editing" => "A route mismatch requires relaunch before editing.",
       "route mismatch halts the lane before editing" => "A route mismatch halts the lane before editing.",
       "route mismatch prevents editing until relaunch" => "A route mismatch prevents editing until relaunch.",
@@ -876,6 +922,12 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch never by itself stops the lane before edits.",
       "A route mismatch does not necessarily stop the lane before edits.",
       "A route mismatch does not automatically block execution before edits.",
+      "A route mismatch never blocks launch.",
+      "A route mismatch does not block replay.",
+      "A different route cannot block review.",
+      "An UNKNOWN observed tuple should not block audit.",
+      "A route mismatch does not disqualify readiness.",
+      "An inherited route never disqualifies a checker verdict.",
       "A route mismatch does not stop the lane, but an independent risk gate blocks execution.",
       "A route mismatch does not stop the lane, and an independent scope gate blocks execution.",
       "A route mismatch does not stop the lane, yet an independent evidence gate blocks execution.",
@@ -1046,6 +1098,21 @@ class ModelRoutingContractTest < Minitest::Test
       assert_raises(Minitest::Assertion, "model-routing guide accepted #{mutation}") do
         assert_constrained_routine_routing(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
       end
+    end
+  end
+
+  def test_changelog_keeps_the_balanced_codex_routing_release_note
+    changelog = read_repo_file("CHANGELOG.md")
+    assert_codex_changelog_routing_note(self, changelog, "CHANGELOG.md")
+
+    mutant = changelog.sub(
+      CODEX_CHANGELOG_ROUTING_NOTE,
+      "Adopt the recommended Codex GPT-5.6 routing profile: Sol/xhigh routine multi-lane coordination."
+    )
+
+    refute_equal changelog, mutant, "Codex routing release-note mutant did not change the changelog"
+    assert_raises(Minitest::Assertion, "changelog accepted unconditional Sol/xhigh Codex multi-lane coordination") do
+      assert_codex_changelog_routing_note(self, mutant, "CHANGELOG.md Codex routing release-note mutant")
     end
   end
 
