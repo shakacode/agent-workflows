@@ -84,25 +84,30 @@ notes.
    override the deterministic repository-name abbreviation used in batch titles
    and thread handles. The initializer does not add this optional key.
 
-   Initialization adds the optional merge-submission seam in its portable,
-   fail-closed form:
+   Initialization adds the optional merge-submission seam in its simplest
+   portable form:
 
    ```yaml
    merge_submission:
-     mode: merge_queue_only
+     mode: direct
    ```
 
-   Keep that value, or omit the mapping, unless the consumer deliberately owns
-   a guarded direct-merge exception. Such a consumer may select
-   `merge_queue_or_guarded_direct` and name one executable guard under
+   Keep that value, or omit the mapping, for the normal GitHub direct-merge
+   path. A repository that enables Merge Queue must explicitly select
+   `merge_queue_only` or `merge_queue_or_guarded_direct`; both modes use
+   canonical enqueue while the live base is queue-controlled. Direct mode fails
+   deterministically before mutation in that state so the repository policy
+   cannot silently change the submission route. A consumer that deliberately
+   owns a guarded direct-merge exception may select the latter mode and name one
+   executable guard under
    `.agents/bin`, an exact merge method, and an explicit acknowledgement plus
    rationale for the non-atomic base binding. The guard is a path, not a shell
    command. It receives the fixed argv contract documented in
    [seam-design.md](seam-design.md), and its return value is accepted only after
    live GitHub state proves the authorized head merged exactly. Queue-enabled
-   PRs continue through canonical enqueue and never invoke the guard. A
-   queue-disabled PR without this opt-in returns a deterministic configuration
-   error before mutation. The
+   PRs continue through canonical enqueue and never invoke the guard. An
+   explicit `merge_queue_only` policy on a queue-disabled base returns a
+   deterministic configuration error before mutation. The
    helper executes a private copy of the validated trusted-base bytes from an
    isolated Git root whose detached `HEAD`, index, and working files all bind
    the receipt-base commit and tree. This is HEAD/index/worktree isolation, not

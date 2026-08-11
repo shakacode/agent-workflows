@@ -185,12 +185,12 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
    deterministically from the repository name: use the basename of the `origin`
    remote after stripping `.git`, or the repository root basename when `origin`
-   is unavailable; for a multi-segment name take the first letter of each of the
-   first six `-`, `_`, or space-separated segments, and for a single-segment
-   name take its first 4 letters or the whole name when shorter, then uppercase
-   the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
-   `shakapacker` -> `SHAK`, `go` -> `GO`). An invalid configured `repo_prefix`
-   is a blocker; do not silently fall back.
+   is unavailable; for a multi-segment name take the first character of each of
+   the first six `-`, `_`, or space-separated segments, and for a single-segment
+   name take its first 4 characters or the whole name when shorter, then
+   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
+   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
+   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
    Fill the optional `A?` slot with A,
    B, C, etc. only when creating multiple batch prompts; omit it for a single
    batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
@@ -704,7 +704,7 @@ evidence is otherwise complete.
 Record the selected `merge_authority` value in the handoff and use the canonical
 split final states from `.agents/workflows/pr-processing.md`.
 
-End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
+End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them.
 
 ## Coordination State
 
@@ -925,13 +925,12 @@ When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
 then submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
 receipt unconditionally. The helper preserves read-only, idempotent observation
-of an exact terminal merge and uses GitHub's `enqueuePullRequest` only when the
-base is queue-controlled. Queue-disabled submission without an enabled
-guarded-direct seam fails before mutation as a deterministic configuration
-error (exit 1), not an `UNKNOWN` mutation outcome.
-Only a validated trusted-base `merge_submission` opt-in may delegate direct
-submission to one repository-owned executable guard under `.agents/bin`; the
-portable helper never performs a generic direct merge. The fixed-argv guard is
+of an exact terminal merge. Absent policy and explicit `mode: direct` use an
+expected-head-bound direct merge on a queue-disabled base; a queue-enabled base
+fails before mutation until the repository explicitly opts into
+`merge_queue_only` or `merge_queue_or_guarded_direct`. The latter may delegate
+queue-disabled submission to one repository-owned executable guard under
+`.agents/bin`. The fixed-argv guard is
 executed from private identity-bound trusted bytes in an isolated Git root
 whose detached `HEAD`, index, and working files all bind the receipt-base
 commit and tree. This is HEAD/index/worktree isolation, not object/ref
@@ -1010,6 +1009,19 @@ In short, `waiting-on-checks-or-review` is per-target progress, not an overall
 terminal state; keep polling, triaging, and fixing, or report NOT COMPLETE /
 blocked with exact resume instructions only after a watch window or real
 external blocker.
+
+When that external blocker publishes an exact future retry time and the host can
+re-enter this same thread on schedule, schedule one same-thread heartbeat for
+that time before handing off, because the 15-minute watch expires first and
+leaves resumable work stranded. Update the existing heartbeat instead of
+duplicating it, stop it once the target is terminal, and report in the handoff
+whether one was created, its exact scheduled time, and its durable identifier,
+or else the exact scheduling blocker. An `UNKNOWN` or absent retry time, a
+`blocked-user-input` blocker, or no scheduling capability creates no automation
+and preserves the exact manual resume instructions. A heartbeat never widens
+target scope, permissions, merge authority, dependency gates, or the retry
+count, and never becomes an unbounded polling loop. The canonical rule is the
+Scheduled Retry Heartbeat paragraph in that contract.
 
 Converge the review loop instead of chasing it: each push re-triggers every configured
 review bot on the new head, so resolve advisory threads in-thread (reply + resolve)
