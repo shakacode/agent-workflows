@@ -175,6 +175,22 @@ USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
   "An explicitly user-selected Sol/xhigh override is honored and reported as an override, not silently rewritten."
 MEASURED_PROMOTION_DEFERRAL_RULE =
   "No ten-batch measured promotion decision may be made before #398 usage/cost receipts, #333 execution-provenance receipts, and #335 evaluation runner exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
+ROUTE_ONLY_CONTRADICTION_PATTERN = /
+  MODEL_ROUTE_MISMATCH |
+  (?:
+    route\ mismatch |
+    unavailable\ (?:observed\ )?route |
+    route\ unavailability |
+    inherited\ route |
+    `UNKNOWN`\ (?:observation|observed\ tuple)
+  )
+  (?!
+    [^.!?]*(?:\bnever\b|\bnot\b)[^.!?]*
+    \b(?:stops?|blocks?|disqualifies)\b
+  )
+  [^.!?]*
+  \b(?:stops?\ the\ lane|blocks?\ execution|disqualifies\ the\ lane)\b
+/imx
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -231,7 +247,7 @@ def assert_route_provenance_contract(test, text, label)
   ROUTE_PROVENANCE_RULES.each do |rule|
     test.assert_includes guide, rule, "#{label} must carry the exact route-provenance rule: #{rule}"
   end
-  test.refute_match(/MODEL_ROUTE_MISMATCH|(?:route mismatch|unavailable(?: observed)? route|route unavailability|inherited route|`?UNKNOWN`? (?:observation|observed tuple))[^.!?]*\bstops? the lane\b/im, guide,
+  test.refute_match(ROUTE_ONLY_CONTRADICTION_PATTERN, guide,
                     "#{label} must not pair advisory continuation with an unconditional route-only stop")
 end
 
@@ -656,7 +672,7 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
-  def test_advisory_continuation_rejects_an_unconditional_route_only_stop_mutant
+  def test_advisory_continuation_rejects_unconditional_route_only_contradictions
     text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
     assert_route_provenance_contract(self, text, MODEL_ROUTING_GUIDE_PATH)
 
@@ -664,13 +680,23 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch" => "A route mismatch stops the lane before any edit begins.",
       "unavailable observed route" => "An unavailable observed route stops the lane before any edit begins.",
       "inherited route" => "An inherited route stops the lane before any edit begins.",
-      "UNKNOWN observed tuple" => "An `UNKNOWN` observed tuple stops the lane before any edit begins."
-    }.each do |case_name, stop_rule|
-      mutant = "#{text}\n#{stop_rule}\n"
+      "UNKNOWN observed tuple" => "An `UNKNOWN` observed tuple stops the lane before any edit begins.",
+      "route mismatch blocks execution" => "A route mismatch blocks execution before any edit begins.",
+      "UNKNOWN observed tuple disqualifies the lane" => "An `UNKNOWN` observed tuple disqualifies the lane before any edit begins."
+    }.each do |case_name, contradiction|
+      mutant = "#{text}\n#{contradiction}\n"
 
       assert_raises(Minitest::Assertion, "advisory continuation accepted #{case_name} as an unconditional route-only stop") do
         assert_route_provenance_contract(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{case_name} unconditional-stop mutant")
       end
+    end
+
+    [
+      "A route mismatch never blocks execution before any edit begins.",
+      "An `UNKNOWN` observed tuple is not a condition that disqualifies the lane before any edit begins."
+    ].each do |advisory_negation|
+      refute_match ROUTE_ONLY_CONTRADICTION_PATTERN, advisory_negation,
+                   "advisory negation must not be treated as an unconditional route-only stop"
     end
   end
 
