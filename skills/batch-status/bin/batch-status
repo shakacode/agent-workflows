@@ -235,10 +235,10 @@ items = requests.map do |request|
 
   claims = coordination.is_a?(Hash) && coordination["claims"].is_a?(Array) ? coordination["claims"] : []
   heartbeats = coordination.is_a?(Hash) && coordination["heartbeats"].is_a?(Array) ? coordination["heartbeats"] : []
-  claim = claims.find { |candidate| candidate.is_a?(Hash) && candidate["status"] == "active" } || claims.first || {}
+  claim = claims.find { |candidate| candidate.is_a?(Hash) && candidate["status"] == "active" } || {}
   holder = present_string(claim["agent_id"])
+  unknowns << "coordination holder: no active claim" unless holder
   heartbeat = heartbeats.find { |candidate| candidate.is_a?(Hash) && candidate["agent_id"] == holder }
-  heartbeat ||= heartbeats.first if holder.nil? && heartbeats.length == 1
   record = heartbeat || claim
   runner = runner_for(record)
   machine_id = present_string(record["machine_id"]) || UNKNOWN

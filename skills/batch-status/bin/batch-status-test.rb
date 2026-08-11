@@ -216,6 +216,45 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_released_claim_does_not_supply_current_holder_or_task_identity
+    coordination = {
+      "claims" => [{
+        "agent_id" => "former-worker",
+        "status" => "released",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10",
+        "session_source" => "codex_thread_id"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "former-worker",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10",
+        "session_source" => "codex_thread_id",
+        "status" => "done"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "issue", number: 188) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "188",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      assert_equal "UNKNOWN", row.fetch("holder")
+      assert_equal "UNKNOWN", row.fetch("editor")
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link")
+      assert_includes row.fetch("unknowns"), "coordination holder: no active claim"
+    end
+  end
+
   private
 
   def with_fake_commands(coordination:, github_kind:, number:)
