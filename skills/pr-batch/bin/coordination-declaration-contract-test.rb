@@ -181,6 +181,110 @@ class CoordinationDeclarationContractTest < Minitest::Test
                  "nested marker padding that reaches the code threshold must not satisfy the declaration gate"
   end
 
+  def test_mixed_marker_padding_over_four_rendered_columns_is_rejected
+    rejected_by_leading_indent = {
+      0 => ["   \t", "    \t", "\t  ", "\t\t", "     "],
+      1 => ["  \t", "\t   ", "\t\t", "     "],
+      2 => [" \t", "\t    ", "\t\t", "     "],
+      3 => ["   \t ", "    \t", "\t ", "\t\t", "     "]
+    }
+
+    rejected_by_leading_indent.each do |leading_indent, paddings|
+      paddings.each do |padding|
+        handoff = "#{' ' * leading_indent}-#{padding}coordination: registered aw-code-padding\n"
+
+        assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                     "padding #{padding.inspect} after #{leading_indent} leading spaces renders wider than four columns"
+      end
+    end
+  end
+
+  def test_nested_mixed_marker_padding_over_four_rendered_columns_is_rejected
+    rejected_by_leading_indent = {
+      0 => [" \t", "\t    ", "\t\t", "     "],
+      1 => ["\t ", "   \t ", "    \t", "\t\t", "     "],
+      2 => ["   \t", "    \t", "\t  ", "\t\t", "     "],
+      3 => ["  \t", "\t   ", "\t\t", "     "]
+    }
+
+    rejected_by_leading_indent.each do |leading_indent, paddings|
+      paddings.each do |padding|
+        item_indent = " " * (2 + leading_indent)
+        handoff = "- Outer:\n#{item_indent}-#{padding}coordination: registered aw-nested-code-padding\n"
+
+        assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                     "nested padding #{padding.inspect} after #{leading_indent} relative spaces renders as code"
+      end
+    end
+  end
+
+  def test_mixed_marker_padding_up_to_four_rendered_columns_is_visible
+    visible_by_leading_indent = {
+      0 => [" \t", "  \t", "\t "],
+      1 => [" \t  ", "\t  "],
+      2 => ["\t   "],
+      3 => [" \t", "   \t"]
+    }
+
+    visible_by_leading_indent.each do |leading_indent, paddings|
+      paddings.each do |padding|
+        handoff = "#{' ' * leading_indent}-#{padding}coordination: registered aw-visible-padding\n"
+
+        assert_empty coordination_declaration_blockers(handoff),
+                     "padding #{padding.inspect} after #{leading_indent} leading spaces renders within four columns"
+      end
+    end
+  end
+
+  def test_nested_mixed_marker_padding_up_to_four_rendered_columns_is_visible
+    visible_by_leading_indent = {
+      0 => ["\t ", "\t  ", "\t   "],
+      1 => [" \t", "  \t", "   \t"],
+      2 => [" \t", "  \t", "\t "],
+      3 => [" \t  ", "\t  "]
+    }
+
+    visible_by_leading_indent.each do |leading_indent, paddings|
+      paddings.each do |padding|
+        item_indent = " " * (2 + leading_indent)
+        handoff = "- Outer:\n#{item_indent}-#{padding}coordination: registered aw-nested-visible-padding\n"
+
+        assert_empty coordination_declaration_blockers(handoff),
+                     "nested padding #{padding.inspect} after #{leading_indent} relative spaces remains visible"
+      end
+    end
+  end
+
+  def test_deep_nested_mixed_tab_padding_uses_original_marker_column
+    handoff = "- Outer:\n    - \tcoordination: registered aw-deep-mixed-tab\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "tab expansion must start from the marker's original column inside the outer list"
+  end
+
+  def test_deep_nested_code_padding_uses_original_marker_column
+    handoff = "- Outer:\n    -\t  coordination: registered fake-deep-code-padding\n"
+
+    assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                 "padding wider than four columns at the original nested marker column is code"
+  end
+
+  def test_mixed_padding_nested_item_continuation_at_plus_four_is_code
+    handoff = "- Outer:\n    - \tInner:\n" \
+              "            coordination: registered fake-inner-code\n"
+
+    assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                 "four spaces beyond the rendered nested content column is indented code"
+  end
+
+  def test_mixed_padding_nested_item_continuation_at_plus_three_is_visible
+    handoff = "- Outer:\n    - \tInner:\n" \
+              "           coordination: registered aw-inner-visible-boundary\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "up to three spaces beyond the rendered nested content column remains visible"
+  end
+
   def test_declaration_is_accepted_in_a_nested_lane_card_list
     [
       "- Lane Card:\n    - coordination: registered aw-nested-unordered-lane\n",

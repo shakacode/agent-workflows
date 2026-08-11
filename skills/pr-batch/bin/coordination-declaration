@@ -30,16 +30,23 @@ module CoordinationDeclaration
 
   # Accepts an optional list marker so a declaration reads naturally inside a
   # bulleted Lane Card or handoff section.
-  DECLARATION_LINE = /^ {0,3}(?:[-*+](?: {1,4}|\t))?coordination:[[:space:]]*(.*?)[[:space:]]*$/
+  BARE_DECLARATION_LINE = /\A {0,3}coordination:[[:space:]]*(.*?)[[:space:]]*\z/
+  BULLETED_DECLARATION_LINE = /\A( {0,3})[-*+]([ \t]+)coordination:[[:space:]]*(.*?)[[:space:]]*\z/
   NEAR_MISS_LINE = /^ {0,3}(?:[-*+][[:space:]]+)?(?:`coordination:.*`|\*\*coordination:\*\*.*|Coordination:.*|coordination[[:blank:]]+[-–][[:blank:]]+.*)[[:blank:]]*$/
   FENCE_OPENING = /\A(?:(`{3,})[^`\r\n]*|(~{3,})[^\r\n]*)\r?\n?\z/
   INDENTED_FENCE_OPENING = /\A( *)(?:(`{3,})[^`\r\n]*|(~{3,})[^\r\n]*)\r?\n?\z/
-  LIST_ITEM = /\A( *)([-+*]|\d{1,9}[.)])( {1,4})(.*)/
+  LIST_ITEM = /\A( *)([-+*]|\d{1,9}[.)])([ \t]+)(.*)/
 
   module_function
 
   def unknown_sentinel?(value)
     value.strip.casecmp("UNKNOWN").zero?
+  end
+
+  def column_after_padding(column, padding)
+    padding.each_char.reduce(column) do |current_column, character|
+      character == "\t" ? current_column + 4 - (current_column % 4) : current_column + 1
+    end
   end
 
   def visible_lines(handoff_text)
@@ -58,19 +65,25 @@ module CoordinationDeclaration
       end
 
       normalized_line = line
+      column_offset = 0
       valid_list_item = false
       visible_list_continuation = false
       if (list_item = line.match(LIST_ITEM))
         item_indent = list_item[1].length
+        marker_end_column = item_indent + list_item[2].length
+        content_start_column = column_after_padding(marker_end_column, list_item[3])
+        padding_width = content_start_column - marker_end_column
         parent_index = list_content_indents.rindex do |content_indent|
           item_indent.between?(content_indent, content_indent + 3)
         end
-        valid_list_item = item_indent <= 3 || !parent_index.nil?
+        valid_list_item = padding_width.between?(1, 4) && (item_indent <= 3 || !parent_index.nil?)
 
         if valid_list_item
+          parent_content_indent = parent_index.nil? ? 0 : list_content_indents[parent_index]
           list_content_indents = parent_index.nil? ? [] : list_content_indents[0..parent_index]
-          list_content_indents << item_indent + list_item[2].length + list_item[3].length
-          normalized_line = line.delete_prefix(list_item[1])
+          list_content_indents << content_start_column
+          normalized_line = line.delete_prefix(" " * parent_content_indent)
+          column_offset = parent_content_indent
         end
       elsif !line.strip.empty? && list_content_indents.any?
         line_indent = line[/\A */].length
@@ -82,6 +95,7 @@ module CoordinationDeclaration
           list_indent = list_content_indents.last
           visible_list_continuation = true
           normalized_line = line.delete_prefix(" " * list_indent)
+          column_offset = list_indent
         elsif line_indent < list_content_indents.first
           list_content_indents.clear
         end
@@ -115,17 +129,34 @@ module CoordinationDeclaration
 
       next if line.start_with?("    ", "\t") && !valid_list_item && !visible_list_continuation
 
-      normalized_line
+      { text: normalized_line, column_offset: column_offset }
     end
   end
 
   def declared_values(handoff_text)
-    visible_lines(handoff_text).filter_map { |line| line[DECLARATION_LINE, 1] }
+    visible_lines(handoff_text).filter_map do |line|
+      declaration_value(line[:text], column_offset: line[:column_offset])
+    end
+  end
+
+  def declaration_value(line, column_offset: 0)
+    bare_declaration = line.match(BARE_DECLARATION_LINE)
+    return bare_declaration[1] if bare_declaration
+
+    bulleted_declaration = line.match(BULLETED_DECLARATION_LINE)
+    return unless bulleted_declaration
+
+    column = column_offset + bulleted_declaration[1].length + 1
+    content_start_column = column_after_padding(column, bulleted_declaration[2])
+    padding_width = content_start_column - column
+    return unless padding_width.between?(1, 4)
+
+    bulleted_declaration[3]
   end
 
   def near_miss_lines(handoff_text)
     visible_lines(handoff_text).filter_map do |line|
-      line.strip if line.match?(NEAR_MISS_LINE)
+      line[:text].strip if line[:text].match?(NEAR_MISS_LINE)
     end
   end
 
