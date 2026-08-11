@@ -22,7 +22,7 @@ the verified target is Codex GPT-5.6, use this informative recommended binding:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
-When the verified target is Claude, use this informative recommended binding
+When the verified target is Claude, use this informative provisional recommended binding
 (`claude-profile v1`):
 
 - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)

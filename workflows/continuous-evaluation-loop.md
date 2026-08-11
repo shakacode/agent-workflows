@@ -18,7 +18,7 @@ role, not a maker role.
   routes:
   - Independent adversarial QA: Sol/xhigh
   - Routine deterministic QA: Sol/high
-  Under the Claude profile (`claude-profile v1`), prefer these
+  Under the provisional Claude profile (`claude-profile v1`), prefer these
   recommended advisory QA routes:
   - Independent adversarial QA: Opus 5/xhigh
   - Routine deterministic QA: Opus 5/high

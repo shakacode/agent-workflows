@@ -82,7 +82,7 @@ facts remain fail-closed and stop before mutation.
   - Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
   - Independent adversarial QA: Sol/xhigh
   - Routine deterministic QA: Sol/high
-- **Claude profile** (`claude-profile v1`): apply only after
+- **Provisional Claude profile** (`claude-profile v1`): apply only after
   verifying the exact routes on the actual host; portable classes remain the
   fallback elsewhere.
   - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)

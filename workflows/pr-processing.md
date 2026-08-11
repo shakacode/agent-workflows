@@ -715,7 +715,7 @@ change, and easy failure detection and rollback. Sol/xhigh is the recommended
 route for a present or disputed high-risk boundary, and Sol/high is the
 recommendation for another missing or disputed simplicity criterion. If either
 is unavailable, use the closest available route or runtime default and record it
-honestly. Sol/xhigh is the preferred multi-target or high-risk
+honestly. Sol/xhigh is the preferred high-risk or listed-exception
 initiating/coordinating route; Terra or Luna may still serve as a fallback
 coordinator or worker, with the actual route recorded honestly. Luna remains
 outside this profile's recommended worker roster. Shared workflow text remains

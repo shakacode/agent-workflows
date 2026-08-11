@@ -141,6 +141,13 @@ LIVE_CLAUDE_PROFILE_SURFACES = %w[
   workflows/pr-processing.md
 ].freeze
 
+SINGLE_TARGET_PLANNER_SURFACES = %w[
+  docs/agent-workflows-model-routing.md
+  docs/pr-batch-skills.md
+  skills/plan-pr-batch/SKILL.md
+  workflows/pr-processing.md
+].freeze
+
 MODEL_ROUTING_GUIDE_PATH = "docs/agent-workflows-model-routing.md"
 ROUTE_DISPOSITION_TABLE_HEADING = "### Disposition Table"
 ROUTE_PROVENANCE_RULES = [
@@ -557,6 +564,19 @@ class ModelRoutingContractTest < Minitest::Test
       text = read_repo_file(path)
       refute_match(/claude-profile v0|Opus 4\.8/, text, "#{path} contains legacy Claude routing guidance")
     end
+  end
+
+  def test_single_target_planner_surfaces_pin_default_and_simple_routes
+    SINGLE_TARGET_PLANNER_SURFACES.each do |path|
+      text = read_repo_file(path)
+      assert_includes text, "Default single-target planner: Sol/high", path
+      assert_includes text, "Affirmatively simple single-target planner: Terra/high", path
+      assert_includes text, "Default single-target planner: Opus 5/high", path
+      assert_includes text, "Affirmatively simple single-target planner: Sonnet 5/high", path
+      assert_includes text, "claude-profile v1", path
+    end
+
+    assert_includes read_repo_file(MODEL_ROUTING_GUIDE_PATH), "claude-opus-5"
   end
 
   def test_profile_surfaces_reject_the_former_sol_xhigh_coordinator_default
