@@ -254,7 +254,13 @@ end
 
 def route_only_contradiction_segments(text)
   text.split(/\n\s*\n/).flat_map do |block|
-    block.each_line.any? { |line| line.lstrip.start_with?("|") } ? block.lines : [block]
+    if block.each_line.any? { |line| line.lstrip.start_with?("|") }
+      block.lines
+    elsif block.each_line.any? { |line| line.match?(/^\s*[-*+]\s+/) }
+      block.split(/(?=^\s*[-*+]\s+)/)
+    else
+      [block]
+    end
   end
 end
 
@@ -794,12 +800,21 @@ class ModelRoutingContractTest < Minitest::Test
 
     {
       "Markdown table rows" => "| Route condition | route mismatch |\n| Gate result | blocks execution |",
-      "blank boundary" => "A route mismatch\n\nblocks execution."
+      "blank boundary" => "A route mismatch\n\nblocks execution.",
+      "Markdown list items" => "- route mismatch: record honestly\n- independent risk gate: blocks execution"
     }.each do |boundary, boundary_text|
       assert_route_provenance_contract(
         self,
         "#{guide}\n\n#{boundary_text}\n",
         "#{MODEL_ROUTING_GUIDE_PATH} #{boundary} boundary"
+      )
+    end
+
+    assert_raises(Minitest::Assertion, "a same-item route-only stop must remain forbidden") do
+      assert_route_provenance_contract(
+        self,
+        "#{guide}\n\n- route mismatch: stops the lane before editing\n",
+        "#{MODEL_ROUTING_GUIDE_PATH} Markdown list item"
       )
     end
   end
