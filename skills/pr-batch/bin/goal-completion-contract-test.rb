@@ -529,6 +529,9 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_contract, "`stop-dependency-terminal`", "canonical completion contract"
     assert_text_includes normalized_contract, "`fallback-model-poll`", "canonical completion contract"
     assert_text_includes normalized_contract, "redeliver-pending-wake", "canonical completion contract"
+    assert_text_includes normalized_contract,
+                         "returned `acknowledgement_payload` is the exact bounded payload to submit after durable enqueue",
+                         "canonical redelivery acknowledgement contract"
     assert_text_includes normalized_contract, "`suppress-replayed-probe`", "canonical completion contract"
     assert_text_includes normalized_contract, "`suppress-acknowledgement-retry`", "canonical completion contract"
     assert_text_includes normalized_contract, "arrays in `blocker_state` as set-valued collections",
@@ -583,6 +586,9 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_host_adapter, "`wake_parent: true` is authoritative", "host-adapter contract"
     assert_text_includes normalized_host_adapter, "`redeliver-pending-wake`", "host-adapter contract"
     assert_text_includes normalized_host_adapter,
+                         "returned `acknowledgement_payload` is the exact bounded payload to submit after durable enqueue",
+                         "host-adapter redelivery acknowledgement contract"
+    assert_text_includes normalized_host_adapter,
                          '"${PR_BATCH_SKILL_DIR}/bin/goal-state-change-monitor"',
                          "host-adapter contract"
     [@pr_batch_skill, @continue_skill, @pr_monitoring_skill].each do |text|
@@ -593,6 +599,9 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes @pr_batch_skill, "`fallback-model-poll`", "pr-batch fallback wake guidance"
     assert_text_includes @pr_batch_skill, "`suppress-acknowledgement-retry`",
                          "pr-batch acknowledgement retry guidance"
+    assert_text_includes @pr_batch_skill.gsub(/\s+/, " "),
+                         "returned `acknowledgement_payload` is the exact bounded payload to submit after durable enqueue",
+                         "pr-batch redelivery acknowledgement guidance"
     assert_text_includes @continue_skill, "typed terminal action",
                          "terminal continuation without a fingerprint delta"
     assert_text_includes @continue_skill.gsub(/\s+/, " "),

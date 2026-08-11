@@ -154,7 +154,9 @@ compact `state_delta` when present and then rerun all mandatory gates. The
 adapter must durably
 enqueue that continuation before acknowledging its `wake_id`; until then,
 `redeliver-pending-wake` remains a waking result so a runner restart cannot lose
-the transition. Acknowledgement is idempotent: retrying the same acknowledged
+the transition. Its returned `acknowledgement_payload` is the exact bounded
+payload to submit after durable enqueue; do not rebuild it from a newer live
+observation. Acknowledgement is idempotent: retrying the same acknowledged
 `wake_id` is a non-waking replay and cannot fail a recovered runner.
 The reducer keeps this state bounded and does not persist an
 acknowledgement-membership ledger. It validates the current pending or last

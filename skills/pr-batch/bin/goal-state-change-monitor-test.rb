@@ -1149,6 +1149,47 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_redelivery_persists_the_original_canonical_acknowledgement_payload
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      waking_observation = observation(
+        "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+        "probe_sequence" => 1,
+        "observed_at" => "2026-08-09T00:15:00Z"
+      )
+      wake, wake_stderr, wake_status = run_helper(state_path, waking_observation)
+      assert wake_status.success?, wake_stderr
+      assert_equal "wake-state-change", wake.fetch("action")
+
+      current_observation = observation(
+        "blocker_state" => { "head" => "c" * 40, "pending" => ["review"] },
+        "probe_sequence" => 2,
+        "observed_at" => "2026-08-09T00:30:00Z"
+      )
+      redelivery, redelivery_stderr, redelivery_status = run_helper(state_path, current_observation)
+      assert redelivery_status.success?, redelivery_stderr
+      assert_equal "redeliver-pending-wake", redelivery.fetch("action")
+
+      acknowledgement_payload = redelivery.fetch("acknowledgement_payload")
+      expected_payload = canonicalize_for_digest(
+        waking_observation.reject { |key, _value| key == "observed_at" }
+                          .merge("acknowledged_wake_id" => wake.fetch("wake_id"))
+      )
+      assert_equal expected_payload, acknowledgement_payload
+      assert_equal(
+        acknowledgement_payload,
+        JSON.parse(File.read(state_path)).dig("pending_wake", "acknowledgement_payload")
+      )
+
+      acknowledged, acknowledged_stderr, acknowledged_status = run_helper(state_path, acknowledgement_payload)
+      assert acknowledged_status.success?, acknowledged_stderr
+      assert_equal "suppress-acknowledgement-retry", acknowledged.fetch("action")
+      refute acknowledged.fetch("wake_parent")
+    end
+  end
+
   def test_pending_wake_acknowledgement_rejects_unrelated_newer_evidence_before_mutation
     [
       {},
@@ -1617,6 +1658,46 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_unchanged_newer_dependency_terminal_redelivers_the_pending_wake
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      terminal_state = { "result" => "failed" }
+      first, first_stderr, first_status = run_helper(
+        state_path,
+        observation(
+          "dependency_status" => "terminal",
+          "blocker_state" => terminal_state,
+          "probe_sequence" => 1,
+          "observed_at" => "2026-08-09T00:15:00Z"
+        )
+      )
+      assert first_status.success?, first_stderr
+      assert_equal "stop-dependency-terminal", first.fetch("action")
+
+      second, second_stderr, second_status = run_helper(
+        state_path,
+        observation(
+          "dependency_status" => "terminal",
+          "blocker_state" => terminal_state,
+          "probe_sequence" => 2,
+          "observed_at" => "2026-08-09T00:30:00Z"
+        )
+      )
+
+      assert second_status.success?, second_stderr
+      assert_equal "redeliver-pending-wake", second.fetch("action")
+      assert_equal "stop-dependency-terminal", second.fetch("replayed_action")
+      assert_equal first.fetch("wake_id"), second.fetch("wake_id")
+      assert second.fetch("wake_parent")
+      persisted = JSON.parse(File.read(state_path))
+      assert_equal first.fetch("wake_id"), persisted.dig("pending_wake", "wake_id")
+      assert_equal 1, persisted.fetch("probe_sequence")
+      assert_equal terminal_state, persisted.fetch("blocker_state")
+    end
+  end
+
   def test_delayed_acknowledgements_remain_idempotent_after_later_wakes
     Dir.mktmpdir do |directory|
       state_path = File.join(directory, "monitor.json")
@@ -2001,6 +2082,12 @@ class GoalStateChangeMonitorTest < Minitest::Test
       },
       "non-waking-inner-action" => lambda { |state|
         state.dig("pending_wake", "decision")["action"] = "suppress-unchanged"
+      },
+      "missing-acknowledgement-payload" => lambda { |state|
+        state.fetch("pending_wake").delete("acknowledgement_payload")
+      },
+      "mismatched-acknowledgement-payload" => lambda { |state|
+        state.dig("pending_wake", "acknowledgement_payload")["blocker_state"] = { "head" => "c" * 40 }
       }
     }
 

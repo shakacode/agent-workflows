@@ -93,6 +93,17 @@ def persisted_decision?(decision, monitor_id)
     (!decision.key?("state_delta") || decision["state_delta"].is_a?(Hash))
 end
 
+def persisted_acknowledgement_payload?(payload, state, wake_id)
+  return false unless payload.is_a?(Hash) && payload == canonicalize(payload)
+  return false if payload.key?("observed_at")
+  return false unless payload["acknowledged_wake_id"] == wake_id &&
+                      payload["monitor_id"] == state["monitor_id"] &&
+                      payload["probe_sequence"] == state["probe_sequence"]
+
+  digest_payload = payload.reject { |key, _value| key == "acknowledged_wake_id" }
+  Digest::SHA256.hexdigest(canonical_json(digest_payload)) == state["last_observation_digest"]
+end
+
 def persisted_state?(state)
   return false unless state.is_a?(Hash)
 
@@ -109,6 +120,7 @@ def persisted_state?(state)
   acknowledged_wake_ids = state.fetch("acknowledged_wake_ids", [])
   pending_wake = state["pending_wake"]
   pending_wake_decision = pending_wake["decision"] if pending_wake.is_a?(Hash)
+  acknowledgement_payload = pending_wake["acknowledgement_payload"] if pending_wake.is_a?(Hash)
 
   state["contract"] == "goal-state-change-monitor-state" &&
     state["version"] == 1 &&
@@ -139,6 +151,7 @@ def persisted_state?(state)
        persisted_decision?(pending_wake_decision, monitor_id) &&
        pending_wake_decision["wake_parent"] == true &&
        pending_wake_decision["wake_id"] == pending_wake["wake_id"] &&
+       persisted_acknowledgement_payload?(acknowledgement_payload, state, pending_wake["wake_id"]) &&
        %w[wake-state-change stop-dependency-terminal fallback-model-poll].include?(pending_wake_decision["action"])))
 end
 
@@ -326,15 +339,20 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     pending_wake = previous&.fetch("pending_wake", nil)
   end
   terminal_observation = TASK_ACTIONS.key?(task_status) || dependency_status == "terminal"
+  terminal_action = TASK_ACTIONS[task_status]
+  terminal_action ||= "stop-dependency-terminal" if dependency_status == "terminal"
   terminal_observation_supersedes_pending = pending_wake && terminal_observation && previous &&
-                                            probe_sequence > previous.fetch("probe_sequence")
+                                            probe_sequence > previous.fetch("probe_sequence") &&
+                                            (pending_wake.dig("decision", "action") != terminal_action ||
+                                             previous.fetch("fingerprint") != fingerprint)
   if pending_wake && !terminal_observation_supersedes_pending
     pending_decision = pending_wake.fetch("decision")
     decision = pending_decision.merge(
       "action" => "redeliver-pending-wake",
       "wake_parent" => true,
       "replayed" => true,
-      "replayed_action" => pending_decision.fetch("action")
+      "replayed_action" => pending_decision.fetch("action"),
+      "acknowledgement_payload" => pending_wake.fetch("acknowledgement_payload")
     )
     puts JSON.generate(decision)
     next
@@ -608,7 +626,10 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   if wake_parent
     state["pending_wake"] = {
       "wake_id" => decision.fetch("wake_id"),
-      "decision" => decision
+      "decision" => decision,
+      "acknowledgement_payload" => canonicalize(
+        digest_observation.merge("acknowledged_wake_id" => decision.fetch("wake_id"))
+      )
     }
   end
   persist_state(state_path, state)

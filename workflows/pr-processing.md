@@ -1762,7 +1762,9 @@ qualifying state-change watcher:
   `stop-dependency-terminal`, or `redeliver-pending-wake`, with compact
   `state_delta` when present, then acknowledges its `wake_id`.
   Acknowledgement retries are idempotent. Until acknowledgement,
-  `redeliver-pending-wake` preserves the wake across a runner restart;
+  `redeliver-pending-wake` preserves the wake across a runner restart. Its
+  returned `acknowledgement_payload` is the exact bounded payload to submit
+  after durable enqueue; do not rebuild it from a newer live observation;
 - keeps acknowledgement state bounded without a persistent membership ledger.
   A delayed retry replays its original canonical observation and probe sequence;
   attaching an old acknowledgement to unrelated newer evidence fails closed;

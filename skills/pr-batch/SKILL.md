@@ -1020,7 +1020,9 @@ the `goal-state-change-monitor` helper in this skill's `bin` directory, and do n
 `fallback-model-poll`, `stop-dependency-terminal`, or `redeliver-pending-wake` with its compact delta
 when present, durably enqueue that resume, and then acknowledge its `wake_id`;
 acknowledgement retries are idempotent. Redeliver an unacknowledged pending
-wake after restart, then rerun every
+wake after restart; its returned `acknowledgement_payload` is the exact bounded
+payload to submit after durable enqueue, not a payload rebuilt from a newer live
+observation. Then rerun every
 security, origin, coordination, overlap, review, readiness, and exact-head gate.
 Keep acknowledgement state bounded: a delayed retry replays its original
 canonical observation and probe sequence so the reducer can derive and verify
@@ -1040,7 +1042,7 @@ authoritative state is unchanged.
 When that external blocker publishes an exact future retry time and the host can
 re-enter this same thread on schedule, schedule one same-thread heartbeat for
 that time before handing off, because the 15-minute watch expires first and
-leave resumable work stranded. Update the existing heartbeat instead of
+leaves resumable work stranded. Update the existing heartbeat instead of
 duplicating it, stop it once the target is terminal, and report in the handoff
 whether one was created, its exact scheduled time, and its durable identifier,
 or else the exact scheduling blocker. An `UNKNOWN` or absent retry time, a
