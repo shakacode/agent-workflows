@@ -359,8 +359,13 @@ Plan a PR batch
      user-permission boundary. Before editing, record each added path and reason
      in the lane envelope when one is present; otherwise use a durable
      coordinator-owned lane record or Lane Card that the coordinator can read.
-     When a lane is the sole active editor, it may refresh active-lane claim and
-     collision checks and continue without user approval when they are clear.
+     Every added path not yet reflected in its verified file-touch map must have
+     an active typed `expansion-path-reservation` before edit. When a lane is the
+     sole active editor, the coordinator durably records the reservation,
+     refreshes authoritative file-touch maps, lane lifecycle state, and
+     active-lane claim and collision checks, and reruns `batch-plan-preflight`;
+     the worker continues without user approval or a blocked lifecycle only
+     after the preflight accepts.
      Before a worker in a multi-editor wave changes an added path, it persists a
      typed expansion request, marks its durable lane lifecycle blocked, refreshes
      its heartbeat, emits a Lane Card with the path, reason, and request evidence
@@ -745,7 +750,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:paths=coord!=permission;path+log;multi=>coord;contradiction/ambiguity/scope-risk/weak verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=permission;path+resv;multi=>coord;contradiction/ambiguity/scope-risk/weak verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description

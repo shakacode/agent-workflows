@@ -817,8 +817,12 @@ validation. Treat owned paths and the execution envelope as coordination and
 collision controls, not as a user-permission boundary. Before editing, record
 each added path and reason in the lane envelope when one is present; otherwise
 use a durable coordinator-owned lane record or Lane Card that the coordinator
-can read. When a lane is the sole active editor, it may refresh active-lane claim
-and collision checks and continue without user approval when they are clear.
+can read. Every added path not yet reflected in its verified file-touch map must
+have an active typed `expansion-path-reservation` before edit. When a lane is the
+sole active editor, the coordinator durably records the reservation, refreshes
+authoritative file-touch maps, lane lifecycle state, and active-lane claim and
+collision checks, and reruns `batch-plan-preflight`; the worker continues without
+user approval or a blocked lifecycle only after the preflight accepts.
 Before a worker in a multi-editor wave changes an added path, it persists a typed
 expansion request, marks its durable lane lifecycle blocked, refreshes its
 heartbeat, emits a Lane Card with the path, reason, and request evidence
@@ -1619,7 +1623,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:paths=coord!=permission;path+log;multi=>coord;contradiction/ambiguity/scope-risk/weak verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=permission;path+resv;multi=>coord;contradiction/ambiguity/scope-risk/weak verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
@@ -2172,16 +2176,21 @@ When worker subagents are explicitly authorized:
   conditions regardless of route. Expand owned paths without user approval when
   repository evidence makes an in-repository path reasonably necessary for the
   authorized goal or required validation. A sole active editor records the path
-  and reason in the envelope or durable coordinator-owned lane record, refreshes
-  active claims and collision checks, then continues when clear. In a multi-editor
-  wave, the worker persists a typed expansion request, marks its durable lifecycle
-  blocked, refreshes its heartbeat, emits a Lane Card with path, reason, and request
+  and reason in the envelope or durable coordinator-owned lane record, then the
+  coordinator records the active reservation, refreshes authoritative file-touch
+  maps, lane lifecycle state, and active claims and collision checks, and reruns
+  `batch-plan-preflight`; the worker continues without user approval or a blocked
+  lifecycle only after the preflight accepts. In a multi-editor wave, the worker
+  persists a typed expansion request, marks its durable lifecycle blocked,
+  refreshes its heartbeat, emits a Lane Card with path, reason, and request
   evidence reference, and pauses before changing the path. The coordinator
   processes requests serially, records the active reservation, refreshes
   authoritative file-touch maps and lane lifecycle state, reruns
   `batch-plan-preflight`, and resumes only after an accepted disjoint or
-  maximum-concurrency-one result. A collision or `UNKNOWN` collision state remains
-  stopped. With or without an envelope, contradictory evidence remains an
+  maximum-concurrency-one result. The reservation remains active until the
+  verified file-touch map reflects the path or the request is cancelled. A
+  collision or `UNKNOWN` collision state remains stopped. With or without an
+  envelope, contradictory evidence remains an
   immediate stop. Stop and return control when any of the following applies: the
   approved goal, accepted behavior, or acceptance criteria changes; the work adds
   unrelated work; it crosses a repository or trust boundary; it requires a

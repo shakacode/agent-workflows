@@ -234,9 +234,13 @@ omit the queue summary and note that queue state is unavailable.
    execution envelope as coordination and collision controls, not as a
    user-permission boundary. Before editing, record each added path and reason in
    the lane envelope when one is present; otherwise use a durable coordinator-owned
-   lane record or Lane Card that the coordinator can read. When a lane is the sole
-   active editor, it may refresh active-lane claim and collision checks and continue
-   without user approval when they are clear. Before a worker in a multi-editor wave
+   lane record or Lane Card that the coordinator can read. Every added path not yet
+   reflected in its verified file-touch map must have an active typed
+   `expansion-path-reservation` before edit. When a lane is the sole active editor,
+   the coordinator durably records the reservation, refreshes authoritative
+   file-touch maps, lane lifecycle state, and active-lane claim and collision checks,
+   and reruns `batch-plan-preflight`; the worker continues without user approval or
+   a blocked lifecycle only after the preflight accepts. Before a worker in a multi-editor wave
    changes an added path, it persists a typed expansion request, marks its durable
    lane lifecycle blocked, refreshes its heartbeat, emits a Lane Card with the path,
    reason, and request evidence reference, and pauses at a safe checkpoint. The

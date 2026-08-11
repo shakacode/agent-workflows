@@ -523,6 +523,25 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_includes collision.fetch("message"), "lib/expanded.rb"
   end
 
+  def test_sole_editor_reservation_protects_path_when_another_lane_later_joins
+    reservation = expansion_path_reservation(lane_id: "lane-a")
+    result, stderr, status = evaluate(input_for(reservations: [reservation]))
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+
+    lanes = [lane("lane-a"), lane("lane-b")]
+    maps = {
+      "lane-a" => touch_map(1, ["lib/lane-a.rb"]),
+      "lane-b" => touch_map(2, ["lib/expanded.rb"])
+    }
+    result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps, reservations: [reservation]))
+
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
+    assert_includes collision.fetch("message"), "lib/expanded.rb"
+  end
+
   def test_expansion_path_reservations_fail_closed_on_invalid_identity_shape_or_evidence
     valid = expansion_path_reservation
     cases = {
