@@ -137,6 +137,50 @@ class CoordinationDeclarationContractTest < Minitest::Test
                  "a Lane Card bullet is a valid place to declare coordination"
   end
 
+  def test_unordered_bullet_declaration_accepts_visible_marker_padding
+    %w[- + *].product((1..4).to_a).each do |marker, spacing|
+      handoff = "#{marker}#{' ' * spacing}coordination: registered aw-#{marker.ord}-#{spacing}\n"
+
+      assert_empty coordination_declaration_blockers(handoff),
+                   "#{marker.inspect} with #{spacing} marker-padding spaces must remain visible"
+    end
+
+    %w[- + *].each do |marker|
+      handoff = "#{marker}\tcoordination: registered aw-#{marker.ord}-tab\n"
+
+      assert_empty coordination_declaration_blockers(handoff),
+                   "one immediate tab expands to visible marker padding under CommonMark"
+    end
+  end
+
+  def test_top_level_unordered_bullet_rejects_code_padding_and_tabs_after_marker
+    handoffs = %w[- + *].flat_map do |marker|
+      [
+        "#{marker}     coordination: registered aw-#{marker.ord}-five-space-code\n",
+        "#{marker}\t\tcoordination: registered aw-#{marker.ord}-two-tab-code\n",
+        "#{marker}    \tcoordination: registered aw-#{marker.ord}-space-tab-code\n"
+      ]
+    end
+
+    assert_equal Array.new(handoffs.length, [MISSING_DECLARATION_BLOCKER]),
+                 handoffs.map { |handoff| coordination_declaration_blockers(handoff) },
+                 "marker padding that reaches the code threshold must not satisfy the declaration gate"
+  end
+
+  def test_nested_unordered_bullet_rejects_code_padding_and_tabs_after_marker
+    handoffs = %w[- + *].flat_map do |marker|
+      [
+        "- Outer:\n  #{marker}     coordination: registered aw-nested-#{marker.ord}-five-space-code\n",
+        "- Outer:\n  #{marker}\t\tcoordination: registered aw-nested-#{marker.ord}-two-tab-code\n",
+        "- Outer:\n  #{marker}    \tcoordination: registered aw-nested-#{marker.ord}-space-tab-code\n"
+      ]
+    end
+
+    assert_equal Array.new(handoffs.length, [MISSING_DECLARATION_BLOCKER]),
+                 handoffs.map { |handoff| coordination_declaration_blockers(handoff) },
+                 "nested marker padding that reaches the code threshold must not satisfy the declaration gate"
+  end
+
   def test_declaration_is_accepted_in_a_nested_lane_card_list
     [
       "- Lane Card:\n    - coordination: registered aw-nested-unordered-lane\n",
@@ -219,6 +263,30 @@ class CoordinationDeclarationContractTest < Minitest::Test
       assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
                    "a declaration shown as Markdown code must not satisfy the runtime gate: #{handoff.inspect}"
     end
+  end
+
+  def test_tilde_fence_info_may_contain_tildes
+    [
+      "~~~ruby~bad\ncoordination: registered example-top-level-tilde-info\n~~~\n",
+      "- ~~~ruby~bad\n  coordination: registered example-list-tilde-info\n  ~~~\n"
+    ].each do |handoff|
+      assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                   "tildes in tilde-fence info do not invalidate the fenced code block"
+    end
+  end
+
+  def test_backtick_in_top_level_backtick_fence_info_does_not_hide_declaration
+    handoff = "```ruby`bad\ncoordination: registered aw-real-after-invalid-opener\n```\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "a backtick in backtick-fence info invalidates the opener under CommonMark"
+  end
+
+  def test_backtick_in_list_backtick_fence_info_does_not_hide_declaration
+    handoff = "- ```ruby`bad\n  coordination: registered aw-real-after-invalid-list-opener\n  ```\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "an invalid backtick-fence opener in a list must not hide visible continuation content"
   end
 
   # --- The actual bug: silence must fail loudly ------------------------------

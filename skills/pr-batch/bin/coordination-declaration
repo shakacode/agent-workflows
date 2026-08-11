@@ -30,10 +30,10 @@ module CoordinationDeclaration
 
   # Accepts an optional list marker so a declaration reads naturally inside a
   # bulleted Lane Card or handoff section.
-  DECLARATION_LINE = /^ {0,3}(?:[-*+][[:space:]]+)?coordination:[[:space:]]*(.*?)[[:space:]]*$/
+  DECLARATION_LINE = /^ {0,3}(?:[-*+](?: {1,4}|\t))?coordination:[[:space:]]*(.*?)[[:space:]]*$/
   NEAR_MISS_LINE = /^ {0,3}(?:[-*+][[:space:]]+)?(?:`coordination:.*`|\*\*coordination:\*\*.*|Coordination:.*|coordination[[:blank:]]+[-–][[:blank:]]+.*)[[:blank:]]*$/
-  FENCE_MARKER = /\A(`{3,}|~{3,})/
-  INDENTED_FENCE_MARKER = /\A( *)(`{3,}|~{3,})/
+  FENCE_OPENING = /\A(?:(`{3,})[^`\r\n]*|(~{3,})[^\r\n]*)\r?\n?\z/
+  INDENTED_FENCE_OPENING = /\A( *)(?:(`{3,})[^`\r\n]*|(~{3,})[^\r\n]*)\r?\n?\z/
   LIST_ITEM = /\A( *)([-+*]|\d{1,9}[.)])( {1,4})(.*)/
 
   module_function
@@ -89,16 +89,16 @@ module CoordinationDeclaration
 
       marker = nil
       fence_indent = nil
-      if valid_list_item && (opening = list_item[4].match(FENCE_MARKER))
-        marker = opening[1]
+      if valid_list_item && (opening = list_item[4].match(FENCE_OPENING))
+        marker = opening[1] || opening[2]
         fence_indent = list_content_indents.last
-      elsif (opening = line.match(INDENTED_FENCE_MARKER))
+      elsif (opening = line.match(INDENTED_FENCE_OPENING))
         opening_indent = opening[1].length
         list_indent = list_content_indents.reverse.find do |content_indent|
           opening_indent.between?(content_indent, content_indent + 3)
         end
         if opening_indent <= 3 || list_indent
-          marker = opening[2]
+          marker = opening[2] || opening[3]
           fence_indent = list_indent || 0
         end
       end
