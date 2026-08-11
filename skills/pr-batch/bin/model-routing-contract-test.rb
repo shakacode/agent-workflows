@@ -199,7 +199,7 @@ ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE =
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
 # This bounded, guide-derived stop/prohibition vocabulary needs matching mutation coverage whenever routing-guide phrasing changes.
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+blocked|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -273,6 +273,7 @@ def strip_allowed_route_only_outcome_clauses(text)
 end
 
 def strip_negated_route_outcome_with_independent_blocker_clause(sentence)
+  # This first-match stripper handles one owned subject/negation/blocker triple; checks before stripping and mutation cases cover extra outcomes in either clause order.
   subject = sentence.match(ROUTE_ONLY_SUBJECT_PATTERN)
   negated_outcome = sentence.match(NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN)
   independent_blocker = sentence.match(DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN)
@@ -378,7 +379,7 @@ def markdown_structural_segments(block)
 end
 
 def route_only_contradiction_segments(text)
-  text.split(/\n\s*\n/).flat_map { |block| markdown_structural_segments(block) }
+  strip_html_comments(text).split(/\n\s*\n/).flat_map { |block| markdown_structural_segments(block) }
 end
 
 def unguarded_route_only_sentence(sentence)
@@ -966,6 +967,9 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch blocks replay" => "A route mismatch blocks replay.",
       "route mismatch blocks review" => "A route mismatch blocks review.",
       "route mismatch blocks audit" => "A route mismatch blocks audit.",
+      "outcome-first passive blocked launch" => "When a route mismatch occurs, launch is blocked.",
+      "subject-first passive blocked review" => "A route mismatch means review is blocked.",
+      "outcome-first passive blocked plural" => "Launch and replay are blocked when a route mismatch occurs.",
       "route mismatch prevents launch" => "A route mismatch prevents launch.",
       "route mismatch prevents replay" => "A route mismatch prevents replay.",
       "route mismatch prevents review" => "A route mismatch prevents review.",
@@ -1092,6 +1096,8 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not prevent launch.",
       "An inherited route never prevents review.",
+      "When a route mismatch occurs, launch is not blocked.",
+      "A route mismatch means review and audit are not blocked.",
       "A route mismatch does not prevent planning.",
       "An inherited route never prevents fallback.",
       "A route mismatch does not prohibit launch.",
@@ -1162,6 +1168,8 @@ class ModelRoutingContractTest < Minitest::Test
       "ATX heading boundary" => "### Route mismatch\nDestructive scope expansion blocks execution.",
       "Setext dashed heading boundary" => "Route mismatch\n--------------\nDestructive scope expansion blocks execution.",
       "Setext equals heading boundary" => "Route mismatch\n==============\nDestructive scope expansion blocks execution.",
+      "HTML comment" => "<!-- A route mismatch blocks launch. -->",
+      "multiline HTML comment" => "<!-- A route mismatch\nblocks launch. -->",
       "Markdown list items" => "- route mismatch: record honestly\n- independent risk gate: blocks execution",
       "Markdown list-item pronoun boundary" => "- A route mismatch occurs.\n- It stops the lane before any edit begins.",
       "Markdown table-row pronoun boundary" => "| Route condition | A route mismatch occurs. |\n| --- | --- |\n| Gate result | It stops the lane before any edit begins. |",
@@ -1202,7 +1210,9 @@ class ModelRoutingContractTest < Minitest::Test
       "wrapped prose after a table without outer pipes" => "Gate | advisory\n--- | ---\nstatus | recorded\nA route mismatch\nblocks execution before editing.",
       "inline-pipe prose" => "A route mismatch uses requested | observed fields and\nblocks execution before editing.",
       "ATX heading followed by route-only contradiction" => "### Advisory routing\nA route mismatch blocks execution before editing.",
-      "Setext heading followed by route-only contradiction" => "Advisory routing\n----------------\nA route mismatch blocks execution before editing."
+      "Setext heading followed by route-only contradiction" => "Advisory routing\n----------------\nA route mismatch blocks execution before editing.",
+      "visible contradiction beside HTML comment" => "<!-- route metadata remains advisory -->\nA route mismatch blocks launch.\n<!-- end advisory note -->",
+      "visible prose around HTML comment" => "A route mismatch <!-- advisory metadata --> blocks launch."
     }.each do |position, contradiction|
       assert_raises(Minitest::Assertion, "a #{position} must remain forbidden") do
         assert_route_provenance_contract(
