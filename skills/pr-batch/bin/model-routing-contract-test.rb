@@ -181,6 +181,8 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
     unavailable\ (?:observed\ )?route |
     route\ unavailability |
     inherited\ route |
+    silent[-\s]substitution |
+    substituted\ route |
     `UNKNOWN`\ (?:observation|observed\ tuple)
   )
 /imx
@@ -189,7 +191,7 @@ ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}/im
 NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
-  /\b(?:never|not)\b(?:\s+\w+){0,3}\s+\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
+  /(?:\bnever\s+|\bnot\s+a\s+condition\s+that\s+)\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -692,11 +694,16 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch" => "A route mismatch stops the lane before any edit begins.",
       "unavailable observed route" => "An unavailable observed route stops the lane before any edit begins.",
       "inherited route" => "An inherited route stops the lane before any edit begins.",
+      "silent substitution" => "A silent substitution stops the lane before editing.",
+      "substituted route" => "A substituted route stops the lane before editing.",
       "UNKNOWN observed tuple" => "An `UNKNOWN` observed tuple stops the lane before any edit begins.",
       "route mismatch blocks execution" => "A route mismatch blocks execution before any edit begins.",
       "UNKNOWN observed tuple disqualifies the lane" => "An `UNKNOWN` observed tuple disqualifies the lane before any edit begins.",
       "unrelated not before route mismatch stop" => "A route mismatch does not always occur, and it stops the lane before any edit begins.",
-      "not authorized before route mismatch stop" => "A route mismatch, when not authorized, stops the lane before any edit begins."
+      "not authorized before route mismatch stop" => "A route mismatch, when not authorized, stops the lane before any edit begins.",
+      "not authorized but blocks execution" => "A route mismatch is not authorized but blocks execution before any edit begins.",
+      "may not be authorized yet blocks execution" => "A route mismatch may not be authorized yet blocks execution before any edit begins.",
+      "unrelated approval negation before route mismatch stop" => "A route mismatch does not require approval and stops the lane before any edit begins."
     }.each do |case_name, contradiction|
       mutant = "#{text}\n#{contradiction}\n"
 
