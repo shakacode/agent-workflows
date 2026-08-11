@@ -1023,6 +1023,131 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_canonicalizes_uppercase_marker_shas_before_trusted_verifier_replay
+    with_repo do |root|
+      expected_head_log = File.join(root, "verifier-expected-head")
+      verifier = <<~RUBY
+        #!/usr/bin/env ruby
+        require "json"
+        arguments = {}
+        criterion_ids = []
+        ARGV.each_slice(2) do |name, value|
+          name == "--criterion" ? criterion_ids << value : arguments[name] = value
+        end
+        canonical_head = arguments.fetch("--expected-head-sha").downcase
+        File.write(#{expected_head_log.dump}, canonical_head)
+        puts JSON.generate(
+          "version" => 1,
+          "verified" => true,
+          "deployment_id" => arguments.fetch("--deployment-id"),
+          "deployment_url" => arguments.fetch("--deployment-url"),
+          "deployed_head_sha" => canonical_head,
+          "target" => arguments.fetch("--target"),
+          "criteria" => criterion_ids.map do |id|
+            {
+              "id" => id,
+              "status" => "passed",
+              "evidence" => "https://evidence.example.test/\#{id}-\#{canonical_head}"
+            }
+          end
+        )
+      RUBY
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", verifier, executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with hosted policy")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+      uppercase_head = head_sha.upcase
+      evidence = hosted_evidence(head_sha:)
+                 .sub("head_sha: #{head_sha}", "head_sha: #{uppercase_head}")
+                 .sub("deployed_head_sha: #{head_sha}", "deployed_head_sha: #{uppercase_head}")
+
+      result, status = run_readiness(root, base_sha:, head_sha:, evidence:)
+
+      assert status.success?, result
+      assert_equal "READY", result.fetch("verdict")
+      assert_equal head_sha, File.read(expected_head_log)
+      assert_equal head_sha, result.dig("hosted_qa_evidence", "fields", "head_sha")
+      assert_equal head_sha, result.dig("hosted_qa_evidence", "fields", "deployed_head_sha")
+      assert_equal head_sha, result.dig("deployment_verification", "deployed_head_sha")
+    end
+  end
+
+  def test_canonicalizes_an_uppercase_trusted_verifier_receipt_sha
+    with_repo do |root|
+      verifier = <<~'RUBY'
+        #!/usr/bin/env ruby
+        require "json"
+        arguments = {}
+        criterion_ids = []
+        ARGV.each_slice(2) do |name, value|
+          name == "--criterion" ? criterion_ids << value : arguments[name] = value
+        end
+        expected_head = arguments.fetch("--expected-head-sha")
+        puts JSON.generate(
+          "version" => 1,
+          "verified" => true,
+          "deployment_id" => arguments.fetch("--deployment-id"),
+          "deployment_url" => arguments.fetch("--deployment-url"),
+          "deployed_head_sha" => expected_head.upcase,
+          "target" => arguments.fetch("--target"),
+          "criteria" => criterion_ids.map do |id|
+            {
+              "id" => id,
+              "status" => "passed",
+              "evidence" => "https://evidence.example.test/#{id}-#{expected_head}"
+            }
+          end
+        )
+      RUBY
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", verifier, executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with hosted policy")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      assert status.success?, result
+      assert_equal "READY", result.fetch("verdict")
+      assert_equal head_sha, result.dig("deployment_verification", "deployed_head_sha")
+    end
+  end
+
+  def test_rejects_a_malformed_trusted_verifier_receipt_sha
+    with_repo do |root|
+      verifier = authenticating_verifier.sub(
+        '"deployed_head_sha" => arguments.fetch("--expected-head-sha")',
+        '"deployed_head_sha" => "ABC123"'
+      )
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", verifier, executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with hosted policy")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "trusted-base deployment verifier did not authenticate the exact deployment, head, and target"
+    end
+  end
+
   def test_verifier_criterion_rows_must_exactly_equal_the_marker_rows
     with_repo do |root|
       verifier = <<~'RUBY'

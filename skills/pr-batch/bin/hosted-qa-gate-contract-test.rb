@@ -41,6 +41,7 @@ class HostedQaGateContractTest < Minitest::Test
     assert_includes workflow, "cannot satisfy a hosted QA waiver"
     assert_includes workflow, "The closed v1 interpreter families are Ruby and POSIX `sh`"
     assert_includes workflow, "Arbitrary executable identities such as `/usr/bin/false` block"
+    assert_includes workflow, "After full-SHA validation, replay canonicalizes both SHA fields to lowercase"
   end
 
   def test_canonical_workflow_requires_pre_execution_runtime_trust_and_criteria_authentication

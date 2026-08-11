@@ -357,6 +357,13 @@ module HostedQaReadiness
       return [nil, "trusted-base deployment verifier returned an invalid closed receipt"]
     end
 
+    verified_head_sha = payload.fetch("deployed_head_sha")
+    unless verified_head_sha.is_a?(String) && verified_head_sha.match?(SHA_PATTERN)
+      return [nil, "trusted-base deployment verifier did not authenticate the exact deployment, head, and target"]
+    end
+
+    payload["deployed_head_sha"] = verified_head_sha.downcase
+
     verified_criteria = payload.fetch("criteria")
     unless valid_verified_criteria?(verified_criteria, criterion_ids) && verified_criteria == criteria
       return [nil, "trusted-base deployment verifier did not authenticate the exact configured acceptance criteria"]

@@ -233,6 +233,8 @@ module CloseoutEvidenceReplay
       end
     end
     missing.uniq!
+    fields["head_sha"] = head_sha if full_head_sha?(head_sha)
+    fields["deployed_head_sha"] = deployed_head_sha if full_head_sha?(deployed_head_sha)
 
     verdict = if errors.any? || missing.any?
                 "UNKNOWN"

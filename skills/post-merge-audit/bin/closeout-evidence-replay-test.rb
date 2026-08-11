@@ -141,6 +141,32 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", data.fetch("overall_verdict")
   end
 
+  def test_hosted_v1_canonicalizes_valid_uppercase_sha_fields_to_lowercase
+    head_sha = "abcdef0123456789abcdef0123456789abcdef01"
+    uppercase_head = head_sha.upcase
+    body = hosted_v1_marker.gsub("1" * 40, uppercase_head)
+
+    hosted = run_replay(body, expected_head_sha: uppercase_head).fetch("hosted_qa_evidence")
+
+    assert_equal "SATISFIED", hosted.fetch("verdict")
+    assert_equal head_sha, hosted.fetch("expected_head_sha")
+    assert_equal head_sha, hosted.dig("fields", "head_sha")
+    assert_equal head_sha, hosted.dig("fields", "deployed_head_sha")
+  end
+
+  def test_hosted_v1_does_not_canonicalize_or_accept_malformed_sha_fields
+    malformed_sha = "ABCDEF0123456789ABCDEF0123456789ABCDEF0"
+    body = hosted_v1_marker.gsub("1" * 40, malformed_sha)
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert_equal malformed_sha, hosted.dig("fields", "head_sha")
+    assert_equal malformed_sha, hosted.dig("fields", "deployed_head_sha")
+    assert_includes hosted.fetch("missing"), "head_sha"
+    assert_includes hosted.fetch("missing"), "deployed_head_sha"
+  end
+
   def test_hosted_v1_rejects_multiple_conflicting_same_head_markers
     conflicting_marker = hosted_v1_marker
                          .sub("production-20260808-abc123", "production-20260808-other")

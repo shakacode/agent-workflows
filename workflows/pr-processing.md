@@ -1249,6 +1249,11 @@ criterion: id=<configured-id> | status=passed | evidence=<nonempty evidence>
 -->
 ```
 
+SHA fields accept either hexadecimal case but must contain exactly 40 digits.
+After full-SHA validation, replay canonicalizes both SHA fields to lowercase
+for the verifier argument vector, exact receipt comparisons, and
+machine-readable output.
+
 Each `criterion:` row's `evidence` value is one scalar field. It must not
 contain an unescaped `|`, a newline, `<!--`, or `-->`; v1 defines no pipe
 escaping or multiline/comment-delimiter form, so those values fail closed.
