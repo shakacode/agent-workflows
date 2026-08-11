@@ -183,6 +183,7 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
     inherited\ route |
     silent[-\s]substitution |
     substituted\ route |
+    different\ (?:observed\ )?(?:route|tuple) |
     `UNKNOWN`\ (?:observation|observed\ tuple)
   )
 /imx
@@ -704,6 +705,9 @@ class ModelRoutingContractTest < Minitest::Test
       "inherited route" => "An inherited route stops the lane before any edit begins.",
       "silent substitution" => "A silent substitution stops the lane before editing.",
       "substituted route" => "A substituted route stops the lane before editing.",
+      "different observed route" => "A different observed route stops the lane before editing.",
+      "different route" => "A different route blocks execution before editing.",
+      "different tuple" => "A different tuple disqualifies the lane before editing.",
       "UNKNOWN observed tuple" => "An `UNKNOWN` observed tuple stops the lane before any edit begins.",
       "route mismatch blocks execution" => "A route mismatch blocks execution before any edit begins.",
       "UNKNOWN observed tuple disqualifies the lane" => "An `UNKNOWN` observed tuple disqualifies the lane before any edit begins.",
