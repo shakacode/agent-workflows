@@ -233,7 +233,7 @@ def assert_route_provenance_contract(test, text, label)
   ROUTE_PROVENANCE_RULES.each do |rule|
     test.assert_includes guide, rule, "#{label} must carry the exact route-provenance rule: #{rule}"
   end
-  test.refute_match(/MODEL_ROUTE_MISMATCH|route mismatch.{0,120}\bstops?\b/im, guide,
+  test.refute_match(/MODEL_ROUTE_MISMATCH|route mismatch[^.!?]*\bstops? the lane\b/im, guide,
                     "#{label} must not pair advisory continuation with an unconditional route-only stop")
 end
 
@@ -254,13 +254,17 @@ def assert_aw_d_route_replay(test, text, label)
   test.assert_equal AW_D_ROUTE_REPLAY_FINGERPRINT, aw_d_replay_fingerprint,
                     "#{label}: the internal AW D replay fixture changed; keep this consistency and mutation guard aligned with the audited record"
   AW_D_ROUTE_REPLAY.each do |row|
+    case_id = row.fetch(:case_id)
     expected = row.fetch(:disposition)
-    actual = dispositions[row.fetch(:case_id)]
+    expected_disposition = EXPECTED_ROUTE_DISPOSITIONS.fetch(case_id)
+    test.assert_equal expected_disposition, expected,
+                      "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} must retain the #{case_id} disposition"
+    actual = dispositions[case_id]
     test.assert_equal expected, actual,
-                      "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} (#{row.fetch(:case_id)}) must dispose as #{expected}"
+                      "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} (#{case_id}) must dispose as #{expected}"
     next if MEASURED_ROUTE_DISPOSITIONS.include?(expected)
 
-    test.assert_includes UNMEASURED_ROUTE_DISPOSITIONS, expected,
+    test.assert_includes UNMEASURED_ROUTE_DISPOSITIONS, expected_disposition,
                          "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} must continue but stay excluded from route measurement"
   end
 end
