@@ -1174,16 +1174,19 @@ applicability from the exact base/head changed paths with rename detection
 disabled so both sides of a move remain visible.
 
 The helper extracts both policy and verifier bytes from trusted base. It never
-executes the head/worktree copy. The trusted verifier must use either the exact
-`#!/usr/bin/env PROGRAM` shebang form, where `PROGRAM` is one fixed portable
-program name, or one absolute interpreter path with no arguments. The helper
-resolves the fixed program from its repository-excluded trusted interpreter
-path. An absolute interpreter's requested path and resolved executable regular
-file must both be outside the candidate repository. Missing, relative,
-ambiguous, and options-bearing shebangs block. The helper invokes the resolved
-interpreter and materialized trusted-base verifier bytes as an explicit argument
-vector; neither the kernel nor `/usr/bin/env` resolves an interpreter from
-candidate state, and no shell interpolation is used:
+executes the head/worktree copy.
+The closed v1 interpreter families are Ruby and POSIX `sh`. A verifier uses
+exactly `#!/usr/bin/env ruby`,
+`#!/usr/bin/env sh`, or an argument-free absolute path whose resolved identity
+matches the running trusted Ruby or the approved system `/bin/sh` or
+`/usr/bin/sh` family. The requested path and resolved executable regular file
+must both be outside the candidate repository.
+Arbitrary executable identities such as `/usr/bin/false` block, as do missing,
+relative, ambiguous, and
+options-bearing shebangs. The helper invokes the resolved interpreter and
+materialized trusted-base verifier bytes as an explicit argument vector;
+neither the kernel nor `/usr/bin/env` resolves an interpreter from candidate
+state, and no shell interpolation is used:
 
 ```text
 <resolved interpreter> <trusted verifier> --deployment-id <id> --deployment-url <url> --expected-head-sha <head> --target <target> --criterion <configured-id> [--criterion <configured-id> ...]

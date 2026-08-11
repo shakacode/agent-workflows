@@ -419,6 +419,52 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_first_adoption_rejects_an_arbitrary_absolute_candidate_interpreter
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      base_sha = commit!(root, "base")
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(
+        root,
+        ".agents/bin/verify-hosted-deployment",
+        "#!/usr/bin/false\n",
+        executable: true
+      )
+      head_sha = commit!(root, "bootstrap with arbitrary absolute verifier interpreter")
+
+      result, status = run_readiness(root, base_sha:, head_sha:)
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_equal [
+        "candidate hosted QA deployment verifier interpreter is unsupported: /usr/bin/false"
+      ], result.fetch("blockers")
+    end
+  end
+
+  def test_first_adoption_rejects_an_arbitrary_env_candidate_interpreter
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      base_sha = commit!(root, "base")
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(
+        root,
+        ".agents/bin/verify-hosted-deployment",
+        "#!/usr/bin/env false\n",
+        executable: true
+      )
+      head_sha = commit!(root, "bootstrap with arbitrary env verifier interpreter")
+
+      result, status = run_readiness(root, base_sha:, head_sha:)
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_equal [
+        "candidate hosted QA deployment verifier /usr/bin/env program is unsupported: false"
+      ], result.fetch("blockers")
+    end
+  end
+
   def test_first_adoption_does_not_treat_managed_bootstrap_paths_as_broad_runtime_changes
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
@@ -685,6 +731,34 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_changed_candidate_policy_rejects_an_arbitrary_absolute_declared_interpreter
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", authenticating_verifier, executable: true)
+      base_sha = commit!(root, "base with hosted policy")
+      candidate_verifier = ".agents/bin/verify-hosted-deployment-next"
+      write(
+        root,
+        ".agents/agent-workflow.yml",
+        hosted_policy.sub(".agents/bin/verify-hosted-deployment", candidate_verifier)
+      )
+      write(root, candidate_verifier, "#!/usr/bin/false\n", executable: true)
+      head_sha = commit!(root, "candidate policy with arbitrary absolute interpreter")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "candidate hosted QA deployment verifier interpreter is unsupported: /usr/bin/false"
+    end
+  end
+
   def test_trusted_deployment_verifier_changes_are_always_applicable
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", hosted_policy(change_paths: ["app/**"]))
@@ -729,6 +803,28 @@ class HostedQaReadinessTest < Minitest::Test
       assert_includes result.fetch("blockers"),
                       "candidate hosted QA deployment verifier has an unsupported shebang"
       refute_path_exists execution_log
+    end
+  end
+
+  def test_changed_verifier_rejects_an_arbitrary_absolute_candidate_interpreter
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", authenticating_verifier, executable: true)
+      base_sha = commit!(root, "base with hosted policy")
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/false\n", executable: true)
+      head_sha = commit!(root, "arbitrary absolute candidate interpreter")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "candidate hosted QA deployment verifier interpreter is unsupported: /usr/bin/false"
     end
   end
 
@@ -1106,6 +1202,48 @@ class HostedQaReadinessTest < Minitest::Test
 
       assert status.success?, result
       assert_equal "READY", result.fetch("verdict")
+    end
+  end
+
+  def test_rejects_an_arbitrary_absolute_trusted_base_interpreter_before_execution
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", hosted_policy)
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/false\n", executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with arbitrary absolute verifier interpreter")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_evidence(head_sha:)
+      )
+
+      refute status.success?
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "trusted-base deployment verifier interpreter is unsupported: /usr/bin/false"
+      refute(result.fetch("blockers").any? { |blocker| blocker.include?("verifier failed") })
+    end
+  end
+
+  def test_accepts_only_the_supported_env_and_absolute_interpreter_families
+    with_repo do |root|
+      expected = {
+        "#!/usr/bin/env ruby\n" => File.realpath(RbConfig.ruby),
+        "#!/usr/bin/env sh\n" => File.realpath("/bin/sh"),
+        "#!#{File.realpath(RbConfig.ruby)}\n" => File.realpath(RbConfig.ruby),
+        "#!/bin/sh\n" => File.realpath("/bin/sh")
+      }
+
+      expected.each do |blob, expected_interpreter|
+        interpreter, error = HostedQaReadiness.trusted_verifier_interpreter(root, blob)
+
+        assert_nil error, blob
+        assert_equal expected_interpreter, interpreter, blob
+      end
     end
   end
 

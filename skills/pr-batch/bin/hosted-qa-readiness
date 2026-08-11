@@ -22,6 +22,10 @@ module HostedQaReadiness
   ENV_PROGRAM = /\A[A-Za-z0-9][A-Za-z0-9_.+-]*\z/
   SYSTEM_TOOL_DIRS = %w[/opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin].freeze
   TRUSTED_INTERPRETER_DIRS = [File.dirname(File.realpath(RbConfig.ruby)), *SYSTEM_TOOL_DIRS].uniq.freeze
+  SUPPORTED_INTERPRETER_CANDIDATES = {
+    "ruby" => [RbConfig.ruby],
+    "sh" => %w[/bin/sh /usr/bin/sh]
+  }.freeze
   SYSTEM_TEMP_ROOTS = %w[/tmp /var/tmp].freeze
   SYSTEM_GIT = %w[/opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git /bin/git].find do |path|
     File.file?(path) && File.executable?(path)
@@ -408,7 +412,11 @@ module HostedQaReadiness
       end
 
       interpreter, resolution_error = resolve_interpreter(repo, requested_interpreter)
-      return [interpreter, nil] if interpreter
+      if interpreter
+        return [interpreter, nil] if supported_interpreter_paths(repo).include?(interpreter)
+
+        return [nil, "#{label} interpreter is unsupported: #{requested_interpreter}"]
+      end
 
       detail = case resolution_error
                when :inside_repository
@@ -428,19 +436,22 @@ module HostedQaReadiness
   end
 
   def resolve_env_interpreter(repo, program, label:)
-    candidates = if program == File.basename(RbConfig.ruby)
-                   [RbConfig.ruby]
-                 else
-                   trusted_path_directories(repo, TRUSTED_INTERPRETER_DIRS).map do |directory|
-                     File.join(directory, program)
-                   end
-                 end
+    candidates = SUPPORTED_INTERPRETER_CANDIDATES[program]
+    return [nil, "#{label} /usr/bin/env program is unsupported: #{program}"] unless candidates
+
     candidates.each do |candidate|
       interpreter, _error = resolve_interpreter(repo, candidate)
       return [interpreter, nil] if interpreter
     end
 
     [nil, "#{label} interpreter is unavailable: #{program}"]
+  end
+
+  def supported_interpreter_paths(repo)
+    SUPPORTED_INTERPRETER_CANDIDATES.values.flatten.filter_map do |candidate|
+      interpreter, _error = resolve_interpreter(repo, candidate)
+      interpreter
+    end.uniq
   end
 
   def resolve_interpreter(repo, path)
