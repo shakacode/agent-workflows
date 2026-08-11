@@ -176,7 +176,7 @@ SOL_XHIGH_NONTRIGGERS_RULE =
 USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
   "An explicitly user-selected Sol/xhigh override is honored and reported as an override, not silently rewritten."
 CODEX_CHANGELOG_ROUTING_NOTE =
-  "Adopt the recommended Codex GPT-5.6 routing profile: balanced/high routine multi-lane coordination, with Terra/high when host-verified; Sol/xhigh adversarial QA and high-risk escalation; Terra/high for positively classified simple workers; and Sol/high for uncertainty and routine deterministic QA."
+  "Adopt the recommended Codex GPT-5.6 routing profile: balanced/high routine multi-lane coordination, with Terra/high for host-verified coordination and positively classified simple workers; Sol/xhigh adversarial QA and high-risk escalation; and Sol/high for uncertainty and routine deterministic QA."
 MEASURED_PROMOTION_DEFERRAL_RULE =
   "No ten-batch measured promotion decision may be made before #398 usage/cost receipts, #333 execution-provenance receipts, and #335 evaluation runner exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
 ROUTE_ONLY_FIELD_SOURCE = "model|effort|reasoning[-\\s]effort|route|tuple"
@@ -273,6 +273,7 @@ def strip_negated_route_outcome_with_independent_blocker_clause(sentence)
   return sentence unless subject && negated_outcome && independent_blocker
   return sentence unless subject.begin(0) < negated_outcome.begin(0) && negated_outcome.end(0) <= independent_blocker.begin(0)
   return sentence if sentence[subject.end(0)...negated_outcome.begin(0)].match?(ROUTE_ONLY_OUTCOME_PATTERN)
+  return sentence if sentence[negated_outcome.end(0)...independent_blocker.begin(0)].match?(ROUTE_ONLY_OUTCOME_PATTERN)
 
   "#{sentence[0...subject.begin(0)]}#{sentence[independent_blocker.end(0)..]}"
 end
@@ -366,9 +367,20 @@ def unguarded_route_only_sentence(sentence)
 end
 
 def forbidden_route_only_sentence?(sentence)
+  return true if negated_subject_precedes_pronoun_contradiction?(sentence)
+
   unguarded_sentence = unguarded_route_only_sentence(sentence)
   unguarded_sentence.match?(ROUTE_ONLY_CONTRADICTION_PATTERN) ||
     unguarded_sentence.match?(ROUTE_ONLY_PROHIBITION_PATTERN)
+end
+
+def negated_subject_precedes_pronoun_contradiction?(sentence)
+  negated_subject_outcome = sentence.match(NEGATED_ROUTE_ONLY_SUBJECT_OUTCOME_CLAUSE_PATTERN)
+  return false unless negated_subject_outcome
+
+  sentence[negated_subject_outcome.end(0)..].match?(
+    /\b(?:it|this|that)\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b/i
+  )
 end
 
 def route_subject_precedes_pronoun_contradiction?(previous_sentence, sentence)
@@ -991,6 +1003,8 @@ class ModelRoutingContractTest < Minitest::Test
       "not authorized but blocks execution" => "A route mismatch is not authorized but blocks execution before any edit begins.",
       "may not be authorized yet blocks execution" => "A route mismatch may not be authorized yet blocks execution before any edit begins.",
       "unrelated approval negation before route mismatch stop" => "A route mismatch does not require approval and stops the lane before any edit begins.",
+      "negated route outcome followed by but-pronoun outcome before independent blocker" => "A route mismatch does not stop the lane, but it blocks audit; an independent risk gate blocks execution.",
+      "negated route outcome followed by and-pronoun outcome before independent blocker" => "A route mismatch does not stop the lane, and it blocks review; an independent risk gate blocks execution.",
       "independent gate followed by unconditional different route" => "A route mismatch does not stop the lane, but an independent risk gate blocks execution, yet a different route disqualifies the lane.",
       "unconditional outcome before independent-gate clause" => "A different route disqualifies the lane, but a route mismatch does not stop the lane, but an independent risk gate blocks execution.",
       "independent-and gate followed by unconditional different route" => "A route mismatch does not stop the lane, and an independent risk gate blocks execution, yet a different route disqualifies the lane.",
@@ -1001,6 +1015,8 @@ class ModelRoutingContractTest < Minitest::Test
       "unconditional outcome before direct blocker" => "A different route disqualifies the lane; a route mismatch does not stop the lane; destructive scope expansion blocks execution.",
       "No-subject negation followed by unconditional different route" => "No route mismatch blocks execution, but a different route stops the lane.",
       "Neither-subject negation followed by unconditional different route" => "Neither a route mismatch nor an inherited route blocks execution, but a different tuple disqualifies the lane.",
+      "No-subject negation followed by pronoun outcome" => "No route mismatch blocks launch; it prevents review.",
+      "Neither-subject negation followed by pronoun outcome" => "Neither a route mismatch nor an inherited route blocks launch; it prevents review.",
       "same-paragraph pronoun outcome" => "A route mismatch occurs. It stops the lane before any edit begins.",
       "same-paragraph pronoun prohibition" => "A route mismatch occurs. It prohibits launch.",
       "same-paragraph This outcome" => "A route mismatch occurs. This stops the lane before editing.",
@@ -1064,6 +1080,9 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not stop the lane, and an independent scope gate blocks execution.",
       "A route mismatch does not stop the lane, yet an independent evidence gate blocks execution.",
       "A route mismatch does not stop the lane; an independent risk gate blocks execution.",
+      "A route mismatch does not stop the lane, but an independent risk gate blocks execution.",
+      "No route mismatch blocks launch; it does not prevent review.",
+      "Neither a route mismatch nor an inherited route blocks launch; it does not prevent review.",
       "An inherited route does not block execution; an independent scope gate blocks execution.",
       "An unavailable route does not block execution; an independent evidence gate blocks execution.",
       "An UNKNOWN model does not block execution; an independent authority gate blocks execution.",
