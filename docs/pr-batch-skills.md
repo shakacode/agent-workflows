@@ -247,8 +247,12 @@ omit the queue summary and note that queue state is unavailable.
    coordinator processes expansion requests serially, records an active
    `expansion_path_reservations` entry, refreshes authoritative file-touch maps and
    lane lifecycle state, reruns `batch-plan-preflight`, and resumes the worker only
-   after the preflight accepts the path as disjoint or under maximum-concurrency-one
-   serialization. The reservation persists until the verified PR file-touch map
+   after the preflight accepts the path as disjoint. Under maximum-concurrency-one
+   serialization, acceptance alone does not authorize resume: the current holder
+   must release the slot, the requester must durably transition out of `blocked`, a
+   fresh preflight must accept, and the requester must be absent from
+   `launch.held_lane_ids`; when launch or relaunch is needed, it must also be present
+   in `launch.eligible_lane_ids`. The reservation persists until the verified PR file-touch map
    contains the path or the request is cancelled, and it is removed once reflected
    or cancelled. A collision or `UNKNOWN` collision state remains stopped until
    then. A missing path alone is not material scope growth and must not produce

@@ -542,6 +542,60 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_includes collision.fetch("message"), "lib/expanded.rb"
   end
 
+  def test_blocked_requester_remains_held_until_max_one_holder_completes_and_requester_transitions
+    holder = lane("lane-holder").merge("serialization_group" => "expanded-path-writers")
+    requester = lane("lane-requester").merge("serialization_group" => "expanded-path-writers")
+    lanes = [holder, requester]
+    groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
+    reservation = expansion_path_reservation(lane_id: "lane-requester")
+    active_and_blocked = [
+      lane_lifecycle_state(lane_id: "lane-holder", state: "active"),
+      lane_lifecycle_state(lane_id: "lane-requester", state: "blocked")
+    ]
+
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, groups: groups, lifecycle_states: active_and_blocked, reservations: [reservation])
+    )
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_includes result.dig("launch", "held_lane_ids"), "lane-requester"
+    refute_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
+
+    holder_done_requester_blocked = [
+      lane_lifecycle_state(lane_id: "lane-holder"),
+      lane_lifecycle_state(lane_id: "lane-requester", state: "blocked")
+    ]
+    result, stderr, status = evaluate(
+      input_for(
+        lanes: lanes,
+        groups: groups,
+        lifecycle_states: holder_done_requester_blocked,
+        reservations: [reservation]
+      )
+    )
+    assert status.success?, stderr
+    assert_includes result.dig("launch", "completed_lane_ids"), "lane-holder"
+    assert_includes result.dig("launch", "held_lane_ids"), "lane-requester"
+    refute_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
+
+    holder_done_requester_planned = [
+      lane_lifecycle_state(lane_id: "lane-holder"),
+      lane_lifecycle_state(lane_id: "lane-requester", state: "planned")
+    ]
+    result, stderr, status = evaluate(
+      input_for(
+        lanes: lanes,
+        groups: groups,
+        lifecycle_states: holder_done_requester_planned,
+        reservations: [reservation]
+      )
+    )
+    assert status.success?, stderr
+    assert_includes result.dig("launch", "completed_lane_ids"), "lane-holder"
+    assert_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
+    refute_includes result.dig("launch", "held_lane_ids"), "lane-requester"
+  end
+
   def test_expansion_path_reservations_fail_closed_on_invalid_identity_shape_or_evidence
     valid = expansion_path_reservation
     cases = {
@@ -1163,6 +1217,20 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def test_missing_lane_id_preserves_lane_identity_violations
     input = input_for
+    input.dig("plan", "lanes", 0).delete("id")
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    codes = result.fetch("violations").map { |item| item.fetch("code") }
+    assert_includes codes, "lane-id-invalid-or-duplicate"
+    assert_includes codes, "lane-record-invalid"
+    refute_includes codes, "invalid-envelope"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_missing_lane_id_with_reservations_preserves_lane_identity_violations
+    input = input_for(reservations: [expansion_path_reservation])
     input.dig("plan", "lanes", 0).delete("id")
 
     result, _stderr, status = evaluate(input)
