@@ -187,10 +187,10 @@ def read_repo_file(path)
 end
 
 def extract_markdown_section(text, heading)
-  heading_index = text.index(heading)
-  raise "missing #{heading}" unless heading_index
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  raise "missing #{heading}" unless heading_match
 
-  body_start = heading_index + heading.length
+  body_start = heading_match.end(0)
   next_heading = text.match(/^###\s+/, body_start)
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
@@ -337,10 +337,10 @@ def assert_evidence_status_table_unmeasured(test, text, label)
 end
 
 def extract_prompt(text, heading)
-  heading_index = text.index(heading)
-  raise "missing #{heading}" unless heading_index
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  raise "missing #{heading}" unless heading_match
 
-  fence_start = text.index(TEXT_FENCE, heading_index)
+  fence_start = text.index(TEXT_FENCE, heading_match.end(0))
   raise "missing text fence after #{heading}" unless fence_start
 
   body_start = fence_start + TEXT_FENCE.length
@@ -351,6 +351,38 @@ def extract_prompt(text, heading)
 end
 
 class ModelRoutingContractTest < Minitest::Test
+  def test_markdown_section_extractor_ignores_a_quoted_heading
+    document = <<~MARKDOWN
+      <!-- Keep `### Disposition Table` in sync. -->
+      decoy body
+
+      ### Disposition Table
+
+      real body
+
+      ### Next
+    MARKDOWN
+
+    assert_equal "\n\nreal body\n\n", extract_markdown_section(document, "### Disposition Table")
+  end
+
+  def test_prompt_extractor_ignores_a_heading_quoted_before_the_real_fence
+    document = <<~MARKDOWN
+      <!-- See `## Goal Prompt` before editing. -->
+      ```text
+      decoy prompt
+      ```
+
+      ## Goal Prompt
+
+      ```text
+      real prompt
+      ```
+    MARKDOWN
+
+    assert_equal "real prompt\n", extract_prompt(document, "## Goal Prompt")
+  end
+
   def test_active_routing_surfaces_share_the_advisory_unsigned_lifecycle_contract
     ROUTING_SURFACES.each do |path|
       text = normalized(read_repo_file(path))

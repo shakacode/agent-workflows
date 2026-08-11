@@ -93,6 +93,18 @@ def coordination_declaration_blockers(handoff_text)
   CoordinationDeclaration.blockers(handoff_text)
 end
 
+def batch_handoff_format_section(workflow)
+  extract_anchored_section(
+    workflow,
+    "### Batch Handoff Format",
+    end_heading: /^###[[:blank:]]+/
+  )
+end
+
+def handoff_prompt_section(workflow, heading)
+  extract_anchored_section(workflow, heading, end_heading: /^###[[:blank:]]+/)
+end
+
 class CoordinationDeclarationContractTest < Minitest::Test
   # --- Gate behavior: the declared forms the contract accepts -----------------
 
@@ -123,6 +135,344 @@ class CoordinationDeclarationContractTest < Minitest::Test
 
     assert_empty coordination_declaration_blockers(handoff),
                  "a Lane Card bullet is a valid place to declare coordination"
+  end
+
+  def test_unordered_bullet_declaration_accepts_visible_marker_padding
+    %w[- + *].product((1..4).to_a).each do |marker, spacing|
+      handoff = "#{marker}#{' ' * spacing}coordination: registered aw-#{marker.ord}-#{spacing}\n"
+
+      assert_empty coordination_declaration_blockers(handoff),
+                   "#{marker.inspect} with #{spacing} marker-padding spaces must remain visible"
+    end
+
+    %w[- + *].each do |marker|
+      handoff = "#{marker}\tcoordination: registered aw-#{marker.ord}-tab\n"
+
+      assert_empty coordination_declaration_blockers(handoff),
+                   "one immediate tab expands to visible marker padding under CommonMark"
+    end
+  end
+
+  def test_top_level_unordered_bullet_rejects_code_padding_and_tabs_after_marker
+    handoffs = %w[- + *].flat_map do |marker|
+      [
+        "#{marker}     coordination: registered aw-#{marker.ord}-five-space-code\n",
+        "#{marker}\t\tcoordination: registered aw-#{marker.ord}-two-tab-code\n",
+        "#{marker}    \tcoordination: registered aw-#{marker.ord}-space-tab-code\n"
+      ]
+    end
+
+    assert_equal Array.new(handoffs.length, [MISSING_DECLARATION_BLOCKER]),
+                 handoffs.map { |handoff| coordination_declaration_blockers(handoff) },
+                 "marker padding that reaches the code threshold must not satisfy the declaration gate"
+  end
+
+  def test_nested_unordered_bullet_rejects_code_padding_and_tabs_after_marker
+    handoffs = %w[- + *].flat_map do |marker|
+      [
+        "- Outer:\n  #{marker}     coordination: registered aw-nested-#{marker.ord}-five-space-code\n",
+        "- Outer:\n  #{marker}\t\tcoordination: registered aw-nested-#{marker.ord}-two-tab-code\n",
+        "- Outer:\n  #{marker}    \tcoordination: registered aw-nested-#{marker.ord}-space-tab-code\n"
+      ]
+    end
+
+    assert_equal Array.new(handoffs.length, [MISSING_DECLARATION_BLOCKER]),
+                 handoffs.map { |handoff| coordination_declaration_blockers(handoff) },
+                 "nested marker padding that reaches the code threshold must not satisfy the declaration gate"
+  end
+
+  def test_mixed_marker_padding_over_four_rendered_columns_is_rejected
+    rejected_by_leading_indent = {
+      0 => ["   \t", "    \t", "\t  ", "\t\t", "     "],
+      1 => ["  \t", "\t   ", "\t\t", "     "],
+      2 => [" \t", "\t    ", "\t\t", "     "],
+      3 => ["   \t ", "    \t", "\t ", "\t\t", "     "]
+    }
+
+    rejected_by_leading_indent.each do |leading_indent, paddings|
+      paddings.each do |padding|
+        handoff = "#{' ' * leading_indent}-#{padding}coordination: registered aw-code-padding\n"
+
+        assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                     "padding #{padding.inspect} after #{leading_indent} leading spaces renders wider than four columns"
+      end
+    end
+  end
+
+  def test_nested_mixed_marker_padding_over_four_rendered_columns_is_rejected
+    rejected_by_leading_indent = {
+      0 => [" \t", "\t    ", "\t\t", "     "],
+      1 => ["\t ", "   \t ", "    \t", "\t\t", "     "],
+      2 => ["   \t", "    \t", "\t  ", "\t\t", "     "],
+      3 => ["  \t", "\t   ", "\t\t", "     "]
+    }
+
+    rejected_by_leading_indent.each do |leading_indent, paddings|
+      paddings.each do |padding|
+        item_indent = " " * (2 + leading_indent)
+        handoff = "- Outer:\n#{item_indent}-#{padding}coordination: registered aw-nested-code-padding\n"
+
+        assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                     "nested padding #{padding.inspect} after #{leading_indent} relative spaces renders as code"
+      end
+    end
+  end
+
+  def test_mixed_marker_padding_up_to_four_rendered_columns_is_visible
+    visible_by_leading_indent = {
+      0 => [" \t", "  \t", "\t "],
+      1 => [" \t  ", "\t  "],
+      2 => ["\t   "],
+      3 => [" \t", "   \t"]
+    }
+
+    visible_by_leading_indent.each do |leading_indent, paddings|
+      paddings.each do |padding|
+        handoff = "#{' ' * leading_indent}-#{padding}coordination: registered aw-visible-padding\n"
+
+        assert_empty coordination_declaration_blockers(handoff),
+                     "padding #{padding.inspect} after #{leading_indent} leading spaces renders within four columns"
+      end
+    end
+  end
+
+  def test_nested_mixed_marker_padding_up_to_four_rendered_columns_is_visible
+    visible_by_leading_indent = {
+      0 => ["\t ", "\t  ", "\t   "],
+      1 => [" \t", "  \t", "   \t"],
+      2 => [" \t", "  \t", "\t "],
+      3 => [" \t  ", "\t  "]
+    }
+
+    visible_by_leading_indent.each do |leading_indent, paddings|
+      paddings.each do |padding|
+        item_indent = " " * (2 + leading_indent)
+        handoff = "- Outer:\n#{item_indent}-#{padding}coordination: registered aw-nested-visible-padding\n"
+
+        assert_empty coordination_declaration_blockers(handoff),
+                     "nested padding #{padding.inspect} after #{leading_indent} relative spaces remains visible"
+      end
+    end
+  end
+
+  def test_deep_nested_mixed_tab_padding_uses_original_marker_column
+    handoff = "- Outer:\n    - \tcoordination: registered aw-deep-mixed-tab\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "tab expansion must start from the marker's original column inside the outer list"
+  end
+
+  def test_deep_nested_code_padding_uses_original_marker_column
+    handoff = "- Outer:\n    -\t  coordination: registered fake-deep-code-padding\n"
+
+    assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                 "padding wider than four columns at the original nested marker column is code"
+  end
+
+  def test_mixed_padding_nested_item_continuation_at_plus_four_is_code
+    handoff = "- Outer:\n    - \tInner:\n" \
+              "            coordination: registered fake-inner-code\n"
+
+    assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                 "four spaces beyond the rendered nested content column is indented code"
+  end
+
+  def test_mixed_padding_nested_item_continuation_at_plus_three_is_visible
+    handoff = "- Outer:\n    - \tInner:\n" \
+              "           coordination: registered aw-inner-visible-boundary\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "up to three spaces beyond the rendered nested content column remains visible"
+  end
+
+  def test_declaration_is_accepted_in_a_nested_lane_card_list
+    [
+      "- Lane Card:\n    - coordination: registered aw-nested-unordered-lane\n",
+      "1. Lane Card:\n   - coordination: unavailable #{EM_DASH} backend not configured\n"
+    ].each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "a nested Lane Card bullet must not be mistaken for standalone indented code"
+    end
+  end
+
+  def test_declaration_is_accepted_as_ordinary_list_content
+    [
+      "- Lane Card:\n    coordination: registered aw-unordered-content\n",
+      "1. Lane Card:\n    coordination: registered aw-ordered-content\n"
+    ].each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "ordinary visible list content must not be mistaken for standalone indented code"
+    end
+  end
+
+  def test_declaration_is_accepted_as_genuine_inner_list_content
+    [
+      "- Outer:\n    - Inner:\n      coordination: registered aw-inner-unordered-content\n",
+      "1. Outer:\n   1. Inner:\n      coordination: registered aw-inner-ordered-content\n"
+    ].each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "continuation content at the active inner list column must remain visible"
+    end
+  end
+
+  def test_list_content_indentation_boundary_is_context_relative
+    visible = [
+      "- Lane Card:\n     coordination: registered aw-unordered-visible-boundary\n",
+      "1. Lane Card:\n      coordination: registered aw-ordered-visible-boundary\n"
+    ]
+    code = [
+      "- Lane Card:\n      coordination: registered example-unordered-code-boundary\n",
+      "1. Lane Card:\n       coordination: registered example-ordered-code-boundary\n",
+      "- Lane Card:\n# Outside list\n    coordination: registered example-after-list-reset\n"
+    ]
+
+    visible.each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "up to three spaces relative to list content remains visible Markdown"
+    end
+    code.each do |handoff|
+      assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                   "four relative spaces or reset list state must remain indented code"
+    end
+  end
+
+  def test_unordered_dedent_to_outer_list_content_discards_inner_list_ancestry
+    handoff = "- Outer:\n    - Inner\n\n  Outer continuation\n\n" \
+              "      coordination: registered aw-hidden-code\n"
+
+    assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                 "a code block relative to outer list content must not match a stale inner content column"
+  end
+
+  def test_ordered_dedent_to_outer_list_content_discards_inner_list_ancestry
+    handoff = "1. Outer:\n   1. Inner\n\n   Outer continuation\n\n" \
+              "       coordination: registered aw-hidden-ordered-code\n"
+
+    assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                 "an ordered-list code block must not match a stale inner content column"
+  end
+
+  def test_declarations_inside_markdown_code_are_ignored
+    [
+      "```text\ncoordination: registered example-backtick\n```\n",
+      "````markdown\ncoordination: registered example-long-backtick\n````\n",
+      "~~~text\ncoordination: unavailable #{EM_DASH} example tilde fence\n~~~\n",
+      "- ```text\n  coordination: registered example-unordered-list-fence\n  ```\n",
+      "1. ~~~~text\n   coordination: registered example-ordered-list-fence\n   ~~~~\n",
+      "- Examples:\n    - ```text\n      - coordination: registered example-nested-list-fence\n      ```\n",
+      "1. Examples:\n      1. ~~~~text\n         - coordination: registered example-nested-ordered-list-fence\n         ~~~~\n",
+      "    coordination: registered example-indented\n",
+      "    - coordination: registered example-indented-list-item\n"
+    ].each do |handoff|
+      assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                   "a declaration shown as Markdown code must not satisfy the runtime gate: #{handoff.inspect}"
+    end
+  end
+
+  def test_tab_indented_list_fence_hides_its_declaration
+    handoff = "- Outer:\n\t```text\n  coordination: registered hidden\n\t```\n"
+
+    assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                 "a tab-indented fence inside list content must hide its example declaration"
+  end
+
+  def test_tab_indented_list_fence_closes_before_a_real_declaration
+    handoff = "-\t```text\n\tcoordination: registered hidden\n\t```\n" \
+              "coordination: registered aw-real\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "a tab-indented closing fence must not hide the later real declaration"
+  end
+
+  def test_mixed_space_tab_indentation_controls_list_fence_transitions
+    hidden_examples = [
+      "- Outer:\n \t```text\n  coordination: registered hidden-mixed-backtick\n \t```\n",
+      "- Outer:\n  \t~~~text\n  coordination: registered hidden-mixed-tilde\n  \t~~~\n"
+    ]
+    closed_examples = [
+      "- \t```text\n\tcoordination: registered hidden-marker-padding\n \t```\n" \
+        "coordination: registered aw-real-after-mixed-backtick\n",
+      "+\t~~~text\n\tcoordination: registered hidden-marker-tab\n  \t~~~\n" \
+        "coordination: registered aw-real-after-mixed-tilde\n"
+    ]
+
+    hidden_examples.each do |handoff|
+      assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                   "mixed leading indentation must open and close the list fence at rendered columns"
+    end
+    closed_examples.each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "mixed leading indentation must close the fence before the later real declaration"
+    end
+  end
+
+  def test_dedent_closes_an_unclosed_list_fence_before_a_real_declaration
+    handoff = "- ```text\n  coordination: registered hidden\n" \
+              "coordination: registered aw-real\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "dedenting out of list content must end its fence before the real declaration"
+  end
+
+  def test_list_fence_dedent_uses_each_container_indent
+    handoffs = [
+      "1. ~~~text\n   coordination: registered hidden-ordered\n" \
+        "coordination: registered aw-real-ordered\n",
+      "- Outer:\n    - ```text\n      coordination: registered hidden-nested\n" \
+        "  coordination: registered aw-real-outer-content\n",
+      "- Outer:\n\t~~~text\n  coordination: registered hidden-tab\n" \
+        "coordination: registered aw-real-after-tab-fence\n"
+    ]
+
+    handoffs.each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "ordered, nested, tilde, and tab-indented list fences must end at their container dedent"
+    end
+  end
+
+  def test_over_indented_closer_stays_fenced_until_the_container_dedent
+    handoff = "- ```text\n  coordination: registered hidden-before\n" \
+              "      ```\n  coordination: registered hidden-after\n" \
+              "coordination: registered aw-real-after-over-indented-closer\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "an over-indented closer remains code, while the later container dedent exposes the real declaration"
+  end
+
+  def test_blank_lines_and_top_level_fences_do_not_implicitly_dedent
+    handoffs = [
+      "- ```text\n\n  coordination: registered hidden-after-blank\n",
+      "```text\ncoordination: registered hidden-in-top-level-fence\n"
+    ]
+
+    handoffs.each do |handoff|
+      assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                   "blank lines preserve list fences, and top-level unclosed fences remain fail-closed"
+    end
+  end
+
+  def test_tilde_fence_info_may_contain_tildes
+    [
+      "~~~ruby~bad\ncoordination: registered example-top-level-tilde-info\n~~~\n",
+      "- ~~~ruby~bad\n  coordination: registered example-list-tilde-info\n  ~~~\n"
+    ].each do |handoff|
+      assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                   "tildes in tilde-fence info do not invalidate the fenced code block"
+    end
+  end
+
+  def test_backtick_in_top_level_backtick_fence_info_does_not_hide_declaration
+    handoff = "```ruby`bad\ncoordination: registered aw-real-after-invalid-opener\n```\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "a backtick in backtick-fence info invalidates the opener under CommonMark"
+  end
+
+  def test_backtick_in_list_backtick_fence_info_does_not_hide_declaration
+    handoff = "- ```ruby`bad\n  coordination: registered aw-real-after-invalid-list-opener\n  ```\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "an invalid backtick-fence opener in a list must not hide visible continuation content"
   end
 
   # --- The actual bug: silence must fail loudly ------------------------------
@@ -219,6 +569,24 @@ class CoordinationDeclarationContractTest < Minitest::Test
     assert_includes blockers.first, "unrecognized"
   end
 
+  def test_near_miss_declarations_are_rejected_with_an_exact_correction
+    [
+      "`coordination: registered aw-1`",
+      "**coordination:** registered aw-1",
+      "Coordination: registered aw-1",
+      "coordination - registered aw-1",
+      "coordination – registered aw-1"
+    ].each do |near_miss|
+      blockers = coordination_declaration_blockers("#{near_miss}\n")
+
+      refute_empty blockers, "#{near_miss.inspect} must remain rejected"
+      assert_includes blockers.first, "near-miss"
+      assert_includes blockers.first, near_miss
+      assert_includes blockers.first, "coordination: registered <batch-id>"
+      assert_includes blockers.first, "coordination: unavailable #{EM_DASH} <reason>"
+    end
+  end
+
   def test_both_forms_on_one_line_fail
     handoff = "coordination: registered aw-1 unavailable #{EM_DASH} backend flaky\n"
     blockers = coordination_declaration_blockers(handoff)
@@ -268,14 +636,28 @@ class CoordinationDeclarationContractTest < Minitest::Test
 
   def test_canonical_rule_lives_in_the_batch_handoff_format_section
     workflow = read_repo_file(WORKFLOW_PATH)
-    start_index = workflow.index("### Batch Handoff Format")
-    refute_nil start_index, "workflows/pr-processing.md must keep the canonical Batch Handoff Format section"
-
-    end_match = workflow.match(/^###\s+/, start_index + 1)
-    section = workflow[start_index...(end_match ? end_match.begin(0) : workflow.length)]
+    section = batch_handoff_format_section(workflow)
 
     assert_includes normalize_prose(section), normalize_prose(COORDINATION_DECLARATION_RULE),
                     "the declaration belongs in the canonical handoff contract the goal prompt routes to"
+  end
+
+  def test_batch_handoff_extractor_ignores_a_quoted_heading
+    workflow = <<~MARKDOWN
+      <!-- Keep `### Batch Handoff Format` synchronized. -->
+      decoy body
+
+      ### Batch Handoff Format
+
+      real body
+
+      ### Next
+    MARKDOWN
+
+    section = batch_handoff_format_section(workflow)
+
+    assert_includes section, "real body"
+    refute_includes section, "decoy body"
   end
 
   # Every prompt that tells a coordinator what its own final handoff must contain
@@ -288,11 +670,7 @@ class CoordinationDeclarationContractTest < Minitest::Test
       "### Generic PR-Batch Continuation Prompt",
       "### Model-Routing Recovery Prompt"
     ].each do |heading|
-      start_index = workflow.index(heading)
-      refute_nil start_index, "workflows/pr-processing.md must keep #{heading}"
-
-      end_match = workflow.match(/^###\s+/, start_index + 1)
-      section = normalize_prose(workflow[start_index...(end_match ? end_match.begin(0) : workflow.length)])
+      section = normalize_prose(handoff_prompt_section(workflow, heading))
 
       assert_includes section, "coordination: registered <batch-id>",
                       "#{heading} must require the registered form"
@@ -301,6 +679,25 @@ class CoordinationDeclarationContractTest < Minitest::Test
       assert_includes section, "A missing declaration is a hard blocker, not a clean handoff.",
                       "#{heading} must make an absent declaration a blocker"
     end
+  end
+
+  def test_handoff_prompt_extractor_ignores_a_quoted_heading
+    heading = "### Generic PR-Batch Continuation Prompt"
+    workflow = <<~MARKDOWN
+      <!-- See `#{heading}` for the canonical prompt. -->
+      decoy prompt
+
+      #{heading}
+
+      real prompt
+
+      ### Next
+    MARKDOWN
+
+    section = handoff_prompt_section(workflow, heading)
+
+    assert_includes section, "real prompt"
+    refute_includes section, "decoy prompt"
   end
 
   def test_rule_states_both_declared_forms_verbatim
@@ -392,7 +789,29 @@ class CoordinationDeclarationContractTest < Minitest::Test
     _out, err, status = Open3.capture3("ruby", COORDINATION_DECLARATION_HELPER)
 
     assert_equal 64, status.exitstatus
-    assert_includes err, "--handoff"
+    assert_equal "Error: missing argument: --handoff\n#{CoordinationDeclaration.usage}\n", err
+  end
+
+  def test_helper_cli_reports_invalid_utf8_as_a_clean_input_error
+    invalid_handoff = "coordination: registered aw-1\ninvalid: \xFF\n".b
+
+    Dir.mktmpdir("coordination-declaration-invalid-utf8") do |directory|
+      path = File.join(directory, "handoff.md")
+      File.binwrite(path, invalid_handoff)
+
+      [
+        ["stdin", ["--handoff", "-"], { stdin_data: invalid_handoff }],
+        ["file", ["--handoff", path], {}]
+      ].each do |label, arguments, options|
+        out, err, status = Open3.capture3("ruby", COORDINATION_DECLARATION_HELPER, *arguments, **options)
+
+        assert_equal 64, status.exitstatus, "#{label}: invalid UTF-8 is an input error"
+        assert_empty out, "#{label}: an input error must not emit a misleading JSON report"
+        assert_match(/\AError: .*invalid UTF-8/i, err, "#{label}: stderr must identify the invalid input")
+        refute_match(/coordination-declaration:\d+:in|Traceback|from .*coordination-declaration/, err,
+                     "#{label}: the helper must not leak a Ruby stack trace")
+      end
+    end
   end
 
   def test_missing_runtime_helper_companion_stops_with_a_precise_blocker

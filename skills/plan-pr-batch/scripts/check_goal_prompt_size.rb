@@ -338,10 +338,10 @@ def reject_phrases(text, phrases, label)
 end
 
 def extract_goal_prompt_template(text, heading, label:)
-  heading_index = text.index(heading)
-  abort_with_failure("missing #{heading} section") unless heading_index
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  abort_with_failure("missing #{heading} section") unless heading_match
 
-  fence_start = text.index(TEXT_FENCE, heading_index)
+  fence_start = text.index(TEXT_FENCE, heading_match.end(0))
   abort_with_failure("missing text fence in #{heading} section") unless fence_start
 
   fence_body_start = fence_start + TEXT_FENCE.length
@@ -353,6 +353,29 @@ def extract_goal_prompt_template(text, heading, label:)
     label,
     missing_closing_message: "missing closing fence in #{heading} section"
   )
+end
+
+def assert_goal_prompt_heading_is_line_anchored
+  fixture = <<~MARKDOWN
+    <!-- See `## Goal Prompt for pr-batch` before editing. -->
+    ```text
+    decoy prompt
+    ```
+
+    ## Goal Prompt for pr-batch
+
+    ```text
+    real prompt
+    ```
+  MARKDOWN
+  extracted = extract_goal_prompt_template(
+    fixture,
+    "## Goal Prompt for pr-batch",
+    label: "heading-anchor fixture"
+  )
+  return if extracted == "real prompt\n"
+
+  abort_with_failure("goal prompt extractor must ignore headings quoted outside a real heading line")
 end
 
 def with_items(prompt_template, items)
@@ -427,6 +450,7 @@ skill_path = File.expand_path("../SKILL.md", __dir__)
 abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(skill_path)
 
 skill_text = File.read(skill_path, encoding: "UTF-8")
+assert_goal_prompt_heading_is_line_anchored
 workflow_text = read_repo_file("workflows/pr-processing.md")
 pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill_text = read_repo_file("skills/triage/SKILL.md")

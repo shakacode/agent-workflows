@@ -30,7 +30,12 @@ module CoordinationDeclaration
 
   # Accepts an optional list marker so a declaration reads naturally inside a
   # bulleted Lane Card or handoff section.
-  DECLARATION_LINE = /^[[:space:]]*(?:[-*+][[:space:]]+)?coordination:[[:space:]]*(.*?)[[:space:]]*$/
+  BARE_DECLARATION_LINE = /\A {0,3}coordination:[[:space:]]*(.*?)[[:space:]]*\z/
+  BULLETED_DECLARATION_LINE = /\A( {0,3})[-*+]([ \t]+)coordination:[[:space:]]*(.*?)[[:space:]]*\z/
+  NEAR_MISS_LINE = /^ {0,3}(?:[-*+][[:space:]]+)?(?:`coordination:.*`|\*\*coordination:\*\*.*|Coordination:.*|coordination[[:blank:]]+[-–][[:blank:]]+.*)[[:blank:]]*$/
+  FENCE_OPENING = /\A(?:(`{3,})[^`\r\n]*|(~{3,})[^\r\n]*)\r?\n?\z/
+  INDENTED_FENCE_OPENING = /\A( *)(?:(`{3,})[^`\r\n]*|(~{3,})[^\r\n]*)\r?\n?\z/
+  LIST_ITEM = /\A( *)([-+*]|\d{1,9}[.)])([ \t]+)(.*)/
 
   module_function
 
@@ -38,8 +43,134 @@ module CoordinationDeclaration
     value.strip.casecmp("UNKNOWN").zero?
   end
 
+  def column_after_padding(column, padding)
+    padding.each_char.reduce(column) do |current_column, character|
+      character == "\t" ? current_column + 4 - (current_column % 4) : current_column + 1
+    end
+  end
+
+  def expand_leading_whitespace(line)
+    leading_whitespace = line[/\A[ \t]*/]
+    expanded_width = column_after_padding(0, leading_whitespace)
+    (" " * expanded_width) + line.delete_prefix(leading_whitespace)
+  end
+
+  def visible_lines(handoff_text)
+    fence = nil
+    # Content columns for the currently open list-item ancestry. They let an
+    # indented child bullet remain a declaration while the same indentation
+    # without a parent list item remains an indented code block.
+    list_content_indents = []
+
+    handoff_text.to_s.lines.filter_map do |raw_line|
+      line = expand_leading_whitespace(raw_line)
+
+      if fence
+        line_indent = line[/\A */].length
+        if !line.strip.empty? && fence[:minimum_indent].positive? && line_indent < fence[:minimum_indent]
+          fence = nil
+        else
+          closing_indent = " {#{fence[:minimum_indent]},#{fence[:maximum_indent]}}"
+          marker = Regexp.escape(fence[:character])
+          fence = nil if line.match?(/\A#{closing_indent}#{marker}{#{fence[:length]},}[[:blank:]]*$/)
+          next
+        end
+      end
+
+      normalized_line = line
+      column_offset = 0
+      valid_list_item = false
+      visible_list_continuation = false
+      if (list_item = line.match(LIST_ITEM))
+        item_indent = list_item[1].length
+        marker_end_column = item_indent + list_item[2].length
+        content_start_column = column_after_padding(marker_end_column, list_item[3])
+        padding_width = content_start_column - marker_end_column
+        parent_index = list_content_indents.rindex do |content_indent|
+          item_indent.between?(content_indent, content_indent + 3)
+        end
+        valid_list_item = padding_width.between?(1, 4) && (item_indent <= 3 || !parent_index.nil?)
+
+        if valid_list_item
+          parent_content_indent = parent_index.nil? ? 0 : list_content_indents[parent_index]
+          list_content_indents = parent_index.nil? ? [] : list_content_indents[0..parent_index]
+          list_content_indents << content_start_column
+          normalized_line = line.delete_prefix(" " * parent_content_indent)
+          column_offset = parent_content_indent
+        end
+      elsif !line.strip.empty? && list_content_indents.any?
+        line_indent = line[/\A */].length
+        list_index = list_content_indents.rindex do |content_indent|
+          line_indent.between?(content_indent, content_indent + 3)
+        end
+        if list_index
+          list_content_indents = list_content_indents[0..list_index]
+          list_indent = list_content_indents.last
+          visible_list_continuation = true
+          normalized_line = line.delete_prefix(" " * list_indent)
+          column_offset = list_indent
+        elsif line_indent < list_content_indents.first
+          list_content_indents.clear
+        end
+      end
+
+      marker = nil
+      fence_indent = nil
+      if valid_list_item && (opening = list_item[4].match(FENCE_OPENING))
+        marker = opening[1] || opening[2]
+        fence_indent = list_content_indents.last
+      elsif (opening = line.match(INDENTED_FENCE_OPENING))
+        opening_indent = opening[1].length
+        list_indent = list_content_indents.reverse.find do |content_indent|
+          opening_indent.between?(content_indent, content_indent + 3)
+        end
+        if opening_indent <= 3 || list_indent
+          marker = opening[2] || opening[3]
+          fence_indent = list_indent || 0
+        end
+      end
+
+      if marker
+        fence = {
+          character: marker[0],
+          length: marker.length,
+          minimum_indent: fence_indent,
+          maximum_indent: fence_indent + 3
+        }
+        next
+      end
+
+      next if line.start_with?("    ", "\t") && !valid_list_item && !visible_list_continuation
+
+      { text: normalized_line, column_offset: column_offset }
+    end
+  end
+
   def declared_values(handoff_text)
-    handoff_text.to_s.lines.filter_map { |line| line[DECLARATION_LINE, 1] }
+    visible_lines(handoff_text).filter_map do |line|
+      declaration_value(line[:text], column_offset: line[:column_offset])
+    end
+  end
+
+  def declaration_value(line, column_offset: 0)
+    bare_declaration = line.match(BARE_DECLARATION_LINE)
+    return bare_declaration[1] if bare_declaration
+
+    bulleted_declaration = line.match(BULLETED_DECLARATION_LINE)
+    return unless bulleted_declaration
+
+    column = column_offset + bulleted_declaration[1].length + 1
+    content_start_column = column_after_padding(column, bulleted_declaration[2])
+    padding_width = content_start_column - column
+    return unless padding_width.between?(1, 4)
+
+    bulleted_declaration[3]
+  end
+
+  def near_miss_lines(handoff_text)
+    visible_lines(handoff_text).filter_map do |line|
+      line[:text].strip if line[:text].match?(NEAR_MISS_LINE)
+    end
   end
 
   # The gate itself. Returns the list of blockers for a candidate final handoff;
@@ -47,7 +178,16 @@ module CoordinationDeclaration
   def blockers(handoff_text)
     values = declared_values(handoff_text)
 
-    return [MISSING_DECLARATION_BLOCKER] if values.empty?
+    if values.empty?
+      near_misses = near_miss_lines(handoff_text)
+      unless near_misses.empty?
+        return ["final handoff contains a near-miss coordination declaration #{near_misses.first.inspect}; " \
+                "use exact `coordination: registered <batch-id>` or " \
+                "`coordination: unavailable #{EM_DASH} <reason>` syntax"]
+      end
+
+      return [MISSING_DECLARATION_BLOCKER]
+    end
 
     if values.length > 1
       return ["final handoff declares `coordination:` #{values.length} times; exactly one declaration is allowed"]
@@ -151,9 +291,14 @@ module CoordinationDeclaration
   # dash, so a default US-ASCII external encoding would crash the gate on exactly
   # the declaration it exists to validate.
   def read_handoff(source)
-    return $stdin.set_encoding(Encoding::UTF_8).read if source == "-"
+    text = if source == "-"
+             $stdin.set_encoding(Encoding::UTF_8).read
+           else
+             File.read(source, encoding: "UTF-8")
+           end
+    raise Encoding::InvalidByteSequenceError, "handoff input is invalid UTF-8" unless text.valid_encoding?
 
-    File.read(source, encoding: "UTF-8")
+    text
   end
 
   def usage
@@ -174,7 +319,7 @@ module CoordinationDeclaration
     end
     parser.parse!(argv)
 
-    raise OptionParser::MissingArgument, "--handoff is required" unless options[:handoff]
+    raise OptionParser::MissingArgument, "--handoff" unless options[:handoff]
 
     result = report(read_handoff(options[:handoff]))
     puts JSON.pretty_generate(result)
@@ -184,6 +329,9 @@ module CoordinationDeclaration
     warn usage
     64
   rescue SystemCallError => e
+    warn "Error: #{e.message}"
+    64
+  rescue EncodingError => e
     warn "Error: #{e.message}"
     64
   end
