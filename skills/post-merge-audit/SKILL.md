@@ -25,17 +25,18 @@ the production receipt parser loaded by the sibling `pr-batch` contract test;
 an isolated pinned copy must include both companions or stop with a precise
 missing-companion blocker.
 
-For a verified Codex GPT-5.6 batch, preserve the originating route profile:
+For a verified Codex GPT-5.6 batch, record the originating preferences and use
+this recommended advisory route profile:
 
-- Multi-lane coordinator: Sol/xhigh
+- Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
-- High-risk or escalated work: Sol/xhigh
+- Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
-For a verified Claude batch, preserve the provisional originating route
-profile (`claude-profile v0`):
+For a verified Claude batch, record the originating preferences and use this
+provisional recommended advisory route profile (`claude-profile v0`):
 
 - Multi-lane coordinator: Opus 4.8/xhigh
 - Simple, positively classified worker: Sonnet 5/high
@@ -56,19 +57,20 @@ prompt, response, or transcript data in the receipt.
 Start by resolving the exact audit range and, when auditing a named agent
 batch/run, the exact worked-issue scope.
 
-For a completed-batch audit, also resolve launch assurance before deep audit:
-the checker must be a fresh instance independent from every maker, with exact
-model/effort and binding evidence satisfying the batch's operator policy. Under
-the conservative GPT-5.6 profile the qualifying audit is independent
-adversarial QA on Sol/xhigh; Sol/high is limited to routine deterministic QA.
-Terra may collect mechanical evidence but does not issue the qualifying verdict.
-Under the provisional Claude profile (`claude-profile v0`) the qualifying audit
-is independent adversarial QA on Opus 4.8/xhigh; Opus 4.8/high is limited to
-routine deterministic QA. Sonnet may collect mechanical evidence but does not
-issue the qualifying verdict. If
-checker route or independence is below policy or `UNKNOWN`, the audit cannot be
-clean; report `checker_route_compliance: UNKNOWN|failed` and the exact fresh
-qualifying-checker reservation needed.
+For a completed-batch audit, resolve checker independence before deep audit:
+the checker must be a fresh instance independent from every maker.
+Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+Under the conservative GPT-5.6 profile, prefer Sol/xhigh for independent
+adversarial QA and Sol/high for routine deterministic QA. Under the provisional
+Claude profile (`claude-profile v0`), prefer Opus 4.8/xhigh for independent
+adversarial QA and Opus 4.8/high for routine deterministic QA. Terra and Sonnet
+may collect mechanical evidence or serve as the qualifying checker when the
+role, independence, scope, current-head evidence, and evidence quality qualify.
+If checker independence is unavailable or `UNKNOWN`, the audit cannot be clean.
+Record unavailable host-observed model/effort as `UNKNOWN`; preference mismatch
+alone does not block an otherwise qualifying verdict.
 
 Default batch selection: when the current visible chat, active goal, restart
 handoff, or immediately preceding batch closeout names exactly one just-run
@@ -265,7 +267,7 @@ For each included PR:
   a process finding unless a maintainer explicitly waived replay for that
   scope.
 - Cross-PR interactions: compare changed files, shared behavior, assumptions, and release-sensitive areas across the batch.
-- Decision log: inspect any `Codex Decision Log` or equivalent section and verify the decisions still hold after the merge.
+- Decision log: inspect the canonical `### Decision log` subsection inside the PR description's `Agent details` disclosure first; also discover legacy `## Codex Decision Log` and consumer-equivalent sections, then verify their decisions still hold after the merge.
 
 For each worked issue, QA lane, or advisory `codex-claim` recovery row from
 coordination state, including no-PR, blocked, parked, done-unmerged, or
@@ -410,7 +412,7 @@ completed-batch audit before its final handoff. Each completed-batch audit is
 owned by its batch coordinator. A parent orchestration agent only reconciles
 the durable audit handoff.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`.
 Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
 
@@ -435,7 +437,7 @@ preserves the original coordination terminal and records the later-target
 completion mode. Active/nonterminal lanes, open targets, unauthenticated target
 facts, and malformed terminal timestamps remain blocked.
 
-Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
+Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
 For `audit_status: complete`, that parse/bind step additionally requires the
 eligible publication preflight and exact manifest match. Pass the same refreshed
@@ -534,12 +536,13 @@ followups_dispositions: <none|one or more ` | `-separated records with ref, owne
 
 For a PR anchor, `publish` and `replay` emit this small managed section after
 comment readback; neither mutates the PR description. The coordinator applies it
-through a separate freshly-read update, preserves all surrounding text, never
-duplicates the markers, and never reruns `publish` to retry description sync:
+inside `### Audit receipts` in the canonical `Agent details` disclosure through
+a separate freshly-read update, preserves all surrounding text, never duplicates
+the markers, and never reruns `publish` to retry description sync:
 
 ```markdown
 <!-- completed-batch-audit-summary:start -->
-## Completed-batch audit
+#### Completed-batch audit
 
 **Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](<exact-comment-url>).
 <!-- completed-batch-audit-summary:end -->

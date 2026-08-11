@@ -6,72 +6,334 @@ require "minitest/autorun"
 ROOT = File.expand_path("../../..", __dir__)
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
-COORDINATOR_ROUTE = "Coordinator model/effort: <model/class>/<effort>."
-LAUNCH_ASSURANCE = "Launch assurance: parent <exact model>/<effort>@<source>; " \
-                   "checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
-WORKER_ROUTE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; " \
-               "escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
-DISPATCH_RULE = "Bind actors on-host; unbound -> stop; no inheritance/substitution; " \
-                "exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh"
-DISPATCH_PREFLIGHT_RULE = "Dispatch preflight: JSON-in/JSON-out; select only bound+attested requested tuple or first explicitly authorized ordered fallback; otherwise one dispatch-decision-request v1."
-GOAL_DISPATCH_PREFLIGHT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
-GOAL_PERSISTED_STATE_LINE = "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only."
-DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>."
-PROSPECTIVE_INSTANCE_ID_RULE = "Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker."
-UNKNOWN_DISPATCH_EVIDENCE_RULE = "Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode."
-REPLAY_IDENTITY_RULE = "Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order."
-REPLACEMENT_FENCING_RULE = "Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice."
-DISPATCH_PERSISTENCE_RULE = "Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch."
-EVIDENCE_VOCABULARY_RULE = "Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed."
-REPLACEMENT_PROOF_RULE = "A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences."
-LAUNCH_CONFIRMATION_V2_RULE = "A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction."
-LAUNCH_CONFIRMATION_V1_HISTORY_RULE = "Version 1 confirmations are history-only and cannot activate a launch-pending assignment."
-SIGNED_LAUNCH_OBSERVATION_RULE = "A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload."
-SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE = "The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_host`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature."
-FIXED_DISPATCHER_TRUST_RULE = "The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it."
-DISPATCHER_TRUST_SCHEMA_RULE = "The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`."
-DISPATCHER_TRUST_PROVENANCE_RULE = "Resolve `<installation-root>` from the real helper path; require the root, `.agents` directory, and trust file to be owned by the helper owner and not group- or world-writable, require the directory and file to be real non-symlink paths of the expected type, and require a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed."
-LAUNCH_CONFIRMATION_V1_MIGRATION_RULE = "During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies."
-PRE_ACTUAL_HOST_V2_MIGRATION_RULE = "A persisted pre-`actual_host` version 2 confirmation remains parseable only as signed history for the same " \
-                                    "`confirmed-active` assignment identity: verify its signature against the legacy canonical payload that omits " \
-                                    "`actual_host`, never synthesize that field, and never use the record to qualify or activate `launch-pending`; " \
-                                    "any tampering or identity mismatch fails closed, and every new activation still requires a current signed " \
-                                    "nonempty `actual_host`."
-OBSOLETE_V1_ACTIVATION_RULE = "only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`"
-DECISION_RESOLUTION_RULE = "Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`."
-SELF_CONTAINED_PERSISTENCE_RULE = "Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch."
-INDEPENDENT_ADVERSARIAL_QA_ROUTE = "Independent adversarial QA: Sol/xhigh"
-ROUTINE_DETERMINISTIC_QA_ROUTE = "Routine deterministic QA: Sol/high"
-CODEX_GPT56_RECOMMENDED_ROUTES = [
-  "Multi-lane coordinator: Sol/xhigh",
+
+ADVISORY_ROUTE_RULE =
+  "Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit."
+OBSERVED_HOST_RULE =
+  "Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report."
+ORDINARY_ACTIVATION_RULE =
+  "Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required."
+REPLAY_IDENTITY_RULE =
+  "Replay identity is `lane_id`, dispatcher, `instance_id`, and launch token; route preference, observed host fields, and `candidate_index` are metadata and never trigger replacement."
+DISPATCH_PERSISTENCE_RULE =
+  "Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active."
+REPLACEMENT_FENCING_RULE =
+  "A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities."
+CHECKER_RULE =
+  "Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict."
+VERDICT_QUALIFICATION_RULE =
+  "Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route."
+ROUTE_NONDISQUALIFICATION_RULE =
+  "A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict."
+EXECUTION_ROUTE_ADVISORY_RULE =
+  "Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback."
+EXECUTION_ROUTE_FALLBACK_RULE =
+  "When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks."
+MODEL_NEUTRAL_RISK_RULE =
+  "Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity."
+MODEL_NEUTRAL_ENVELOPE_RULE =
+  "Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model."
+ADVERSARIAL_ADVISORY_RULE =
+  "Preferred route, model, and effort are advisory for adversarial review; mismatch or unavailability alone does not disqualify an otherwise independent, evidence-backed adversarial verdict."
+ADVERSARIAL_OBSERVATION_RULE =
+  "Record observed host, model, and effort only from host-exposed runtime evidence; use literal `UNKNOWN` for every unavailable field, and never infer observations from the preference, prompt text, or model self-report."
+ADVERSARIAL_QUALITY_RULE =
+  "Reviewer independence and evidence quality remain mandatory regardless of the preferred or observed route."
+HOST_ROLLOUT_MATRIX_RULE =
+  "Before any host-owned fact becomes a portable mandatory gate, the proposal must name an accountable owner for each producer, verifier, provisioner, and installer role and define clean-install acceptance for every supported host."
+HOST_ROLLOUT_OPTIONAL_RULE =
+  "If any role or clean-install acceptance is absent, the capability remains optional and advisory; unavailable host-owned fields use `UNKNOWN` and do not block otherwise valid workflow progress."
+
+ROUTING_SURFACES = %w[
+  CONTEXT.md
+  docs/pr-batch-skills.md
+  docs/agent-workflows-model-routing.md
+  skills/plan-pr-batch/SKILL.md
+  skills/pr-batch/SKILL.md
+  skills/triage/SKILL.md
+  workflows/pr-processing.md
+].freeze
+
+CHECKER_SURFACES = %w[
+  CONTEXT.md
+  docs/agent-workflows-model-routing.md
+  docs/pr-batch-skills.md
+  skills/adversarial-pr-review/SKILL.md
+  skills/plan-pr-batch/SKILL.md
+  skills/post-merge-audit/SKILL.md
+  skills/pr-batch/SKILL.md
+  skills/triage/SKILL.md
+  workflows/adversarial-pr-review.md
+  workflows/continuous-evaluation-loop.md
+  workflows/post-merge-audit.md
+  workflows/pr-processing.md
+].freeze
+
+ROUTE_DISQUALIFICATION_PATTERNS = {
+  "named route forbidden from qualifying verdict" =>
+    /\b(?:Sol|Terra|Opus|Sonnet)\b.{0,160}(?:may not|must not|does not) issue.{0,80}qualifying/im,
+  "qualifying verdict assigned to a named route" =>
+    /qualifying.{0,120}\b(?:uses|is)\b.{0,80}\b(?:Sol|Terra|Opus|Sonnet)\b/im,
+  "named route limited below qualifying review" =>
+    /\b(?:Sol|Terra|Opus|Sonnet)\b.{0,80}limited to routine deterministic QA/im,
+  "cheaper route forbidden from qualifying verdict" =>
+    /cheaper route.{0,120}(?:may not|must not|does not).{0,80}qualifying/im,
+  "route compliance used as checker qualification" => /checker_route_compliance/i,
+  "route classified below policy" => /below-policy/i,
+  "route mismatch used to downgrade a verdict" => /do not downgrade/i,
+  "launch assurance used to qualify a checker" => /launch-assured policy-compliant run/i
+}.freeze
+
+NAMED_EXECUTION_ENFORCEMENT_PATTERNS = {
+  "named model denied coordinator or initiator work" =>
+    /\b(?:Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,100}may not initiate or coordinate/im,
+  "named model allowed only for a worker class" =>
+    /\b(?:Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,40}(?:is |remains )?(?:allowed|available) only/im,
+  "named model required to stop editing" =>
+    /\b(?:Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,40}stops without editing/im,
+  "execution envelope approved by a named model" =>
+    /\b(?:Sol|Opus)-approved execution envelope/im,
+  "named worker route requires simple classification" =>
+    %r{\b(?:Terra|Sonnet)(?: 5)?/high requires\b}im,
+  "named route forced by risk classification" =>
+    /(?:boundary|criterion|uncertainty) routes? to \b(?:Sol|Opus|Terra|Sonnet)\b/im,
+  "runtime fallback prohibited from inheriting a route" =>
+    /workers must not inherit the coordinator preference/im,
+  "exact supported pair required before execution" =>
+    /(?:needs?|requires?|until dispatch binds).{0,80}exact supported pair|exact supported pair.{0,80}(?:required|prerequisite)/im,
+  "exact model identity required for routing" => /require an exact model/im
+}.freeze
+
+ROUTE_AUTHORITY_ENFORCEMENT_PATTERNS = {
+  "route preference described as requiring authority" =>
+    /\b(?:(?:explicit\s+)?route(?:\s+and\s+dispatch)?\s+authority|explicit authority for (?:the )?route)\b/im
+}.freeze
+
+CODEX_RECOMMENDATIONS = [
+  "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
   "Simple, positively classified worker: Terra/high",
   "Unknown or uncertain worker: Sol/high",
-  "High-risk or escalated work: Sol/xhigh",
-  INDEPENDENT_ADVERSARIAL_QA_ROUTE,
-  ROUTINE_DETERMINISTIC_QA_ROUTE
+  "Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`",
+  "Independent adversarial QA: Sol/xhigh",
+  "Routine deterministic QA: Sol/high"
 ].freeze
-CLAUDE_INDEPENDENT_ADVERSARIAL_QA_ROUTE = "Independent adversarial QA: Opus 4.8/xhigh"
-CLAUDE_ROUTINE_DETERMINISTIC_QA_ROUTE = "Routine deterministic QA: Opus 4.8/high"
-CLAUDE_PROFILE_VERSION_MARKER = "claude-profile v0"
-CLAUDE_RECOMMENDED_ROUTES = [
+
+CLAUDE_RECOMMENDATIONS = [
   "Multi-lane coordinator: Opus 4.8/xhigh",
   "Simple, positively classified worker: Sonnet 5/high",
   "Unknown or uncertain worker: Opus 4.8/xhigh",
   "High-risk or escalated work: Opus 4.8/xhigh",
-  CLAUDE_INDEPENDENT_ADVERSARIAL_QA_ROUTE,
-  CLAUDE_ROUTINE_DETERMINISTIC_QA_ROUTE
+  "Independent adversarial QA: Opus 4.8/xhigh",
+  "Routine deterministic QA: Opus 4.8/high"
 ].freeze
-SIGNED_OBSERVATION_CONTRACT_PATHS = %w[
-  CONTEXT.md
-  docs/pr-batch-skills.md
-  docs/agent-workflows-model-routing.md
-  skills/pr-batch/SKILL.md
-  workflows/pr-processing.md
-  skills/triage/SKILL.md
+
+MODEL_ROUTING_GUIDE_PATH = "docs/agent-workflows-model-routing.md"
+ROUTE_DISPOSITION_TABLE_HEADING = "### Disposition Table"
+ROUTE_PROVENANCE_RULES = [
+  "A requested route is an instruction; an observed route is host-reported evidence of what actually executed. The two are separate fields and never collapse into one.",
+  "Requested-route prose in a plan, handoff, comment, or PR description is never presentable as observed execution evidence; only host-reported session metadata binds.",
+  "When operator policy names an exact route, an unbound, unavailable, substituted, or `UNKNOWN` observed tuple stops the lane with `MODEL_ROUTE_MISMATCH` before any edit begins.",
+  "A worker never inherits the coordinator's model/effort pair, and an inherited pair is a route mismatch even when the inherited route is stronger than the requested one.",
+  "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule"
 ].freeze
+SATISFIED_ROUTE_DISPOSITIONS = %w[proceed proceed-as-fallback].freeze
+FAIL_CLOSED_ROUTE_CASES = %w[
+  unbound-exact-route
+  silent-substitution
+  coordinator-pair-inheritance
+].freeze
+AW_D_ROUTE_REPLAY = [
+  { pr: 146, role: "implementation", case_id: "bound-exact-match", disposition: "proceed" },
+  { pr: 146, role: "review and QA", case_id: "bound-exact-match", disposition: "proceed" },
+  { pr: 147, role: "post-publication review fixes", case_id: "coordinator-pair-inheritance", disposition: "MODEL_ROUTE_MISMATCH" },
+  { pr: 148, role: "implementation", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" },
+  { pr: 148, role: "QA", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" }
+].freeze
+# Internal consistency and mutation guard for the audited replay fixture; it is
+# not an independent tamper-proof immutable oracle. Sorted so row order is free.
+AW_D_ROUTE_REPLAY_FINGERPRINT = [
+  "146|implementation|bound-exact-match|proceed",
+  "146|review and QA|bound-exact-match|proceed",
+  "147|post-publication review fixes|coordinator-pair-inheritance|MODEL_ROUTE_MISMATCH",
+  "148|QA|silent-substitution|MODEL_ROUTE_MISMATCH",
+  "148|implementation|silent-substitution|MODEL_ROUTE_MISMATCH"
+].freeze
+EXPECTED_ROUTE_DISPOSITIONS = {
+  "bound-exact-match" => "proceed",
+  "unbound-exact-route" => "MODEL_ROUTE_MISMATCH",
+  "silent-substitution" => "MODEL_ROUTE_MISMATCH",
+  "coordinator-pair-inheritance" => "MODEL_ROUTE_MISMATCH",
+  "authorized-fallback" => "proceed-as-fallback"
+}.freeze
+ROUTINE_COORDINATOR_ROUTE_RULE =
+  "Routine bounded planning, dispatch bookkeeping, status reconciliation, evidence collation, and routine coordination use the `balanced`/high class. Name the exact `Terra/high` pair only when the active host has verified that pair; otherwise preserve the requested preference and record host-observed values as `UNKNOWN` when unavailable."
+ROUTINE_MULTI_LANE_COORDINATOR_ROUTE_RULE =
+  "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)"
+SOL_XHIGH_EXCEPTION_ROUTE_RULE =
+  "Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`"
+AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE =
+  "authorized fallback tuple with recorded authority"
+SOL_XHIGH_RESERVATION_RULE =
+  "Reserve Sol/xhigh for a pinned high-risk trigger, a bounded plan challenge, repeated credible failures, or an evidence-backed `MODEL_ESCALATION_REQUEST`."
+SOL_XHIGH_NONTRIGGERS_RULE =
+  "Polling, mechanical work, deterministic aggregation, receipt construction, unchanged-state checks, context pollution, and topology alone do not justify Sol/xhigh."
+USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
+  "An explicitly user-selected Sol/xhigh override is honored and reported as an override, not silently rewritten."
+MEASURED_PROMOTION_DEFERRAL_RULE =
+  "No ten-batch measured promotion decision may be made before #398 execution-provenance receipts exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
+end
+
+def extract_markdown_section(text, heading)
+  heading_index = text.index(heading)
+  raise "missing #{heading}" unless heading_index
+
+  body_start = heading_index + heading.length
+  next_heading = text.match(/^###\s+/, body_start)
+  body_end = next_heading ? next_heading.begin(0) : text.length
+  text[body_start...body_end]
+end
+
+def strip_html_comments(text)
+  text.gsub(/<!--.*?-->/m, "")
+end
+
+def normalized(text)
+  text.gsub(/\s+/, " ").strip
+end
+
+def route_dispositions(text)
+  section = extract_markdown_section(text, ROUTE_DISPOSITION_TABLE_HEADING)
+  rows = section.scan(/^\|\s*`([a-z-]+)`\s*\|[^|\n]*\|[^|\n]*\|\s*`([A-Za-z_-]+)`\s*\|\s*$/)
+  raise "missing route disposition rows under #{ROUTE_DISPOSITION_TABLE_HEADING}" if rows.empty?
+
+  duplicate_case_ids = rows.group_by(&:first).select { |_case_id, entries| entries.length > 1 }.keys
+  unless duplicate_case_ids.empty?
+    raise "duplicate route disposition case ids: #{duplicate_case_ids.join(', ')}"
+  end
+
+  rows.to_h
+end
+
+def mutate_route_disposition(text, case_id, disposition)
+  text.sub(/(^\|\s*`#{Regexp.escape(case_id)}`[^\n]*\|\s*)`[A-Za-z_-]+`(\s*\|\s*$)/) do
+    "#{Regexp.last_match(1)}`#{disposition}`#{Regexp.last_match(2)}"
+  end
+end
+
+def duplicate_route_disposition(text, case_id, disposition)
+  row_pattern = /^\|\s*`#{Regexp.escape(case_id)}`[^\n]*\n/
+  row = text.match(row_pattern)&.to_s
+  raise "missing route disposition row for #{case_id}" unless row
+
+  duplicate = "| `#{case_id}` | duplicate requested tuple | duplicate observed tuple | `#{disposition}` |\n"
+  text.sub(row, "#{row}#{duplicate}")
+end
+
+def assert_route_provenance_contract(test, text, label)
+  guide = normalized(text)
+  ROUTE_PROVENANCE_RULES.each do |rule|
+    test.assert_includes guide, rule, "#{label} must carry the exact route-provenance rule: #{rule}"
+  end
+end
+
+def aw_d_replay_fingerprint
+  AW_D_ROUTE_REPLAY.map do |row|
+    [row.fetch(:pr), row.fetch(:role), row.fetch(:case_id), row.fetch(:disposition)].join("|")
+  end.sort
+end
+
+def assert_aw_d_route_replay(test, text, label)
+  dispositions = route_dispositions(text)
+  test.assert_includes normalized(text), AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE,
+                       "#{label}: authorized fallback must retain its recorded-authority requirement"
+  FAIL_CLOSED_ROUTE_CASES.each do |case_id|
+    test.assert_equal "MODEL_ROUTE_MISMATCH", dispositions[case_id],
+                      "#{label}: #{case_id} must stay fail-closed"
+  end
+  EXPECTED_ROUTE_DISPOSITIONS.each do |case_id, expected|
+    test.assert_equal expected, dispositions[case_id],
+                      "#{label}: #{case_id} must dispose as #{expected}"
+  end
+  test.assert_equal AW_D_ROUTE_REPLAY_FINGERPRINT, aw_d_replay_fingerprint,
+                    "#{label}: the internal AW D replay fixture changed; keep this consistency and mutation guard aligned with the audited record"
+  AW_D_ROUTE_REPLAY.each do |row|
+    expected = row.fetch(:disposition)
+    actual = dispositions[row.fetch(:case_id)]
+    test.assert_equal expected, actual,
+                      "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} (#{row.fetch(:case_id)}) must dispose as #{expected}"
+    next if SATISFIED_ROUTE_DISPOSITIONS.include?(expected)
+
+    test.assert_includes FAIL_CLOSED_ROUTE_CASES, row.fetch(:case_id),
+                         "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} replays a non-satisfied outcome, so #{row.fetch(:case_id)} must be a fail-closed case"
+  end
+end
+
+def assert_recommended_profiles(test, text, label)
+  guide = normalized(text)
+  (CODEX_RECOMMENDATIONS + CLAUDE_RECOMMENDATIONS).each do |recommendation|
+    test.assert_includes guide, recommendation, "#{label} is missing #{recommendation}"
+  end
+  test.assert_includes guide, "advisory", label
+end
+
+def assert_constrained_routine_routing(test, text, label)
+  guide = normalized(strip_html_comments(text))
+  [
+    ROUTINE_COORDINATOR_ROUTE_RULE,
+    ROUTINE_MULTI_LANE_COORDINATOR_ROUTE_RULE,
+    SOL_XHIGH_EXCEPTION_ROUTE_RULE,
+    SOL_XHIGH_RESERVATION_RULE,
+    SOL_XHIGH_NONTRIGGERS_RULE,
+    USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE,
+    MEASURED_PROMOTION_DEFERRAL_RULE
+  ].each do |rule|
+    test.assert_includes guide, rule, "#{label} is missing constrained-routing rule: #{rule}"
+  end
+  test.refute_includes guide, "Multi-lane coordinator: Sol/xhigh",
+                       "#{label} must not present Sol/xhigh as the multi-lane coordinator default"
+end
+
+def evidence_status_rows(text)
+  section = extract_markdown_section(text, "### Evidence Status")
+  lines = section.lines
+  header_index = lines.index { |line| line.strip == "| Scenario class | Risk | Recommended route | Samples | Evidence strength |" }
+  raise "missing Evidence Status table header" unless header_index
+
+  data_lines = lines[(header_index + 2)..].take_while { |line| line.start_with?("|") }
+  raise "missing Evidence Status scenario rows" if data_lines.empty?
+
+  data_lines.map do |line|
+    cells = line.strip.split("|", -1)[1...-1].map(&:strip)
+    raise "malformed Evidence Status scenario row: #{line.strip}" unless cells.length == 5
+
+    {
+      scenario: cells[0],
+      samples: cells[3],
+      evidence_strength: cells[4].delete("`")
+    }
+  end
+end
+
+def mutate_evidence_status_row(text, scenario, samples: nil, evidence_strength: nil)
+  row = text.each_line.find { |line| line.start_with?("| #{scenario} |") }
+  raise "missing Evidence Status scenario row for #{scenario}" unless row
+
+  cells = row.strip.split("|", -1)[1...-1].map(&:strip)
+  cells[3] = samples if samples
+  cells[4] = "`#{evidence_strength}`" if evidence_strength
+  text.sub(row, "| #{cells.join(' | ')} |\n")
+end
+
+def assert_evidence_status_table_unmeasured(test, text, label)
+  evidence_status_rows(text).each do |row|
+    test.assert_equal "0", row.fetch(:samples),
+                      "#{label}: #{row.fetch(:scenario)} must retain Samples: 0"
+    test.assert_equal "UNKNOWN", row.fetch(:evidence_strength),
+                      "#{label}: #{row.fetch(:scenario)} must retain Evidence strength: UNKNOWN"
+  end
 end
 
 def extract_prompt(text, heading)
@@ -88,86 +350,36 @@ def extract_prompt(text, heading)
   text[body_start...body_end]
 end
 
-def extract_markdown_section(text, heading)
-  heading_index = text.index(heading)
-  raise "missing #{heading}" unless heading_index
-
-  body_start = heading_index + heading.length
-  next_heading = text.match(/^###\s+/, body_start)
-  body_end = next_heading ? next_heading.begin(0) : text.length
-  text[body_start...body_end]
-end
-
-def normalized(text)
-  text.gsub(/\s+/, " ").strip
-end
-
-def source_checkout?
-  ENV[SOURCE_CHECKOUT_ENV] == "1"
-end
-
-def assert_signed_observation_contract(test, text, label)
-  test.assert_includes text, SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE,
-                       "#{label} must carry the exact current signed payload"
-  test.assert_includes text, PRE_ACTUAL_HOST_V2_MIGRATION_RULE,
-                       "#{label} must carry the exact pre-actual_host v2 migration contract"
-end
-
 class ModelRoutingContractTest < Minitest::Test
-  def test_signed_observation_payload_and_migration_match_across_all_six_surfaces
-    SIGNED_OBSERVATION_CONTRACT_PATHS.each do |path|
-      assert_signed_observation_contract(self, read_repo_file(path), path)
-    end
-  end
+  def test_active_routing_surfaces_share_the_advisory_unsigned_lifecycle_contract
+    ROUTING_SURFACES.each do |path|
+      text = normalized(read_repo_file(path))
 
-  def test_signed_observation_payload_parity_mutants_fail_on_every_surface
-    legacy_payload = SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE.sub(", `actual_host`", "")
-
-    SIGNED_OBSERVATION_CONTRACT_PATHS.each do |path|
-      text = read_repo_file(path)
-      assert_signed_observation_contract(self, text, path)
-      mutants = {
-        "stale payload" => text.sub(SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE, legacy_payload),
-        "missing actual_host" => text.sub("`actual_host`", "`host`"),
-        "misordered actual_host" => text.sub(
-          "`launch_token`, `actual_host`, `actual_model`",
-          "`launch_token`, `actual_model`, `actual_host`"
-        )
-      }
-
-      mutants.each do |mutation, mutant|
-        assert_raises(Minitest::Assertion, "#{path} accepted #{mutation}") do
-          assert_signed_observation_contract(self, mutant, "#{path} #{mutation} mutant")
-        end
+      [
+        ADVISORY_ROUTE_RULE,
+        OBSERVED_HOST_RULE,
+        ORDINARY_ACTIVATION_RULE,
+        REPLAY_IDENTITY_RULE,
+        DISPATCH_PERSISTENCE_RULE,
+        REPLACEMENT_FENCING_RULE
+      ].each do |rule|
+        assert_includes text, rule, "#{path} is missing: #{rule}"
       end
     end
   end
 
-  def test_signed_observation_migration_parity_mutants_fail_on_every_surface
-    SIGNED_OBSERVATION_CONTRACT_PATHS.each do |path|
+  def test_active_routing_surfaces_do_not_restore_project_signing_or_hard_route_gates
+    ROUTING_SURFACES.each do |path|
       text = read_repo_file(path)
-      assert_signed_observation_contract(self, text, path)
-      mutants = {
-        "missing migration" => text.sub(PRE_ACTUAL_HOST_V2_MIGRATION_RULE, ""),
-        "weakened pending fence" => text.sub(
-          "never use the record to qualify or activate `launch-pending`",
-          "avoid using the record to activate `launch-pending`"
-        ),
-        "weakened current host requirement" => text.sub(
-          "current signed nonempty `actual_host`",
-          "current `actual_host`"
-        )
-      }
 
-      mutants.each do |mutation, mutant|
-        assert_raises(Minitest::Assertion, "#{path} accepted #{mutation}") do
-          assert_signed_observation_contract(self, mutant, "#{path} #{mutation} mutant")
-        end
-      end
+      refute_includes text, ".agents/dispatcher-launch-trust.json", path
+      refute_includes text, "RSA-SHA256", path
+      refute_includes text, "exact-policy UNKNOWN blocks", path
+      refute_includes text, "hard route", path
     end
   end
 
-  def test_goal_prompts_separate_coordinator_assignment_from_worker_routes
+  def test_goal_prompts_describe_preferences_observations_and_ordinary_activation
     prompts = {
       "workflow" => extract_prompt(read_repo_file("workflows/pr-processing.md"), "### Plan To Goal Handoff"),
       "pr-batch" => extract_prompt(read_repo_file("skills/pr-batch/SKILL.md"), "## Goal Prompt Template"),
@@ -175,555 +387,347 @@ class ModelRoutingContractTest < Minitest::Test
     }
 
     prompts.each do |label, prompt|
-      assert_includes prompt, COORDINATOR_ROUTE, "#{label} prompt must pin the parent separately"
-      assert_includes prompt, LAUNCH_ASSURANCE, "#{label} prompt must carry fail-closed launch assurance"
-      assert_includes prompt, WORKER_ROUTE, "#{label} prompt must carry an initial and escalation route"
-      assert_includes prompt, DISPATCH_RULE, "#{label} prompt must separate worker binding from exact-parent relaunch"
-      assert_includes prompt, GOAL_DISPATCH_PREFLIGHT_LINE,
-                      "#{label} prompt must gate automatic Goal-mode resume on dispatcher preflight"
-      assert_includes prompt, GOAL_PERSISTED_STATE_LINE,
-                      "#{label} prompt must persist dispatch state on every autoload fallback path"
-      assert_includes prompt, DISPATCH_PLAN_PROMPT_LINE,
-                      "#{label} prompt must carry lane-keyed dispatcher, fallback, and authority input"
-      refute_includes prompt, "Model/effort groups:", "#{label} prompt must not use the static assignment field"
+      assert_includes prompt, "Coordinator model/effort preference:", label
+      assert_includes prompt, "Worker model/effort preferences:", label
+      assert_includes prompt, "Observed host/model/effort:", label
+      assert_includes prompt, "ordinary pending/active lifecycle", label
+      refute_includes prompt, "Launch assurance:", label
+      refute_includes prompt, "exact-policy", label
     end
   end
 
-  def test_canonical_workflow_defines_cost_aware_staged_routing
-    routing = normalized(
-      extract_markdown_section(read_repo_file("workflows/pr-processing.md"), "### Model And Effort Routing")
-    )
+  def test_dispatcher_helper_is_portable_unsigned_and_preserves_dispatcher_fencing
+    helper_path = File.join(ROOT, "skills/pr-batch/bin/dispatcher-capability-preflight")
+    source = File.read(helper_path, encoding: "UTF-8")
 
-    [
-      "Coordinator assignment",
-      "Launch assurance",
-      "before target interpretation, planning, or dispatch",
-      "When operator policy requires an exact parent or checker",
-      "effective instance-bound runtime state",
-      "mutable default configuration alone",
-      "A prompt cannot upgrade its parent",
-      "fresh qualifying checker is reserved",
-      "Without an exact-parent or exact-checker policy",
-      "Independent checker assignment",
-      "Sol/high",
-      "Terra/high",
-      "coordinator-approved execution envelope",
-      "workers must not inherit the coordinator assignment",
-      "A small, explainable first failure stays on the initial route",
-      "two materially different, credible attempts",
-      "`MODEL_ESCALATION_REQUEST`",
-      "Plan review is the preferred escalation",
-      "return bounded implementation to the initial worker tier",
-      "strongest-led implementation"
-    ].each do |phrase|
-      assert_includes routing, phrase, "canonical workflow is missing staged-routing rule: #{phrase}"
-    end
-
-    assert_includes routing, "preserve unavailable binding as `UNKNOWN` and continue portable class-based planning"
-    assert_includes routing, DISPATCH_PREFLIGHT_RULE
+    assert File.executable?(helper_path)
+    assert_includes source, "blocked-replacement-fencing"
+    assert_includes source, "stop-and-reconcile-prior-instance"
+    assert_includes source, "replacement-proof"
+    assert_includes source, "launch-pending"
+    assert_includes source, '"active"'
+    refute_includes source, "OpenSSL"
+    refute_includes source, "dispatcher-launch-trust"
+    refute_includes source, "launch_confirmation"
   end
 
-  def test_dispatcher_capability_preflight_is_portable_and_documented
-    helper = File.join(ROOT, "skills/pr-batch/bin/dispatcher-capability-preflight")
-    assert File.executable?(helper), "dispatcher capability preflight must be executable"
+  def test_checker_surfaces_preserve_independence_and_quality_without_route_blocking
+    CHECKER_SURFACES.each do |path|
+      text = normalized(read_repo_file(path))
 
-    guide = read_repo_file("docs/agent-workflows-model-routing.md")
-    docs = read_repo_file("docs/pr-batch-skills.md")
-    context = read_repo_file("CONTEXT.md")
-    triage = read_repo_file("skills/triage/SKILL.md")
-    [guide, docs, context, read_repo_file("skills/plan-pr-batch/SKILL.md"), read_repo_file("skills/pr-batch/SKILL.md"),
-     triage, read_repo_file("workflows/pr-processing.md")].each do |text|
-      assert_includes text, "dispatch-decision-request v1"
-      assert_includes text, "dispatcher-capability-preflight"
-      assert_includes text, PROSPECTIVE_INSTANCE_ID_RULE
-      assert_includes text, UNKNOWN_DISPATCH_EVIDENCE_RULE
-      assert_includes text, REPLAY_IDENTITY_RULE
-      assert_includes text, REPLACEMENT_FENCING_RULE
-      assert_includes text, DISPATCH_PERSISTENCE_RULE
-      assert_includes text, EVIDENCE_VOCABULARY_RULE
-      assert_includes text, REPLACEMENT_PROOF_RULE
-      assert_includes text, DECISION_RESOLUTION_RULE
-      assert_includes text, SELF_CONTAINED_PERSISTENCE_RULE
-    end
-
-    [
-      guide,
-      docs,
-      context,
-      triage,
-      read_repo_file("skills/plan-pr-batch/SKILL.md"),
-      read_repo_file("skills/pr-batch/SKILL.md"),
-      read_repo_file("workflows/pr-processing.md")
-    ].each do |text|
-      assert_includes text, LAUNCH_CONFIRMATION_V2_RULE
-      assert_includes text, LAUNCH_CONFIRMATION_V1_HISTORY_RULE
-      refute_includes text, OBSOLETE_V1_ACTIVATION_RULE
-    end
-    [
-      guide,
-      docs,
-      context,
-      triage,
-      read_repo_file("skills/pr-batch/SKILL.md"),
-      read_repo_file("workflows/pr-processing.md")
-    ].each do |text|
-      assert_includes text, SIGNED_LAUNCH_OBSERVATION_RULE
-      assert_includes text, FIXED_DISPATCHER_TRUST_RULE
-      assert_includes text, DISPATCHER_TRUST_SCHEMA_RULE
-      assert_includes text, DISPATCHER_TRUST_PROVENANCE_RULE
-      assert_includes text, LAUNCH_CONFIRMATION_V1_MIGRATION_RULE
-      refute_includes text, "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM"
-      refute_includes text, "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID"
-    end
-    [triage, read_repo_file("skills/pr-batch/SKILL.md"), read_repo_file("workflows/pr-processing.md")].each do |text|
-      assert_includes text, SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE
-    end
-
-    portable_call = '"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"'
-    [guide, docs, read_repo_file("skills/plan-pr-batch/SKILL.md"), read_repo_file("workflows/pr-processing.md")].each do |text|
-      assert_includes text, "PR_BATCH_SKILL_DIR"
-      assert_includes text, portable_call
-      refute_includes text, "skills/pr-batch/bin/dispatcher-capability-preflight"
+      assert_includes text, CHECKER_RULE, path
+      assert_includes text.downcase, "independent", path
     end
   end
 
-  def test_worker_replacement_is_checkpointed_fenced_and_non_overlapping
-    replacement = normalized(
-      extract_markdown_section(
-        read_repo_file("workflows/pr-processing.md"),
-        "### Worker Model Replacement And Escalation"
-      )
-    )
+  def test_review_audit_and_planning_surfaces_never_qualify_verdicts_by_route
+    CHECKER_SURFACES.each do |path|
+      text = normalized(read_repo_file(path))
 
-    [
-      "`MODEL_REPLACEMENT_HANDOFF`",
-      "preserve the lane identity, worktree, branch, and useful changes",
-      "confirm the old instance has stopped",
-      "old and replacement instances must not overlap",
-      "Reconcile the claim holder, generation, and instance",
-      "initial and final model/effort",
-      "credible attempt count",
-      "escalation disposition"
-    ].each do |phrase|
-      assert_includes replacement, phrase, "replacement protocol is missing: #{phrase}"
+      assert_includes text, VERDICT_QUALIFICATION_RULE, path
+      assert_includes text, ROUTE_NONDISQUALIFICATION_RULE, path
+      ROUTE_DISQUALIFICATION_PATTERNS.each do |label, pattern|
+        refute_match pattern, text, "#{path}: #{label}"
+      end
     end
   end
 
-  def test_ready_routes_require_both_tiers_and_group_by_complete_policy
-    planner = normalized(read_repo_file("skills/plan-pr-batch/SKILL.md"))
-    workflow = normalized(
-      extract_markdown_section(read_repo_file("workflows/pr-processing.md"), "### Model And Effort Routing")
-    )
+  def test_active_execution_surfaces_never_enforce_named_model_routes
+    ROUTING_SURFACES.each do |path|
+      text = normalized(read_repo_file(path))
 
-    assert_includes planner, "If either the initial or escalation route cannot be named"
-    assert_includes planner, "Do not call the prompt ready"
-    assert_includes workflow, "Collate lanes with matching complete worker model/effort routes"
-    assert_includes workflow, "initial assignment, escalation assignment, evidence gate, and maximum escalation count"
-    refute_includes workflow, "matching initial routes only"
-  end
-
-  def test_recovery_prompt_preserves_parent_and_replaces_nonconforming_workers
-    section = extract_markdown_section(
-      read_repo_file("workflows/pr-processing.md"),
-      "### Model-Routing Recovery Prompt"
-    )
-    prompt = normalized(extract_prompt(section, "Use this prompt"))
-
-    [
-      "Continue the existing goal; do not clear it or start a new batch",
-      "After launch assurance passes, keep the compliant parent coordinator on",
-      LAUNCH_ASSURANCE,
-      "When the existing goal requires an exact checker",
-      "On mismatch or UNKNOWN, stop until a fresh qualifying checker is reserved",
-      "Only when neither an exact-parent nor exact-checker policy applies",
-      "Inventory every active worker",
-      "`MODEL_REPLACEMENT_HANDOFF`",
-      "Confirm the old instance has stopped",
-      WORKER_ROUTE,
-      "Preserve each lane's route mapping",
-      "Do not allow a worker to inherit the coordinator assignment",
-      "`MODEL_ESCALATION_REQUEST`",
-      "Plan review is preferred",
-      "merge_authority"
-    ].each do |phrase|
-      assert_includes prompt, phrase, "recovery prompt is missing: #{phrase}"
+      [
+        EXECUTION_ROUTE_ADVISORY_RULE,
+        EXECUTION_ROUTE_FALLBACK_RULE,
+        MODEL_NEUTRAL_RISK_RULE,
+        MODEL_NEUTRAL_ENVELOPE_RULE
+      ].each do |rule|
+        assert_includes text, rule, "#{path} is missing: #{rule}"
+      end
+      NAMED_EXECUTION_ENFORCEMENT_PATTERNS.each do |label, pattern|
+        refute_match pattern, text, "#{path}: #{label}"
+      end
+      ROUTE_AUTHORITY_ENFORCEMENT_PATTERNS.each do |label, pattern|
+        refute_match pattern, text, "#{path}: #{label}"
+      end
     end
-
-    refute_includes prompt, "Worker initial route: <model/class>/<effort>",
-                    "recovery prompt must not collapse per-lane routes into one batch-wide pair"
-    refute_includes prompt, "Do not stop, replace, or downgrade the parent",
-                    "recovery prompt must not preserve a parent before launch assurance passes"
   end
 
-  def test_continuation_entry_points_distinguish_batch_recovery_from_worker_restart
+  def test_adversarial_review_surfaces_keep_route_advisory_without_weakening_the_verdict
     %w[
-      skills/plan-pr-batch/SKILL.md
-      skills/pr-batch/SKILL.md
+      skills/adversarial-pr-review/SKILL.md
+      workflows/adversarial-pr-review.md
     ].each do |path|
-      entry = normalized(read_repo_file(path))
+      text = normalized(read_repo_file(path))
 
-      assert_includes entry,
-                      "saved handoff explicitly requests model-route replacement or identifies workers on a wrong or too-expensive route",
-                      "#{path} must detect model-routing recovery handoffs"
-      assert_includes entry, "`MODEL_REPLACEMENT_HANDOFF` alone does not prove whole-batch route recovery",
-                      "#{path} must not confuse a worker restart handoff with batch recovery"
-      assert_includes entry, "Model-Routing Recovery Prompt",
-                      "#{path} must route model handoffs through fenced recovery"
-      assert_includes entry, "Bounded Status Recovery",
-                      "#{path} must route standalone worker restart handoffs through live-state recovery"
-      assert_includes entry, "Otherwise use the",
-                      "#{path} must reserve generic continuation for non-model handoffs"
+      assert_includes text, ADVERSARIAL_ADVISORY_RULE, path
+      assert_includes text, ADVERSARIAL_OBSERVATION_RULE, path
+      assert_includes text, ADVERSARIAL_QUALITY_RULE, path
+      refute_includes text, "Do not downgrade this qualifying adversarial verdict", path
+      refute_includes text,
+                      "remains the route for routine deterministic QA, not this qualifying adversarial verdict",
+                      path
     end
   end
 
-  def test_user_guide_carries_the_cost_aware_model_playbook
+  def test_host_owned_hard_gates_require_an_owned_end_to_end_rollout
+    contract = normalized(read_repo_file("docs/host-adapter/contract.md"))
+
+    assert_includes contract, HOST_ROLLOUT_MATRIX_RULE
+    assert_includes contract, HOST_ROLLOUT_OPTIONAL_RULE
+  end
+
+  def test_signed_launch_postmortem_has_accountable_followup_owners_and_resumption_boundary
+    postmortem = normalized(
+      read_repo_file("docs/postmortems/2026-08-06-unsupported-signed-launch-enforcement.md")
+    )
+
+    assert_match %r{Convert incompatible Codex/Claude prompts.*\[justin808\]\(https://github\.com/justin808\).*\[issue #372\]\(https://github\.com/shakacode/agent-workflows/issues/372\)}, postmortem
+    assert_match %r{Use observed routing evidence.*\[justin808\]\(https://github\.com/justin808\).*\[issue #151\]\(https://github\.com/shakacode/agent-workflows/issues/151\)}, postmortem
+    assert_includes postmortem,
+                    "Issue #273 resumes separately after #299 removes the unsupported launch gate; #299 does not implement or redefine #273."
+    assert_includes postmortem, "https://github.com/shakacode/agent-workflows/issues/273"
+  end
+
+  def test_recommended_profiles_remain_advisory_across_routing_surfaces
+    paths = %w[
+      docs/agent-workflows-model-routing.md
+      docs/pr-batch-skills.md
+      skills/plan-pr-batch/SKILL.md
+      skills/post-merge-audit/SKILL.md
+      skills/pr-batch/SKILL.md
+      skills/triage/SKILL.md
+      workflows/post-merge-audit.md
+      workflows/pr-processing.md
+    ]
+
+    paths.each do |path|
+      assert_recommended_profiles(self, read_repo_file(path), path)
+    end
+  end
+
+  def test_profile_surfaces_reject_the_former_sol_xhigh_coordinator_default
+    paths = %w[
+      docs/agent-workflows-model-routing.md
+      docs/pr-batch-skills.md
+      skills/plan-pr-batch/SKILL.md
+      skills/post-merge-audit/SKILL.md
+      skills/pr-batch/SKILL.md
+      skills/triage/SKILL.md
+      workflows/post-merge-audit.md
+      workflows/pr-processing.md
+    ]
+
+    paths.each do |path|
+      text = read_repo_file(path)
+      assert_recommended_profiles(self, text, path)
+      mutant = text.sub(
+        "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
+        "Multi-lane coordinator: Sol/xhigh"
+      )
+
+      refute_equal text, mutant, "#{path} former coordinator-default mutant did not change the profile"
+      assert_raises(Minitest::Assertion, "#{path} accepted the former Sol/xhigh coordinator default") do
+        assert_recommended_profiles(self, mutant, "#{path} former coordinator-default mutant")
+      end
+    end
+  end
+
+  def test_cost_aware_playbook_and_escalation_controls_remain
     guide = read_repo_file("docs/agent-workflows-model-routing.md")
+    workflow = normalized(read_repo_file("workflows/pr-processing.md"))
 
     [
       "GPT-5.6 Sol",
       "GPT-5.6 Terra",
-      "GPT-5.5",
       "Conservative GPT-5.6 Profile",
       "Sol diagnosis and envelope → Terra implementation → Sol check",
-      "Luna is outside this conservative profile",
-      "## Verification Matrix",
       "First-pass acceptance rate",
       "Percentage of tasks escalated",
       "Do not assume that maximum reasoning always improves outcomes"
-    ].each do |phrase|
-      assert_includes guide, phrase, "model-routing guide is missing playbook content: #{phrase}"
-    end
-
-    return unless source_checkout?
-
-    assert_includes read_repo_file("docs/README.md"), "[Cost-aware model routing](agent-workflows-model-routing.md)"
+    ].each { |phrase| assert_includes guide, phrase }
+    assert_includes workflow, "MODEL_ESCALATION_REQUEST"
+    assert_includes workflow, "old and replacement instances must not overlap"
+    assert_includes workflow, "stop and reconcile"
   end
 
-  def test_codex_gpt56_recommendation_is_memorialized_across_routing_surfaces
-    paths = %w[
-      docs/agent-workflows-model-routing.md
-      docs/pr-batch-skills.md
-      skills/plan-pr-batch/SKILL.md
-      skills/post-merge-audit/SKILL.md
-      skills/pr-batch/SKILL.md
-      skills/triage/SKILL.md
-      workflows/post-merge-audit.md
-      workflows/pr-processing.md
-    ]
-
-    paths.each do |path|
-      text = normalized(read_repo_file(path))
-
-      CODEX_GPT56_RECOMMENDED_ROUTES.each do |route|
-        assert_includes text, route, "#{path} is missing the recommended Codex route: #{route}"
-      end
-
-      refute_includes text, "Terra/medium", "#{path} must not restore Terra/medium to the Codex profile"
-    end
-
-    checker = normalized(read_repo_file("workflows/continuous-evaluation-loop.md"))
-    assert_includes checker, INDEPENDENT_ADVERSARIAL_QA_ROUTE
-    assert_includes checker, ROUTINE_DETERMINISTIC_QA_ROUTE
-
+  def test_lane_cards_separate_preference_from_optional_observation
     %w[
-      skills/adversarial-pr-review/SKILL.md
-      workflows/adversarial-pr-review.md
-    ].each do |path|
-      assert_includes normalized(read_repo_file(path)), INDEPENDENT_ADVERSARIAL_QA_ROUTE
-    end
-
-    triage = normalized(read_repo_file("skills/triage/SKILL.md"))
-    assert_includes triage, "Do not encode unverified exact model or tool names as portable defaults"
-    refute_includes triage, "Do not encode model or tool names in the skill"
-
-    guide = normalized(read_repo_file("docs/agent-workflows-model-routing.md"))
-    assert_includes guide, "Routine deterministic QA uses Sol/high"
-    refute_includes guide, "Routine deterministic QA may use Sol/high"
-    assert_includes guide, "`xhigh` is the extra-high reasoning-effort tier above `high`"
-    assert_includes guide, "deliberate conservative baselines for multi-lane coordination and independent adversarial QA"
-
-    {
-      "docs/agent-workflows-model-routing.md" => "Other unknown or uncertainty routes to Sol/high",
-      "workflows/pr-processing.md" => "Any other missing or disputed simplicity criterion routes to Sol/high"
-    }.each do |path, uncertainty_fallback|
-      text = normalized(read_repo_file(path))
-      assert_includes text, "explicit acceptance criteria"
-      assert_includes text, "known bounded file surface"
-      assert_includes text, "strong deterministic verification oracle"
-      assert_includes text, "no unresolved design decision"
-      assert_includes text, "no security, authorization, concurrency, persistence, lifecycle, routing, or public-contract change"
-      assert_includes text, "easy failure detection and rollback"
-      assert_includes text, "Any present or disputed high-risk boundary routes to Sol/xhigh"
-      assert_includes text, uncertainty_fallback
-    end
-  end
-
-  def test_claude_recommendation_is_memorialized_across_routing_surfaces
-    paths = %w[
-      docs/agent-workflows-model-routing.md
-      docs/pr-batch-skills.md
-      skills/plan-pr-batch/SKILL.md
-      skills/post-merge-audit/SKILL.md
-      skills/pr-batch/SKILL.md
-      skills/triage/SKILL.md
-      workflows/post-merge-audit.md
       workflows/pr-processing.md
-    ]
-
-    paths.each do |path|
-      text = normalized(read_repo_file(path))
-
-      CLAUDE_RECOMMENDED_ROUTES.each do |route|
-        assert_includes text, route, "#{path} is missing the recommended Claude route: #{route}"
-      end
-
-      assert_includes text, CLAUDE_PROFILE_VERSION_MARKER,
-                      "#{path} must mark the Claude profile as versioned and provisional"
-      refute_includes text, "Sonnet 5/medium", "#{path} must not introduce Sonnet 5/medium into the Claude profile"
-    end
-
-    checker = normalized(read_repo_file("workflows/continuous-evaluation-loop.md"))
-    assert_includes checker, CLAUDE_INDEPENDENT_ADVERSARIAL_QA_ROUTE
-    assert_includes checker, CLAUDE_ROUTINE_DETERMINISTIC_QA_ROUTE
-
-    %w[
-      skills/adversarial-pr-review/SKILL.md
-      workflows/adversarial-pr-review.md
-    ].each do |path|
-      assert_includes normalized(read_repo_file(path)), CLAUDE_INDEPENDENT_ADVERSARIAL_QA_ROUTE
-    end
-
-    guide = normalized(read_repo_file("docs/agent-workflows-model-routing.md"))
-    assert_includes guide, "## Conservative Claude Profile (provisional)"
-    assert_includes guide, "provisional pending the observed route receipts and comparative evidence"
-    assert_includes guide, "Routine deterministic QA uses Opus 4.8/high"
-    refute_includes guide, "Routine deterministic QA may use Opus 4.8/high"
-    assert_includes guide, "Never make Fable 5 or `max` effort a default route"
-    assert_includes guide, "Haiku 4.5 is outside this provisional profile"
-    assert_includes guide,
-                    "deliberate conservative baselines for multi-lane coordination, uncertain work, and independent adversarial QA"
-
-    %w[
-      docs/agent-workflows-model-routing.md
-      workflows/pr-processing.md
-    ].each do |path|
-      text = normalized(read_repo_file(path))
-      assert_includes text, "Any present or disputed high-risk boundary routes to Opus 4.8/xhigh"
-      assert_includes text, "Any other missing or disputed simplicity criterion routes to Opus 4.8/xhigh"
-    end
-  end
-
-  def test_glossary_models_staged_routes_and_replacement_evidence
-    skip "source-pack glossary is not installed" unless source_checkout?
-
-    context = normalized(read_repo_file("CONTEXT.md"))
-
-    [
-      "**Coordinator model/effort assignment**",
-      "**Batch launch assurance**",
-      "exact checker model/effort required by operator policy",
-      "exact parent or checker",
-      "**Worker execution envelope**",
-      "**Worker model/effort route**",
-      "**Active model/effort assignment**",
-      "**Model escalation request**",
-      "**Model replacement handoff**",
-      "**Model/effort route group**",
-      "exactly one active **Active model/effort assignment**",
-      "old and replacement worker instances never overlap"
-    ].each do |phrase|
-      assert_includes context, phrase, "CONTEXT.md is missing staged-routing vocabulary: #{phrase}"
-    end
-
-    refute_includes context, "**Model/effort group**"
-  end
-
-  def test_source_docs_gate_launch_assurance_before_target_verification
-    skip "source-pack docs are not installed" unless source_checkout?
-
-    docs = read_repo_file("docs/pr-batch-skills.md")
-    launch_gate = docs.index("4. Record `Launch assurance`")
-    target_verification = docs.index("5. Verify every candidate through GitHub")
-
-    refute_nil launch_gate
-    refute_nil target_verification
-    assert_operator launch_gate, :<, target_verification
-    [DISPATCH_PERSISTENCE_RULE, EVIDENCE_VOCABULARY_RULE].each do |rule|
-      assert_match(/^   #{Regexp.escape(rule)}/, docs, "item 4 continuation must retain exactly three spaces")
-    end
-  end
-
-  def test_planning_and_dispatch_surfaces_propagate_routes
-    paths = %w[
-      skills/plan-pr-batch/SKILL.md
       skills/pr-batch/SKILL.md
+      skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
-    ]
-    paths << "docs/pr-batch-skills.md" if source_checkout?
-
-    paths.each do |path|
+    ].each do |path|
       text = read_repo_file(path)
-      assert_includes text, "Coordinator model/effort", "#{path} must separate the parent assignment"
-      assert_includes text, "Launch assurance", "#{path} must preserve the launch gate"
-      assert_includes text, "Worker model/effort route", "#{path} must plan staged worker routes"
-      assert_includes text, "MODEL_ESCALATION_REQUEST", "#{path} must carry the escalation gate"
-      refute_includes text, "Model/effort groups:", "#{path} must not retain the static prompt field"
-    end
-
-    pr_batch = read_repo_file("skills/pr-batch/SKILL.md")
-    pr_batch_normalized = normalized(pr_batch)
-    assert_includes pr_batch, "Model-Routing Recovery Prompt"
-    assert_includes pr_batch, "Worker Model Replacement And Escalation"
-    assert_includes pr_batch_normalized, "independent-checker model/effort plus its qualifying binding source"
-    assert_includes pr_batch_normalized, "parent mismatch or `UNKNOWN`"
-    assert_includes pr_batch_normalized, "correctly bound coordinator relaunch"
-    assert_includes pr_batch_normalized,
-                    "checker mismatch or `UNKNOWN` requires reserving a fresh qualifying checker"
-    assert_includes pr_batch_normalized, "Without an exact-parent or exact-checker policy"
-
-    planner = normalized(read_repo_file("skills/plan-pr-batch/SKILL.md"))
-    assert_includes planner, "exact-parent or exact-checker"
-    assert_includes planner, "continue portable class-based planning"
-    assert_includes planner, "exact policy-required checker route"
-    assert_includes planner, "checker reservation"
-    assert_includes planner, "freshness, and independence when it starts"
-  end
-
-  def test_triage_launch_assurance_precedes_inventory
-    triage = read_repo_file("skills/triage/SKILL.md")
-    launch_gate = triage.index("2. **Launch assurance**")
-    inventory = triage.index("## Phase 1: Inventory And Graph")
-
-    refute_nil launch_gate
-    refute_nil inventory
-    assert_operator launch_gate, :<, inventory
-
-    preconditions = normalized(triage[launch_gate...inventory])
-    [
-      "before repository or target interpretation",
-      "Under an exact-parent policy, a parent mismatch or `UNKNOWN` requires a correctly bound coordinator relaunch",
-      "Under an exact-checker policy, a checker mismatch or `UNKNOWN` requires reserving a fresh qualifying checker",
-      "For either actor without an exact policy, preserve that actor's unavailable binding as `UNKNOWN`",
-      "continue portable class-based triage"
-    ].each do |phrase|
-      assert_includes preconditions, phrase, "triage launch precondition is missing: #{phrase}"
+      assert_includes text, "preferred model/effort", path
+      assert_includes text, "observed host/model/effort", path
+      assert_includes text, "UNKNOWN", path
     end
   end
 
-  def test_continuous_checker_is_strong_independent_and_fail_closed
-    checker_text = read_repo_file("workflows/continuous-evaluation-loop.md")
-    checker = normalized(checker_text)
-
-    [
-      "distinct from every maker",
-      "exact model/effort",
-      "conservative GPT-5.6 profile",
-      "Independent adversarial QA: Sol/xhigh",
-      "Routine deterministic QA: Sol/high",
-      "Terra may collect mechanical evidence",
-      "may not issue the qualifying intent-achievement or final-risk verdict",
-      "do not return a clean/`realized` verdict",
-      "Without an exact-checker policy",
-      "continue portable class-based evaluation",
-      "missing binding alone does not block an otherwise evidence-backed `realized` classification"
-    ].each do |phrase|
-      assert_includes checker, phrase, "continuous checker contract is missing: #{phrase}"
-    end
-
-    loop_prompt = normalized(extract_prompt(checker_text, "## Loop Prompt"))
-    [
-      "distinct from every maker",
-      "exact model/effort",
-      "Checker policy: <exact model>/<effort> via <binding source> | no exact-checker policy",
-      "If independence is unavailable or UNKNOWN, stop short of a clean/realized verdict",
-      "When an exact checker is required",
-      "mismatched, unavailable, below-policy, or UNKNOWN exact model/effort or binding also blocks",
-      "Without an exact-checker policy",
-      "continue portable class-based evaluation",
-      "do not block an otherwise evidence-backed clean/realized verdict solely for that reason",
-      "checker_route_compliance: UNKNOWN|failed"
-    ].each do |phrase|
-      assert_includes loop_prompt, phrase, "continuous checker Loop Prompt is missing: #{phrase}"
-    end
+  def test_routing_guide_pins_requested_versus_observed_route_provenance
+    assert_route_provenance_contract(self, read_repo_file(MODEL_ROUTING_GUIDE_PATH), MODEL_ROUTING_GUIDE_PATH)
   end
 
-  def test_post_merge_independent_audit_prompt_is_fail_closed
-    audit_text = read_repo_file("workflows/post-merge-audit.md")
-    audit_prompt = normalized(extract_prompt(audit_text, "## Independent Audit Prompt"))
-    audit_skill = normalized(read_repo_file("skills/post-merge-audit/SKILL.md"))
-
-    assert_includes normalized(audit_text),
-                    "one launch-assured policy-compliant run as the qualifying checker"
-    refute_includes normalized(audit_text), "one launch-assured Sol run as the qualifying checker"
-    assert_includes audit_skill, "exact fresh qualifying-checker reservation needed"
-    refute_includes audit_skill, "the relaunch needed"
-    [normalized(audit_text), audit_skill].each do |text|
-      assert_includes text, "Sonnet may collect mechanical evidence but does not issue the qualifying verdict"
-    end
-
-    [
-      "Audit role: <qualifying-checker | advisory-auditor>",
-      "For completed-batch audit with `Audit role: qualifying-checker`",
-      "fresh instance independent from every maker",
-      "identity, exact model/effort, binding source",
-      "Host session metadata, effective instance-bound runtime state, or explicit operator-selected launch configuration",
-      "mutable default configuration, installed rosters, dispatch-resolved classes, prompt text, and model self-report do not",
-      "Terra may collect mechanical evidence but must not issue the qualifying audit verdict",
-      "Opus 4.8/high is limited to routine deterministic QA",
-      "Sonnet may collect mechanical evidence but must not issue the qualifying audit verdict",
-      "If checker identity, exact model/effort, binding source, or independence is unavailable",
-      "below policy, or `UNKNOWN`",
-      "do not return a clean verdict",
-      "checker_route_compliance: UNKNOWN|failed",
-      "exact fresh qualifying-checker reservation needed",
-      "For `Audit role: advisory-auditor`",
-      "checker_route_compliance: not_applicable (advisory)",
-      "do not issue the qualifying clean/ready verdict",
-      "Concrete advisory findings still require coordinator triage",
-      "If `Audit role` is missing, unresolved, invalid, or `UNKNOWN`, record `checker_route_compliance: UNKNOWN`; collect and report evidence only, and do not issue the qualifying clean/ready verdict"
-    ].each do |phrase|
-      assert_includes audit_prompt, phrase, "post-merge Independent Audit Prompt is missing: #{phrase}"
-    end
-
-    refute_includes audit_prompt, "checker reservation or relaunch needed"
+  def test_aw_d_route_mismatch_replays_to_fail_closed_dispositions
+    assert_aw_d_route_replay(self, read_repo_file(MODEL_ROUTING_GUIDE_PATH), MODEL_ROUTING_GUIDE_PATH)
   end
 
-  def test_worker_assignment_evidence_is_carried_in_lane_cards
-    %w[
-      workflows/pr-processing.md
-      skills/pr-batch/SKILL.md
-      skills/plan-pr-batch/SKILL.md
-      skills/triage/SKILL.md
-    ].each do |path|
-      assert_includes read_repo_file(path), "exact model/effort+binding",
-                      "#{path} Lane Card must expose worker assignment evidence"
-    end
+  def test_route_provenance_rule_mutants_fail_closed
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_route_provenance_contract(self, text, MODEL_ROUTING_GUIDE_PATH)
+    guide = normalized(text)
+    mutants = {
+      "collapsed requested into observed" => guide.sub("never collapse into one", "may be recorded as one field"),
+      "prose accepted as evidence" => guide.sub(
+        "is never presentable as observed execution evidence",
+        "should not usually be presented as observed execution evidence"
+      ),
+      "unbound exact route allowed to proceed" => guide.sub(
+        "stops the lane with `MODEL_ROUTE_MISMATCH` before any edit begins",
+        "is recorded as a note and the lane proceeds"
+      ),
+      "inheritance permitted when stronger" => guide.sub(
+        "an inherited pair is a route mismatch even when the inherited route is stronger than the requested one",
+        "an inherited pair is acceptable when the inherited route is stronger than the requested one"
+      ),
+      "nested spawns exempted" => guide.sub(
+        "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule",
+        "Nested subagents are exempt from this rule"
+      )
+    }
 
-    worker_rules = normalized(
-      extract_markdown_section(read_repo_file("workflows/pr-processing.md"), "### Worker Rules")
-    )
-    assert_includes worker_rules, "`Assignment:` `<exact-model>/<effort>`"
-    assert_includes worker_rules, "`binding:` `<host/session/runtime/operator source|UNKNOWN>`"
-    assert_includes worker_rules, "Prompt text or worker self-report alone is not binding evidence"
-  end
-
-  def test_planners_preserve_checker_independence_and_worker_stop_conditions
-    %w[
-      skills/plan-pr-batch/SKILL.md
-      skills/triage/SKILL.md
-    ].each do |path|
-      planner = normalized(read_repo_file(path)).downcase
-      [
-        "fresh strongest-capability instance distinct from every maker",
-        "may collect mechanical evidence but may not issue the qualifying intent, risk, or readiness verdict",
-        "contradictory evidence",
-        "ambiguous criteria",
-        "scope or risk growth",
-        "weakened verification",
-        "consequential judgment"
-      ].each do |phrase|
-        assert_includes planner, phrase, "#{path} is missing checker/envelope rule: #{phrase}"
+    mutants.each do |mutation, mutant|
+      refute_equal guide, mutant, "#{mutation} mutant did not change the guide text"
+      assert_raises(Minitest::Assertion, "model-routing guide accepted #{mutation}") do
+        assert_route_provenance_contract(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
       end
     end
+  end
+
+  def test_aw_d_replay_mutants_fail_closed_on_silent_inheritance
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_aw_d_route_replay(self, text, MODEL_ROUTING_GUIDE_PATH)
+    mutants = {
+      "inherited coordinator pair allowed to proceed" =>
+        mutate_route_disposition(text, "coordinator-pair-inheritance", "proceed"),
+      "silent substitution downgraded to a fallback" =>
+        mutate_route_disposition(text, "silent-substitution", "proceed-as-fallback"),
+      "unbound exact route allowed to proceed" =>
+        mutate_route_disposition(text, "unbound-exact-route", "proceed"),
+      "authorized fallback stripped of its recorded-authority requirement" =>
+        mutate_route_disposition(text, "authorized-fallback", "proceed"),
+      "authorized fallback tuple loses recorded authority" =>
+        text.sub(AUTHORIZED_FALLBACK_RECORDED_AUTHORITY_RULE, "authorized fallback tuple"),
+      "bound exact match downgraded to a mismatch" =>
+        mutate_route_disposition(text, "bound-exact-match", "MODEL_ROUTE_MISMATCH")
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal text, mutant, "#{mutation} mutant did not change the disposition table"
+      assert_raises(Minitest::Assertion, "AW D replay accepted #{mutation}") do
+        assert_aw_d_route_replay(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
+    end
+  end
+
+  def test_duplicate_route_dispositions_fail_closed
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    mutant = duplicate_route_disposition(text, "silent-substitution", "proceed")
+
+    refute_equal text, mutant, "duplicate disposition mutant did not change the guide text"
+    error = assert_raises(RuntimeError, "duplicate route disposition row was accepted") do
+      route_dispositions(mutant)
+    end
+    assert_includes error.message, "duplicate route disposition case ids: silent-substitution"
+  end
+
+  def test_routing_guide_marks_scenario_recommendations_unmeasured
+    guide = normalized(read_repo_file(MODEL_ROUTING_GUIDE_PATH))
+
+    [
+      "No measured route recommendation is published yet",
+      "priors chosen for fail-closed safety, not measurements",
+      "do not compare a requested route that lacks an observed receipt against one that has one",
+      "Route adherence is itself an outcome measure"
+    ].each do |phrase|
+      assert_includes guide, phrase, "model-routing guide is missing evidence-status rule: #{phrase}"
+    end
+  end
+
+  def test_evidence_status_table_keeps_every_scenario_unmeasured
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_evidence_status_table_unmeasured(self, text, MODEL_ROUTING_GUIDE_PATH)
+
+    mutants = {
+      "nonzero scenario samples" => mutate_evidence_status_row(text, "Adversarial review", samples: "1"),
+      "known scenario evidence strength" => mutate_evidence_status_row(
+        text,
+        "Exact-head QA and replay",
+        evidence_strength: "MEASURED"
+      )
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal text, mutant, "#{mutation} mutant did not change the evidence-status table"
+      assert_raises(Minitest::Assertion, "evidence-status table accepted #{mutation}") do
+        assert_evidence_status_table_unmeasured(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
+    end
+  end
+
+  def test_routine_coordinator_routing_and_measured_promotion_remain_constrained
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_constrained_routine_routing(self, text, MODEL_ROUTING_GUIDE_PATH)
+
+    mutants = {
+      "routine coordination defaults to strongest" => text.sub(
+        "routine coordination use the `balanced`/high class",
+        "routine coordination use Sol/xhigh by default"
+      ),
+      "routine multi-lane coordinator defaults to Sol/xhigh" => text.sub(
+        "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
+        "Multi-lane coordinator: Sol/xhigh"
+      ),
+      "routine coordination defaults to strongest only in an HTML comment" =>
+        text.sub(
+          "routine coordination use the `balanced`/high class",
+          "routine coordination use Sol/xhigh by default"
+        ) + "\n<!-- #{ROUTINE_COORDINATOR_ROUTE_RULE} -->\n",
+      "unverified Terra pair named as exact" => text.sub(
+        "only when the active host has verified that pair",
+        "whenever the coordinator requests it"
+      ),
+      "Sol/xhigh reservation broadened" => text.sub(
+        "Reserve Sol/xhigh for a pinned high-risk trigger",
+        "Use Sol/xhigh for ordinary coordination or a pinned high-risk trigger"
+      ),
+      "mechanical activity treated as a Sol/xhigh trigger" => text.sub(
+        "mechanical work",
+        "high-risk mechanical work"
+      ),
+      "user-selected Sol/xhigh override silently rewritten" => text.sub(
+        "An explicitly user-selected Sol/xhigh override is honored and\nreported as an override, not silently rewritten",
+        "An explicitly user-selected Sol/xhigh override is silently\nrewritten"
+      ),
+      "promotion decision made before #398 receipts" => text.sub(
+        "No ten-batch measured promotion decision may be made before #398\nexecution-provenance receipts exist",
+        "A ten-batch measured promotion decision may be made before #398\nexecution-provenance receipts exist"
+      )
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal text, mutant, "#{mutation} mutant did not change the guide text"
+      assert_raises(Minitest::Assertion, "model-routing guide accepted #{mutation}") do
+        assert_constrained_routine_routing(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
+    end
+  end
+
+  def test_docs_index_keeps_model_routing_guide
+    skip "source-pack docs are not installed" unless ENV[SOURCE_CHECKOUT_ENV] == "1"
+
+    assert_includes read_repo_file("docs/README.md"),
+                    "[Cost-aware model routing](agent-workflows-model-routing.md)"
   end
 end

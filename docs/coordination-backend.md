@@ -93,21 +93,23 @@ its batch-registration seam. A representative dry-run manifest is:
   "repo": "OWNER/REPO",
   "objective": "Process the approved targets",
   "pack_sha": "0123456789abcdef0123456789abcdef01234567",
-  "coordinator_route": {
+  "coordinator_preference": {
     "model": "gpt-5.6-sol",
-    "effort": "xhigh",
-    "binding_source": "instance-bound-runtime-metadata"
+    "effort": "xhigh"
   },
   "lanes": [
     {
       "name": "implementation",
       "owner": "batch-a-implementation",
       "targets": ["issue:123"],
-      "host": "codex",
-      "worker_route": {
+      "worker_preference": {
         "model": "gpt-5.6-terra",
-        "effort": "high",
-        "binding_source": "dispatcher-bound"
+        "effort": "high"
+      },
+      "observed_host": {
+        "host": "codex",
+        "model": "UNKNOWN",
+        "effort": "UNKNOWN"
       }
     }
   ]
@@ -122,35 +124,25 @@ dirty source checkout does not identify its loaded contents by `HEAD` alone;
 record literal `UNKNOWN` unless a trusted installed-release identifier covers
 those exact files.
 
-`coordinator_route` and each lane's `worker_route` carry `model`, `effort`, and
-`binding_source`. Each lane also carries its actual host (`codex`, `claude`, or
-another verified host identifier). Take route and binding values from launch
-assurance and the persisted dispatcher selection; do not infer them from prompt
-text, mutable defaults, or the coordinator's route. Any unverifiable scalar is
-literal `UNKNOWN`. Register this manifest after dispatcher selection is
+`coordinator_preference` and each lane's `worker_preference` carry advisory
+`model` and `effort`. Each lane separately carries `observed_host` with `host`,
+`model`, and `effort`. Record those observed fields only when the host exposes
+them; do not infer them from prompt text, mutable defaults, model self-report, or
+the coordinator preference. Any unavailable observed scalar is literal
+`UNKNOWN`. Register this manifest after dispatcher selection is
 persisted and before the worker launch so downstream consumers can group batch
-outcomes by `pack_sha`, coordinator route, worker route, and host.
+outcomes by `pack_sha`, preferences, and optional host observations.
 
-After every accepted host-observed `launch-confirmation v2`, reconcile and
-update the registered manifest before treating that lane as active. When
-fallback, escalation, or replacement changes the observed actual host, model,
-effort, or binding source, persist the observed value for that exact field,
-preserve every other verified field, and write literal `UNKNOWN` only for each
-individual field the observation cannot verify. Never replace a whole route or
-lane entry with `UNKNOWN`.
-
-The accepted confirmation's actual host comes only from the signed
-`actual_host` field in its canonical dispatcher observation payload. A missing,
-blank, unsigned, or literal `UNKNOWN` actual host cannot satisfy exact-policy
-activation; keep the lane `launch-pending` until a fresh qualifying observation
-verifies it.
+When fallback, escalation, or replacement changes a preference or the host later
+exposes an observation, reconcile the affected field, preserve every other known
+field, and write literal `UNKNOWN` only for each unavailable observed field.
+Never replace a whole route or lane entry with `UNKNOWN`. Observation absence or
+reconciliation failure does not block ordinary pending-to-active lifecycle.
 
 Before requiring a reconciliation write, detect whether the backend advertises
 a registration update/upsert/reconciliation capability. For an unadvertised or
 unsupported create-only backend, record each affected registration field
-`UNKNOWN`; this does not undo an authenticated confirmation, but activation
-proceeds only when every launch-acceptance field is verified and otherwise
-remains `launch-pending`. An advertised update uses the same bounded safe
+`UNKNOWN`. An advertised update uses the same bounded safe
 executable-plus-opaque-argv contract below; timeout or failure records affected
 fields `UNKNOWN` and must not wedge activation or reconciliation handoff.
 
@@ -162,6 +154,10 @@ On expiry terminate the whole group with `TERM`, then `KILL` after a finite
 grace period. Timeout, forced termination, or an unsafe advertisement records
 best-effort field-granular `UNKNOWN`; worker launch continues and the durable
 handoff names the exact reconciliation needed.
+
+Model and effort preferences are advisory. Assignment lifecycle and provenance
+remain ordinary JSON state: the project requires no signing key, fixed trust
+anchor, launch-confirmation receipt, or human waiver.
 
 When the backend is `n/a`, keep the same provenance in the durable coordinator
 handoff instead of inventing a registration surface. A degraded registration

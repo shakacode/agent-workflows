@@ -53,10 +53,10 @@ helper is still missing.
 For a verified Codex GPT-5.6 host, use this recommended exact profile while
 keeping provider-neutral classes for other runtimes:
 
-- Multi-lane coordinator: Sol/xhigh
+- Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
-- High-risk or escalated work: Sol/xhigh
+- Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
@@ -80,19 +80,16 @@ Plan a PR batch
 ## Workflow
 
 1. Intake
-   - Before reading GitHub targets or shaping the batch, resolve launch-assurance
-     policy. When it requires an exact parent or checker, verify the
-     already-running coordinator's exact model/effort from host session metadata,
-     effective instance-bound runtime state, or explicit operator-selected launch
-     configuration, and verify that the exact policy-required checker route is
-     available and reserved with qualifying binding evidence. Mutable default
-     configuration alone, prompt text, model self-report, installed rosters, and
-     dispatch-resolved classes do not qualify. A missing, mismatched, or `UNKNOWN`
-     exact-policy parent or checker binding stops for a correctly bound parent
-     relaunch or checker reservation. Without an exact-parent or exact-checker
-     policy, preserve unavailable binding as `UNKNOWN` and continue portable
-     class-based planning; a prompt cannot upgrade its own session. Reverify the
-     checker instance's exact binding, freshness, and independence when it starts.
+   - Before reading GitHub targets or shaping the batch, record coordinator,
+     worker, and checker model/effort preferences. Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+     Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
+     Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+     Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+     A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+     Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback.
+     When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
+     Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
+     Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
    - If the user wants a ready `$pr-batch` goal and has not specified
      `merge_authority`, ask for `none`, `ask`, or
@@ -288,9 +285,9 @@ Plan a PR batch
      Prefer a smaller first batch when live coordination, CI, approval, or quota
      health is uncertain; put remaining file-disjoint work in later wave
      prompts.
-   - Model/effort routing: keep the coordinator model/effort assignment
-     and exact independent-checker assignment separate from every worker
-     model/effort route. Classify each implementation,
+   - Model/effort routing: keep the coordinator model/effort preference
+     and independent-checker preference separate from every worker
+     model/effort preference. Classify each implementation,
      discovery, review, and QA lane from the verified work it contains. Resolve the lane's worker
      host/provider and its currently available model/effort combinations from
      explicit user constraints or host-exposed runtime/config state; current
@@ -304,29 +301,29 @@ Plan a PR batch
      different credible failed attempts, or an earlier high-risk trigger from
      the canonical workflow, require `MODEL_ESCALATION_REQUEST`. Prefer
      stronger-model plan review followed by implementation on the initial tier;
-     stronger-led implementation is the exception. When the current roster is available, require an exact model
+     stronger-led implementation is the exception. When the current roster is available, prefer an exact model
      name or host-stable alias and compatible effort. If the worker host is known but its roster is unavailable,
      or only the `generic` prompt target is known, use a dispatch-resolved model class
      (`fastest-low-cost`, `balanced`, or `strongest`) with the classified
      effort instead of guessing a model. Scope the class to the known host when
-     possible. This fallback is ready only when the goal requires binding the
-     class to an exact supported pair before any worker starts. If either the initial or escalation route cannot be named,
-     record that route `UNKNOWN`. Do not call the prompt ready unless the route
-     explicitly disables escalation with a zero maximum. Group lanes by exact model/effort route,
+     possible. If either the initial or escalation route cannot be named, record
+     that route `UNKNOWN`; it remains an advisory preference rather than a launch
+     blocker. Group lanes by model/effort preference,
      or dispatch-resolved class/effort route, for review and dispatch,
      but preserve lane ownership, dependencies, serial discovery, collision
      rules, and wave caps; grouping never combines targets into one worker.
-     Bind coordinator and worker routes independently on their actual hosts;
-     workers must not inherit the coordinator pair. Record launch assurance with
-     the exact initiating coordinator pair, binding source, and exact checker
-     pair; a dispatch-resolved class never satisfies an operator-required exact
-     coordinator or checker. Reserve the checker as a fresh strongest-capability
-     instance distinct from every maker. A cheaper route may collect mechanical
-     evidence but may not issue the qualifying intent, risk, or readiness verdict.
-     Give every lower-capability worker a
-     coordinator-approved execution envelope containing goal/non-goals, owned
-     paths, supported diagnosis, invariants, acceptance criteria, verification,
-     and immediate stop conditions. Contradictory evidence, ambiguous criteria,
+     Keep coordinator and worker requested preferences independent. If the
+     dispatcher or runtime inherits or defaults to the coordinator route, record
+     it honestly and continue unless an independent gate blocks. Prefer a fresh strongest-capability checker
+     instance distinct from every maker. A lower-cost route may collect mechanical
+     evidence or issue the intent, risk, or readiness verdict when the checker
+     role, independence, scope, current-head evidence, and evidence quality qualify.
+     Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+     Give every lane whose risk or bounded delegation requires an execution
+     envelope a coordinator-role-approved envelope containing goal/non-goals,
+     owned paths, supported diagnosis, invariants, acceptance criteria,
+     verification, and immediate stop conditions regardless of route.
+     Contradictory evidence, ambiguous criteria,
      scope or risk growth, weakened verification, or consequential judgment
      returns control to the coordinator before further edits.
      Before any worker launch, resolve `PLAN_PR_BATCH_SKILL_DIR` through the
@@ -336,17 +333,10 @@ Plan a PR batch
      owns schema, collision, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
-     `lane_lifecycle_receipts` array. Advance max-one groups only from the
-     helper's exact signed workflow-control completion receipt bound to the
-     batch, dependency plan, lane, wave, canonical durable-state reference, and
-     completed/recorded chronology. The receipt's RSA-SHA256 signature covers
-     every field except `signature` as recursively key-sorted canonical JSON and
-     is verified only against the safe fixed installation file
-     `<installation-root>/.agents/workflow-control-lifecycle-trust.json`. Its v1
-     record type is `agent-workflow-control-lifecycle-trust-anchor`, with
-     `agent_workflow_control_lifecycle_trusted_key_id` and
-     `agent_workflow_control_lifecycle_trusted_public_key_pem`; caller input and
-     environment cannot supply trust. Inline lane completion claims are invalid.
+     `lane_lifecycle_states` array. Advance max-one groups only from a separate
+     ordinary durable `lane-lifecycle-state` v1 record bound to the batch,
+     dependency plan, lane, and wave. Reject duplicates, unknown identities,
+     unsupported states, and inline lane completion claims.
      Preserve real PR `pr-file-touch-map` verified results unchanged; represent
      explicit pre-PR paths with the helper's typed `planned-path-evidence` v1
      record and durable evidence reference. A rejected result launches no
@@ -354,39 +344,40 @@ Plan a PR batch
      held lanes unlaunched.
      Before launch, resolve `PR_BATCH_SKILL_DIR` through the explicit env-var /
      loaded-skill / repo-local pinned-copy chain, then send the requested
-     route/dispatcher, explicit route and dispatch authority, ordered candidates,
+     route preference, requested dispatcher, dispatch authority, ordered candidates,
      and lane state to `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`.
-     It selects only a bound, attested tuple or explicitly authorized ordered
-     fallback; generic subagent wording and the coordinator route grant nothing.
+     It prefers the requested dispatcher and requires explicit authority for a
+     dispatcher fallback; generic subagent wording grants nothing.
      Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker.
-     Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice.
-     Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. The decision request includes canonical viable fallback choices.
-     Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
+     Prospective `instance_id` equal to `UNKNOWN` is unusable. Replay identity is `lane_id`, dispatcher, `instance_id`, and launch token; route preference, observed host fields, and `candidate_index` are metadata and never trigger replacement.
+     Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active.
+     Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
+     Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
+     Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+     A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
+     Persisted request history, choices, revisions, assignments, replacement proofs, and `decision_resolution` are deep-validated; malformed nested state returns structured `invalid-input`.
      A `selected` result may resume Goal mode; `blocked-user-input` carries one
      `dispatch-decision-request v1` and stops.
    - Build the batch-registration provenance from the pack and actors that will
      actually run the batch. Record `pack_sha` as the verified full git SHA of
      the loaded Agent Workflows checkout, or its verified installed-release
      identifier; a dirty checkout or unverified source is `UNKNOWN`, never the
-     consumer repo SHA or a remote guess. Record `coordinator_route` with model,
-     effort, and binding source. For every lane, record the actual `host` plus
-     `worker_route` model, effort, and binding source from the persisted
-     dispatcher selection; never inherit the coordinator route. When batch
+     consumer repo SHA or a remote guess. Record `coordinator_preference` as a
+     preference. For every lane, record the worker route preference and optional
+     observed host/model/effort from the host. Keep the worker's requested
+     preference distinct; if the runtime inherits or defaults to the coordinator
+     route, record that actual host observation honestly and never infer it from
+     the preference. When batch
      registration is supported, persist this manifest after dispatcher
      selection and before worker launch. Backend `n/a` keeps the same
      provenance in the durable Batch Plan/handoff; a degraded registration is
-     `UNKNOWN` with exact retry evidence. After every accepted host-observed
-     `launch-confirmation v2`, reconcile registration before treating the lane
-     as active: update each actual host/model/effort/binding field changed by
-     fallback, escalation, or replacement, preserve verified fields, and use
-     `UNKNOWN` only per unverifiable field. Every advertised registration
-     observation takes actual host only from signed `actual_host`; missing,
-     blank, unsigned, or `UNKNOWN` host cannot satisfy exact-policy activation.
+     `UNKNOWN` with exact retry evidence. When the host later exposes an
+     observation, update each observed host/model/effort field, preserve known
+     fields, and use `UNKNOWN` only per unavailable field. Observation absence or
+     registration-write failure never blocks assignment activation.
      Before requiring a reconciliation write, detect advertised registration
      update/upsert/reconciliation capability. An unadvertised or unsupported
-     create-only backend records each affected field `UNKNOWN`; authenticated
-     confirmation remains valid, but activation requires every launch-
-     acceptance field verified and otherwise stays `launch-pending`. An
+     create-only backend records each affected field `UNKNOWN`. An
      advertised update uses the bounded safe executable-plus-opaque-argv
      contract; failure records affected fields `UNKNOWN` without wedging.
      Every advertised registration
@@ -440,9 +431,9 @@ Plan a PR batch
    - Add a compact `Lane Card:` line. Workers emit the canonical Lane Card
      after a successful claim, on blocked/cancelled state, and as the final
      handoff header. The actor that opens or updates the PR emits the PR-open
-     Lane Card when the PR is opened. It records the active exact model/effort,
-     binding source, and execution-envelope receipt; prompt text or worker
-     self-report alone is not binding evidence. The claim holder and `dashboard_url`
+     Lane Card when the PR is opened. It records preferred model/effort,
+     observed host/model/effort, and the execution-envelope receipt; unavailable
+     observations are `UNKNOWN`. The claim holder and `dashboard_url`
      degrade to `UNKNOWN` when the backend does not provide them, while `pr_url`
      may use the verified GitHub PR URL from PR-open/current PR state.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
@@ -457,14 +448,15 @@ Plan a PR batch
      Do not use byte-oriented counts such as `wc -c`.
    - Use compact one-line item goals, short worker notes, and canonical workflow references instead of copied
      audit evidence, repeated issue text, or long rule explanations.
-   - Include the coordinator model/effort assignment and every worker
-     model/effort route, collated by initial/escalation pair with a terse
+   - Include the coordinator model/effort preference and every worker
+     model/effort preference, collated by initial/escalation pair with a terse
      rationale in the Batch Plan and lane ids in the goal prompt. Use exact
      pairs when the roster is known and dispatch-resolved classes when it is
-     not. Bind each class to an exact pair before dispatch and revalidate it on the actual host.
+     not. Treat unavailable preferences as `UNKNOWN`; the dispatcher may use a
+     different available route without blocking launch or readiness.
      Require `MODEL_ESCALATION_REQUEST` before a worker moves
-     to the stronger route. If the host cannot apply a route, stop for
-     re-planning rather than silently substituting.
+     to a stronger route as a deliberate escalation, while ordinary host route
+     substitution remains advisory metadata.
      When route entries themselves cause the overflow or breach the 300-character
      headroom floor, split along route groups so each generated goal carries only
      the included lanes' complete routes;
@@ -536,13 +528,13 @@ backend must say so in the declaration.
 - File-touch map and path evidence:
 - Dependencies and sequencing:
 - Subagent split:
-- Coordinator model/effort assignment: exact pair or dispatch-resolved class,
+- Coordinator model/effort preference: exact pair or dispatch-resolved class,
   effort, rationale, and availability evidence.
-- Worker model/effort routes: initial and escalation pairs or classes, lane ids,
-  escalation threshold and maximum, and availability evidence; keep any
-  `UNKNOWN` route out of a ready prompt.
-- Batch manifest provenance: `pack_sha`, `coordinator_route` model/effort/binding
-  source, and each lane's `host` plus `worker_route` model/effort/binding source;
+- Worker model/effort preferences: initial and escalation pairs or classes,
+  lane ids, escalation threshold and maximum, and availability evidence;
+  unavailable preferences remain advisory and never alone block readiness.
+- Batch manifest provenance: `pack_sha`, `coordinator_preference` model/effort,
+  and each lane's `worker_preference` plus optional `observed_host` fields;
   name the registration evidence or the durable backend-`n/a` handoff.
 - Batch size target: `codex`, `claude`, or `generic`; max items per wave and
   split rationale.
@@ -653,17 +645,17 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
-Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
+Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
 Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort: <model/class>/<effort>.
-Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
-Manifest:pack_sha=<rev|UNKNOWN>;coordinator_route=<model>/<effort>@<binding>;lanes=<lane-id:host+model/effort@binding>,...;UNKNOWN=field;no guesses
-Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
+Coordinator model/effort preference: <model/class>/<effort>.
+Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
+Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
+Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
@@ -677,7 +669,7 @@ Items:
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
-- Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
+- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
