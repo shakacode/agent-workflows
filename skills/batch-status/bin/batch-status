@@ -1,0 +1,288 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "open3"
+require "optparse"
+
+UNKNOWN = "UNKNOWN"
+DEFAULT_TIMEOUT_SECONDS = 20
+
+def present_string(value)
+  value.is_a?(String) && !value.strip.empty? ? value.strip : nil
+end
+
+def valid_repo?(value)
+  value.is_a?(String) && value.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z})
+end
+
+def runner_for(record)
+  host = present_string(record["host"])&.downcase
+  source = present_string(record["session_source"])
+  host_runner = if host&.include?("codex")
+                  "Codex"
+                elsif host&.include?("claude")
+                  "Claude"
+                end
+  source_runner = "Codex" if source == "codex_thread_id"
+  return UNKNOWN if host_runner && source_runner && host_runner != source_runner
+
+  host_runner || source_runner || UNKNOWN
+end
+
+def codex_deep_link(record, runner)
+  return UNKNOWN unless runner == "Codex"
+  return UNKNOWN unless present_string(record["machine_id"])
+  return UNKNOWN unless record["session_source"] == "codex_thread_id"
+
+  thread_id = present_string(record["session_id"])
+  return UNKNOWN unless thread_id&.match?(/\A[0-9A-Za-z-]+\z/)
+
+  "codex://threads/#{thread_id}"
+end
+
+def bounded_helper
+  candidates = []
+  candidates << File.join(ENV["PR_BATCH_SKILL_DIR"], "bin", "agent-coord-bounded") if ENV["PR_BATCH_SKILL_DIR"]
+  candidates << File.expand_path("../../pr-batch/bin/agent-coord-bounded", __dir__)
+  candidates.find { |path| File.file?(path) && File.executable?(path) }
+end
+
+def run_json(*argv)
+  stdout, stderr, status = Open3.capture3(*argv)
+  return [JSON.parse(stdout), nil] if status.success?
+
+  [nil, stderr.strip.empty? ? "command exited #{status.exitstatus}" : stderr.strip]
+rescue JSON::ParserError => e
+  [nil, "invalid JSON: #{e.message}"]
+rescue SystemCallError => e
+  [nil, e.message]
+end
+
+options = { batch_ids: [], prs: [], issues: [], targets: [], timeout: DEFAULT_TIMEOUT_SECONDS }
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: batch-status [--batch-id ID] [--repo OWNER/REPO] [--pr N | --issue N | --target OWNER/REPO#N] [--json]"
+  opts.on("--batch-id ID", "Inspect a registered batch (repeatable)") { |value| options[:batch_ids] << value }
+  opts.on("--repo OWNER/REPO", "Repository for --pr and --issue") { |value| options[:repo] = value }
+  opts.on("--pr NUMBER", Integer, "Inspect a pull request number") { |value| options[:prs] << value }
+  opts.on("--issue NUMBER", Integer, "Inspect an issue number") { |value| options[:issues] << value }
+  opts.on("--target REF", "Inspect OWNER/REPO#N and detect PR versus issue") { |value| options[:targets] << value }
+  opts.on("--timeout SECONDS", Float, "Agent-coordination deadline") { |value| options[:timeout] = value }
+  opts.on("--json", "Emit machine-readable JSON") { options[:json] = true }
+  opts.on("-h", "--help", "Show this help") do
+    puts opts
+    exit 0
+  end
+end
+
+begin
+  parser.parse!(ARGV)
+rescue OptionParser::ParseError => e
+  warn e.message
+  warn parser
+  exit 64
+end
+
+unless ARGV.empty?
+  warn "unexpected arguments: #{ARGV.join(' ')}"
+  warn parser
+  exit 64
+end
+
+unless options[:timeout].positive? && options[:timeout].finite?
+  warn "--timeout must be a positive finite number"
+  exit 64
+end
+
+if (!options[:prs].empty? || !options[:issues].empty?) && options[:repo].to_s.empty?
+  warn "--repo is required with --pr or --issue"
+  exit 64
+end
+
+if options[:repo] && !valid_repo?(options[:repo])
+  warn "invalid repository #{options[:repo].inspect}; expected OWNER/REPO"
+  exit 64
+end
+
+unless (options[:prs] + options[:issues]).all?(&:positive?)
+  warn "PR and issue numbers must be positive"
+  exit 64
+end
+
+requests = []
+options[:prs].each { |number| requests << { repo: options[:repo], number:, requested_kind: "pr" } }
+options[:issues].each { |number| requests << { repo: options[:repo], number:, requested_kind: "issue" } }
+options[:targets].each do |ref|
+  match = ref.match(%r{\A([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)\z})
+  unless match
+    warn "invalid target #{ref.inspect}; expected OWNER/REPO#N"
+    exit 64
+  end
+  requests << { repo: match[1], number: Integer(match[2]), requested_kind: nil }
+end
+
+if requests.empty? && options[:batch_ids].empty?
+  warn parser
+  exit 64
+end
+
+helper = bounded_helper
+batch_unknowns = []
+resolved_batch_ids = []
+options[:batch_ids].each do |batch_id|
+  unless helper
+    batch_unknowns << "batch #{batch_id}: bounded agent-coordination helper unavailable"
+    next
+  end
+
+  batch_payload, batch_error = run_json(
+    helper,
+    "--timeout", options[:timeout].to_s,
+    "status", "--batch-id", batch_id, "--json"
+  )
+  if batch_error
+    batch_unknowns << "batch #{batch_id}: #{batch_error}"
+    next
+  end
+
+  batches = batch_payload.is_a?(Hash) && batch_payload["batches"].is_a?(Array) ? batch_payload["batches"] : []
+  batch = batches.find { |candidate| candidate.is_a?(Hash) && candidate["batch_id"] == batch_id } || batches.first
+  unless batch.is_a?(Hash)
+    batch_unknowns << "batch #{batch_id}: registration not found"
+    next
+  end
+
+  resolved_batch_id = present_string(batch["batch_id"]) || batch_id
+  resolved_batch_ids << resolved_batch_id
+  repo = present_string(batch["repo"]) || options[:repo]
+  unless repo
+    batch_unknowns << "batch #{resolved_batch_id}: repository UNKNOWN"
+    next
+  end
+  unless valid_repo?(repo)
+    batch_unknowns << "batch #{resolved_batch_id}: invalid repository metadata"
+    next
+  end
+
+  heartbeats = batch_payload["heartbeats"].is_a?(Array) ? batch_payload["heartbeats"] : []
+  lanes = batch["lanes"].is_a?(Array) ? batch["lanes"] : []
+  lanes.each do |lane|
+    unless lane.is_a?(Hash)
+      batch_unknowns << "batch #{resolved_batch_id}: non-object lane"
+      next
+    end
+
+    owner = present_string(lane["owner"])
+    lane_heartbeats = heartbeats.select do |heartbeat|
+      heartbeat.is_a?(Hash) && owner && heartbeat["agent_id"] == owner
+    end
+    targets = lane["targets"].is_a?(Array) ? lane["targets"] : []
+    targets.each do |target|
+      unless target.to_s.match?(/\A[1-9][0-9]*\z/)
+        batch_unknowns << "batch #{resolved_batch_id} lane #{lane['name'] || UNKNOWN}: invalid target #{target.inspect}"
+        next
+      end
+
+      claim = lane.merge("agent_id" => owner, "status" => "active")
+      requests << {
+        repo: repo,
+        number: Integer(target),
+        requested_kind: nil,
+        batch_id: resolved_batch_id,
+        lane: present_string(lane["name"]) || UNKNOWN,
+        coordination: { "claims" => [claim], "heartbeats" => lane_heartbeats }
+      }
+    end
+  end
+end
+
+items = requests.map do |request|
+  repo = request.fetch(:repo)
+  number = request.fetch(:number)
+  unknowns = []
+
+  github, github_error = run_json("gh", "api", "repos/#{repo}/issues/#{number}")
+  if github && !github.is_a?(Hash)
+    github = nil
+    github_error = "response was not an object"
+  end
+  github_kind = if github&.key?("pull_request")
+                  "pr"
+                elsif github
+                  "issue"
+                else
+                  UNKNOWN
+                end
+  unknowns << "GitHub state: #{github_error}" if github_error
+  if request[:requested_kind] && github_kind != UNKNOWN && request[:requested_kind] != github_kind
+    unknowns << "target type mismatch: requested #{request[:requested_kind]}, GitHub reports #{github_kind}"
+  end
+
+  coordination = request[:coordination]
+  coordination_error = nil
+  if coordination
+    # Batch-scoped API data already includes the lane owner and its current heartbeat.
+  elsif helper
+    coordination, coordination_error = run_json(
+      helper,
+      "--timeout", options[:timeout].to_s,
+      "status", "--repo", repo, "--target", number.to_s, "--json"
+    )
+  else
+    coordination_error = "bounded agent-coordination helper unavailable"
+  end
+  unknowns << "coordination state: #{coordination_error}" if coordination_error
+
+  claims = coordination.is_a?(Hash) && coordination["claims"].is_a?(Array) ? coordination["claims"] : []
+  heartbeats = coordination.is_a?(Hash) && coordination["heartbeats"].is_a?(Array) ? coordination["heartbeats"] : []
+  claim = claims.find { |candidate| candidate.is_a?(Hash) && candidate["status"] == "active" } || claims.first || {}
+  holder = present_string(claim["agent_id"])
+  heartbeat = heartbeats.find { |candidate| candidate.is_a?(Hash) && candidate["agent_id"] == holder }
+  heartbeat ||= heartbeats.first if holder.nil? && heartbeats.length == 1
+  record = heartbeat || claim
+  runner = runner_for(record)
+  machine_id = present_string(record["machine_id"]) || UNKNOWN
+  thread_id = present_string(record["session_id"]) || UNKNOWN
+  deep_link = codex_deep_link(record, runner)
+  unknowns << "editor: host/session metadata missing or conflicting" if runner == UNKNOWN
+  if runner == "Codex" && deep_link == UNKNOWN
+    reason = if machine_id == UNKNOWN
+               "machine_id missing"
+             elsif record["session_source"] != "codex_thread_id"
+               "session_source is not codex_thread_id"
+             else
+               "thread_id missing or invalid"
+             end
+    unknowns << "Codex deep link: #{reason}"
+  end
+
+  {
+    "batch_id" => request[:batch_id] || UNKNOWN,
+    "lane" => request[:lane] || "#{repo}##{number}",
+    "target" => {
+      "repo" => repo,
+      "number" => number,
+      "kind" => github_kind,
+      "url" => github&.fetch("html_url", UNKNOWN) || UNKNOWN
+    },
+    "holder" => holder || UNKNOWN,
+    "editor" => runner,
+    "runner" => runner,
+    "machine_id" => machine_id,
+    "thread_id" => thread_id,
+    "codex_deep_link" => deep_link,
+    "codex_deep_link_machine_id" => deep_link == UNKNOWN ? UNKNOWN : machine_id,
+    "heartbeat" => heartbeat || UNKNOWN,
+    "github_state" => github&.fetch("state", UNKNOWN) || UNKNOWN,
+    "unknowns" => unknowns
+  }
+end
+
+payload = {
+  "schema_version" => 1,
+  "batch_id" => resolved_batch_ids.length == 1 ? resolved_batch_ids.first : UNKNOWN,
+  "batch_ids" => resolved_batch_ids,
+  "items" => items,
+  "unknowns" => batch_unknowns
+}
+puts JSON.pretty_generate(payload)

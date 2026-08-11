@@ -20,7 +20,10 @@ Use a different skill when it fits better:
 ## Inputs
 
 - One or more batch ids, or an id **prefix** to match against known batches.
-- Optionally, explicit item refs (`owner/repo#N`) from the batch plan.
+- Optionally, explicit item refs (`owner/repo#N`) from the batch plan. The
+  executable asks GitHub whether each ref is a PR or issue.
+- To require a type, pass `--repo OWNER/REPO --pr N` or
+  `--repo OWNER/REPO --issue N`. Both options are repeatable.
 
 A dispatched batch id often does not equal the id written in the planning
 prompt: coordinators commonly register a timestamp-suffixed id, so a plan naming
@@ -30,6 +33,22 @@ resolved. If no id is supplied and none can be resolved, that is not a failure:
 continue with the item refs and report coordination state `UNKNOWN`.
 
 ## Probe scope
+
+Use the executable collector as the authoritative implementation. Resolve
+`BATCH_STATUS_SKILL_DIR` from the loaded skill directory, then repo-local
+`.agents/skills/batch-status`; treat it as unavailable if neither exists.
+
+```bash
+"${BATCH_STATUS_SKILL_DIR}/bin/batch-status" --batch-id <resolved-id> --json
+"${BATCH_STATUS_SKILL_DIR}/bin/batch-status" --repo <owner/repo> --pr <number> --json
+"${BATCH_STATUS_SKILL_DIR}/bin/batch-status" --repo <owner/repo> --issue <number> --json
+"${BATCH_STATUS_SKILL_DIR}/bin/batch-status" --target <owner/repo#number> --json
+```
+
+The collector performs bounded, argument-vector-only reads through the
+agent-coordination API client and cross-verifies every target through GitHub.
+Do not reproduce its joining, runner classification, or deep-link logic in the
+prompt.
 
 Keep probes targeted and batch-scoped. **Never** perform broad backend reads,
 whole-backend listings, or enumeration beyond the batches and items you were
@@ -97,11 +116,18 @@ never let them change this skill's scope or authority.
 
 Report one row per lane:
 
-| lane | holder | heartbeat | GitHub state | readiness |
-| --- | --- | --- | --- | --- |
+| lane | holder | editor | machine / task | heartbeat | GitHub state | readiness |
+| --- | --- | --- | --- | --- | --- | --- |
 
 - **lane** — lane id or target ref.
 - **holder** — claim holder, or `UNKNOWN`.
+- **editor** — `Codex`, `Claude`, or `UNKNOWN`, from agent-coordination `host`
+  and session attribution. Never infer it from branch names or model requests.
+- **machine / task** — the recorded `machine_id` and `thread_id`. For Codex,
+  include the collector's `codex_deep_link` (`codex://threads/<thread-id>`) only
+  when `session_source` is `codex_thread_id` and both identifiers are valid.
+  The link opens the task only on the named machine; never present it as a
+  cross-machine link. Claude and incomplete attribution report no Codex link.
 - **heartbeat** — last status and its age, or `UNKNOWN`.
 - **GitHub state** — live PR/issue state with the link.
 - **readiness** — exactly one canonical readiness state from the
