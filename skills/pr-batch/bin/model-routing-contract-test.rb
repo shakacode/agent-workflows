@@ -175,16 +175,18 @@ USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
   "An explicitly user-selected Sol/xhigh override is honored and reported as an override, not silently rewritten."
 MEASURED_PROMOTION_DEFERRAL_RULE =
   "No ten-batch measured promotion decision may be made before #398 usage/cost receipts, #333 execution-provenance receipts, and #335 evaluation runner exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
+ROUTE_ONLY_FIELD_SOURCE = "model|effort|reasoning[-\\s]effort|route|tuple"
 ROUTE_ONLY_SUBJECT_PATTERN = /
   (?:
-    route\ mismatch |
-    unavailable\ (?:observed\ )?route |
-    route\ unavailability |
+    (?:#{ROUTE_ONLY_FIELD_SOURCE})\s+(?:mismatch|unavailability) |
+    (?:#{ROUTE_ONLY_FIELD_SOURCE})\s+is\s+(?:unavailable|different|`?UNKNOWN`?) |
+    preferred\s+route\s+is\s+(?:unavailable|different|`?UNKNOWN`?) |
+    unavailable\ (?:observed\ )?(?:#{ROUTE_ONLY_FIELD_SOURCE}) |
+    different\ (?:observed\ )?(?:#{ROUTE_ONLY_FIELD_SOURCE}) |
+    `?UNKNOWN`?\s+(?:observed\ )?(?:#{ROUTE_ONLY_FIELD_SOURCE}|observation) |
     inherited\ route |
     silent[-\s]substitution |
-    substituted\ route |
-    different\ (?:observed\ )?(?:route|tuple) |
-    `UNKNOWN`\ (?:observation|observed\ tuple)
+    substituted\ route
   )
 /imx
 ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+execution|disqualif(?:y|ies)\\s+the\\s+lane|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch"
@@ -194,12 +196,12 @@ ROUTE_ONLY_CONTRADICTION_PATTERN =
 NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
   /
     (?:
-      \bnever\s+ |
+      \bnever\s+(?:(?:alone|by\s+itself)\s+)? |
       \bnot\s+a\s+condition\s+that\s+ |
       \b(?:is|are|was|were)\s+not\s+sufficient\s+to\s+ |
       \b(?:is|are|was|were)n['’]?t\s+sufficient\s+to\s+ |
       \b(?:do|does|did|should|must|may|can|will|would|could|shall)\s+
-      not(?:\s+|,\s*)(?:(?:by\s+itself|alone)(?:\s+|,\s*))? |
+      not(?:\s+|,\s*)(?:(?:by\s+itself|alone)(?:\s+|,\s*)|(?:necessarily|automatically)\s+)? |
       \b(?:do|does|did|should|must|may|can|would|could|shall)n['’]?t\s+ |
       \bwon['’]?t\s+ |
       \bcannot\s+ |
@@ -210,8 +212,9 @@ NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
 INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN =
   /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+if\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\b/i
 INDEPENDENT_GATE_BLOCKS_EXECUTION_PATTERN =
-  /\bbut\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\b/i
-
+  /\b(?:but|and|yet)\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\b/i
+INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN =
+  /\bonly\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\s+when\s+/i
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
 end
@@ -252,16 +255,69 @@ def strip_negated_route_outcome_with_independent_gate_clause(sentence)
   "#{sentence[0...subject.begin(0)]}#{sentence[independent_gate.end(0)..]}"
 end
 
+def strip_independent_gate_first_clause(sentence)
+  gate_prefix = sentence.match(INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN)
+  return sentence unless gate_prefix
+
+  subject = sentence.match(ROUTE_ONLY_SUBJECT_PATTERN, gate_prefix.end(0))
+  return sentence unless subject
+
+  occurrence = sentence[subject.end(0)..].match(/\A\s+occurs\b/i)
+  return sentence unless occurrence
+
+  trailing_text = sentence[subject.end(0) + occurrence.end(0)..]
+  return sentence if trailing_text.match?(ROUTE_ONLY_OUTCOME_PATTERN)
+
+  "#{sentence[0...gate_prefix.begin(0)]}#{sentence[subject.end(0) + occurrence.end(0)..]}"
+end
+
+def markdown_table_delimiter_line?(line)
+  stripped_line = line.strip
+  has_leading_pipe = stripped_line.start_with?("|")
+  has_trailing_pipe = stripped_line.end_with?("|")
+  cells_text = stripped_line
+  cells_text = cells_text[1..] if has_leading_pipe
+  cells_text = cells_text[0...-1] if has_trailing_pipe
+  cells = cells_text.split("|").map(&:strip)
+
+  return false if cells.empty? || cells.any?(&:empty?)
+  return false unless cells.all? { |cell| cell.match?(/\A:?-{3,}:?\z/) }
+
+  has_leading_pipe || has_trailing_pipe || cells.length >= 2
+end
+
+def markdown_table_line_indexes(lines)
+  table_line_indexes = []
+
+  lines.each_with_index do |line, index|
+    next unless markdown_table_delimiter_line?(line)
+
+    previous_index = index - 1
+    table_line_indexes << previous_index if previous_index >= 0 && lines[previous_index].include?("|")
+    table_line_indexes << index
+
+    following_index = index + 1
+    while following_index < lines.length && lines[following_index].include?("|")
+      table_line_indexes << following_index
+      following_index += 1
+    end
+  end
+
+  table_line_indexes.uniq
+end
+
 def markdown_structural_segments(block)
   segments = []
   current_segment = +""
+  lines = block.lines
+  table_line_indexes = markdown_table_line_indexes(lines)
 
-  block.each_line do |line|
-    if line.lstrip.start_with?("|")
+  lines.each_with_index do |line, index|
+    if table_line_indexes.include?(index)
       segments << current_segment unless current_segment.empty?
       segments << line
       current_segment = +""
-    elsif line.match?(/^\s*[-*+]\s+/)
+    elsif line.match?(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/)
       segments << current_segment unless current_segment.empty?
       current_segment = line.dup
     else
@@ -280,7 +336,8 @@ end
 def forbidden_route_only_contradiction?(text)
   route_only_contradiction_segments(text).any? do |segment|
     segment.split(/(?<=[.!?])\s+/).any? do |sentence|
-      permitted_clause_stripped = strip_negated_route_outcome_with_independent_gate_clause(sentence)
+      gate_first_clause_stripped = strip_independent_gate_first_clause(sentence)
+      permitted_clause_stripped = strip_negated_route_outcome_with_independent_gate_clause(gate_first_clause_stripped)
       unguarded_sentence = strip_allowed_route_only_outcome_clauses(permitted_clause_stripped)
       unguarded_sentence.match?(ROUTE_ONLY_CONTRADICTION_PATTERN)
     end
@@ -761,6 +818,16 @@ class ModelRoutingContractTest < Minitest::Test
       "different route" => "A different route blocks execution before editing.",
       "different tuple" => "A different tuple disqualifies the lane before editing.",
       "UNKNOWN observed tuple" => "An `UNKNOWN` observed tuple stops the lane before any edit begins.",
+      "model mismatch" => "A model mismatch stops the lane before editing.",
+      "effort mismatch" => "An effort mismatch blocks execution before editing.",
+      "reasoning-effort mismatch" => "A reasoning-effort mismatch requires relaunch before editing.",
+      "different model" => "A different model blocks execution before editing.",
+      "unavailable effort" => "An unavailable effort stops the lane before editing.",
+      "UNKNOWN model" => "An UNKNOWN model requires relaunch before editing.",
+      "model is unavailable" => "A model is unavailable and stops the lane before editing.",
+      "effort is different" => "An effort is different and blocks execution before editing.",
+      "reasoning effort is UNKNOWN" => "A reasoning effort is UNKNOWN and requires relaunch before editing.",
+      "preferred route is unavailable" => "A preferred route is unavailable and stops the lane before editing.",
       "route mismatch requires relaunch before editing" => "A route mismatch requires relaunch before editing.",
       "route mismatch halts the lane before editing" => "A route mismatch halts the lane before editing.",
       "route mismatch prevents editing until relaunch" => "A route mismatch prevents editing until relaunch.",
@@ -776,7 +843,13 @@ class ModelRoutingContractTest < Minitest::Test
       "may not be authorized yet blocks execution" => "A route mismatch may not be authorized yet blocks execution before any edit begins.",
       "unrelated approval negation before route mismatch stop" => "A route mismatch does not require approval and stops the lane before any edit begins.",
       "independent gate followed by unconditional different route" => "A route mismatch does not stop the lane, but an independent risk gate blocks execution, yet a different route disqualifies the lane.",
-      "unconditional outcome before independent-gate clause" => "A different route disqualifies the lane, but a route mismatch does not stop the lane, but an independent risk gate blocks execution."
+      "unconditional outcome before independent-gate clause" => "A different route disqualifies the lane, but a route mismatch does not stop the lane, but an independent risk gate blocks execution.",
+      "independent-and gate followed by unconditional different route" => "A route mismatch does not stop the lane, and an independent risk gate blocks execution, yet a different route disqualifies the lane.",
+      "unconditional outcome before independent-yet gate clause" => "A different route disqualifies the lane, yet a route mismatch does not stop the lane, yet an independent risk gate blocks execution.",
+      "risk gate-first trailing outcome" => "Only an independent risk gate blocks execution when a route mismatch occurs, then stops the lane before editing.",
+      "scope gate-first trailing outcome" => "Only an independent scope gate blocks execution when an effort mismatch occurs, then requires relaunch before editing.",
+      "evidence gate-first trailing outcome" => "Only an independent evidence gate blocks execution when a different route occurs, then halts the lane before editing.",
+      "authority gate-first trailing outcome" => "Only an independent authority gate blocks execution when an UNKNOWN model occurs, then prevents editing until relaunch."
     }.each do |case_name, contradiction|
       mutant = "#{text}\n#{contradiction}\n"
 
@@ -797,7 +870,19 @@ class ModelRoutingContractTest < Minitest::Test
       "An inherited route shouldn't disqualify the lane before edits.",
       "A route mismatch is not sufficient to stop the lane before edits.",
       "A route mismatch does not, by itself, block execution before edits.",
+      "A model mismatch does not stop the lane before edits.",
+      "An unavailable effort does not block execution before edits.",
+      "A route mismatch never alone blocks execution before edits.",
+      "A route mismatch never by itself stops the lane before edits.",
+      "A route mismatch does not necessarily stop the lane before edits.",
+      "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not stop the lane, but an independent risk gate blocks execution.",
+      "A route mismatch does not stop the lane, and an independent scope gate blocks execution.",
+      "A route mismatch does not stop the lane, yet an independent evidence gate blocks execution.",
+      "Only an independent risk gate blocks execution when a route mismatch occurs.",
+      "Only an independent scope gate blocks execution when an effort mismatch occurs.",
+      "Only an independent evidence gate blocks execution when a different route occurs.",
+      "Only an independent authority gate blocks execution when an UNKNOWN model occurs.",
       "A route mismatch stops the lane only if an independent risk gate blocks.",
       "A route mismatch stops the lane only if an independent scope gate blocks.",
       "A route mismatch stops the lane only if an independent evidence gate blocks.",
@@ -805,6 +890,11 @@ class ModelRoutingContractTest < Minitest::Test
     ].each do |allowed_condition|
       refute forbidden_route_only_contradiction?(allowed_condition),
              "allowed route condition must not be treated as an unconditional route-only stop: #{allowed_condition}"
+      assert_route_provenance_contract(
+        self,
+        "#{text}\n\n#{allowed_condition}\n",
+        "#{MODEL_ROUTING_GUIDE_PATH} allowed route condition"
+      )
     end
   end
 
@@ -812,9 +902,14 @@ class ModelRoutingContractTest < Minitest::Test
     guide = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
 
     {
-      "Markdown table rows" => "| Route condition | route mismatch |\n| Gate result | blocks execution |",
+      "Markdown table rows" => "| Route condition | route mismatch |\n| --- | --- |\n| Gate result | blocks execution |",
+      "leading-only Markdown table rows" => "| Route condition | route mismatch\n| --- | ---\n| Gate result | blocks execution",
+      "trailing-only Markdown table rows" => "Route condition | route mismatch |\n--- | --- |\nGate result | blocks execution |",
+      "single-column leading-pipe Markdown table rows" => "| route mismatch |\n| --- |\n| blocks execution |",
+      "Markdown table rows without outer pipes" => "Route condition | route mismatch\n--- | ---\nGate result | blocks execution",
       "blank boundary" => "A route mismatch\n\nblocks execution.",
-      "Markdown list items" => "- route mismatch: record honestly\n- independent risk gate: blocks execution"
+      "Markdown list items" => "- route mismatch: record honestly\n- independent risk gate: blocks execution",
+      "ordered Markdown list items" => "1. route mismatch: record honestly\n2) independent risk gate: blocks execution"
     }.each do |boundary, boundary_text|
       assert_route_provenance_contract(
         self,
@@ -832,8 +927,24 @@ class ModelRoutingContractTest < Minitest::Test
     end
 
     {
-      "wrapped prose before a table" => "A route mismatch\nblocks execution before editing.\n| Gate | advisory |",
-      "wrapped prose after a table" => "| Gate | advisory |\nA route mismatch\nblocks execution before editing."
+      "dot ordered list item" => "1. route mismatch: stops the lane before editing",
+      "parenthesized ordered list item" => "1) route mismatch: stops the lane before editing"
+    }.each do |marker, contradiction|
+      assert_raises(Minitest::Assertion, "a same #{marker} must remain forbidden") do
+        assert_route_provenance_contract(
+          self,
+          "#{guide}\n\n#{contradiction}\n",
+          "#{MODEL_ROUTING_GUIDE_PATH} #{marker}"
+        )
+      end
+    end
+
+    {
+      "wrapped prose before a table" => "A route mismatch\nblocks execution before editing.\n| Gate | advisory |\n| --- | --- |\n| status | recorded |",
+      "wrapped prose after a table" => "| Gate | advisory |\n| --- | --- |\n| status | recorded |\nA route mismatch\nblocks execution before editing.",
+      "wrapped prose before a table without outer pipes" => "A route mismatch\nblocks execution before editing.\nGate | advisory\n--- | ---\nstatus | recorded",
+      "wrapped prose after a table without outer pipes" => "Gate | advisory\n--- | ---\nstatus | recorded\nA route mismatch\nblocks execution before editing.",
+      "inline-pipe prose" => "A route mismatch uses requested | observed fields and\nblocks execution before editing."
     }.each do |position, contradiction|
       assert_raises(Minitest::Assertion, "a #{position} must remain forbidden") do
         assert_route_provenance_contract(
