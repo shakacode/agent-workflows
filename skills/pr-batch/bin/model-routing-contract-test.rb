@@ -209,6 +209,8 @@ NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
   /ix
 INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN =
   /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+if\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\b/i
+INDEPENDENT_GATE_BLOCKS_EXECUTION_PATTERN =
+  /\bbut\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\b/i
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -238,10 +240,31 @@ def strip_allowed_route_only_outcome_clauses(text)
     .gsub(INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN, "")
 end
 
+def strip_negated_route_outcome_with_independent_gate_clause(sentence)
+  subject = sentence.match(ROUTE_ONLY_SUBJECT_PATTERN)
+  negated_outcome = sentence.match(NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN)
+  independent_gate = sentence.match(INDEPENDENT_GATE_BLOCKS_EXECUTION_PATTERN)
+
+  return sentence unless subject && negated_outcome && independent_gate
+  return sentence unless subject.begin(0) < negated_outcome.begin(0) && negated_outcome.end(0) <= independent_gate.begin(0)
+  return sentence if sentence[subject.end(0)...negated_outcome.begin(0)].match?(ROUTE_ONLY_OUTCOME_PATTERN)
+
+  "#{sentence[0...subject.begin(0)]}#{sentence[independent_gate.end(0)..]}"
+end
+
+def route_only_contradiction_segments(text)
+  text.split(/\n\s*\n/).flat_map do |block|
+    block.each_line.any? { |line| line.lstrip.start_with?("|") } ? block.lines : [block]
+  end
+end
+
 def forbidden_route_only_contradiction?(text)
-  text.split(/(?<=[.!?])\s+/).any? do |sentence|
-    unguarded_sentence = strip_allowed_route_only_outcome_clauses(sentence)
-    unguarded_sentence.match?(ROUTE_ONLY_CONTRADICTION_PATTERN)
+  route_only_contradiction_segments(text).any? do |segment|
+    segment.split(/(?<=[.!?])\s+/).any? do |sentence|
+      permitted_clause_stripped = strip_negated_route_outcome_with_independent_gate_clause(sentence)
+      unguarded_sentence = strip_allowed_route_only_outcome_clauses(permitted_clause_stripped)
+      unguarded_sentence.match?(ROUTE_ONLY_CONTRADICTION_PATTERN)
+    end
   end
 end
 
@@ -728,7 +751,9 @@ class ModelRoutingContractTest < Minitest::Test
       "not authorized before route mismatch stop" => "A route mismatch, when not authorized, stops the lane before any edit begins.",
       "not authorized but blocks execution" => "A route mismatch is not authorized but blocks execution before any edit begins.",
       "may not be authorized yet blocks execution" => "A route mismatch may not be authorized yet blocks execution before any edit begins.",
-      "unrelated approval negation before route mismatch stop" => "A route mismatch does not require approval and stops the lane before any edit begins."
+      "unrelated approval negation before route mismatch stop" => "A route mismatch does not require approval and stops the lane before any edit begins.",
+      "independent gate followed by unconditional different route" => "A route mismatch does not stop the lane, but an independent risk gate blocks execution, yet a different route disqualifies the lane.",
+      "unconditional outcome before independent-gate clause" => "A different route disqualifies the lane, but a route mismatch does not stop the lane, but an independent risk gate blocks execution."
     }.each do |case_name, contradiction|
       mutant = "#{text}\n#{contradiction}\n"
 
@@ -749,6 +774,7 @@ class ModelRoutingContractTest < Minitest::Test
       "An inherited route shouldn't disqualify the lane before edits.",
       "A route mismatch is not sufficient to stop the lane before edits.",
       "A route mismatch does not, by itself, block execution before edits.",
+      "A route mismatch does not stop the lane, but an independent risk gate blocks execution.",
       "A route mismatch stops the lane only if an independent risk gate blocks.",
       "A route mismatch stops the lane only if an independent scope gate blocks.",
       "A route mismatch stops the lane only if an independent evidence gate blocks.",
@@ -756,6 +782,16 @@ class ModelRoutingContractTest < Minitest::Test
     ].each do |allowed_condition|
       refute forbidden_route_only_contradiction?(allowed_condition),
              "allowed route condition must not be treated as an unconditional route-only stop: #{allowed_condition}"
+    end
+  end
+
+  def test_route_only_contradictions_do_not_cross_markdown_rows_or_blank_boundaries
+    {
+      "Markdown table rows" => "| Route condition | route mismatch |\n| Gate result | blocks execution |",
+      "blank boundary" => "A route mismatch\n\nblocks execution."
+    }.each do |boundary, text|
+      refute forbidden_route_only_contradiction?(text),
+             "route-only contradiction must not cross a #{boundary}"
     end
   end
 
