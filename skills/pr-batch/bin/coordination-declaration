@@ -49,6 +49,12 @@ module CoordinationDeclaration
     end
   end
 
+  def expand_leading_whitespace(line)
+    leading_whitespace = line[/\A[ \t]*/]
+    expanded_width = column_after_padding(0, leading_whitespace)
+    (" " * expanded_width) + line.delete_prefix(leading_whitespace)
+  end
+
   def visible_lines(handoff_text)
     fence = nil
     # Content columns for the currently open list-item ancestry. They let an
@@ -56,7 +62,9 @@ module CoordinationDeclaration
     # without a parent list item remains an indented code block.
     list_content_indents = []
 
-    handoff_text.to_s.lines.filter_map do |line|
+    handoff_text.to_s.lines.filter_map do |raw_line|
+      line = expand_leading_whitespace(raw_line)
+
       if fence
         closing_indent = " {#{fence[:minimum_indent]},#{fence[:maximum_indent]}}"
         marker = Regexp.escape(fence[:character])

@@ -369,6 +369,43 @@ class CoordinationDeclarationContractTest < Minitest::Test
     end
   end
 
+  def test_tab_indented_list_fence_hides_its_declaration
+    handoff = "- Outer:\n\t```text\n  coordination: registered hidden\n\t```\n"
+
+    assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                 "a tab-indented fence inside list content must hide its example declaration"
+  end
+
+  def test_tab_indented_list_fence_closes_before_a_real_declaration
+    handoff = "-\t```text\n\tcoordination: registered hidden\n\t```\n" \
+              "coordination: registered aw-real\n"
+
+    assert_empty coordination_declaration_blockers(handoff),
+                 "a tab-indented closing fence must not hide the later real declaration"
+  end
+
+  def test_mixed_space_tab_indentation_controls_list_fence_transitions
+    hidden_examples = [
+      "- Outer:\n \t```text\n  coordination: registered hidden-mixed-backtick\n \t```\n",
+      "- Outer:\n  \t~~~text\n  coordination: registered hidden-mixed-tilde\n  \t~~~\n"
+    ]
+    closed_examples = [
+      "- \t```text\n\tcoordination: registered hidden-marker-padding\n \t```\n" \
+        "coordination: registered aw-real-after-mixed-backtick\n",
+      "+\t~~~text\n\tcoordination: registered hidden-marker-tab\n  \t~~~\n" \
+        "coordination: registered aw-real-after-mixed-tilde\n"
+    ]
+
+    hidden_examples.each do |handoff|
+      assert_equal [MISSING_DECLARATION_BLOCKER], coordination_declaration_blockers(handoff),
+                   "mixed leading indentation must open and close the list fence at rendered columns"
+    end
+    closed_examples.each do |handoff|
+      assert_empty coordination_declaration_blockers(handoff),
+                   "mixed leading indentation must close the fence before the later real declaration"
+    end
+  end
+
   def test_tilde_fence_info_may_contain_tildes
     [
       "~~~ruby~bad\ncoordination: registered example-top-level-tilde-info\n~~~\n",
