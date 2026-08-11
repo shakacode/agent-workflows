@@ -2,8 +2,8 @@
 # frozen_string_literal: true
 
 require "json"
-require "open3"
 require "optparse"
+require "tempfile"
 
 UNKNOWN = "UNKNOWN"
 DEFAULT_TIMEOUT_SECONDS = 20
@@ -54,13 +54,78 @@ end
 
 def bounded_helper
   candidates = []
-  candidates << File.join(ENV["PR_BATCH_SKILL_DIR"], "bin", "agent-coord-bounded") if ENV["PR_BATCH_SKILL_DIR"]
+  configured_skill_dir = present_string(ENV["PR_BATCH_SKILL_DIR"])
+  candidates << File.join(configured_skill_dir, "bin", "agent-coord-bounded") if configured_skill_dir
   candidates << File.expand_path("../../pr-batch/bin/agent-coord-bounded", __dir__)
   candidates.find { |path| File.file?(path) && File.executable?(path) }
 end
 
-def run_json(*argv)
-  stdout, stderr, status = Open3.capture3(*argv)
+def wait_for_child(pid, deadline)
+  loop do
+    waited = Process.waitpid2(pid, Process::WNOHANG)
+    return waited[1] if waited
+    return nil if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+    sleep 0.01
+  end
+rescue Errno::ECHILD
+  nil
+end
+
+def process_group_alive?(pid)
+  Process.kill(0, -pid)
+  true
+rescue Errno::ESRCH
+  false
+rescue Errno::EPERM
+  true
+end
+
+def signal_process_group(pid, signal)
+  Process.kill(signal, -pid)
+rescue Errno::ESRCH
+  nil
+end
+
+def wait_for_process_group_exit(pid, deadline)
+  loop do
+    return true unless process_group_alive?(pid)
+    return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+    sleep 0.01
+  end
+end
+
+def terminate_process_group(pid)
+  signal_process_group(pid, "TERM")
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+  wait_for_child(pid, deadline)
+  return if wait_for_process_group_exit(pid, deadline)
+
+  signal_process_group(pid, "KILL")
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+  wait_for_child(pid, deadline)
+  wait_for_process_group_exit(pid, deadline)
+end
+
+def run_json(*argv, timeout: nil)
+  stdout_file = Tempfile.new("batch-status-stdout")
+  stderr_file = Tempfile.new("batch-status-stderr")
+  pid = Process.spawn(*argv, out: stdout_file.path, err: stderr_file.path, pgroup: true)
+  status = if timeout
+             wait_for_child(pid, Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout)
+           else
+             Process.waitpid2(pid)[1]
+           end
+  if timeout && status.nil?
+    terminate_process_group(pid)
+    return [nil, "command timed out after #{timeout}s"]
+  end
+
+  stdout_file.rewind
+  stderr_file.rewind
+  stdout = stdout_file.read
+  stderr = stderr_file.read
   return [JSON.parse(stdout), nil] if status.success?
 
   [nil, stderr.strip.empty? ? "command exited #{status.exitstatus}" : stderr.strip]
@@ -68,6 +133,9 @@ rescue JSON::ParserError => e
   [nil, "invalid JSON: #{e.message}"]
 rescue SystemCallError => e
   [nil, e.message]
+ensure
+  stdout_file&.close!
+  stderr_file&.close!
 end
 
 options = { batch_ids: [], prs: [], issues: [], targets: [], timeout: DEFAULT_TIMEOUT_SECONDS }
@@ -78,7 +146,7 @@ parser = OptionParser.new do |opts|
   opts.on("--pr NUMBER", Integer, "Inspect a pull request number") { |value| options[:prs] << value }
   opts.on("--issue NUMBER", Integer, "Inspect an issue number") { |value| options[:issues] << value }
   opts.on("--target REF", "Inspect OWNER/REPO#N and detect PR versus issue") { |value| options[:targets] << value }
-  opts.on("--timeout SECONDS", Float, "Agent-coordination deadline") { |value| options[:timeout] = value }
+  opts.on("--timeout SECONDS", Float, "External probe deadline") { |value| options[:timeout] = value }
   opts.on("--json", "Emit machine-readable JSON") { options[:json] = true }
   opts.on("-h", "--help", "Show this help") do
     puts opts
@@ -214,7 +282,7 @@ items = requests.map do |request|
   number = request.fetch(:number)
   unknowns = []
 
-  github, github_error = run_json("gh", "api", "repos/#{repo}/issues/#{number}")
+  github, github_error = run_json("gh", "api", "repos/#{repo}/issues/#{number}", timeout: options[:timeout])
   if github && !github.is_a?(Hash)
     github = nil
     github_error = "response was not an object"
@@ -253,8 +321,8 @@ items = requests.map do |request|
   if holder && expected_owner && holder != expected_owner
     unknowns << "coordination holder divergence: batch owner #{expected_owner}, active claim #{holder}"
   end
-  heartbeat = heartbeats.find { |candidate| candidate.is_a?(Hash) && candidate["agent_id"] == holder }
-  record = heartbeat || claim
+  heartbeat = holder && heartbeats.find { |candidate| candidate.is_a?(Hash) && candidate["agent_id"] == holder }
+  record = holder ? (heartbeat || claim) : {}
   runner = runner_for(record)
   machine_id = present_string(record["machine_id"]) || UNKNOWN
   thread_id = present_string(record["session_id"]) || UNKNOWN

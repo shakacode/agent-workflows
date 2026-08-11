@@ -318,6 +318,128 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_github_lookup_times_out_without_leaving_its_process_group_alive
+    Dir.mktmpdir("batch-status-test") do |dir|
+      child_marker = File.join(dir, "gh-child-survived")
+      write_executable(File.join(dir, "agent-coord"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        puts '{"claims":[],"heartbeats":[]}'
+      RUBY
+      write_executable(File.join(dir, "gh"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        fork do
+          sleep 0.6
+          File.write(#{child_marker.dump}, "survived")
+        end
+        sleep 1
+        puts '{"state":"open","html_url":"https://github.com/shakacode/agent-workflows/issues/188"}'
+      RUBY
+      env = {
+        "PATH" => [dir, ENV.fetch("PATH")].join(File::PATH_SEPARATOR),
+        "PR_BATCH_SKILL_DIR" => File.expand_path("../../pr-batch", __dir__)
+      }
+
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "188",
+        "--timeout", "0.05",
+        "--json"
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert_predicate status, :success?, stderr
+      assert_operator elapsed, :<, 0.5
+      sleep 0.7
+      refute File.exist?(child_marker), "timed-out gh child process survived"
+      row = JSON.parse(stdout).fetch("items").first
+      assert_equal "UNKNOWN", row.fetch("target").fetch("kind")
+      assert_includes row.fetch("unknowns"), "GitHub state: command timed out after 0.05s"
+    end
+  end
+
+  def test_github_timeout_kills_a_term_ignoring_process_group
+    Dir.mktmpdir("batch-status-test") do |dir|
+      term_marker = File.join(dir, "term-ignoring-gh-received-term")
+      write_executable(File.join(dir, "agent-coord"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        puts '{"claims":[],"heartbeats":[]}'
+      RUBY
+      write_executable(File.join(dir, "gh"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        Signal.trap("TERM") { File.write(#{term_marker.dump}, "ignored") }
+        fork do
+          loop { sleep 0.1 }
+        end
+        loop { sleep 0.1 }
+      RUBY
+      env = {
+        "PATH" => [dir, ENV.fetch("PATH")].join(File::PATH_SEPARATOR),
+        "PR_BATCH_SKILL_DIR" => File.expand_path("../../pr-batch", __dir__)
+      }
+
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "188",
+        "--timeout", "1.5",
+        "--json"
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert_predicate status, :success?, stderr
+      assert_operator elapsed, :>=, 1.7
+      assert_operator elapsed, :<, 3.5, "timeout, TERM/KILL cleanup, and the following bounded probe must not hang"
+      assert File.exist?(term_marker), "TERM handler did not run before KILL escalation"
+      row = JSON.parse(stdout).fetch("items").first
+      assert_equal "UNKNOWN", row.fetch("target").fetch("kind")
+      assert_includes row.fetch("unknowns"), "GitHub state: command timed out after 1.5s"
+    end
+  end
+
+  def test_blank_pr_batch_skill_dir_ignores_a_relative_helper
+    Dir.mktmpdir("batch-status-test") do |dir|
+      FileUtils.mkdir_p(File.join(dir, "bin"))
+      write_executable(File.join(dir, "bin", "agent-coord-bounded"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        puts "not JSON"
+      RUBY
+      write_executable(File.join(dir, "agent-coord"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        puts '{"claims":[],"heartbeats":[]}'
+      RUBY
+      write_executable(File.join(dir, "gh"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        puts '{"state":"open","html_url":"https://github.com/shakacode/agent-workflows/issues/188"}'
+      RUBY
+      env = {
+        "PATH" => [dir, ENV.fetch("PATH")].join(File::PATH_SEPARATOR),
+        "PR_BATCH_SKILL_DIR" => ""
+      }
+
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "188",
+        "--json",
+        chdir: dir
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      assert_equal "issue", row.fetch("target").fetch("kind")
+      refute(row.fetch("unknowns").any? { |item| item.include?("invalid JSON") })
+    end
+  end
+
   def test_released_claim_does_not_supply_current_holder_or_task_identity
     coordination = {
       "claims" => [{
@@ -354,6 +476,40 @@ class BatchStatusTest < Minitest::Test
       assert_equal "UNKNOWN", row.fetch("editor")
       assert_equal "UNKNOWN", row.fetch("codex_deep_link")
       assert_includes row.fetch("unknowns"), "coordination holder: no active claim"
+    end
+  end
+
+  def test_missing_active_holder_never_joins_a_heartbeat_without_an_agent_id
+    coordination = {
+      "claims" => [{ "status" => "active" }],
+      "heartbeats" => [{
+        "host" => "codex",
+        "machine_id" => "kona",
+        "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10",
+        "session_source" => "codex_thread_id",
+        "status" => "in_progress"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "issue", number: 188) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "188",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      assert_equal "UNKNOWN", row.fetch("holder")
+      assert_equal "UNKNOWN", row.fetch("editor")
+      assert_equal "UNKNOWN", row.fetch("runner")
+      assert_equal "UNKNOWN", row.fetch("machine_id")
+      assert_equal "UNKNOWN", row.fetch("thread_id")
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link")
+      assert_equal "UNKNOWN", row.fetch("heartbeat")
     end
   end
 
