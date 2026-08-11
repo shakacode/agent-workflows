@@ -9,9 +9,14 @@ PATH_EXPANSION_DEFAULT =
   "Necessary in-repository path expansion defaults to allowed when repository evidence shows an added path " \
   "is reasonably necessary to complete the already-authorized goal or its required validation. Treat owned " \
   "paths and the execution envelope as coordination and collision controls, not as a user-permission boundary. " \
-  "Before changing the added path, record the path and reason in the lane envelope, refresh active-lane claim " \
-  "and collision checks, and continue without user approval when they are clear. A missing path alone is not " \
-  "material scope growth and must not produce `blocked-user-input`."
+  "When a lane is the sole active editor, it may record the path and reason in the lane envelope, refresh " \
+  "active-lane claim and collision checks, and continue without user approval when they are clear. Before a " \
+  "worker in a multi-editor wave changes an added path, it records an expansion request and pauses at a safe " \
+  "checkpoint. The coordinator processes expansion requests serially, refreshes authoritative file-touch maps " \
+  "and lane lifecycle state, reruns `batch-plan-preflight`, and resumes the worker only after accepting the path " \
+  "as disjoint or serializing the affected work at maximum concurrency one. A collision or `UNKNOWN` collision " \
+  "state remains stopped until then. A missing path alone is not material scope growth and must not produce " \
+  "`blocked-user-input`."
 
 PATH_EXPANSION_EXAMPLES =
   "Necessary additions can include contract or type files, tests or fixtures, offline demo stubs, and build or " \
@@ -27,8 +32,16 @@ PATH_EXPANSION_STOPS =
   "weakens verification."
 
 COMPACT_WORKER_CONTRACT =
-  "Workers:paths=coord!=permission;path+log/check/go;contradiction/ambiguity/scope-risk/weakened " \
+  "Workers:paths=coord!=permission;path+log;multi=>coord;contradiction/ambiguity/scope-risk/weak " \
   "verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN"
+
+WORKER_SUBAGENT_COORDINATION =
+  "A sole active editor records the path and reason, refreshes active claims and collision checks, then " \
+  "continues when clear. In a multi-editor wave, the worker records an expansion request and pauses at a safe " \
+  "checkpoint before changing the path. The coordinator processes expansion requests serially, refreshes " \
+  "authoritative file-touch maps and lane lifecycle state, reruns `batch-plan-preflight`, and resumes only after " \
+  "accepting disjointness or maximum-concurrency-one serialization. A collision or `UNKNOWN` collision state " \
+  "remains stopped."
 
 WORKER_SUBAGENT_RESTATEMENT =
   "With or without an envelope, contradictory evidence remains an immediate stop. Stop and return control when " \
@@ -78,7 +91,7 @@ class FileExpansionContractTest < Minitest::Test
     contracts.each do |label, lines|
       assert_equal [COMPACT_WORKER_CONTRACT], lines, label
     end
-    assert_includes COMPACT_WORKER_CONTRACT, "path+log/check/go"
+    assert_includes COMPACT_WORKER_CONTRACT, "path+log;multi=>coord"
     assert_includes COMPACT_WORKER_CONTRACT, "contradiction"
     assert_includes COMPACT_WORKER_CONTRACT, "unverifiable facts are UNKNOWN"
   end
@@ -86,6 +99,7 @@ class FileExpansionContractTest < Minitest::Test
   def test_worker_subagent_restatement_preserves_every_material_stop
     workflow = @full_contract_surfaces.fetch("workflows/pr-processing.md").gsub(/\s+/, " ")
 
+    assert_includes workflow, WORKER_SUBAGENT_COORDINATION
     assert_includes workflow, WORKER_SUBAGENT_RESTATEMENT
   end
 end

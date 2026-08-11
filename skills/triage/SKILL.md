@@ -220,11 +220,17 @@ precise blocker.
    evidence shows an added path is reasonably necessary to complete the
    already-authorized goal or its required validation. Treat owned paths and
    the execution envelope as coordination and collision controls, not as a
-   user-permission boundary. Before changing the added path, record the path
-   and reason in the lane envelope, refresh active-lane claim and collision
-   checks, and continue without user approval when they are clear. A missing
-   path alone is not material scope growth and must not produce
-   `blocked-user-input`.
+   user-permission boundary. When a lane is the sole active editor, it may
+   record the path and reason in the lane envelope, refresh active-lane claim
+   and collision checks, and continue without user approval when they are
+   clear. Before a worker in a multi-editor wave changes an added path, it
+   records an expansion request and pauses at a safe checkpoint. The
+   coordinator processes expansion requests serially, refreshes authoritative
+   file-touch maps and lane lifecycle state, reruns `batch-plan-preflight`, and
+   resumes the worker only after accepting the path as disjoint or serializing
+   the affected work at maximum concurrency one. A collision or `UNKNOWN`
+   collision state remains stopped until then. A missing path alone is not
+   material scope growth and must not produce `blocked-user-input`.
    Necessary additions can include contract or type files, tests or fixtures,
    offline demo stubs, and build or generated integration surfaces when
    repository evidence makes them necessary.

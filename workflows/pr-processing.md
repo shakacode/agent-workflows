@@ -797,11 +797,17 @@ does not redefine scope or substitute a new diagnosis. Necessary in-repository
 path expansion defaults to allowed when repository evidence shows an added path
 is reasonably necessary to complete the already-authorized goal or its required
 validation. Treat owned paths and the execution envelope as coordination and
-collision controls, not as a user-permission boundary. Before changing the
-added path, record the path and reason in the lane envelope, refresh active-lane
-claim and collision checks, and continue without user approval when they are
-clear. A missing path alone is not material scope growth and must not produce
-`blocked-user-input`.
+collision controls, not as a user-permission boundary. When a lane is the sole
+active editor, it may record the path and reason in the lane envelope, refresh
+active-lane claim and collision checks, and continue without user approval when
+they are clear. Before a worker in a multi-editor wave changes an added path,
+it records an expansion request and pauses at a safe checkpoint. The coordinator
+processes expansion requests serially, refreshes authoritative file-touch maps
+and lane lifecycle state, reruns `batch-plan-preflight`, and resumes the worker
+only after accepting the path as disjoint or serializing the affected work at
+maximum concurrency one. A collision or `UNKNOWN` collision state remains
+stopped until then. A missing path alone is not material scope growth and must
+not produce `blocked-user-input`.
 Necessary additions can include contract or type files, tests or fixtures,
 offline demo stubs, and build or generated integration surfaces when repository
 evidence makes them necessary.
@@ -1588,7 +1594,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:paths=coord!=permission;path+log/check/go;contradiction/ambiguity/scope-risk/weakened verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=permission;path+log;multi=>coord;contradiction/ambiguity/scope-risk/weak verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
@@ -2140,9 +2146,15 @@ When worker subagents are explicitly authorized:
   supported diagnosis, invariants, acceptance criteria, verification, and stop
   conditions regardless of route. Expand owned paths without user approval when
   repository evidence makes an in-repository path reasonably necessary for the
-  authorized goal or required validation: record the path and reason, refresh
-  active claims and collision checks, then continue when clear. With or without
-  an envelope, contradictory evidence remains an immediate stop. Stop and return
+  authorized goal or required validation. A sole active editor records the path
+  and reason, refreshes active claims and collision checks, then continues when
+  clear. In a multi-editor wave, the worker records an expansion request and
+  pauses at a safe checkpoint before changing the path. The coordinator
+  processes expansion requests serially, refreshes authoritative file-touch
+  maps and lane lifecycle state, reruns `batch-plan-preflight`, and resumes only
+  after accepting disjointness or maximum-concurrency-one serialization. A
+  collision or `UNKNOWN` collision state remains stopped. With or without an envelope,
+  contradictory evidence remains an immediate stop. Stop and return
   control when path expansion changes the approved goal, accepted behavior,
   or acceptance criteria; adds unrelated work; crosses a repository or trust
   boundary; requires a destructive or difficult-to-reverse action; introduces

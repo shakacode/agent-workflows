@@ -590,7 +590,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:paths=coord!=permission;path+log/check/go;contradiction/ambiguity/scope-risk/weakened verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=permission;path+log;multi=>coord;contradiction/ambiguity/scope-risk/weak verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
@@ -800,10 +800,17 @@ route. Necessary in-repository path expansion defaults to allowed when
 repository evidence shows an added path is reasonably necessary to complete the
 already-authorized goal or its required validation. Treat owned paths and the
 execution envelope as coordination and collision controls, not as a
-user-permission boundary. Before changing the added path, record the path and
-reason in the lane envelope, refresh active-lane claim and collision checks, and
-continue without user approval when they are clear. A missing path alone is not
-material scope growth and must not produce `blocked-user-input`.
+user-permission boundary. When a lane is the sole active editor, it may record
+the path and reason in the lane envelope, refresh active-lane claim and
+collision checks, and continue without user approval when they are clear.
+Before a worker in a multi-editor wave changes an added path, it records an
+expansion request and pauses at a safe checkpoint. The coordinator processes
+expansion requests serially, refreshes authoritative file-touch maps and lane
+lifecycle state, reruns `batch-plan-preflight`, and resumes the worker only
+after accepting the path as disjoint or serializing the affected work at
+maximum concurrency one. A collision or `UNKNOWN` collision state remains
+stopped until then. A missing path alone is not material scope growth and must
+not produce `blocked-user-input`.
 Necessary additions can include contract or type files, tests or fixtures,
 offline demo stubs, and build or generated integration surfaces when repository
 evidence makes them necessary.
