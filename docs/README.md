@@ -3,9 +3,15 @@
 Guide for installing, adopting, and running the shared ShakaCode agent workflow
 pack.
 
-Choose the journey that matches what you need to do. The first five sections
+Choose the journey that matches what you need to do. The first six sections
 cover the normal user path; architecture records, schemas, maintainer material,
 and implementation plans are collected in the final reference section.
+
+## Start here
+
+| Goal | Read |
+| --- | --- |
+| Go from zero to a first successful workflow run | [Getting Started](getting-started.md) |
 
 ## Understand the project
 
