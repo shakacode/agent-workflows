@@ -1627,7 +1627,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:paths=coord!=permission;path+resv;multi=>coord;contradiction/ambiguity/scope-risk/weak verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambiguity/scope-risk/verify↓;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description

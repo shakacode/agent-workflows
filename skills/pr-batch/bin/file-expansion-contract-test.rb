@@ -42,8 +42,8 @@ PATH_EXPANSION_STOPS =
   "ambiguity; or it weakens verification. An omitted path alone is not such a condition."
 
 COMPACT_WORKER_CONTRACT =
-  "Workers:paths=coord!=permission;path+resv;multi=>coord;contradiction/ambiguity/scope-risk/weak " \
-  "verify=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN"
+  "Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambiguity/scope-risk/" \
+  "verify↓;Verify live GitHub before edits;unverifiable facts are UNKNOWN"
 
 WORKER_SUBAGENT_COORDINATION =
   "A sole active editor records the path and reason in the envelope or durable coordinator-owned lane record, " \
@@ -117,7 +117,8 @@ class FileExpansionContractTest < Minitest::Test
       assert_equal [COMPACT_WORKER_CONTRACT], lines, label
     end
     assert_includes COMPACT_WORKER_CONTRACT, "path+resv;multi=>coord"
-    assert_includes COMPACT_WORKER_CONTRACT, "contradiction"
+    assert_includes COMPACT_WORKER_CONTRACT, "stop:contradiction/ambiguity/scope-risk/verify↓"
+    assert_includes COMPACT_WORKER_CONTRACT, "Verify live GitHub before edits"
     assert_includes COMPACT_WORKER_CONTRACT, "unverifiable facts are UNKNOWN"
   end
 
