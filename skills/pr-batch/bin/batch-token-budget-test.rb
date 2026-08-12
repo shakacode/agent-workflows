@@ -4,15 +4,25 @@
 require "json"
 require "minitest/autorun"
 require "open3"
+require "openssl"
+require "base64"
+require "digest"
 require "tmpdir"
 
 HELPER = File.expand_path("batch-token-budget", __dir__)
 FIXTURE = File.expand_path("../fixtures/batch-token-budget-v1.json", __dir__)
 
 class BatchTokenBudgetTest < Minitest::Test
+  TEST_VERIFIER_KEY = OpenSSL::PKey::RSA.generate(2048)
+
   def budget(state_path: nil)
     parsed = JSON.parse(File.read(FIXTURE))
     parsed["state_path"] = state_path if state_path
+    parsed["trusted_verifiers"] = [{
+      "id" => "coordinator-399",
+      "algorithm" => "rsa-pss-sha256",
+      "public_key_pem" => TEST_VERIFIER_KEY.public_key.to_pem
+    }]
     parsed
   end
 
@@ -114,10 +124,32 @@ class BatchTokenBudgetTest < Minitest::Test
     }
   end
 
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.to_h { |key| [key, canonicalize(value.fetch(key))] }
+    when Array
+      value.map { |item| canonicalize(item) }
+    else
+      value
+    end
+  end
+
+  def object_digest(value)
+    Digest::SHA256.hexdigest(JSON.generate(canonicalize(value)))
+  end
+
+  def rehash_control_tail(state)
+    tail = state.fetch("control_events").last
+    tail["state_digest"] = object_digest(state.reject { |key, _value| key == "control_events" })
+    tail["digest"] = object_digest(tail.reject { |key, _value| key == "digest" })
+  end
+
   def human_attestation(state_path, id:, scope_id:, action:, issued_at: "2026-08-12T11:58:00Z",
-                        expires_at: "2026-08-12T13:00:00Z", overrides: {})
+                        expires_at: "2026-08-12T13:00:00Z", signing_key: TEST_VERIFIER_KEY,
+                        verifier_id: "coordinator-399", overrides: {})
     state = JSON.parse(File.read(state_path))
-    {
+    signed_fields = {
       "type" => "proven-human-attestation",
       "version" => 1,
       "id" => "attestation-#{id}",
@@ -128,14 +160,13 @@ class BatchTokenBudgetTest < Minitest::Test
       "actor" => "maintainer@example.test",
       "issued_at" => issued_at,
       "expires_at" => expires_at,
-      "provenance" => {
-        "type" => "coordinator-verified-provenance-receipt",
-        "version" => 1,
-        "status" => "verified",
-        "verifier_id" => "coordinator-399",
-        "receipt_ref" => "coordination://verified-human/#{id}"
-      }
+      "verifier_id" => verifier_id,
+      "algorithm" => "rsa-pss-sha256",
+      "receipt_ref" => "coordination://verified-human/#{id}"
     }.merge(overrides)
+    payload = JSON.generate(canonicalize(signed_fields))
+    signature = signing_key.sign_pss("SHA256", payload, salt_length: :digest, mgf1_hash: "SHA256")
+    signed_fields.merge("signature" => Base64.strict_encode64(signature))
   end
 
   def approval(state_path, id:, scope_id: "lane-a", reason: "Allow one bounded admission.",
@@ -214,6 +245,32 @@ class BatchTokenBudgetTest < Minitest::Test
       refute mismatch_status.success?
       assert_nil output
       assert_equal "state-path-mismatch", JSON.parse(mismatch_stderr).fetch("reason")
+    end
+  end
+
+  def test_initialize_rejects_untrusted_or_malformed_verifier_keys
+    Dir.mktmpdir("batch-token-budget-verifier-contract") do |directory|
+      mutations = {
+        "unknown-algorithm" => proc { |records| records[0]["algorithm"] = "UNKNOWN" },
+        "malformed-key" => proc { |records| records[0]["public_key_pem"] = "not-a-public-key" },
+        "private-key" => proc { |records| records[0]["public_key_pem"] = TEST_VERIFIER_KEY.to_pem },
+        "duplicate-id" => proc { |records| records << records[0].dup },
+        "empty" => proc(&:clear)
+      }
+      mutations.each do |name, mutate|
+        state_path = File.join(directory, "#{name}.json")
+        candidate = budget(state_path: state_path)
+        mutate.call(candidate.fetch("trusted_verifiers"))
+        output, stderr, status = run_helper(
+          state_path,
+          command("initialize", "budget" => candidate)
+        )
+
+        refute status.success?, name
+        assert_nil output, name
+        assert_equal "invalid-budget-contract", JSON.parse(stderr).fetch("reason"), name
+        refute File.file?(state_path), name
+      end
     end
   end
 
@@ -594,9 +651,11 @@ class BatchTokenBudgetTest < Minitest::Test
         "wrong-batch" => proc { |value| value["batch_id"] = "other-batch" },
         "wrong-budget" => proc { |value| value["budget_digest"] = "0" * 64 },
         "wrong-action" => proc { |value| value["action"]["type"] = "merge" },
-        "unverified" => proc { |value| value["provenance"]["status"] = "self-attested" },
-        "self-attested-ref" => proc { |value| value["provenance"]["receipt_ref"] = "self-attested" },
-        "missing-provenance" => proc { |value| value.delete("provenance") },
+        "unsupported-algorithm" => proc { |value| value["algorithm"] = "UNKNOWN" },
+        "unlisted-verifier" => proc { |value| value["verifier_id"] = "self-described-verifier" },
+        "self-attested-ref" => proc { |value| value["receipt_ref"] = "self-attested" },
+        "missing-signature" => proc { |value| value.delete("signature") },
+        "malformed-signature" => proc { |value| value["signature"] = "not-base64!" },
         "expired" => proc { |value| value["expires_at"] = "2026-08-12T11:59:00Z" },
         "future" => proc { |value| value["issued_at"] = "2026-08-12T12:30:00Z" }
       }
@@ -609,6 +668,23 @@ class BatchTokenBudgetTest < Minitest::Test
         assert_equal "invalid-approval", JSON.parse(stderr).fetch("reason"), name
         assert_equal baseline, File.read(state_path), name
       end
+
+      forged = approval(state_path, id: "forged-key")
+      forged["attestation"] = human_attestation(
+        state_path,
+        id: "forged-key",
+        scope_id: "lane-a",
+        action: { "type" => "approve-next-admission", "decision_id" => "forged-key" },
+        signing_key: OpenSSL::PKey::RSA.generate(2048)
+      )
+      forged_output, forged_stderr, forged_status = run_helper(
+        state_path,
+        command("approve", "approval" => forged)
+      )
+      refute forged_status.success?
+      assert_nil forged_output
+      assert_equal "invalid-approval", JSON.parse(forged_stderr).fetch("reason")
+      assert_equal baseline, File.read(state_path)
 
       verified = approval(state_path, id: "bound-approval")
       accepted, accepted_stderr, accepted_status = run_helper(
@@ -625,10 +701,16 @@ class BatchTokenBudgetTest < Minitest::Test
       )
       refute replay_status.success?
       assert_nil replay
-      assert_equal "approval-replay-mismatch", JSON.parse(replay_stderr).fetch("reason")
+      assert_equal "invalid-approval", JSON.parse(replay_stderr).fetch("reason")
 
       rebound = approval(state_path, id: "rebound-approval")
-      rebound["attestation"]["id"] = verified.dig("attestation", "id")
+      rebound["attestation"] = human_attestation(
+        state_path,
+        id: "rebound-approval",
+        scope_id: "lane-a",
+        action: { "type" => "approve-next-admission", "decision_id" => "rebound-approval" },
+        overrides: { "id" => verified.dig("attestation", "id") }
+      )
       rebound_output, rebound_stderr, rebound_status = run_helper(
         state_path,
         command("approve", "approval" => rebound)
@@ -650,7 +732,7 @@ class BatchTokenBudgetTest < Minitest::Test
         old_limit_tokens: 600,
         new_limit_tokens: 700
       )
-      unverified["attestation"]["provenance"]["status"] = "UNKNOWN"
+      unverified["attestation"]["verifier_id"] = "UNKNOWN"
       output, stderr, status = run_helper(state_path, command("override", "override" => unverified))
       refute status.success?
       assert_nil output
@@ -685,7 +767,7 @@ class BatchTokenBudgetTest < Minitest::Test
       assert accepted_status.success?, accepted_stderr
       assert_equal "overridden", accepted.fetch("status")
       changed = JSON.parse(JSON.generate(verified))
-      changed["attestation"]["provenance"]["receipt_ref"] = "coordination://verified-human/other"
+      changed["attestation"]["receipt_ref"] = "coordination://verified-human/other"
       replay, replay_stderr, replay_status = run_helper(
         state_path,
         command("override", "override" => changed)
@@ -1641,6 +1723,123 @@ class BatchTokenBudgetTest < Minitest::Test
         refute corrupt_status.success?, name
         assert_nil output, name
         assert_equal "corrupt-persisted-state", JSON.parse(corrupt_stderr).fetch("reason"), name
+      end
+    end
+  end
+
+  def test_restart_rejects_scope_inflation_deleted_override_and_deleted_hard_stop
+    Dir.mktmpdir("batch-token-budget-control-integrity") do |directory|
+      inflated_path = File.join(directory, "inflated.json")
+      initialize_budget(inflated_path)
+      inflated = JSON.parse(File.read(inflated_path))
+      inflated.dig("budget", "scopes", "aggregate")["limit_tokens"] = 10_000
+      inflated.dig("budget", "scopes", "lanes", "lane-a")["limit_tokens"] = 10_000
+      inflated.dig("scopes", "aggregate")["limit_tokens"] = 10_000
+      inflated.dig("scopes", "lanes", "lane-a")["limit_tokens"] = 10_000
+      inflated["effective_budget_digest"] = object_digest(inflated.fetch("budget"))
+      rehash_control_tail(inflated)
+      File.write(inflated_path, JSON.generate(inflated))
+      output, stderr, status = reserve(inflated_path, id: "inflation-admission", tokens: 600)
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+
+      override_path = File.join(directory, "deleted-override.json")
+      initialize_budget(override_path)
+      increase = budget_override(
+        override_path,
+        id: "durable-increase",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 700
+      )
+      overridden, override_stderr, override_status = run_helper(
+        override_path,
+        command("override", "override" => increase)
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", overridden.fetch("status")
+      deleted_override = JSON.parse(File.read(override_path))
+      deleted_override.fetch("overrides").delete("durable-increase")
+      rehash_control_tail(deleted_override)
+      File.write(override_path, JSON.generate(deleted_override))
+      output, stderr, status = run_helper(
+        override_path,
+        command("closeout", "evaluated_at" => "2026-08-12T14:00:00Z")
+      )
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+
+      hard_path = File.join(directory, "deleted-hard-stop.json")
+      initialize_budget(hard_path)
+      hard, = reserve(hard_path, id: "durable-hard-stop", tokens: 600)
+      assert_equal "budget-exhausted", hard.fetch("status")
+      deleted_hard = JSON.parse(File.read(hard_path))
+      deleted_hard["admission_decisions"] = {}
+      rehash_control_tail(deleted_hard)
+      File.write(hard_path, JSON.generate(deleted_hard))
+      output, stderr, status = run_helper(hard_path, command("closeout"))
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+    end
+  end
+
+  def test_restart_rejects_deleted_approval_and_tampered_control_event_chain
+    Dir.mktmpdir("batch-token-budget-control-events") do |directory|
+      approval_path = File.join(directory, "deleted-approval.json")
+      initialize_budget(approval_path)
+      accepted, approval_stderr, approval_status = run_helper(
+        approval_path,
+        command("approve", "approval" => approval(approval_path, id: "durable-approval"))
+      )
+      assert approval_status.success?, approval_stderr
+      assert_equal "approved", accepted.fetch("status")
+      deleted_approval = JSON.parse(File.read(approval_path))
+      deleted_approval.fetch("approvals").delete("durable-approval")
+      rehash_control_tail(deleted_approval)
+      File.write(approval_path, JSON.generate(deleted_approval))
+      output, stderr, status = run_helper(approval_path, command("closeout"))
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+
+      attestation_path = File.join(directory, "deleted-attestation.json")
+      initialize_budget(attestation_path)
+      run_helper(
+        attestation_path,
+        command("approve", "approval" => approval(attestation_path, id: "attestation-record"))
+      )
+      deleted_attestation = JSON.parse(File.read(attestation_path))
+      deleted_attestation.dig("approvals", "attestation-record", "decision").delete("attestation")
+      rehash_control_tail(deleted_attestation)
+      File.write(attestation_path, JSON.generate(deleted_attestation))
+      output, stderr, status = run_helper(attestation_path, command("closeout"))
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+
+      tamper_cases = {
+        "reordered" => proc(&:reverse!),
+        "digest-mismatch" => proc { |events| events.last["digest"] = "0" * 64 },
+        "predecessor-mismatch" => proc { |events| events.last["previous_digest"] = "0" * 64 },
+        "unknown-field" => proc { |events| events.last["self_attested"] = true },
+        "deleted-event" => proc(&:pop)
+      }
+      tamper_cases.each do |name, tamper|
+        state_path = File.join(directory, "#{name}.json")
+        initialize_budget(state_path)
+        reserve(state_path, id: "#{name}-reservation")
+        state = JSON.parse(File.read(state_path))
+        assert_operator state.fetch("control_events").length, :>=, 2
+        tamper.call(state.fetch("control_events"))
+        File.write(state_path, JSON.generate(state))
+
+        output, tamper_stderr, tamper_status = run_helper(state_path, command("closeout"))
+        refute tamper_status.success?, name
+        assert_nil output, name
+        assert_equal "corrupt-persisted-state", JSON.parse(tamper_stderr).fetch("reason"), name
       end
     end
   end

@@ -5,6 +5,7 @@ require "digest"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "openssl"
 require "rbconfig"
 require "tempfile"
 
@@ -14,6 +15,7 @@ REPLAY_FIXTURE = File.expand_path("../fixtures/ror-wave-a-plan-replay.json", __d
 UNSIGNED_LIFECYCLE_FIXTURE = File.expand_path("../fixtures/unsigned-lifecycle-smoke.json", __dir__)
 
 class BatchPlanPreflightTest < Minitest::Test
+  TEST_VERIFIER_KEY = OpenSSL::PKey::RSA.generate(2048)
   RISK_SURFACES = %w[
     ci_workflow
     developer_tooling
@@ -294,7 +296,12 @@ class BatchPlanPreflightTest < Minitest::Test
         "hard_percent" => 100
       },
       "telemetry" => { "max_age_seconds" => 900 },
-      "delegation" => { "approval_threshold_tokens" => 250 }
+      "delegation" => { "approval_threshold_tokens" => 250 },
+      "trusted_verifiers" => [{
+        "id" => "coordinator-399",
+        "algorithm" => "rsa-pss-sha256",
+        "public_key_pem" => TEST_VERIFIER_KEY.public_key.to_pem
+      }]
     }
   end
 
@@ -895,6 +902,27 @@ class BatchPlanPreflightTest < Minitest::Test
     assert status.success?, stderr
     assert_equal "accepted", result.fetch("status")
     assert_empty result.fetch("violations")
+  end
+
+  def test_token_budget_rejects_untrusted_or_malformed_verifier_records
+    mutations = {
+      "unknown-algorithm" => proc { |records| records[0]["algorithm"] = "UNKNOWN" },
+      "malformed-key" => proc { |records| records[0]["public_key_pem"] = "not-a-public-key" },
+      "private-key" => proc { |records| records[0]["public_key_pem"] = TEST_VERIFIER_KEY.to_pem },
+      "duplicate-id" => proc { |records| records << records[0].dup },
+      "empty" => proc(&:clear)
+    }
+    mutations.each do |name, mutate|
+      input = input_for
+      input.fetch("plan")["token_budget"] = token_budget
+      mutate.call(input.dig("plan", "token_budget", "trusted_verifiers"))
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, name
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-trusted-verifiers-invalid", name
+    end
   end
 
   def test_top_level_token_budget_cannot_coexist_with_inline_lane_budget_metadata
@@ -1775,13 +1803,13 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.dig("launch", "completed_lane_ids")
   end
 
-  def test_helper_has_no_project_lifecycle_signing_or_fixed_trust_contract
+  def test_helper_keeps_lifecycle_unsigned_while_validating_opt_in_budget_verifiers
     source = File.read(HELPER, encoding: "UTF-8")
 
     refute_includes source, "workflow-control-lifecycle-trust"
-    refute_includes source, "OpenSSL"
-    refute_includes source, "signature"
     refute_includes source, "lane_lifecycle_receipts"
+    assert_includes source, "valid_trusted_verifiers?"
+    assert_includes source, "rsa-pss-sha256"
   end
 
   def test_typed_edit_edge_serializes_shared_path_and_gate_holds_consumer
