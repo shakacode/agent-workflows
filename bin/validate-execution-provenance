@@ -319,7 +319,8 @@ module ValidateExecutionProvenance
     return unless match
     return unless rfc3339_components_in_range?(match)
 
-    DateTime.rfc3339(value)
+    parsed = DateTime.rfc3339(value)
+    match[:second].to_i == 60 ? parsed + Rational(1, 86_400) : parsed
   rescue ArgumentError
     nil
   end

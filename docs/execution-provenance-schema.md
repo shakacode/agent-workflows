@@ -89,7 +89,9 @@ Every field in `execution_provenance` is required:
   `00`-`23`, minutes and offset minutes are `00`-`59`, and offset hours are
   `00`-`23`. Second `60` is accepted only when the signed offset converts the
   represented UTC minute to `23:59`; the validator does not consult an external
-  leap-second calendar. The end cannot precede the start.
+  leap-second calendar. For ordering, a validated second `60` compares one
+  second after the parser's normalized value, so it follows `:59` and meets the
+  next day's `00:00:00` boundary. The end cannot precede the start.
 - `influenced_commits` is an array of full 40- or 64-character hexadecimal Git
   object IDs. `attribution_confidence` is `exact`, `timeline-derived`, `mixed`,
   or literal `UNKNOWN`. An empty list with known confidence records a known

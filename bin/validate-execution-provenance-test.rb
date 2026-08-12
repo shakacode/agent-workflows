@@ -328,6 +328,30 @@ class ValidateExecutionProvenanceTest < Minitest::Test
     end
   end
 
+  def test_timestamp_ordering_preserves_the_leap_second
+    valid_boundaries = [
+      ["2026-12-31T23:59:59Z", "2026-12-31T23:59:60Z"],
+      ["2026-12-31T23:59:60Z", "2027-01-01T00:00:00Z"]
+    ]
+    valid_boundaries.each do |started_at, ended_at|
+      document = valid_document
+      receipt = document.fetch("execution_provenance")
+      receipt["started_at"] = started_at
+      receipt["ended_at"] = ended_at
+
+      assert_empty ValidateExecutionProvenance.validate_document(document, "receipt"),
+                   "#{started_at} -> #{ended_at}"
+    end
+
+    document = valid_document
+    receipt = document.fetch("execution_provenance")
+    receipt["started_at"] = "2026-12-31T23:59:60Z"
+    receipt["ended_at"] = "2026-12-31T23:59:59Z"
+
+    assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
+                    "receipt: execution_provenance.ended_at must not precede started_at"
+  end
+
   def test_identity_host_and_reason_fields_are_explicit
     document = valid_document
     receipt = document.fetch("execution_provenance")
