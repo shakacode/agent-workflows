@@ -24,6 +24,7 @@ module AgentWorkflowSeamDoctorTestHelpers
     "merge_ledger" => "n/a",
     "ci_parity_environment" => "n/a",
     "hosted_ci_trigger" => "n/a",
+    "hosted_qa_gate" => "n/a",
     "ci_change_detector" => "n/a"
   }.freeze
 
@@ -117,6 +118,17 @@ module AgentWorkflowSeamDoctorTestHelpers
           "rationale" => "The repository guard revalidates policy immediately before direct squash."
         }
       }
+    }
+  end
+
+  def hosted_qa_policy
+    {
+      "version" => 1,
+      "change_paths" => ["app/**"],
+      "target" => "production",
+      "deployment_verifier" => ".agents/bin/verify-hosted-deployment",
+      "acceptance_criteria" => %w[sign-in checkout],
+      "waiver_mode" => "forbidden"
     }
   end
 end
@@ -312,6 +324,95 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_hosted_qa_gate_is_optional_during_first_phase_adoption
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      policy = POLICY.dup
+      policy.delete("hosted_qa_gate")
+      write_policy(root, policy)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_hosted_qa_gate_rejects_unknown_mapping_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "verify-hosted-deployment", "exec true\n")
+      write_policy(
+        root,
+        POLICY.merge("hosted_qa_gate" => hosted_qa_policy.merge("allow_local_substitute" => true))
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid hosted_qa_gate policy: contains unknown key \"allow_local_substitute\""
+    end
+  end
+
+  def test_hosted_qa_gate_accepts_the_complete_closed_mapping
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "verify-hosted-deployment", "exec true\n")
+      write_policy(root, POLICY.merge("hosted_qa_gate" => hosted_qa_policy))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_hosted_qa_gate_rejects_malformed_duplicate_and_unsafe_values
+    fixtures = {
+      "descriptive n/a" => "n/a — no runtime",
+      "unsupported version" => hosted_qa_policy.merge("version" => 2),
+      "unsafe glob" => hosted_qa_policy.merge("change_paths" => ["../app/**"]),
+      "duplicate criterion" => hosted_qa_policy.merge("acceptance_criteria" => %w[sign-in sign-in]),
+      "unsafe verifier" => hosted_qa_policy.merge("deployment_verifier" => "bin/verify-hosted-deployment"),
+      "unknown waiver mode" => hosted_qa_policy.merge("waiver_mode" => "always")
+    }
+
+    fixtures.each do |label, value|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_script(root, "verify-hosted-deployment", "exec true\n")
+        write_policy(root, POLICY.merge("hosted_qa_gate" => value))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out, "invalid hosted_qa_gate policy", label
+      end
+    end
+  end
+
+  def test_hosted_qa_gate_rejects_duplicate_yaml_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "verify-hosted-deployment", "exec true\n")
+      yaml = POLICY.merge("hosted_qa_gate" => hosted_qa_policy).to_yaml.sub(
+        "  target: production\n",
+        "  target: production\n  target: shadow-production\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid hosted_qa_gate policy: $.hosted_qa_gate contains duplicate key \"target\""
+    end
+  end
+
   def test_incomplete_untrusted_contributor_intake_policy_fails
     with_repo do |root|
       write_valid_binstub_contract(root)
@@ -449,10 +550,14 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
-  def test_optional_merge_submission_accepts_queue_only_and_guarded_direct_modes
+  def test_optional_merge_submission_accepts_direct_queue_only_and_guarded_direct_modes
     with_repo do |root|
       write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
+
+      write_policy(root, POLICY.merge("merge_submission" => { "mode" => "direct" }))
+      direct_out, direct_status = run_doctor(root)
+      assert direct_status.success?, direct_out
 
       write_policy(
         root,
@@ -463,15 +568,15 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       write_script(root, "merge-pr-after-checks", "exec true\n")
       write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
-      direct_out, direct_status = run_doctor(root)
-      assert direct_status.success?, direct_out
+      guarded_out, guarded_status = run_doctor(root)
+      assert guarded_status.success?, guarded_out
     end
   end
 
   def test_guarded_direct_merge_submission_uses_a_closed_fail_closed_schema
     cases = {
       "unknown mode" => {
-        "mode" => "direct"
+        "mode" => "unknown"
       },
       "queue-only extra key" => {
         "mode" => "merge_queue_only", "guarded_direct" => {}
@@ -1315,6 +1420,22 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
     end
   end
 
+  def test_executable_hosted_qa_placeholder_fails
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, <<~MARKDOWN)
+        ```bash
+        echo <hosted QA acceptance criteria>
+        ```
+      MARKDOWN
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "<hosted QA acceptance criteria>"
+    end
+  end
+
   def test_inline_act_event_command_placeholder_fails
     with_repo do |root|
       write_valid_binstub_contract(root)
@@ -1588,7 +1709,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert File.executable?(File.join(root, ".agents/bin/test"))
       policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")))
       assert_equal "main", policy.fetch("base_branch")
-      assert_equal({ "mode" => "merge_queue_only" }, policy.fetch("merge_submission"))
+      assert_equal({ "mode" => "direct" }, policy.fetch("merge_submission"))
       trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")))
       assert_equal [], trust.fetch("trusted_users")
       assert_equal [], trust.fetch("trusted_bots")
@@ -4736,7 +4857,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
         after_first.reject { |path, _content| path == ".agents/agent-workflow.yml" }
       )
       first_policy = YAML.safe_load(after_first.fetch(".agents/agent-workflow.yml"))
-      assert_equal({ "mode" => "merge_queue_only" }, first_policy.fetch("merge_submission"))
+      assert_equal({ "mode" => "direct" }, first_policy.fetch("merge_submission"))
 
       second_out, second_status = run_doctor(root, "--init")
       assert second_status.success?, second_out

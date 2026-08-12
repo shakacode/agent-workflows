@@ -10,12 +10,12 @@ For a verified Codex GPT-5.6 host, use this recommended advisory route profile:
 Sol/xhigh is the preferred adversarial route; Sol/high is the routine
 deterministic QA preference.
 
-For a verified Claude host, use this provisional recommended advisory route
-profile (`claude-profile v0`):
+For a verified Claude host, use this provisional recommended advisory route profile
+(`claude-profile v1`):
 
-- Independent adversarial QA: Opus 4.8/xhigh
+- Independent adversarial QA: Opus 5/xhigh
 
-Opus 4.8/xhigh is the preferred adversarial route; Opus 4.8/high is the routine
+Opus 5/xhigh is the preferred adversarial route; Opus 5/high is the routine
 deterministic QA preference.
 
 Preferred route, model, and effort are advisory for adversarial review;

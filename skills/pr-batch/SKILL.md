@@ -23,6 +23,10 @@ test intentionally loads the production receipt parser from the sibling
 `post-merge-audit` skill; an isolated pinned copy must include that companion
 or stop with a precise missing-companion blocker.
 
+Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
+contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract here.
+
 Memorable invocation:
 
 ```text
@@ -76,21 +80,21 @@ facts remain fail-closed and stop before mutation.
   Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
 - **Recommended Codex GPT-5.6 profile**: apply only after verifying the exact
   routes on the actual host; portable classes remain the fallback elsewhere.
-  - Multi-lane coordinator: Sol/xhigh
+  - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
   - Simple, positively classified worker: Terra/high
   - Unknown or uncertain worker: Sol/high
-  - High-risk or escalated work: Sol/xhigh
+  - Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
   - Independent adversarial QA: Sol/xhigh
   - Routine deterministic QA: Sol/high
-- **Provisional Claude profile** (`claude-profile v0`): apply only after
+- **Provisional Claude profile** (`claude-profile v1`): apply only after
   verifying the exact routes on the actual host; portable classes remain the
   fallback elsewhere.
-  - Multi-lane coordinator: Opus 4.8/xhigh
+  - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
   - Simple, positively classified worker: Sonnet 5/high
-  - Unknown or uncertain worker: Opus 4.8/xhigh
-  - High-risk or escalated work: Opus 4.8/xhigh
-  - Independent adversarial QA: Opus 4.8/xhigh
-  - Routine deterministic QA: Opus 4.8/high
+  - Unknown or uncertain worker: Opus 5/high
+  - Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+  - Independent adversarial QA: Opus 5/xhigh
+  - Routine deterministic QA: Opus 5/high
 - **Batch plan preflight**: before dispatcher selection or worker launch, run
   the resolved plan skill's `bin/batch-plan-preflight` with a v1 envelope. It
   owns schema and launch scheduling, including the required active wave and
@@ -185,12 +189,12 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
    deterministically from the repository name: use the basename of the `origin`
    remote after stripping `.git`, or the repository root basename when `origin`
-   is unavailable; for a multi-segment name take the first letter of each of the
-   first six `-`, `_`, or space-separated segments, and for a single-segment
-   name take its first 4 letters or the whole name when shorter, then uppercase
-   the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
-   `shakapacker` -> `SHAK`, `go` -> `GO`). An invalid configured `repo_prefix`
-   is a blocker; do not silently fall back.
+   is unavailable; for a multi-segment name take the first character of each of
+   the first six `-`, `_`, or space-separated segments, and for a single-segment
+   name take its first 4 characters or the whole name when shorter, then
+   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
+   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
+   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
    Fill the optional `A?` slot with A,
    B, C, etc. only when creating multiple batch prompts; omit it for a single
    batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
@@ -550,12 +554,12 @@ Keep this template aligned with the matching plan-to-goal prompt in the
 resolved `pr-processing.md`, including the review/audit gate
 paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
-`GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
 Use this template when creating Codex goal text:
 
 ```text
-Use $pr-batch to complete or continue the exact requested batch with subagents.
+Use $pr-batch to complete or continue this exact batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Repo: OWNER/REPO
 Objective: ...
@@ -571,7 +575,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
@@ -719,7 +723,7 @@ evidence is otherwise complete.
 Record the selected `merge_authority` value in the handoff and use the canonical
 split final states from `.agents/workflows/pr-processing.md`.
 
-End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
+End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them.
 
 ## Coordination State
 
@@ -940,13 +944,12 @@ When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
 then submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
 receipt unconditionally. The helper preserves read-only, idempotent observation
-of an exact terminal merge and uses GitHub's `enqueuePullRequest` only when the
-base is queue-controlled. Queue-disabled submission without an enabled
-guarded-direct seam fails before mutation as a deterministic configuration
-error (exit 1), not an `UNKNOWN` mutation outcome.
-Only a validated trusted-base `merge_submission` opt-in may delegate direct
-submission to one repository-owned executable guard under `.agents/bin`; the
-portable helper never performs a generic direct merge. The fixed-argv guard is
+of an exact terminal merge. Absent policy and explicit `mode: direct` use an
+expected-head-bound direct merge on a queue-disabled base; a queue-enabled base
+fails before mutation until the repository explicitly opts into
+`merge_queue_only` or `merge_queue_or_guarded_direct`. The latter may delegate
+queue-disabled submission to one repository-owned executable guard under
+`.agents/bin`. The fixed-argv guard is
 executed from private identity-bound trusted bytes in an isolated Git root
 whose detached `HEAD`, index, and working files all bind the receipt-base
 commit and tree. This is HEAD/index/worktree isolation, not object/ref
@@ -1025,6 +1028,52 @@ In short, `waiting-on-checks-or-review` is per-target progress, not an overall
 terminal state; keep polling, triaging, and fixing, or report NOT COMPLETE /
 blocked with exact resume instructions only after a watch window or real
 external blocker.
+
+For autonomously clearable blockers, prefer a deterministic state-change
+watcher that can run without a model continuation. Bind one stable monitor
+identity and persisted state, reduce sanitized observations through
+the `goal-state-change-monitor` helper in this skill's `bin` directory, and do not wake this parent task for
+`baseline-recorded`, `suppress-unchanged`, `suppress-stale-probe`,
+`suppress-replayed-probe`, or `suppress-acknowledgement-retry`. Treat
+`wake_parent: true` as authoritative and resume on `wake-state-change`,
+`fallback-model-poll`, `stop-dependency-terminal`, or `redeliver-pending-wake` with its compact delta
+when present, durably enqueue that resume, and then acknowledge its `wake_id`;
+acknowledgement retries are idempotent. Redeliver an unacknowledged pending
+wake after restart; its returned `acknowledgement_payload` is the exact bounded
+payload to submit after durable enqueue, not a payload rebuilt from a newer live
+observation. Then rerun every
+security, origin, coordination, overlap, review, readiness, and exact-head gate.
+Keep acknowledgement state bounded: a delayed retry replays its original
+canonical observation and probe sequence so the reducer can derive and verify
+the exact waking identity without retaining an ever-growing membership ledger.
+If only model-mediated same-thread polling is available, use the bounded
+15-minute fast window, exponential backoff, and finite unchanged-run/call/token
+ceilings from the canonical contract; conservatively count every fallback
+continuation as at least one model call. Use the least-expensive safe configured
+route for each unavoidable probe; reserve the coordinator route for an actual
+transition or recovery decision. Stop or pause on terminal, non-resumable,
+user-input, or budget outcomes; for user input, preserve the exact question and
+manual-resume instruction in the restart-safe handoff. Rollback
+to that bounded fallback, never an indefinite 15-minute wake loop. This trades
+some detection latency for avoiding repeated full-context model work while the
+authoritative state is unchanged.
+
+When that external blocker publishes an exact future retry time and the host can
+re-enter this same thread on schedule, schedule one same-thread heartbeat for
+that time before handing off, because neither the deterministic watcher nor the
+bounded fallback cadence guarantees a probe at that exact published time.
+Use it as the single scheduled mechanism for that blocker and gate; do not start
+or retain either watcher mode for the same gate, and create or update its durable
+record before stopping or replacing any existing watcher so no wake is lost.
+Update the existing heartbeat instead of
+duplicating it, stop it once the target is terminal, and report in the handoff
+whether one was created, its exact scheduled time, and its durable identifier,
+or else the exact scheduling blocker. An `UNKNOWN` or absent retry time, a
+`blocked-user-input` blocker, or no scheduling capability creates no automation
+and preserves the exact manual resume instructions. A heartbeat never widens
+target scope, permissions, merge authority, dependency gates, or the retry
+count, and never becomes an unbounded polling loop. The canonical rule is the
+Scheduled Retry Heartbeat paragraph in that contract.
 
 Converge the review loop instead of chasing it: each push re-triggers every configured
 review bot on the new head, so resolve advisory threads in-thread (reply + resolve)

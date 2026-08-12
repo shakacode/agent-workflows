@@ -10,7 +10,7 @@ GOAL_PROMPT_MIN_HEADROOM = 300
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 GOAL_LINE = "/goal"
-INVOCATION_LINE = "Use $pr-batch to complete or continue the exact requested batch with subagents."
+INVOCATION_LINE = "Use $pr-batch to complete or continue this exact batch with subagents."
 BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
 REPO_PROMPT_LINE = "Repo: OWNER/REPO"
 OBJECTIVE_PROMPT_LINE = "Objective: ..."
@@ -61,28 +61,29 @@ TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
                                      "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                                      "live=<replay/ref>; " \
                                      "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
-GOAL_MODE_COMPACT_CONTRACT = "GMCC-v3: current-head CI/configured-reviewers " \
+GOAL_MODE_COMPACT_CONTRACT = "GMCC-v4:CI@head/configured-reviewers " \
                              "pending|missing|untriaged or threads unresolved|UNKNOWN=>" \
-                             "waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m " \
-                             "same-thread-watch else exact manual resume; stop clear/done; " \
-                             "no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; " \
+                             "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
+                             "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
+                             "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;" \
+                             "auto=>exact verdict/head/sorted-gates/rollback; " \
                              "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
-                             "durable-decision(proven-human+merge-authority); else ready-human-review-required|" \
-                             "autonomous-merge-evidence-unknown; merge+close PR/target/issue."
+                             "durable-decision(proven-human+merge-authority);else ready-human-review-required|" \
+                             "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
 GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
                                 "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
                                 "CI or configured review agents, unresolved current-head review threads, failures, " \
                                 "or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE " \
-                                "with resume instructions. When the overall Goal is genuinely blocked by a condition " \
-                                "that can clear without user input, treat the host's recurring automation/wakeup " \
-                                "capability as available only if it can re-enter this same thread on schedule and be inspected, " \
-                                "updated, and stopped; create or update one active 15-minute " \
-                                "current-thread monitor before the blocked handoff; do not create a duplicate. On each " \
-                                "wake, refresh live blocker evidence and resume work if a blocker clears. Stop the monitor " \
-                                "when the goal is unblocked or before completing it. `blocked-user-input` does not start " \
-                                "a monitor; preserve its exact question and manual resume instructions. If recurring " \
-                                "current-thread wake-ups " \
-                                "are unavailable, preserve exact manual resume instructions. A batch with 5 PRs, 3 " \
+                                "with resume instructions. For an autonomously clearable blocker, prefer one deduplicated " \
+                                "deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint " \
+                                "persists without loading parent context, while a material change resumes once with only " \
+                                "`state_delta` and reruns security, origin, coordination, overlap, review, readiness, and " \
+                                "exact-head gates. If deterministic watching is unavailable, use one bounded model-mediated " \
+                                "fallback: the default fast window is four 15-minute polls, then the interval doubles to a " \
+                                "four-hour cap, with finite unchanged-run, model-call, and token ceilings. Stop or pause on " \
+                                "clear, done, terminal, non-resumable, `blocked-user-input`, or budget state and preserve an " \
+                                "exact restart-safe manual-resume handoff; do not create a duplicate. If neither watcher is " \
+                                "available, preserve exact manual resume instructions. A batch with 5 PRs, 3 " \
                                 "pending hosted checks, and clean " \
                                 "review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when " \
                                 "`merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done " \
@@ -93,12 +94,13 @@ GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-chec
                                 "eligibility state, and unless another real blocker prevents it, merge and close " \
                                 "the PR, target, and issue."
 GOAL_MODE_REQUIRED_SEMANTICS = [
-  "current-head CI/configured-reviewers pending|missing|untriaged",
+  "CI@head/configured-reviewers pending|missing|untriaged",
   "threads unresolved",
   "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE",
   "poll/fix",
-  "auto-clear=>1 15m same-thread-watch else exact manual resume",
-  "stop clear/done",
+  "auto-clear=>watch(same:0wake,delta:gates)",
+  "fallback:4x15m+exp/4h|manual",
+  "stop clear/done/term/budget/user",
   "no auth=>ready-no-merge-authority",
   "auto=>exact verdict/head/sorted-gates/rollback",
   "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
@@ -198,7 +200,9 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.",
   "If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll.",
   "Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage.",
-  "When the overall goal is genuinely blocked by a condition that can clear without user input, treat the host's recurring automation/wakeup capability as supported only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; reuse or create one 15-minute current-thread monitor before handoff and do not create a duplicate.",
+  "GMCC-v4 compatibility fallback:",
+  "reuse or create one bounded current-thread monitor before handoff and do not create a duplicate",
+  "Use at most four 15-minute fast-window polls followed by exponential backoff capped at four hours",
   "On each wake, refresh live blocker evidence and resume if a blocker clears.",
   "Stop the monitor when the goal unblocks or before completion.",
   "`blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions.",
@@ -346,10 +350,10 @@ def reject_phrases(text, phrases, label)
 end
 
 def extract_goal_prompt_template(text, heading, label:)
-  heading_index = text.index(heading)
-  abort_with_failure("missing #{heading} section") unless heading_index
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  abort_with_failure("missing #{heading} section") unless heading_match
 
-  fence_start = text.index(TEXT_FENCE, heading_index)
+  fence_start = text.index(TEXT_FENCE, heading_match.end(0))
   abort_with_failure("missing text fence in #{heading} section") unless fence_start
 
   fence_body_start = fence_start + TEXT_FENCE.length
@@ -361,6 +365,29 @@ def extract_goal_prompt_template(text, heading, label:)
     label,
     missing_closing_message: "missing closing fence in #{heading} section"
   )
+end
+
+def assert_goal_prompt_heading_is_line_anchored
+  fixture = <<~MARKDOWN
+    <!-- See `## Goal Prompt for pr-batch` before editing. -->
+    ```text
+    decoy prompt
+    ```
+
+    ## Goal Prompt for pr-batch
+
+    ```text
+    real prompt
+    ```
+  MARKDOWN
+  extracted = extract_goal_prompt_template(
+    fixture,
+    "## Goal Prompt for pr-batch",
+    label: "heading-anchor fixture"
+  )
+  return if extracted == "real prompt\n"
+
+  abort_with_failure("goal prompt extractor must ignore headings quoted outside a real heading line")
 end
 
 def with_items(prompt_template, items)
@@ -435,6 +462,7 @@ skill_path = File.expand_path("../SKILL.md", __dir__)
 abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(skill_path)
 
 skill_text = File.read(skill_path, encoding: "UTF-8")
+assert_goal_prompt_heading_is_line_anchored
 workflow_text = read_repo_file("workflows/pr-processing.md")
 pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill_text = read_repo_file("skills/triage/SKILL.md")
@@ -580,12 +608,26 @@ host_aware_batch_sizing_phrase_checks = {
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
     ["- Batch size target: `codex`, `claude`, or `generic`", 1],
-    ["less than 300 characters of headroom", 1]
+    ["less than 300 characters of headroom", 1],
+    ["Default single-target planner: Sol/high", 1],
+    ["Affirmatively simple single-target planner: Terra/high", 1],
+    ["Default single-target planner: Opus 5/high", 1],
+    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Opus 5/xhigh exception:", 1],
+    ["`claude-profile v1`", 1],
+    ["subagents alone do", 1]
   ],
   "skills/plan-pr-batch/SKILL.md" => [
     ["`codex`: up to 10 independent items, or 8", 1],
     ["`claude`: up to 5 independent items, or 3", 1],
-    ["`generic`: use the Claude-sized 5/3", 1]
+    ["`generic`: use the Claude-sized 5/3", 1],
+    ["Default single-target planner: Sol/high", 1],
+    ["Affirmatively simple single-target planner: Terra/high", 1],
+    ["Default single-target planner: Opus 5/high", 1],
+    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Opus 5/xhigh exception:", 1],
+    ["`claude-profile v1`", 1],
+    ["advise from `UNKNOWN`, repeat", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
     ["Use `codex` for up to 10", 1],
@@ -633,7 +675,14 @@ if enforce_restart_docs_drift
 
   host_aware_batch_sizing_phrase_checks["docs/pr-batch-skills.md"] = [
     ["Codex-targeted waves may use up to 10", 1],
-    ["Claude and generic waves use up to 5", 1]
+    ["Claude and generic waves use up to 5", 1],
+    ["Default single-target planner: Sol/high", 1],
+    ["Affirmatively simple single-target planner: Terra/high", 1],
+    ["Default single-target planner: Opus 5/high", 1],
+    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Opus 5/xhigh exception:", 1],
+    ["`claude-profile v1`", 1],
+    ["The advisory never blocks, requests a", 1]
   ]
   host_aware_batch_sizing_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text
 
