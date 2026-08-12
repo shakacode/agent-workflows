@@ -1248,7 +1248,9 @@ module PushDownstream
         unless current_branch_state == branch_state && current_remote_head == remote_branch_head
           return publisher_failure(repo, "publisher branch moved before publish")
         end
-        unless publisher_publish_branch(repo, clone, branch, remote_branch_head, local_branch_head)
+        unless publisher_publish_branch(
+          repo, clone, branch, remote_branch_head, local_branch_head, expected_base_sha
+        )
           return publisher_failure(repo, "conditional non-force publisher update failed")
         end
       end
@@ -1276,7 +1278,8 @@ module PushDownstream
     )
   end
 
-  def publisher_publish_branch(repo, clone, branch, expected_remote_head, new_head)
+  def publisher_publish_branch(repo, clone, branch, expected_remote_head, new_head, expected_base_sha)
+    return false unless expected_base_sha.is_a?(String) && expected_base_sha.match?(/\A[0-9a-f]{40}\z/)
     return false unless publisher_reconcile_stale_staging_refs(repo)
 
     staging = "#{PUBLISH_STAGING_BRANCH_PREFIX}#{Time.now.to_i}-#{SecureRandom.hex(16)}"
@@ -1285,7 +1288,9 @@ module PushDownstream
     published = false
     staging_upload_attempted = true
     if publisher_git(clone, "push", "origin", "#{new_head}:refs/heads/#{staging}") &&
-       publisher_atomic_ref_update(repo, branch, expected_remote_head, new_head, staging)
+       publisher_atomic_ref_update(
+         repo, branch, expected_remote_head, new_head, staging, expected_base_sha
+       )
       staging_atomically_deleted = true
       target_state, target_head = publisher_remote_branch_state(clone, branch)
       staging_state, = publisher_remote_branch_state(clone, staging)
@@ -1403,8 +1408,13 @@ module PushDownstream
     end
   end
 
-  def publisher_atomic_ref_update(repo, branch, expected_remote_head, new_head, staging)
+  def publisher_atomic_ref_update(repo, branch, expected_remote_head, new_head, staging, expected_base_sha)
     updates = [
+      {
+        name: "refs/heads/#{repo.fetch(:base_branch)}",
+        before: expected_base_sha,
+        after: expected_base_sha
+      },
       { name: "refs/heads/#{branch}", before: expected_remote_head || ZERO_OID, after: new_head },
       { name: "refs/heads/#{staging}", before: new_head, after: ZERO_OID }
     ]
