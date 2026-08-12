@@ -116,11 +116,10 @@ MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences:
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
 MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory."
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
-DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle."
+DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane>:preferred <dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle"
 COORDINATION_DEPENDENCY_PROMPT_LINE =
-  "- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; " \
-  "register before launch when supported; claim refusal=>stop; push holder/generation check; " \
-  "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
+  "Coord:stable ids+heartbeats;register before launch when supported;claim refusal=>stop;" \
+  "push holder/generation check;known deps=>gate;missing/UNKNOWN=>stop"
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
 STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
@@ -211,34 +210,40 @@ HUMAN_STATUS_CONTRACT_PHRASES = [
   "merge gates"
 ].freeze
 MIXED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
-  Dispatch implementation: preferred remote@balanced/medium; fallbacks remote@strongest/high; auth dispatch y; pending/active.
-  Dispatch qa-review: preferred remote@strongest/high; fallbacks none; auth dispatch n; pending/active.
+  Dispatch implementation:preferred remote@balanced/medium;fallback remote@strongest/high;auth y;pending/active
+  Dispatch qa-review:preferred remote@strongest/high;fallback none;auth n;pending/active
 TEXT
 SPLIT_ROUTE_GROUP_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
-SPLIT_DISPATCH_POLICY_LINE = "Dispatch implementation: preferred remote@balanced/medium; fallbacks remote@strongest/high; auth dispatch y; pending/active."
+SPLIT_DISPATCH_POLICY_LINE = "Dispatch implementation:preferred remote@balanced/medium;fallback remote@strongest/high;auth y;pending/active"
 SECOND_SPLIT_ROUTE_GROUP_LINE = "Worker model/effort preferences: strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
-SECOND_SPLIT_DISPATCH_POLICY_LINE = "Dispatch qa-review: preferred remote@strongest/high; fallbacks none; auth dispatch n; pending/active."
+SECOND_SPLIT_DISPATCH_POLICY_LINE = "Dispatch qa-review:preferred remote@strongest/high;fallback none;auth n;pending/active"
 OVERSIZED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
-  Dispatch implementation: preferred remote@balanced/medium; fallback dispatchers remote@strongest/high; auth dispatch y; ordinary pending/active lifecycle.
-  Dispatch qa-review: preferred remote@strongest/high; fallback dispatchers none; auth dispatch n; ordinary pending/active lifecycle.
-  Dispatch docs: preferred remote@fastest-low-cost/low; fallback dispatchers remote@balanced/medium; auth dispatch y; ordinary pending/active lifecycle.
-  Dispatch release: preferred remote@balanced/medium; fallback dispatchers none; auth dispatch n; ordinary pending/active lifecycle.
+  Dispatch implementation:preferred remote@balanced/medium;fallback remote@strongest/high;auth y;pending/active
+  Dispatch qa-review:preferred remote@strongest/high;fallback none;auth n;pending/active
+  Dispatch docs:preferred remote@fastest-low-cost/low;fallback remote@balanced/medium;auth y;pending/active
+  Dispatch release:preferred remote@balanced/medium;fallback none;auth n;pending/active
 TEXT
-GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;" \
-                             "block=>stop;no raw GitHub/override"
-TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE =
-  "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
-  "block=>stop; no raw GitHub/override"
+GOAL_PROMPT_LAUNCH_LINE =
+  "Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;" \
+  "ovr:n/a|name/auth/ref/task;" \
+  "none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop"
+GOAL_PROMPT_PREFLIGHT_LINE =
+  "PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security"
+TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE = GOAL_PROMPT_PREFLIGHT_LINE
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
-  - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-    Original:trusted ad-hoc prompt|n/a
-    Goal:one-line outcome
-    Notes:scope/branch/deps
-    Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
+  - Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+    Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
+    Goal:outcome
+    Notes:scope/deps
+    Done:req auth+PR/no-PR evidence|no-fix rationale
 TEXT
+CANONICAL_ISSUE_CREATION_SOURCE_PIN =
+  "When search finds no canonical issue or existing PR, create the canonical issue with explicit " \
+  "planning-time issue-creation authority, or ask for that authority; do not create a branch, edit, " \
+  "or dispatch until the persisted issue identity is rebound into the plan and preflight passes."
 TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
-  - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-    Original: trusted ad-hoc prompt; else n/a.
+  - Target: <repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+    Original: <prompt|n/a>; ovr: <n/a|name/authorizer/ref/task>
     Goal: one-line outcome.
     Notes: scope/branch/dependency.
     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
@@ -752,9 +757,8 @@ required_all_prompt_phrases = [
   "Thread handle: <batch-short>-<lane>-<word>",
   "Lane Card:",
   "preferred model/effort;observed host/model/effort/UNKNOWN",
-  "Preflight: issue/PR=>pr-security-preflight;",
-  "trusted-direct adhoc:=>skip",
-  "no raw GitHub/override",
+  GOAL_PROMPT_LAUNCH_LINE,
+  GOAL_PROMPT_PREFLIGHT_LINE,
   GOAL_MODE_COMPACT_CONTRACT,
   HUMAN_STATUS_VERSION_KEY,
   "merge_authority:",
@@ -826,7 +830,7 @@ host_aware_batch_sizing_phrase_checks = {
     ["`Coordinator model/effort preference: <model/class>/<effort>.`", 1],
     ["`Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.`", 1],
     ["`Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`", 1],
-    ["`Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.`", 1],
+    ["`#{DISPATCH_PLAN_PROMPT_LINE}`", 1],
     ["classify every lane by the canonical staged model/effort routing", 1],
     ["known host with an unavailable roster may use a dispatch-resolved model class", 1],
     ["Lane Card:", 1],
@@ -842,6 +846,15 @@ host_aware_batch_sizing_text_by_path = {
   "skills/pr-batch/SKILL.md" => pr_batch_skill_text,
   "skills/triage/SKILL.md" => triage_skill_text
 }
+
+host_aware_batch_sizing_text_by_path.each do |path, text|
+  require_occurrence_count(
+    text,
+    CANONICAL_ISSUE_CREATION_SOURCE_PIN,
+    1,
+    "#{path} canonical issue creation path"
+  )
+end
 
 goal_prompt_batch_size_target_text_by_path = {
   "workflows/pr-processing.md" => workflow_text,
@@ -914,6 +927,7 @@ goal_prompt_batch_size_target_text_by_path.each do |path, text|
     1,
     "#{path} goal prompt batch-size target field order"
   )
+  require_occurrence_count(text, GOAL_PROMPT_LAUNCH_LINE, 1, "#{path} goal prompt launch line")
   require_occurrence_count(text, GOAL_PROMPT_PREFLIGHT_LINE, 1, "#{path} goal prompt preflight line")
   require_occurrence_count(text, GOAL_PROMPT_FALLBACK_LINE, 1, "#{path} goal prompt fallback line")
 end
@@ -933,6 +947,7 @@ end
     [MANIFEST_WHOLE_COORDINATOR_PREFERENCE_UNKNOWN_FRAGMENT],
     "#{label} manifest provenance contract"
   )
+  require_occurrence_count(template, GOAL_PROMPT_LAUNCH_LINE, 1, "#{label} launch contract")
   require_occurrence_count(template, GOAL_PROMPT_PREFLIGHT_LINE, 1, "#{label} preflight contract")
   require_occurrence_count(template, GOAL_PROMPT_ITEM_SHAPE, 1, "#{label} complete item shape")
   require_occurrence_count(template, GOAL_PROMPT_BASE_RESOLUTION_LINE, 1, "#{label} base-resolution contract")
@@ -977,6 +992,12 @@ require_occurrence_count(
   MANIFEST_PROVENANCE_PROMPT_LINE,
   1,
   "triage generated-prompt manifest provenance contract"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
+  GOAL_PROMPT_LAUNCH_LINE,
+  1,
+  "triage generated-prompt launch contract"
 )
 require_occurrence_count(
   triage_prompt_contract_text,

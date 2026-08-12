@@ -2,6 +2,7 @@
 
 require "json"
 require "open3"
+require "tmpdir"
 
 ROOT = File.expand_path("../../..", __dir__)
 
@@ -60,6 +61,7 @@ end
 
 batch = read_repo_file("skills/pr-batch/SKILL.md")
 guide = read_repo_file("docs/pr-batch-skills.md")
+plan_batch = read_repo_file("skills/plan-pr-batch/SKILL.md")
 workflow = read_repo_file("workflows/pr-processing.md")
 batch_metadata = read_repo_file("skills/pr-batch/agents/openai.yaml")
 address_review = read_repo_file("skills/address-review/SKILL.md")
@@ -74,7 +76,35 @@ assert(batch.include?("an explicit `AGENTS.md` rule, or a resolved batch-plan in
 assert(batch.include?("fastest or balanced worker route"), "single-target mode must use cost-aware staged routing")
 assert(batch.include?("verified head branch cannot be pushed"), "single-target PR mode must preserve the unpushable-head fallback")
 assert(batch.include?("replacement branch/PR"), "single-target PR mode must explain the replacement path")
-assert(batch.include?("for one direct-prompt task, the derived `adhoc:<yyyymmdd>-<short-slug>`"), "the required interview must accept ad-hoc targets")
+assert(batch.include?("reuse the accepted exact `target.target` value unchanged as the coordination target"), "trusted ad-hoc coordination must reuse the preflight-accepted target token")
+assert(batch.include?("Never derive, rename, or regenerate it after preflight"), "trusted ad-hoc coordination must preserve target identity after preflight")
+assert(batch.include?("preserve the user's original wording plus override provenance"), "trusted ad-hoc coordination must preserve original wording and provenance")
+canonical_launch_rule = "Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target."
+canonical_identity_rule = "Pass the repository-qualified canonical issue/PR identity unchanged through planning, plan preflight, dispatch, coordination claims, the Lane Card, and final handoff."
+unbound_prompt_rule = "A direct prompt without either target must stop before branch creation, editing, implementation or coordination mutation, or worker dispatch and route to planning/reconciliation."
+durable_override_rule = "The only exception is a named, trusted, task-specific durable ad-hoc override."
+insufficient_override_rule = "Generic instructions, `$pr-batch` invocation, fix-it intent, or PR-publication authority do not create this override."
+override_evidence_rule = "Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff."
+canonical_claim_binding_rule = "Before branch creation, editing, or dispatch, every bounded status and claim invocation binds `--repo` to lowercase `target.repository` and `--target` to the backend-safe canonical token derived from target v1: decimal `target.number` for either GitHub target type, or exact `target.target` for trusted ad-hoc; this raw pair is the canonical repository-qualified claim identity. Run status before claim; a second claim for the same canonical target, including a repository-casing alias or issue/PR type alias at the same number, must stop on `CLAIM_REFUSED` / exit 3 and cannot reach branch creation or dispatch."
+
+[batch, workflow].each do |text|
+  assert(text.include?(canonical_launch_rule), "canonical launch must require an exact issue or existing PR")
+  assert(text.include?(canonical_identity_rule), "canonical issue/PR identity must survive every launch and evidence surface")
+  assert(text.include?(unbound_prompt_rule), "an unbound direct prompt must fail closed before implementation launch")
+  assert(text.include?(durable_override_rule), "only a named trusted task-specific durable override may launch ad-hoc work")
+  assert(text.include?(insufficient_override_rule), "generic implementation or publication intent must not synthesize override authority")
+  assert(text.include?(override_evidence_rule), "durable override provenance and stable identity must survive every evidence surface")
+  assert(text.include?(canonical_claim_binding_rule), "canonical status and claim operations must bind one normalized target and stop duplicate launch")
+end
+assert(plan_batch.include?(canonical_launch_rule), "planning must enforce the canonical launch target")
+assert(plan_batch.include?(unbound_prompt_rule), "planning must fail closed for an unbound direct prompt")
+assert(plan_batch.include?(durable_override_rule), "planning must recognize only the durable ad-hoc exception")
+assert(plan_batch.include?(override_evidence_rule), "planning must preserve durable override evidence")
+assert(plan_batch.include?("Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch"), "batch plans must include every durable ad-hoc item field")
+assert(batch.include?("equivalent wording cannot create another synthetic coordination lane"), "equivalent prompts must reconcile before claiming a new lane")
+assert(plan_batch.include?("equivalent prompt wording cannot create independently claimable synthetic lanes"), "planning must prevent semantic duplicate synthetic lanes")
+assert(workflow.include?("Equivalent direct prompts cannot become independently claimable synthetic lanes"), "canonical processing must prevent semantic duplicate synthetic lanes")
+assert(workflow.include?("claim refusal prevents duplicate work"), "canonical issue/PR claims must remain the duplicate-work gate")
 assert(batch.include?("direct user instruction, a maintainer-approved exact list"), "the required interview must classify direct-prompt trust")
 assert(batch.include?("when present, otherwise from the `AGENTS.md`"), "canonical base-branch resolution must support inline AGENTS configuration")
 
@@ -99,15 +129,140 @@ assert(workflow.include?("heartbeat --help"), "canonical coordination must prese
 assert(workflow.include?("--thread-handle"), "canonical coordination must preserve extended lane metadata")
 assert(workflow.include?("`coordination_backend: n/a`"), "canonical coordination must define no-backend single-target behavior")
 assert(workflow.include?("single-operator assumption in the Lane Card and final handoff"), "no-backend mode must preserve its assumption in evidence")
-assert(workflow.include?("a derived `adhoc:<yyyymmdd>-<short-slug>` target"), "canonical intake must accept direct-prompt task targets")
-assert(workflow.include?("Do not pass `adhoc:` targets to `pr-security-preflight`"), "ad-hoc targets must not be sent to the GitHub preflight helper")
-assert(workflow.include?("Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`"), "canonical goal handoff must represent ad-hoc task items")
-assert(workflow.include?("Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`"), "canonical file-touch map must represent ad-hoc task lanes")
-assert(workflow.include?("For an ad-hoc target, record the evidence and rationale directly in the final handoff"), "canonical final handoff must support ad-hoc no-PR evidence")
-assert(workflow.include?("For an ad-hoc task, the final handoff is the evidence surface"), "canonical outcome classification must support ad-hoc no-PR evidence")
+assert(workflow.include?("A durably\n  overridden ad-hoc request also carries its complete typed override record"), "canonical intake must accept only durably overridden ad-hoc targets")
+assert(workflow.include?("Do not pass a durably overridden `adhoc:` target to `pr-security-preflight`"), "only accepted durable ad-hoc targets may skip the GitHub preflight helper")
+assert(workflow.include?("- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>"), "canonical goal handoff must represent stable issue, PR, and overridden ad-hoc identities")
+assert(workflow.include?("type `github-issue` or `github-pull-request`"), "canonical goal handoff must name executable GitHub target types")
+assert(workflow.include?("The sole ad-hoc object type is\n`trusted-ad-hoc-override`"), "canonical goal handoff must reserve ad-hoc launch for the typed durable override")
+assert(workflow.include?("Target ids: repository-qualified PR/Issue #N or durably overridden ad-hoc `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`"), "canonical file-touch map must preserve canonical launch identity")
+assert(workflow.include?("`Target:` for a GitHub target is its `<verified GitHub issue/PR link>`; for an ad-hoc target use exactly `n/a — durably overridden ad-hoc; durable_ref=<exact accepted durable_authorization_ref>`"), "lane cards must not invent a GitHub link for a durable ad-hoc target")
+assert(workflow.include?("For a durably overridden ad-hoc target, record the\n  evidence, rationale, complete override provenance"), "canonical final handoff must preserve overridden ad-hoc provenance")
+assert(workflow.include?("For a durably overridden ad-hoc task,\n  the final handoff is the evidence surface"), "canonical outcome classification must support accepted ad-hoc no-PR evidence")
 assert(workflow.include?("public claim fallback is unavailable because there is no issue or PR comment surface"), "canonical coordination must handle ad-hoc lanes without a public claim surface")
 assert(workflow.include?("coordination target or explicit no-backend single-operator approval"), "ad-hoc degraded coordination must stop for a safe ownership decision")
 assert(workflow.include?("or inline `AGENTS.md` configuration"), "canonical goal handoff must support inline AGENTS configuration")
+
+bounded_coord = File.join(ROOT, "skills/pr-batch/bin/agent-coord-bounded")
+Dir.mktmpdir("canonical-claim-gate") do |tmpdir|
+  fake_coord = File.join(tmpdir, "agent-coord")
+  state_path = File.join(tmpdir, "claims")
+  invocation_log = File.join(tmpdir, "invocations.jsonl")
+  launch_log = File.join(tmpdir, "launch-events")
+  File.write(fake_coord, <<~'RUBY')
+    #!/usr/bin/env ruby
+    require "json"
+
+    command = ARGV.shift
+    value_for = lambda do |flag|
+      index = ARGV.index(flag)
+      abort("missing #{flag}") unless index && ARGV[index + 1]
+
+      ARGV[index + 1]
+    end
+    repo = value_for.call("--repo")
+    target = value_for.call("--target")
+    abort("invalid target repo: #{repo}") unless repo.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z})
+    abort("invalid target: #{target}") unless target.match?(/\A[A-Za-z0-9_:-]+(?:\.[A-Za-z0-9_:-]+)*\z/)
+
+    canonical_key = "#{repo}|#{target}"
+    File.open(ENV.fetch("FAKE_COORD_LOG"), "a") do |file|
+      file.puts(JSON.generate("command" => command, "repo" => repo,
+                              "target" => target, "canonical_key" => canonical_key))
+    end
+
+    case command
+    when "status"
+      puts JSON.generate("target" => target, "status" => "available")
+    when "claim"
+      refused = false
+      File.open(ENV.fetch("FAKE_COORD_STATE"), File::RDWR | File::CREAT, 0o600) do |file|
+        file.flock(File::LOCK_EX)
+        claims = file.read.lines(chomp: true)
+        if claims.include?(canonical_key)
+          refused = true
+        else
+          file.seek(0, IO::SEEK_END)
+          file.puts(canonical_key)
+          file.flush
+        end
+      end
+      if refused
+        warn "CLAIM_REFUSED holder=first-launch target=#{target}"
+        exit 3
+      end
+      puts JSON.generate("target" => target, "status" => "claimed")
+    else
+      abort("unsupported fake command #{command.inspect}")
+    end
+  RUBY
+  File.chmod(0o755, fake_coord)
+
+  env = {
+    "PATH" => "#{tmpdir}:#{ENV.fetch('PATH')}",
+    "FAKE_COORD_STATE" => state_path,
+    "FAKE_COORD_LOG" => invocation_log
+  }
+  _invalid_stdout, invalid_stderr, invalid_status = Open3.capture3(
+    env, bounded_coord, "--timeout", "2", "status",
+    "--repo", "owner/repo", "--target", "owner/repo:issue:397", "--json"
+  )
+  assert(!invalid_status.success? && invalid_stderr.include?("invalid target"),
+         "claim adapter must reject a slash-bearing stable identity as an invalid backend target token")
+
+  attempts = [
+    ["first", "github-issue", "owner/repo", "owner/repo", "397"],
+    ["casing-alias", "github-issue", "OWNER/REPO", "owner/repo", "397"],
+    ["pull-request-alias", "github-pull-request", "OwNeR/RePo", "owner/repo", "397"]
+  ]
+  claim_results = attempts.map do |attempt, target_type, target_repository, normalized_repository, target_token|
+    assert(%w[github-issue github-pull-request].include?(target_type), "#{attempt} target type must be explicit")
+    assert(normalized_repository == target_repository.downcase,
+           "#{attempt} must lowercase target.repository before coordination")
+    _status_stdout, status_stderr, status = Open3.capture3(
+      env, bounded_coord, "--timeout", "2", "status",
+      "--repo", normalized_repository, "--target", target_token, "--json"
+    )
+    assert(status.success?, "#{attempt} canonical status must pass before claim: #{status_stderr}")
+
+    claim_stdout, claim_stderr, claim = Open3.capture3(
+      env, bounded_coord, "--timeout", "2", "claim",
+      "--repo", normalized_repository, "--target", target_token, "--json"
+    )
+    if claim.success?
+      File.open(launch_log, "a") do |file|
+        file.puts("#{attempt}:branch")
+        file.puts("#{attempt}:dispatch")
+      end
+    end
+    [claim_stdout, claim_stderr, claim]
+  end
+
+  assert(claim_results[0][2].success?, "first canonical target claim must succeed")
+  claim_results.drop(1).each do |_claim_stdout, claim_stderr, claim_status|
+    assert(claim_status.exitstatus == 3, "same canonical target aliases must exit 3")
+    assert(claim_stderr.include?("CLAIM_REFUSED"), "duplicate canonical claims must report CLAIM_REFUSED")
+  end
+
+  invocations = File.readlines(invocation_log, chomp: true).map { |line| JSON.parse(line) }
+  assert(invocations.map { |row| row.fetch("command") } == %w[status claim status claim status claim],
+         "each launch attempt must run bounded status before claim")
+  assert(invocations.all? { |row| row.fetch("target") == "397" },
+         "every GitHub status and claim must bind the decimal target.number token")
+  assert(invocations.all? { |row| row.fetch("repo") == "owner/repo" },
+         "every status and claim must bind lowercase target.repository")
+  assert(invocations.map { |row| row.fetch("canonical_key") }.uniq == ["owner/repo|397"],
+         "the actual normalized raw repo/target pairs must converge on one backend claim path")
+  assert(File.readlines(launch_log, chomp: true) == %w[first:branch first:dispatch],
+         "CLAIM_REFUSED casing and pull-request aliases must not reach branch creation or dispatch")
+
+  adhoc_stdout, adhoc_stderr, adhoc_status = Open3.capture3(
+    env, bounded_coord, "--timeout", "2", "status",
+    "--repo", "owner/repo", "--target", "adhoc:20260825-issue-397", "--json"
+  )
+  assert(adhoc_status.success?, "trusted ad-hoc target.target must satisfy backend segment grammar: #{adhoc_stderr}")
+  assert(JSON.parse(adhoc_stdout).fetch("target") == "adhoc:20260825-issue-397",
+         "ad-hoc coordination must pass exact target.target as the backend token")
+end
 
 assert(batch.include?("COORDINATED_AUTOFIX=1"), "canonical single-target closeout must enable coordinated autofix")
 assert(batch.include?("fixes run through action `f` without an extra quick-action pause"), "canonical closeout must preselect must-fix review work")
