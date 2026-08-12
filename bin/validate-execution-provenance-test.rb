@@ -382,6 +382,17 @@ class ValidateExecutionProvenanceTest < Minitest::Test
                     "receipt: execution_provenance.mismatch_reason must use literal UNKNOWN when unknown"
   end
 
+  def test_required_strings_reject_unicode_whitespace_only_values
+    ["\u00A0", "\u2003", "\u202F", "\u3000"].each do |whitespace|
+      document = valid_document
+      document.fetch("execution_provenance")["batch"] = whitespace
+
+      assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
+                      "receipt: execution_provenance.batch must be a non-empty string",
+                      "U+#{whitespace.ord.to_s(16).upcase}"
+    end
+  end
+
   def test_lane_identity_fields_reject_literal_unknown
     document = valid_document
     receipt = document.fetch("execution_provenance")

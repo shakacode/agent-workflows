@@ -299,7 +299,7 @@ module ValidateExecutionProvenance
   end
 
   def non_empty_string?(value)
-    value.is_a?(String) && !value.strip.empty?
+    value.is_a?(String) && !value.match?(/\A[[:space:]]*\z/)
   end
 
   def unknown_sentinel_variant?(value)
