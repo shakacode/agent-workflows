@@ -24,13 +24,12 @@ class TargetMembershipGuardTest < Minitest::Test
       "human_authorized_control_transfer" => false
     }.merge(overrides)
 
-    stdout, stderr, status = Open3.capture3(HELPER, stdin_data: JSON.generate(input))
-    [JSON.parse(stdout), stderr, status]
+    invoke_raw(JSON.generate(input))
   end
 
-  def invoke_raw(input)
-    stdout, stderr, status = Open3.capture3(HELPER, stdin_data: input)
-    [JSON.parse(stdout), stderr, status]
+  def invoke_raw(input, parse: true)
+    stdout, stderr, status = Open3.capture3([HELPER, HELPER], stdin_data: input)
+    [parse ? JSON.parse(stdout) : stdout, stderr, status]
   end
 
   def test_allows_control_for_an_exact_manifest_member
@@ -114,8 +113,8 @@ class TargetMembershipGuardTest < Minitest::Test
   def test_duplicate_json_key_replay_is_byte_for_byte_deterministic
     input = '{"contract":"target-membership-request","contract":"target-membership-request"}'
 
-    first_stdout, first_stderr, first_status = Open3.capture3(HELPER, stdin_data: input)
-    second_stdout, second_stderr, second_status = Open3.capture3(HELPER, stdin_data: input)
+    first_stdout, first_stderr, first_status = invoke_raw(input, parse: false)
+    second_stdout, second_stderr, second_status = invoke_raw(input, parse: false)
 
     assert_equal 2, first_status.exitstatus, first_stderr
     assert_equal first_status.exitstatus, second_status.exitstatus, second_stderr
@@ -178,6 +177,39 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_equal true, result.fetch("target_membership")
     assert_equal false, result.fetch("control_allowed")
     assert_equal true, result.fetch("evidence_delivery_allowed")
+  end
+
+  def test_non_boolean_human_authority_returns_structured_unknown
+    ["true", 1, nil].each do |invalid_authority|
+      result, stderr, status = invoke(
+        "human_authorized_control_transfer" => invalid_authority
+      )
+
+      assert_equal 2, status.exitstatus, "#{invalid_authority.inspect}: #{stderr}"
+      assert_equal "UNKNOWN", result.fetch("status"), invalid_authority.inspect
+      assert_equal "UNKNOWN", result.fetch("disposition"), invalid_authority.inspect
+      assert_equal false, result.fetch("control_allowed"), invalid_authority.inspect
+      assert_equal false, result.fetch("evidence_delivery_allowed"), invalid_authority.inspect
+      assert_equal "human_authorized_control_transfer must be true or false",
+                   result.fetch("reason"), invalid_authority.inspect
+    end
+  end
+
+  def test_wrong_contract_or_version_returns_structured_unknown
+    [
+      { "contract" => "wrong-contract" },
+      { "version" => 2 }
+    ].each do |overrides|
+      result, stderr, status = invoke(overrides)
+
+      assert_equal 2, status.exitstatus, "#{overrides.inspect}: #{stderr}"
+      assert_equal "UNKNOWN", result.fetch("status"), overrides.inspect
+      assert_equal "UNKNOWN", result.fetch("disposition"), overrides.inspect
+      assert_equal false, result.fetch("control_allowed"), overrides.inspect
+      assert_equal false, result.fetch("evidence_delivery_allowed"), overrides.inspect
+      assert_equal "invalid target-membership-request contract or version",
+                   result.fetch("reason"), overrides.inspect
+    end
   end
 
   def test_allows_explicit_human_authorized_transfer_to_target_bound_task
@@ -389,8 +421,8 @@ class TargetMembershipGuardTest < Minitest::Test
       "human_authorized_control_transfer" => false
     )
 
-    first_stdout, first_stderr, first_status = Open3.capture3(HELPER, stdin_data: input)
-    second_stdout, second_stderr, second_status = Open3.capture3(HELPER, stdin_data: input)
+    first_stdout, first_stderr, first_status = invoke_raw(input, parse: false)
+    second_stdout, second_stderr, second_status = invoke_raw(input, parse: false)
 
     assert_equal 3, first_status.exitstatus, first_stderr
     assert_equal first_status.exitstatus, second_status.exitstatus, second_stderr
