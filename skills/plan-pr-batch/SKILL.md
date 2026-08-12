@@ -383,6 +383,10 @@ Plan a PR batch
      and it is removed once reflected or cancelled. A collision or `UNKNOWN`
      collision state remains stopped until then. A missing path alone is not
      material scope growth and must not produce `blocked-user-input`.
+     Directory renames use a distinct `expansion-rename-reservation` v1 record
+     with canonical, distinct `old` and `new` endpoints; only this typed rename
+     form adds ancestor/descendant collision checks, while scalar path
+     reservations remain exact-path collision controls.
      Necessary additions can include contract or type files, tests or fixtures,
      offline demo stubs, and build or generated integration surfaces when
      repository evidence makes them necessary.
@@ -411,13 +415,18 @@ Plan a PR batch
      The optional additive top-level `expansion_path_reservations` array uses
      exact `expansion-path-reservation` v1 records bound to the batch,
      dependency plan, known lane, and wave, with one canonical path, known
-     reason, and durable evidence reference. Presence means active and omission
-     means cancelled. Reject malformed, `UNKNOWN`, noncanonical, duplicate,
+     reason, and durable evidence reference. A directory rename instead uses an
+     exact `expansion-rename-reservation` v1 record with the same identity,
+     reason, and evidence fields and a canonical, distinct `rename` old/new
+     pair in place of `path`. Presence means active and omission means
+     cancelled. Reject malformed, `UNKNOWN`, noncanonical, duplicate,
      mismatched, completed-lane, and already-reflected reservations. Derive
      collisions and risky capacity from verified file-touch paths plus active
-     reservations; reserved-path overlap requires a shared max-one serialization
-     group, not only a typed edit edge. Remove a reservation after cancellation
-     or once the verified PR map reflects its path.
+     reservations. Scalar path reservations remain exact-only; typed rename
+     reservations add ancestor/descendant collision checks at both endpoints.
+     Reservation-derived overlap requires a shared max-one serialization group,
+     not only a typed edit edge. Remove a reservation after cancellation or once
+     the verified PR map reflects its path or exact rename pair.
      Preserve real PR `pr-file-touch-map` verified results unchanged; represent
      explicit pre-PR paths with the helper's typed `planned-path-evidence` v1
      record and durable evidence reference. A rejected result launches no
@@ -739,7 +748,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
@@ -754,7 +763,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambiguity/scope-risk/verify↓;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description

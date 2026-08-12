@@ -32,6 +32,11 @@ PATH_EXPANSION_EXAMPLES =
   "Necessary additions can include contract or type files, tests or fixtures, offline demo stubs, and build or " \
   "generated integration surfaces when repository evidence makes them necessary."
 
+RENAME_RESERVATION_RULE =
+  "Directory renames use a distinct `expansion-rename-reservation` v1 record with canonical, distinct `old` and " \
+  "`new` endpoints; only this typed rename form adds ancestor/descendant collision checks, while scalar path " \
+  "reservations remain exact-path collision controls."
+
 PATH_EXPANSION_STOPS =
   "Contradictory evidence remains an immediate stop. Stop and return control when any of the following applies: " \
   "the approved goal, accepted behavior, or acceptance criteria changes; the work adds unrelated work; it crosses " \
@@ -42,8 +47,8 @@ PATH_EXPANSION_STOPS =
   "ambiguity; or it weakens verification. An omitted path alone is not such a condition."
 
 COMPACT_WORKER_CONTRACT =
-  "Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambiguity/scope-risk/" \
-  "verify↓;Verify live GitHub before edits;unverifiable facts are UNKNOWN"
+  "Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/" \
+  "verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN"
 
 WORKER_SUBAGENT_COORDINATION =
   "A sole active editor records the path and reason in the envelope or durable coordinator-owned lane record, " \
@@ -104,6 +109,7 @@ class FileExpansionContractTest < Minitest::Test
 
       assert_includes normalized, PATH_EXPANSION_DEFAULT, label
       assert_includes normalized, PATH_EXPANSION_EXAMPLES, label
+      assert_includes normalized, RENAME_RESERVATION_RULE, label
       assert_includes normalized, PATH_EXPANSION_STOPS, label
     end
   end
@@ -117,9 +123,9 @@ class FileExpansionContractTest < Minitest::Test
       assert_equal [COMPACT_WORKER_CONTRACT], lines, label
     end
     assert_includes COMPACT_WORKER_CONTRACT, "path+resv;multi=>coord"
-    assert_includes COMPACT_WORKER_CONTRACT, "stop:contradiction/ambiguity/scope-risk/verify↓"
+    assert_includes COMPACT_WORKER_CONTRACT, "stop:contradiction/ambig/scope-risk/verify-down"
     assert_includes COMPACT_WORKER_CONTRACT, "Verify live GitHub before edits"
-    assert_includes COMPACT_WORKER_CONTRACT, "unverifiable facts are UNKNOWN"
+    assert_includes COMPACT_WORKER_CONTRACT, "unverifiable=>UNKNOWN"
   end
 
   def test_worker_subagent_restatement_preserves_every_material_stop

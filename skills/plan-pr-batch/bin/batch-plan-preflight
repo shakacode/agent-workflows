@@ -60,6 +60,17 @@ module BatchPlanPreflight
     version
     wave
   ].freeze
+  EXPANSION_RENAME_RESERVATION_KEYS = %w[
+    batch_plan_id
+    evidence_ref
+    lane_id
+    reason
+    rename
+    stage_dependency_plan_id
+    type
+    version
+    wave
+  ].freeze
   GATE_PERMISSIONS = %w[
     read_only_discovery
     branch_worktree_create
@@ -115,6 +126,8 @@ module BatchPlanPreflight
     plan_violation_codes = plan_violations.map { |item| item["code"] }
     lane_ids_valid = !plan_violation_codes.include?("lane-id-invalid-or-duplicate")
     changed_surfaces_valid = !plan_violation_codes.include?("changed-surfaces-invalid")
+    stage_dependency_plan = input["stage_dependency_plan"]
+    stage_dependency_plan_id = stage_dependency_plan["id"] if stage_dependency_plan.is_a?(Hash)
     completed_lane_ids = []
     active_lane_ids = []
     blocked_lane_ids = []
@@ -122,7 +135,7 @@ module BatchPlanPreflight
       lifecycle_violations, completed_lane_ids, active_lane_ids, blocked_lane_ids = validate_lane_lifecycle_states(
         input["lane_lifecycle_states"],
         input["plan"],
-        input["stage_dependency_plan"]
+        stage_dependency_plan_id
       )
       violations.concat(lifecycle_violations)
     end
@@ -133,7 +146,7 @@ module BatchPlanPreflight
         validate_expansion_path_reservations(
           input["expansion_path_reservations"],
           input["plan"],
-          input["stage_dependency_plan"],
+          stage_dependency_plan_id,
           input["file_touch_map"],
           completed_lane_ids
         )
@@ -251,7 +264,7 @@ module BatchPlanPreflight
     violations
   end
 
-  def validate_lane_lifecycle_states(states, plan, stage_dependency_plan)
+  def validate_lane_lifecycle_states(states, plan, stage_dependency_plan_id)
     unless states.is_a?(Array)
       return [
         [violation(
@@ -276,7 +289,7 @@ module BatchPlanPreflight
       unless valid_lane_lifecycle_state?(
         state,
         plan["id"],
-        stage_dependency_plan["id"],
+        stage_dependency_plan_id,
         lanes_by_id
       )
         violations << violation(
@@ -323,7 +336,7 @@ module BatchPlanPreflight
     false
   end
 
-  def validate_expansion_path_reservations(reservations, plan, stage_dependency_plan, maps,
+  def validate_expansion_path_reservations(reservations, plan, stage_dependency_plan_id, maps,
                                            completed_lane_ids)
     return [[], []] if reservations.nil?
     unless reservations.is_a?(Array)
@@ -342,25 +355,26 @@ module BatchPlanPreflight
       unless valid_expansion_path_reservation?(
         reservation,
         plan["id"],
-        stage_dependency_plan["id"],
+        stage_dependency_plan_id,
         lanes_by_id
       )
         violations << violation(
           "expansion-path-reservations-invalid",
           path,
           "Require the exact v1 shape with matching batch, dependency-plan, lane, and wave identities; " \
-          "a canonical path; a known reason; and a durable evidence reference."
+          "one canonical path or a distinct canonical old/new rename pair; a known reason; and a durable " \
+          "evidence reference."
         )
         next
       end
 
       lane_id = reservation.fetch("lane_id")
-      reflected_paths = maps.is_a?(Hash) && maps[lane_id].is_a?(Hash) ? maps[lane_id]["paths"] : nil
-      if completed_lane_ids.include?(lane_id) || Array(reflected_paths).include?(reservation["path"])
+      reflected_map = maps.is_a?(Hash) && maps[lane_id].is_a?(Hash) ? maps[lane_id] : {}
+      if completed_lane_ids.include?(lane_id) || reservation_reflected?(reservation, reflected_map)
         violations << violation(
           "expansion-path-reservation-stale",
           path,
-          "Remove a reservation when its lane completes or its verified file-touch map reflects the path.",
+          "Remove a reservation when its lane completes or its verified file-touch map reflects the path or rename.",
           lane_ids: [lane_id]
         )
         next
@@ -368,37 +382,83 @@ module BatchPlanPreflight
       valid_reservations << reservation
     end
 
-    reservation_keys = valid_reservations.map { |reservation| reservation.values_at("lane_id", "path") }
+    reservation_keys = valid_reservations.map { |reservation| expansion_reservation_identity(reservation) }
     if reservation_keys.uniq.length != reservation_keys.length
       violations << violation(
         "expansion-path-reservation-duplicate",
         "$.expansion_path_reservations",
-        "Provide at most one active reservation for each lane and canonical path."
+        "Provide at most one active reservation for each lane and canonical path or rename pair."
       )
     end
     [violations, valid_reservations]
   end
 
   def valid_expansion_path_reservation?(reservation, batch_plan_id, stage_dependency_plan_id, lanes_by_id)
-    return false unless reservation.is_a?(Hash) && reservation.keys.sort == EXPANSION_PATH_RESERVATION_KEYS
-    return false unless reservation["type"] == "expansion-path-reservation" && reservation["version"] == 1
+    return false unless reservation.is_a?(Hash) && reservation["version"] == 1
+
+    shape_valid = case reservation["type"]
+                  when "expansion-path-reservation"
+                    valid_expansion_path_reservation_shape?(reservation)
+                  when "expansion-rename-reservation"
+                    valid_expansion_rename_reservation_shape?(reservation)
+                  else
+                    false
+                  end
+    return false unless shape_valid
     return false unless reservation["batch_plan_id"] == batch_plan_id &&
                         reservation["stage_dependency_plan_id"] == stage_dependency_plan_id
 
     lane = lanes_by_id[reservation["lane_id"]]
     return false unless lane && reservation["wave"] == lane["wave"]
-    return false unless canonical_repository_relative_path?(reservation["path"])
     return false unless known_single_line_text?(reservation["reason"])
 
     durable_state_ref?(reservation["evidence_ref"])
   end
 
+  def valid_expansion_path_reservation_shape?(reservation)
+    reservation.keys.sort == EXPANSION_PATH_RESERVATION_KEYS &&
+      canonical_repository_relative_path?(reservation["path"])
+  end
+
+  def valid_expansion_rename_reservation_shape?(reservation)
+    rename = reservation["rename"]
+    reservation.keys.sort == EXPANSION_RENAME_RESERVATION_KEYS &&
+      rename.is_a?(Hash) && rename.keys.sort == %w[new old] &&
+      canonical_repository_relative_path?(rename["old"]) &&
+      canonical_repository_relative_path?(rename["new"]) &&
+      rename["old"] != rename["new"]
+  end
+
+  def expansion_reservation_identity(reservation)
+    if reservation["type"] == "expansion-rename-reservation"
+      [reservation["lane_id"], reservation["type"], reservation.dig("rename", "old"),
+       reservation.dig("rename", "new")]
+    else
+      [reservation["lane_id"], reservation["type"], reservation["path"]]
+    end
+  end
+
+  def reservation_reflected?(reservation, map)
+    if reservation["type"] == "expansion-rename-reservation"
+      Array(map["renames"]).include?(reservation["rename"])
+    else
+      Array(map["paths"]).include?(reservation["path"])
+    end
+  end
+
   def effective_file_touch_maps(maps, reservations)
     effective = maps.to_h do |lane_id, map|
-      [lane_id, map.merge("paths" => map.fetch("paths").dup)]
+      [lane_id, map.merge("paths" => map.fetch("paths").dup, "renames" => map.fetch("renames").map(&:dup))]
     end
     reservations.each do |reservation|
-      effective.fetch(reservation.fetch("lane_id")).fetch("paths") << reservation.fetch("path")
+      map = effective.fetch(reservation.fetch("lane_id"))
+      if reservation["type"] == "expansion-rename-reservation"
+        rename = reservation.fetch("rename")
+        map.fetch("paths").concat(rename.values)
+        map.fetch("renames") << rename.dup
+      else
+        map.fetch("paths") << reservation.fetch("path")
+      end
     end
     effective
   end
@@ -640,7 +700,7 @@ module BatchPlanPreflight
 
       reservation_collision = collision_paths.any? do |path|
         reservations.any? do |reservation|
-          [left_id, right_id].include?(reservation["lane_id"]) && reservation["path"] == path
+          [left_id, right_id].include?(reservation["lane_id"]) && reservation_collides_with_path?(reservation, path)
         end
       end
       next if !reservation_collision && serialized_by_edit_edge?(
@@ -678,6 +738,14 @@ module BatchPlanPreflight
       paths.concat(left_paths.select { |path| rename.values.any? { |endpoint| path.start_with?("#{endpoint}/") } })
     end
     paths.uniq
+  end
+
+  def reservation_collides_with_path?(reservation, path)
+    return reservation["path"] == path unless reservation["type"] == "expansion-rename-reservation"
+
+    reservation.fetch("rename").values.any? do |endpoint|
+      path == endpoint || path.start_with?("#{endpoint}/")
+    end
   end
 
   def serialized_by_group?(left, right, groups)

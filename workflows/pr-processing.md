@@ -654,20 +654,25 @@ result permits only `launch.eligible_lane_ids` and leaves
 
 The optional top-level `expansion_path_reservations` array is additive to v1;
 omitting it or providing an empty array preserves existing inputs. Each active
-reservation is one exact `expansion-path-reservation` v1 record containing
+scalar reservation is one exact `expansion-path-reservation` v1 record containing
 `batch_plan_id`, `stage_dependency_plan_id`, `lane_id`, `wave`, one canonical
-repository-relative `path`, a known `reason`, and a durable `evidence_ref`.
+repository-relative `path`, a known `reason`, and a durable `evidence_ref`. A
+directory rename instead uses an exact `expansion-rename-reservation` v1 record
+with the same identity, reason, and evidence fields, replacing `path` with a
+`rename` object containing canonical, distinct `old` and `new` endpoints.
 Presence is the active state; cancellation removes the record, so no independent
 status boolean or dependency edge is introduced. The preflight binds each record
 to known plan and lane identities, rejects malformed, `UNKNOWN`, noncanonical,
 duplicate, mismatched, completed-lane, or already-reflected reservations, and
 derives collision and risky-capacity inputs from the union of verified
-`file_touch_map.paths` and active reservations. Reserved-path overlap between
-same-wave lanes requires an explicit shared serialization group whose
+`file_touch_map.paths` and active reservations. Scalar path reservations retain
+exact-path collision semantics; only typed rename reservations apply
+ancestor/descendant collision checks at both endpoints. Any reservation-derived
+same-wave collision requires an explicit shared serialization group whose
 `max_concurrency` is one; a typed edit edge alone is insufficient. Keep the
-reservation until the request is cancelled or the verified PR map contains the
-path, then remove it before the next preflight because a reflected reservation is
-stale.
+reservation until the request is cancelled or the verified PR map reflects the
+path or exact rename pair, then remove it before the next preflight because a
+reflected reservation is stale.
 
 ### Model And Effort Routing
 
@@ -840,6 +845,10 @@ the request is cancelled, and it is removed once reflected or cancelled. A
 collision or `UNKNOWN` collision state remains stopped until then. A missing
 path alone is not material scope growth and must not produce
 `blocked-user-input`.
+Directory renames use a distinct `expansion-rename-reservation` v1 record with
+canonical, distinct `old` and `new` endpoints; only this typed rename form adds
+ancestor/descendant collision checks, while scalar path reservations remain
+exact-path collision controls.
 Necessary additions can include contract or type files, tests or fixtures,
 offline demo stubs, and build or generated integration surfaces when repository
 evidence makes them necessary.
@@ -1612,7 +1621,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
@@ -1627,7 +1636,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambiguity/scope-risk/verify↓;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
@@ -1838,7 +1847,7 @@ Use this compact, self-contained `GMCC-v4` line verbatim in PR-batch goal
 prompts.
 `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 
 `GMCC-v4` expands to this canonical contract:
 

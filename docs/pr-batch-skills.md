@@ -257,6 +257,10 @@ omit the queue summary and note that queue state is unavailable.
    or cancelled. A collision or `UNKNOWN` collision state remains stopped until
    then. A missing path alone is not material scope growth and must not produce
    `blocked-user-input`.
+   Directory renames use a distinct `expansion-rename-reservation` v1 record with
+   canonical, distinct `old` and `new` endpoints; only this typed rename form adds
+   ancestor/descendant collision checks, while scalar path reservations remain
+   exact-path collision controls.
    Necessary additions can include contract or type files, tests or fixtures,
    offline demo stubs, and build or generated integration surfaces when repository
    evidence makes them necessary.
