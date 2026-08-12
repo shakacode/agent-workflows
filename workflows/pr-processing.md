@@ -752,10 +752,11 @@ envelope, the coordinator role supplies it regardless of the selected model.
 Opus 5/xhigh is reserved for the listed high-risk and escalation exceptions;
 ordinary missing or disputed simplicity criteria use Opus 5/high. If either is
 unavailable, use the closest available route or runtime default and record it
-honestly. Sonnet or Haiku may still serve as a fallback coordinator or worker,
-with the actual route recorded honestly. Haiku remains outside this profile's
-recommended worker roster. Fable 5 stays an experimental candidate, never a
-default route.
+honestly. Opus 5/xhigh is the preferred high-risk or listed-exception
+initiating/coordinating route; Sonnet or Haiku may still serve as a fallback
+coordinator or worker, with the actual route recorded honestly. Haiku remains
+outside this profile's recommended worker roster. Fable 5 stays an experimental
+candidate, never a default route.
 
 Classify the route from what is difficult (diagnosis/strategy versus execution),
 blast radius, verification strength, acceptance-criteria clarity, and previous
