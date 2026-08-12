@@ -206,10 +206,14 @@ skips clean consumers and re-fetches every drifted consumer at the report's
 exact base SHA. It stages exactly the audited managed paths, rejects hidden
 off-scope branch history, and opens or updates the configured sync branch with
 non-force conditional ref updates. Commit objects are uploaded with an ordinary
-push to a unique staging ref; the target moves only when its exact prior state
-still matches the audit, and staging cleanup is part of or follows that guarded
-operation. Replay reuses the same repository-owned PR and does not commit or
-publish when its branch is already current. It never auto-merges a consumer PR.
+push to a timestamped, random staging ref; the target moves only when its exact
+prior state still matches the audit. Every in-process exit after upload performs
+exact-OID-guarded staging cleanup. Before another publish, a bounded inventory
+under the exact owned staging namespace reaps only refs at least two hours old;
+recent refs are preserved for concurrent runs, while malformed, overflowing, or
+unreadable inventory fails closed. Replay reuses the same repository-owned PR
+and does not commit or publish when its branch is already current. It never
+auto-merges a consumer PR.
 A retained branch on another base, duplicate or unprovable PR state, branch
 race, base race, authentication failure, or fetch failure stops that publish as
 non-clean.

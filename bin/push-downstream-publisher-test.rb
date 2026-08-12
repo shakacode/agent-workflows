@@ -611,6 +611,199 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     end
   end
 
+  def test_publisher_cleans_the_exact_staging_ref_when_update_raises_after_upload
+    Dir.mktmpdir("push-downstream-publisher-staging-exception") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      branch = repo.fetch(:pr_branch)
+      clone = File.join(dir, "clone")
+      git!(dir, "clone", "--branch", "main", remote, clone)
+      git!(clone, "config", "user.name", "Test")
+      git!(clone, "config", "user.email", "test@example.com")
+      File.write(File.join(clone, "publisher.txt"), "publisher\n")
+      git!(clone, "add", "publisher.txt")
+      git!(clone, "commit", "-m", "publisher")
+      new_head = git!(clone, "rev-parse", "HEAD").strip
+      original_git = PushDownstream.method(:publisher_git)
+      raise_after_upload = lambda do |root, *arguments|
+        result = original_git.call(root, *arguments)
+        raise "injected failure after staging upload" if arguments.first == "push" && result
+
+        result
+      end
+
+      with_module_stub(PushDownstream, :publisher_git, raise_after_upload) do
+        _out, err = capture_io do
+          @published = PushDownstream.publisher_publish_branch(repo, clone, branch, nil, new_head)
+        end
+        assert_includes err, "injected failure after staging upload"
+      end
+
+      refute @published
+      assert_nil bare_ref_or_nil(remote, branch)
+      assert_empty git!(remote, "for-each-ref", "--format=%(refname)", "refs/heads/agent-workflows/staging/").lines
+    end
+  end
+
+  def test_publisher_reaps_only_stale_owned_staging_refs_before_upload
+    Dir.mktmpdir("push-downstream-publisher-stale-staging") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      branch = repo.fetch(:pr_branch)
+      base_head = bare_ref(remote, "main")
+      now = Time.now.to_i
+      stale = "agent-workflows/staging/#{now - (3 * 60 * 60)}-#{'a' * 32}"
+      recent = "agent-workflows/staging/#{now - (30 * 60)}-#{'b' * 32}"
+      git!(remote, "update-ref", "refs/heads/#{stale}", base_head)
+      git!(remote, "update-ref", "refs/heads/#{recent}", base_head)
+      clone = File.join(dir, "clone")
+      git!(dir, "clone", "--branch", "main", remote, clone)
+      git!(clone, "config", "user.name", "Test")
+      git!(clone, "config", "user.email", "test@example.com")
+      File.write(File.join(clone, "publisher.txt"), "publisher\n")
+      git!(clone, "add", "publisher.txt")
+      git!(clone, "commit", "-m", "publisher")
+      new_head = git!(clone, "rev-parse", "HEAD").strip
+
+      assert PushDownstream.publisher_publish_branch(repo, clone, branch, nil, new_head)
+
+      assert_nil bare_ref_or_nil(remote, stale)
+      assert_equal base_head, bare_ref(remote, recent)
+      assert_equal new_head, bare_ref(remote, branch)
+      assert_equal ["refs/heads/#{recent}\n"],
+                   git!(remote, "for-each-ref", "--format=%(refname)",
+                        "refs/heads/agent-workflows/staging/").lines
+    end
+  end
+
+  def test_github_staging_ref_listing_is_exact_bounded_and_shape_checked
+    repo = { owner: "local", repo: "consumer", nwo: "local/consumer" }
+    oid = "a" * 40
+    qualified_name = "refs/heads/agent-workflows/staging/1000000000-#{'b' * 32}"
+    branch_name = qualified_name.delete_prefix("refs/heads/")
+    response = {
+      "data" => {
+        "repository" => {
+          "refs" => {
+            "nodes" => [{ "prefix" => "refs/heads/", "name" => branch_name, "target" => { "oid" => oid } }],
+            "pageInfo" => { "hasNextPage" => false }
+          }
+        }
+      }
+    }
+    calls = []
+    success = Object.new
+    success.define_singleton_method(:success?) { true }
+
+    with_module_stub(Open3, :capture2, lambda { |*arguments|
+      calls << arguments
+      [JSON.generate(response), success]
+    }) do
+      assert_equal [{ name: qualified_name, oid: oid }], PushDownstream.publisher_staging_refs(repo)
+    end
+
+    command = calls.fetch(0)
+    query = command.find { |argument| argument.start_with?("query=") }
+    assert_includes query, "repository(owner: $owner, name: $name)"
+    assert_includes command, "owner=local"
+    assert_includes command, "name=consumer"
+    assert_includes query, "refPrefix: $refPrefix"
+    assert_includes command, "refPrefix=refs/heads/agent-workflows/staging/"
+    assert_includes command, "limit=#{PushDownstream::PUBLISH_STAGING_REF_LIMIT + 1}"
+
+    malformed_node = Marshal.load(Marshal.dump(response))
+    malformed_node.dig("data", "repository", "refs", "nodes")[0]["prefix"] = "refs/tags/"
+    with_module_stub(Open3, :capture2, ->(*) { [JSON.generate(malformed_node), success] }) do
+      assert_nil PushDownstream.publisher_staging_refs(repo)
+    end
+  end
+
+  def test_publisher_fails_closed_before_upload_for_unknown_staging_inventory
+    repo = { nwo: "local/consumer" }
+    oid = "a" * 40
+    now = Time.now.to_i
+    cases = {
+      lookup_failure: nil,
+      malformed: [{ name: "refs/heads/agent-workflows/staging/not-owned", oid: oid }],
+      overflow: Array.new(PushDownstream::PUBLISH_STAGING_REF_LIMIT + 1) do |index|
+        {
+          name: "refs/heads/agent-workflows/staging/#{now}-#{format('%032x', index)}",
+          oid: oid
+        }
+      end
+    }
+    push = ->(*) { flunk "must not upload while staging inventory is unknown" }
+
+    cases.each do |name, refs|
+      with_module_stub(PushDownstream, :publisher_staging_refs, ->(_repo) { refs }) do
+        with_module_stub(PushDownstream, :publisher_git, push) do
+          refute PushDownstream.publisher_publish_branch(repo, "/unused", "sync", nil, oid), name
+        end
+      end
+    end
+  end
+
+  def test_stale_cleanup_uses_the_listed_exact_oid_and_rejects_a_race
+    Dir.mktmpdir("push-downstream-publisher-stale-race") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      base_head = bare_ref(remote, "main")
+      competitor = seed_competing_commit(remote, dir)
+      stale = "agent-workflows/staging/#{Time.now.to_i - (3 * 60 * 60)}-#{'c' * 32}"
+      git!(remote, "update-ref", "refs/heads/#{stale}", base_head)
+      original_update = PushDownstream.method(:publisher_update_refs)
+      fixture_git = method(:git!)
+      raced_update = lambda do |target_repo, updates|
+        fixture_git.call(remote, "update-ref", "refs/heads/#{stale}", competitor, base_head)
+        original_update.call(target_repo, updates)
+      end
+
+      with_module_stub(PushDownstream, :publisher_update_refs, raced_update) do
+        refute PushDownstream.publisher_reconcile_stale_staging_refs(repo)
+      end
+
+      assert_equal competitor, bare_ref(remote, stale)
+    end
+  end
+
+  def test_staging_cleanup_accepts_absence_and_never_deletes_a_different_oid
+    Dir.mktmpdir("push-downstream-publisher-exact-cleanup") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      expected = bare_ref(remote, "main")
+      competing = seed_competing_commit(remote, dir)
+      staging = "agent-workflows/staging/#{Time.now.to_i}-#{'d' * 32}"
+
+      assert PushDownstream.publisher_delete_staging_ref(repo, staging, expected), "already absent"
+      git!(remote, "update-ref", "refs/heads/#{staging}", competing)
+      refute PushDownstream.publisher_delete_staging_ref(repo, staging, expected), "different oid"
+      assert_equal competing, bare_ref(remote, staging)
+      assert PushDownstream.publisher_delete_staging_ref(repo, staging, competing), "exact oid"
+      assert_nil bare_ref_or_nil(remote, staging)
+    end
+  end
+
+  def test_staging_cleanup_failure_is_visible_and_does_not_raise_over_publish_failure
+    repo = { nwo: "local/consumer" }
+    oid = "a" * 40
+    cleanup_failure = ->(*) { raise "cleanup unavailable" }
+
+    with_module_stub(PushDownstream, :publisher_reconcile_stale_staging_refs, ->(*) { true }) do
+      with_module_stub(PushDownstream, :publisher_git, ->(*) { true }) do
+        with_module_stub(PushDownstream, :publisher_atomic_ref_update, ->(*) { false }) do
+          with_module_stub(PushDownstream, :publisher_delete_staging_ref, cleanup_failure) do
+            _out, err = capture_io do
+              @published = PushDownstream.publisher_publish_branch(repo, "/unused", "sync", nil, oid)
+            end
+            assert_includes err, "publisher staging ref cleanup failed"
+          end
+        end
+      end
+    end
+
+    refute @published
+  end
+
   def test_github_ref_update_contract_uses_exact_before_oid_and_force_false
     repo = { nwo: "local/consumer" }
     calls = []
@@ -638,7 +831,54 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     assert_includes query, "force: false"
     assert_includes command, "before0=#{'a' * 40}"
     assert_includes command, "after1=#{PushDownstream::ZERO_OID}"
+    assert_equal 1, command.count("before0=#{'a' * 40}")
     refute(command.any? { |argument| argument.include?("--force") })
+  end
+
+  def test_github_repository_lookup_uses_owner_and_name_and_checks_response_shape
+    repo = { owner: "local", repo: "consumer", nwo: "local/consumer" }
+    calls = []
+    success = Object.new
+    success.define_singleton_method(:success?) { true }
+    capture = lambda do |*arguments|
+      calls << arguments
+      [JSON.generate("data" => { "repository" => { "id" => "R_test" } }), success]
+    end
+
+    with_module_stub(Open3, :capture2, capture) do
+      assert_equal "R_test", PushDownstream.publisher_github_repository_id(repo)
+    end
+
+    command = calls.fetch(0)
+    query = command.find { |argument| argument.start_with?("query=") }
+    assert_includes query, "repository(owner: $owner, name: $name)"
+    assert_includes command, "owner=local"
+    assert_includes command, "name=consumer"
+    with_module_stub(Open3, :capture2, ->(*) { ["[]", success] }) do
+      assert_nil PushDownstream.publisher_github_repository_id(repo)
+    end
+  end
+
+  def test_github_ref_update_rejects_valid_json_with_the_wrong_shape
+    repo = { nwo: "local/consumer" }
+    success = Object.new
+    success.define_singleton_method(:success?) { true }
+    updates = [
+      { name: "refs/heads/agent-workflows/staging/test", before: "b" * 40, after: PushDownstream::ZERO_OID }
+    ]
+    wrong_shapes = [
+      [], nil, { "data" => [] }, { "data" => { "updateRefs" => nil } },
+      { "data" => { "updateRefs" => "updated" } },
+      { "errors" => [{ "message" => "rejected" }], "data" => { "updateRefs" => {} } }
+    ]
+
+    with_module_stub(PushDownstream, :publisher_github_repository_id, ->(_repo) { "R_test" }) do
+      wrong_shapes.each do |shape|
+        with_module_stub(Open3, :capture2, ->(*) { [JSON.generate(shape), success] }) do
+          refute PushDownstream.publisher_update_refs(repo, updates), shape.inspect
+        end
+      end
+    end
   end
 
   def test_update_fast_forwards_the_same_pr_after_the_consumer_base_advances

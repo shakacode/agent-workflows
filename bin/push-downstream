@@ -50,6 +50,11 @@ module PushDownstream
   FALLBACK_GIT_USER_NAME = "Agent Workflows"
   FALLBACK_GIT_USER_EMAIL = "agent-workflows@users.noreply.github.com"
   ZERO_OID = "0" * 40
+  PUBLISH_STAGING_BRANCH_PREFIX = "agent-workflows/staging/"
+  PUBLISH_STAGING_REF_PREFIX = "refs/heads/#{PUBLISH_STAGING_BRANCH_PREFIX}".freeze
+  PUBLISH_STAGING_REF_LIMIT = 50
+  PUBLISH_STAGING_STALE_AFTER = 2 * 60 * 60
+  PUBLISH_STAGING_BRANCH_PATTERN = %r{\Aagent-workflows/staging/([1-9]\d{9,})-([0-9a-f]{32})\z}
   NEW_AGENTS_HEADER = "# AGENTS.md\n"
   THIN_CLAUDE = "# CLAUDE.md\n\nSee @AGENTS.md for canonical agent instructions, commands, and policy.\n"
   CLAUDE_CONSOLIDATION_FOLLOW_UP = "existing CLAUDE.md preserved; consolidate it to import @AGENTS.md"
@@ -1272,24 +1277,130 @@ module PushDownstream
   end
 
   def publisher_publish_branch(repo, clone, branch, expected_remote_head, new_head)
-    staging = "agent-workflows/staging/#{SecureRandom.hex(16)}"
-    unless publisher_git(clone, "push", "origin", "#{new_head}:refs/heads/#{staging}")
-      return false
-    end
+    return false unless publisher_reconcile_stale_staging_refs(repo)
 
-    updated = publisher_atomic_ref_update(repo, branch, expected_remote_head, new_head, staging)
-    unless updated
-      cleaned = publisher_delete_staging_ref(repo, staging, new_head)
-      warn "FAIL #{repo.fetch(:nwo)}: publisher staging ref cleanup failed: #{staging}" unless cleaned
-      return false
+    staging = "#{PUBLISH_STAGING_BRANCH_PREFIX}#{Time.now.to_i}-#{SecureRandom.hex(16)}"
+    staging_upload_attempted = false
+    staging_atomically_deleted = false
+    published = false
+    staging_upload_attempted = true
+    if publisher_git(clone, "push", "origin", "#{new_head}:refs/heads/#{staging}") &&
+       publisher_atomic_ref_update(repo, branch, expected_remote_head, new_head, staging)
+      staging_atomically_deleted = true
+      target_state, target_head = publisher_remote_branch_state(clone, branch)
+      staging_state, = publisher_remote_branch_state(clone, staging)
+      published = target_state == :present && target_head == new_head && staging_state == :absent
     end
-
-    target_state, target_head = publisher_remote_branch_state(clone, branch)
-    staging_state, = publisher_remote_branch_state(clone, staging)
-    target_state == :present && target_head == new_head && staging_state == :absent
+    published
   rescue RuntimeError, SystemCallError => e
     warn "FAIL #{repo.fetch(:nwo)}: conditional publisher update could not be completed: #{e.message}"
     false
+  ensure
+    if staging_upload_attempted && !staging_atomically_deleted
+      begin
+        cleaned = publisher_delete_staging_ref(repo, staging, new_head)
+      rescue StandardError
+        cleaned = false
+      end
+      warn "FAIL #{repo.fetch(:nwo)}: publisher staging ref cleanup failed: #{staging}" unless cleaned
+    end
+  end
+
+  def publisher_reconcile_stale_staging_refs(repo, now: Time.now.to_i)
+    refs = publisher_staging_refs(repo)
+    return false unless refs && refs.length <= PUBLISH_STAGING_REF_LIMIT
+
+    stale_updates = refs.filter_map do |ref|
+      match = PUBLISH_STAGING_BRANCH_PATTERN.match(ref.fetch(:name).delete_prefix("refs/heads/"))
+      return false unless match
+
+      created_at = Integer(match[1], 10)
+      return false if created_at > now
+      next if created_at > now - PUBLISH_STAGING_STALE_AFTER
+
+      { name: ref.fetch(:name), before: ref.fetch(:oid), after: ZERO_OID }
+    end
+    stale_updates.empty? || publisher_update_refs(repo, stale_updates)
+  rescue KeyError, ArgumentError, RuntimeError, SystemCallError
+    false
+  end
+
+  def publisher_staging_refs(repo)
+    remote = repo[:remote_url]
+    return publisher_local_staging_refs(remote) if remote && publisher_local_bare_remote?(remote)
+
+    publisher_github_staging_refs(repo)
+  end
+
+  def publisher_github_staging_refs(repo)
+    query = <<~GRAPHQL.delete("\n")
+      query($owner: String!, $name: String!, $refPrefix: String!, $limit: Int!) {
+        repository(owner: $owner, name: $name) {
+          refs(refPrefix: $refPrefix, first: $limit) {
+            nodes { name prefix target { oid } }
+            pageInfo { hasNextPage }
+          }
+        }
+      }
+    GRAPHQL
+    output, status = Open3.capture2(
+      "gh", "api", "graphql", "-f", "query=#{query}",
+      "-f", "owner=#{repo.fetch(:owner)}", "-f", "name=#{repo.fetch(:repo)}",
+      "-f", "refPrefix=#{PUBLISH_STAGING_REF_PREFIX}",
+      "-F", "limit=#{PUBLISH_STAGING_REF_LIMIT + 1}"
+    )
+    return nil unless status.success?
+
+    response = JSON.parse(output)
+    return nil unless response.is_a?(Hash) && response["errors"].nil?
+
+    data = response["data"]
+    repository = data["repository"] if data.is_a?(Hash)
+    refs = repository["refs"] if repository.is_a?(Hash)
+    nodes = refs["nodes"] if refs.is_a?(Hash)
+    page_info = refs["pageInfo"] if refs.is_a?(Hash)
+    return nil unless nodes.is_a?(Array) && page_info.is_a?(Hash) &&
+                      [true, false].include?(page_info["hasNextPage"])
+    return nil if page_info["hasNextPage"] || nodes.length > PUBLISH_STAGING_REF_LIMIT
+
+    nodes.map do |node|
+      return nil unless node.is_a?(Hash) && node["target"].is_a?(Hash)
+
+      prefix = node["prefix"]
+      branch_name = node["name"]
+      oid = node.fetch("target")["oid"]
+      return nil unless prefix == "refs/heads/" && branch_name.is_a?(String)
+
+      name = "#{prefix}#{branch_name}"
+      return nil unless name.start_with?(PUBLISH_STAGING_REF_PREFIX) &&
+                        oid.is_a?(String) && oid.match?(/\A[0-9a-f]{40}\z/)
+
+      { name: name, oid: oid }
+    end
+  rescue JSON::ParserError, KeyError, RuntimeError, SystemCallError
+    nil
+  end
+
+  def publisher_local_staging_refs(remote)
+    output, status = Open3.capture2e(
+      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "--git-dir", File.expand_path(remote),
+      "for-each-ref", "--format=%(objectname)%09%(refname)", PUBLISH_STAGING_REF_PREFIX
+    )
+    return nil unless status.success?
+
+    publisher_parse_staging_ref_rows(output.lines)
+  rescue RuntimeError, SystemCallError
+    nil
+  end
+
+  def publisher_parse_staging_ref_rows(rows)
+    rows.map do |row|
+      oid, name, extra = row.strip.split("\t", 3)
+      return nil unless extra.nil? && oid&.match?(/\A[0-9a-f]{40}\z/) &&
+                        name&.start_with?(PUBLISH_STAGING_REF_PREFIX)
+
+      { name: name, oid: oid }
+    end
   end
 
   def publisher_atomic_ref_update(repo, branch, expected_remote_head, new_head, staging)
@@ -1301,10 +1412,16 @@ module PushDownstream
   end
 
   def publisher_delete_staging_ref(repo, staging, expected_head)
-    publisher_update_refs(
+    deleted = publisher_update_refs(
       repo,
       [{ name: "refs/heads/#{staging}", before: expected_head, after: ZERO_OID }]
     )
+    return true if deleted
+
+    refs = publisher_staging_refs(repo)
+    refs&.none? { |ref| ref.fetch(:name) == "refs/heads/#{staging}" }
+  rescue KeyError, RuntimeError, SystemCallError
+    false
   end
 
   def publisher_update_refs(repo, updates)
@@ -1338,22 +1455,30 @@ module PushDownstream
     return false unless status.success?
 
     response = JSON.parse(output)
-    response["errors"].nil? && response.dig("data", "updateRefs").is_a?(Hash)
+    return false unless response.is_a?(Hash) && response["errors"].nil?
+
+    data = response["data"]
+    data.is_a?(Hash) && data["updateRefs"].is_a?(Hash)
   rescue JSON::ParserError, RuntimeError, SystemCallError
     false
   end
 
   def publisher_github_repository_id(repo)
-    query = "query($nwo: String!) { repository(nameWithOwner: $nwo) { id } }"
+    query = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id } }"
     output, status = Open3.capture2(
-      "gh", "api", "graphql", "-f", "query=#{query}", "-f", "nwo=#{repo.fetch(:nwo)}"
+      "gh", "api", "graphql", "-f", "query=#{query}",
+      "-f", "owner=#{repo.fetch(:owner)}", "-f", "name=#{repo.fetch(:repo)}"
     )
     return nil unless status.success?
 
     response = JSON.parse(output)
-    identifier = response.dig("data", "repository", "id")
+    return nil unless response.is_a?(Hash) && response["errors"].nil?
+
+    data = response["data"]
+    repository = data["repository"] if data.is_a?(Hash)
+    identifier = repository["id"] if repository.is_a?(Hash)
     identifier if identifier.is_a?(String) && !identifier.empty?
-  rescue JSON::ParserError, RuntimeError, SystemCallError
+  rescue JSON::ParserError, KeyError, RuntimeError, SystemCallError
     nil
   end
 
