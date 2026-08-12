@@ -953,6 +953,48 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_token_budget_rejects_same_aliased_or_ancestor_trusted_plan_and_state_artifacts
+    Dir.mktmpdir("batch-plan-budget-artifacts") do |directory|
+      same_path = File.join(directory, "same.json")
+      same_budget = token_budget
+      same_budget["state_path"] = same_path
+      same_input = input_for
+      enable_token_budget(same_input, same_budget)
+      same_input.dig("plan", "token_budget_anchor")["trusted_plan_path"] = same_path
+
+      same_result, _same_stderr, same_status = evaluate(same_input)
+      refute same_status.success?
+      assert_includes same_result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-artifact-collision"
+
+      plan_path = File.join(directory, "trusted-plan.json")
+      alias_state_path = File.join(directory, "state-alias.json")
+      File.write(plan_path, "trusted-plan-placeholder")
+      File.symlink(plan_path, alias_state_path)
+      alias_budget = token_budget
+      alias_budget["state_path"] = alias_state_path
+      alias_input = input_for
+      enable_token_budget(alias_input, alias_budget)
+      alias_input.dig("plan", "token_budget_anchor")["trusted_plan_path"] = plan_path
+
+      alias_result, _alias_stderr, alias_status = evaluate(alias_input)
+      refute alias_status.success?
+      assert_includes alias_result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-artifact-collision"
+
+      ancestor_budget = token_budget
+      ancestor_budget["state_path"] = File.join(directory, "budget-artifact", "state.json")
+      ancestor_input = input_for
+      enable_token_budget(ancestor_input, ancestor_budget)
+      ancestor_input.dig("plan", "token_budget_anchor")["trusted_plan_path"] = File.join(directory, "budget-artifact")
+
+      ancestor_result, _ancestor_stderr, ancestor_status = evaluate(ancestor_input)
+      refute ancestor_status.success?
+      assert_includes ancestor_result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-artifact-collision"
+    end
+  end
+
   def test_token_budget_rejects_untrusted_or_malformed_verifier_records
     mutations = {
       "unknown-algorithm" => proc { |records| records[0]["algorithm"] = "UNKNOWN" },

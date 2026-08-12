@@ -55,7 +55,9 @@ record its coordinator-selected binding next to `plan.token_budget`:
 The `batch_id` must match the plan id, `state_path` must be the absolute
 coordinator-owned path passed to every helper invocation, lane scope ids must
 exactly match every planned lane, and coordinator/lane limits cannot exceed the
-aggregate limit.
+aggregate limit. The trusted plan and mutable state must be distinct canonical
+artifacts; equal expanded paths, resolvable aliases, or ancestor/file identity
+collisions fail closed.
 Lane ids `aggregate` and `coordinator` are reserved for their parent scopes.
 Thresholds must be strictly increasing and `hard_percent` is exactly 100.
 `trusted_verifiers` is a nonempty exact allowlist of unique verifier ids and
@@ -99,13 +101,20 @@ the separately held path, id, and canonical digest.
 Admission denials are valid decisions and exit zero so callers can persist the
 receipt and checkpoint safely. State updates use an exclusive adjacent lock,
 an fsynced private temporary file, and atomic rename. Replaying an id with a
-different payload fails closed. Every valid reservation-id outcome, including a
+different payload fails closed. Exact existing-id replay is checked before
+telemetry freshness, so an admitted, blocked, or coalesced decision remains
+deterministic after its original telemetry ages without allocating twice or
+rewriting its outcome. Every valid reservation-id outcome, including a
 coalesced or blocked request, is durably fenced by its canonical request digest;
 an exact replay returns the recorded decision, while later payload changes
 cannot reuse that id after the target or predecessor changes state. Commands and
 persisted state reject duplicate JSON object keys at every nesting level.
-The initialization receipt, immutable base projection, and unique root control
-event remain bound to the externally supplied immutable preflighted plan;
+The external plan's canonical `state_path` is compared unconditionally with the
+expanded CLI `--state` before a directory, state, or lock file is created. The
+initialization command must also carry an exact budget projection equal to the
+trusted plan; null, omitted, or different projections fail closed. The
+initialization receipt, immutable base projection, and unique root control event
+remain bound to the externally supplied immutable preflighted plan;
 scoped overrides update a separate effective-budget digest, so restart replay
 and unresolved threshold evidence cannot be hidden by a limit change.
 `evaluated_at` is a monotonic durable watermark: a command cannot roll state
@@ -185,7 +194,9 @@ smaller action or sibling override cannot clear them.
 After the admitted boundary completes, `reconcile` consumes an
 `authoritative-token-usage-receipt v1`. The producer must be identified as a
 host-reported, coordination-backend, or authoritative-runtime source with a
-durable evidence reference. Each unique physical segment names `self` or
+durable URI evidence reference. Plain, `UNKNOWN`, `self-attested://`, and
+`worker-self-attested://` references have no authority. Producer objects use an
+exact field allowlist. Each unique physical segment names `self` or
 `descendant`, its owning scope and an admitted target, and raw tokens. The
 helper reconciles
 predicted versus actual usage, releases unused reservation, and rejects stale,
@@ -234,7 +245,10 @@ Budget approval or override never grants or weakens those six gates. `closeout`
 reports allocated, consumed, currently reserved, cumulatively released, and
 unattributed tokens for aggregate, coordinator, and every lane. Active
 reservations, unattributed usage, an unresolved hard-stop checkpoint or
-decision, or exhaustion of any scope produces `NOT COMPLETE`.
+decision, any unresolved `approval-required` decision, or exhaustion of any
+scope produces `NOT COMPLETE`. Recording an approval alone does not resolve its
+stop; an explicit approved admission transition must bind the decision's
+resolution before closeout can become complete.
 Every state load recomputes accounting from reservation, release,
 reconciliation, usage-receipt, and segment ledgers. Missing ledger entries or
 counter mismatches are corrupt state, and `COMPLETE` additionally requires zero

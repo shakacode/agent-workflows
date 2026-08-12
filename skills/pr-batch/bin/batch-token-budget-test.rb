@@ -412,6 +412,90 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_external_budget_binds_state_path_before_filesystem_mutation_and_requires_exact_initialization_projection
+    Dir.mktmpdir("batch-token-budget-state-binding") do |directory|
+      state_path = File.join(directory, "state.json")
+      wrong_state_path = File.join(directory, "wrong-state.json")
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+
+      output, stderr, status = run_helper_raw(
+        wrong_state_path,
+        JSON.generate(command("initialize", "budget" => candidate)),
+        anchor: anchor
+      )
+      refute status.success?
+      assert_nil output
+      assert_equal "state-path-mismatch", JSON.parse(stderr).fetch("reason")
+      refute File.exist?(wrong_state_path)
+      refute File.exist?("#{wrong_state_path}.lock")
+
+      [
+        command("initialize", "budget" => nil),
+        command("initialize").tap { |input| input.delete("budget") }
+      ].each do |initialization|
+        output, invalid_stderr, invalid_status = run_helper_raw(
+          state_path,
+          JSON.generate(initialization),
+          anchor: anchor
+        )
+        refute invalid_status.success?
+        assert_nil output
+        assert_equal "unsupported-command-contract", JSON.parse(invalid_stderr).fetch("reason")
+        refute File.exist?(state_path)
+        refute File.exist?("#{state_path}.lock")
+      end
+    end
+  end
+
+  def test_runtime_rejects_same_or_aliased_trusted_plan_and_state_artifacts
+    Dir.mktmpdir("batch-token-budget-artifact-separation") do |directory|
+      same_path = File.join(directory, "same.json")
+      same_budget = budget(state_path: same_path)
+      File.write(same_path, JSON.generate(canonicalize(same_budget)))
+      same_anchor = {
+        "path" => same_path,
+        "id" => same_budget.fetch("batch_id"),
+        "digest" => "sha256:#{object_digest(same_budget)}"
+      }
+      same_before = File.read(same_path)
+
+      output, stderr, status = run_helper_raw(
+        same_path,
+        JSON.generate(command("initialize", "budget" => same_budget)),
+        anchor: same_anchor
+      )
+      refute status.success?
+      assert_nil output
+      assert_equal "trusted-plan-state-path-collision", JSON.parse(stderr).fetch("reason")
+      assert_equal same_before, File.read(same_path)
+      refute File.exist?("#{same_path}.lock")
+
+      plan_path = File.join(directory, "trusted-plan.json")
+      alias_state_path = File.join(directory, "state-alias.json")
+      aliased_budget = budget(state_path: alias_state_path)
+      File.write(plan_path, JSON.generate(canonicalize(aliased_budget)))
+      File.symlink(plan_path, alias_state_path)
+      alias_anchor = {
+        "path" => plan_path,
+        "id" => aliased_budget.fetch("batch_id"),
+        "digest" => "sha256:#{object_digest(aliased_budget)}"
+      }
+      plan_before = File.read(plan_path)
+
+      output, alias_stderr, alias_status = run_helper_raw(
+        alias_state_path,
+        JSON.generate(command("initialize", "budget" => aliased_budget)),
+        anchor: alias_anchor
+      )
+      refute alias_status.success?
+      assert_nil output
+      assert_equal "trusted-plan-state-path-collision", JSON.parse(alias_stderr).fetch("reason")
+      assert_equal plan_before, File.read(plan_path)
+      refute File.exist?("#{alias_state_path}.lock")
+    end
+  end
+
   def test_initialize_rejects_untrusted_or_malformed_verifier_keys
     Dir.mktmpdir("batch-token-budget-verifier-contract") do |directory|
       mutations = {
@@ -709,7 +793,7 @@ class BatchTokenBudgetTest < Minitest::Test
       run_helper(state_path, command("override", "override" => lane_override))
       resumed, resume_stderr, resume_status = reserve(
         state_path,
-        id: "reserve-hard",
+        id: "reserve-hard-resume",
         lane_id: "lane-b",
         tokens: 500
       )
@@ -786,6 +870,83 @@ class BatchTokenBudgetTest < Minitest::Test
       )
       assert combined_status.success?, combined_stderr
       assert_equal "admitted-with-warning", combined_resume.fetch("status")
+    end
+  end
+
+  def test_closeout_requires_lane_and_aggregate_approval_stops_to_be_explicitly_resolved
+    Dir.mktmpdir("batch-token-budget-approval-closeout") do |directory|
+      scenarios = {
+        "lane" => { "tokens" => 500, "scope_id" => "lane-a" },
+        "aggregate" => { "tokens" => 800, "scope_id" => "aggregate", "lane_limit" => 1_000 }
+      }
+      scenarios.each do |name, scenario|
+        state_path = File.join(directory, "#{name}.json")
+        candidate = budget(state_path: state_path)
+        candidate.dig("scopes", "lanes", "lane-a")["limit_tokens"] = scenario["lane_limit"] if scenario["lane_limit"]
+        run_helper(state_path, command("initialize", "budget" => candidate))
+        stopped_request = reservation(id: "#{name}-approval-stop", tokens: scenario.fetch("tokens"))
+
+        stopped, stopped_stderr, stopped_status = run_helper(
+          state_path,
+          command("reserve", "reservation" => stopped_request)
+        )
+        assert stopped_status.success?, stopped_stderr
+        assert_equal "approval-required", stopped.fetch("status"), name
+
+        incomplete, incomplete_stderr, incomplete_status = run_helper(state_path, command("closeout"))
+        assert incomplete_status.success?, incomplete_stderr
+        assert_equal "not-complete", incomplete.fetch("status"), name
+        assert_equal "NOT COMPLETE", incomplete.fetch("completion"), name
+
+        approval_id = "#{name}-approval"
+        approved, approval_stderr, approval_status = run_helper(
+          state_path,
+          command(
+            "approve",
+            "approval" => approval(state_path, id: approval_id, scope_id: scenario.fetch("scope_id"))
+          )
+        )
+        assert approval_status.success?, approval_stderr
+        assert_equal "approved", approved.fetch("status"), name
+
+        approved_but_unresolved, unresolved_stderr, unresolved_status = run_helper(state_path, command("closeout"))
+        assert unresolved_status.success?, unresolved_stderr
+        assert_equal "not-complete", approved_but_unresolved.fetch("status"), name
+        assert_equal "NOT COMPLETE", approved_but_unresolved.fetch("completion"), name
+
+        admitted_request = reservation(
+          id: "#{name}-approved-admission",
+          tokens: scenario.fetch("tokens"),
+          overrides: { "approval_id" => approval_id }
+        )
+        admitted, admitted_stderr, admitted_status = run_helper(
+          state_path,
+          command("reserve", "reservation" => admitted_request)
+        )
+        assert admitted_status.success?, admitted_stderr
+        assert_includes %w[admitted admitted-with-warning], admitted.fetch("status"), name
+
+        released, release_stderr, release_status = run_helper(
+          state_path,
+          command(
+            "release",
+            "release" => {
+              "type" => "batch-token-release",
+              "version" => 1,
+              "id" => "#{name}-approved-release",
+              "reservation_id" => admitted_request.fetch("id"),
+              "reason" => "Finish approved closeout regression."
+            }
+          )
+        )
+        assert release_status.success?, release_stderr
+        assert_equal "released", released.fetch("status"), name
+
+        complete, complete_stderr, complete_status = run_helper(state_path, command("closeout"))
+        assert complete_status.success?, complete_stderr
+        assert_equal "complete", complete.fetch("status"), name
+        assert_equal "COMPLETE", complete.fetch("completion"), name
+      end
     end
   end
 
@@ -1187,6 +1348,79 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_exact_admitted_blocked_and_coalesced_reservation_replays_precede_telemetry_freshness
+    with_state do |state_path|
+      initialize_budget(state_path)
+      requests = {
+        "admitted" => reservation(id: "stale-replay-admitted", tokens: 100),
+        "blocked" => reservation(
+          id: "stale-replay-blocked",
+          tokens: 100,
+          target_id: "paused-target",
+          overrides: { "target_state" => "paused" }
+        ),
+        "coalesced" => reservation(
+          id: "stale-replay-coalesced",
+          tokens: 100,
+          target_id: "active-target",
+          overrides: { "target_state" => "active" }
+        )
+      }
+      expected_decisions = {
+        "admitted" => "admitted",
+        "blocked" => "blocked",
+        "coalesced" => "coalesced"
+      }
+      requests.each do |name, request|
+        first, first_stderr, first_status = run_helper(
+          state_path,
+          command("reserve", "reservation" => request)
+        )
+        assert first_status.success?, first_stderr
+        assert_equal expected_decisions.fetch(name), first.fetch("status"), name
+      end
+      state_before = JSON.parse(File.read(state_path))
+      allocated_before = state_before.dig("scopes", "aggregate", "allocated_tokens")
+      outcomes_before = state_before.fetch("reservation_decisions").transform_values do |fence|
+        object_digest(fence)
+      end
+
+      requests.each do |name, request|
+        replay, replay_stderr, replay_status = run_helper(
+          state_path,
+          command(
+            "reserve",
+            "reservation" => request,
+            "evaluated_at" => "2026-08-12T12:20:00Z"
+          )
+        )
+        assert replay_status.success?, replay_stderr
+        assert_equal "replayed", replay.fetch("status"), name
+        assert_equal expected_decisions.fetch(name), replay.fetch("decision_status"), name
+        assert_equal allocated_before, replay.dig("totals", "aggregate", "allocated_tokens"), name
+      end
+      state_after = JSON.parse(File.read(state_path))
+      outcomes_after = state_after.fetch("reservation_decisions").transform_values do |fence|
+        object_digest(fence)
+      end
+      assert_equal outcomes_before, outcomes_after
+
+      changed = Marshal.load(Marshal.dump(requests.fetch("admitted")))
+      changed["telemetry"]["observed_at"] = "2026-08-12T12:19:00Z"
+      output, mismatch_stderr, mismatch_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "reservation" => changed,
+          "evaluated_at" => "2026-08-12T12:20:00Z"
+        )
+      )
+      refute mismatch_status.success?
+      assert_nil output
+      assert_equal "reservation-replay-mismatch", JSON.parse(mismatch_stderr).fetch("reason")
+    end
+  end
+
   def test_coalesced_reservation_id_is_durably_fenced_after_predecessor_release
     with_state do |state_path|
       initialize_budget(state_path)
@@ -1284,11 +1518,12 @@ class BatchTokenBudgetTest < Minitest::Test
       denied, = run_helper(state_path, command("reserve", "reservation" => retried_request))
       assert_equal "budget-exhausted", denied.fetch("status")
 
-      %w[occupying retry-after-headroom].each_with_index do |reservation_id, index|
+      %w[occupying retry-after-headroom-resume].each_with_index do |reservation_id, index|
         if index == 1
+          resumed_request = retried_request.merge("id" => reservation_id)
           admitted, admitted_stderr, admitted_status = run_helper(
             state_path,
-            command("reserve", "reservation" => retried_request)
+            command("reserve", "reservation" => resumed_request)
           )
           assert admitted_status.success?, admitted_stderr
           assert_equal "admitted", admitted.fetch("status")
@@ -1485,7 +1720,7 @@ class BatchTokenBudgetTest < Minitest::Test
       )
       run_helper(state_path, command("override", "override" => aggregate_override))
       run_helper(state_path, command("override", "override" => lane_override))
-      resumed, = reserve(state_path, id: "hard", tokens: 600)
+      resumed, = reserve(state_path, id: "hard-resume", tokens: 600)
       assert_equal "admitted", resumed.fetch("status")
       run_helper(
         state_path,
@@ -1495,7 +1730,7 @@ class BatchTokenBudgetTest < Minitest::Test
             "type" => "batch-token-release",
             "version" => 1,
             "id" => "release-resumed-hard",
-            "reservation_id" => "hard",
+            "reservation_id" => "hard-resume",
             "reason" => "Resumed boundary completed without observable use."
           }
         )
@@ -1670,6 +1905,54 @@ class BatchTokenBudgetTest < Minitest::Test
         receipt["type"] == "batch-token-budget-override-expiration-receipt"
       end
       assert_equal 2, expiration_receipts
+    end
+  end
+
+  def test_usage_producer_requires_supported_kind_exact_fields_and_durable_non_self_attested_reference
+    Dir.mktmpdir("batch-token-budget-producer-evidence") do |directory|
+      variants = {
+        "self-attested-uri" => proc { |producer| producer["evidence_ref"] = "self-attested://worker/usage" },
+        "worker-self-attested-uri" => proc do |producer|
+          producer["evidence_ref"] = "worker-self-attested://worker/usage"
+        end,
+        "plain-reference" => proc { |producer| producer["evidence_ref"] = "worker says 100 tokens" },
+        "unknown-reference" => proc { |producer| producer["evidence_ref"] = "UNKNOWN" },
+        "unsupported-kind" => proc { |producer| producer["kind"] = "worker-reported" },
+        "extra-field" => proc { |producer| producer["self_attested"] = false }
+      }
+      variants.each do |name, mutate|
+        state_path = File.join(directory, "#{name}.json")
+        initialize_budget(state_path)
+        reserve(state_path, id: "#{name}-reservation", tokens: 100, target_id: "#{name}-target")
+        receipt = usage_receipt(
+          id: "#{name}-usage",
+          segments: [{
+            "id" => "#{name}-self",
+            "kind" => "self",
+            "scope_id" => "lane-a",
+            "target_id" => "#{name}-target",
+            "tokens" => 100
+          }]
+        )
+        mutate.call(receipt.fetch("producer"))
+
+        blocked, stderr, status = run_helper(
+          state_path,
+          command(
+            "reconcile",
+            "reservation_id" => "#{name}-reservation",
+            "usage_receipt" => receipt
+          )
+        )
+
+        assert status.success?, stderr
+        assert_equal "blocked", blocked.fetch("status"), name
+        assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason"), name
+        assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens"), name
+        state = JSON.parse(File.read(state_path))
+        assert_equal "active", state.dig("reservations", "#{name}-reservation", "status"), name
+        assert_empty state.fetch("usage_receipts"), name
+      end
     end
   end
 
