@@ -199,7 +199,8 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
     substituted\ route
   )
 /imx
-ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE = "launch|replay|review|audit|planning|coordination|execution|escalation|fallback"
+ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE =
+  "(?:the\\s+)?(?:launch|replay|review|audit|planning|coordination|execution|escalation|fallback)"
 ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE =
   "(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?=\\s*(?:[.!?,;:]|\\z|when\\b|if\\b|whenever\\b|unless\\b))".freeze
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
@@ -449,16 +450,20 @@ def markdown_setext_heading_line_indexes(lines)
 end
 
 def markdown_fence_line?(line)
-  line.match?(/^\s{0,3}(?:```|~~~)/)
+  markdown_fence_container_content(line).match?(/^\s{0,3}(?:```|~~~)/)
 end
 
 def markdown_fence_opening_marker(line)
-  line[/^\s{0,3}(`{3,}|~{3,})/, 1]
+  markdown_fence_container_content(line)[/^\s{0,3}(`{3,}|~{3,})/, 1]
 end
 
 def markdown_fence_closing_line?(line, opening_marker)
   marker = Regexp.escape(opening_marker[0])
-  line.match?(/^\s{0,3}#{marker}{#{opening_marker.length},}\s*$/)
+  markdown_fence_container_content(line).match?(/^\s{0,3}#{marker}{#{opening_marker.length},}\s*$/)
+end
+
+def markdown_fence_container_content(line)
+  line.sub(/^\s{0,3}(?:>\s?)+/, "")
 end
 
 def markdown_thematic_break_line?(line)
@@ -1163,6 +1168,7 @@ class ModelRoutingContractTest < Minitest::Test
       "reasoning effort is UNKNOWN" => "A reasoning effort is UNKNOWN and requires relaunch before editing.",
       "preferred route is unavailable" => "A preferred route is unavailable and stops the lane before editing.",
       "route mismatch blocks launch" => "A route mismatch blocks launch.",
+      "route mismatch blocks the launch" => "A route mismatch blocks the launch.",
       "route mismatch blocks replay" => "A route mismatch blocks replay.",
       "route mismatch blocks review" => "A route mismatch blocks review.",
       "route mismatch blocks audit" => "A route mismatch blocks audit.",
@@ -1175,6 +1181,7 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch prevents both launch and review" => "A route mismatch prevents both launch and review.",
       "outcome-first prevents both planning and fallback" => "Prevent both planning and fallback when a route mismatch occurs.",
       "outcome-first passive blocked launch" => "When a route mismatch occurs, launch is blocked.",
+      "outcome-first passive blocked the launch" => "The launch is blocked when a route mismatch occurs.",
       "outcome-first passive stopped launch" => "Launch is stopped when a route mismatch occurs.",
       "outcome-first passive prevented review" => "Review is prevented when a route mismatch occurs.",
       "outcome-first modal passive stopped launch" => "Launch must be stopped when a route mismatch occurs.",
@@ -1196,6 +1203,7 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch prevents launch" => "A route mismatch prevents launch.",
       "route mismatch prevents replay" => "A route mismatch prevents replay.",
       "route mismatch prevents review" => "A route mismatch prevents review.",
+      "route mismatch prevents the review" => "A route mismatch prevents the review.",
       "route mismatch prevents audit" => "A route mismatch prevents audit.",
       "route mismatch prevents planning" => "A route mismatch prevents planning.",
       "route mismatch prevents coordination" => "A route mismatch prevents coordination.",
@@ -1225,6 +1233,7 @@ class ModelRoutingContractTest < Minitest::Test
       "outcome-first shall-not audit" => "Shall not audit when there is an unavailable route.",
       "outcome-first forbids launch" => "Forbids launch when there is a route mismatch.",
       "outcome-first launch not allowed" => "Launch is not allowed when there is a route mismatch.",
+      "outcome-first the review not allowed" => "The review is not allowed when there is a route mismatch.",
       "unavailable route blocks planning" => "An unavailable route blocks planning.",
       "inherited route blocks coordination" => "An inherited route blocks coordination.",
       "different tuple blocks escalation" => "A different tuple blocks escalation.",
@@ -1234,10 +1243,12 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch disqualifies readiness" => "A route mismatch disqualifies readiness.",
       "route mismatch disqualifies checker verdict" => "A route mismatch disqualifies a checker verdict.",
       "outcome-first launch" => "Block launch when there is a route mismatch.",
+      "outcome-first the launch" => "Block the launch when there is a route mismatch.",
       "outcome-first replay" => "Block replay when there is a route mismatch.",
       "outcome-first review" => "Block review when there is a route mismatch.",
       "outcome-first audit" => "Block audit when there is a route mismatch.",
       "outcome-first prevention" => "Prevent launch when there is a route mismatch.",
+      "outcome-first prevents the review" => "Prevent the review when there is a route mismatch.",
       "outcome-first prevention planning" => "Prevent planning when there is a route mismatch.",
       "outcome-first prevention coordination" => "Prevent coordination when there is an inherited route.",
       "outcome-first prevention execution" => "Prevent execution when there is an UNKNOWN model.",
@@ -1333,6 +1344,8 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not necessarily stop the lane before edits.",
       "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not prevent launch.",
+      "A route mismatch does not block the launch.",
+      "A route mismatch does not prevent the review.",
       "A route mismatch does not block both launch and review.",
       "When the observed route differs from the requested route, launch is not blocked.",
       "When the requested route differs from the observed route, review is not blocked.",
@@ -1347,6 +1360,7 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not block launch and prevent review.",
       "An inherited route never prevents review.",
       "When a route mismatch occurs, launch is not blocked.",
+      "The launch is not blocked when a route mismatch occurs.",
       "Launch is not stopped when a route mismatch occurs.",
       "Review is not prevented when a route mismatch occurs.",
       "Launch must not be stopped when a route mismatch occurs.",
@@ -1417,6 +1431,8 @@ class ModelRoutingContractTest < Minitest::Test
       "Only an independent evidence gate blocks execution when a different route occurs.",
       "Only an independent authority gate blocks execution when an UNKNOWN model occurs.",
       "A route mismatch stops the lane only if an independent risk gate blocks.",
+      "A route mismatch blocks the launch only if an independent risk gate blocks execution.",
+      "Block the launch only if an independent risk gate blocks execution when a route mismatch occurs.",
       "A route mismatch stops otherwise valid work only if an independent risk gate blocks execution.",
       "A route mismatch halts otherwise valid work only if an independent scope gate blocks execution.",
       "A route mismatch stops the lane only if an independent scope gate blocks.",
@@ -1481,6 +1497,8 @@ class ModelRoutingContractTest < Minitest::Test
       "```text\n<!-- A route mismatch blocks launch. -->\n```",
       "````text\n```\n<!-- A route mismatch blocks launch. -->\n````",
       "~~~~text\n~~~\n<!-- A route mismatch blocks launch. -->\n~~~~",
+      "> ```text\n> <!-- A route mismatch blocks launch. -->\n> ```",
+      "> ~~~text\n> <!-- A route mismatch blocks launch. -->\n> ~~~",
       "The forbidden example is `<!-- A route mismatch blocks launch. -->`.",
       "The forbidden example is `<!-- A route mismatch\nblocks launch. -->`.",
       "The forbidden example is ``<!-- A route mismatch\nblocks launch. -->``."
@@ -1491,7 +1509,8 @@ class ModelRoutingContractTest < Minitest::Test
 
     [
       "<!-- A route mismatch blocks launch. -->",
-      "<!-- A route mismatch\nblocks launch. -->"
+      "<!-- A route mismatch\nblocks launch. -->",
+      "> <!-- A route mismatch blocks launch. -->"
     ].each do |hidden_comment|
       refute forbidden_route_only_contradiction?(hidden_comment),
              "actual HTML comments must remain ignored: #{hidden_comment}"
