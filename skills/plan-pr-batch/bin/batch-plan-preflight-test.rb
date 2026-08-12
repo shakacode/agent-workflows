@@ -1278,6 +1278,31 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal(["invalid-envelope"], result.fetch("violations").map { |item| item.fetch("code") })
   end
 
+  def test_duplicate_json_plan_fields_fail_closed_before_evaluation
+    input = input_for
+    input.fetch("plan")["token_budget"] = token_budget
+    raw = JSON.generate(input).sub(
+      '"id":"batch-plan-1"',
+      '"id":"batch-plan-1","id":"shadow-plan"'
+    )
+
+    result, stderr, status = evaluate_raw(raw)
+
+    refute status.success?
+    assert_empty stderr
+    assert_equal(["malformed-json"], result.fetch("violations").map { |item| item.fetch("code") })
+
+    duplicate_budget = JSON.generate(input).sub(
+      '"batch_id":"batch-plan-1"',
+      '"batch_id":"batch-plan-1","batch_id":"shadow-batch"'
+    )
+    nested_result, nested_stderr, nested_status = evaluate_raw(duplicate_budget)
+
+    refute nested_status.success?
+    assert_empty nested_stderr
+    assert_equal(["malformed-json"], nested_result.fetch("violations").map { |item| item.fetch("code") })
+  end
+
   def test_completed_stage_gate_preserves_boolean_permission_decisions
     input = input_for
     input.dig("stage_dependency_gate", "lanes", 0, "permissions").delete("patch_edit")

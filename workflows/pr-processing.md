@@ -677,6 +677,9 @@ scheduled continuation, monitor wake, resume, replacement, escalation, or
 cross-task delegation, reserve conservative target headroom. The helper's file
 lock, fsynced temporary state, and atomic rename serialize concurrent
 reservations and make ids replay-safe. Unchanged active targets coalesce.
+Every valid reservation-id decision, including coalesced and blocked outcomes,
+is durably fenced to the exact request digest; later changed-payload reuse fails
+closed even after the active target or predecessor is released.
 Treat command time as a durable monotonic watermark; future-dated human
 decisions and time rollback fail closed. Replacement/escalation always names a
 released or reconciled predecessor, and persisted reservations contain only
@@ -693,12 +696,20 @@ physical self/descendant segment exactly once in its owning lane and aggregate;
 bind every segment to the admitted target envelope and release unused
 reservation. Missing, stale, malformed, duplicate, conflicting,
 or `UNKNOWN` telemetry allows read-only discovery and checkpointing only. A
+segment with `UNKNOWN` ownership cannot reconcile or release its active
+reservation. Receipt objects use exact field allowlists.
 cross-task charge-back records source causality for actual target self plus
 descendant use without incrementing physical aggregate totals twice.
 Replacement or escalation waits for predecessor release/reconciliation.
 
-Warning persists a compact checkpoint and continues. Approval persists a
-scoped, expiring human receipt and starts no new expensive action without it.
+Warning persists a compact checkpoint and continues. Approval and override
+commands embed a strict `proven-human-attestation v1` bound to batch, immutable
+budget digest, scope, exact action/id, actor, issuance/expiry, and a
+coordinator-verified provenance receipt reference. The helper validates that
+independently verified shape without claiming to authenticate the external
+identity system; free-form or self-attested strings do not authorize work.
+Approval starts no new expensive action without a scope-matched unexpired
+attestation.
 Hard returns `budget-exhausted / NOT COMPLETE`, with no unchanged retry or
 automatic continuation until an explicit scoped increase or resume decision
 restores headroom. Approvals and overrides never grant or weaken security,
@@ -713,6 +724,9 @@ and a copy-paste resume action. Closeout reports allocated, consumed, currently
 reserved, cumulatively released, and unattributed tokens in aggregate,
 coordinator, and every lane plus overshoot. The complete JSON contract and
 examples are in [Hierarchical Token Budgets](../docs/token-budgets.md).
+Duplicate JSON object keys fail before evaluation. Every restart validates
+reservation/usage ledgers against all counters, and complete closeout requires
+zero reserved tokens in every scope.
 
 ### Model And Effort Routing
 

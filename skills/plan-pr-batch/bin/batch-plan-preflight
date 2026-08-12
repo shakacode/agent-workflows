@@ -8,6 +8,8 @@ require "uri"
 require "pathname"
 
 module BatchPlanPreflight
+  class DuplicateJSONKey < StandardError; end
+
   BACKENDS = %w[codex claude generic].freeze
   PURPOSES = %w[implementation investigation].freeze
   RISK_SURFACES = %w[
@@ -67,6 +69,53 @@ module BatchPlanPreflight
   }.freeze
 
   module_function
+
+  def json_string_end(raw, start)
+    index = start + 1
+    escaped = false
+    while index < raw.length
+      character = raw[index]
+      if escaped
+        escaped = false
+      elsif character == "\\"
+        escaped = true
+      elsif character == '"'
+        break
+      end
+      index += 1
+    end
+    index
+  end
+
+  def parse_json_strict(raw)
+    containers = []
+    index = 0
+    while index < raw.length
+      case raw[index]
+      when '"'
+        start = index
+        index = json_string_end(raw, start)
+        probe = index + 1
+        probe += 1 while probe < raw.length && raw[probe].match?(/\s/)
+        if probe < raw.length && raw[probe] == ":" && containers.last&.fetch(:type) == :object
+          key = JSON.parse(raw[start..index])
+          raise DuplicateJSONKey, key if containers.last.fetch(:keys).key?(key)
+
+          containers.last.fetch(:keys)[key] = true
+        end
+      when "{"
+        containers << { type: :object, keys: {} }
+      when "["
+        containers << { type: :array }
+      when "}", "]"
+        containers.pop
+      end
+      index += 1
+    end
+    JSON.parse(raw)
+  rescue DuplicateJSONKey
+    raise JSON::ParserError, "duplicate-object-key"
+  end
 
   def violation(code, path, message, lane_ids: nil)
     item = { "code" => code, "path" => path, "message" => message }
@@ -899,7 +948,7 @@ module BatchPlanPreflight
 end
 
 begin
-  parsed_input = JSON.parse($stdin.read)
+  parsed_input = BatchPlanPreflight.parse_json_strict($stdin.read)
 rescue JSON::ParserError
   parsed_input = nil
   output = BatchPlanPreflight.result(

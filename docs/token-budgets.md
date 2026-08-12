@@ -66,7 +66,11 @@ emits one deterministic result on stdout. The CLI path must match the plan's
 Admission denials are valid decisions and exit zero so callers can persist the
 receipt and checkpoint safely. State updates use an exclusive adjacent lock,
 an fsynced private temporary file, and atomic rename. Replaying an id with a
-different payload fails closed.
+different payload fails closed. Every valid reservation-id outcome, including a
+coalesced or blocked request, is durably fenced by its canonical request digest;
+an exact replay returns the recorded decision, while later payload changes
+cannot reuse that id after the target or predecessor changes state. Commands and
+persisted state reject duplicate JSON object keys at every nesting level.
 The initialization digest remains bound to the immutable preflighted plan;
 scoped overrides update a separate effective-budget digest, so restart replay
 and unresolved threshold evidence cannot be hidden by a limit change.
@@ -95,14 +99,54 @@ bounded action. At approval, it persists a receipt and rejects every new
 expensive action until a scoped, expiring `batch-token-budget-approval v1`
 receipt authorizes the next admission. At hard stop, it returns
 `budget-exhausted`, `NOT COMPLETE`, and permits only discovery, checkpoint,
-scoped override, and closeout. A `batch-token-budget-override v1` must name the
-exact batch/scope, old and larger new limit, approver, durable proven-human
-evidence reference, reason, approval time, and expiry. Approvals require the
-same human evidence boundary. An override changes no sibling or future-batch
-scope. Persisted approval and hard decisions continue to block their affected
-scope until an applicable human approval or sufficient scoped headroom is
-followed by admission of the stopped target; an unrelated smaller action or
-sibling override cannot clear them.
+scoped override, and closeout. Approval and override commands embed a strict
+`proven-human-attestation v1`; free-form `approver` or `evidence_ref` strings are
+not authorization:
+
+```json
+{
+  "type": "batch-token-budget-approval",
+  "version": 1,
+  "id": "approval-1",
+  "batch_id": "batch-399",
+  "scope_id": "aggregate",
+  "decision": "approve-next-admission",
+  "reason": "Allow one bounded admission.",
+  "attestation": {
+    "type": "proven-human-attestation",
+    "version": 1,
+    "id": "attestation-approval-1",
+    "batch_id": "batch-399",
+    "budget_digest": "<immutable-plan-budget-sha256>",
+    "scope_id": "aggregate",
+    "action": {
+      "type": "approve-next-admission",
+      "decision_id": "approval-1"
+    },
+    "actor": "<verified-human-identity>",
+    "issued_at": "2026-08-12T11:58:00Z",
+    "expires_at": "2026-08-12T13:00:00Z",
+    "provenance": {
+      "type": "coordinator-verified-provenance-receipt",
+      "version": 1,
+      "status": "verified",
+      "verifier_id": "<coordinator-identity>",
+      "receipt_ref": "<durable-independent-verification-receipt>"
+    }
+  }
+}
+```
+
+The helper validates this independently verified provenance shape and its
+batch, immutable budget, scope, action/id, issuance, and expiry bindings. It
+does not itself authenticate a GitHub user or coordination backend. Override
+attestations use action type `increase-budget-limit` and bind their decision id
+plus the exact old and new limits. `UNKNOWN`, future, expired, malformed,
+unverified, mismatched, or rebound attestations fail closed. An override changes
+no sibling or future-batch scope. Persisted approval and hard decisions continue
+to block their affected scope until an applicable human approval or sufficient
+scoped headroom is followed by admission of the stopped target; an unrelated
+smaller action or sibling override cannot clear them.
 
 After the admitted boundary completes, `reconcile` consumes an
 `authoritative-token-usage-receipt v1`. The producer must be identified as a
@@ -114,6 +158,10 @@ predicted versus actual usage, releases unused reservation, and rejects stale,
 malformed, `UNKNOWN`, duplicate, or conflicting segments. This receipt schema
 is the stable integration boundary for an authoritative producer; no producer
 from another unmerged change is assumed.
+Receipt, producer, segment, and overshoot objects use exact field allowlists.
+A segment whose owning `scope_id` is `UNKNOWN` never reconciles or releases
+headroom: the active reservation remains held and only read-only discovery or
+checkpointing may proceed until authoritative ownership is known.
 
 If actual use exceeds the reservation because a previously admitted turn was
 already in flight, the authoritative receipt also names each affected admitted
@@ -150,6 +198,10 @@ reports allocated, consumed, currently reserved, cumulatively released, and
 unattributed tokens for aggregate, coordinator, and every lane. Active
 reservations, unattributed usage, an unresolved hard-stop checkpoint or
 decision, or exhaustion of any scope produces `NOT COMPLETE`.
+Every state load recomputes accounting from reservation, release,
+reconciliation, usage-receipt, and segment ledgers. Missing ledger entries or
+counter mismatches are corrupt state, and `COMPLETE` additionally requires zero
+reserved tokens in every scope.
 
 Scheduled monitors and same-thread heartbeats use the same reservation command
 before loading model context. They do not auto-continue at approval or hard
