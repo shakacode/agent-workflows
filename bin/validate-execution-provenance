@@ -169,7 +169,7 @@ module ValidateExecutionProvenance
     failures = []
     failures << "#{label}.started_at must be an RFC 3339 timestamp" unless started_at
     failures << "#{label}.ended_at must be an RFC 3339 timestamp" unless ended_at
-    if started_at && ended_at && ended_at < started_at
+    if started_at && ended_at && (ended_at <=> started_at).negative?
       failures << "#{label}.ended_at must not precede started_at"
     end
     failures
@@ -319,10 +319,20 @@ module ValidateExecutionProvenance
     return unless match
     return unless rfc3339_components_in_range?(match)
 
-    parsed = DateTime.rfc3339(value)
-    match[:second].to_i == 60 ? parsed + Rational(1, 86_400) : parsed
+    parsed_value = match[:second].to_i == 60 ? rfc3339_equivalent_last_second(value) : value
+    utc = DateTime.rfc3339(parsed_value).new_offset(0)
+    seconds_of_day = if match[:second].to_i == 60
+                       86_400 + utc.sec_fraction
+                     else
+                       (utc.hour * 3600) + (utc.min * 60) + utc.sec + utc.sec_fraction
+                     end
+    [utc.jd, seconds_of_day]
   rescue ArgumentError
     nil
+  end
+
+  def rfc3339_equivalent_last_second(value)
+    value.sub(/:60(?=(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z)/, ":59")
   end
 
   def rfc3339_components_in_range?(match)
