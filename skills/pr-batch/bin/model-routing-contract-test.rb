@@ -251,11 +251,13 @@ NEGATED_ROUTE_ONLY_COORDINATED_OUTCOME_CLAUSE_PATTERN =
     (?:or|nor|and)\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b
   /imx
 DIRECT_INDEPENDENT_BLOCKER_SOURCE =
-  "(?:an?\\s+)?(?:independent\\s+(?:risk|scope|evidence|authority)(?:\\s+gate)?|(?:risk|scope|evidence|authority)\\s+gate|exact-head\\s+CI\\s+gate|(?:destructive\\s+)?scope\\s+expansion)"
+  "(?:an?\\s+)?(?:independent\\s+(?:risk|scope|evidence|authority)(?:\\s+gate)?|(?:risk|scope|evidence|authority)\\s+gate|credential\\s+check|exact-head\\s+CI\\s+gate|(?:destructive\\s+)?scope\\s+expansion)"
 INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN =
   /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+if\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks(?:\s+execution)?\b/i
 DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN =
   /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks\s+execution\b/i
+DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN =
+  /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\b/i
 INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN =
   /\bonly\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\s+when\s+/i
 CONCRETE_INDEPENDENT_BLOCKER_SENTENCE_PATTERN =
@@ -386,6 +388,20 @@ def strip_independent_gate_first_clause(sentence)
   return sentence if trailing_text.match?(ROUTE_ONLY_OUTCOME_PATTERN)
 
   "#{sentence[0...gate_prefix.begin(0)]}#{sentence[subject.end(0) + occurrence.end(0)..]}"
+end
+
+def strip_route_occurrence_with_independent_blocker_clause(sentence)
+  subject = sentence.match(ROUTE_ONLY_SUBJECT_PATTERN)
+  return sentence unless subject
+
+  occurrence = sentence[subject.end(0)..].match(/\A\s+occurs\b/i)
+  blocker = sentence.match(DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN)
+  return sentence unless occurrence && blocker
+  return sentence unless subject.begin(0) < blocker.begin(0)
+  return sentence unless subject.end(0) + occurrence.end(0) <= blocker.begin(0)
+  return sentence if sentence[subject.begin(0)...blocker.begin(0)].match?(ROUTE_ONLY_OUTCOME_OR_PROHIBITION_PATTERN)
+
+  "#{sentence[0...subject.begin(0)]}#{sentence[blocker.end(0)..]}"
 end
 
 def markdown_table_delimiter_line?(line)
@@ -552,7 +568,8 @@ end
 
 def unguarded_route_only_sentence(sentence)
   gate_first_clause_stripped = strip_independent_gate_first_clause(sentence)
-  permitted_clause_stripped = strip_negated_route_outcome_with_independent_blocker_clause(gate_first_clause_stripped)
+  independent_blocker_stripped = strip_route_occurrence_with_independent_blocker_clause(gate_first_clause_stripped)
+  permitted_clause_stripped = strip_negated_route_outcome_with_independent_blocker_clause(independent_blocker_stripped)
   strip_allowed_route_only_outcome_clauses(permitted_clause_stripped)
 end
 
@@ -1257,6 +1274,7 @@ class ModelRoutingContractTest < Minitest::Test
       "semicolon gate followed by unconditional different route" => "A route mismatch does not stop the lane; an independent risk gate blocks execution, yet a different route disqualifies the lane.",
       "unconditional outcome before semicolon gate clause" => "A different route disqualifies the lane; a route mismatch does not stop the lane; an independent risk gate blocks execution.",
       "direct blocker followed by unconditional different route" => "A route mismatch does not stop the lane; destructive scope expansion blocks execution, yet a different route disqualifies the lane.",
+      "same-sentence independent blocker followed by inherited route" => "A route mismatch occurs, but an exact-head CI gate blocks launch, yet an inherited route blocks launch.",
       "exact-head CI blocker followed by unconditional route outcome" => "A route mismatch does not stop the lane; an exact-head CI gate blocks execution, yet an inherited route forbids launch.",
       "unconditional outcome before direct blocker" => "A different route disqualifies the lane; a route mismatch does not stop the lane; destructive scope expansion blocks execution.",
       "prohibition between permitted clause and independent blocker" => "A route mismatch does not stop the lane, and an inherited route forbids launch, but an independent risk gate blocks execution.",
@@ -1362,6 +1380,12 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch occurs. A credential check fails. This blocks launch.",
       "A route mismatch occurs. An exact-head CI gate fails. This blocks launch.",
       "A route mismatch does not stop the lane; an exact-head CI gate blocks execution.",
+      "A route mismatch occurs, but a credential check blocks launch.",
+      "A route mismatch occurs, but an exact-head CI gate blocks launch.",
+      "A route mismatch occurs, but an independent risk gate blocks launch.",
+      "A route mismatch occurs, but an independent scope gate blocks launch.",
+      "A route mismatch occurs, but an independent evidence gate blocks launch.",
+      "A route mismatch occurs, but an independent authority gate blocks launch.",
       "A route mismatch occurs. An independent scope gate triggers. It blocks execution.",
       "A route mismatch occurs. An independent evidence gate triggers. It blocks execution.",
       "A route mismatch occurs. An independent authority gate triggers. It blocks execution.",
