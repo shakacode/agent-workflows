@@ -205,7 +205,7 @@ ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE =
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
 # This bounded, guide-derived stop/prohibition vocabulary needs matching mutation coverage whenever routing-guide phrasing changes.
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+(?:blocked|stopped|prevented)|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:must|should|may|can|will|would|could|shall)\\s+be\\s+(?:blocked|stopped|prevented)|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+(?:the\\s+lane|otherwise\\s+valid\\s+work)|halts?\\s+(?:the\\s+lane|otherwise\\s+valid\\s+work)|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+(?:blocked|stopped|prevented)|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:must|should|may|can|will|would|could|shall)\\s+be\\s+(?:blocked|stopped|prevented)|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -1105,6 +1105,8 @@ class ModelRoutingContractTest < Minitest::Test
 
     {
       "route mismatch" => "A route mismatch stops the lane before any edit begins.",
+      "route mismatch stops otherwise valid work" => "A route mismatch stops otherwise valid work.",
+      "route mismatch halts otherwise valid work" => "A route mismatch halts otherwise valid work.",
       "unavailable observed route" => "An unavailable observed route stops the lane before any edit begins.",
       "inherited route" => "An inherited route stops the lane before any edit begins.",
       "silent substitution" => "A silent substitution stops the lane before editing.",
@@ -1214,6 +1216,8 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch halts the lane before editing" => "A route mismatch halts the lane before editing.",
       "route mismatch prevents editing until relaunch" => "A route mismatch prevents editing until relaunch.",
       "outcome-first route mismatch" => "Stop the lane before editing when there is a route mismatch.",
+      "outcome-first stops otherwise valid work" => "Stop otherwise valid work when a route mismatch occurs.",
+      "outcome-first halts otherwise valid work" => "Halt otherwise valid work when a route mismatch occurs.",
       "outcome-first relaunch before route mismatch" => "Require relaunch before editing when there is a route mismatch.",
       "outcome-first different observed route" => "Block execution whenever there is a different observed route.",
       "outcome-first UNKNOWN observed tuple" => "Disqualify the lane when an `UNKNOWN` observed tuple appears.",
@@ -1268,6 +1272,8 @@ class ModelRoutingContractTest < Minitest::Test
 
     [
       "A route mismatch never blocks execution before any edit begins.",
+      "A route mismatch never stops otherwise valid work.",
+      "A route mismatch does not halt otherwise valid work.",
       "An `UNKNOWN` observed tuple is not a condition that disqualifies the lane before any edit begins.",
       "A route mismatch does not block execution before edits.",
       "A route mismatch should not stop the lane before edits.",
@@ -1310,6 +1316,8 @@ class ModelRoutingContractTest < Minitest::Test
       "Launch would not be stopped when a route mismatch occurs.",
       "Review could not be prevented when an inherited route occurs.",
       "A route mismatch occurs. Launch is blocked only if an independent risk gate blocks execution.",
+      "Do not stop otherwise valid work when a route mismatch occurs.",
+      "Never halt otherwise valid work when a route mismatch occurs.",
       "A route mismatch occurs. Launch must be blocked only if an independent scope gate blocks execution.",
       "A route mismatch means review and audit are not blocked.",
       "Launch must not be blocked when a route mismatch occurs.",
@@ -1365,6 +1373,8 @@ class ModelRoutingContractTest < Minitest::Test
       "Only an independent evidence gate blocks execution when a different route occurs.",
       "Only an independent authority gate blocks execution when an UNKNOWN model occurs.",
       "A route mismatch stops the lane only if an independent risk gate blocks.",
+      "A route mismatch stops otherwise valid work only if an independent risk gate blocks execution.",
+      "A route mismatch halts otherwise valid work only if an independent scope gate blocks execution.",
       "A route mismatch stops the lane only if an independent scope gate blocks.",
       "A route mismatch stops the lane only if an independent evidence gate blocks.",
       "A route mismatch stops the lane only if an independent authority gate blocks.",
