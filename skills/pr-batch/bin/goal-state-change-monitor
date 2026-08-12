@@ -309,7 +309,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
       persist_state(state_path, previous)
       legacy_digest_migrated = false
       recognized_acknowledgement = true
-    elsif previous && probe_sequence <= previous.fetch("probe_sequence") &&
+    elsif previous && probe_sequence == previous.fetch("probe_sequence") &&
           previous.dig("last_decision", "wake_parent") == true &&
           previous.dig("last_decision", "wake_id") == acknowledged_wake_id
       recognized_acknowledgement = true
@@ -346,7 +346,8 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   terminal_observation_supersedes_pending = pending_wake && terminal_observation && previous &&
                                             probe_sequence > previous.fetch("probe_sequence") &&
                                             (pending_wake.dig("decision", "action") != terminal_action ||
-                                             previous.fetch("fingerprint") != fingerprint)
+                                             previous.fetch("fingerprint") != fingerprint ||
+                                             capability == "unsupported")
   if pending_wake && !terminal_observation_supersedes_pending
     pending_decision = pending_wake.fetch("decision")
     decision = pending_decision.merge(

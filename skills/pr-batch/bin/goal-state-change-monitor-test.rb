@@ -1728,6 +1728,52 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_newer_dependency_terminal_capability_loss_supersedes_the_pending_wake
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      terminal_state = { "result" => "failed" }
+      first, first_stderr, first_status = run_helper(
+        state_path,
+        observation(
+          "dependency_status" => "terminal",
+          "blocker_state" => terminal_state,
+          "probe_sequence" => 1,
+          "observed_at" => "2026-08-09T00:15:00Z"
+        )
+      )
+      assert first_status.success?, first_stderr
+      assert_equal "stop-dependency-terminal", first.fetch("action")
+
+      resume_instruction = "Resume task thread-393 manually after restoring watcher support."
+      second, second_stderr, second_status = run_helper(
+        state_path,
+        observation(
+          "capability" => "unsupported",
+          "dependency_status" => "terminal",
+          "blocker_state" => terminal_state,
+          "resume_instruction" => resume_instruction,
+          "probe_sequence" => 2,
+          "observed_at" => "2026-08-09T00:30:00Z"
+        )
+      )
+
+      assert second_status.success?, second_stderr
+      assert_equal "manual-resume-required", second.fetch("action")
+      refute second.fetch("wake_parent")
+      assert_equal "dependency-terminal-while-unsupported", second.dig("handoff", "reason")
+      assert_equal terminal_state, second.dig("handoff", "blocker_state")
+      assert_equal resume_instruction, second.dig("handoff", "resume_instruction")
+
+      persisted = JSON.parse(File.read(state_path))
+      refute persisted.key?("pending_wake")
+      assert_equal "unsupported", persisted.fetch("capability")
+      assert_equal 2, persisted.fetch("probe_sequence")
+      assert_equal second.fetch("handoff"), persisted.dig("last_decision", "handoff")
+    end
+  end
+
   def test_delayed_acknowledgements_remain_idempotent_after_later_wakes
     Dir.mktmpdir do |directory|
       state_path = File.join(directory, "monitor.json")
@@ -1769,6 +1815,36 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert_equal "suppress-acknowledgement-retry", retried.fetch("action")
       refute retried.fetch("wake_parent")
       assert_equal persisted_before_retry, File.read(state_path)
+    end
+  end
+
+  def test_last_wake_retry_requires_the_original_probe_sequence_and_evidence
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      wake_observation = observation("blocker_state" => { "value" => 1 }, "probe_sequence" => 1)
+      wake, wake_stderr, wake_status = run_helper(state_path, wake_observation)
+      assert wake_status.success?, wake_stderr
+      acknowledge_wake(state_path, wake_observation, wake)
+
+      exact_retry, exact_retry_stderr, exact_retry_status = run_helper(
+        state_path,
+        wake_observation.merge("acknowledged_wake_id" => wake.fetch("wake_id"))
+      )
+      assert exact_retry_status.success?, exact_retry_stderr
+      assert_equal "suppress-acknowledgement-retry", exact_retry.fetch("action")
+      refute exact_retry.fetch("wake_parent")
+
+      persisted_before_unrelated_retry = File.read(state_path)
+      unrelated, unrelated_stderr, unrelated_status = run_helper(
+        state_path,
+        observation("acknowledged_wake_id" => wake.fetch("wake_id"))
+      )
+      assert_nil unrelated
+      refute unrelated_status.success?
+      assert_includes unrelated_stderr, '"reason":"invalid-wake-acknowledgement"'
+      assert_equal persisted_before_unrelated_retry, File.read(state_path)
     end
   end
 
