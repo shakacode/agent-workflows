@@ -347,6 +347,8 @@ module PushDownstream
 
   def load_presets(path)
     YAML.safe_load(File.read(path), aliases: false) || {}
+  rescue Psych::Exception => e
+    raise "invalid seam presets: #{e.message.lines.first.to_s.strip}"
   end
 
   def resolve_contract(repo, presets)
@@ -1234,7 +1236,11 @@ module PushDownstream
       end
 
       local_branch_head = publisher_local_ref_head(clone, "HEAD")
-      unless local_branch_head == remote_branch_head
+      if local_branch_head == remote_branch_head
+        unless publisher_assert_base(repo, expected_base_sha)
+          return publisher_failure(repo, "consumer base moved before PR confirmation")
+        end
+      else
         unless publisher_remote_ref_head(clone, repo.fetch(:base_branch)) == expected_base_sha
           return publisher_failure(repo, "consumer base moved before publish")
         end
@@ -1421,6 +1427,21 @@ module PushDownstream
     publisher_update_refs(repo, updates)
   end
 
+  def publisher_assert_base(repo, expected_base_sha)
+    return false unless expected_base_sha.is_a?(String) && expected_base_sha.match?(/\A[0-9a-f]{40}\z/)
+
+    publisher_update_refs(
+      repo,
+      [{
+        name: "refs/heads/#{repo.fetch(:base_branch)}",
+        before: expected_base_sha,
+        after: expected_base_sha
+      }]
+    )
+  rescue KeyError, RuntimeError, SystemCallError
+    false
+  end
+
   def publisher_delete_staging_ref(repo, staging, expected_head)
     deleted = publisher_update_refs(
       repo,
@@ -1521,22 +1542,29 @@ module PushDownstream
   end
 
   def publisher_desired_managed_state!(clone, temporary_root, contract, expected_base_sha, expected_paths)
-    desired = clone_destination!(temporary_root, "desired-state")
-    added = publisher_git(clone, "worktree", "add", "--detach", desired, expected_base_sha)
-    raise "audited desired state worktree could not be created" unless added
+    Dir.mktmpdir("push-downstream-desired-state-", temporary_root) do |workspace|
+      safe_workspace = clone_destination!(temporary_root, File.basename(workspace))
+      raise "desired state workspace escaped the temporary root" unless safe_workspace == File.expand_path(workspace)
 
-    validate_managed_scaffold_paths!(desired)
-    reconcile_scaffold(desired, contract)
-    unless expected_paths.empty? || publisher_git(desired, "add", "--all", "--", *expected_paths)
-      raise "audited desired managed paths could not be staged"
+      desired = clone_destination!(safe_workspace, "worktree")
+      added = publisher_git(clone, "worktree", "add", "--detach", desired, expected_base_sha)
+      raise "audited desired state worktree could not be created" unless added
+
+      begin
+        validate_managed_scaffold_paths!(desired)
+        reconcile_scaffold(desired, contract)
+        unless expected_paths.empty? || publisher_git(desired, "add", "--all", "--", *expected_paths)
+          raise "audited desired managed paths could not be staged"
+        end
+
+        state = publisher_index_managed_state(desired, expected_paths)
+        raise "audited desired managed content could not be inspected" if state.nil?
+
+        state
+      ensure
+        publisher_git(clone, "worktree", "remove", "--force", desired)
+      end
     end
-
-    state = publisher_index_managed_state(desired, expected_paths)
-    raise "audited desired managed content could not be inspected" if state.nil?
-
-    state
-  ensure
-    publisher_git(clone, "worktree", "remove", "--force", desired) if added
   end
 
   def publisher_index_managed_state(clone, expected_paths)

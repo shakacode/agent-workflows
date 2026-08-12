@@ -22,7 +22,8 @@ class DownstreamSeamAuditWorkflowTest < Minitest::Test
       "bin/agent-workflow-seam-doctor",
       "bin/push-downstream*",
       "downstream.yml",
-      "seam-presets.yml"
+      "seam-presets.yml",
+      "skills/secure-github-actions/lib/secure_github_actions_scanner.rb"
     ]
     expected_paths.each { |path| assert_includes push.fetch("paths"), path }
     refute_empty @triggers.fetch("schedule")

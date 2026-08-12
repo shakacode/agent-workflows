@@ -286,6 +286,41 @@ class PushDownstreamPublisherReportTest < Minitest::Test
     end
   end
 
+  def test_publisher_fails_closed_with_a_clear_error_for_malformed_seam_presets
+    with_clean_source do |root, source_sha|
+      Dir.mktmpdir("push-downstream-publisher-malformed-presets") do |dir|
+        config = File.join(dir, "downstream.yml")
+        presets = File.join(dir, "seam-presets.yml")
+        File.write(config, <<~YAML)
+          defaults:
+            owner: local
+            base_branch: main
+            pr_branch: agent-workflows/seam-sync
+          repos:
+            - repo: consumer
+        YAML
+        File.write(presets, "presets:\n  broken: [\n")
+        drifted = publisher_consumer("local/consumer", "drifted", ["AGENTS.md"])
+
+        with_report(publisher_report(source_sha, consumers: [drifted])) do |path|
+          _out, err = capture_io do
+            @status = PushDownstream.run_publisher(
+              path,
+              config,
+              presets,
+              source_sha: source_sha,
+              source_root: root
+            )
+          end
+
+          assert_equal 1, @status
+          assert_includes err, "publisher failed closed: invalid seam presets:"
+          refute_includes err, "Psych::SyntaxError"
+        end
+      end
+    end
+  end
+
   def test_publisher_syncs_only_drifted_consumers_and_never_churns_clean_consumers
     with_clean_source do |root, source_sha|
       Dir.mktmpdir("push-downstream-publisher-selection") do |dir|
@@ -541,6 +576,27 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     end
   end
 
+  def test_consumer_named_desired_state_uses_a_noncolliding_desired_worktree
+    Dir.mktmpdir("push-downstream-publisher-desired-state-name") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote).merge(repo: "desired-state", nwo: "local/desired-state")
+      audit_entry = audit(repo)
+      open_pr = ->(*) { { ok: true, url: nil, base: nil } }
+      ensure_pr = ->(*) { true }
+
+      with_module_stub(PushDownstream, :publisher_open_pr_state, open_pr) do
+        with_module_stub(PushDownstream, :publisher_ensure_pull_request, ensure_pr) do
+          _out, err = capture_io do
+            @status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
+          end
+          assert @status, err
+        end
+      end
+
+      assert bare_ref_or_nil(remote, repo.fetch(:pr_branch))
+    end
+  end
+
   def test_publisher_branch_compare_and_swap_handles_present_and_absent_races_without_force
     scenarios = {
       present: { initial: :present, race: nil, succeeds: true },
@@ -651,6 +707,55 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
       assert_nil bare_ref_or_nil(remote, repo.fetch(:pr_branch))
       assert_empty git!(remote, "for-each-ref", "--format=%(refname)",
                         "refs/heads/agent-workflows/staging/").lines
+      refute(File.readlines(gh_log, chomp: true).any? { |call| call.start_with?("pr create ") })
+      push_calls = File.readlines(git_log, chomp: true).grep(/(?:\A| -C \S+ )push /)
+      refute(push_calls.any? { |call| call.include?("--force") })
+    end
+  end
+
+  def test_unchanged_publisher_branch_rejects_a_base_race_before_pr_creation
+    Dir.mktmpdir("push-downstream-publisher-unchanged-base-race") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      audit_entry = audit(repo)
+      fake_bin, gh_log, git_log = install_cli_stubs(dir)
+      previous_path = ENV.fetch("PATH")
+      ENV["PATH"] = "#{fake_bin}:#{previous_path}"
+
+      begin
+        _first_out, first_err = capture_io do
+          @first_status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
+        end
+        target_before_race = bare_ref(remote, repo.fetch(:pr_branch))
+        FileUtils.rm_f(File.join(dir, "pr-state"))
+        File.write(gh_log, "")
+        File.write(git_log, "")
+
+        original_update = PushDownstream.method(:publisher_update_refs)
+        fixture_advance = method(:advance_base)
+        raced = false
+        inject_base_race = lambda do |target_repo, updates|
+          unless raced
+            fixture_advance.call(remote, dir)
+            raced = true
+          end
+          original_update.call(target_repo, updates)
+        end
+
+        with_module_stub(PushDownstream, :publisher_update_refs, inject_base_race) do
+          _second_out, second_err = capture_io do
+            @second_status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
+          end
+          assert_includes second_err, "consumer base moved before PR confirmation"
+        end
+      ensure
+        ENV["PATH"] = previous_path
+      end
+
+      assert @first_status, first_err
+      refute @second_status
+      assert raced
+      assert_equal target_before_race, bare_ref(remote, repo.fetch(:pr_branch))
       refute(File.readlines(gh_log, chomp: true).any? { |call| call.start_with?("pr create ") })
       push_calls = File.readlines(git_log, chomp: true).grep(/(?:\A| -C \S+ )push /)
       refute(push_calls.any? { |call| call.include?("--force") })

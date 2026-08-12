@@ -9,6 +9,7 @@ on:
       - bin/push-downstream*
       - downstream.yml
       - seam-presets.yml
+      - skills/secure-github-actions/lib/secure_github_actions_scanner.rb
   schedule:
     - cron: "17 13 * * 1"
   workflow_dispatch:
