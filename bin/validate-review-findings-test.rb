@@ -9,6 +9,15 @@ SCRIPT = File.expand_path("validate-review-findings", __dir__)
 load SCRIPT
 
 class ValidateReviewFindingsTest < Minitest::Test
+  RECEIPT_SOURCES = %w[
+    autoreview
+    adversarial-pr-review
+    continuous-evaluation-loop
+    post-merge-audit
+    address-review
+    structural-review
+    fix-flaky-tests
+  ].freeze
   FIXTURE_ROOT = File.expand_path("../test/fixtures/review-findings", __dir__)
   PROVENANCE_GUIDANCE_PATHS = %w[
     skills/adversarial-pr-review/SKILL.md
@@ -417,18 +426,32 @@ class ValidateReviewFindingsTest < Minitest::Test
     ]
 
     assert_includes ValidateReviewFindings.validate_document(document, "report"),
-                    "report: review_receipt.source must be one of: autoreview, adversarial-pr-review, " \
-                    "continuous-evaluation-loop, post-merge-audit, address-review"
+                    "report: review_receipt.source must be one of: #{RECEIPT_SOURCES.join(', ')}"
   end
 
   def test_named_review_workflows_are_valid_receipt_sources
-    %w[adversarial-pr-review continuous-evaluation-loop post-merge-audit address-review].each do |source|
+    (RECEIPT_SOURCES - ["autoreview"]).each do |source|
       document = fixture_document("autoreview-receipt-valid.json")
       document.fetch("review_receipt")["source"] = source
       document.fetch("review_findings").first["source"] = source
 
       assert_empty ValidateReviewFindings.validate_document(document, source), source
     end
+  end
+
+  def test_receipt_source_allowlist_matches_declared_sources
+    assert_equal RECEIPT_SOURCES, ValidateReviewFindings::RECEIPT_SOURCES
+  end
+
+  def test_docs_receipt_source_list_matches_validator_allowlist
+    path = File.expand_path("../docs/review-finding-schema.md", __dir__)
+    text = File.read(path)
+    source_line = text.lines.find { |line| line.start_with?("Allowed receipt sources:") }
+
+    assert source_line, "docs must enumerate allowed receipt sources"
+    documented_sources = source_line.scan(/`([^`]+)`/).flatten
+
+    assert_equal RECEIPT_SOURCES, documented_sources
   end
 
   def test_receipt_status_fields_are_required
