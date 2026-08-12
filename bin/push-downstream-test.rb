@@ -1418,6 +1418,84 @@ end
 class PushDownstreamAuditTest < Minitest::Test
   CONTRACT = PushDownstreamScaffoldTest::CONTRACT
 
+  def test_run_audit_prints_mixed_fleet_report_and_aggregates_exit_codes
+    Dir.mktmpdir("push-downstream-run-audit") do |dir|
+      clean_dir = File.join(dir, "clean")
+      drifted_dir = File.join(dir, "drifted")
+      FileUtils.mkdir_p([clean_dir, drifted_dir])
+      clean_remote, clean_seed = seed_bare_consumer(clean_dir)
+      drifted_remote, = seed_bare_consumer(drifted_dir)
+      PushDownstream.reconcile_scaffold(clean_seed, CONTRACT)
+      system("git", "-C", clean_seed, "add", ".")
+      system("git", "-C", clean_seed, "commit", "-m", "adopt seam", out: File::NULL)
+      system("git", "-C", clean_seed, "push", "origin", "main", out: File::NULL)
+
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        defaults:
+          owner: local
+          base_branch: main
+          pr_branch: agent-workflows/seam-sync
+        repos:
+          - { repo: clean }
+          - { repo: drifted }
+          - { repo: blocked }
+      YAML
+      remotes = {
+        "clean" => clean_remote,
+        "drifted" => drifted_remote,
+        "blocked" => File.join(dir, "missing.git")
+      }
+
+      with_module_stub(PushDownstream, :resolve_contract, ->(_repo, _presets) { CONTRACT }) do
+        with_module_stub(PushDownstream, :repo_url, ->(repo) { remotes.fetch(repo.fetch(:repo)) }) do
+          mixed_output, = capture_io do
+            @mixed_status = PushDownstream.run_audit(
+              config, File.join(dir, "missing-presets.yml"), only: nil, include_disabled: false
+            )
+          end
+          clean_output, = capture_io do
+            @clean_status = PushDownstream.run_audit(
+              config, File.join(dir, "missing-presets.yml"), only: ["clean"], include_disabled: false
+            )
+          end
+
+          mixed = JSON.parse(mixed_output)
+          assert_equal 1, @mixed_status
+          assert_equal PushDownstream::AUDIT_SCHEMA, mixed.fetch("schema")
+          assert_equal PushDownstream::AUDIT_CONTRACT, mixed.fetch("contract")
+          assert_equal PushDownstream::AUDIT_SCOPE, mixed.fetch("scope")
+          assert_equal %w[consumers contract schema scope source summary], mixed.keys.sort
+          assert_equal %w[repo sha worktree_clean], mixed.fetch("source").keys.sort
+          assert_equal({ "total" => 3, "clean" => 1, "drifted" => 1, "blocked" => 1 },
+                       mixed.fetch("summary"))
+
+          consumers = mixed.fetch("consumers").to_h { |consumer| [consumer.fetch("repo"), consumer] }
+          assert_equal %w[local/blocked local/clean local/drifted], consumers.keys.sort
+          assert_equal "clean", consumers.fetch("local/clean").fetch("status")
+          assert_equal [], consumers.fetch("local/clean").fetch("seam_doctor_issues")
+          assert_equal [], consumers.fetch("local/clean").fetch("changed_managed_paths")
+          assert_equal [], consumers.fetch("local/clean").fetch("follow_ups")
+          assert_equal "drifted", consumers.fetch("local/drifted").fetch("status")
+          assert_kind_of Array, consumers.fetch("local/drifted").fetch("seam_doctor_issues")
+          assert_kind_of Array, consumers.fetch("local/drifted").fetch("changed_managed_paths")
+          assert_kind_of Array, consumers.fetch("local/drifted").fetch("follow_ups")
+          blocked = consumers.fetch("local/blocked")
+          assert_equal "blocked", blocked.fetch("status")
+          assert_equal PushDownstream::AUDIT_UNKNOWN, blocked.fetch("base_sha")
+          PushDownstream::AUDIT_POLYMORPHIC_FIELDS.each do |field|
+            assert_equal PushDownstream::AUDIT_UNKNOWN, blocked.fetch(field)
+          end
+
+          clean = JSON.parse(clean_output)
+          assert_equal 0, @clean_status
+          assert_equal({ "total" => 1, "clean" => 1, "drifted" => 0, "blocked" => 0 },
+                       clean.fetch("summary"))
+        end
+      end
+    end
+  end
+
   def test_audit_reports_drifted_consumer_with_exact_changed_managed_paths
     Dir.mktmpdir("push-downstream-audit") do |dir|
       remote, = seed_bare_consumer(dir)
