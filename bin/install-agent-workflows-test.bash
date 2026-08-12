@@ -235,6 +235,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
     provenance_fingerprint = metadata.fetch("managed_pack_doc_copy_fingerprints")["execution-provenance-schema.md"]
     abort metadata.inspect unless metadata["host"] == "codex" &&
                                   metadata["mode"] == "copy" &&
+                                  metadata["delivery_mode"] == "flat" &&
                                   metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
                                   provenance_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/)
   ' "$target/.agent-workflows-install.json"
@@ -1676,6 +1677,66 @@ test_invalid_recorded_delivery_mode_fails_before_mutation() {
   [[ ! -e "$target/skills" ]] || fail "invalid recorded delivery mode created a flat skill layout"
 }
 
+test_corrupt_install_metadata_fails_closed_with_recovery_guidance() {
+  local tmp target output status metadata_before target_paths_before variant
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target"
+  printf '{"delivery_mode":' > "$target/.agent-workflows-install.json"
+  printf 'preserve me\n' > "$target/sentinel.txt"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+
+  for variant in omitted explicit; do
+    set +e
+    if [[ "$variant" = omitted ]]; then
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+    else
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+    fi
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "corrupt install metadata unexpectedly allowed the $variant delivery-mode path"
+    assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+    assert_contains "$output" "$target/.agent-workflows-install.json"
+    assert_contains "$output" "Restore a valid backup"
+    assert_contains "$output" "new empty target"
+    assert_contains "$output" "--delivery-mode flat|plugin-companion"
+    assert_not_contains "$output" "or remove"
+    [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+      fail "corrupt metadata failure changed install metadata"
+    [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+      fail "corrupt metadata failure changed the target tree"
+    [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "corrupt metadata failure created install lock"
+    [[ ! -e "$target/skills" ]] || fail "corrupt metadata failure created a flat skill layout"
+  done
+}
+
+test_legacy_install_metadata_without_delivery_mode_remains_flat() {
+  local tmp target
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target"
+  ruby -rjson -e '
+    path, source = ARGV
+    File.write(path, JSON.pretty_generate({
+      "host" => "codex",
+      "mode" => "copy",
+      "source" => source,
+      "source_revision" => "0000000000000000000000000000000000000000"
+    }) + "\n")
+  ' "$target/.agent-workflows-install.json" "$ROOT"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+
+  assert_file "$target/skills/pr-batch/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$target/.agent-workflows-install.json"
+}
+
 test_companion_to_flat_refuses_unowned_same_named_skill() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -2542,6 +2603,8 @@ main() {
     test_repeat_companion_install_blocks_native_skill_removed_from_current_source
     test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots
     test_invalid_recorded_delivery_mode_fails_before_mutation
+    test_corrupt_install_metadata_fails_closed_with_recovery_guidance
+    test_legacy_install_metadata_without_delivery_mode_remains_flat
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
     test_codex_host_install_writes_helpers_and_metadata

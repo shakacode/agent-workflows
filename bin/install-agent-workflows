@@ -168,11 +168,44 @@ installed_metadata_value() {
   [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || return 1
 
   ruby -rjson -e '
-    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    begin
+      metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    rescue JSON::ParserError, SystemCallError
+      exit 65
+    end
+    exit 65 unless metadata.is_a?(Hash)
     value = metadata[ARGV.fetch(1)]
     exit 1 if value.nil? || value.to_s.empty?
     puts value
   ' "$metadata_path" "$key"
+}
+
+resolve_delivery_mode() {
+  local metadata_path="$target/$metadata_name"
+  local recorded_mode metadata_status
+
+  if [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]; then
+    [[ -n "$delivery_mode" ]] || delivery_mode="flat"
+    return 0
+  fi
+  if [[ -L "$metadata_path" || ! -f "$metadata_path" ]]; then
+    metadata_status=65
+  else
+    set +e
+    recorded_mode="$(installed_metadata_value delivery_mode 2>/dev/null)"
+    metadata_status=$?
+    set -e
+  fi
+
+  case "$metadata_status" in
+    0) [[ -n "$delivery_mode" ]] || delivery_mode="$recorded_mode" ;;
+    1) [[ -n "$delivery_mode" ]] || delivery_mode="flat" ;;
+    *)
+      echo "CORRUPT_INSTALL_METADATA: cannot read valid install metadata from $metadata_path." >&2
+      echo "Restore a valid backup of that file. If none exists, preserve the corrupt target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
+      return 65
+      ;;
+  esac
 }
 
 validate_delivery_mode() {
@@ -741,10 +774,8 @@ validate_delivery_mode "--delivery-mode"
 resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
-if [[ -z "$delivery_mode" ]]; then
-  delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
-  validate_delivery_mode "Installed metadata delivery_mode"
-fi
+resolve_delivery_mode
+validate_delivery_mode "Installed metadata delivery_mode"
 
 if [[ "$delivery_mode" = "plugin-companion" ]]; then
   validate_scanner_companion_ancestors || exit 1
