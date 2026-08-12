@@ -87,6 +87,15 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_match(/malformed or invalid semantic assessment/, result.fetch("evidence_failures").first)
   end
 
+  def test_live_collection_returns_structured_unknown_when_parser_error_contains_invalid_utf8
+    result = evaluate(invalid_utf8_semantic_syntax: true) do |base_sha|
+      evidence(base_sha:, files: files(1))
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_predicate result.fetch("evidence_failures").first, :valid_encoding?
+  end
+
   def test_portable_size_and_commit_boundaries_are_inclusive_human_gates
     cases = {
       "changed-files-limit" => evidence_override(files: files(30)),
@@ -1134,7 +1143,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
 
   def invoke(root:, calibration_path:, stdin_data: "", evaluation: nil, semantic_path: nil,
              helper_provenance: :trusted_base, subprocess_env: {}, gh_invalid_utf8_field: nil,
-             invalid_utf8_semantic_field: nil)
+             invalid_utf8_semantic_field: nil, invalid_utf8_semantic_syntax: false)
     command = [
       "ruby",
       SCRIPT,
@@ -1160,7 +1169,9 @@ class AutonomousMergeEligibilityTest < Minitest::Test
         File.write(objective_path, JSON.generate(evaluation.fetch("objective"), ascii_only: true))
         unless semantic_path
           semantic_json = JSON.generate(evaluation.fetch("semantic_assessment"))
-          if invalid_utf8_semantic_field
+          if invalid_utf8_semantic_syntax
+            semantic_json = "{\"x\":".b + "\xFF}".b
+          elsif invalid_utf8_semantic_field
             semantic_value = evaluation.fetch("semantic_assessment").fetch(invalid_utf8_semantic_field)
             semantic_json = semantic_json.b.sub(semantic_value.b, "\xFF".b)
           end
@@ -1190,13 +1201,14 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def evaluate(reviewed_heads_mode: "shadow", policy_yaml: nil, subprocess_env: {},
-               gh_invalid_utf8_field: nil, invalid_utf8_semantic_field: nil)
+               gh_invalid_utf8_field: nil, invalid_utf8_semantic_field: nil,
+               invalid_utf8_semantic_syntax: false)
     Dir.mktmpdir("autonomous-merge-eligibility-test") do |root|
       calibration_path = write_calibration(root, reviewed_heads_mode:)
       base_sha = initialize_trusted_base(root, policy_yaml:, include_runtime: true)
       evaluation = yield(base_sha)
       invoke(root:, calibration_path:, evaluation:, subprocess_env:, gh_invalid_utf8_field:,
-             invalid_utf8_semantic_field:)
+             invalid_utf8_semantic_field:, invalid_utf8_semantic_syntax:)
     end
   end
 

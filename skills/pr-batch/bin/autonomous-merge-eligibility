@@ -25,6 +25,7 @@ end.parse!
 @verified_runtime_trust = nil
 
 def emit_unknown(failure, head_sha: "UNKNOWN", policy_provenance: "UNKNOWN")
+  failure = failure.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
   runtime_trust = @verified_runtime_trust
   helper_provenance = runtime_trust&.accepted ? runtime_trust.provenance : "UNKNOWN"
   helper_trust = if runtime_trust&.accepted
