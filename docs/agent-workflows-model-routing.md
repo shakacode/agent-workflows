@@ -69,11 +69,13 @@ Sol/xhigh is reserved for the listed exceptions; it is not the routine
 multi-lane coordinator default. Task-specific routing still follows ambiguity,
 consequence, and verification strength.
 
-Routine bounded planning, dispatch bookkeeping, status reconciliation, evidence
-collation, and routine coordination use the `balanced`/high class. Name the
-exact `Terra/high` pair only when the active host has verified that pair;
-otherwise preserve the requested preference and record host-observed values as
-`UNKNOWN` when unavailable.
+For multiple interacting targets, routine bounded planning and coordination use
+the `balanced`/high class. Mechanical dispatch bookkeeping, status
+reconciliation, and evidence collation may also use that worker class, but do
+not change a single-target coordinator's Sol/high default. Name the exact
+`Terra/high` pair only when the active host has verified that pair; otherwise
+preserve the requested preference and record host-observed values as `UNKNOWN`
+when unavailable.
 
 Reserve Sol/xhigh for a pinned high-risk trigger, a bounded plan challenge,
 repeated credible failures, or an evidence-backed `MODEL_ESCALATION_REQUEST`.
