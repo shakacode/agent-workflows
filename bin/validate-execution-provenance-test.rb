@@ -393,6 +393,25 @@ class ValidateExecutionProvenanceTest < Minitest::Test
     end
   end
 
+  def test_unknown_sentinel_rejects_unicode_whitespace_wrappers_but_preserves_nonblank_controls
+    ["\u00A0", "\u2003", "\u202F", "\u3000", "\u0085"].each do |wrapper|
+      document = valid_document
+      document.fetch("execution_provenance")["session_id"] = "#{wrapper}UNKNOWN#{wrapper}"
+
+      assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
+                      "receipt: execution_provenance.session_id must use literal UNKNOWN when unknown",
+                      "U+#{wrapper.ord.to_s(16).upcase}"
+    end
+
+    ["\u200B", "\u200C", "\u2060", "\uFEFF"].each do |control|
+      document = valid_document
+      document.fetch("execution_provenance")["session_id"] = "#{control}UNKNOWN#{control}"
+
+      assert_empty ValidateExecutionProvenance.validate_document(document, "receipt"),
+                   "U+#{control.ord.to_s(16).upcase}"
+    end
+  end
+
   def test_lane_identity_fields_reject_literal_unknown
     document = valid_document
     receipt = document.fetch("execution_provenance")

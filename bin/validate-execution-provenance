@@ -305,7 +305,8 @@ module ValidateExecutionProvenance
   def unknown_sentinel_variant?(value)
     return false unless value.is_a?(String) && value != "UNKNOWN"
 
-    value.strip.unicode_normalize(:nfkc).casecmp?("UNKNOWN")
+    normalized = value.unicode_normalize(:nfkc)
+    normalized.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "").casecmp?("UNKNOWN")
   end
 
   def full_git_object_id?(value)
