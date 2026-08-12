@@ -20,14 +20,6 @@ coordination_backend_contract:
   version: 1
   allowed_identifiers:
     - "agent-coord private backend"
-# Ordinary implementation uses one user-visible task, one repository-qualified
-# canonical issue/existing PR, one lane, and one implementation PR per lane.
-# Keep the threshold disabled until #398 receipts support repository calibration.
-canonical_task_control:
-  version: 1
-  default_topology: ordinary
-  context_compaction_threshold: "n/a"
-  threshold_source: "#398 execution-provenance receipts required"
 agent_claimed_label: "agent-claimed"
 changelog: "CHANGELOG.md"
 benchmark_labels: "n/a"

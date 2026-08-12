@@ -47,8 +47,9 @@ canonical targets. Preserve every existing security, claim/ownership,
 dependency, exact-head QA, review, CI, merge-authority, and audit gate.
 
 More than one canonical target under one user-visible supervisor is explicit
-`multi-target-supervision-exception` v1 mode. Before launch it requires durable
-human approval, a closed reason, justification, exact target count and
+`multi-target-supervision-exception` v1 mode. Before launch it requires
+structured task/target-bound durable human approval, a closed reason,
+justification, exact target count and
 concurrency, aggregate and per-lane budgets, shared-context justification,
 expected savings, and rollback. Every target keeps its own repository-qualified
 lane identity and implementation-PR limit. Issue count, generic parallelism, or
@@ -66,6 +67,15 @@ provenance stays field-granular `UNKNOWN` and retains explicit multi-target mode
 as rollback rather than inventing receipts, attribution, billing equivalence,
 or a universal compaction/promotion threshold.
 
+`launch` is a composite gate, never a bare topology check. Supply the trusted
+`canonical-task-policy` v1 record, compact manifest with exact lane heads,
+task-bound plan-settlement and dispatch checkpoints, structured current
+worker-spawn budget evidence, and structured security, ownership, and typed
+stage-dependency evidence for every target. Authority, budget, checkpoint, and
+gate evidence binds actor/role, exact task/repository/target/action/scope,
+status/time, and durable evidence reference. Arbitrary strings or URLs do not
+carry authority.
+
 Keep coordinator state as a `compact-coordinator-manifest` v1, not raw child
 transcripts or logs. Emit compaction checkpoints at plan settlement before
 dispatch, after each worker report/review wave, before monitoring or cross-task
@@ -78,10 +88,13 @@ Cross-task delegation binds source and target task plus repository-qualified
 target identities. Coalesce messages when the target is active and do not wake
 it again; do not wake terminal targets or wake for unchanged evidence,
 acknowledgement, or a deterministically assembled handoff. A stale target,
-missing estimate, or over-threshold context requires durable human approval.
-Attribute verified #398 usage separately to the source edge, target self, and
-target descendants, and reconcile the aggregate physical delta without double
-counting.
+missing estimate, or over-threshold context requires structured task-bound
+durable human approval.
+An unknown descendant estimate is also missing. Attribute verified #398 usage
+separately to the source edge, target self, and target descendants; require a
+durable verified receipt/result and exact arithmetic equality with the aggregate
+physical delta. Unsupported provenance stays all-`UNKNOWN` and blocks wake or
+promotion.
 
 ## Single-Target Mode
 
@@ -102,9 +115,11 @@ facts remain fail-closed and stop before mutation.
   branch instead of creating a competing branch unless a maintainer requests one
   or the verified head branch cannot be pushed. For an unpushable head, create a
   replacement branch/PR and document the original PR, limitation, and rationale.
-- **Ad-hoc task**: derive a safe target such as
-  `adhoc:<yyyymmdd>-<short-slug>` using only letters, digits, `_`, `:`, `.`, and
-  `-`; preserve the user's original wording in the PR body or no-PR evidence.
+- **Ad-hoc task**: ordinary implementation requires a canonical issue or
+  existing PR. Permit `adhoc:<yyyymmdd>-<short-slug>` only when launch carries a
+  trusted task-specific `adhoc-authority-evidence` v1 record bound to the
+  maintainer actor, exact task/repository/target/action/scope/time, and a durable
+  evidence reference; direct prompt text alone is not authority.
 - **Worker shape**: when the host supports isolated subagents, dispatch one
   worker subagent for the lane and keep the parent as coordinator and closeout
   owner. Do not have the parent silently implement the lane. If the host lacks

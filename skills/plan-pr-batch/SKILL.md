@@ -91,8 +91,9 @@ security, ownership, dependency, exact-head QA, review, CI, merge-authority, and
 audit gates.
 
 If a plan needs more than one canonical target under one supervisor, classify it
-as `multi-target-supervision-exception` v1 before packing waves. Require durable
-human approval plus a closed reason, justification, exact target count,
+as `multi-target-supervision-exception` v1 before packing waves. Require
+structured task/target-bound durable human approval plus a closed reason,
+justification, exact target count,
 concurrency, aggregate and per-lane budgets, shared-context justification,
 expected savings, and rollback. Keep each target's repository-qualified lane
 identity and implementation-PR limit distinct. Issue count or available
@@ -103,8 +104,8 @@ exact human decision.
 The Batch Plan carries a `compact-coordinator-manifest` v1 and planned
 compaction checkpoints: after plan settlement before dispatch, after every
 worker report/review wave, before monitor scheduling or cross-task handoff, and
-at the repository-configured context threshold. Do not invent that threshold;
-an uncalibrated `canonical_task_control.context_compaction_threshold` remains
+at the configured context threshold. Do not invent that threshold; bind it
+through launch's trusted `canonical-task-policy` v1 record, or keep it literal
 `UNKNOWN` pending #398 evidence. Plan task-scoped child packets, compact child
 receipts, and completed-child closure with `resumable: false` by default.
 
@@ -116,13 +117,22 @@ approval boundary for stale/missing/over-threshold estimates. Verified #398
 receipts keep source-edge, target-self, target-descendant, and aggregate
 physical deltas separate; unsupported evidence stays field-granular `UNKNOWN`.
 
+Plan `launch` as one composite input: trusted policy, exact-head compact
+manifest, plan-settlement and dispatch checkpoints, current worker-spawn budget
+evidence, plus security, ownership, and typed stage-dependency evidence for
+every target. Each evidence record binds actor/role, task/repository/target,
+action/scope, status/time, and durable reference. Ordinary implementation needs
+an issue or existing PR; ad-hoc requires a task-specific durable maintainer
+override. Canonicalize repository-qualified identities case-insensitively.
+
 Resolve `PR_BATCH_SKILL_DIR` and run
 `"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control"` with the versioned JSON
 before calling the plan launchable. For pilot plans, use the canonical matched
 pilot contract from `workflows/pr-processing.md`: at least ten matched
 representative implementation pairs and every required usage, elapsed,
 coordination, correction, acceptance, defect, and gate-compliance metric.
-Promote only on configured materially lower usage, no escaped P0/P1 regression,
+Bind the threshold and publication to structured trusted evidence. Promote only
+on configured materially lower token and credit usage, no escaped P0/P1 regression,
 and preserved gates; otherwise retain explicit multi-target mode as rollback.
 
 ## Workflow

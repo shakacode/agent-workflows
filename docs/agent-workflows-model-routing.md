@@ -448,13 +448,16 @@ A stronger coordinator route, more available context, or a high lane cap never
 justifies retaining multiple canonical targets under one supervisor.
 
 Any multi-target comparison uses the versioned exception contract from
-`workflows/pr-processing.md`: human approval, reason, target count, concurrency,
+`workflows/pr-processing.md`: structured task/target-bound human approval and
+#399 budget evidence, reason, target count, concurrency,
 aggregate/per-lane budgets, shared-context savings, and rollback. The matched
-pilot has at least ten representative pairs with matching task class and context
-topology and reports total tokens, credit equivalents, elapsed time, human
+pilot has at least ten representative pairs with distinct exact task/batch
+identities, matching task class/context facts, and verified #398 receipt/result
+evidence. It reports total tokens, credit equivalents, elapsed time, human
 coordination time, correction turns, first-pass acceptance, escaped P0/P1
 defects, and gate compliance for both arms. Promotion requires configured
-materially lower usage, no escaped P0/P1 regression, and no weakened gate
+materially lower token and credit usage with structured policy/publication
+evidence, no escaped P0/P1 regression, and no weakened gate
 compliance. Missing #398 receipts, unsupported observed execution, or any
 `UNKNOWN` criterion retains explicit multi-target mode as rollback; never infer
 a receipt, billing equivalence, or universal percentage from local cumulative

@@ -9,12 +9,19 @@ module CanonicalTaskControl
   module_function
 
   def run(input)
+    raise InvalidInput, "top-level JSON must be an object" unless input.is_a?(Hash)
+
     operation = input["operation"]
     input_keys = %w[contract version operation task]
+    input_keys.concat(%w[policy manifest lifecycle budget_gate typed_gates]) if operation == "launch"
     input_keys.concat(%w[manifest lifecycle children]) if operation == "accept_child_receipt"
     input_keys.concat(%w[manifest lifecycle budget_gate delegation]) if operation == "delegation"
     input_keys << "pilot" if operation == "pilot_evaluation"
     input_keys.concat(%w[budget_action budget_gate]) if operation == "budget_action"
+    if operation == "launch" && %w[policy manifest lifecycle budget_gate typed_gates].any? { |key| !input.key?(key) }
+      raise InvalidInput, "launch requires composite gate evidence"
+    end
+
     require_exact_keys!(input, input_keys)
     raise InvalidInput, "unsupported contract" unless input["contract"] == "canonical-task-control"
     raise InvalidInput, "unsupported version" unless input["version"] == 1
@@ -25,9 +32,11 @@ module CanonicalTaskControl
     task = input.fetch("task")
     task_keys = %w[id topology_mode targets lanes implementation_pr_limit]
     task_keys << "exception" if task.is_a?(Hash) && task["topology_mode"] == "multi_target_exception"
+    task_keys << "adhoc_override" if task.is_a?(Hash) && task.key?("adhoc_override")
     require_exact_keys!(task, task_keys)
     raise InvalidInput, "task.id must be known" unless known_string?(task["id"])
     raise InvalidInput, "implementation_pr_limit must be 1 per lane" unless task["implementation_pr_limit"] == 1
+
     validate_topology!(task)
 
     unknowns = []
@@ -36,31 +45,38 @@ module CanonicalTaskControl
     verdict = "allow"
     allowed_actions = [operation]
     wake_target = false
+    blockers = []
     pilot_result = {}
-    if operation == "accept_child_receipt"
-      validate_manifest!(input.fetch("manifest"))
-      unknowns.concat(validate_lifecycle!(input.fetch("lifecycle"), required_boundary: "review_wave"))
-      accepted_child_receipts, closed_children = validate_children!(input.fetch("children"), task)
-    elsif operation == "delegation"
-      validate_manifest!(input.fetch("manifest"))
+    case operation
+    when "launch"
+      validate_launch!(input, task)
+    when "accept_child_receipt"
+      validate_manifest!(input.fetch("manifest"), task: task, reject_unknown: true)
+      unknowns.concat(validate_lifecycle!(input.fetch("lifecycle"), required_boundaries: ["review_wave"], task: task))
+      accepted_child_receipts, closed_children = validate_children!(input.fetch("children"), task, input.fetch("manifest"))
+    when "delegation"
+      validate_manifest!(input.fetch("manifest"), task: task, reject_unknown: true)
       lifecycle = input.fetch("lifecycle")
-      unknowns.concat(validate_lifecycle!(lifecycle, required_boundary: "cross_task_handoff"))
-      validate_budget_gate!(input.fetch("budget_gate"))
+      unknowns.concat(validate_lifecycle!(lifecycle, required_boundaries: ["cross_task_handoff"], task: task))
+      validate_budget_gate!(input.fetch("budget_gate"), task: task, action: "delegation")
       delegation_decision = validate_delegation!(input.fetch("delegation"), task, lifecycle["context_threshold"])
       verdict = delegation_decision.fetch("verdict")
       allowed_actions = delegation_decision.fetch("allowed_actions")
       wake_target = delegation_decision.fetch("wake_target")
+      blockers.concat(delegation_decision.fetch("blockers"))
       unknowns.concat(delegation_decision.fetch("unknowns"))
-    elsif operation == "pilot_evaluation"
-      pilot_result = validate_pilot!(input.fetch("pilot"))
+    when "pilot_evaluation"
+      pilot_result = validate_pilot!(input.fetch("pilot"), task)
       verdict = pilot_result.fetch("pilot_verdict") == "promote_ordinary_default" ? "allow" : "block"
       allowed_actions = ["publish_pilot_result"]
       unknowns.concat(pilot_result.fetch("unknowns"))
-    elsif operation == "budget_action"
+      blockers << "pilot_criteria_not_satisfied" if verdict == "block"
+    when "budget_action"
       action = input.fetch("budget_action")
       allowed_budget_actions = %w[delegation resume worker_spawn retry review_wave]
       raise InvalidInput, "unsupported budget action" unless allowed_budget_actions.include?(action)
-      validate_budget_gate!(input.fetch("budget_gate"))
+
+      validate_budget_gate!(input.fetch("budget_gate"), task: task, action: action)
       allowed_actions = [action]
     end
 
@@ -71,37 +87,175 @@ module CanonicalTaskControl
       "topology_mode" => task.fetch("topology_mode"),
       "allowed_actions" => allowed_actions,
       "wake_target" => wake_target,
-      "blockers" => [],
+      "blockers" => blockers.uniq.sort,
       "unknowns" => unknowns.uniq.sort,
       "accepted_child_receipts" => accepted_child_receipts,
       "closed_children" => closed_children
     }.merge(pilot_result.reject { |key, _value| key == "unknowns" })
   end
 
-  def validate_pilot!(pilot)
-    keys = %w[contract version dependency pairs promotion rollback publication_ref]
+  def validate_launch!(input, task)
+    required = %w[policy manifest lifecycle budget_gate typed_gates]
+    unless required.all? { |key| input.key?(key) }
+      raise InvalidInput, "launch requires composite gate evidence"
+    end
+
+    policy = validate_policy!(input.fetch("policy"), task)
+    manifest = input.fetch("manifest")
+    validate_manifest!(manifest, task: task, reject_unknown: true)
+    lifecycle = input.fetch("lifecycle")
+    validate_lifecycle!(lifecycle, required_boundaries: %w[plan_settlement dispatch], task: task)
+    unless lifecycle["context_threshold"] == policy["context_threshold"]
+      raise InvalidInput, "lifecycle threshold must match the trusted policy record"
+    end
+
+    validate_launch_budget!(input.fetch("budget_gate"), task)
+    validate_typed_gates!(input.fetch("typed_gates"), task, manifest)
+  end
+
+  def validate_policy!(policy, task)
+    require_exact_keys!(policy, %w[contract version default_topology ad_hoc_default context_threshold evidence])
+    unless policy["contract"] == "canonical-task-policy" && policy["version"] == 1
+      raise InvalidInput, "unsupported canonical task policy"
+    end
+    raise InvalidInput, "trusted policy must select ordinary default" unless policy["default_topology"] == "ordinary"
+    raise InvalidInput, "trusted policy must reject ad-hoc by default" unless policy["ad_hoc_default"] == "reject"
+
+    threshold = policy["context_threshold"]
+    unless threshold == "UNKNOWN" || positive_integer?(threshold)
+      raise InvalidInput, "policy context threshold must be positive or UNKNOWN"
+    end
+
+    validate_target_evidence_set!(
+      policy["evidence"], task, contract: "authority-evidence",
+                                action: "bind_canonical_task_policy", allowed_roles: %w[maintainer coordinator]
+    )
+    policy
+  end
+
+  def validate_launch_budget!(records, task)
+    raise InvalidInput, "launch budget evidence must cover every target" unless records.is_a?(Array)
+
+    validate_target_evidence_set!(
+      records, task, contract: "budget-evidence", action: "worker_spawn",
+                     allowed_roles: %w[maintainer coordinator budget_owner], extra_keys: %w[policy_issue amount unit]
+    )
+    raise InvalidInput, "launch budget evidence must bind #399" unless records.all? { |record| record["policy_issue"] == 399 }
+
+    records.each { |record| validate_budget_evidence_values!(record) }
+  end
+
+  def validate_typed_gates!(records, task, manifest)
+    raise InvalidInput, "typed gate evidence must be an array" unless records.is_a?(Array)
+
+    required = %w[security ownership stage_dependency]
+    required.each do |gate|
+      subset = records.select { |record| record.is_a?(Hash) && record["gate"] == gate }
+      validate_target_evidence_set!(
+        subset, task, contract: "typed-gate-evidence", action: "launch_worker",
+                      allowed_roles: %w[maintainer coordinator security_checker ownership_checker dependency_checker],
+                      extra_keys: %w[gate lane_id base_sha head_sha]
+      )
+      subset.each { |record| validate_typed_gate_head!(record, task, manifest) }
+    end
+    expected_count = task.fetch("targets").length * required.length
+    raise InvalidInput, "typed gates must contain exactly one required gate per target" unless records.length == expected_count
+  end
+
+  def validate_typed_gate_head!(record, task, manifest)
+    lane = task.fetch("lanes").find { |candidate| canonical_scalar(candidate["id"]) == canonical_scalar(record["lane_id"]) }
+    raise InvalidInput, "typed gate lane is outside task" unless lane && canonical_target_key(lane) == canonical_target_key(record)
+    unless full_sha?(record["base_sha"]) && full_sha?(record["head_sha"]) && record["base_sha"] != record["head_sha"]
+      raise InvalidInput, "typed gate requires distinct full base/head SHAs"
+    end
+    return if canonical_scalar(record["head_sha"]) == canonical_scalar(manifest_head_for(manifest, lane["id"]))
+
+    raise InvalidInput, "typed gate head must equal manifest current head"
+  end
+
+  def validate_target_evidence_set!(records, task, contract:, action:, allowed_roles:, extra_keys: [])
+    targets = task.fetch("targets")
+    raise InvalidInput, "evidence set must be an array" unless records.is_a?(Array)
+    raise InvalidInput, "evidence set must cover every target" unless records.length == targets.length
+
+    records.each do |record|
+      validate_bound_evidence!(
+        record, contract: contract, task: task, action: action,
+                allowed_roles: allowed_roles, extra_keys: extra_keys
+      )
+    end
+    identities = records.map { |record| canonical_target_key(record) }
+    expected = targets.map { |target| canonical_target_key(target) }
+    raise InvalidInput, "evidence set target bindings do not match task" unless identities.sort == expected.sort
+  end
+
+  def validate_bound_evidence!(evidence, contract:, task:, action:, allowed_roles:, extra_keys: [])
+    keys = %w[contract version actor role task_id repository target action scope status observed_at evidence_ref] + extra_keys
+    require_exact_keys!(evidence, keys)
+    unless evidence["contract"] == contract && evidence["version"] == 1
+      raise InvalidInput, "unsupported #{contract} contract"
+    end
+    raise InvalidInput, "evidence actor must be known" unless known_string?(evidence["actor"])
+    raise InvalidInput, "evidence role is unauthorized" unless allowed_roles.include?(evidence["role"])
+    unless canonical_scalar(evidence["task_id"]) == canonical_scalar(task["id"])
+      raise InvalidInput, "evidence task binding mismatch"
+    end
+
+    validate_target!(evidence.slice("repository", "target"))
+    raise InvalidInput, "evidence target is outside task" unless task_target?(task, evidence)
+    raise InvalidInput, "evidence action mismatch" unless evidence["action"] == action
+    raise InvalidInput, "evidence scope must be known" unless known_string?(evidence["scope"])
+    raise InvalidInput, "evidence status must be passed" unless evidence["status"] == "passed"
+    raise InvalidInput, "evidence observed_at must be RFC3339 UTC" unless rfc3339_utc?(evidence["observed_at"])
+    raise InvalidInput, "evidence_ref must be durable HTTPS" unless durable_ref?(evidence["evidence_ref"])
+
+    evidence
+  end
+
+  def validate_pilot!(pilot, task)
+    keys = %w[contract version dependency pairs promotion rollback publication]
     require_exact_keys!(pilot, keys)
     unless pilot["contract"] == "canonical-task-matched-pilot" && pilot["version"] == 1
       raise InvalidInput, "unsupported canonical task matched pilot"
     end
+
     dependency = pilot["dependency"]
-    require_exact_keys!(dependency, %w[issue status evidence_ref])
-    raise InvalidInput, "pilot dependency must bind issue #398" unless dependency["issue"] == 398
+    dependency_keys = %w[
+      contract version issue actor role task_id repository target action scope
+      status observed_at result_ref
+    ]
+    require_exact_keys!(dependency, dependency_keys)
+    unless dependency["contract"] == "dependency-gate-evidence" && dependency["version"] == 1 && dependency["issue"] == 398
+      raise InvalidInput, "pilot dependency must be versioned and bind issue #398"
+    end
+    raise InvalidInput, "pilot dependency actor must be known" unless known_string?(dependency["actor"])
+    raise InvalidInput, "pilot dependency role is unauthorized" unless %w[dependency_checker coordinator].include?(dependency["role"])
+    unless canonical_scalar(dependency["task_id"]) == canonical_scalar(task["id"]) && task_target?(task, dependency)
+      raise InvalidInput, "pilot dependency task/target binding mismatch"
+    end
+    raise InvalidInput, "pilot dependency action mismatch" unless dependency["action"] == "evaluate_pilot"
+    raise InvalidInput, "pilot dependency scope must be known" unless known_string?(dependency["scope"])
+    raise InvalidInput, "pilot dependency observed_at must be RFC3339 UTC" unless rfc3339_utc?(dependency["observed_at"])
     unless %w[pending satisfied].include?(dependency["status"])
       raise InvalidInput, "pilot dependency status must be pending or satisfied"
     end
+
     if dependency["status"] == "satisfied"
-      raise InvalidInput, "satisfied #398 dependency requires durable evidence" unless durable_ref?(dependency["evidence_ref"])
-    elsif dependency["evidence_ref"] != "UNKNOWN"
+      raise InvalidInput, "satisfied #398 dependency requires durable verified result" unless durable_ref?(dependency["result_ref"])
+    elsif dependency["result_ref"] != "UNKNOWN"
       raise InvalidInput, "pending #398 dependency evidence must stay UNKNOWN"
     end
     raise InvalidInput, "pilot rollback must be known" unless known_string?(pilot["rollback"])
-    raise InvalidInput, "pilot publication_ref must be durable HTTPS" unless durable_ref?(pilot["publication_ref"])
+
+    validate_bound_evidence!(
+      pilot["publication"], contract: "pilot-publication-evidence", task: task,
+                            action: "publish_pilot_result", allowed_roles: %w[maintainer coordinator]
+    )
 
     promotion = pilot["promotion"]
     promotion_keys = %w[
       usage_reduction_policy material_reduction_percent
-      require_zero_escaped_p0_p1_regression require_preserved_gate_compliance
+      require_zero_escaped_p0_p1_regression require_preserved_gate_compliance evidence
     ]
     require_exact_keys!(promotion, promotion_keys)
     raise InvalidInput, "promotion usage policy must be materially_lower" unless promotion["usage_reduction_policy"] == "materially_lower"
@@ -115,13 +269,23 @@ module CanonicalTaskControl
       raise InvalidInput, "pilot promotion may not weaken defect or gate criteria"
     end
 
+    validate_bound_evidence!(
+      promotion["evidence"], contract: "pilot-promotion-policy-evidence", task: task,
+                             action: "bind_pilot_promotion_policy", allowed_roles: %w[maintainer]
+    )
+
     pairs = pilot["pairs"]
     raise InvalidInput, "matched pilot requires at least ten pairs" unless pairs.is_a?(Array) && pairs.length >= 10
+
     pair_ids = []
+    representative_ids = []
     unknowns = []
     ordinary_tokens = 0
     multi_tokens = 0
-    token_metrics_known = true
+    ordinary_credits = 0
+    multi_credits = 0
+    usage_metrics_known = true
+    execution_refs = []
     escaped_defect_regression = false
     gate_regression = false
     pairs.each do |pair|
@@ -130,56 +294,89 @@ module CanonicalTaskControl
         raise InvalidInput, "pilot pair #{key} must be known" unless known_string?(pair[key])
       end
       pair_ids << pair["pair_id"]
-      ordinary = validate_pilot_arm!(pair["ordinary"])
-      multi = validate_pilot_arm!(pair["multi_target"])
-      if pair["ordinary"]["execution_receipt_ref"] == "UNKNOWN" ||
-         pair["multi_target"]["execution_receipt_ref"] == "UNKNOWN"
+      ordinary = validate_pilot_arm!(pair["ordinary"], expected_arm: "ordinary", pair: pair)
+      multi = validate_pilot_arm!(pair["multi_target"], expected_arm: "multi_target", pair: pair)
+      representative_ids.concat([
+                                  canonical_scalar(pair["ordinary"]["task_identity"]),
+                                  canonical_scalar(pair["ordinary"]["batch_identity"]),
+                                  canonical_scalar(pair["multi_target"]["task_identity"]),
+                                  canonical_scalar(pair["multi_target"]["batch_identity"])
+                                ])
+      if pair["ordinary"]["execution_evidence"]["support"] != "available" ||
+         pair["multi_target"]["execution_evidence"]["support"] != "available"
         unknowns << "execution_provenance"
       end
-      if ordinary["total_tokens"] == "UNKNOWN" || multi["total_tokens"] == "UNKNOWN"
-        token_metrics_known = false
+      [pair["ordinary"], pair["multi_target"]].each do |arm|
+        evidence = arm["execution_evidence"]
+        execution_refs.concat([evidence["receipt_ref"], evidence["result_ref"]]) if evidence["support"] == "available"
+      end
+      if [ordinary, multi].any? { |metrics| metrics["total_tokens"] == "UNKNOWN" || metrics["credit_equivalents"] == "UNKNOWN" }
+        usage_metrics_known = false
       else
         ordinary_tokens += ordinary.fetch("total_tokens")
         multi_tokens += multi.fetch("total_tokens")
+        ordinary_credits += ordinary.fetch("credit_equivalents")
+        multi_credits += multi.fetch("credit_equivalents")
       end
       escaped_defect_regression ||= ordinary.fetch("escaped_p0_p1_defects") > multi.fetch("escaped_p0_p1_defects")
       gate_regression ||= ordinary.fetch("gate_compliance") != "preserved" || multi.fetch("gate_compliance") != "preserved"
     end
     raise InvalidInput, "pilot pair ids must be unique" unless pair_ids.uniq.length == pair_ids.length
+    unless representative_ids.uniq.length == representative_ids.length
+      raise InvalidInput, "representative task identities must be globally unique"
+    end
+    unless execution_refs.uniq.length == execution_refs.length
+      raise InvalidInput, "pilot execution receipt/result references must be globally unique"
+    end
 
-    reduction = if token_metrics_known && !multi_tokens.zero?
-                  ((multi_tokens - ordinary_tokens) * 100.0 / multi_tokens)
-                end
-    promotable = dependency["status"] == "satisfied" && unknowns.empty? && reduction &&
-                 reduction >= promotion["material_reduction_percent"] &&
+    token_reduction = if usage_metrics_known && !multi_tokens.zero?
+                        ((multi_tokens - ordinary_tokens) * 100.0 / multi_tokens)
+                      end
+    credit_reduction = if usage_metrics_known && !multi_credits.zero?
+                         ((multi_credits - ordinary_credits) * 100.0 / multi_credits)
+                       end
+    promotable = dependency["status"] == "satisfied" && unknowns.empty? && token_reduction && credit_reduction &&
+                 token_reduction >= promotion["material_reduction_percent"] &&
+                 credit_reduction >= promotion["material_reduction_percent"] &&
                  !escaped_defect_regression && !gate_regression
     {
       "pilot_verdict" => promotable ? "promote_ordinary_default" : "retain_multi_target_rollback",
       "matched_pair_count" => pairs.length,
-      "token_reduction_percent" => reduction&.round(3) || "UNKNOWN",
+      "token_reduction_percent" => token_reduction&.round(3) || "UNKNOWN",
+      "credit_reduction_percent" => credit_reduction&.round(3) || "UNKNOWN",
       "unknowns" => unknowns.uniq.sort
     }
   end
 
-  def validate_pilot_arm!(arm)
-    require_exact_keys!(arm, %w[execution_receipt_ref metrics])
-    receipt = arm["execution_receipt_ref"]
-    unless receipt == "UNKNOWN" || known_string?(receipt)
-      raise InvalidInput, "execution receipt reference must be known or UNKNOWN"
+  def validate_pilot_arm!(arm, expected_arm:, pair:)
+    keys = %w[
+      arm_identity task_identity batch_identity task_class context_topology
+      execution_evidence metrics
+    ]
+    require_exact_keys!(arm, keys)
+    raise InvalidInput, "pilot arm identity mismatch" unless arm["arm_identity"] == expected_arm
+
+    %w[task_identity batch_identity task_class context_topology].each do |key|
+      raise InvalidInput, "pilot arm #{key} must be known" unless known_string?(arm[key])
     end
+    unless arm["task_class"] == pair["task_class"] && arm["context_topology"] == pair["context_topology"]
+      raise InvalidInput, "pilot arm task class/context facts must match pair"
+    end
+
+    evidence = validate_pilot_execution_evidence!(arm["execution_evidence"], arm)
     metrics = arm["metrics"]
     keys = %w[
       total_tokens credit_equivalents elapsed_seconds human_coordination_seconds
       correction_turns first_pass_accepted escaped_p0_p1_defects gate_compliance
     ]
     require_exact_keys!(metrics, keys)
-    if receipt == "UNKNOWN"
+    if evidence["support"] != "available"
       %w[total_tokens credit_equivalents].each do |key|
         raise InvalidInput, "unsupported execution receipt requires #{key} UNKNOWN" unless metrics[key] == "UNKNOWN"
       end
     end
     %w[total_tokens credit_equivalents].each do |key|
-      next if receipt == "UNKNOWN" && metrics[key] == "UNKNOWN"
+      next if evidence["support"] != "available" && metrics[key] == "UNKNOWN"
       raise InvalidInput, "pilot metric #{key} must be nonnegative" unless nonnegative_number?(metrics[key])
     end
     %w[elapsed_seconds human_coordination_seconds correction_turns escaped_p0_p1_defects].each do |key|
@@ -191,18 +388,64 @@ module CanonicalTaskControl
     unless %w[preserved weakened UNKNOWN].include?(metrics["gate_compliance"])
       raise InvalidInput, "gate_compliance is unsupported"
     end
+
     metrics
+  end
+
+  def validate_pilot_execution_evidence!(evidence, arm)
+    keys = %w[
+      contract version support producer_issue actor role task_identity batch_identity
+      arm_identity task_class context_topology status observed_at receipt_ref result_ref
+    ]
+    require_exact_keys!(evidence, keys)
+    unless evidence["contract"] == "pilot-execution-result-evidence" && evidence["version"] == 1
+      raise InvalidInput, "unsupported pilot execution evidence contract"
+    end
+
+    detail_keys = keys - %w[contract version support]
+    if evidence["support"] != "available"
+      unless evidence["support"] == "unsupported" && detail_keys.all? { |key| evidence[key] == "UNKNOWN" }
+        raise InvalidInput, "unsupported pilot execution evidence must stay field-granular UNKNOWN"
+      end
+
+      return evidence
+    end
+    unless evidence["producer_issue"] == 398 && evidence["status"] == "verified" &&
+           %w[execution_meter telemetry_verifier].include?(evidence["role"])
+      raise InvalidInput, "pilot execution evidence must be a verified #398 result"
+    end
+    raise InvalidInput, "pilot execution evidence actor must be known" unless known_string?(evidence["actor"])
+
+    %w[task_identity batch_identity arm_identity task_class context_topology].each do |key|
+      unless canonical_scalar(evidence[key]) == canonical_scalar(arm[key])
+        raise InvalidInput, "pilot execution evidence #{key} binding mismatch"
+      end
+    end
+    raise InvalidInput, "pilot execution evidence observed_at must be RFC3339 UTC" unless rfc3339_utc?(evidence["observed_at"])
+    unless durable_ref?(evidence["receipt_ref"]) && durable_ref?(evidence["result_ref"])
+      raise InvalidInput, "pilot requires durable verified #398 receipt-result references or literal UNKNOWN"
+    end
+
+    evidence
   end
 
   def durable_ref?(value)
     value.to_s.match?(%r{\Ahttps://[^[:space:]]+\z})
   end
 
-  def validate_budget_gate!(gate)
-    require_exact_keys!(gate, %w[source status evidence_ref])
-    raise InvalidInput, "budget gate source must be #399 or a durable policy reference" unless known_string?(gate["source"])
-    raise InvalidInput, "budget gate must pass before this operation" unless gate["status"] == "passed"
-    raise InvalidInput, "budget gate evidence must be known" unless known_string?(gate["evidence_ref"])
+  def validate_budget_gate!(gate, task:, action:)
+    validate_bound_evidence!(
+      gate, contract: "budget-evidence", task: task, action: action,
+            allowed_roles: %w[maintainer coordinator budget_owner], extra_keys: %w[policy_issue amount unit]
+    )
+    raise InvalidInput, "budget evidence must bind #399" unless gate["policy_issue"] == 399
+
+    validate_budget_evidence_values!(gate)
+  end
+
+  def validate_budget_evidence_values!(evidence)
+    raise InvalidInput, "budget evidence amount must be positive" unless positive_integer?(evidence["amount"])
+    raise InvalidInput, "budget evidence unit must be known" unless known_string?(evidence["unit"])
   end
 
   def validate_delegation!(delegation, task, configured_context_threshold)
@@ -214,15 +457,22 @@ module CanonicalTaskControl
     require_exact_keys!(delegation, keys)
     source = validate_task_identity!(delegation["source"])
     target = validate_task_identity!(delegation["target"])
-    raise InvalidInput, "source and target task identities must differ" if source["task_id"] == target["task_id"]
+    if canonical_scalar(source["task_id"]) == canonical_scalar(target["task_id"])
+      raise InvalidInput, "source and target task identities must differ case-insensitively"
+    end
+    if canonical_target_key(source) == canonical_target_key(target)
+      raise InvalidInput, "source and target canonical identities must differ"
+    end
+
     canonical = task.fetch("targets").first
-    unless target.values_at("repository", "target") == canonical.values_at("repository", "target") &&
-           target["task_id"] == task["id"]
+    unless canonical_target_key(target) == canonical_target_key(canonical) &&
+           canonical_scalar(target["task_id"]) == canonical_scalar(task["id"])
       raise InvalidInput, "delegation target must bind this task and canonical repository-qualified target"
     end
 
     states = %w[active idle paused stale terminal]
     raise InvalidInput, "unsupported target_state" unless states.include?(delegation["target_state"])
+
     message_classes = %w[new_evidence unchanged acknowledgement deterministic_handoff]
     raise InvalidInput, "unsupported message_class" unless message_classes.include?(delegation["message_class"])
     raise InvalidInput, "queued_messages must be a nonnegative integer" unless delegation["queued_messages"].is_a?(Integer) && !delegation["queued_messages"].negative?
@@ -239,21 +489,20 @@ module CanonicalTaskControl
         raise InvalidInput, "#{key} must be a nonnegative integer or UNKNOWN"
       end
     end
-    unknowns.concat(validate_usage!(delegation["usage"]))
+    usage_unknowns = validate_usage!(delegation["usage"], source: source, target: target)
+    unknowns.concat(usage_unknowns)
     unless delegation["context_policy_threshold"] == configured_context_threshold
       raise InvalidInput, "delegation threshold must match the configured lifecycle threshold"
     end
 
-    if delegation["target_state"] == "active"
-      raise InvalidInput, "active-target delegation must coalesce queued messages" unless delegation["coalesced"] == true && delegation["queued_messages"].positive?
-      return {
-        "verdict" => "coalesce",
-        "allowed_actions" => ["queue_coalesced_message"],
-        "wake_target" => false,
-        "unknowns" => unknowns
-      }
+    approval = false
+    unless delegation["human_approval"] == "UNKNOWN"
+      validate_bound_evidence!(
+        delegation["human_approval"], contract: "authority-evidence", task: task,
+                                      action: "wake_target_task", allowed_roles: %w[maintainer]
+      )
+      approval = true
     end
-
 
     suppress_wake = %w[unchanged acknowledgement deterministic_handoff].include?(delegation["message_class"]) ||
                     delegation["deterministic_handoff_available"]
@@ -262,14 +511,24 @@ module CanonicalTaskControl
         "verdict" => "block",
         "allowed_actions" => [],
         "wake_target" => false,
+        "blockers" => [delegation["target_state"] == "terminal" ? "target_terminal" : "noise_suppressed"],
         "unknowns" => unknowns
       }
     end
 
-    approval = delegation["human_approval"].to_s.match?(%r{\Ahttps://[^[:space:]]+\z})
+    if usage_unknowns.include?("execution_provenance")
+      return {
+        "verdict" => "block",
+        "allowed_actions" => [],
+        "wake_target" => false,
+        "blockers" => ["execution_provenance_unknown"],
+        "unknowns" => unknowns
+      }
+    end
+
     context = delegation["estimated_rendered_context"]
     threshold = delegation["context_policy_threshold"]
-    needs_approval = context == "UNKNOWN" || threshold == "UNKNOWN" ||
+    needs_approval = context == "UNKNOWN" || threshold == "UNKNOWN" || delegation["descendant_fanout"] == "UNKNOWN" ||
                      (context.is_a?(Integer) && threshold.is_a?(Integer) && context > threshold) ||
                      delegation["target_state"] == "stale"
     if needs_approval && !approval
@@ -277,6 +536,19 @@ module CanonicalTaskControl
         "verdict" => "block",
         "allowed_actions" => [],
         "wake_target" => false,
+        "blockers" => ["human_approval_required"],
+        "unknowns" => unknowns
+      }
+    end
+
+    if delegation["target_state"] == "active"
+      raise InvalidInput, "active-target delegation must coalesce queued messages" unless delegation["coalesced"] == true && delegation["queued_messages"].positive?
+
+      return {
+        "verdict" => "coalesce",
+        "allowed_actions" => ["queue_coalesced_message"],
+        "wake_target" => false,
+        "blockers" => [],
         "unknowns" => unknowns
       }
     end
@@ -285,6 +557,7 @@ module CanonicalTaskControl
       "verdict" => "allow",
       "allowed_actions" => ["wake_target_task"],
       "wake_target" => true,
+      "blockers" => [],
       "unknowns" => unknowns
     }
   end
@@ -292,45 +565,74 @@ module CanonicalTaskControl
   def validate_task_identity!(identity)
     require_exact_keys!(identity, %w[task_id repository target])
     raise InvalidInput, "task identity must be known" unless known_string?(identity["task_id"])
+
     validate_target!(identity.slice("repository", "target"))
     identity
   end
 
-  def validate_usage!(usage)
+  def validate_usage!(usage, source:, target:)
     keys = %w[
-      contract version support receipt_ref source_edge_delta target_self_delta
-      target_descendant_delta aggregate_physical_delta reconciliation
+      contract version support producer_issue actor role source_task_id target_task_id
+      repository target action scope status observed_at receipt_ref result_ref
+      source_edge_delta target_self_delta target_descendant_delta
+      aggregate_physical_delta reconciliation
     ]
     require_exact_keys!(usage, keys)
     unless usage["contract"] == "execution-provenance-evidence" && usage["version"] == 1
       raise InvalidInput, "unsupported execution provenance evidence contract"
     end
+
     delta_keys = %w[source_edge_delta target_self_delta target_descendant_delta aggregate_physical_delta]
     case usage["support"]
     when "unsupported", "UNKNOWN"
-      unless usage["receipt_ref"] == "UNKNOWN" && usage["reconciliation"] == "UNKNOWN" &&
-             delta_keys.all? { |key| usage[key] == "UNKNOWN" }
+      evidence_keys = keys - %w[contract version support]
+      unless evidence_keys.all? { |key| usage[key] == "UNKNOWN" }
         raise InvalidInput, "unsupported execution provenance must stay field-granular UNKNOWN"
       end
+
       ["execution_provenance"]
     when "available"
-      raise InvalidInput, "available execution provenance requires a receipt reference" unless known_string?(usage["receipt_ref"])
-      raise InvalidInput, "available execution provenance must be reconciled" unless usage["reconciliation"] == "reconciled"
+      unless usage["producer_issue"] == 398 && usage["status"] == "verified" &&
+             %w[execution_meter telemetry_verifier].include?(usage["role"])
+        raise InvalidInput, "available execution provenance requires verified #398 result evidence"
+      end
+      raise InvalidInput, "execution provenance actor must be known" unless known_string?(usage["actor"])
+      unless canonical_scalar(usage["source_task_id"]) == canonical_scalar(source["task_id"]) &&
+             canonical_scalar(usage["target_task_id"]) == canonical_scalar(target["task_id"]) &&
+             canonical_target_key(usage) == canonical_target_key(target)
+        raise InvalidInput, "execution provenance identity binding mismatch"
+      end
+      raise InvalidInput, "execution provenance action mismatch" unless usage["action"] == "delegation"
+      raise InvalidInput, "execution provenance scope must be known" unless known_string?(usage["scope"])
+      raise InvalidInput, "execution provenance observed_at must be RFC3339 UTC" unless rfc3339_utc?(usage["observed_at"])
+      unless durable_ref?(usage["receipt_ref"]) && durable_ref?(usage["result_ref"])
+        raise InvalidInput, "available provenance requires durable verified #398 receipt-result references"
+      end
+      unless usage["reconciliation"] == "reconciled_no_double_count"
+        raise InvalidInput, "available execution provenance must be reconciled without double counting"
+      end
       unless delta_keys.all? { |key| nonnegative_number?(usage[key]) }
         raise InvalidInput, "execution provenance deltas must be nonnegative numbers"
       end
+
+      component_sum = usage["source_edge_delta"] + usage["target_self_delta"] + usage["target_descendant_delta"]
+      unless usage["aggregate_physical_delta"] == component_sum
+        raise InvalidInput, "execution provenance aggregate arithmetic mismatch"
+      end
+
       []
     else
       raise InvalidInput, "unsupported execution provenance support state"
     end
   end
 
-  def validate_manifest!(manifest)
+  def validate_manifest!(manifest, task:, reject_unknown:)
     keys = %w[contract version requirements ownership current_heads gates budgets decisions]
     require_exact_keys!(manifest, keys)
     unless manifest["contract"] == "compact-coordinator-manifest" && manifest["version"] == 1
       raise InvalidInput, "unsupported compact coordinator manifest"
     end
+
     %w[requirements decisions].each do |key|
       values = manifest[key]
       raise InvalidInput, "manifest.#{key} must be a compact known array" unless known_string_array?(values)
@@ -339,15 +641,28 @@ module CanonicalTaskControl
       value = manifest[key]
       raise InvalidInput, "manifest.#{key} must be a nonempty object" unless value.is_a?(Hash) && !value.empty?
     end
+    if reject_unknown && nested_unknown?(manifest)
+      raise InvalidInput, "manifest evidence may not contain nested UNKNOWN"
+    end
+
+    expected_head_keys = task.fetch("lanes").map { |lane| canonical_scalar(lane.fetch("id")) }
+    actual_head_keys = manifest["current_heads"].keys.map { |lane_id| canonical_scalar(lane_id) }
+    unless actual_head_keys.uniq.length == actual_head_keys.length && actual_head_keys.sort == expected_head_keys.sort
+      raise InvalidInput, "manifest current_heads must exactly cover task lanes"
+    end
+    return if manifest["current_heads"].values.all? { |sha| full_sha?(sha) }
+
+    raise InvalidInput, "manifest current_heads must be full SHAs"
   end
 
-  def validate_lifecycle!(lifecycle, required_boundary:)
+  def validate_lifecycle!(lifecycle, required_boundaries:, task:)
     require_exact_keys!(lifecycle, %w[context_threshold context_threshold_source checkpoints])
     threshold = lifecycle["context_threshold"]
     source = lifecycle["context_threshold_source"]
     unknowns = []
     if threshold == "UNKNOWN"
       raise InvalidInput, "unknown context threshold must keep source UNKNOWN" unless source == "UNKNOWN"
+
       unknowns << "context_threshold"
     else
       raise InvalidInput, "context_threshold must be positive or UNKNOWN" unless positive_integer?(threshold)
@@ -356,24 +671,55 @@ module CanonicalTaskControl
 
     checkpoints = lifecycle["checkpoints"]
     raise InvalidInput, "checkpoints must be a nonempty array" unless checkpoints.is_a?(Array) && !checkpoints.empty?
+
     boundaries = checkpoints.map do |checkpoint|
-      require_exact_keys!(checkpoint, %w[contract version boundary status evidence_ref])
+      keys = %w[
+        contract version boundary actor role task_id repository target action
+        scope status observed_at evidence_ref
+      ]
+      require_exact_keys!(checkpoint, keys)
       unless checkpoint["contract"] == "coordinator-compaction-checkpoint" && checkpoint["version"] == 1
         raise InvalidInput, "unsupported compaction checkpoint"
       end
+
       allowed = %w[plan_settlement dispatch review_wave monitor cross_task_handoff context_threshold]
       raise InvalidInput, "unsupported compaction boundary" unless allowed.include?(checkpoint["boundary"])
       raise InvalidInput, "compaction checkpoint must be satisfied" unless checkpoint["status"] == "satisfied"
-      raise InvalidInput, "compaction checkpoint evidence must be known" unless known_string?(checkpoint["evidence_ref"])
+
+      validate_checkpoint_binding!(checkpoint, task)
       checkpoint["boundary"]
     end
-    raise InvalidInput, "compaction checkpoint boundaries must be unique" unless boundaries.uniq.length == boundaries.length
-    raise InvalidInput, "missing #{required_boundary} compaction checkpoint" unless boundaries.include?(required_boundary)
+    expected_occurrences = task.fetch("targets").length
+    required_boundaries.each do |boundary|
+      unless boundaries.count(boundary) == expected_occurrences
+        raise InvalidInput, "missing #{boundary} compaction checkpoint"
+      end
+    end
+    identities = checkpoints.map { |checkpoint| [checkpoint["boundary"], canonical_target_key(checkpoint)] }
+    raise InvalidInput, "compaction checkpoints must be unique per boundary and target" unless identities.uniq.length == identities.length
+
     unknowns
   end
 
-  def validate_children!(children, task)
+  def validate_checkpoint_binding!(checkpoint, task)
+    raise InvalidInput, "checkpoint actor must be known" unless known_string?(checkpoint["actor"])
+    raise InvalidInput, "checkpoint role is unauthorized" unless %w[coordinator maintainer].include?(checkpoint["role"])
+    unless canonical_scalar(checkpoint["task_id"]) == canonical_scalar(task["id"])
+      raise InvalidInput, "checkpoint task binding mismatch"
+    end
+
+    validate_target!(checkpoint.slice("repository", "target"))
+    raise InvalidInput, "checkpoint target is outside task" unless task_target?(task, checkpoint)
+    raise InvalidInput, "checkpoint action mismatch" unless checkpoint["action"] == "compact_coordinator"
+    raise InvalidInput, "checkpoint scope must be known" unless known_string?(checkpoint["scope"])
+    raise InvalidInput, "checkpoint observed_at must be RFC3339 UTC" unless rfc3339_utc?(checkpoint["observed_at"])
+    raise InvalidInput, "checkpoint evidence_ref must be durable HTTPS" unless durable_ref?(checkpoint["evidence_ref"])
+  end
+
+  def validate_children!(children, task, manifest)
     require_exact_keys!(children, %w[packets receipts states])
+    raise InvalidInput, "child evidence may not contain nested UNKNOWN" if nested_unknown?(children)
+
     packets = children["packets"]
     receipts = children["receipts"]
     states = children["states"]
@@ -381,31 +727,35 @@ module CanonicalTaskControl
       raise InvalidInput, "children packets, receipts, and states must be arrays"
     end
 
-    task_lanes = task.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
+    task_lanes = task.fetch("lanes").to_h { |lane| [canonical_scalar(lane.fetch("id")), lane] }
     packet_ids = packets.map do |packet|
       keys = %w[
         contract version child_id lane_id repository target role scope
+        base_sha head_sha review_round review_package_ref
         acceptance_criteria verification stop_conditions
       ]
       require_exact_keys!(packet, keys)
       unless packet["contract"] == "task-scoped-child-packet" && packet["version"] == 1
         raise InvalidInput, "unsupported task-scoped child packet"
       end
+
       %w[child_id lane_id role scope].each do |key|
         raise InvalidInput, "child packet #{key} must be known" unless known_string?(packet[key])
       end
       %w[acceptance_criteria verification stop_conditions].each do |key|
         raise InvalidInput, "child packet #{key} must be a known array" unless known_string_array?(packet[key])
       end
+      validate_review_binding!(packet)
       validate_child_binding!(packet, task_lanes)
-      packet["child_id"]
+      canonical_scalar(packet["child_id"])
     end
     raise InvalidInput, "child packet ids must be unique" unless packet_ids.uniq.length == packet_ids.length
 
     receipt_ids = receipts.map do |receipt|
       keys = %w[
         contract version child_id lane_id repository target status head_sha
-        summary findings verification open_decisions
+        role scope base_sha review_round review_package_ref summary findings
+        verification open_decisions review_result
       ]
       require_exact_keys!(receipt, keys)
       unless receipt["contract"] == "compact-child-receipt" && receipt["version"] == 1
@@ -414,33 +764,85 @@ module CanonicalTaskControl
       raise InvalidInput, "child receipt status must be completed" unless receipt["status"] == "completed"
       raise InvalidInput, "child receipt summary must be known" unless known_string?(receipt["summary"])
       raise InvalidInput, "child receipt head_sha must be full" unless receipt["head_sha"].to_s.match?(/\A[0-9a-fA-F]{40}\z/)
+
       %w[findings verification open_decisions].each do |key|
         raise InvalidInput, "child receipt #{key} must be an array" unless receipt[key].is_a?(Array)
       end
+      validate_review_binding!(receipt)
+      unless canonical_scalar(receipt["head_sha"]) == canonical_scalar(manifest_head_for(manifest, receipt["lane_id"]))
+        raise InvalidInput, "child receipt head must equal manifest current head"
+      end
+
+      validate_review_result!(receipt["review_result"], receipt)
+      raise InvalidInput, "child receipt evidence may not contain nested UNKNOWN" if nested_unknown?(receipt)
+
       validate_child_binding!(receipt, task_lanes)
-      receipt["child_id"]
+      canonical_scalar(receipt["child_id"])
     end
     raise InvalidInput, "child receipt ids must be unique" unless receipt_ids.uniq.length == receipt_ids.length
 
     state_ids = states.map do |state|
-      require_exact_keys!(state, %w[child_id status resumable])
+      require_exact_keys!(state, %w[
+                            child_id lane_id repository target role scope base_sha head_sha
+                            review_round review_package_ref status resumable
+                          ])
       raise InvalidInput, "completed children must be closed" unless state["status"] == "closed"
       raise InvalidInput, "completed children are non-resumable by default" unless state["resumable"] == false
-      state["child_id"]
+
+      validate_review_binding!(state)
+      validate_child_binding!(state, task_lanes)
+      canonical_scalar(state["child_id"])
     end
     raise InvalidInput, "child state ids must be unique" unless state_ids.uniq.length == state_ids.length
     unless packet_ids.sort == receipt_ids.sort && receipt_ids.sort == state_ids.sort
       raise InvalidInput, "every accepted child packet requires one receipt and closed state"
     end
+
+    packet_bindings = packets.to_h { |record| [canonical_scalar(record["child_id"]), child_binding(record)] }
+    receipt_bindings = receipts.to_h { |record| [canonical_scalar(record["child_id"]), child_binding(record)] }
+    state_bindings = states.to_h { |record| [canonical_scalar(record["child_id"]), child_binding(record)] }
+    unless packet_bindings == receipt_bindings && receipt_bindings == state_bindings
+      raise InvalidInput, "packet/receipt/state bindings must match"
+    end
+
     [receipt_ids.sort, state_ids.sort]
   end
 
-  def validate_child_binding!(record, task_lanes)
-    lane = task_lanes[record["lane_id"]]
-    raise InvalidInput, "child record lane is outside the task" unless lane
-    unless record.values_at("repository", "target") == lane.values_at("repository", "target")
-      raise InvalidInput, "child record must bind the lane repository-qualified target"
+  def validate_review_binding!(record)
+    raise InvalidInput, "review base/head must be full SHAs" unless full_sha?(record["base_sha"]) && full_sha?(record["head_sha"])
+    raise InvalidInput, "review base and head must differ" if canonical_scalar(record["base_sha"]) == canonical_scalar(record["head_sha"])
+    raise InvalidInput, "review round must be positive" unless positive_integer?(record["review_round"])
+    raise InvalidInput, "review package ref must be durable HTTPS" unless durable_ref?(record["review_package_ref"])
+  end
+
+  def validate_review_result!(result, receipt)
+    require_exact_keys!(result, %w[
+                          contract version base_sha head_sha round review_package_ref status findings
+                          findings_evidence_ref
+                        ])
+    unless result["contract"] == "exact-diff-review-result" && result["version"] == 1 && result["status"] == "verified"
+      raise InvalidInput, "unsupported exact diff review result"
     end
+
+    expected = [receipt["base_sha"], receipt["head_sha"], receipt["review_round"], receipt["review_package_ref"]]
+    actual = [result["base_sha"], result["head_sha"], result["round"], result["review_package_ref"]]
+    raise InvalidInput, "review result binding mismatch" unless actual == expected
+    raise InvalidInput, "review result findings must equal receipt findings" unless result["findings"] == receipt["findings"]
+    raise InvalidInput, "review findings evidence must be durable HTTPS" unless durable_ref?(result["findings_evidence_ref"])
+  end
+
+  def child_binding(record)
+    %w[lane_id repository target role scope base_sha head_sha review_round review_package_ref].map do |key|
+      %w[lane_id repository target role].include?(key) ? canonical_scalar(record[key]) : record[key]
+    end
+  end
+
+  def validate_child_binding!(record, task_lanes)
+    lane = task_lanes[canonical_scalar(record["lane_id"])]
+    raise InvalidInput, "child record lane is outside the task" unless lane
+    return if canonical_target_key(record) == canonical_target_key(lane)
+
+    raise InvalidInput, "child record must bind the lane repository-qualified target"
   end
 
   def validate_topology!(task)
@@ -449,12 +851,30 @@ module CanonicalTaskControl
     raise InvalidInput, "targets must be a nonempty array" unless targets.is_a?(Array) && !targets.empty?
     raise InvalidInput, "lanes must be a nonempty array" unless lanes.is_a?(Array) && !lanes.empty?
 
+    ad_hoc_targets = targets.select { |target| target.is_a?(Hash) && target["target"].to_s.start_with?("adhoc:") }
+    if ad_hoc_targets.any?
+      unless ad_hoc_targets.length == 1 && targets.length == 1 && task.key?("adhoc_override")
+        raise InvalidInput, "ad-hoc target requires trusted task-specific override"
+      end
+
+      validate_bound_evidence!(
+        task["adhoc_override"], contract: "adhoc-authority-evidence", task: task,
+                                action: "authorize_adhoc_task", allowed_roles: %w[maintainer]
+      )
+    elsif task.key?("adhoc_override")
+      raise InvalidInput, "ad-hoc override is only valid for an ad-hoc target"
+    end
+
     targets.each { |target| validate_target!(target) }
     lanes.each { |lane| validate_lane!(lane) }
-    target_keys = targets.map { |target| target.values_at("repository", "target") }
-    lane_target_keys = lanes.map { |lane| lane.values_at("repository", "target") }
-    raise InvalidInput, "canonical targets must be unique" unless target_keys.uniq.length == target_keys.length
-    raise InvalidInput, "lane ids must be unique" unless lanes.map { |lane| lane["id"] }.uniq.length == lanes.length
+    target_keys = targets.map { |target| canonical_target_key(target) }
+    lane_target_keys = lanes.map { |lane| canonical_target_key(lane) }
+    unless target_keys.uniq.length == target_keys.length
+      raise InvalidInput, "canonical targets must be unique case-insensitively"
+    end
+
+    lane_ids = lanes.map { |lane| canonical_scalar(lane["id"]) }
+    raise InvalidInput, "lane ids must be unique case-insensitively" unless lane_ids.uniq.length == lane_ids.length
     unless lane_target_keys.sort == target_keys.sort
       raise InvalidInput, "each canonical repository-qualified target requires exactly one execution lane"
     end
@@ -464,21 +884,27 @@ module CanonicalTaskControl
       raise InvalidInput, "ordinary topology requires exactly one target and one lane" unless targets.length == 1 && lanes.length == 1
     when "multi_target_exception"
       raise InvalidInput, "multi-target exception requires at least two targets" unless targets.length > 1
-      validate_exception!(task.fetch("exception"), targets, lanes)
+
+      validate_exception!(task.fetch("exception"), task)
     else
       raise InvalidInput, "unsupported topology_mode"
     end
   end
 
-  def validate_exception!(exception, targets, lanes)
+  def validate_exception!(exception, task)
+    targets = task.fetch("targets")
+    lanes = task.fetch("lanes")
     keys = %w[
       contract version reason justification target_count concurrency aggregate_budget
-      per_lane_budgets shared_context_justification expected_savings rollback human_approval
+      per_lane_budgets shared_context_justification expected_savings rollback
+      human_approvals budget_authorities
     ]
     require_exact_keys!(exception, keys)
     raise InvalidInput, "unsupported multi-target exception contract" unless exception["contract"] == "multi-target-supervision-exception" && exception["version"] == 1
+
     reasons = %w[independent_read_heavy atomic_cross_issue_migration tightly_coupled_dependency_wave]
     raise InvalidInput, "unsupported multi-target exception reason" unless reasons.include?(exception["reason"])
+
     %w[justification shared_context_justification expected_savings rollback].each do |key|
       raise InvalidInput, "exception.#{key} must be known" unless known_string?(exception[key])
     end
@@ -486,45 +912,77 @@ module CanonicalTaskControl
     unless positive_integer?(exception["concurrency"]) && exception["concurrency"] <= targets.length
       raise InvalidInput, "concurrency must be between 1 and target_count"
     end
-    unless exception["human_approval"].to_s.match?(%r{\Ahttps://[^[:space:]]+\z})
-      raise InvalidInput, "human_approval must be a durable HTTPS reference"
+
+    validate_target_evidence_set!(
+      exception["human_approvals"], task,
+      contract: "authority-evidence", action: "authorize_multi_target_supervision",
+      allowed_roles: %w[maintainer]
+    )
+    validate_target_evidence_set!(
+      exception["budget_authorities"], task,
+      contract: "budget-evidence", action: "authorize_multi_target_budget",
+      allowed_roles: %w[maintainer budget_owner], extra_keys: %w[policy_issue amount unit]
+    )
+    unless exception["budget_authorities"].all? { |record| record["policy_issue"] == 399 }
+      raise InvalidInput, "multi-target budget authorities must bind #399"
     end
 
-    aggregate = validate_budget!(exception["aggregate_budget"], require_source: true)
+    exception["budget_authorities"].each { |record| validate_budget_evidence_values!(record) }
+
+    aggregate = validate_budget!(exception["aggregate_budget"])
     per_lane = exception["per_lane_budgets"]
     raise InvalidInput, "per_lane_budgets must cover every lane" unless per_lane.is_a?(Array) && per_lane.length == lanes.length
-    lane_ids = lanes.map { |lane| lane["id"] }
+
+    lane_ids = lanes.map { |lane| canonical_scalar(lane["id"]) }
     budget_lane_ids = per_lane.map do |budget|
       require_exact_keys!(budget, %w[lane_id amount unit])
       raise InvalidInput, "budget amount must be a positive integer" unless positive_integer?(budget["amount"])
       raise InvalidInput, "budget unit must be known" unless known_string?(budget["unit"])
-      budget["lane_id"]
+
+      canonical_scalar(budget["lane_id"])
     end
     raise InvalidInput, "per_lane_budgets lane ids must exactly match lanes" unless budget_lane_ids.sort == lane_ids.sort
+
     units = per_lane.map { |budget| budget["unit"] }.uniq
     raise InvalidInput, "aggregate and per-lane budget units must match" unless units == [aggregate.fetch("unit")]
     raise InvalidInput, "per-lane budgets exceed aggregate budget" if per_lane.sum { |budget| budget["amount"] } > aggregate.fetch("amount")
+
+    budget_by_target = lanes.to_h do |lane|
+      lane_budget = per_lane.find { |budget| canonical_scalar(budget["lane_id"]) == canonical_scalar(lane["id"]) }
+      [canonical_target_key(lane), lane_budget]
+    end
+    exception["budget_authorities"].each do |evidence|
+      lane_budget = budget_by_target.fetch(canonical_target_key(evidence))
+      unless evidence.values_at("amount", "unit") == lane_budget.values_at("amount", "unit")
+        raise InvalidInput, "multi-target budget evidence must bind exact per-lane amount and unit"
+      end
+    end
   end
 
-  def validate_budget!(budget, require_source:)
-    keys = %w[amount unit]
-    keys << "source" if require_source
-    require_exact_keys!(budget, keys)
+  def validate_budget!(budget)
+    require_exact_keys!(budget, %w[amount unit])
     raise InvalidInput, "budget amount must be a positive integer" unless positive_integer?(budget["amount"])
     raise InvalidInput, "budget unit must be known" unless known_string?(budget["unit"])
-    raise InvalidInput, "budget source must be known" if require_source && !known_string?(budget["source"])
+
     budget
   end
 
   def validate_target!(target)
     require_exact_keys!(target, %w[repository target])
     raise InvalidInput, "target repository must be OWNER/REPO" unless target["repository"].to_s.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z})
-    raise InvalidInput, "target must be issue:N or pull_request:N" unless target["target"].to_s.match?(%r{\A(?:issue|pull_request):[1-9][0-9]*\z})
+
+    target_value = target["target"].to_s
+    valid_canonical = target_value.match?(/\A(?:issue|pull_request):[1-9][0-9]*\z/)
+    valid_ad_hoc = target_value.match?(/\Aadhoc:[a-z0-9][a-z0-9_.:-]*\z/)
+    return if valid_canonical || valid_ad_hoc
+
+    raise InvalidInput, "target must be issue:N, pull_request:N, or authorized adhoc:id"
   end
 
   def validate_lane!(lane)
     require_exact_keys!(lane, %w[id repository target])
     raise InvalidInput, "lane.id must be known" unless known_string?(lane["id"])
+
     validate_target!(lane.slice("repository", "target"))
   end
 
@@ -549,6 +1007,44 @@ module CanonicalTaskControl
 
   def nonnegative_number?(value)
     value.is_a?(Numeric) && value >= 0
+  end
+
+  def nested_unknown?(value)
+    case value
+    when Hash then value.any? { |key, nested| nested_unknown?(key) || nested_unknown?(nested) }
+    when Array then value.any? { |nested| nested_unknown?(nested) }
+    when String then value.upcase.include?("UNKNOWN")
+    else false
+    end
+  end
+
+  def full_sha?(value)
+    value.to_s.match?(/\A[0-9a-fA-F]{40}\z/)
+  end
+
+  def canonical_scalar(value)
+    value.to_s.downcase
+  end
+
+  def canonical_target_key(target)
+    [canonical_scalar(target["repository"]), canonical_scalar(target["target"])]
+  end
+
+  def task_target?(task, record)
+    task.fetch("targets").any? { |target| canonical_target_key(target) == canonical_target_key(record) }
+  end
+
+  def manifest_head_for(manifest, lane_id)
+    entry = manifest.fetch("current_heads").find do |candidate, _sha|
+      canonical_scalar(candidate) == canonical_scalar(lane_id)
+    end
+    raise InvalidInput, "manifest current head missing for lane" unless entry
+
+    entry.last
+  end
+
+  def rfc3339_utc?(value)
+    value.to_s.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/)
   end
 end
 
