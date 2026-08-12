@@ -91,6 +91,17 @@ Other runtimes continue to use the portable `fastest-low-cost`, `balanced`, and
 supported pair, the closest available route, or the runtime default; record the
 requested and observed route honestly without blocking on the binding alone.
 
+## Token Budgets
+
+Use opt-in [`batch-token-budget v1`](token-budgets.md) when a batch needs an
+explicit raw-token ceiling. The plan declares aggregate, coordinator, and every
+lane scope. The runtime helper atomically reserves headroom before model turns,
+spawns, retries, review waves, scheduled continuations, monitors, resumes, or
+cross-task delegation, then reconciles only authoritative self-plus-descendant
+usage receipts. Warning persists a compact checkpoint; approval and hard states
+stop automatic continuation. A scoped approval or budget increase never grants
+security, review, QA, exact-head, ownership, or merge authority.
+
 ## Skill Roles
 
 | Skill                | Use when                                                                                                    | Output                                                                                |

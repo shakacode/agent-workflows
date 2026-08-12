@@ -563,6 +563,19 @@ the whole launch before dispatch.
      best-effort field-granular `UNKNOWN`, names reconciliation, and does not
      block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
+   - When token-budget enforcement is requested, add one complete opt-in
+     `batch-token-budget v1` at `plan.token_budget`: the exact plan/batch id;
+     positive raw-token limits for aggregate, coordinator, and every planned
+     lane id; warning/approval/hard percentages; telemetry freshness; and the
+     delegation approval threshold; and an absolute coordinator-owned
+     `state_path`. Do not invent universal absolute limits.
+     Reserve `aggregate` and `coordinator` for the parent scopes; they cannot be
+     lane ids.
+     Partial, inline, stale, malformed, or `UNKNOWN` budget metadata fails the
+     batch-plan preflight. A plan with no budget metadata remains legacy
+     compatible. Record the coordinator-owned durable runtime state path in the
+     Batch Plan and goal prompt. See
+     [Hierarchical Token Budgets](../../docs/token-budgets.md).
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
@@ -722,6 +735,10 @@ backend must say so in the declaration.
 - Batch manifest provenance: `pack_sha`, `coordinator_preference` model/effort,
   and each lane's `worker_preference` plus optional `observed_host` fields;
   name the registration evidence or the durable backend-`n/a` handoff.
+- Token budget: `none` for a plan with no budget metadata, or the complete
+  `batch-token-budget v1` aggregate/coordinator/all-lanes object, thresholds,
+  telemetry/delegation policy, and durable state path. Any present budget field
+  makes complete valid scope coverage mandatory.
 - Batch size target: `codex`, `claude`, or `generic`; max items per wave and
   split rationale.
 - While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
@@ -840,8 +857,9 @@ Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+Observed host/model/effort:<host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
+Budget:<none|v1 A/R/L,W/P/H,age,del,state>;stop
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
@@ -860,6 +878,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
+Budget:v1 reserve/reconcile auth usage;warn checkpoint;approval/hard stop;gates unchanged.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.

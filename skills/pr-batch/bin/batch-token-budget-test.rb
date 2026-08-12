@@ -1,0 +1,1241 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "minitest/autorun"
+require "open3"
+require "tmpdir"
+
+HELPER = File.expand_path("batch-token-budget", __dir__)
+FIXTURE = File.expand_path("../fixtures/batch-token-budget-v1.json", __dir__)
+
+class BatchTokenBudgetTest < Minitest::Test
+  def budget(state_path: nil)
+    parsed = JSON.parse(File.read(FIXTURE))
+    parsed["state_path"] = state_path if state_path
+    parsed
+  end
+
+  def command(action, overrides = {})
+    {
+      "type" => "batch-token-budget-command",
+      "version" => 1,
+      "action" => action,
+      "batch_id" => "batch-399",
+      "evaluated_at" => "2026-08-12T12:00:00Z"
+    }.merge(overrides)
+  end
+
+  def run_helper(state_path, input)
+    stdout, stderr, status = Open3.capture3(
+      HELPER,
+      "--state",
+      state_path,
+      stdin_data: JSON.generate(input)
+    )
+    [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
+  end
+
+  def with_state
+    Dir.mktmpdir("batch-token-budget-test") do |directory|
+      yield File.join(directory, "state.json")
+    end
+  end
+
+  def initialize_budget(state_path)
+    run_helper(state_path, command("initialize", "budget" => budget(state_path: state_path)))
+  end
+
+  def reservation(id:, lane_id: "lane-a", tokens: 100, target_id: nil, kind: "model-turn", overrides: {})
+    target_id ||= "task-#{lane_id}"
+    {
+      "type" => "batch-token-reservation",
+      "version" => 1,
+      "id" => id,
+      "scope_id" => lane_id,
+      "admission_kind" => kind,
+      "tokens" => tokens,
+      "target" => {
+        "task_id" => target_id,
+        "batch_id" => "batch-399",
+        "root_id" => "root-399",
+        "lane_id" => lane_id,
+        "work_item" => { "repo" => "owner/repo", "type" => "issue", "number" => 399 }
+      },
+      "target_state" => "idle",
+      "message_fingerprint" => "message-#{id}",
+      "telemetry" => {
+        "status" => "fresh",
+        "observed_at" => "2026-08-12T11:55:00Z",
+        "self_estimate_tokens" => tokens,
+        "descendant_estimate_tokens" => 0,
+        "context_status" => "ready",
+        "descendant_target_ids" => []
+      }
+    }.merge(overrides)
+  end
+
+  def reserve(state_path, **options)
+    run_helper(
+      state_path,
+      command("reserve", "reservation" => reservation(**options))
+    )
+  end
+
+  def usage_receipt(id: "usage-1", segments: nil)
+    segments ||= [
+      { "id" => "physical-self-1", "kind" => "self", "scope_id" => "lane-a", "target_id" => "task-lane-a", "tokens" => 160 },
+      { "id" => "physical-child-1", "kind" => "descendant", "scope_id" => "lane-a", "target_id" => "child-a", "tokens" => 70 },
+      { "id" => "physical-grandchild-1", "kind" => "descendant", "scope_id" => "lane-a", "target_id" => "grandchild-a", "tokens" => 20 }
+    ]
+    {
+      "type" => "authoritative-token-usage-receipt",
+      "version" => 1,
+      "id" => id,
+      "batch_id" => "batch-399",
+      "cutoff" => "runtime-sequence:42",
+      "observed_at" => "2026-08-12T11:59:00Z",
+      "producer" => { "kind" => "host-reported", "evidence_ref" => "host-usage://task-lane-a/42" },
+      "segments" => segments
+    }
+  end
+
+  def task_identity(task_id:, lane_id: "lane-a")
+    {
+      "task_id" => task_id,
+      "batch_id" => "batch-399",
+      "root_id" => "root-399",
+      "lane_id" => lane_id,
+      "work_item" => { "repo" => "owner/repo", "type" => "issue", "number" => 399 }
+    }
+  end
+
+  def test_initialize_persists_complete_hierarchical_scope_totals_and_replays
+    with_state do |state_path|
+      first, stderr, status = initialize_budget(state_path)
+
+      assert status.success?, stderr
+      assert_equal "initialized", first.fetch("status")
+      assert_equal 1_000, first.dig("totals", "aggregate", "limit_tokens")
+      assert_equal 300, first.dig("totals", "coordinator", "limit_tokens")
+      assert_equal 600, first.dig("totals", "lanes", "lane-a", "limit_tokens")
+      assert File.file?(state_path)
+
+      replay, replay_stderr, replay_status = initialize_budget(state_path)
+
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replay.fetch("status")
+      assert_equal first.fetch("totals"), replay.fetch("totals")
+
+      other_path = File.join(File.dirname(state_path), "other-state.json")
+      output, mismatch_stderr, mismatch_status = run_helper(
+        other_path,
+        command("initialize", "budget" => budget(state_path: state_path))
+      )
+      refute mismatch_status.success?
+      assert_nil output
+      assert_equal "state-path-mismatch", JSON.parse(mismatch_stderr).fetch("reason")
+    end
+  end
+
+  def test_lane_reservation_identity_must_match_its_accounting_scope
+    with_state do |state_path|
+      initialize_budget(state_path)
+      wrong_target = task_identity(task_id: "lane-b-task", lane_id: "lane-b")
+
+      blocked, stderr, status = reserve(
+        state_path,
+        id: "wrong-lane",
+        lane_id: "lane-a",
+        overrides: { "target" => wrong_target }
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "invalid-reservation", blocked.fetch("reason")
+      assert_equal 0, blocked.dig("totals", "aggregate", "allocated_tokens")
+
+      leaked, leaked_stderr, leaked_status = reserve(
+        state_path,
+        id: "leaked-content",
+        overrides: { "prompt" => "never persist this prompt" }
+      )
+      assert leaked_status.success?, leaked_stderr
+      assert_equal "blocked", leaked.fetch("status")
+      assert_equal "invalid-reservation", leaked.fetch("reason")
+      refute_includes File.read(state_path), "never persist this prompt"
+
+      reserve(state_path, id: "identity-a", lane_id: "lane-a", target_id: "shared-task")
+      distinct_identity, distinct_stderr, distinct_status = reserve(
+        state_path,
+        id: "identity-b",
+        lane_id: "lane-b",
+        target_id: "shared-task"
+      )
+      assert distinct_status.success?, distinct_stderr
+      assert_equal "admitted", distinct_identity.fetch("status")
+      assert_equal 200, distinct_identity.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal 100, distinct_identity.dig("totals", "lanes", "lane-b", "reserved_tokens")
+    end
+  end
+
+  def test_atomic_concurrent_reservations_never_overallocate_aggregate_or_lane_headroom
+    with_state do |state_path|
+      concurrent_budget = budget(state_path: state_path)
+      concurrent_budget["scopes"]["lanes"].transform_values! { { "limit_tokens" => 700 } }
+      concurrent_budget["thresholds"] = {
+        "warning_percent" => 50,
+        "approval_percent" => 95,
+        "hard_percent" => 100
+      }
+      concurrent_budget["delegation"]["approval_threshold_tokens"] = 900
+      run_helper(state_path, command("initialize", "budget" => concurrent_budget))
+      cross_reservation = lambda do |id, lane_id, target_batch|
+        source = task_identity(task_id: "source-#{lane_id}", lane_id: lane_id)
+        source["batch_id"] = target_batch
+        target = task_identity(task_id: "target-#{lane_id}", lane_id: lane_id)
+        reservation(
+          id: id,
+          lane_id: lane_id,
+          tokens: 600,
+          kind: "cross-task-delegation",
+          target_id: "unused",
+          overrides: { "source" => source, "target" => target }
+        )
+      end
+      inputs = [
+        command("reserve", "reservation" => cross_reservation.call("reserve-a", "lane-a", "target-batch-a")),
+        command("reserve", "reservation" => cross_reservation.call("reserve-b", "lane-b", "target-batch-b"))
+      ]
+      outputs = inputs.map do |input|
+        Thread.new { run_helper(state_path, input) }
+      end.map(&:value)
+
+      assert outputs.all? { |_output, _stderr, status| status.success? }, outputs.map { |row| row[1] }.join
+      statuses = outputs.map { |output, _stderr, _status| output.fetch("status") }
+      assert_equal %w[admitted-with-warning budget-exhausted], statuses.sort
+
+      closeout, stderr, status = run_helper(state_path, command("closeout"))
+
+      assert status.success?, stderr
+      assert_equal 600, closeout.dig("totals", "aggregate", "reserved_tokens")
+      assert_operator closeout.dig("totals", "aggregate", "reserved_tokens"), :<=,
+                      closeout.dig("totals", "aggregate", "limit_tokens")
+      lane_reserved = %w[lane-a lane-b].map do |lane_id|
+        closeout.dig("totals", "lanes", lane_id, "reserved_tokens")
+      end
+      assert_equal [0, 600], lane_reserved.sort
+    end
+  end
+
+  def test_nested_authoritative_usage_is_counted_exactly_once_and_charge_back_is_nonphysical
+    with_state do |state_path|
+      cross_budget = budget(state_path: state_path)
+      cross_budget["delegation"]["approval_threshold_tokens"] = 400
+      run_helper(state_path, command("initialize", "budget" => cross_budget))
+      source = task_identity(task_id: "source-task")
+      source["batch_id"] = "source-batch"
+      target = task_identity(task_id: "task-lane-a")
+      admitted, stderr, status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "reservation" => reservation(
+            id: "reserve-nested",
+            tokens: 300,
+            kind: "cross-task-delegation",
+            overrides: {
+              "source" => source,
+              "target" => target,
+              "telemetry" => reservation(id: "nested-envelope", tokens: 300).fetch("telemetry").merge(
+                "self_estimate_tokens" => 200,
+                "descendant_estimate_tokens" => 100,
+                "descendant_target_ids" => %w[child-a grandchild-a]
+              )
+            }
+          )
+        )
+      )
+      assert status.success?, stderr
+      assert_includes %w[admitted admitted-with-warning], admitted.fetch("status")
+
+      charge_back = {
+        "type" => "batch-token-charge-back",
+        "version" => 1,
+        "id" => "cause-1",
+        "source" => source,
+        "target" => target
+      }
+      reconcile = command(
+        "reconcile",
+        "reservation_id" => "reserve-nested",
+        "usage_receipt" => usage_receipt,
+        "charge_back" => charge_back
+      )
+      first, first_stderr, first_status = run_helper(state_path, reconcile)
+
+      assert first_status.success?, first_stderr
+      assert_equal "reconciled", first.fetch("status")
+      assert_equal 250, first.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 250, first.dig("totals", "lanes", "lane-a", "consumed_tokens")
+      assert_equal 50, first.dig("totals", "aggregate", "released_tokens")
+      assert_equal 0, first.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal 250, first.dig("charge_back", "tokens")
+      assert_equal false, first.dig("charge_back", "physical_total_incremented")
+
+      replay, replay_stderr, replay_status = run_helper(state_path, reconcile)
+
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replay.fetch("status")
+      assert_equal 250, replay.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 250, replay.dig("totals", "lanes", "lane-a", "consumed_tokens")
+      assert_equal 50, replay.dig("totals", "aggregate", "released_tokens")
+
+      reserve_again = reservation(
+        id: "reserve-nested-again",
+        tokens: 100,
+        kind: "cross-task-delegation",
+        overrides: { "source" => source, "target" => target }
+      )
+      run_helper(state_path, command("reserve", "reservation" => reserve_again))
+      second_usage = usage_receipt(
+        id: "usage-second-delegation",
+        segments: [
+          { "id" => "physical-second-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "task-lane-a", "tokens" => 100 }
+        ]
+      )
+      duplicate_charge_back, duplicate_stderr, duplicate_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "reservation_id" => "reserve-nested-again",
+          "usage_receipt" => second_usage,
+          "charge_back" => charge_back
+        )
+      )
+      refute duplicate_status.success?
+      assert_nil duplicate_charge_back
+      assert_equal "charge-back-already-accounted", JSON.parse(duplicate_stderr).fetch("reason")
+    end
+  end
+
+  def test_approval_and_scoped_budget_increase_are_durable_and_do_not_grant_other_authority
+    with_state do |state_path|
+      initialize_budget(state_path)
+      blocked, stderr, status = reserve(state_path, id: "reserve-approval", tokens: 500)
+
+      assert status.success?, stderr
+      assert_equal "approval-required", blocked.fetch("status")
+      assert_equal "projected-approval-threshold", blocked.fetch("reason")
+
+      approval = {
+        "type" => "batch-token-budget-approval",
+        "version" => 1,
+        "id" => "approval-1",
+        "batch_id" => "batch-399",
+        "scope_id" => "lane-a",
+        "decision" => "approve-next-admission",
+        "approver" => "maintainer@example.test",
+        "evidence_ref" => "coordination://proven-human/approval-1",
+        "reason" => "Finish the bounded lane.",
+        "approved_at" => "2026-08-12T11:58:00Z",
+        "expires_at" => "2026-08-12T13:00:00Z"
+      }
+      approved, approval_stderr, approval_status = run_helper(
+        state_path,
+        command("approve", "approval" => approval)
+      )
+
+      assert approval_status.success?, approval_stderr
+      assert_equal "approved", approved.fetch("status")
+      assert_equal %w[security review qa exact-head ownership merge], approved.fetch("preserved_gates")
+
+      reused_id, reused_stderr, reused_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "reservation" => reservation(
+            id: "reserve-approval",
+            tokens: 500,
+            overrides: { "approval_id" => "approval-1" }
+          )
+        )
+      )
+      refute reused_status.success?
+      assert_nil reused_id
+      assert_equal "reservation-replay-mismatch", JSON.parse(reused_stderr).fetch("reason")
+
+      admitted, admitted_stderr, admitted_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "reservation" => reservation(
+            id: "reserve-approval-authorized",
+            tokens: 500,
+            overrides: { "approval_id" => "approval-1" }
+          )
+        )
+      )
+
+      assert admitted_status.success?, admitted_stderr
+      assert_equal "admitted-with-warning", admitted.fetch("status")
+      assert_equal %w[security review qa exact-head ownership merge], admitted.fetch("preserved_gates")
+
+      hard, hard_stderr, hard_status = reserve(state_path, id: "reserve-hard", lane_id: "lane-b", tokens: 500)
+      assert hard_status.success?, hard_stderr
+      assert_equal "budget-exhausted", hard.fetch("status")
+
+      override = {
+        "type" => "batch-token-budget-override",
+        "version" => 1,
+        "id" => "override-1",
+        "batch_id" => "batch-399",
+        "scope_id" => "aggregate",
+        "old_limit_tokens" => 1_000,
+        "new_limit_tokens" => 1_500,
+        "approver" => "maintainer@example.test",
+        "evidence_ref" => "coordination://proven-human/override-1",
+        "reason" => "Add bounded headroom for lane-b only in this batch.",
+        "approved_at" => "2026-08-12T12:00:00Z",
+        "expires_at" => "2026-08-12T14:00:00Z"
+      }
+      increased, override_stderr, override_status = run_helper(
+        state_path,
+        command("override", "override" => override)
+      )
+
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", increased.fetch("status")
+      assert_equal 1_500, increased.dig("totals", "aggregate", "limit_tokens")
+      assert_equal 600, increased.dig("totals", "lanes", "lane-a", "limit_tokens")
+      assert_equal 500, increased.dig("totals", "lanes", "lane-b", "limit_tokens")
+      assert_equal %w[security review qa exact-head ownership merge], increased.fetch("preserved_gates")
+
+      lane_override = override.merge(
+        "id" => "override-lane-b",
+        "scope_id" => "lane-b",
+        "old_limit_tokens" => 500,
+        "new_limit_tokens" => 800
+      )
+      run_helper(state_path, command("override", "override" => lane_override))
+      resumed, resume_stderr, resume_status = reserve(
+        state_path,
+        id: "reserve-hard",
+        lane_id: "lane-b",
+        tokens: 500
+      )
+      assert resume_status.success?, resume_stderr
+      assert_equal "admitted-with-warning", resumed.fetch("status")
+      assert_equal 1_000, resumed.dig("totals", "aggregate", "reserved_tokens")
+    end
+  end
+
+  def test_persisted_threshold_stops_block_smaller_followup_work_until_authorized
+    with_state do |state_path|
+      initialize_budget(state_path)
+
+      approval_stop, = reserve(state_path, id: "approval-stop", lane_id: "lane-a", tokens: 500)
+      assert_equal "approval-required", approval_stop.fetch("status")
+
+      smaller_approval, = reserve(state_path, id: "approval-smaller", lane_id: "lane-a", tokens: 100)
+      assert_equal "approval-required", smaller_approval.fetch("status")
+      assert_equal "persisted-approval-stop", smaller_approval.fetch("reason")
+
+      hard_stop, = reserve(state_path, id: "hard-stop", lane_id: "lane-b", tokens: 500)
+      assert_equal "budget-exhausted", hard_stop.fetch("status")
+
+      smaller_hard, = reserve(state_path, id: "hard-smaller", lane_id: "lane-b", tokens: 100)
+      assert_equal "budget-exhausted", smaller_hard.fetch("status")
+      assert_equal "persisted-hard-stop", smaller_hard.fetch("reason")
+      assert_equal 0, smaller_hard.dig("totals", "aggregate", "reserved_tokens")
+    end
+  end
+
+  def test_scoped_override_keeps_plan_identity_and_cannot_hide_an_unrelated_hard_stop
+    with_state do |state_path|
+      initialized, = initialize_budget(state_path)
+      plan_digest = initialized.dig("receipt", "budget_digest")
+      hard_stop, = reserve(state_path, id: "lane-a-hard", lane_id: "lane-a", tokens: 600)
+      assert_equal "budget-exhausted", hard_stop.fetch("status")
+
+      unrelated_override = {
+        "type" => "batch-token-budget-override",
+        "version" => 1,
+        "id" => "lane-b-only",
+        "batch_id" => "batch-399",
+        "scope_id" => "lane-b",
+        "old_limit_tokens" => 500,
+        "new_limit_tokens" => 550,
+        "approver" => "maintainer@example.test",
+        "evidence_ref" => "coordination://proven-human/lane-b-only",
+        "reason" => "Increase only lane-b headroom.",
+        "approved_at" => "2026-08-12T12:00:00Z",
+        "expires_at" => "2026-08-12T14:00:00Z"
+      }
+      overridden, override_stderr, override_status = run_helper(
+        state_path,
+        command("override", "override" => unrelated_override)
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", overridden.fetch("status")
+
+      replayed, replay_stderr, replay_status = initialize_budget(state_path)
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal plan_digest, JSON.parse(File.read(state_path)).fetch("budget_digest")
+
+      closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
+      assert closeout_status.success?, closeout_stderr
+      assert_equal "budget-exhausted", closeout.fetch("status")
+      assert_equal "NOT COMPLETE", closeout.fetch("completion")
+    end
+  end
+
+  def test_expensive_admission_fails_closed_on_stale_unknown_paused_or_compaction_telemetry
+    with_state do |state_path|
+      initialize_budget(state_path)
+
+      stale, = reserve(
+        state_path,
+        id: "stale",
+        overrides: {
+          "telemetry" => reservation(id: "ignored").fetch("telemetry").merge("observed_at" => "2026-08-12T11:00:00Z")
+        }
+      )
+      assert_equal "blocked", stale.fetch("status")
+      assert_equal "telemetry-stale", stale.fetch("reason")
+      assert_equal %w[read-only-discovery checkpoint], stale.fetch("allowed_actions")
+
+      unknown, = reserve(
+        state_path,
+        id: "unknown",
+        overrides: {
+          "telemetry" => reservation(id: "ignored").fetch("telemetry").merge("status" => "UNKNOWN")
+        }
+      )
+      assert_equal "blocked", unknown.fetch("status")
+      assert_equal "telemetry-unknown", unknown.fetch("reason")
+
+      paused, = reserve(state_path, id: "paused", overrides: { "target_state" => "paused" })
+      assert_equal "blocked", paused.fetch("status")
+      assert_equal "paused-target-requires-resume-approval", paused.fetch("reason")
+
+      compaction, = reserve(
+        state_path,
+        id: "compaction-authorized",
+        overrides: {
+          "telemetry" => reservation(id: "ignored").fetch("telemetry").merge("context_status" => "compaction-required")
+        }
+      )
+      assert_equal "approval-required", compaction.fetch("status")
+      assert_equal "compaction-required", compaction.fetch("reason")
+
+      compaction_approval = {
+        "type" => "batch-token-budget-approval",
+        "version" => 1,
+        "id" => "compaction-approval",
+        "batch_id" => "batch-399",
+        "scope_id" => "lane-a",
+        "decision" => "approve-next-admission",
+        "approver" => "maintainer@example.test",
+        "evidence_ref" => "coordination://proven-human/compaction-approval",
+        "reason" => "Allow one bounded post-compaction turn.",
+        "approved_at" => "2026-08-12T11:58:00Z",
+        "expires_at" => "2026-08-12T13:00:00Z"
+      }
+      run_helper(state_path, command("approve", "approval" => compaction_approval))
+      compaction_request = reservation(
+        id: "compaction",
+        overrides: {
+          "approval_id" => "compaction-approval",
+          "telemetry" => reservation(id: "ignored").fetch("telemetry").merge("context_status" => "compaction-required")
+        }
+      )
+      compacted, = run_helper(state_path, command("reserve", "reservation" => compaction_request))
+      assert_equal "admitted", compacted.fetch("status")
+
+      active, = reserve(
+        state_path,
+        id: "active",
+        kind: "scheduled-continuation",
+        overrides: { "target_state" => "active" }
+      )
+      assert_equal "coalesced", active.fetch("status")
+      assert_equal "target-already-active", active.fetch("reason")
+      assert_equal 100, active.dig("totals", "aggregate", "reserved_tokens")
+    end
+  end
+
+  def test_cross_task_delegation_requires_source_identity_and_delegation_approval
+    with_state do |state_path|
+      initialize_budget(state_path)
+      target = task_identity(task_id: "other-task")
+      source = task_identity(task_id: "source-task")
+      source["batch_id"] = "source-batch"
+      cross_task = reservation(
+        id: "cross-task-1",
+        tokens: 260,
+        kind: "cross-task-delegation",
+        overrides: {
+          "source" => source,
+          "target" => target,
+          "telemetry" => reservation(id: "ignored", tokens: 260).fetch("telemetry").merge(
+            "self_estimate_tokens" => 100,
+            "descendant_estimate_tokens" => 160,
+            "descendant_target_ids" => %w[retained-child retained-grandchild]
+          )
+        }
+      )
+      blocked, stderr, status = run_helper(
+        state_path,
+        command("reserve", "reservation" => cross_task)
+      )
+
+      assert status.success?, stderr
+      assert_equal "approval-required", blocked.fetch("status")
+      assert_equal "projected-delegation-threshold", blocked.fetch("reason")
+      assert_equal 0, blocked.dig("totals", "aggregate", "reserved_tokens")
+
+      approval = {
+        "type" => "batch-token-budget-approval",
+        "version" => 1,
+        "id" => "cross-approval",
+        "batch_id" => "batch-399",
+        "scope_id" => "lane-a",
+        "decision" => "approve-next-admission",
+        "approver" => "maintainer@example.test",
+        "evidence_ref" => "coordination://proven-human/cross-approval",
+        "reason" => "Allow one bounded cross-task wake.",
+        "approved_at" => "2026-08-12T11:58:00Z",
+        "expires_at" => "2026-08-12T13:00:00Z"
+      }
+      run_helper(state_path, command("approve", "approval" => approval))
+      cross_task["id"] = "cross-task-1-authorized"
+      cross_task["message_fingerprint"] = "message-cross-task-1-authorized"
+      cross_task["approval_id"] = "cross-approval"
+      admitted, admitted_stderr, admitted_status = run_helper(
+        state_path,
+        command("reserve", "reservation" => cross_task)
+      )
+      assert admitted_status.success?, admitted_stderr
+      assert_equal "admitted", admitted.fetch("status")
+      assert_equal 260, admitted.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal %w[other-task retained-child retained-grandchild],
+                   admitted.dig("receipt", "overshoot_envelope", "target_ids")
+    end
+  end
+
+  def test_release_then_replacement_or_escalation_is_fenced_and_restart_safe
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "prior", tokens: 200)
+
+      predecessor_missing, = reserve(
+        state_path,
+        id: "replacement-without-predecessor",
+        tokens: 200,
+        target_id: "replacement-target",
+        kind: "replacement"
+      )
+      assert_equal "blocked", predecessor_missing.fetch("status")
+      assert_equal "replacement-predecessor-required", predecessor_missing.fetch("reason")
+
+      unfenced, = reserve(
+        state_path,
+        id: "replacement-too-early",
+        tokens: 200,
+        kind: "replacement",
+        overrides: { "replaces_reservation_id" => "prior" }
+      )
+      assert_equal "blocked", unfenced.fetch("status")
+      assert_equal "replacement-prior-not-reconciled", unfenced.fetch("reason")
+
+      release = command(
+        "release",
+        "release" => {
+          "type" => "batch-token-release",
+          "version" => 1,
+          "id" => "release-prior",
+          "reservation_id" => "prior",
+          "reason" => "Worker stopped before its model turn."
+        }
+      )
+      released, release_stderr, release_status = run_helper(state_path, release)
+      assert release_status.success?, release_stderr
+      assert_equal "released", released.fetch("status")
+      assert_equal 0, released.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal 200, released.dig("totals", "aggregate", "released_tokens")
+
+      replay, replay_stderr, replay_status = run_helper(state_path, release)
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replay.fetch("status")
+      assert_equal 200, replay.dig("totals", "aggregate", "released_tokens")
+
+      replacement, replacement_stderr, replacement_status = reserve(
+        state_path,
+        id: "replacement",
+        tokens: 200,
+        kind: "escalation",
+        overrides: { "replaces_reservation_id" => "prior" }
+      )
+      assert replacement_status.success?, replacement_stderr
+      assert_equal "admitted", replacement.fetch("status")
+      assert_equal 200, replacement.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal 400, replacement.dig("totals", "aggregate", "allocated_tokens")
+
+      reused_release = release.merge(
+        "release" => release.fetch("release").merge(
+          "reservation_id" => "replacement",
+          "reason" => "A different worker stopped."
+        )
+      )
+      output, reused_stderr, reused_status = run_helper(state_path, reused_release)
+      refute reused_status.success?
+      assert_nil output
+      assert_equal "release-replay-mismatch", JSON.parse(reused_stderr).fetch("reason")
+    end
+  end
+
+  def test_successful_retry_after_released_headroom_resolves_prior_hard_decision
+    with_state do |state_path|
+      retry_budget = budget(state_path: state_path)
+      retry_budget["scopes"]["lanes"].transform_values! { { "limit_tokens" => 700 } }
+      retry_budget["thresholds"] = {
+        "warning_percent" => 80,
+        "approval_percent" => 95,
+        "hard_percent" => 100
+      }
+      run_helper(state_path, command("initialize", "budget" => retry_budget))
+      reserve(state_path, id: "occupying", lane_id: "lane-a", tokens: 600)
+      retried_request = reservation(id: "retry-after-headroom", lane_id: "lane-b", tokens: 500)
+
+      denied, = run_helper(state_path, command("reserve", "reservation" => retried_request))
+      assert_equal "budget-exhausted", denied.fetch("status")
+
+      %w[occupying retry-after-headroom].each_with_index do |reservation_id, index|
+        if index == 1
+          admitted, admitted_stderr, admitted_status = run_helper(
+            state_path,
+            command("reserve", "reservation" => retried_request)
+          )
+          assert admitted_status.success?, admitted_stderr
+          assert_equal "admitted", admitted.fetch("status")
+        end
+        run_helper(
+          state_path,
+          command(
+            "release",
+            "release" => {
+              "type" => "batch-token-release",
+              "version" => 1,
+              "id" => "release-#{reservation_id}",
+              "reservation_id" => reservation_id,
+              "reason" => "No usage was observed."
+            }
+          )
+        )
+      end
+
+      closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
+      assert closeout_status.success?, closeout_stderr
+      assert_equal "complete", closeout.fetch("status")
+      assert_equal "COMPLETE", closeout.fetch("completion")
+    end
+  end
+
+  def test_bounded_overshoot_is_measured_per_admitted_target_and_multiple_turns_fail_closed
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "overshoot", tokens: 200)
+      receipt = usage_receipt(
+        id: "usage-overshoot",
+        segments: [
+          { "id" => "overshoot-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "task-lane-a", "tokens" => 225 }
+        ]
+      )
+      receipt["overshoot"] = [{ "target_id" => "task-lane-a", "tokens" => 25, "turns" => 2 }]
+
+      denied, stderr, status = run_helper(
+        state_path,
+        command("reconcile", "reservation_id" => "overshoot", "usage_receipt" => receipt)
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", denied.fetch("status")
+      assert_equal "overshoot-envelope-invalid", denied.fetch("reason")
+      assert_equal 0, denied.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 200, denied.dig("totals", "aggregate", "reserved_tokens")
+
+      receipt["overshoot"] = [{ "target_id" => "task-lane-a", "tokens" => 25, "turns" => 1 }]
+      reconciled, reconcile_stderr, reconcile_status = run_helper(
+        state_path,
+        command("reconcile", "reservation_id" => "overshoot", "usage_receipt" => receipt)
+      )
+
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      assert_equal 25, reconciled.dig("receipt", "overshoot_tokens")
+      assert_equal 1, reconciled.dig("receipt", "overshoot_turn_count")
+      assert_equal 225, reconciled.dig("totals", "aggregate", "consumed_tokens")
+    end
+  end
+
+  def test_authoritative_usage_targets_must_match_the_reservation_envelope
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "target-bound", tokens: 200, target_id: "reserved-task")
+      wrong_target = usage_receipt(
+        id: "wrong-target-usage",
+        segments: [
+          { "id" => "wrong-target-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "another-task", "tokens" => 100 }
+        ]
+      )
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command("reconcile", "reservation_id" => "target-bound", "usage_receipt" => wrong_target)
+      )
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-target-reservation-mismatch", blocked.fetch("reason")
+      assert_equal 200, blocked.dig("totals", "aggregate", "reserved_tokens")
+
+      corrected = usage_receipt(
+        id: "correct-target-usage",
+        segments: [
+          { "id" => "correct-target-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "reserved-task", "tokens" => 100 }
+        ]
+      )
+      reconciled, = run_helper(
+        state_path,
+        command("reconcile", "reservation_id" => "target-bound", "usage_receipt" => corrected)
+      )
+      assert_equal "reconciled", reconciled.fetch("status")
+    end
+  end
+
+  def test_lane_overshoot_to_its_hard_limit_blocks_closeout_even_with_aggregate_headroom
+    with_state do |state_path|
+      overshoot_budget = budget(state_path: state_path)
+      overshoot_budget["thresholds"] = {
+        "warning_percent" => 50,
+        "approval_percent" => 95,
+        "hard_percent" => 100
+      }
+      run_helper(state_path, command("initialize", "budget" => overshoot_budget))
+      reserve(state_path, id: "lane-hard-overshoot", tokens: 500)
+      receipt = usage_receipt(
+        id: "lane-hard-usage",
+        segments: [
+          { "id" => "lane-hard-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "task-lane-a", "tokens" => 650 }
+        ]
+      )
+      receipt["overshoot"] = [{ "target_id" => "task-lane-a", "tokens" => 150, "turns" => 1 }]
+      reconciled, = run_helper(
+        state_path,
+        command("reconcile", "reservation_id" => "lane-hard-overshoot", "usage_receipt" => receipt)
+      )
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
+      assert closeout_status.success?, closeout_stderr
+      assert_equal "budget-exhausted", closeout.fetch("status")
+      assert_equal "NOT COMPLETE", closeout.fetch("completion")
+      assert_equal 650, closeout.dig("totals", "lanes", "lane-a", "consumed_tokens")
+      assert_equal 650, closeout.dig("totals", "aggregate", "consumed_tokens")
+    end
+  end
+
+  def test_budget_exhausted_checkpoint_and_closeout_capture_exact_restart_evidence
+    with_state do |state_path|
+      initialize_budget(state_path)
+      hard, = reserve(state_path, id: "hard", tokens: 600)
+      assert_equal "budget-exhausted", hard.fetch("status")
+      assert_equal "required", hard.fetch("checkpoint_status")
+
+      checkpoint = {
+        "type" => "batch-token-budget-checkpoint",
+        "version" => 1,
+        "id" => "checkpoint-hard-1",
+        "batch_id" => "batch-399",
+        "scope_id" => "lane-a",
+        "status" => "budget-exhausted",
+        "completion" => "NOT COMPLETE",
+        "exact_work" => ["Implemented helper", "Ran focused tests"],
+        "branch" => "jg-codex/399-hierarchical-token-budgets",
+        "head_sha" => "a" * 40,
+        "gates" => {
+          "security" => "passed",
+          "review" => "remaining",
+          "qa" => "not-applicable",
+          "exact-head" => "remaining",
+          "ownership" => "held",
+          "merge" => "not-authorized"
+        },
+        "receipt_cutoff" => "runtime-sequence:42",
+        "resume_conditions" => ["Apply scoped budget increase", "Rerun exact-head gates"],
+        "resume_action" => "Resume batch-399 from checkpoint-hard-1 after scoped approval."
+      }
+      saved, checkpoint_stderr, checkpoint_status = run_helper(
+        state_path,
+        command("checkpoint", "checkpoint" => checkpoint)
+      )
+
+      assert checkpoint_status.success?, checkpoint_stderr
+      assert_equal "checkpointed", saved.fetch("status")
+      assert_equal "NOT COMPLETE", saved.dig("checkpoint", "completion")
+      assert_equal "a" * 40, saved.dig("checkpoint", "head_sha")
+      assert_equal checkpoint.fetch("gates"), saved.dig("checkpoint", "gates")
+
+      closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
+      assert closeout_status.success?, closeout_stderr
+      assert_equal "budget-exhausted", closeout.fetch("status")
+      assert_equal "NOT COMPLETE", closeout.fetch("completion")
+      assert_equal checkpoint, closeout.fetch("latest_checkpoint")
+      assert_equal 0, closeout.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 0, closeout.dig("totals", "aggregate", "reserved_tokens")
+
+      aggregate_override = {
+        "type" => "batch-token-budget-override",
+        "version" => 1,
+        "id" => "checkpoint-aggregate-increase",
+        "batch_id" => "batch-399",
+        "scope_id" => "aggregate",
+        "old_limit_tokens" => 1_000,
+        "new_limit_tokens" => 1_500,
+        "approver" => "maintainer@example.test",
+        "evidence_ref" => "coordination://proven-human/checkpoint-increase",
+        "reason" => "Resume from the hard checkpoint.",
+        "approved_at" => "2026-08-12T11:58:00Z",
+        "expires_at" => "2026-08-12T13:00:00Z"
+      }
+      lane_override = aggregate_override.merge(
+        "id" => "checkpoint-lane-increase",
+        "scope_id" => "lane-a",
+        "old_limit_tokens" => 600,
+        "new_limit_tokens" => 1_300
+      )
+      run_helper(state_path, command("override", "override" => aggregate_override))
+      run_helper(state_path, command("override", "override" => lane_override))
+      resumed, = reserve(state_path, id: "hard", tokens: 600)
+      assert_equal "admitted", resumed.fetch("status")
+      run_helper(
+        state_path,
+        command(
+          "release",
+          "release" => {
+            "type" => "batch-token-release",
+            "version" => 1,
+            "id" => "release-resumed-hard",
+            "reservation_id" => "hard",
+            "reason" => "Resumed boundary completed without observable use."
+          }
+        )
+      )
+      recovered, = run_helper(state_path, command("closeout"))
+      assert_equal "complete", recovered.fetch("status")
+      assert_equal "COMPLETE", recovered.fetch("completion")
+    end
+  end
+
+  def test_stale_malformed_unknown_and_duplicate_authoritative_receipts_fail_closed
+    with_state do |state_path|
+      receipt_budget = budget(state_path: state_path)
+      receipt_budget["scopes"]["lanes"]["lane-a"]["limit_tokens"] = 1_000
+      run_helper(state_path, command("initialize", "budget" => receipt_budget))
+      receipt_envelope = reservation(id: "receipt-envelope", tokens: 300).fetch("telemetry").merge(
+        "self_estimate_tokens" => 200,
+        "descendant_estimate_tokens" => 100,
+        "descendant_target_ids" => %w[child-a grandchild-a]
+      )
+      reserve(
+        state_path,
+        id: "receipt-gate-1",
+        tokens: 300,
+        overrides: { "telemetry" => receipt_envelope }
+      )
+      stale_receipt = usage_receipt(id: "stale-usage")
+      stale_receipt["observed_at"] = "2026-08-12T11:00:00Z"
+      stale, = run_helper(
+        state_path,
+        command("reconcile", "reservation_id" => "receipt-gate-1", "usage_receipt" => stale_receipt)
+      )
+      assert_equal "blocked", stale.fetch("status")
+      assert_equal "usage-telemetry-stale", stale.fetch("reason")
+      assert_equal 300, stale.dig("totals", "aggregate", "reserved_tokens")
+
+      unknown_receipt = usage_receipt(id: "unknown-usage")
+      unknown_receipt["producer"]["kind"] = "UNKNOWN"
+      unknown, = run_helper(
+        state_path,
+        command("reconcile", "reservation_id" => "receipt-gate-1", "usage_receipt" => unknown_receipt)
+      )
+      assert_equal "blocked", unknown.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", unknown.fetch("reason")
+
+      reconcile = command(
+        "reconcile",
+        "reservation_id" => "receipt-gate-1",
+        "usage_receipt" => usage_receipt(id: "counted-usage")
+      )
+      counted, = run_helper(state_path, reconcile)
+      assert_equal "reconciled", counted.fetch("status")
+      assert_equal 250, counted.dig("totals", "aggregate", "consumed_tokens")
+
+      reserve(
+        state_path,
+        id: "receipt-gate-2",
+        tokens: 300,
+        overrides: { "telemetry" => receipt_envelope }
+      )
+      duplicate = usage_receipt(id: "duplicate-wrapper")
+      denied, = run_helper(
+        state_path,
+        command("reconcile", "reservation_id" => "receipt-gate-2", "usage_receipt" => duplicate)
+      )
+      assert_equal "blocked", denied.fetch("status")
+      assert_equal "usage-segment-already-accounted", denied.fetch("reason")
+      assert_equal 250, denied.dig("totals", "aggregate", "consumed_tokens")
+    end
+  end
+
+  def test_coordinator_scope_and_all_expensive_continuation_kinds_use_the_same_admission_gate
+    Dir.mktmpdir("batch-token-budget-admission-kinds") do |directory|
+      %w[spawn retry review-wave scheduled-continuation monitor resume].each do |kind|
+        state_path = File.join(directory, "#{kind}.json")
+        initialize_budget(state_path)
+        overrides = kind == "resume" ? { "target_state" => "paused" } : {}
+        blocked, stderr, status = reserve(
+          state_path,
+          id: "#{kind}-admission",
+          tokens: 500,
+          kind: kind,
+          overrides: overrides
+        )
+        assert status.success?, stderr
+        assert_equal "approval-required", blocked.fetch("status"), kind
+        assert_equal 0, blocked.dig("totals", "aggregate", "reserved_tokens"), kind
+      end
+
+      coordinator_state = File.join(directory, "coordinator.json")
+      initialize_budget(coordinator_state)
+      coordinator_target = task_identity(task_id: "root-399", lane_id: "coordinator")
+      coordinator_reservation = reservation(
+        id: "coordinator-turn",
+        tokens: 150,
+        overrides: { "scope_id" => "coordinator", "target" => coordinator_target }
+      )
+      admitted, stderr, status = run_helper(
+        coordinator_state,
+        command("reserve", "reservation" => coordinator_reservation)
+      )
+      assert status.success?, stderr
+      assert_equal "admitted-with-warning", admitted.fetch("status")
+      assert_equal 150, admitted.dig("totals", "coordinator", "reserved_tokens")
+      assert_equal 150, admitted.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal "warning", admitted.dig("checkpoint", "status")
+    end
+  end
+
+  def test_expired_scoped_overrides_restore_prior_limits_before_admission
+    with_state do |state_path|
+      initialize_budget(state_path)
+      aggregate_override = {
+        "type" => "batch-token-budget-override",
+        "version" => 1,
+        "id" => "short-aggregate",
+        "batch_id" => "batch-399",
+        "scope_id" => "aggregate",
+        "old_limit_tokens" => 1_000,
+        "new_limit_tokens" => 1_500,
+        "approver" => "maintainer@example.test",
+        "evidence_ref" => "coordination://proven-human/short-window",
+        "reason" => "One short admission window.",
+        "approved_at" => "2026-08-12T11:58:00Z",
+        "expires_at" => "2026-08-12T12:05:00Z"
+      }
+      lane_override = aggregate_override.merge(
+        "id" => "short-lane",
+        "scope_id" => "lane-a",
+        "old_limit_tokens" => 600,
+        "new_limit_tokens" => 800
+      )
+      run_helper(state_path, command("override", "override" => aggregate_override))
+
+      incompatible_lane_override = lane_override.merge(
+        "id" => "incompatible-lane",
+        "new_limit_tokens" => 1_200,
+        "expires_at" => "2026-08-12T14:00:00Z"
+      )
+      incompatible, incompatible_stderr, incompatible_status = run_helper(
+        state_path,
+        command("override", "override" => incompatible_lane_override)
+      )
+      refute incompatible_status.success?
+      assert_nil incompatible
+      assert_equal "override-outlives-required-aggregate-headroom",
+                   JSON.parse(incompatible_stderr).fetch("reason")
+
+      run_helper(state_path, command("override", "override" => lane_override))
+
+      expired_command = command(
+        "reserve",
+        "evaluated_at" => "2026-08-12T13:00:00Z",
+        "reservation" => reservation(
+          id: "after-expiry",
+          tokens: 600,
+          overrides: {
+            "telemetry" => reservation(id: "ignored", tokens: 600).fetch("telemetry").merge(
+              "observed_at" => "2026-08-12T12:59:00Z"
+            )
+          }
+        )
+      )
+      stopped, stderr, status = run_helper(state_path, expired_command)
+
+      assert status.success?, stderr
+      assert_equal "budget-exhausted", stopped.fetch("status")
+      assert_equal 1_000, stopped.dig("totals", "aggregate", "limit_tokens")
+      assert_equal 600, stopped.dig("totals", "lanes", "lane-a", "limit_tokens")
+      expiration_receipts = JSON.parse(File.read(state_path)).fetch("receipts").count do |receipt|
+        receipt["type"] == "batch-token-budget-override-expiration-receipt"
+      end
+      assert_equal 2, expiration_receipts
+    end
+  end
+
+  def test_unattributed_usage_is_reported_and_blocks_clean_closeout
+    with_state do |state_path|
+      initialize_budget(state_path)
+      unattributed_envelope = reservation(id: "ignored", tokens: 200).fetch("telemetry").merge(
+        "self_estimate_tokens" => 150,
+        "descendant_estimate_tokens" => 50,
+        "descendant_target_ids" => ["unknown-child"]
+      )
+      reserve(state_path, id: "unattributed", tokens: 200, overrides: { "telemetry" => unattributed_envelope })
+      receipt = usage_receipt(
+        id: "usage-unattributed",
+        segments: [
+          { "id" => "known-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "task-lane-a", "tokens" => 100 },
+          { "id" => "unknown-owner", "kind" => "descendant", "scope_id" => "UNKNOWN", "target_id" => "unknown-child", "tokens" => 50 }
+        ]
+      )
+      reconciled, = run_helper(
+        state_path,
+        command("reconcile", "reservation_id" => "unattributed", "usage_receipt" => receipt)
+      )
+
+      assert_equal "reconciled", reconciled.fetch("status")
+      assert_equal 150, reconciled.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 100, reconciled.dig("totals", "lanes", "lane-a", "consumed_tokens")
+      assert_equal 50, reconciled.dig("totals", "aggregate", "unattributed_tokens")
+
+      closeout, = run_helper(state_path, command("closeout"))
+      assert_equal "not-complete", closeout.fetch("status")
+      assert_equal "NOT COMPLETE", closeout.fetch("completion")
+      assert_equal 50, closeout.fetch("unattributed_tokens")
+    end
+  end
+
+  def test_unknown_scope_usage_still_must_match_the_admitted_target_envelope
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "unknown-target-envelope", tokens: 200)
+      receipt = usage_receipt(
+        id: "usage-unknown-target-mismatch",
+        segments: [
+          {
+            "id" => "unknown-target-segment",
+            "kind" => "descendant",
+            "scope_id" => "UNKNOWN",
+            "target_id" => "not-admitted",
+            "tokens" => 50
+          }
+        ]
+      )
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command("reconcile", "reservation_id" => "unknown-target-envelope", "usage_receipt" => receipt)
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-target-reservation-mismatch", blocked.fetch("reason")
+      assert_equal 0, blocked.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 200, blocked.dig("totals", "aggregate", "reserved_tokens")
+    end
+  end
+
+  def test_corrupt_persisted_accounting_fails_closed_after_restart
+    with_state do |state_path|
+      initialize_budget(state_path)
+      state = JSON.parse(File.read(state_path))
+      state.dig("scopes", "aggregate")["reserved_tokens"] = -1
+      File.write(state_path, JSON.generate(state))
+
+      output, stderr, status = run_helper(state_path, command("closeout"))
+
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+    end
+  end
+
+  def test_command_time_is_monotonic_and_human_receipts_cannot_take_effect_early
+    with_state do |state_path|
+      initialize_budget(state_path)
+      future_approval = {
+        "type" => "batch-token-budget-approval",
+        "version" => 1,
+        "id" => "future-approval",
+        "batch_id" => "batch-399",
+        "scope_id" => "lane-a",
+        "decision" => "approve-next-admission",
+        "approver" => "maintainer@example.test",
+        "evidence_ref" => "coordination://proven-human/future-approval",
+        "reason" => "This decision has not happened yet.",
+        "approved_at" => "2026-08-12T12:30:00Z",
+        "expires_at" => "2026-08-12T13:00:00Z"
+      }
+      output, future_stderr, future_status = run_helper(
+        state_path,
+        command("approve", "approval" => future_approval)
+      )
+      refute future_status.success?
+      assert_nil output
+      assert_equal "invalid-approval", JSON.parse(future_stderr).fetch("reason")
+
+      future_override = {
+        "type" => "batch-token-budget-override",
+        "version" => 1,
+        "id" => "future-override",
+        "batch_id" => "batch-399",
+        "scope_id" => "lane-a",
+        "old_limit_tokens" => 600,
+        "new_limit_tokens" => 700,
+        "approver" => "maintainer@example.test",
+        "evidence_ref" => "coordination://proven-human/future-override",
+        "reason" => "This increase has not happened yet.",
+        "approved_at" => "2026-08-12T12:30:00Z",
+        "expires_at" => "2026-08-12T13:00:00Z"
+      }
+      override_output, override_stderr, override_status = run_helper(
+        state_path,
+        command("override", "override" => future_override)
+      )
+      refute override_status.success?
+      assert_nil override_output
+      assert_equal "invalid-override", JSON.parse(override_stderr).fetch("reason")
+
+      run_helper(state_path, command("closeout", "evaluated_at" => "2026-08-12T14:00:00Z"))
+      backdated, backdated_stderr, backdated_status = run_helper(
+        state_path,
+        command("reserve", "reservation" => reservation(id: "backdated"))
+      )
+      refute backdated_status.success?
+      assert_nil backdated
+      assert_equal "command-time-rollback", JSON.parse(backdated_stderr).fetch("reason")
+    end
+  end
+end

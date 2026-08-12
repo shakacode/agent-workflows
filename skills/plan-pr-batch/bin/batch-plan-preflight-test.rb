@@ -277,6 +277,27 @@ class BatchPlanPreflightTest < Minitest::Test
     input
   end
 
+  def token_budget(lane_limits: { "lane-a" => 600 })
+    {
+      "type" => "batch-token-budget",
+      "version" => 1,
+      "batch_id" => "batch-plan-1",
+      "state_path" => "/var/tmp/batch-plan-1-token-budget.json",
+      "scopes" => {
+        "aggregate" => { "limit_tokens" => 1_000 },
+        "coordinator" => { "limit_tokens" => 300 },
+        "lanes" => lane_limits.transform_values { |limit| { "limit_tokens" => limit } }
+      },
+      "thresholds" => {
+        "warning_percent" => 50,
+        "approval_percent" => 80,
+        "hard_percent" => 100
+      },
+      "telemetry" => { "max_age_seconds" => 900 },
+      "delegation" => { "approval_threshold_tokens" => 250 }
+    }
+  end
+
   def test_ordinary_durable_lane_state_advances_serialized_work_without_trust_material
     lanes = [lane("lane-b"), lane("lane-a")]
     lanes.each { |record| record["serialization_group"] = "changelog-writers" }
@@ -863,6 +884,78 @@ class BatchPlanPreflightTest < Minitest::Test
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "canonical-launch-target-duplicate"
+  end
+
+  def test_complete_opt_in_hierarchical_token_budget_is_accepted
+    input = input_for
+    input.fetch("plan")["token_budget"] = token_budget
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_empty result.fetch("violations")
+  end
+
+  def test_top_level_token_budget_cannot_coexist_with_inline_lane_budget_metadata
+    input = input_for
+    input.fetch("plan")["token_budget"] = token_budget
+    input.dig("plan", "lanes", 0)["token_budget"] = { "limit_tokens" => 100 }
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_equal "rejected", result.fetch("status")
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-placement-invalid"
+  end
+
+  def test_partial_or_mismatched_token_budget_fails_closed_without_affecting_legacy_plans
+    input = input_for(lanes: [lane("lane-a"), lane("lane-b")])
+    input.fetch("plan")["token_budget"] = token_budget
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_equal "rejected", result.fetch("status")
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-lane-scopes-mismatch"
+
+    legacy = input_for
+    legacy_result, legacy_stderr, legacy_status = evaluate(legacy)
+    assert legacy_status.success?, legacy_stderr
+    assert_equal "accepted", legacy_result.fetch("status")
+  end
+
+  def test_opt_in_token_budget_requires_an_absolute_durable_state_path
+    input = input_for
+    input.fetch("plan")["token_budget"] = token_budget
+    input.dig("plan", "token_budget").delete("state_path")
+
+    missing, _stderr, missing_status = evaluate(input)
+
+    refute missing_status.success?
+    assert_includes missing.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-state-path-invalid"
+
+    input.dig("plan", "token_budget")["state_path"] = "tmp/budget.json"
+    relative, _stderr, relative_status = evaluate(input)
+
+    refute relative_status.success?
+    assert_includes relative.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-state-path-invalid"
+  end
+
+  def test_token_budget_rejects_lane_ids_reserved_for_parent_scopes
+    reserved_lane = lane("coordinator")
+    input = input_for(lanes: [reserved_lane])
+    input.fetch("plan")["token_budget"] = token_budget(lane_limits: { "coordinator" => 200 })
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-lane-id-reserved"
   end
 
   def test_unsupported_contract_fails_closed_with_structured_violation

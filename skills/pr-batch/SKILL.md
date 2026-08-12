@@ -488,8 +488,13 @@ Before implementation or worker launch, produce:
     timeout or whole-group `TERM` then `KILL` records best-effort
     field-granular `UNKNOWN`, names reconciliation, and does not block worker
     launch.
+13. For an opt-in `batch-token-budget v1`, the exact aggregate, coordinator,
+    and all-lane limits; warning/approval/hard thresholds; telemetry freshness;
+    delegation threshold; durable state path; current per-scope totals; and
+    latest receipt cutoff. Any partial or `UNKNOWN` required value blocks new
+    expensive work, not read-only discovery or checkpointing.
 <!-- host-branch: codex-only start -->
-13. A final `/goal` prompt when the user asked for Goal mode.
+14. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
 After any target-specific invocation line, each pasteable batch prompt must put
@@ -519,6 +524,51 @@ directory/directories compatibility plus the lockfile content-diff note:
 
 This per-PR requirement also applies to each individual target PR in the batch
 whose committed lockfiles change.
+
+## Hierarchical Token Budget
+
+When the Batch Plan carries `batch-token-budget v1`, resolve
+`PR_BATCH_SKILL_DIR` through the explicit environment variable, loaded skill
+base, then repo-local pinned-copy chain and run
+`"${PR_BATCH_SKILL_DIR}/bin/batch-token-budget" --state <plan.state_path>` as the
+admission/accounting boundary. Initialize it from the exact preflighted object.
+The CLI path must equal the absolute coordinator-owned `state_path` in that
+object.
+Plans with no budget metadata retain legacy behavior.
+
+Reserve conservative headroom before every coordinator/worker model turn,
+spawn, retry, review wave, scheduled continuation, monitor wake, resume,
+replacement, escalation, or cross-task delegation. The locked helper prevents
+concurrent over-allocation and replays reservation/release ids safely. Unchanged
+active targets coalesce. Cross-task admission resolves canonical source and
+target task/root/batch/lane plus issue/PR identities from metadata only and
+reserves the target batch/lane before its turn. Paused targets need resume
+admission; retained descendants are included in the estimate.
+
+Reconcile only fresh `authoritative-token-usage-receipt v1` evidence from a
+named host/runtime/backend producer. Count each physical self or descendant
+segment once in its owning lane and aggregate, release unused reservation, and
+fail closed on missing, stale, malformed, duplicate, conflicting, or `UNKNOWN`
+telemetry. Never use worker self-attestation as authoritative. Cross-task causal
+charge-back includes target self plus descendant use without incrementing a
+physical aggregate twice. Replacement/escalation waits until its predecessor is
+released or reconciled.
+
+Warning persists a compact checkpoint and continues. Approval persists a human
+receipt and blocks every new expensive action until a scope-matched unexpired
+decision. Hard returns `budget-exhausted / NOT COMPLETE`; unchanged retries and
+automatic continuations stay stopped until a scoped increase or resume decision
+restores headroom. No budget approval or override grants or weakens security,
+review, QA, exact-head, ownership, or merge gates. The bounded overshoot is one
+already-admitted in-flight turn per admitted target/retained descendant, and
+authoritative reconciliation must measure it.
+
+Before a hard-stop handoff, persist exact completed work, branch, full head SHA,
+all remaining gates, receipt cutoff, resume conditions, and a copy-paste resume
+action. Closeout reports allocated, consumed, currently reserved, cumulatively
+released, and unattributed tokens for aggregate/coordinator/every lane, plus
+overshoot. Full JSON contracts are in
+[Hierarchical Token Budgets](../../docs/token-budgets.md).
 
 ## Stage-Typed Dependencies
 
@@ -707,8 +757,9 @@ Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+Observed host/model/effort:<host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
+Budget:<none|v1 A/R/L,W/P/H,age,del,state>;stop
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
@@ -727,6 +778,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
+Budget:v1 reserve/reconcile auth usage;warn checkpoint;approval/hard stop;gates unchanged.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
