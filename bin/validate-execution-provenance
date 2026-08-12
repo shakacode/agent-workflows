@@ -1,0 +1,298 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "time"
+
+module ValidateExecutionProvenance
+  SCHEMA = "execution-provenance-v0"
+  REQUIRED_FIELDS = %w[
+    batch
+    lane
+    target
+    scenario_class
+    role
+    route_policy
+    requested
+    observed
+    dispatcher
+    binding_source
+    host
+    session_id
+    thread_id
+    started_at
+    ended_at
+    influenced_commits
+    attribution_confidence
+    mismatch_reason
+    recorded_authority
+    disposition
+  ].freeze
+  ROLES = %w[implementation review QA integration].freeze
+  BINDING_SOURCES = %w[
+    host-session-metadata
+    structured-command-result
+    structured-api-result
+    UNKNOWN
+  ].freeze
+  DISPOSITIONS = %w[
+    bound-exact-match
+    unbound-exact-route
+    silent-substitution
+    coordinator-pair-inheritance
+    authorized-fallback
+  ].freeze
+  ATTRIBUTION_CONFIDENCES = %w[exact timeline-derived mixed UNKNOWN].freeze
+
+  module_function
+
+  def run(path)
+    failures = validate_path(path)
+
+    if failures.empty?
+      puts "PASS execution provenance schema"
+      0
+    else
+      warn failures.join("\n")
+      1
+    end
+  end
+
+  def validate_path(path)
+    text = File.read(path, encoding: "UTF-8")
+    if File.extname(path).casecmp(".md").zero?
+      validate_markdown(text, path)
+    else
+      validate_json(text, path)
+    end
+  rescue SystemCallError => e
+    ["#{path}: #{e.message}"]
+  end
+
+  def validate_markdown(text, path)
+    blocks = text.scan(/^```json[ \t]+execution-provenance\n(.*?)^```\s*$/m).flatten
+    return ["#{path}: missing ```json execution-provenance fenced block"] if blocks.empty?
+
+    blocks.each_with_index.flat_map do |block, index|
+      validate_json(block, "#{path}: execution-provenance block #{index + 1}")
+    end
+  end
+
+  def validate_json(text, label)
+    document = JSON.parse(text)
+    validate_document(document, label)
+  rescue JSON::ParserError => e
+    ["#{label}: invalid JSON: #{e.message}"]
+  end
+
+  def validate_document(document, label)
+    return ["#{label}: top-level value must be a JSON object"] unless document.is_a?(Hash)
+
+    failures = []
+    failures << "#{label}: schema must be #{SCHEMA.inspect}" unless document["schema"] == SCHEMA
+    receipt = document["execution_provenance"]
+    unless receipt.is_a?(Hash)
+      failures << "#{label}: execution_provenance must be an object"
+      return failures
+    end
+
+    REQUIRED_FIELDS.each do |field|
+      failures << "#{label}: execution_provenance.#{field} must be present" unless receipt.key?(field)
+    end
+    unless ROLES.include?(receipt["role"])
+      failures << "#{label}: execution_provenance.role must be one of: #{ROLES.join(', ')}"
+    end
+    unless receipt["route_policy"] == "exact-route"
+      failures << "#{label}: execution_provenance.route_policy must be exact-route"
+    end
+    failures.concat(validate_metadata(receipt, "#{label}: execution_provenance"))
+    failures.concat(validate_route_tuple(receipt["requested"], "#{label}: execution_provenance.requested", known: true))
+    failures.concat(validate_route_tuple(receipt["observed"], "#{label}: execution_provenance.observed", known: false))
+    unless BINDING_SOURCES.include?(receipt["binding_source"])
+      failures << "#{label}: execution_provenance.binding_source must be one of: #{BINDING_SOURCES.join(', ')}"
+    end
+    failures.concat(validate_timestamps(receipt, "#{label}: execution_provenance"))
+    failures.concat(validate_attribution(receipt, "#{label}: execution_provenance"))
+    failures.concat(validate_disposition(receipt, "#{label}: execution_provenance"))
+    failures
+  end
+
+  def validate_metadata(receipt, label)
+    failures = []
+    %w[batch lane target scenario_class dispatcher].each do |field|
+      next unless receipt.key?(field)
+
+      failures << "#{label}.#{field} must be a non-empty string" unless non_empty_string?(receipt[field])
+      if unknown_sentinel_variant?(receipt[field])
+        failures << "#{label}.#{field} must use literal UNKNOWN when unknown"
+      end
+    end
+
+    host = receipt["host"]
+    if host.is_a?(Hash)
+      %w[executable version].each do |field|
+        unless host.key?(field)
+          failures << "#{label}.host.#{field} must be explicitly present"
+          next
+        end
+        failures << "#{label}.host.#{field} must be a non-empty string" unless non_empty_string?(host[field])
+        if unknown_sentinel_variant?(host[field])
+          failures << "#{label}.host.#{field} must use literal UNKNOWN when unknown"
+        end
+      end
+    else
+      failures << "#{label}.host must be an object"
+    end
+
+    %w[session_id thread_id mismatch_reason recorded_authority].each do |field|
+      next unless receipt.key?(field)
+
+      failures << "#{label}.#{field} must be a non-empty string" unless non_empty_string?(receipt[field])
+      if unknown_sentinel_variant?(receipt[field])
+        failures << "#{label}.#{field} must use literal UNKNOWN when unknown"
+      end
+    end
+    failures
+  end
+
+  def validate_timestamps(receipt, label)
+    started_at = parse_rfc3339(receipt["started_at"])
+    ended_at = parse_rfc3339(receipt["ended_at"])
+    failures = []
+    failures << "#{label}.started_at must be an RFC 3339 timestamp" unless started_at
+    failures << "#{label}.ended_at must be an RFC 3339 timestamp" unless ended_at
+    if started_at && ended_at && ended_at < started_at
+      failures << "#{label}.ended_at must not precede started_at"
+    end
+    failures
+  end
+
+  def validate_attribution(receipt, label)
+    commits = receipt["influenced_commits"]
+    return ["#{label}.influenced_commits must be an array"] unless commits.is_a?(Array)
+
+    failures = commits.each_with_index.filter_map do |commit, index|
+      next if full_git_object_id?(commit)
+
+      "#{label}.influenced_commits[#{index}] must be a full hexadecimal Git object ID"
+    end
+    confidence = receipt["attribution_confidence"]
+    unless ATTRIBUTION_CONFIDENCES.include?(confidence)
+      failures << "#{label}.attribution_confidence must be one of: #{ATTRIBUTION_CONFIDENCES.join(', ')}"
+    end
+    if ATTRIBUTION_CONFIDENCES.include?(confidence) && confidence != "UNKNOWN" && commits.empty?
+      failures << "#{label}.#{confidence} attribution requires at least one influenced commit"
+    elsif confidence == "UNKNOWN" && !commits.empty?
+      failures << "#{label}.UNKNOWN attribution requires an empty influenced_commits array"
+    end
+    failures
+  end
+
+  def validate_disposition(receipt, label)
+    disposition = receipt["disposition"]
+    unless DISPOSITIONS.include?(disposition)
+      return ["#{label}.disposition must be one of: #{DISPOSITIONS.join(', ')}"]
+    end
+
+    observed = receipt["observed"]
+    return [] unless observed.is_a?(Hash)
+
+    failures = []
+    observed_values = %w[model effort].map { |field| observed[field] }
+    observed_unknown = %w[model effort].all? { |field| observed[field] == "UNKNOWN" }
+    observed_known = observed_values.all? { |value| non_empty_string?(value) && value != "UNKNOWN" }
+    unless observed_unknown || observed_known
+      failures << "#{label}.observed must be entirely known or entirely UNKNOWN"
+    end
+    if observed_unknown && receipt["binding_source"] != "UNKNOWN"
+      failures << "#{label}.UNKNOWN observed tuple requires binding_source UNKNOWN"
+    elsif observed_known && receipt["binding_source"] == "UNKNOWN"
+      failures << "#{label}.known observed tuple requires a host binding_source"
+    end
+
+    requested = receipt["requested"]
+    same_route = requested.is_a?(Hash) && %w[model effort].all? { |field| requested[field] == observed[field] }
+    case disposition
+    when "bound-exact-match"
+      failures << "#{label}.disposition bound-exact-match requires a known observed tuple" if observed_unknown
+      failures << "#{label}.bound-exact-match requires observed to equal requested" if observed_known && !same_route
+      failures << "#{label}.bound-exact-match requires mismatch_reason UNKNOWN" unless receipt["mismatch_reason"] == "UNKNOWN"
+    when "unbound-exact-route"
+      unless observed_unknown
+        failures << "#{label}.disposition unbound-exact-route requires an explicit UNKNOWN observed tuple"
+      end
+    when "authorized-fallback"
+      if observed_unknown
+        failures << "#{label}.authorized-fallback requires a known observed tuple"
+      end
+      if receipt["recorded_authority"] == "UNKNOWN"
+        failures << "#{label}.authorized-fallback requires non-UNKNOWN recorded_authority"
+      end
+      failures << "#{label}.authorized-fallback requires observed to differ from requested" if same_route
+    when "silent-substitution"
+      failures << "#{label}.silent-substitution requires a known observed tuple" if observed_unknown
+      failures << "#{label}.silent-substitution requires observed to differ from requested" if same_route
+    when "coordinator-pair-inheritance"
+      if observed_unknown
+        failures << "#{label}.coordinator-pair-inheritance requires a known observed tuple"
+      end
+      failures << "#{label}.coordinator-pair-inheritance requires observed to differ from requested" if same_route
+    end
+    if disposition != "bound-exact-match" && receipt["mismatch_reason"] == "UNKNOWN"
+      failures << "#{label}.#{disposition} requires a non-UNKNOWN mismatch_reason"
+    end
+    if disposition != "authorized-fallback" && receipt["recorded_authority"] != "UNKNOWN"
+      failures << "#{label}.#{disposition} requires recorded_authority UNKNOWN"
+    end
+    failures
+  end
+
+  def validate_route_tuple(tuple, label, known:)
+    return ["#{label} must be an object"] unless tuple.is_a?(Hash)
+
+    failures = []
+    %w[model effort].each do |field|
+      unless tuple.key?(field)
+        failures << "#{label}.#{field} must be explicitly present"
+        next
+      end
+
+      value = tuple[field]
+      failures << "#{label}.#{field} must be a non-empty string" unless non_empty_string?(value)
+      if unknown_sentinel_variant?(value)
+        failures << "#{label}.#{field} must use literal UNKNOWN when unknown"
+      elsif known && value == "UNKNOWN"
+        failures << "#{label}.#{field} must name the exact requested value"
+      end
+    end
+    failures
+  end
+
+  def non_empty_string?(value)
+    value.is_a?(String) && !value.strip.empty?
+  end
+
+  def unknown_sentinel_variant?(value)
+    return false unless value.is_a?(String) && value != "UNKNOWN"
+
+    value.strip.unicode_normalize(:nfkc).casecmp?("UNKNOWN")
+  end
+
+  def full_git_object_id?(value)
+    value.is_a?(String) && value.match?(/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/)
+  end
+
+  def parse_rfc3339(value)
+    return unless value.is_a?(String)
+    return unless value.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/)
+
+    Time.iso8601(value)
+  rescue ArgumentError
+    nil
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  path = ARGV.fetch(0, File.expand_path("../docs/execution-provenance-schema.md", __dir__))
+  exit ValidateExecutionProvenance.run(path)
+end

@@ -370,6 +370,10 @@ session metadata for one lane showed a different tuple, so that batch produced
 no usable evidence for or against the routes it was meant to test. The rules
 below are what make route evidence trustworthy enough to evaluate.
 
+Record those facts with the versioned
+[execution-provenance receipt schema](execution-provenance-schema.md); its
+validator keeps receipt dispositions aligned with the table below.
+
 A requested route is an instruction; an observed route is host-reported
 evidence of what actually executed. The two are separate fields and never
 collapse into one.
@@ -413,12 +417,13 @@ user override rather than an implicit fallback, and its requested and observed
 tuples are recorded separately.
 
 These dispositions are a normative contract for coordinators, handoffs, and
-execution receipts. They are not statuses any helper returns today:
-`dispatcher-capability-preflight` emits `selected`, `launch-pending`,
+execution receipts, and the execution-provenance validator checks their
+receipt classifications. They are not statuses returned by
+`dispatcher-capability-preflight`, which emits `selected`, `launch-pending`,
 `replay-already-active`, `blocked-user-input`, `blocked-replacement-fencing`,
-and `invalid-input`, and nothing yet observes an actual route at dispatch time. Do
-not read these route-evidence dispositions as values a script produces until
-the execution-provenance receipts land.
+and `invalid-input`; that helper still does not observe the actual route at
+dispatch time. `MODEL_ROUTE_MISMATCH` remains the table outcome, not a helper
+return value.
 
 A lane that resolves to `proceed-unmeasured` or `proceed-as-fallback` continues
 unless an independent risk, scope, evidence, or authority gate blocks it. It

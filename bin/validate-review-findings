@@ -426,7 +426,7 @@ module ValidateReviewFindings
   end
 
   def unknown_sentinel_variant?(value)
-    value.is_a?(String) && value.strip.casecmp?("UNKNOWN") && value != "UNKNOWN"
+    value.is_a?(String) && value != "UNKNOWN" && value.strip.unicode_normalize(:nfkc).casecmp?("UNKNOWN")
   end
 
   def full_git_object_id?(value)

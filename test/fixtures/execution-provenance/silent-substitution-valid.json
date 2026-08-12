@@ -1,0 +1,25 @@
+{
+  "schema": "execution-provenance-v0",
+  "execution_provenance": {
+    "batch": "batch-001",
+    "lane": "lane-substituted",
+    "target": "OWNER/REPO#102",
+    "scenario_class": "review",
+    "role": "review",
+    "route_policy": "exact-route",
+    "requested": { "model": "claude-opus", "effort": "high" },
+    "observed": { "model": "gpt-5.6-sol", "effort": "high" },
+    "dispatcher": "codex",
+    "binding_source": "host-session-metadata",
+    "host": { "executable": "codex", "version": "1.2.3" },
+    "session_id": "session-substituted",
+    "thread_id": "UNKNOWN",
+    "started_at": "2026-08-11T11:00:00Z",
+    "ended_at": "2026-08-11T11:15:00Z",
+    "influenced_commits": ["1111111111111111111111111111111111111111"],
+    "attribution_confidence": "timeline-derived",
+    "mismatch_reason": "Host evidence identified a different route without recorded fallback authority.",
+    "recorded_authority": "UNKNOWN",
+    "disposition": "silent-substitution"
+  }
+}

@@ -162,6 +162,17 @@ class ValidateReviewFindingsTest < Minitest::Test
     assert_includes failures, "report: review_receipt: provenance.usage must be an object or literal UNKNOWN"
   end
 
+  def test_receipt_provenance_rejects_nfkc_unknown_lookalikes
+    document = fixture_document("autoreview-receipt-valid.json")
+    provenance = document.fetch("review_receipt").fetch("provenance")
+    provenance["model"] = "ＵＮＫＮＯＷＮ"
+    provenance["effort"] = "UnKnOwN"
+
+    failures = ValidateReviewFindings.validate_document(document, "report")
+    assert_includes failures, "report: review_receipt: provenance.model must use literal UNKNOWN when unknown"
+    assert_includes failures, "report: review_receipt: provenance.effort must use literal UNKNOWN when unknown"
+  end
+
   def test_receipt_provenance_usage_requires_all_stable_metric_fields
     document = fixture_document("autoreview-receipt-valid.json")
     document.fetch("review_receipt").fetch("provenance")["usage"] = {
