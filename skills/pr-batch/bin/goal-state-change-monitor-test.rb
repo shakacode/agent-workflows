@@ -1310,6 +1310,36 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_pending_wake_rejects_a_substantively_changed_same_sequence_replay_without_mutating_state
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      waking_observation = observation(
+        "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+        "probe_sequence" => 1,
+        "observed_at" => "2026-08-09T00:15:00Z"
+      )
+      wake, wake_stderr, wake_status = run_helper(state_path, waking_observation)
+      assert wake_status.success?, wake_stderr
+      assert_equal "wake-state-change", wake.fetch("action")
+      persisted_before_replay = File.read(state_path)
+
+      decision, stderr, status = run_helper(
+        state_path,
+        waking_observation.merge(
+          "blocker_state" => { "head" => "c" * 40, "pending" => ["new-check"] },
+          "resume_instruction" => "A different instruction at the same sequence."
+        )
+      )
+
+      assert_nil decision
+      refute status.success?
+      assert_includes stderr, '"reason":"probe-replay-mismatch"'
+      assert_equal persisted_before_replay, File.read(state_path)
+    end
+  end
+
   def test_same_sequence_replay_ignores_an_informational_timestamp_refresh
     Dir.mktmpdir do |directory|
       state_path = File.join(directory, "monitor.json")
