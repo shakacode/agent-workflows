@@ -416,8 +416,18 @@ Plan a PR batch
      best-effort field-granular `UNKNOWN`, names reconciliation, and does not
      block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
-     Preserve the manifest as the receiver's exact repository-qualified target
-     boundary. Before any cross-task packet can cause a control operation—
+     Its raw lane `targets` are not guard input. Before invoking the guard,
+     derive `canonical_target_manifest` only from trusted provenance/coordinator
+     lane data: combine its exact `OWNER/REPO` repository with an exact
+     `issue:N` or `pr:N` positive-number target, render `OWNER/REPO#N`, and
+     deduplicate after repository-case normalization only by rejecting any
+     repeated derived identity. Missing, ambiguous,
+     synthetic, literal `UNKNOWN`, invalid, or duplicate derived identities
+     block before the guard. Never derive the manifest from a cross-task packet.
+     Preserve the manifest as source evidence, but do not pass raw provenance
+     lane target strings to the guard. Use the derived manifest as
+     the receiver's exact repository-qualified target boundary. Before any
+     cross-task packet can cause a control operation—
      `claim`, `supersede`, `replacement`, `worker_spawn`, `dispatch`,
      `ownership`, `heartbeat_mutation`, `lease_mutation`,
      `resource_lock_handoff`, `repository_mutation`, `github_mutation`, or

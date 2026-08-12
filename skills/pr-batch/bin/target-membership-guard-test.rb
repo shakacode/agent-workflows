@@ -538,4 +538,33 @@ class TargetMembershipGuardTest < Minitest::Test
       end
     end
   end
+
+  def test_plan_pr_batch_converts_trusted_provenance_lane_targets_before_guard_input
+    %w[
+      skills/plan-pr-batch/SKILL.md
+      workflows/pr-processing.md
+    ].each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      normalized_text = text.gsub(/\s+/, " ")
+
+      assert_includes normalized_text,
+                      "derive `canonical_target_manifest` only from trusted provenance/coordinator lane data",
+                      relative_path
+      assert_includes normalized_text,
+                      "combine its exact `OWNER/REPO` repository with an exact `issue:N` or `pr:N` positive-number target",
+                      relative_path
+      assert_includes normalized_text,
+                      "deduplicate after repository-case normalization",
+                      relative_path
+      assert_includes normalized_text,
+                      "Missing, ambiguous, synthetic, literal `UNKNOWN`, invalid, or duplicate derived identities block before the guard",
+                      relative_path
+      assert_includes normalized_text,
+                      "Never derive the manifest from a cross-task packet",
+                      relative_path
+      assert_includes normalized_text,
+                      "do not pass raw provenance lane target strings to the guard",
+                      relative_path
+    end
+  end
 end

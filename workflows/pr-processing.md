@@ -1842,6 +1842,17 @@ body/comment, worker reachability, stale ownership, or general batch authority.
 Synthetic `adhoc:` identities may remain local task targets but cannot establish
 cross-task membership.
 
+For a linked Batch Provenance Manifest, its raw lane `targets` are not guard
+input. Before invoking the guard, derive `canonical_target_manifest` only from
+trusted provenance/coordinator lane data: combine its exact `OWNER/REPO`
+repository with an exact `issue:N` or `pr:N` positive-number target, render
+`OWNER/REPO#N`, and
+deduplicate after repository-case normalization only by rejecting any repeated
+derived identity. Missing, ambiguous, synthetic, literal `UNKNOWN`, invalid, or
+duplicate derived identities block before the guard. Never derive the manifest
+from a cross-task packet. Preserve the manifest as source evidence, but do not
+pass raw provenance lane target strings to the guard.
+
 Classify every cross-task packet as one of two operations:
 
 - `evidence_delivery`: the receiver may incorporate a compact receipt, including
