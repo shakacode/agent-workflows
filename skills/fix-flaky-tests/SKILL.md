@@ -218,11 +218,6 @@ When structured output is requested, emit findings using
 so a flake investigation can feed `pr-batch` and `post-merge-audit` like any
 other review source.
 
-Do **not** emit a `review_receipt` from this skill. The receipt `source` field
-is a closed allowlist in `bin/validate-review-findings`, and `fix-flaky-tests`
-is not in it; emitting one would fail repo validation. Findings-only output is
-the supported mode here.
-
 ## Report Format
 
 ```markdown
