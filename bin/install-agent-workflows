@@ -162,47 +162,92 @@ metadata_value() {
   esac
 }
 
-installed_metadata_value() {
+read_installed_metadata_value() {
   local key="$1"
   local metadata_path="$target/$metadata_name"
-  [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || return 1
+  local protocol encoded_value decoded_value sentinel=$'\036'
+  installed_metadata_state="corrupt"
+  installed_metadata_value=""
 
-  ruby -rjson -e '
+  if ! protocol="$(ruby -rjson -e '
     begin
-      metadata = JSON.parse(File.read(ARGV.fetch(0)))
-    rescue JSON::ParserError, SystemCallError
-      exit 65
+      path = ARGV.fetch(0)
+      stat = File.lstat(path)
+      unless stat.file? && !stat.symlink? && File.const_defined?(:NOFOLLOW)
+        puts "corrupt"
+        exit
+      end
+      file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      opened_stat = file.stat
+      unless opened_stat.file? && opened_stat.dev == stat.dev && opened_stat.ino == stat.ino
+        puts "corrupt"
+        exit
+      end
+      metadata = JSON.parse(file.read)
+      unless metadata.is_a?(Hash)
+        puts "corrupt"
+        exit
+      end
+      key = ARGV.fetch(1)
+      unless metadata.key?(key)
+        puts "key_absent"
+        exit
+      end
+      value = metadata[key]
+      unless value.is_a?(String) && !value.empty?
+        puts "corrupt"
+        exit
+      end
+      puts "valid:#{[value].pack("m0")}"
+    rescue Errno::ENOENT
+      puts "corrupt"
+    rescue StandardError
+      puts "corrupt"
+    ensure
+      file&.close
     end
-    exit 65 unless metadata.is_a?(Hash)
-    value = metadata[ARGV.fetch(1)]
-    exit 1 if value.nil? || value.to_s.empty?
-    puts value
-  ' "$metadata_path" "$key"
+  ' "$metadata_path" "$key" 2>/dev/null)"; then
+    return 0
+  fi
+
+  case "$protocol" in
+    valid:*)
+      encoded_value="${protocol#valid:}"
+      if decoded_value="$(ruby -e 'print ARGV.fetch(0).unpack1("m0")' "$encoded_value" 2>/dev/null && printf '\036')" &&
+         [[ "$decoded_value" == *"$sentinel" ]]; then
+        installed_metadata_value="${decoded_value%"$sentinel"}"
+        installed_metadata_state="valid"
+      fi
+      ;;
+    key_absent) installed_metadata_state="key_absent" ;;
+    corrupt) ;;
+  esac
+}
+
+report_corrupt_install_metadata() {
+  local metadata_path="$target/$metadata_name"
+  echo "CORRUPT_INSTALL_METADATA: cannot read valid install metadata from $metadata_path." >&2
+  echo "Restore a valid backup of that file. If none exists, preserve the corrupt target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
 }
 
 resolve_delivery_mode() {
   local metadata_path="$target/$metadata_name"
-  local recorded_mode metadata_status
+  local recorded_mode
 
   if [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]; then
     [[ -n "$delivery_mode" ]] || delivery_mode="flat"
     return 0
   fi
-  if [[ -L "$metadata_path" || ! -f "$metadata_path" ]]; then
-    metadata_status=65
-  else
-    set +e
-    recorded_mode="$(installed_metadata_value delivery_mode 2>/dev/null)"
-    metadata_status=$?
-    set -e
-  fi
+  read_installed_metadata_value delivery_mode
 
-  case "$metadata_status" in
-    0) [[ -n "$delivery_mode" ]] || delivery_mode="$recorded_mode" ;;
-    1) [[ -n "$delivery_mode" ]] || delivery_mode="flat" ;;
-    *)
-      echo "CORRUPT_INSTALL_METADATA: cannot read valid install metadata from $metadata_path." >&2
-      echo "Restore a valid backup of that file. If none exists, preserve the corrupt target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
+  case "$installed_metadata_state" in
+    valid)
+      recorded_mode="$installed_metadata_value"
+      [[ -n "$delivery_mode" ]] || delivery_mode="$recorded_mode"
+      ;;
+    key_absent) [[ -n "$delivery_mode" ]] || delivery_mode="flat" ;;
+    corrupt)
+      report_corrupt_install_metadata
       return 65
       ;;
   esac
@@ -396,8 +441,16 @@ workflow_doctor_symlink_matches_recorded_source() {
   local destination="$target/bin/agent_doctor"
   local link_target recorded_mode recorded_source
   link_target="$(readlink "$destination" 2>/dev/null)" || return 1
-  recorded_mode="$(installed_metadata_value mode 2>/dev/null || true)"
-  recorded_source="$(installed_metadata_value source 2>/dev/null || true)"
+  read_installed_metadata_value mode
+  case "$installed_metadata_state" in
+    valid) recorded_mode="$installed_metadata_value" ;;
+    key_absent|corrupt) return 1 ;;
+  esac
+  read_installed_metadata_value source
+  case "$installed_metadata_state" in
+    valid) recorded_source="$installed_metadata_value" ;;
+    key_absent|corrupt) return 1 ;;
+  esac
   [[ "$recorded_mode" = symlink && -n "$recorded_source" &&
      "$link_target" = "$recorded_source/bin/agent_doctor" ]]
 }
@@ -465,7 +518,11 @@ remove_legacy_managed_model_routing_path() {
   local legacy_path="$docs_target/model-routing.md"
   local link_target previous_revision previous_source source_root
 
-  previous_source="$(installed_metadata_value source 2>/dev/null || true)"
+  read_installed_metadata_value source
+  case "$installed_metadata_state" in
+    valid) previous_source="$installed_metadata_value" ;;
+    key_absent|corrupt) previous_source="" ;;
+  esac
   if [[ -L "$legacy_path" ]]; then
     link_target="$(readlink "$legacy_path")"
     if [[ "$link_target" == "$repo_root/docs/model-routing.md" || \
@@ -476,7 +533,11 @@ remove_legacy_managed_model_routing_path() {
   fi
 
   [[ -f "$legacy_path" ]] || return 0
-  previous_revision="$(installed_metadata_value source_revision 2>/dev/null || true)"
+  read_installed_metadata_value source_revision
+  case "$installed_metadata_state" in
+    valid) previous_revision="$installed_metadata_value" ;;
+    key_absent|corrupt) previous_revision="" ;;
+  esac
   [[ -n "$previous_revision" ]] || return 0
 
   for source_root in "$repo_root" "$previous_source"; do
@@ -820,7 +881,25 @@ if [[ -f "$migration_receipt" ]]; then
     rmdir "$install_lock" 2>/dev/null || true
     exit 1
   fi
-  prior_delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
+  read_installed_metadata_value delivery_mode
+  case "$installed_metadata_state" in
+    valid)
+      prior_delivery_mode="$installed_metadata_value"
+      case "$prior_delivery_mode" in
+        flat|plugin-companion) ;;
+        *)
+          echo "Installed metadata delivery_mode must be flat or plugin-companion, got: $prior_delivery_mode" >&2
+          exit 64
+          ;;
+      esac
+      ;;
+    key_absent) prior_delivery_mode="flat" ;;
+    corrupt)
+      report_corrupt_install_metadata
+      echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+      exit 65
+      ;;
+  esac
   if [[ "$prior_delivery_mode" = "plugin-companion" ]]; then
     if ! rm -rf "$recovered_staging"; then
       echo "CLEANUP_PENDING: committed plugin-companion mode; preserved $migration_receipt for $recovered_staging" >&2
