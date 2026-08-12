@@ -212,6 +212,7 @@ ROUTE_ONLY_PROHIBITION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*\b(?:#{ROUTE_ONLY_PROHIBITION_SOURCE})\b|\b(?:#{ROUTE_ONLY_PROHIBITION_SOURCE})\b[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
 ROUTE_ONLY_OUTCOME_OR_PROHIBITION_PATTERN =
   /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b/i
+MAX_PERMITTED_ROUTE_OUTCOME_CLAUSES = 2
 NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
   /
     (?:
@@ -219,6 +220,7 @@ NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
       \bnot\s+a\s+condition\s+that\s+ |
       \b(?:is|are|was|were)\s+not\s+sufficient\s+to\s+ |
       \b(?:is|are|was|were)n['’]?t\s+sufficient\s+to\s+ |
+      \b(?:is|are|was|were)\s+insufficient\s+to\s+ |
       \b(?:do|does|did|should|must|may|can|will|would|could|shall)\s+
       not(?:\s+|,\s*)(?:(?:by\s+itself|alone)(?:\s+|,\s*)|(?:necessarily|automatically)\s+)? |
       \b(?:do|does|did|should|must|may|can|would|could|shall)n['’]?t(?:\s+|,\s*)
@@ -254,6 +256,8 @@ DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN =
   /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks\s+execution\b/i
 INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN =
   /\bonly\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\s+when\s+/i
+CONCRETE_INDEPENDENT_BLOCKER_SENTENCE_PATTERN =
+  /\b(?:credential|security|risk|scope|evidence|authority)\s+(?:check|gate)\s+(?:fails?|blocks?)\b/i
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
 end
@@ -286,7 +290,20 @@ def strip_allowed_route_only_outcome_clauses(text)
 end
 
 def strip_negated_route_outcome_with_independent_blocker_clause(sentence)
-  # This first-match stripper handles one owned subject/negation/blocker triple; checks before stripping and mutation cases cover extra outcomes in either clause order.
+  remaining = sentence
+
+  MAX_PERMITTED_ROUTE_OUTCOME_CLAUSES.times do
+    stripped = strip_one_negated_route_outcome_with_independent_blocker_clause(remaining)
+    break if stripped == remaining
+
+    remaining = stripped
+  end
+
+  remaining
+end
+
+def strip_one_negated_route_outcome_with_independent_blocker_clause(sentence)
+  # Checks before stripping ensure each removed clause has one owned subject/negation/blocker triple.
   subject = sentence.match(ROUTE_ONLY_SUBJECT_PATTERN)
   negated_outcome = sentence.match(NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN)
   independent_blocker = sentence.match(DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN)
@@ -375,6 +392,14 @@ def markdown_blockquote_content(line)
   line.sub(/^\s{0,3}>\s?/, "")
 end
 
+def markdown_lazy_blockquote_continuation_line?(line)
+  return false if line.strip.empty?
+  return false if markdown_fence_line?(line) || markdown_thematic_break_line?(line)
+  return false if line.match?(/^\s{0,3}\#{1,6}(?:\s|$)/)
+
+  !line.match?(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/)
+end
+
 def markdown_structural_segments(block)
   segments = []
   current_segment = +""
@@ -391,6 +416,11 @@ def markdown_structural_segments(block)
         in_blockquote = true
       end
       current_segment << markdown_blockquote_content(line)
+      next
+    end
+
+    if in_blockquote && markdown_lazy_blockquote_continuation_line?(line)
+      current_segment << line
       next
     end
 
@@ -475,7 +505,8 @@ def route_subject_precedes_bare_outcome_contradiction?(previous_sentence, senten
 end
 
 def independent_blocker_sentence?(sentence)
-  sentence.match?(/\b(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\b/i)
+  sentence.match?(/\b(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\b/i) ||
+    sentence.match?(CONCRETE_INDEPENDENT_BLOCKER_SENTENCE_PATTERN)
 end
 
 def forbidden_route_only_contradiction?(text)
@@ -1039,6 +1070,7 @@ class ModelRoutingContractTest < Minitest::Test
       "outcome-first prevents both planning and fallback" => "Prevent both planning and fallback when a route mismatch occurs.",
       "outcome-first passive blocked launch" => "When a route mismatch occurs, launch is blocked.",
       "cross-sentence passive blocked launch" => "A route mismatch occurs. Launch is blocked.",
+      "ordinary sentence preserves route antecedent for pronoun outcome" => "A route mismatch occurs. A status note is recorded. This blocks launch.",
       "subject-first passive blocked review" => "A route mismatch means review is blocked.",
       "outcome-first passive blocked plural" => "Launch and replay are blocked when a route mismatch occurs.",
       "outcome-first must-passive blocked launch" => "Launch must be blocked when a route mismatch occurs.",
@@ -1129,6 +1161,7 @@ class ModelRoutingContractTest < Minitest::Test
       "direct blocker followed by unconditional different route" => "A route mismatch does not stop the lane; destructive scope expansion blocks execution, yet a different route disqualifies the lane.",
       "unconditional outcome before direct blocker" => "A different route disqualifies the lane; a route mismatch does not stop the lane; destructive scope expansion blocks execution.",
       "prohibition between permitted clause and independent blocker" => "A route mismatch does not stop the lane, and an inherited route forbids launch, but an independent risk gate blocks execution.",
+      "adjective insufficiency followed by unconditional outcome" => "A route mismatch is insufficient to block launch, but it blocks review.",
       "No-subject negation followed by unconditional different route" => "No route mismatch blocks execution, but a different route stops the lane.",
       "Neither-subject negation followed by unconditional different route" => "Neither a route mismatch nor an inherited route blocks execution, but a different tuple disqualifies the lane.",
       "No-subject negation followed by pronoun outcome" => "No route mismatch blocks launch; it prevents review.",
@@ -1137,6 +1170,7 @@ class ModelRoutingContractTest < Minitest::Test
       "closed-form negation followed by unconditional outcome" => "A route mismatch cannot by itself block launch, but it blocks audit.",
       "coordinated negation followed by unconditional outcome" => "A route mismatch does not block launch or prevent review, but it blocks audit.",
       "same-paragraph pronoun outcome" => "A route mismatch occurs. It stops the lane before any edit begins.",
+      "lazy blockquote pronoun outcome" => "> A route mismatch occurs.\nThis blocks launch.",
       "same-paragraph pronoun prohibition" => "A route mismatch occurs. It prohibits launch.",
       "same-paragraph This outcome" => "A route mismatch occurs. This stops the lane before editing.",
       "same-paragraph That prohibition" => "A route mismatch occurs. That forbids launch.",
@@ -1171,6 +1205,7 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch doesn't stop the lane before edits.",
       "An inherited route shouldn't disqualify the lane before edits.",
       "A route mismatch is not sufficient to stop the lane before edits.",
+      "A route mismatch is insufficient to block launch.",
       "A route mismatch does not, by itself, block execution before edits.",
       "A model mismatch does not stop the lane before edits.",
       "An unavailable effort does not block execution before edits.",
@@ -1210,6 +1245,7 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch occurs. An independent risk gate blocks execution. It stops the lane before editing.",
       "A route mismatch occurs. Nothing else changes. An independent scope gate blocks execution. It stops the lane before editing.",
       "A route mismatch occurs. An independent risk gate triggers. It blocks execution.",
+      "A route mismatch occurs. A credential check fails. This blocks launch.",
       "A route mismatch occurs. An independent scope gate triggers. It blocks execution.",
       "A route mismatch occurs. An independent evidence gate triggers. It blocks execution.",
       "A route mismatch occurs. An independent authority gate triggers. It blocks execution.",
@@ -1244,7 +1280,8 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch stops the lane only if an independent scope gate blocks.",
       "A route mismatch stops the lane only if an independent evidence gate blocks.",
       "A route mismatch stops the lane only if an independent authority gate blocks.",
-      "A route mismatch stops the lane only if destructive scope expansion blocks execution."
+      "A route mismatch stops the lane only if destructive scope expansion blocks execution.",
+      "A route mismatch does not stop the lane, but an independent risk gate blocks execution; an inherited route does not block execution, but an independent scope gate blocks execution."
     ].each do |allowed_condition|
       refute forbidden_route_only_contradiction?(allowed_condition),
              "allowed route condition must not be treated as an unconditional route-only stop: #{allowed_condition}"
@@ -1279,6 +1316,7 @@ class ModelRoutingContractTest < Minitest::Test
       "HTML comment" => "<!-- A route mismatch blocks launch. -->",
       "multiline HTML comment" => "<!-- A route mismatch\nblocks launch. -->",
       "blockquote boundary" => "A route mismatch does not stop the lane.\n> Destructive scope expansion blocks execution.",
+      "lazy blockquote continuation boundary" => "> A route mismatch occurs.\nThis remains quoted and advisory.",
       "Markdown list items" => "- route mismatch: record honestly\n- independent risk gate: blocks execution",
       "Markdown list-item pronoun boundary" => "- A route mismatch occurs.\n- It stops the lane before any edit begins.",
       "Markdown table-row pronoun boundary" => "| Route condition | A route mismatch occurs. |\n| --- | --- |\n| Gate result | It stops the lane before any edit begins. |",
