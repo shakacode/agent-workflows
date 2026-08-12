@@ -33,8 +33,10 @@ The maintainer first confirms that `VERSION`, `.claude-plugin/plugin.json`, and
 `.codex-plugin/plugin.json` all contain the same `X.Y.Z`. Create and push one
 annotated `vX.Y.Z` tag at the exact approved commit. Do not move or recreate it.
 
-Dispatch the `Release` workflow with the tag, exact peeled commit, change
-author, and annotated-tag object ID. The protected environment supplies the
+Dispatch the `Release` workflow **from that exact tag ref** with the tag, exact
+peeled commit, change author, and annotated-tag object ID. The workflow verifies
+that its own definition came from the approved commit, so selecting `main` or
+another mutable ref fails closed. The protected environment supplies the
 independent exact-head human approval. The workflow rejects a malformed,
 missing, lightweight, moved, non-annotated, wrong-commit, or version-mismatched
 tag. It does not inspect cryptographic signatures.

@@ -46,8 +46,12 @@ jobs:
           APPROVED_COMMIT: ${{ inputs.approved_commit }}
           EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}
           RELEASE_REF: ${{ inputs.release }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
+          test "$WORKFLOW_REF" = "refs/tags/$RELEASE_REF"
+          test "$WORKFLOW_SHA" = "$APPROVED_COMMIT"
           test "$(git rev-parse HEAD)" = "$APPROVED_COMMIT"
           bin/agent-workflows-release verify-tag \
             --root . \
@@ -75,7 +79,7 @@ jobs:
           test "$(jq 'length' <<<"$associated_authors")" -eq 1
           test "$(jq -r '.[0]' <<<"$associated_authors")" = "$CHANGE_AUTHOR"
 
-          approvals="$(gh api "repos/$REPOSITORY/actions/runs/${{ github.run_id }}/approvals")"
+          approvals="$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/approvals")"
           approval_reviewer="$(
             jq -er '[.[] |
               select(.state == "approved") |

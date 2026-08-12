@@ -234,6 +234,7 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_includes policy, "protected, immutable, annotated `vX.Y.Z` tags"
     assert_includes policy, "protected `stable-release` environment"
     assert_includes policy, "Cryptographic tag signatures are not required or checked"
+    assert_includes policy, "dispatch the workflow from that exact tag ref"
     assert_includes policy, "--channel development"
   end
 
@@ -242,7 +243,11 @@ class RepositorySecurityPolicyTest < Minitest::Test
     workflow = File.read(path)
 
     assert_includes workflow, "environment: stable-release"
-    assert_includes workflow, "actions/runs/${{ github.run_id }}/approvals"
+    assert_includes workflow, "actions/runs/$RUN_ID/approvals"
+    assert_includes workflow, "WORKFLOW_REF: ${{ github.ref }}"
+    assert_includes workflow, "WORKFLOW_SHA: ${{ github.workflow_sha }}"
+    assert_includes workflow, 'test "$WORKFLOW_REF" = "refs/tags/$RELEASE_REF"'
+    assert_includes workflow, 'test "$WORKFLOW_SHA" = "$APPROVED_COMMIT"'
     assert_includes workflow, "bin/agent-workflows-release verify-tag"
     assert_includes workflow, "bin/agent-workflows-release record-receipt"
     assert_includes workflow, "--expected-tag-object"
