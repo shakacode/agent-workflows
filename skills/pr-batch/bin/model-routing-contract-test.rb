@@ -205,7 +205,7 @@ ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE =
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
 # This bounded, guide-derived stop/prohibition vocabulary needs matching mutation coverage whenever routing-guide phrasing changes.
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+(?:blocked|stopped|prevented)|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:must|should|may|can|will|shall)\\s+be\\s+(?:blocked|stopped|prevented)|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+(?:blocked|stopped|prevented)|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:must|should|may|can|will|would|could|shall)\\s+be\\s+(?:blocked|stopped|prevented)|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -215,7 +215,6 @@ ROUTE_ONLY_PROHIBITION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*\b(?:#{ROUTE_ONLY_PROHIBITION_SOURCE})\b|\b(?:#{ROUTE_ONLY_PROHIBITION_SOURCE})\b[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
 ROUTE_ONLY_OUTCOME_OR_PROHIBITION_PATTERN =
   /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b/i
-MAX_PERMITTED_ROUTE_OUTCOME_CLAUSES = 2
 NEGATED_ROUTE_ONLY_OUTCOME_CLAUSE_PATTERN =
   /
     (?:
@@ -252,7 +251,7 @@ NEGATED_ROUTE_ONLY_COORDINATED_OUTCOME_CLAUSE_PATTERN =
     (?:or|nor|and)\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b
   /imx
 DIRECT_INDEPENDENT_BLOCKER_SOURCE =
-  "(?:an?\\s+)?(?:independent\\s+(?:risk|scope|evidence|authority)(?:\\s+gate)?|(?:risk|scope|evidence|authority)\\s+gate|(?:destructive\\s+)?scope\\s+expansion)"
+  "(?:an?\\s+)?(?:independent\\s+(?:risk|scope|evidence|authority)(?:\\s+gate)?|(?:risk|scope|evidence|authority)\\s+gate|exact-head\\s+CI\\s+gate|(?:destructive\\s+)?scope\\s+expansion)"
 INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN =
   /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+if\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks(?:\s+execution)?\b/i
 DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN =
@@ -295,7 +294,9 @@ end
 def strip_negated_route_outcome_with_independent_blocker_clause(sentence)
   remaining = sentence
 
-  MAX_PERMITTED_ROUTE_OUTCOME_CLAUSES.times do
+  # Each iteration removes one route-owned clause, so route-subject occurrences
+  # provide a finite bound while allowing every independently gated clause.
+  sentence.scan(ROUTE_ONLY_SUBJECT_PATTERN).length.times do
     stripped = strip_one_negated_route_outcome_with_independent_blocker_clause(remaining)
     break if stripped == remaining
 
@@ -1098,6 +1099,8 @@ class ModelRoutingContractTest < Minitest::Test
       "outcome-first passive prevented review" => "Review is prevented when a route mismatch occurs.",
       "outcome-first modal passive stopped launch" => "Launch must be stopped when a route mismatch occurs.",
       "outcome-first modal passive prevented review" => "Review should be prevented when an inherited route occurs.",
+      "outcome-first would-passive stopped launch" => "Launch would be stopped when a route mismatch occurs.",
+      "outcome-first could-passive prevented review" => "Review could be prevented when an inherited route occurs.",
       "cross-sentence passive blocked launch" => "A route mismatch occurs. Launch is blocked.",
       "ordinary sentence preserves route antecedent for pronoun outcome" => "A route mismatch occurs. A status note is recorded. This blocks launch.",
       "ordinary CI note preserves route antecedent for pronoun outcome" => "A route mismatch occurs. An exact-head CI note is recorded. This blocks launch.",
@@ -1189,6 +1192,7 @@ class ModelRoutingContractTest < Minitest::Test
       "semicolon gate followed by unconditional different route" => "A route mismatch does not stop the lane; an independent risk gate blocks execution, yet a different route disqualifies the lane.",
       "unconditional outcome before semicolon gate clause" => "A different route disqualifies the lane; a route mismatch does not stop the lane; an independent risk gate blocks execution.",
       "direct blocker followed by unconditional different route" => "A route mismatch does not stop the lane; destructive scope expansion blocks execution, yet a different route disqualifies the lane.",
+      "exact-head CI blocker followed by unconditional route outcome" => "A route mismatch does not stop the lane; an exact-head CI gate blocks execution, yet an inherited route forbids launch.",
       "unconditional outcome before direct blocker" => "A different route disqualifies the lane; a route mismatch does not stop the lane; destructive scope expansion blocks execution.",
       "prohibition between permitted clause and independent blocker" => "A route mismatch does not stop the lane, and an inherited route forbids launch, but an independent risk gate blocks execution.",
       "adjective insufficiency followed by unconditional outcome" => "A route mismatch is insufficient to block launch, but it blocks review.",
@@ -1262,6 +1266,8 @@ class ModelRoutingContractTest < Minitest::Test
       "Review is not prevented when a route mismatch occurs.",
       "Launch must not be stopped when a route mismatch occurs.",
       "Review should not be prevented when an inherited route occurs.",
+      "Launch would not be stopped when a route mismatch occurs.",
+      "Review could not be prevented when an inherited route occurs.",
       "A route mismatch occurs. Launch is blocked only if an independent risk gate blocks execution.",
       "A route mismatch occurs. Launch must be blocked only if an independent scope gate blocks execution.",
       "A route mismatch means review and audit are not blocked.",
@@ -1286,6 +1292,7 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch occurs. An independent risk gate triggers. It blocks execution.",
       "A route mismatch occurs. A credential check fails. This blocks launch.",
       "A route mismatch occurs. An exact-head CI gate fails. This blocks launch.",
+      "A route mismatch does not stop the lane; an exact-head CI gate blocks execution.",
       "A route mismatch occurs. An independent scope gate triggers. It blocks execution.",
       "A route mismatch occurs. An independent evidence gate triggers. It blocks execution.",
       "A route mismatch occurs. An independent authority gate triggers. It blocks execution.",
@@ -1321,7 +1328,8 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch stops the lane only if an independent evidence gate blocks.",
       "A route mismatch stops the lane only if an independent authority gate blocks.",
       "A route mismatch stops the lane only if destructive scope expansion blocks execution.",
-      "A route mismatch does not stop the lane, but an independent risk gate blocks execution; an inherited route does not block execution, but an independent scope gate blocks execution."
+      "A route mismatch does not stop the lane, but an independent risk gate blocks execution; an inherited route does not block execution, but an independent scope gate blocks execution.",
+      "A route mismatch does not stop the lane, but an independent risk gate blocks execution; an inherited route does not block execution, but an independent scope gate blocks execution; an unavailable route does not block review, but an independent evidence gate blocks execution."
     ].each do |allowed_condition|
       refute forbidden_route_only_contradiction?(allowed_condition),
              "allowed route condition must not be treated as an unconditional route-only stop: #{allowed_condition}"
