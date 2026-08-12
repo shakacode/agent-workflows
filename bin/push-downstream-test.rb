@@ -1462,7 +1462,7 @@ class PushDownstreamAuditTest < Minitest::Test
 
           mixed = JSON.parse(mixed_output)
           assert_equal 1, @mixed_status
-          assert_equal PushDownstream::AUDIT_SCHEMA, mixed.fetch("schema")
+          assert_equal "agent-workflows/downstream-seam-audit/v1", mixed.fetch("schema")
           assert_equal PushDownstream::AUDIT_CONTRACT, mixed.fetch("contract")
           assert_equal PushDownstream::AUDIT_SCOPE, mixed.fetch("scope")
           assert_equal %w[consumers contract schema scope source summary], mixed.keys.sort
@@ -1482,10 +1482,9 @@ class PushDownstreamAuditTest < Minitest::Test
           assert_kind_of Array, consumers.fetch("local/drifted").fetch("follow_ups")
           blocked = consumers.fetch("local/blocked")
           assert_equal "blocked", blocked.fetch("status")
-          assert_equal PushDownstream::AUDIT_UNKNOWN, blocked.fetch("base_sha")
-          PushDownstream::AUDIT_POLYMORPHIC_FIELDS.each do |field|
-            assert_equal PushDownstream::AUDIT_UNKNOWN, blocked.fetch(field)
-          end
+          assert_equal "UNKNOWN", blocked.fetch("seam_doctor_issues")
+          assert_equal "UNKNOWN", blocked.fetch("changed_managed_paths")
+          assert_equal "UNKNOWN", blocked.fetch("follow_ups")
 
           clean = JSON.parse(clean_output)
           assert_equal 0, @clean_status
