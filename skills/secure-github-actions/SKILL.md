@@ -54,6 +54,11 @@ case-insensitive exact repository identities. Wildcards, organization-wide
 trust, refs, subpaths, aliases, and `UNKNOWN` are invalid. Allowlisting never
 waives the full-SHA or readable-version-comment rules.
 
+The scanner reads `trusted_actions` from the checkout being scanned; it does
+not prove that a pull request left the allowlist unchanged. Treat every
+allowlist diff as security-sensitive and compare additions with the trusted
+base before accepting them.
+
 A digest establishes container-image immutability, not image trust. `docker://`
 references are intentionally outside the exact GitHub `owner/repository`
 `trusted_actions` seam, so maintainers must review the registry, image, and

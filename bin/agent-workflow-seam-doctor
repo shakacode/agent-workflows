@@ -11,6 +11,7 @@ require "optparse"
 require "shellwords"
 require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
+require_relative "agent_doctor/hosted_qa_policy"
 
 module AgentWorkflowSeamDoctor
   SECTION = "Agent Workflow Configuration"
@@ -129,7 +130,7 @@ module AgentWorkflowSeamDoctor
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
   REPO_PREFIX_PATTERN = /\A[A-Z0-9]{1,6}\z/
   MERGE_SUBMISSION_POLICY_KEY = "merge_submission"
-  MERGE_SUBMISSION_MODES = %w[merge_queue_only merge_queue_or_guarded_direct].freeze
+  MERGE_SUBMISSION_MODES = %w[direct merge_queue_only merge_queue_or_guarded_direct].freeze
   MERGE_SUBMISSION_KEYS = %w[mode guarded_direct].freeze
   GUARDED_DIRECT_KEYS = %w[executable method non_atomic_base].freeze
   NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
@@ -154,6 +155,7 @@ module AgentWorkflowSeamDoctor
     (?:
       follow-up\ prefix |
       hosted[-\ ]CI |
+      hosted[-\ ]QA |
       benchmark\ labels? |
       (?:secret\ )?redaction\ patterns? |
       changelog\ path |
@@ -1473,7 +1475,7 @@ module AgentWorkflowSeamDoctor
   def prepare_init_policy(root, base_branch, existing)
     defaults = REQUIRED_POLICY_KEYS.to_h { |key| [key, key == "base_branch" ? base_branch : "n/a"] }
     defaults["follow_up_prefix"] = "Follow-up:"
-    defaults[MERGE_SUBMISSION_POLICY_KEY] = { "mode" => "merge_queue_only" }
+    defaults[MERGE_SUBMISSION_POLICY_KEY] = { "mode" => "direct" }
     prepare_init_mapping(File.join(root, POLICY_CONFIG), existing, defaults, "policy config")
   end
 
@@ -1746,6 +1748,7 @@ module AgentWorkflowSeamDoctor
 
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
+    issues.concat(hosted_qa_policy_issues(root, File.read(path, encoding: "UTF-8")))
     if config.key?("autonomous_merge")
       autonomous_policy = AutonomousMergePolicy.parse(File.read(path, encoding: "UTF-8"))
       autonomous_policy.errors.each do |error|
@@ -1756,6 +1759,20 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def hosted_qa_policy_issues(root, yaml)
+    result = HostedQaPolicy.parse(yaml)
+    issues = result.errors.map { |error| "invalid hosted_qa_gate policy: #{error}" }
+    return issues unless result.state == :configured
+
+    verifier = result.policy.fetch("deployment_verifier")
+    verifier_issues = guarded_direct_file_issues(root, verifier).map do |issue|
+      issue
+        .sub("invalid merge_submission policy: guarded_direct.executable", "invalid hosted_qa_gate policy: deployment_verifier")
+        .sub("guarded_direct.executable", "deployment_verifier")
+    end
+    issues.concat(verifier_issues)
   end
 
   def untrusted_contributor_intake_policy_issues(config)
@@ -1790,14 +1807,14 @@ module AgentWorkflowSeamDoctor
 
     mode = seam["mode"]
     unless MERGE_SUBMISSION_MODES.include?(mode)
-      return ["invalid merge_submission policy: mode must be merge_queue_only or " \
+      return ["invalid merge_submission policy: mode must be direct, merge_queue_only, or " \
               "merge_queue_or_guarded_direct"]
     end
-    expected_keys = mode == "merge_queue_only" ? ["mode"] : MERGE_SUBMISSION_KEYS
+    expected_keys = %w[direct merge_queue_only].include?(mode) ? ["mode"] : MERGE_SUBMISSION_KEYS
     unless exact_string_keys?(seam, expected_keys)
       return ["invalid merge_submission policy: keys must be exactly #{expected_keys.sort.join(', ')}"]
     end
-    return [] if mode == "merge_queue_only"
+    return [] if %w[direct merge_queue_only].include?(mode)
 
     direct = seam["guarded_direct"]
     unless exact_string_keys?(direct, GUARDED_DIRECT_KEYS)

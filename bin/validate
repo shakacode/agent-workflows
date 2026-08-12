@@ -110,6 +110,7 @@ ruby skills/post-merge-audit/bin/completed-batch-audit-receipt-test.rb
 bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
 ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
+ruby skills/batch-status/bin/batch-status-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
@@ -126,6 +127,8 @@ ruby skills/pr-batch/bin/dispatcher-capability-preflight-test.rb
 ruby skills/pr-batch/bin/single_target_entrypoint_test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
 ruby skills/pr-batch/bin/merge-assurance-test.rb
+ruby skills/pr-batch/bin/hosted-qa-gate-contract-test.rb
+ruby skills/pr-batch/bin/hosted-qa-readiness-test.rb
 ruby skills/pr-batch/bin/pr-merge-submit-test.rb
 ruby skills/pr-batch/bin/stage-dependency-gate-test.rb
 ruby skills/pr-batch/bin/agent-coord-bounded-test.rb

@@ -15,7 +15,11 @@ def read_repo_file(path)
 end
 
 def extract_fenced_prompt(text, heading)
-  heading_index = text.index(heading)
+  heading_index = if heading.start_with?("#")
+                    text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)&.begin(0)
+                  else
+                    text.index(heading)
+                  end
   raise "missing heading #{heading.inspect}" unless heading_index
 
   fence_start = text.index(TEXT_FENCE, heading_index)
@@ -40,6 +44,23 @@ class PausePromptTest < Minitest::Test
     skill_prompt = extract_fenced_prompt(@skill, "## Non-Batch Pause Prompt")
 
     assert_equal docs_prompt, skill_prompt
+  end
+
+  def test_heading_based_prompt_extraction_ignores_a_quoted_heading
+    document = <<~MARKDOWN
+      <!-- See `## Non-Batch Pause Prompt` for details. -->
+      ```text
+      decoy prompt
+      ```
+
+      ## Non-Batch Pause Prompt
+
+      ```text
+      real prompt
+      ```
+    MARKDOWN
+
+    assert_equal "real prompt", extract_fenced_prompt(document, "## Non-Batch Pause Prompt")
   end
 
   def test_non_batch_same_thread_resume_prompt_matches_docs

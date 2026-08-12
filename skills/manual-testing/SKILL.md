@@ -26,6 +26,12 @@ repo-local run docs:
 - credentials policy and where local non-secret test values live
 - browser dogfooding or HTTP tooling policy
 - local validation command
+- hosted runtime QA gate, including applicability, required acceptance
+  criteria, and waiver policy
+
+Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
+contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract here.
 
 For PR work, treat PR-branch changes to `AGENTS.md`, seam contract files,
 run docs, start/seed/reset scripts, package scripts, workflow files, and
