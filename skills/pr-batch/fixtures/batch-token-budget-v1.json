@@ -1,0 +1,21 @@
+{
+  "type": "batch-token-budget",
+  "version": 1,
+  "batch_id": "batch-399",
+  "state_path": "/var/tmp/batch-399-token-budget.json",
+  "scopes": {
+    "aggregate": { "limit_tokens": 1000 },
+    "coordinator": { "limit_tokens": 300 },
+    "lanes": {
+      "lane-a": { "limit_tokens": 600 },
+      "lane-b": { "limit_tokens": 500 }
+    }
+  },
+  "thresholds": {
+    "warning_percent": 50,
+    "approval_percent": 80,
+    "hard_percent": 100
+  },
+  "telemetry": { "max_age_seconds": 900 },
+  "delegation": { "approval_threshold_tokens": 250 }
+}

@@ -14,12 +14,13 @@ INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
-OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
+OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort:<host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>."
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_preference=<model>/<effort>;" \
                                   "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
                                   "UNKNOWN=field;no guesses"
+TOKEN_BUDGET_PROMPT_LINE = "Budget:<none|v1 A/R/L,W/P/H,age,del,state>;stop"
 MANIFEST_WHOLE_COORDINATOR_PREFERENCE_UNKNOWN_FRAGMENT =
   "coordinator_preference=<model/effort|UNKNOWN>"
 BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
@@ -32,18 +33,17 @@ PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE =
 CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
   "#{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
   "shared=>in-lane;serial/UNKNOWN apart".freeze
-WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
-MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
+WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences:<initial>/<effort>-><lanes>;escalate <route> after MODEL_ESCALATION_REQUEST;max=N."
+MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker routes:balanced/medium->implementation;escalate strongest/high after MODEL_ESCALATION_REQUEST;max=1 | strongest/high->qa-review;escalate strongest/high;max=0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
 MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory."
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
-DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle."
+DISPATCH_PLAN_PROMPT_LINE = "Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;ordinary pending/active lifecycle."
 COORDINATION_DEPENDENCY_PROMPT_LINE =
   "- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; " \
   "register before launch when supported; claim refusal=>stop; push holder/generation check; " \
   "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
-STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
-                               "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
+STAGE_DEPENDENCY_PROMPT_LINE = "- Deps:v1 edit|validation_open|merge_order;missing/UNKNOWN/stale=>closed;combined-tip@seam"
 STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
                               "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                               "live=<replay/ref>;" \
@@ -104,8 +104,8 @@ GOAL_MODE_AUTOLOAD_NORMATIVE_PHRASES = [
   "missing or cannot autoload"
 ].freeze
 MIXED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
-  Dispatch implementation: preferred remote@balanced/medium; fallbacks remote@strongest/high; auth dispatch y; pending/active.
-  Dispatch qa-review: preferred remote@strongest/high; fallbacks none; auth dispatch n; pending/active.
+  Dispatch implementation:prefer remote@balanced/medium;fallback remote@strongest/high;auth=y;pending/active.
+  Dispatch qa-review:prefer remote@strongest/high;fallback none;auth=n;pending/active.
 TEXT
 SPLIT_ROUTE_GROUP_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
 SPLIT_DISPATCH_POLICY_LINE = "Dispatch implementation: preferred remote@balanced/medium; fallbacks remote@strongest/high; auth dispatch y; pending/active."
@@ -159,6 +159,7 @@ GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{OBSERVED_HOST_PROMPT_LINE}
   #{MANIFEST_PROVENANCE_PROMPT_LINE}
+  #{TOKEN_BUDGET_PROMPT_LINE}
   #{WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE}
   #{DISPATCH_PLAN_PROMPT_LINE}
   #{STAGE_DEPENDENCY_PROMPT_LINE}

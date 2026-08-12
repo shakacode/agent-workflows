@@ -652,6 +652,68 @@ unsupported states are invalid. A rejected result launches nothing; an accepted
 result permits only `launch.eligible_lane_ids` and leaves
 `launch.held_lane_ids` unlaunched.
 
+### Hierarchical Token Budget
+
+`batch-token-budget v1` is opt-in. When `plan.token_budget` is absent, legacy
+batch plans keep their existing behavior. When any budget metadata is present,
+the plan must declare the exact batch id, positive raw-token limits for the
+aggregate, coordinator, and every planned lane id, strictly increasing warning
+and approval percentages with hard at 100, a telemetry freshness limit, a
+cross-task delegation approval threshold, and an absolute coordinator-owned
+`state_path`. Partial, inline, stale, malformed, or `UNKNOWN` required data blocks new
+expensive work. Do not invent universal absolute limits or substitute dollars,
+plan meters, cached-token discounts, prompt length, or message count.
+
+Resolve `PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
+repo-local pinned-copy chain. Initialize and operate the durable state through:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/batch-token-budget" \
+  --state <plan.state_path> < batch-token-budget-command-v1.json
+```
+
+Before every coordinator or worker model turn, spawn, retry, review wave,
+scheduled continuation, monitor wake, resume, replacement, escalation, or
+cross-task delegation, reserve conservative target headroom. The helper's file
+lock, fsynced temporary state, and atomic rename serialize concurrent
+reservations and make ids replay-safe. Unchanged active targets coalesce.
+Treat command time as a durable monotonic watermark; future-dated human
+decisions and time rollback fail closed. Replacement/escalation always names a
+released or reconciled predecessor, and persisted reservations contain only
+pinned metadata fields.
+Cross-task admission resolves source and target task/root/batch/lane plus
+canonical issue/PR identities from metadata only, reserves the target batch/lane
+before its turn, and includes retained-child fan-out in the estimate. A paused
+target requires explicit resume admission.
+
+Reconcile predicted use only from a fresh
+`authoritative-token-usage-receipt v1` emitted by a named
+host/runtime/coordination producer with durable evidence. Count every unique
+physical self/descendant segment exactly once in its owning lane and aggregate;
+bind every segment to the admitted target envelope and release unused
+reservation. Missing, stale, malformed, duplicate, conflicting,
+or `UNKNOWN` telemetry allows read-only discovery and checkpointing only. A
+cross-task charge-back records source causality for actual target self plus
+descendant use without incrementing physical aggregate totals twice.
+Replacement or escalation waits for predecessor release/reconciliation.
+
+Warning persists a compact checkpoint and continues. Approval persists a
+scoped, expiring human receipt and starts no new expensive action without it.
+Hard returns `budget-exhausted / NOT COMPLETE`, with no unchanged retry or
+automatic continuation until an explicit scoped increase or resume decision
+restores headroom. Approvals and overrides never grant or weaken security,
+review, QA, exact-head, ownership, or merge gates. The maximum documented
+overshoot is one already-admitted in-flight turn per admitted target/retained
+descendant; authoritative reconciliation measures it and rejects a wider
+envelope.
+
+Before a hard-stop handoff, persist exact completed work, current branch and
+full head, all six gate states, authoritative receipt cutoff, resume conditions,
+and a copy-paste resume action. Closeout reports allocated, consumed, currently
+reserved, cumulatively released, and unattributed tokens in aggregate,
+coordinator, and every lane plus overshoot. The complete JSON contract and
+examples are in [Hierarchical Token Budgets](../docs/token-budgets.md).
+
 ### Model And Effort Routing
 
 Route the parent coordinator separately from implementation, discovery, review,
@@ -1538,11 +1600,12 @@ Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+Observed host/model/effort:<host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
-Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
-- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
+Budget:<none|v1 A/R/L,W/P/H,age,del,state>;stop
+Worker model/effort preferences:<initial>/<effort>-><lanes>;escalate <route> after MODEL_ESCALATION_REQUEST;max=N.
+Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;ordinary pending/active lifecycle.
+- Deps:v1 edit|validation_open|merge_order;missing/UNKNOWN/stale=>closed;combined-tip@seam
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
@@ -1557,6 +1620,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
+Budget:v1 reserve/reconcile auth usage;warn checkpoint;approval/hard stop;gates unchanged.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
@@ -1731,6 +1795,8 @@ Every target must use one explicit final state:
 - `autonomous-merge-evidence-unknown`: ordinary readiness may be clean, but
   autonomous eligibility evidence is missing, malformed, ambiguous, stale, or
   not bound to the exact current head.
+- `budget-exhausted`: token-budget hard stop; always `NOT COMPLETE`. Include the
+  exact work/branch/head/gates/cutoff checkpoint and scoped resume conditions.
 - `no-pr-evidence`: no PR was created; link the evidence-backed issue/PR
   comment and disposition. For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target comment exists.
 
@@ -2803,6 +2869,11 @@ The closeout lane is:
     compatible capability or its advertisement is `UNKNOWN`, record
     `telemetry audit: unavailable` in the durable handoff and continue; backend
     `n/a` skips this step.
+    For a budget-enabled batch, also run `batch-token-budget closeout` after all
+    releases/reconciliations and carry aggregate/coordinator/all-lane allocated,
+    consumed, reserved, released, unattributed, and overshoot totals. Active
+    reservations, unattributed usage, stale/`UNKNOWN` telemetry, or a hard-stop
+    checkpoint remains `NOT COMPLETE` and blocks automatic closeout.
 13. Once every batch target has a final state, the batch coordinator must run
     its completed-batch audit before its final handoff. Each completed-batch
     audit is owned by its batch coordinator. A parent orchestration agent only
