@@ -568,6 +568,11 @@ using a process gap as PR evidence:
 
 ## High-Concurrency Batch Launch
 
+Use this section when the user wants one or more issues, PRs, or direct-prompt
+tasks processed by Codex workers, subagents, worktrees, or multiple machines.
+For one target, keep the same intake and handoff fields while collapsing wave
+packing and collision analysis to a batch of one.
+
 ### Merge Authority Input Normalization
 
 At the human-editable input boundary, accept `none`, `ask`, `auto`, and the
@@ -585,11 +590,6 @@ worker prompt or writing manifests, handoffs, merge-assurance contexts or
 receipts, audits, helper inputs, or other durable evidence, require the
 canonical value `auto_merge_when_gates_pass`. Never persist `auto`, and never
 infer a default from an omitted or unresolved field.
-
-Use this section when the user wants one or more issues, PRs, or direct-prompt
-tasks processed by Codex workers, subagents, worktrees, or multiple machines.
-For one target, keep the same intake and handoff fields while collapsing wave
-packing and collision analysis to a batch of one.
 
 ### Short Invocation
 
