@@ -259,6 +259,8 @@ DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN =
   /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks\s+execution\b/i
 DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN =
   /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\b/i
+DIRECT_INDEPENDENT_BLOCKER_FIRST_CLAUSE_PATTERN =
+  /\A\s*(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\s*,\s*(?:while|and)\s+/i
 INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN =
   /\bonly\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\s+when\s+/i
 CONCRETE_INDEPENDENT_BLOCKER_SENTENCE_PATTERN =
@@ -337,6 +339,60 @@ def normalized(text)
   text.gsub(/\s+/, " ").strip
 end
 
+def normalize_visible_inline_emphasis(text)
+  fence_marker = nil
+  inline_code_delimiter_length = nil
+
+  text.lines.map do |line|
+    if fence_marker
+      fence_marker = nil if markdown_fence_closing_line?(line, fence_marker)
+      next line
+    end
+
+    if (fence_marker = markdown_fence_opening_marker(line))
+      next line
+    end
+
+    normalized_line, inline_code_delimiter_length =
+      normalize_prose_line_inline_emphasis(line, inline_code_delimiter_length)
+    inline_code_delimiter_length = nil if line.strip.empty?
+    normalized_line
+  end.join
+end
+
+def normalize_prose_line_inline_emphasis(line, inline_code_delimiter_length)
+  normalized_line = +""
+  prose = +""
+  index = 0
+
+  while index < line.length
+    if line[index] == "`"
+      delimiter_length = line[index..].match(/\A`+/)[0].length
+      if inline_code_delimiter_length == delimiter_length
+        inline_code_delimiter_length = nil
+      elsif inline_code_delimiter_length.nil?
+        inline_code_delimiter_length = delimiter_length
+      end
+      normalized_line << normalize_emphasis_delimiters(prose) << line[index, delimiter_length]
+      prose = +""
+      index += delimiter_length
+    elsif inline_code_delimiter_length
+      normalized_line << line[index]
+      index += 1
+    else
+      prose << line[index]
+      index += 1
+    end
+  end
+
+  normalized_line << normalize_emphasis_delimiters(prose)
+  [normalized_line, inline_code_delimiter_length]
+end
+
+def normalize_emphasis_delimiters(text)
+  text.gsub(/\*\*([^*\n]+)\*\*/, "\\1").gsub(/(?<!\w)_([^_\n]+)_(?!\w)/, "\\1")
+end
+
 def strip_allowed_route_only_outcome_clauses(text)
   text
     .gsub(NEGATED_ROUTE_ONLY_COORDINATED_OUTCOME_CLAUSE_PATTERN, "")
@@ -389,6 +445,16 @@ def strip_independent_gate_first_clause(sentence)
   return sentence if trailing_text.match?(ROUTE_ONLY_OUTCOME_PATTERN)
 
   "#{sentence[0...gate_prefix.begin(0)]}#{sentence[subject.end(0) + occurrence.end(0)..]}"
+end
+
+def strip_independent_blocker_first_clause(sentence)
+  blocker = sentence.match(DIRECT_INDEPENDENT_BLOCKER_FIRST_CLAUSE_PATTERN)
+  return sentence unless blocker
+
+  remaining = sentence[blocker.end(0)..]
+  return sentence unless remaining.match?(ROUTE_ONLY_SUBJECT_PATTERN)
+
+  remaining
 end
 
 def strip_route_occurrence_with_independent_blocker_clause(sentence)
@@ -495,12 +561,23 @@ end
 def markdown_structural_segments(block)
   segments = []
   current_segment = +""
+  fence_marker = nil
   in_blockquote = false
   lines = block.lines
   table_line_indexes = markdown_table_line_indexes(lines)
   setext_heading_line_indexes = markdown_setext_heading_line_indexes(lines)
 
   lines.each_with_index do |line, index|
+    if fence_marker
+      current_segment << line
+      if markdown_fence_closing_line?(line, fence_marker)
+        fence_marker = nil
+        segments << current_segment
+        current_segment = +""
+      end
+      next
+    end
+
     if markdown_blockquote_line?(line)
       content = markdown_blockquote_content(line)
 
@@ -535,10 +612,9 @@ def markdown_structural_segments(block)
       segments << current_segment unless current_segment.empty?
       segments << line
       current_segment = +""
-    elsif markdown_fence_line?(line)
+    elsif (fence_marker = markdown_fence_opening_marker(line))
       segments << current_segment unless current_segment.empty?
-      segments << line
-      current_segment = +""
+      current_segment = line.dup
     elsif setext_heading_line_indexes.include?(index)
       segments << current_segment unless current_segment.empty?
       segments << line
@@ -572,7 +648,8 @@ def route_only_contradiction_segments(text)
 end
 
 def unguarded_route_only_sentence(sentence)
-  gate_first_clause_stripped = strip_independent_gate_first_clause(sentence)
+  blocker_first_clause_stripped = strip_independent_blocker_first_clause(sentence)
+  gate_first_clause_stripped = strip_independent_gate_first_clause(blocker_first_clause_stripped)
   independent_blocker_stripped = strip_route_occurrence_with_independent_blocker_clause(gate_first_clause_stripped)
   permitted_clause_stripped = strip_negated_route_outcome_with_independent_blocker_clause(independent_blocker_stripped)
   strip_allowed_route_only_outcome_clauses(permitted_clause_stripped)
@@ -600,8 +677,8 @@ end
 
 def route_subject_precedes_pronoun_contradiction?(previous_sentence, sentence)
   previous_sentence.match?(ROUTE_ONLY_SUBJECT_PATTERN) &&
-    sentence.match?(/\A\s*(?:it|this|that)\b/i) &&
-    forbidden_route_only_sentence?(sentence.sub(/\A\s*(?:it|this|that)\b/i, "A route mismatch"))
+    sentence.match?(/\A\s*(?:(?:`{3,}|~{3,})\s*)?(?:it|this|that)\b/i) &&
+    forbidden_route_only_sentence?(sentence.sub(/\A\s*(?:(?:`{3,}|~{3,})\s*)?(?:it|this|that)\b/i, "A route mismatch"))
 end
 
 def route_subject_precedes_bare_outcome_contradiction?(previous_sentence, sentence)
@@ -617,7 +694,7 @@ end
 
 def forbidden_route_only_contradiction?(text)
   route_only_contradiction_segments(text).any? do |segment|
-    sentences = segment.split(/(?<=[.!?])\s+/)
+    sentences = normalize_visible_inline_emphasis(segment).split(/(?<=[.!?])\s+/)
     route_subject_sentence = nil
 
     sentences.any? do |sentence|
@@ -1168,6 +1245,8 @@ class ModelRoutingContractTest < Minitest::Test
       "reasoning effort is UNKNOWN" => "A reasoning effort is UNKNOWN and requires relaunch before editing.",
       "preferred route is unavailable" => "A preferred route is unavailable and stops the lane before editing.",
       "route mismatch blocks launch" => "A route mismatch blocks launch.",
+      "route mismatch emphasized blocks launch" => "A route mismatch **blocks** launch.",
+      "route mismatch underscored blocks launch" => "A route mismatch _blocks_ launch.",
       "route mismatch blocks the launch" => "A route mismatch blocks the launch.",
       "route mismatch blocks replay" => "A route mismatch blocks replay.",
       "route mismatch blocks review" => "A route mismatch blocks review.",
@@ -1286,6 +1365,7 @@ class ModelRoutingContractTest < Minitest::Test
       "unconditional outcome before semicolon gate clause" => "A different route disqualifies the lane; a route mismatch does not stop the lane; an independent risk gate blocks execution.",
       "direct blocker followed by unconditional different route" => "A route mismatch does not stop the lane; destructive scope expansion blocks execution, yet a different route disqualifies the lane.",
       "same-sentence independent blocker followed by inherited route" => "A route mismatch occurs, but an exact-head CI gate blocks launch, yet an inherited route blocks launch.",
+      "inherited route owns blocker-first clause" => "An inherited route blocks launch, while a route mismatch is merely recorded.",
       "exact-head CI blocker followed by unconditional route outcome" => "A route mismatch does not stop the lane; an exact-head CI gate blocks execution, yet an inherited route forbids launch.",
       "unconditional outcome before direct blocker" => "A different route disqualifies the lane; a route mismatch does not stop the lane; destructive scope expansion blocks execution.",
       "prohibition between permitted clause and independent blocker" => "A route mismatch does not stop the lane, and an inherited route forbids launch, but an independent risk gate blocks execution.",
@@ -1344,6 +1424,8 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not necessarily stop the lane before edits.",
       "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not prevent launch.",
+      "A route mismatch **does not** block launch.",
+      "A route mismatch _does not_ block launch.",
       "A route mismatch does not block the launch.",
       "A route mismatch does not prevent the review.",
       "A route mismatch does not block both launch and review.",
@@ -1400,6 +1482,9 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch occurs, but an independent scope gate blocks launch.",
       "A route mismatch occurs, but an independent evidence gate blocks launch.",
       "A route mismatch occurs, but an independent authority gate blocks launch.",
+      "A credential check blocks launch, while a route mismatch is merely recorded.",
+      "An exact-head CI gate blocks launch, while a route mismatch is merely recorded.",
+      "An independent risk gate blocks launch, while a route mismatch is merely recorded.",
       "A route mismatch occurs. An independent scope gate triggers. It blocks execution.",
       "A route mismatch occurs. An independent evidence gate triggers. It blocks execution.",
       "A route mismatch occurs. An independent authority gate triggers. It blocks execution.",
@@ -1520,6 +1605,24 @@ class ModelRoutingContractTest < Minitest::Test
            "a matching three-backtick close must resume actual HTML-comment stripping"
     refute forbidden_route_only_contradiction?("~~~text\n~~~~\n<!-- A route mismatch blocks launch. -->"),
            "a longer same-marker close must resume actual HTML-comment stripping"
+
+    {
+      "four-backtick fence with literal three-backtick line" => "````text\nA route mismatch occurs.\n```\nIt blocks launch.\n````",
+      "four-tilde fence with literal three-tilde line" => "~~~~text\nA route mismatch occurs.\n~~~\nIt blocks launch.\n~~~~"
+    }.each do |fence, contradiction|
+      assert forbidden_route_only_contradiction?(contradiction),
+             "#{fence} must remain one visible code segment"
+    end
+
+    [
+      "````text\nA route mismatch occurs.\n````\nIt blocks launch.",
+      "````text\nA route mismatch occurs.\n`````\nIt blocks launch.",
+      "~~~~text\nA route mismatch occurs.\n~~~~\nIt blocks launch.",
+      "~~~~text\nA route mismatch occurs.\n~~~~~\nIt blocks launch."
+    ].each do |closed_fence|
+      refute forbidden_route_only_contradiction?(closed_fence),
+             "a matching or longer fence close must end the code segment: #{closed_fence}"
+    end
 
     assert_raises(Minitest::Assertion, "a same-item route-only stop must remain forbidden") do
       assert_route_provenance_contract(
