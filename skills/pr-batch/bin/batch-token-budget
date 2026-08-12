@@ -16,8 +16,56 @@ module BatchTokenBudget
   ].freeze
 
   class InvalidInput < StandardError; end
+  class DuplicateJSONKey < StandardError; end
 
   module_function
+
+  def json_string_end(raw, start)
+    index = start + 1
+    escaped = false
+    while index < raw.length
+      character = raw[index]
+      if escaped
+        escaped = false
+      elsif character == "\\"
+        escaped = true
+      elsif character == '"'
+        break
+      end
+      index += 1
+    end
+    index
+  end
+
+  def parse_json_strict(raw)
+    containers = []
+    index = 0
+    while index < raw.length
+      case raw[index]
+      when '"'
+        start = index
+        index = json_string_end(raw, start)
+        probe = index + 1
+        probe += 1 while probe < raw.length && raw[probe].match?(/\s/)
+        if probe < raw.length && raw[probe] == ":" && containers.last&.fetch(:type) == :object
+          key = JSON.parse(raw[start..index])
+          raise DuplicateJSONKey, key if containers.last.fetch(:keys).key?(key)
+
+          containers.last.fetch(:keys)[key] = true
+        end
+      when "{"
+        containers << { type: :object, keys: {} }
+      when "["
+        containers << { type: :array }
+      when "}", "]"
+        containers.pop
+      end
+      index += 1
+    end
+    JSON.parse(raw)
+  rescue DuplicateJSONKey
+    raise JSON::ParserError, "duplicate-object-key"
+  end
 
   def canonicalize(value)
     case value
@@ -52,6 +100,11 @@ module BatchTokenBudget
 
   def nonnegative_integer?(value)
     value.is_a?(Integer) && !value.negative?
+  end
+
+  def durable_reference?(value)
+    nonempty_string?(value) && value.match?(%r{\A[a-z][a-z0-9+.-]*://[^\s]+\z}i) &&
+      !%w[self-attested worker-self-attested].include?(value.split(":", 2).first.downcase)
   end
 
   def timestamp?(value)
@@ -145,14 +198,157 @@ module BatchTokenBudget
       "overrides" => {},
       "charge_backs" => {},
       "admission_decisions" => {},
+      "reservation_decisions" => {},
       "checkpoint_resolutions" => {},
       "checkpoints" => [],
       "receipts" => []
     }
   end
 
+  def ledger_receipt?(state, candidate, type)
+    candidate.is_a?(Hash) && candidate["type"] == type && candidate["version"] == 1 &&
+      candidate["batch_id"] == state["batch_id"] && state.fetch("receipts").include?(candidate)
+  end
+
+  def valid_usage_ledgers?(state, reconciled_receipt_ids)
+    referenced_segment_ids = []
+    state.fetch("usage_receipts").each do |receipt_id, usage|
+      return false unless nonempty_string?(receipt_id) && usage.is_a?(Hash) &&
+                          usage.keys.sort == %w[cutoff digest segment_ids tokens_counted] &&
+                          nonempty_string?(usage["digest"]) && nonempty_string?(usage["cutoff"]) &&
+                          usage["segment_ids"].is_a?(Array) && !usage["segment_ids"].empty? &&
+                          usage["segment_ids"].uniq.length == usage["segment_ids"].length &&
+                          nonnegative_integer?(usage["tokens_counted"])
+      return false unless reconciled_receipt_ids.count(receipt_id) == 1
+
+      segment_records = usage["segment_ids"].map { |segment_id| state.dig("usage_segments", segment_id) }
+      return false if segment_records.any?(&:nil?)
+      return false unless segment_records.all? do |segment|
+        segment.is_a?(Hash) && segment.keys.sort == %w[digest receipt_id tokens] &&
+        nonempty_string?(segment["digest"]) && segment["receipt_id"] == receipt_id &&
+        positive_integer?(segment["tokens"])
+      end
+      return false unless segment_records.sum { |segment| segment.fetch("tokens") } == usage["tokens_counted"]
+
+      referenced_segment_ids.concat(usage["segment_ids"])
+    end
+    referenced_segment_ids.uniq.length == referenced_segment_ids.length &&
+      referenced_segment_ids.sort == state.fetch("usage_segments").keys.sort
+  end
+
+  def valid_accounting_ledgers?(state)
+    expected = Hash.new do |records, scope_id|
+      records[scope_id] = {
+        "allocated_tokens" => 0,
+        "consumed_tokens" => 0,
+        "reserved_tokens" => 0,
+        "released_tokens" => 0,
+        "unattributed_tokens" => 0
+      }
+    end
+    reconciled_receipt_ids = []
+    state.fetch("reservations").each do |reservation_id, record|
+      return false unless nonempty_string?(reservation_id) && record.is_a?(Hash)
+
+      request = record["request"]
+      scope_id = request.is_a?(Hash) && request["scope_id"]
+      tokens = record["reserved_tokens"]
+      expected_record_keys = case record["status"]
+                             when "active"
+                               %w[receipt request request_digest reserved_tokens status]
+                             when "released"
+                               %w[receipt release_digest release_id release_receipt request request_digest reserved_tokens status]
+                             when "reconciled"
+                               %w[
+                                 charge_back_id receipt reconciliation_receipt request request_digest reserved_tokens status
+                                 usage_receipt_id
+                               ]
+                             else
+                               []
+                             end
+      return false unless request.is_a?(Hash) && request["id"] == reservation_id &&
+                          record.keys.sort == expected_record_keys.sort &&
+                          record["request_digest"] == digest(request) && known_scope?(state, scope_id) &&
+                          scope_id != "aggregate" && positive_integer?(tokens) &&
+                          ledger_receipt?(state, record["receipt"], "batch-token-budget-reservation-receipt") &&
+                          record.dig("receipt", "reservation_id") == reservation_id &&
+                          record.dig("receipt", "scope_id") == scope_id &&
+                          record.dig("receipt", "tokens") == tokens
+
+      [scope_id, "aggregate"].each { |id| expected[id]["allocated_tokens"] += tokens }
+      case record["status"]
+      when "active"
+        [scope_id, "aggregate"].each { |id| expected[id]["reserved_tokens"] += tokens }
+      when "released"
+        release = record["release_receipt"]
+        return false unless nonempty_string?(record["release_id"]) && nonempty_string?(record["release_digest"]) &&
+                            ledger_receipt?(state, release, "batch-token-budget-release-receipt") &&
+                            release["release_id"] == record["release_id"] &&
+                            release["reservation_id"] == reservation_id && release["tokens"] == tokens
+
+        [scope_id, "aggregate"].each { |id| expected[id]["released_tokens"] += tokens }
+      when "reconciled"
+        reconciliation = record["reconciliation_receipt"]
+        usage_receipt_id = record["usage_receipt_id"]
+        usage = state.dig("usage_receipts", usage_receipt_id)
+        return false unless nonempty_string?(usage_receipt_id) && usage &&
+                            ledger_receipt?(state, reconciliation, "batch-token-budget-reconciliation-receipt") &&
+                            reconciliation["reservation_id"] == reservation_id &&
+                            reconciliation["usage_receipt_id"] == usage_receipt_id &&
+                            reconciliation["predicted_tokens"] == tokens &&
+                            reconciliation["actual_tokens"] == usage["tokens_counted"] &&
+                            reconciliation["self_tokens"].is_a?(Integer) &&
+                            reconciliation["descendant_tokens"].is_a?(Integer) &&
+                            reconciliation["self_tokens"] + reconciliation["descendant_tokens"] ==
+                            reconciliation["actual_tokens"] &&
+                            reconciliation["unattributed_tokens"].zero? &&
+                            reconciliation["released_tokens"] == [tokens - reconciliation["actual_tokens"], 0].max &&
+                            reconciliation["overshoot_tokens"] == [reconciliation["actual_tokens"] - tokens, 0].max
+
+        reconciled_receipt_ids << usage_receipt_id
+        [scope_id, "aggregate"].each do |id|
+          expected[id]["consumed_tokens"] += reconciliation["actual_tokens"]
+          expected[id]["released_tokens"] += reconciliation["released_tokens"]
+        end
+      else
+        return false
+      end
+    end
+    return false unless valid_usage_ledgers?(state, reconciled_receipt_ids)
+
+    records = { "aggregate" => state.dig("scopes", "aggregate"),
+                "coordinator" => state.dig("scopes", "coordinator") }
+    state.dig("scopes", "lanes").each { |scope_id, record| records[scope_id] = record }
+    records.all? do |scope_id, record|
+      SCOPE_COUNTERS.all? { |counter| record[counter] == expected[scope_id][counter] }
+    end
+  end
+
+  def valid_reservation_decision_ledgers?(state)
+    valid_fences = state.fetch("reservation_decisions").all? do |reservation_id, fence|
+      nonempty_string?(reservation_id) && fence.is_a?(Hash) &&
+        fence.keys.sort == %w[outcomes request_digest] && nonempty_string?(fence["request_digest"]) &&
+        fence["outcomes"].is_a?(Array) && !fence["outcomes"].empty? && fence["outcomes"].all? do |outcome|
+          outcome.is_a?(Hash) && outcome.keys.sort == %w[receipt result_fields status] &&
+            nonempty_string?(outcome["status"]) && outcome["result_fields"].is_a?(Hash) &&
+            ledger_receipt?(state, outcome["receipt"], "batch-token-budget-reservation-decision-receipt") &&
+            outcome.dig("receipt", "reservation_id") == reservation_id &&
+            outcome.dig("receipt", "request_digest") == fence["request_digest"] &&
+            outcome.dig("receipt", "status") == outcome["status"]
+        end
+    end
+    valid_fences && state.fetch("reservations").all? do |reservation_id, reservation|
+      state.dig("reservation_decisions", reservation_id, "request_digest") == reservation["request_digest"]
+    end
+  end
+
   def valid_state?(state)
     valid = state.is_a?(Hash) && state["contract"] == "batch-token-budget-state" && state["version"] == 1 &&
+            state.keys.sort == %w[
+              admission_decisions approvals base_budget batch_id budget budget_digest charge_backs checkpoint_resolutions
+              checkpoints contract effective_budget_digest last_evaluated_at overrides receipts reservation_decisions
+              reservations revision scopes usage_receipts usage_segments version
+            ] &&
             nonempty_string?(state["batch_id"]) && valid_budget?(state["base_budget"]) &&
             valid_budget?(state["budget"]) &&
             state["budget_digest"] == digest(state["base_budget"]) &&
@@ -163,6 +359,7 @@ module BatchTokenBudget
             state["usage_receipts"].is_a?(Hash) && state["usage_segments"].is_a?(Hash) &&
             state["approvals"].is_a?(Hash) && state["overrides"].is_a?(Hash) &&
             state["charge_backs"].is_a?(Hash) && state["admission_decisions"].is_a?(Hash) &&
+            state["reservation_decisions"].is_a?(Hash) &&
             state["checkpoint_resolutions"].is_a?(Hash) &&
             state["checkpoints"].is_a?(Array) && state["receipts"].is_a?(Array)
     return false unless valid
@@ -188,14 +385,20 @@ module BatchTokenBudget
       aggregate[counter] == descendants.sum { |record| record[counter] }
     end
 
-    aggregate["consumed_tokens"] == descendants.sum { |record| record["consumed_tokens"] } +
-                                    aggregate["unattributed_tokens"]
+    return false unless aggregate["consumed_tokens"] == descendants.sum { |record| record["consumed_tokens"] } +
+                                                        aggregate["unattributed_tokens"]
+
+    valid_accounting_ledgers?(state) && valid_reservation_decision_ledgers?(state)
   end
 
   def scope(state, scope_id)
     return state.dig("scopes", "coordinator") if scope_id == "coordinator"
 
     state.dig("scopes", "lanes", scope_id)
+  end
+
+  def known_scope?(state, scope_id)
+    scope_id == "aggregate" || !scope(state, scope_id).nil?
   end
 
   def scope_totals(state, scope_id)
@@ -393,7 +596,57 @@ module BatchTokenBudget
       fields["completion"] = "NOT COMPLETE"
       fields["resume_conditions"] = %w[scoped-budget-increase durable-resume-decision-with-headroom]
     end
-    [state, result(state, status, fields)]
+    persist_reservation_decision(state, reservation, command.fetch("evaluated_at"), status, fields)
+  end
+
+  def persist_reservation_decision(original_state, reservation, evaluated_at, status, fields)
+    request_digest = digest(reservation)
+    reservation_id = reservation.fetch("id")
+    canonical_fields = canonicalize(fields)
+    existing_fence = original_state.dig("reservation_decisions", reservation_id)
+    if existing_fence
+      raise InvalidInput, "reservation-replay-mismatch" unless existing_fence["request_digest"] == request_digest
+
+      prior_outcome = existing_fence.fetch("outcomes").last
+      if prior_outcome["status"] == status && prior_outcome["result_fields"] == canonical_fields
+        return replay_reservation_decision(original_state, prior_outcome)
+      end
+    end
+
+    state = deep_copy(original_state)
+    fence = state.fetch("reservation_decisions")[reservation_id]
+    if fence
+      raise InvalidInput, "reservation-replay-mismatch" unless fence["request_digest"] == request_digest
+    else
+      fence = {
+        "request_digest" => request_digest,
+        "outcomes" => []
+      }
+      state.fetch("reservation_decisions")[reservation_id] = fence
+    end
+    outcome_receipt = append_receipt(
+      state,
+      "batch-token-budget-reservation-decision-receipt",
+      "reservation_id" => reservation_id,
+      "request_digest" => request_digest,
+      "status" => status,
+      "reason" => fields["reason"],
+      "evaluated_at" => evaluated_at
+    )
+    outcome = {
+      "status" => status,
+      "result_fields" => canonical_fields,
+      "receipt" => outcome_receipt
+    }
+    fence.fetch("outcomes") << outcome
+    [state, result(state, status, fields.merge("decision_receipt" => outcome_receipt))]
+  end
+
+  def replay_reservation_decision(state, outcome)
+    fields = deep_copy(outcome.fetch("result_fields"))
+    fields["decision_status"] = outcome.fetch("status")
+    fields["decision_receipt"] = outcome.fetch("receipt")
+    [state, result(state, "replayed", fields)]
   end
 
   def totals(state)
@@ -467,9 +720,17 @@ module BatchTokenBudget
     end
 
     reservation_id = reservation.fetch("id")
+    request_digest = digest(reservation)
+    fence = original_state.dig("reservation_decisions", reservation_id)
+    if fence
+      raise InvalidInput, "reservation-replay-mismatch" unless fence["request_digest"] == request_digest
+
+      prior_outcome = fence.fetch("outcomes").last
+      return replay_reservation_decision(original_state, prior_outcome) if %w[blocked coalesced].include?(prior_outcome["status"])
+    end
     existing = original_state.dig("reservations", reservation_id)
     if existing
-      raise InvalidInput, "reservation-replay-mismatch" unless existing["request_digest"] == digest(reservation)
+      raise InvalidInput, "reservation-replay-mismatch" unless existing["request_digest"] == request_digest
 
       return [original_state, result(
         original_state,
@@ -487,13 +748,19 @@ module BatchTokenBudget
 
     if %w[replacement escalation].include?(reservation["admission_kind"]) &&
        !reservation["replaces_reservation_id"]
-      return [original_state, result(original_state, "blocked", "reason" => "replacement-predecessor-required")]
+      return persist_reservation_decision(
+        original_state, reservation, command.fetch("evaluated_at"), "blocked",
+        "reason" => "replacement-predecessor-required"
+      )
     end
 
     if reservation["replaces_reservation_id"]
       prior = original_state.dig("reservations", reservation["replaces_reservation_id"])
       unless prior && %w[released reconciled].include?(prior["status"])
-        return [original_state, result(original_state, "blocked", "reason" => "replacement-prior-not-reconciled")]
+        return persist_reservation_decision(
+          original_state, reservation, command.fetch("evaluated_at"), "blocked",
+          "reason" => "replacement-prior-not-reconciled"
+        )
       end
     end
 
@@ -501,20 +768,24 @@ module BatchTokenBudget
       record["status"] == "active" && record.dig("request", "target") == reservation["target"]
     end
     if reservation["target_state"] == "active" || same_target
-      return [original_state, result(
+      return persist_reservation_decision(
         original_state,
+        reservation,
+        command.fetch("evaluated_at"),
         "coalesced",
         "reason" => "target-already-active",
         "coalesced_reservation_id" => same_target&.dig("request", "id")
-      )]
+      )
     end
     if reservation["target_state"] == "paused" && reservation["admission_kind"] != "resume"
-      return [original_state, result(
+      return persist_reservation_decision(
         original_state,
+        reservation,
+        command.fetch("evaluated_at"),
         "blocked",
         "reason" => "paused-target-requires-resume-approval",
         "allowed_actions" => %w[read-only-discovery checkpoint approve]
-      )]
+      )
     end
     approval_id = reservation["approval_id"]
     approval = approval_id && original_state.dig("approvals", approval_id)
@@ -551,7 +822,9 @@ module BatchTokenBudget
         fields["completion"] = "NOT COMPLETE"
         fields["resume_conditions"] = %w[scoped-budget-increase durable-resume-decision-with-headroom]
       end
-      return [original_state, result(original_state, unresolved_prior_stop.fetch("status"), fields)]
+      return persist_reservation_decision(
+        original_state, reservation, command.fetch("evaluated_at"), unresolved_prior_stop.fetch("status"), fields
+      )
     end
 
     if reservation.dig("telemetry", "context_status") == "compaction-required" && !valid_approval
@@ -703,20 +976,66 @@ module BatchTokenBudget
       )
     end
     status = %w[warning approval].include?(state_name) ? "admitted-with-warning" : "admitted"
-    [state, result(state, status, "receipt" => reservation_receipt, "checkpoint" => threshold_checkpoint)]
+    persist_reservation_decision(
+      state,
+      reservation,
+      command.fetch("evaluated_at"),
+      status,
+      "receipt" => reservation_receipt,
+      "checkpoint" => threshold_checkpoint
+    )
+  end
+
+  def valid_human_attestation?(attestation, state, evaluated_at, scope_id, expected_action)
+    return false unless attestation.is_a?(Hash) && attestation["type"] == "proven-human-attestation" &&
+                        attestation["version"] == 1 && attestation.keys.sort == %w[
+                          action actor batch_id budget_digest expires_at id issued_at provenance scope_id type version
+                        ]
+    return false unless nonempty_string?(attestation["id"]) && nonempty_string?(attestation["actor"]) &&
+                        attestation["batch_id"] == state["batch_id"] &&
+                        attestation["budget_digest"] == state["budget_digest"] &&
+                        attestation["scope_id"] == scope_id && attestation["action"] == expected_action
+
+    provenance = attestation["provenance"]
+    return false unless provenance.is_a?(Hash) && provenance.keys.sort == %w[
+      receipt_ref status type verifier_id version
+    ] && provenance["type"] == "coordinator-verified-provenance-receipt" && provenance["version"] == 1 &&
+                        provenance["status"] == "verified" && nonempty_string?(provenance["verifier_id"]) &&
+                        durable_reference?(provenance["receipt_ref"])
+    return false unless timestamp?(attestation["issued_at"]) && timestamp?(attestation["expires_at"])
+
+    seconds_between(evaluated_at, attestation["issued_at"]) >= 0 &&
+      seconds_between(attestation["expires_at"], evaluated_at) >= 0 &&
+      seconds_between(attestation["expires_at"], attestation["issued_at"]).positive?
   end
 
   def valid_approval?(approval, state, evaluated_at)
-    approval.is_a?(Hash) && approval["type"] == "batch-token-budget-approval" && approval["version"] == 1 &&
-      approval.keys.sort == %w[approved_at approver batch_id decision evidence_ref expires_at id reason scope_id type version] &&
-      nonempty_string?(approval["id"]) && approval["batch_id"] == state["batch_id"] &&
-      !scope(state, approval["scope_id"]).nil? && approval["decision"] == "approve-next-admission" &&
-      nonempty_string?(approval["approver"]) && nonempty_string?(approval["reason"]) &&
-      nonempty_string?(approval["evidence_ref"]) &&
-      timestamp?(approval["approved_at"]) && timestamp?(approval["expires_at"]) &&
-      seconds_between(evaluated_at, approval["approved_at"]) >= 0 &&
-      seconds_between(approval["expires_at"], evaluated_at) >= 0 &&
-      seconds_between(approval["expires_at"], approval["approved_at"]).positive?
+    return false unless approval.is_a?(Hash) && approval["type"] == "batch-token-budget-approval" &&
+                        approval["version"] == 1 && approval.keys.sort == %w[
+                          attestation batch_id decision id reason scope_id type version
+                        ]
+    return false unless nonempty_string?(approval["id"]) && approval["batch_id"] == state["batch_id"] &&
+                        known_scope?(state, approval["scope_id"]) &&
+                        approval["decision"] == "approve-next-admission" && nonempty_string?(approval["reason"])
+
+    valid_human_attestation?(
+      approval["attestation"],
+      state,
+      evaluated_at,
+      approval["scope_id"],
+      { "type" => "approve-next-admission", "decision_id" => approval["id"] }
+    )
+  end
+
+  def ensure_attestation_id_available!(state, attestation, decision_id)
+    existing = (state.fetch("approvals").values + state.fetch("overrides").values).find do |record|
+      record.dig("receipt", "attestation_id") == attestation["id"]
+    end
+    return unless existing
+    return if existing["attestation_digest"] == digest(attestation) &&
+              [existing.dig("receipt", "approval_id"), existing.dig("receipt", "override_id")].compact == [decision_id]
+
+    raise InvalidInput, "human-attestation-replay-mismatch"
   end
 
   def approve_command(original_state, command)
@@ -729,6 +1048,7 @@ module BatchTokenBudget
 
       return [original_state, result(original_state, "replayed", "receipt" => existing.fetch("receipt"))]
     end
+    ensure_attestation_id_available!(original_state, approval.fetch("attestation"), approval.fetch("id"))
 
     state = deep_copy(original_state)
     approval_receipt = append_receipt(
@@ -737,16 +1057,19 @@ module BatchTokenBudget
       "approval_id" => approval.fetch("id"),
       "scope_id" => approval.fetch("scope_id"),
       "decision" => approval.fetch("decision"),
-      "approver" => approval.fetch("approver"),
       "reason" => approval.fetch("reason"),
-      "evidence_ref" => approval.fetch("evidence_ref"),
-      "approved_at" => approval.fetch("approved_at"),
-      "expires_at" => approval.fetch("expires_at")
+      "attestation_id" => approval.dig("attestation", "id"),
+      "attestation_digest" => digest(approval.fetch("attestation")),
+      "actor" => approval.dig("attestation", "actor"),
+      "provenance_receipt_ref" => approval.dig("attestation", "provenance", "receipt_ref"),
+      "issued_at" => approval.dig("attestation", "issued_at"),
+      "expires_at" => approval.dig("attestation", "expires_at")
     )
     state["approvals"][approval.fetch("id")] = {
       "digest" => digest(approval),
       "scope_id" => approval.fetch("scope_id"),
-      "expires_at" => approval.fetch("expires_at"),
+      "expires_at" => approval.dig("attestation", "expires_at"),
+      "attestation_digest" => digest(approval.fetch("attestation")),
       "consumed_by" => nil,
       "receipt" => approval_receipt
     }
@@ -779,19 +1102,23 @@ module BatchTokenBudget
                         override["version"] == 1 && nonempty_string?(override["id"]) &&
                         override["batch_id"] == state["batch_id"]
     return false unless override.keys.sort == %w[
-      approved_at approver batch_id evidence_ref expires_at id new_limit_tokens old_limit_tokens reason scope_id type version
+      attestation batch_id id new_limit_tokens old_limit_tokens reason scope_id type version
     ]
-    return false unless %w[aggregate coordinator].include?(override["scope_id"]) || scope(state, override["scope_id"])
+    return false unless known_scope?(state, override["scope_id"])
     return false unless positive_integer?(override["old_limit_tokens"]) && positive_integer?(override["new_limit_tokens"]) &&
                         override["new_limit_tokens"] > override["old_limit_tokens"]
     return false unless override["old_limit_tokens"] == budget_scope_limit(state, override["scope_id"])
-    return false unless nonempty_string?(override["approver"]) && nonempty_string?(override["reason"]) &&
-                        nonempty_string?(override["evidence_ref"])
-    return false unless timestamp?(override["approved_at"]) && timestamp?(override["expires_at"])
+    return false unless nonempty_string?(override["reason"])
 
-    seconds_between(override["expires_at"], evaluated_at) >= 0 &&
-      seconds_between(evaluated_at, override["approved_at"]) >= 0 &&
-      seconds_between(override["expires_at"], override["approved_at"]).positive?
+    expected_action = {
+      "type" => "increase-budget-limit",
+      "decision_id" => override["id"],
+      "old_limit_tokens" => override["old_limit_tokens"],
+      "new_limit_tokens" => override["new_limit_tokens"]
+    }
+    valid_human_attestation?(
+      override["attestation"], state, evaluated_at, override["scope_id"], expected_action
+    )
   end
 
   def override_command(original_state, command)
@@ -804,11 +1131,13 @@ module BatchTokenBudget
     end
     raise InvalidInput, "invalid-override" unless valid_override?(override, original_state, command["evaluated_at"])
 
+    ensure_attestation_id_available!(original_state, override.fetch("attestation"), override.fetch("id"))
+
     if override["scope_id"] != "aggregate"
       required_aggregate_override = original_state.fetch("overrides").values.find do |record|
         record["active"] == true && record["scope_id"] == "aggregate" &&
           override["new_limit_tokens"] > record["old_limit_tokens"] &&
-          seconds_between(override["expires_at"], record["expires_at"]).positive?
+          seconds_between(override.dig("attestation", "expires_at"), record["expires_at"]).positive?
       end
       raise InvalidInput, "override-outlives-required-aggregate-headroom" if required_aggregate_override
     end
@@ -824,18 +1153,21 @@ module BatchTokenBudget
       "scope_id" => override.fetch("scope_id"),
       "old_limit_tokens" => override.fetch("old_limit_tokens"),
       "new_limit_tokens" => override.fetch("new_limit_tokens"),
-      "approver" => override.fetch("approver"),
       "reason" => override.fetch("reason"),
-      "evidence_ref" => override.fetch("evidence_ref"),
-      "approved_at" => override.fetch("approved_at"),
-      "expires_at" => override.fetch("expires_at")
+      "attestation_id" => override.dig("attestation", "id"),
+      "attestation_digest" => digest(override.fetch("attestation")),
+      "actor" => override.dig("attestation", "actor"),
+      "provenance_receipt_ref" => override.dig("attestation", "provenance", "receipt_ref"),
+      "issued_at" => override.dig("attestation", "issued_at"),
+      "expires_at" => override.dig("attestation", "expires_at")
     )
     state["overrides"][override.fetch("id")] = {
       "digest" => digest(override),
       "scope_id" => override.fetch("scope_id"),
       "old_limit_tokens" => override.fetch("old_limit_tokens"),
       "new_limit_tokens" => override.fetch("new_limit_tokens"),
-      "expires_at" => override.fetch("expires_at"),
+      "expires_at" => override.dig("attestation", "expires_at"),
+      "attestation_digest" => digest(override.fetch("attestation")),
       "active" => true,
       "receipt" => override_receipt
     }
@@ -844,6 +1176,8 @@ module BatchTokenBudget
 
   def closeout_command(state)
     active_reservations = state.fetch("reservations").values.count { |reservation| reservation["status"] == "active" }
+    reserved_scope = ([state.dig("scopes", "aggregate"), state.dig("scopes", "coordinator")] +
+                      state.dig("scopes", "lanes").values).any? { |record| record["reserved_tokens"].positive? }
     unattributed = state.dig("scopes", "aggregate", "unattributed_tokens")
     latest_checkpoint = state.fetch("checkpoints").last
     unresolved_hard_checkpoint = state.fetch("checkpoints").any? do |checkpoint|
@@ -869,7 +1203,7 @@ module BatchTokenBudget
     end
     status = if exhausted_scope || current_hard_stop || unresolved_hard_checkpoint
                "budget-exhausted"
-             elsif active_reservations.positive? || unattributed.positive?
+             elsif active_reservations.positive? || reserved_scope || unattributed.positive?
                "not-complete"
              else
                "complete"
@@ -984,7 +1318,7 @@ module BatchTokenBudget
   def valid_usage_segment?(segment, state)
     segment.is_a?(Hash) && segment.keys.sort == %w[id kind scope_id target_id tokens] &&
       nonempty_string?(segment["id"]) && %w[self descendant].include?(segment["kind"]) &&
-      (segment["scope_id"] == "UNKNOWN" || !scope(state, segment["scope_id"]).nil?) &&
+      !scope(state, segment["scope_id"]).nil? &&
       nonempty_string?(segment["target_id"]) && positive_integer?(segment["tokens"])
   end
 
@@ -993,6 +1327,10 @@ module BatchTokenBudget
                         usage_receipt["version"] == 1 && nonempty_string?(usage_receipt["id"]) &&
                         usage_receipt["batch_id"] == state["batch_id"] && nonempty_string?(usage_receipt["cutoff"]) &&
                         timestamp?(usage_receipt["observed_at"])
+
+    allowed_keys = %w[batch_id cutoff id observed_at producer segments type version]
+    allowed_keys << "overshoot" if usage_receipt.key?("overshoot")
+    return false unless usage_receipt.keys.sort == allowed_keys.sort
 
     producer = usage_receipt["producer"]
     return false unless producer.is_a?(Hash) && producer.keys.sort == %w[evidence_ref kind] &&
@@ -1314,7 +1652,7 @@ unless state_path.is_a?(String) && !state_path.empty?
 end
 
 begin
-  command = JSON.parse($stdin.read)
+  command = BatchTokenBudget.parse_json_strict($stdin.read)
 rescue JSON::ParserError
   warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => "malformed-json")
   exit 1
@@ -1326,7 +1664,7 @@ begin
     lock.flock(File::LOCK_EX)
     state = if File.file?(state_path)
               begin
-                JSON.parse(File.read(state_path))
+                BatchTokenBudget.parse_json_strict(File.read(state_path))
               rescue JSON::ParserError
                 raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state"
               end

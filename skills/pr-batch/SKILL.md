@@ -540,7 +540,9 @@ Reserve conservative headroom before every coordinator/worker model turn,
 spawn, retry, review wave, scheduled continuation, monitor wake, resume,
 replacement, escalation, or cross-task delegation. The locked helper prevents
 concurrent over-allocation and replays reservation/release ids safely. Unchanged
-active targets coalesce. Cross-task admission resolves canonical source and
+active targets coalesce. Every valid reservation-id outcome is durably fenced
+to its exact request digest, including coalesced and blocked decisions.
+Cross-task admission resolves canonical source and
 target task/root/batch/lane plus issue/PR identities from metadata only and
 reserves the target batch/lane before its turn. Paused targets need resume
 admission; retained descendants are included in the estimate.
@@ -549,14 +551,19 @@ Reconcile only fresh `authoritative-token-usage-receipt v1` evidence from a
 named host/runtime/backend producer. Count each physical self or descendant
 segment once in its owning lane and aggregate, release unused reservation, and
 fail closed on missing, stale, malformed, duplicate, conflicting, or `UNKNOWN`
-telemetry. Never use worker self-attestation as authoritative. Cross-task causal
+telemetry. `UNKNOWN` segment ownership retains the active reservation and
+cannot release headroom. Never use worker self-attestation as authoritative. Cross-task causal
 charge-back includes target self plus descendant use without incrementing a
 physical aggregate twice. Replacement/escalation waits until its predecessor is
 released or reconciled.
 
-Warning persists a compact checkpoint and continues. Approval persists a human
-receipt and blocks every new expensive action until a scope-matched unexpired
-decision. Hard returns `budget-exhausted / NOT COMPLETE`; unchanged retries and
+Warning persists a compact checkpoint and continues. Approval and override
+commands require a `proven-human-attestation v1` bound to the batch, immutable
+budget digest, scope, exact action/id, actor, issuance/expiry, and a
+coordinator-verified provenance receipt reference; free-form or self-attested
+strings do not authorize work. The helper validates that shape, not the external
+identity system. Approval blocks every new expensive action until a
+scope-matched unexpired decision. Hard returns `budget-exhausted / NOT COMPLETE`; unchanged retries and
 automatic continuations stay stopped until a scoped increase or resume decision
 restores headroom. No budget approval or override grants or weakens security,
 review, QA, exact-head, ownership, or merge gates. The bounded overshoot is one
@@ -567,7 +574,8 @@ Before a hard-stop handoff, persist exact completed work, branch, full head SHA,
 all remaining gates, receipt cutoff, resume conditions, and a copy-paste resume
 action. Closeout reports allocated, consumed, currently reserved, cumulatively
 released, and unattributed tokens for aggregate/coordinator/every lane, plus
-overshoot. Full JSON contracts are in
+overshoot. Duplicate JSON keys and ledger/counter inconsistencies fail on load;
+complete closeout requires zero reserved tokens in every scope. Full JSON contracts are in
 [Hierarchical Token Budgets](../../docs/token-budgets.md).
 
 ## Stage-Typed Dependencies

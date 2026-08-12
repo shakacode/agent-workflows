@@ -571,7 +571,7 @@ the whole launch before dispatch.
      `state_path`. Do not invent universal absolute limits.
      Reserve `aggregate` and `coordinator` for the parent scopes; they cannot be
      lane ids.
-     Partial, inline, stale, malformed, or `UNKNOWN` budget metadata fails the
+     Partial, inline, stale, malformed, duplicate-key, or `UNKNOWN` budget metadata fails the
      batch-plan preflight. A plan with no budget metadata remains legacy
      compatible. Record the coordinator-owned durable runtime state path in the
      Batch Plan and goal prompt. See
