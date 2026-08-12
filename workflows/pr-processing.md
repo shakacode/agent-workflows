@@ -1886,8 +1886,10 @@ the explicit env-var / loaded-skill / repo-local pinned-copy chain and send one
 
 Use only one exact scalar repository-qualified target. The helper exits 0 for an
 allowed decision, 3 for blocked control, and 2 for structured `UNKNOWN`. An
-allowed `evidence_delivery` still reports `control_allowed: false`. Duplicate
-JSON object keys anywhere in the request, including unrelated nested metadata,
+allowed `evidence_delivery` still reports `control_allowed: false`.
+`evidence_delivery_allowed: true` appears only on a request whose operation is
+`evidence_delivery`; a control request cannot be repurposed as evidence delivery.
+Duplicate JSON object keys anywhere in the request, including unrelated nested metadata,
 return structured `UNKNOWN` and block both control and evidence incorporation.
 Proceed with a control or mutation only when the current decision reports both
 `target_membership: true` and `control_allowed: true`. Bind the decision to the

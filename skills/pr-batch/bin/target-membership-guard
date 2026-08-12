@@ -298,7 +298,7 @@ next_action = if member && !evidence_only && !human_authorized_control_transfer
               elsif member
                 "continue only within the verified target-bound task"
               else
-                "route evidence to the exact target-bound task or obtain an explicit human-authorized control transfer to a task already bound to that target"
+                "submit a new exact evidence_delivery request or obtain an explicit human-authorized control transfer to a task already bound to that target"
               end
 
 emit(
@@ -310,7 +310,7 @@ emit(
     "target_membership" => member,
     "human_authorized_control_transfer" => human_authorized_control_transfer,
     "control_allowed" => control_allowed,
-    "evidence_delivery_allowed" => true,
+    "evidence_delivery_allowed" => evidence_only,
     "reason" => reason,
     "next_action" => next_action
   },

@@ -40,7 +40,7 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_equal "manifest-member", result.fetch("disposition")
     assert_equal true, result.fetch("target_membership")
     assert_equal true, result.fetch("control_allowed")
-    assert_equal true, result.fetch("evidence_delivery_allowed")
+    assert_equal false, result.fetch("evidence_delivery_allowed")
   end
 
   def test_duplicate_json_keys_fail_closed_at_every_contract_field
@@ -130,8 +130,8 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_equal "dispatch", result.fetch("operation")
     assert_equal false, result.fetch("target_membership")
     assert_equal false, result.fetch("control_allowed")
-    assert_equal true, result.fetch("evidence_delivery_allowed")
-    assert_equal "route evidence to the exact target-bound task or obtain an explicit human-authorized control transfer to a task already bound to that target",
+    assert_equal false, result.fetch("evidence_delivery_allowed")
+    assert_equal "submit a new exact evidence_delivery request or obtain an explicit human-authorized control transfer to a task already bound to that target",
                  result.fetch("next_action")
   end
 
@@ -176,7 +176,7 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_equal "control-transfer-authority-required", result.fetch("disposition")
     assert_equal true, result.fetch("target_membership")
     assert_equal false, result.fetch("control_allowed")
-    assert_equal true, result.fetch("evidence_delivery_allowed")
+    assert_equal false, result.fetch("evidence_delivery_allowed")
   end
 
   def test_non_boolean_human_authority_returns_structured_unknown
@@ -224,6 +224,7 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_equal true, result.fetch("target_membership")
     assert_equal true, result.fetch("human_authorized_control_transfer")
     assert_equal true, result.fetch("control_allowed")
+    assert_equal false, result.fetch("evidence_delivery_allowed")
   end
 
   def test_missing_target_returns_structured_unknown_and_blocks_work
@@ -338,7 +339,9 @@ class TargetMembershipGuardTest < Minitest::Test
       assert_equal "blocked", result.fetch("status"), operation
       assert_equal true, result.fetch("target_membership"), operation
       assert_equal false, result.fetch("control_allowed"), operation
-      assert_equal true, result.fetch("evidence_delivery_allowed"), operation
+      assert_equal false, result.fetch("evidence_delivery_allowed"), operation
+      assert_equal "obtain explicit human authority before packet-driven control or mutation",
+                   result.fetch("next_action"), operation
 
       result, stderr, status = invoke(
         "operation" => operation,
@@ -349,6 +352,7 @@ class TargetMembershipGuardTest < Minitest::Test
       assert_equal operation, result.fetch("operation")
       assert_equal true, result.fetch("target_membership")
       assert_equal true, result.fetch("control_allowed")
+      assert_equal false, result.fetch("evidence_delivery_allowed")
 
       [false, true].each do |human_authority|
         result, stderr, status = invoke(
@@ -362,7 +366,9 @@ class TargetMembershipGuardTest < Minitest::Test
         assert_equal "foreign-target / evidence-only", result.fetch("disposition"), operation
         assert_equal false, result.fetch("target_membership"), operation
         assert_equal false, result.fetch("control_allowed"), operation
-        assert_equal true, result.fetch("evidence_delivery_allowed"), operation
+        assert_equal false, result.fetch("evidence_delivery_allowed"), operation
+        assert_equal "submit a new exact evidence_delivery request or obtain an explicit human-authorized control transfer to a task already bound to that target",
+                     result.fetch("next_action"), operation
       end
     end
   end
@@ -393,7 +399,7 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_equal "foreign-target / evidence-only", result.fetch("disposition")
     assert_equal false, result.fetch("target_membership")
     assert_equal false, result.fetch("control_allowed")
-    assert_equal true, result.fetch("evidence_delivery_allowed")
+    assert_equal false, result.fetch("evidence_delivery_allowed")
   end
 
   def test_duplicate_manifest_identity_is_ambiguous_after_normalization
@@ -445,6 +451,17 @@ class TargetMembershipGuardTest < Minitest::Test
     end
   end
 
+  def test_bin_validate_executes_the_target_membership_guard_suite_in_the_pr_batch_section
+    validate = File.readlines(File.join(ROOT, "bin/validate"), chomp: true)
+    guard_test = "ruby skills/pr-batch/bin/target-membership-guard-test.rb"
+    previous_test = "ruby skills/batch-status/bin/batch-status-test.rb"
+    next_test = "ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb"
+
+    assert_includes validate, guard_test
+    assert_operator validate.index(previous_test), :<, validate.index(guard_test)
+    assert_operator validate.index(guard_test), :<, validate.index(next_test)
+  end
+
   def test_portable_contract_documents_transfer_authority_and_duplicate_key_fail_closed_rules
     required_surfaces = %w[
       skills/pr-batch/SKILL.md
@@ -461,6 +478,10 @@ class TargetMembershipGuardTest < Minitest::Test
       assert_includes normalized_text, "unrelated nested metadata", relative_path
       assert_includes normalized_text, "Every packet-driven operation other than `evidence_delivery`", relative_path
     end
+
+    workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+    assert_includes workflow,
+                    "`evidence_delivery_allowed: true` appears only on a request whose operation is `evidence_delivery`"
   end
 
   def test_portable_skill_summaries_distinguish_foreign_evidence_from_unknown_identity
