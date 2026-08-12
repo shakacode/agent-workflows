@@ -275,7 +275,48 @@ def extract_markdown_section(text, heading)
 end
 
 def strip_html_comments(text)
-  text.gsub(/<!--.*?-->/m, "")
+  in_fence = false
+  in_html_comment = false
+
+  text.lines.map do |line|
+    if markdown_fence_line?(line)
+      in_fence = !in_fence
+      next line
+    end
+
+    next line if in_fence
+
+    stripped_line, in_html_comment = strip_html_comments_from_prose_line(line, in_html_comment)
+    stripped_line
+  end.join
+end
+
+def strip_html_comments_from_prose_line(line, in_html_comment)
+  stripped_line = +""
+  inline_code = false
+  index = 0
+
+  while index < line.length
+    if in_html_comment
+      comment_end = line.index("-->", index)
+      return [stripped_line, true] unless comment_end
+
+      index = comment_end + 3
+      in_html_comment = false
+    elsif line[index] == "`"
+      inline_code = !inline_code
+      stripped_line << line[index]
+      index += 1
+    elsif !inline_code && line[index, 4] == "<!--"
+      in_html_comment = true
+      index += 4
+    else
+      stripped_line << line[index]
+      index += 1
+    end
+  end
+
+  [stripped_line, in_html_comment]
 end
 
 def normalized(text)
@@ -1380,6 +1421,22 @@ class ModelRoutingContractTest < Minitest::Test
         "#{guide}\n\n#{boundary_text}\n",
         "#{MODEL_ROUTING_GUIDE_PATH} #{boundary} boundary"
       )
+    end
+
+    [
+      "```text\n<!-- A route mismatch blocks launch. -->\n```",
+      "The forbidden example is `<!-- A route mismatch blocks launch. -->`."
+    ].each do |visible_comment|
+      assert forbidden_route_only_contradiction?(visible_comment),
+             "visible code comments must remain subject to route-only contradiction checks: #{visible_comment}"
+    end
+
+    [
+      "<!-- A route mismatch blocks launch. -->",
+      "<!-- A route mismatch\nblocks launch. -->"
+    ].each do |hidden_comment|
+      refute forbidden_route_only_contradiction?(hidden_comment),
+             "actual HTML comments must remain ignored: #{hidden_comment}"
     end
 
     assert_raises(Minitest::Assertion, "a same-item route-only stop must remain forbidden") do
