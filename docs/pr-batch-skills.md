@@ -177,7 +177,7 @@ omit the queue summary and note that queue state is unavailable.
    single-target `$plan-pr-batch` work to Sol/high. Use Terra/high only after an
    affirmative simple classification, and reserve Sol/xhigh for a
    present/disputed high-risk boundary or another listed exception. Multiple
-   interacting targets use the routine multi-lane balanced/high route unless an
+   targets use the routine multi-lane balanced/high route unless an
    exception applies.
    On Claude, use Opus 5/high by default, Sonnet 5/high only after the same
    affirmative simple classification, and Opus 5/xhigh for the corresponding
