@@ -23,6 +23,10 @@ test intentionally loads the production receipt parser from the sibling
 `post-merge-audit` skill; an isolated pinned copy must include that companion
 or stop with a precise missing-companion blocker.
 
+Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
+contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract here.
+
 Memorable invocation:
 
 ```text

@@ -21,10 +21,15 @@ names:
 
 - base branch
 - hosted-CI trigger or hosted-CI policy
+- hosted runtime QA gate
 - review gate
 - merge ledger, if present
 - changelog policy
 - local validation command
+
+Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
+contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract here.
 
 Use the PR's real repository, base, head branch, head SHA, and current merge
 state. Derive the repository from a PR URL when one is supplied; otherwise use

@@ -1,0 +1,757 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "etc"
+require "open3"
+require "optparse"
+require "rbconfig"
+require "tempfile"
+require "tmpdir"
+require "yaml"
+require File.expand_path("../../../bin/agent_doctor/hosted_qa_policy", __dir__)
+require File.expand_path("../lib/hosted_qa_runtime_trust", __dir__)
+load File.expand_path("../../post-merge-audit/bin/closeout-evidence-replay", __dir__)
+load File.expand_path("../../post-merge-audit/bin/completed-batch-publication-preflight", __dir__)
+
+module HostedQaReadiness
+  POLICY_PATH = ".agents/agent-workflow.yml"
+  SHA_PATTERN = /\A[0-9a-f]{40}\z/i
+  HELPER_PROVENANCE_PATTERN = /\A(?:trusted-base:[0-9a-f]{40}|verified-installed-pack:[0-9a-f]{64})\z/
+  ENV_INTERPRETER = "/usr/bin/env"
+  ENV_PROGRAM = /\A[A-Za-z0-9][A-Za-z0-9_.+-]*\z/
+  SYSTEM_TOOL_DIRS = %w[/opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin].freeze
+  TRUSTED_INTERPRETER_DIRS = [File.dirname(File.realpath(RbConfig.ruby)), *SYSTEM_TOOL_DIRS].uniq.freeze
+  SUPPORTED_INTERPRETER_CANDIDATES = {
+    "ruby" => [RbConfig.ruby],
+    "sh" => %w[/bin/sh /usr/bin/sh]
+  }.freeze
+  SYSTEM_TEMP_ROOTS = %w[/tmp /var/tmp].freeze
+  SYSTEM_GIT = %w[/opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git /bin/git].find do |path|
+    File.file?(path) && File.executable?(path)
+  end
+
+  module_function
+
+  def assess(repo:, base_sha:, head_sha:, evidence:, review_target_url: nil, waiver_verifier: nil)
+    repo = File.expand_path(repo)
+    normalized_base = base_sha.to_s.downcase
+    normalized_head = head_sha.to_s.downcase
+    resolved_base = resolve_commit(repo, base_sha)
+    resolved_head = resolve_commit(repo, head_sha)
+    current_head = resolve_commit(repo, "HEAD")
+    blockers = []
+    blockers << "base SHA is absent, invalid, or unresolved" unless
+      base_sha.is_a?(String) && base_sha.match?(SHA_PATTERN) && resolved_base == normalized_base
+    blockers << "head SHA is absent, invalid, or unresolved" unless
+      head_sha.is_a?(String) && head_sha.match?(SHA_PATTERN) && resolved_head == normalized_head
+    blockers << "current checkout HEAD does not equal --head-sha" unless current_head == resolved_head
+    blockers << "hosted QA evidence must be text" unless evidence.is_a?(String)
+    blockers << "base SHA is not an ancestor of head SHA" unless
+      resolved_base && resolved_head && ancestor?(repo, resolved_base, resolved_head)
+    return blocked_result(base_sha, head_sha, blockers) unless blockers.empty?
+
+    trusted_policy = policy_at(repo, resolved_base)
+    unless trusted_policy.errors.empty?
+      blockers = trusted_policy.errors.map { |error| "invalid trusted-base hosted_qa_gate policy: #{error}" }
+      return blocked_result(resolved_base, resolved_head, blockers)
+    end
+    if %i[absent not_applicable].include?(trusted_policy.state)
+      candidate_policy = policy_at(repo, resolved_head, label: "candidate policy")
+      unless candidate_policy.errors.empty?
+        blockers = candidate_policy.errors.map { |error| "invalid candidate hosted_qa_gate policy: #{error}" }
+        return blocked_result(resolved_base, resolved_head, blockers)
+      end
+      if candidate_policy.state == :configured
+        parsed_policy = candidate_policy.policy
+
+        paths = changed_paths(repo, resolved_base, resolved_head)
+        allowed_paths = [POLICY_PATH, parsed_policy.fetch("deployment_verifier")]
+        runtime_paths = (paths - allowed_paths).select { |path| policy_applies_to_path?(parsed_policy, path) }
+        unmanaged_paths = paths - allowed_paths - runtime_paths
+        bootstrap_blockers = []
+        unless paths.include?(parsed_policy.fetch("deployment_verifier"))
+          bootstrap_blockers << "hosted QA policy bootstrap must add or update its declared verifier: " \
+                                "#{parsed_policy.fetch('deployment_verifier')}"
+        end
+        candidate_verifier_label = "candidate hosted QA deployment verifier"
+        candidate_verifier_error = verifier_interpreter_error_at(
+          repo,
+          resolved_head,
+          parsed_policy.fetch("deployment_verifier"),
+          label: candidate_verifier_label
+        )
+        bootstrap_blockers << candidate_verifier_error if candidate_verifier_error
+        unless runtime_paths.empty?
+          bootstrap_blockers << "hosted QA policy bootstrap is mixed with configured runtime changes: #{runtime_paths.join(', ')}"
+        end
+        unless unmanaged_paths.empty?
+          bootstrap_blockers << "hosted QA policy bootstrap contains unmanaged paths: #{unmanaged_paths.join(', ')}"
+        end
+        return blocked_result(resolved_base, resolved_head, bootstrap_blockers) unless bootstrap_blockers.empty?
+
+        return {
+          "eligible" => true,
+          "verdict" => "BOOTSTRAP_ALLOWED",
+          "policy_source" => "trusted_base",
+          "base_sha" => resolved_base,
+          "head_sha" => resolved_head,
+          "changed_paths" => paths,
+          "blockers" => []
+        }
+      end
+
+      return {
+        "eligible" => true,
+        "verdict" => "NOT_APPLICABLE",
+        "policy_source" => "trusted_base",
+        "base_sha" => resolved_base,
+        "head_sha" => resolved_head,
+        "changed_paths" => changed_paths(repo, resolved_base, resolved_head),
+        "blockers" => []
+      }
+    end
+
+    parsed_policy = trusted_policy.policy
+    _verifier_blob, verifier_error = trusted_executable_blob(
+      repo,
+      resolved_base,
+      parsed_policy.fetch("deployment_verifier")
+    )
+    return blocked_result(resolved_base, resolved_head, [verifier_error]) if verifier_error
+
+    paths = changed_paths(repo, resolved_base, resolved_head)
+    governing_paths = [POLICY_PATH, parsed_policy.fetch("deployment_verifier")]
+    applicable_paths = paths.select do |path|
+      governing_paths.include?(path) || policy_applies_to_path?(parsed_policy, path)
+    end
+    if paths.include?(POLICY_PATH)
+      candidate_policy = policy_at(repo, resolved_head, label: "candidate policy")
+      candidate_policy_blockers = candidate_policy.errors.map do |error|
+        "invalid candidate hosted_qa_gate policy: #{error}"
+      end
+      unless candidate_policy.state == :configured
+        candidate_policy_blockers << "candidate hosted_qa_gate policy must remain a closed version 1 mapping"
+      end
+      if candidate_policy.state == :configured
+        candidate_verifier_error = verifier_interpreter_error_at(
+          repo,
+          resolved_head,
+          candidate_policy.policy.fetch("deployment_verifier"),
+          label: "candidate hosted QA deployment verifier"
+        )
+        candidate_policy_blockers << candidate_verifier_error if candidate_verifier_error
+      end
+      unless candidate_policy_blockers.empty?
+        return blocked_result(resolved_base, resolved_head, candidate_policy_blockers.uniq).merge(
+          "changed_paths" => paths,
+          "applicable_paths" => applicable_paths
+        )
+      end
+    end
+    if paths.include?(parsed_policy.fetch("deployment_verifier"))
+      candidate_verifier_label = "candidate hosted QA deployment verifier"
+      candidate_verifier_error = verifier_interpreter_error_at(
+        repo,
+        resolved_head,
+        parsed_policy.fetch("deployment_verifier"),
+        label: candidate_verifier_label
+      )
+      if candidate_verifier_error
+        return blocked_result(resolved_base, resolved_head, [candidate_verifier_error]).merge(
+          "changed_paths" => paths,
+          "applicable_paths" => applicable_paths
+        )
+      end
+    end
+    if applicable_paths.empty?
+      return {
+        "eligible" => true,
+        "verdict" => "NOT_APPLICABLE",
+        "policy_source" => "trusted_base",
+        "base_sha" => resolved_base,
+        "head_sha" => resolved_head,
+        "changed_paths" => paths,
+        "applicable_paths" => [],
+        "blockers" => []
+      }
+    end
+
+    hosted_markers = CloseoutEvidenceReplay.marker_bodies(evidence, "hosted-qa-evidence v1")
+    if hosted_markers.empty?
+      return blocked_result(
+        resolved_base,
+        resolved_head,
+        ["hosted-qa-evidence v1 marker is required; qa-evidence markers are not hosted deployment proof"]
+      ).merge("changed_paths" => paths, "applicable_paths" => applicable_paths)
+    end
+    if hosted_markers.length != 1
+      return blocked_result(
+        resolved_base,
+        resolved_head,
+        ["exactly one hosted-qa-evidence v1 marker is required"]
+      ).merge("changed_paths" => paths, "applicable_paths" => applicable_paths)
+    end
+
+    hosted = CloseoutEvidenceReplay.replay_hosted_qa_markers(hosted_markers, expected_head_sha: resolved_head)
+    unless %w[SATISFIED WAIVED].include?(hosted.fetch("verdict"))
+      details = [*hosted.fetch("missing", []), *hosted.fetch("errors", [])].uniq
+      return blocked_result(
+        resolved_base,
+        resolved_head,
+        ["hosted QA evidence is not structurally replayable: #{details.join(', ')}"]
+      ).merge("changed_paths" => paths, "applicable_paths" => applicable_paths, "hosted_qa_evidence" => hosted)
+    end
+    unless hosted.dig("fields", "target") == parsed_policy.fetch("target")
+      return blocked_result(
+        resolved_base,
+        resolved_head,
+        ["hosted QA evidence target does not equal trusted-base policy target"]
+      ).merge("hosted_qa_evidence" => hosted)
+    end
+    if hosted.fetch("verdict") == "WAIVED" && parsed_policy.fetch("waiver_mode") == "forbidden"
+      return blocked_result(
+        resolved_base,
+        resolved_head,
+        ["trusted-base hosted QA policy forbids waivers"]
+      ).merge("hosted_qa_evidence" => hosted)
+    end
+    if hosted.fetch("verdict") == "WAIVED"
+      review_target = CompletedBatchPublicationPreflight.target_from_url(review_target_url.to_s)
+      unless review_target
+        return blocked_result(
+          resolved_base,
+          resolved_head,
+          ["--review-target-url must identify the exact GitHub pull request or issue for a maintainer waiver"]
+        ).merge("hosted_qa_evidence" => hosted)
+      end
+      waiver = CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
+        { "url" => hosted.dig("fields", "maintainer_waiver") },
+        review_target,
+        evidence,
+        head_sha: resolved_head,
+        hosted_target: parsed_policy.fetch("target"),
+        verifier: waiver_verifier
+      )
+      unless waiver
+        return blocked_result(
+          resolved_base,
+          resolved_head,
+          ["maintainer hosted QA waiver is not authenticated and replayable for the exact current head"]
+        ).merge("hosted_qa_evidence" => hosted)
+      end
+
+      return {
+        "eligible" => true,
+        "verdict" => "WAIVED",
+        "policy_source" => "trusted_base",
+        "base_sha" => resolved_base,
+        "head_sha" => resolved_head,
+        "changed_paths" => paths,
+        "applicable_paths" => applicable_paths,
+        "hosted_qa_evidence" => hosted,
+        "maintainer_waiver" => waiver,
+        "blockers" => []
+      }
+    end
+    if hosted.fetch("verdict") == "SATISFIED"
+      configured_ids = parsed_policy.fetch("acceptance_criteria")
+      observed_ids = hosted.fetch("criteria").map { |row| row.fetch("id") }
+      missing_ids = configured_ids - observed_ids
+      extra_ids = observed_ids - configured_ids
+      unless observed_ids == configured_ids
+        details = []
+        details << "missing #{missing_ids.join(', ')}" unless missing_ids.empty?
+        details << "unexpected #{extra_ids.join(', ')}" unless extra_ids.empty?
+        details << "criterion order does not match trusted-base policy" if missing_ids.empty? && extra_ids.empty?
+        return blocked_result(
+          resolved_base,
+          resolved_head,
+          ["hosted QA criterion coverage mismatch: #{details.join('; ')}"]
+        ).merge("hosted_qa_evidence" => hosted)
+      end
+
+      verification, verification_error = verify_deployment(
+        repo:,
+        base_sha: resolved_base,
+        verifier_path: parsed_policy.fetch("deployment_verifier"),
+        fields: hosted.fetch("fields"),
+        criterion_ids: configured_ids,
+        criteria: hosted.fetch("criteria")
+      )
+      if verification_error
+        return blocked_result(
+          resolved_base,
+          resolved_head,
+          [verification_error]
+        ).merge("hosted_qa_evidence" => hosted)
+      end
+
+      {
+        "eligible" => true,
+        "verdict" => "READY",
+        "policy_source" => "trusted_base",
+        "base_sha" => resolved_base,
+        "head_sha" => resolved_head,
+        "changed_paths" => paths,
+        "applicable_paths" => applicable_paths,
+        "hosted_qa_evidence" => hosted,
+        "deployment_verification" => verification,
+        "blockers" => []
+      }
+    end
+  rescue Psych::Exception, SystemCallError, IOError, TypeError => e
+    blocked_result(base_sha, head_sha, ["hosted QA readiness input could not be read"], errors: [e.message])
+  end
+
+  def policy_applies_to_path?(policy, path)
+    HostedQaPolicy.match?(policy, path)
+  end
+
+  def verify_deployment(repo:, base_sha:, verifier_path:, fields:, criterion_ids:, criteria:)
+    blob, error = trusted_executable_blob(repo, base_sha, verifier_path)
+    return [nil, error] if error
+
+    interpreter, interpreter_error = trusted_verifier_interpreter(repo, blob)
+    return [nil, interpreter_error] if interpreter_error
+
+    arguments = [
+      "--deployment-id", fields.fetch("deployment_id"),
+      "--deployment-url", fields.fetch("deployment_url"),
+      "--expected-head-sha", fields.fetch("head_sha"),
+      "--target", fields.fetch("target")
+    ]
+    criterion_ids.each { |criterion_id| arguments.concat(["--criterion", criterion_id]) }
+    stdout = stderr = nil
+    status = nil
+    with_safe_verifier_directory(repo) do |directory|
+      Tempfile.create(["hosted-qa-verifier", File.extname(verifier_path)], directory) do |file|
+        file.binmode
+        file.write(blob)
+        file.flush
+        File.chmod(0o700, file.path)
+        file.close
+        stdout, stderr, status = CompletedBatchPublicationPreflight.capture_process(
+          [interpreter, file.path, *arguments],
+          input: "",
+          timeout: 30,
+          environment: verifier_environment(repo, directory),
+          chdir: directory,
+          unsetenv_others: true
+        )
+      end
+    end
+    unless status&.success?
+      detail = stderr.to_s.strip
+      suffix = detail.empty? ? "" : ": #{detail.lines.first.to_s.strip}"
+      return [nil, "trusted-base deployment verifier failed#{suffix}"]
+    end
+
+    payload = JSON.parse(stdout)
+    unless payload.is_a?(Hash) && payload.key?("criteria")
+      return [nil, "trusted-base deployment verifier did not authenticate the exact configured acceptance criteria"]
+    end
+
+    expected_keys = %w[criteria deployed_head_sha deployment_id deployment_url target verified version]
+    unless payload.is_a?(Hash) && payload.keys.all?(String) && payload.keys.sort == expected_keys
+      return [nil, "trusted-base deployment verifier returned an invalid closed receipt"]
+    end
+
+    verified_head_sha = payload.fetch("deployed_head_sha")
+    unless verified_head_sha.is_a?(String) && verified_head_sha.match?(SHA_PATTERN)
+      return [nil, "trusted-base deployment verifier did not authenticate the exact deployment, head, and target"]
+    end
+
+    payload["deployed_head_sha"] = verified_head_sha.downcase
+
+    verified_criteria = payload.fetch("criteria")
+    unless valid_verified_criteria?(verified_criteria, criterion_ids) && verified_criteria == criteria
+      return [nil, "trusted-base deployment verifier did not authenticate the exact configured acceptance criteria"]
+    end
+
+    expected = {
+      "version" => 1,
+      "verified" => true,
+      "deployment_id" => fields.fetch("deployment_id"),
+      "deployment_url" => fields.fetch("deployment_url"),
+      "deployed_head_sha" => fields.fetch("head_sha"),
+      "target" => fields.fetch("target"),
+      "criteria" => verified_criteria
+    }
+    unless payload == expected
+      return [nil, "trusted-base deployment verifier did not authenticate the exact deployment, head, and target"]
+    end
+
+    [payload.merge("verifier_source" => "trusted_base", "verifier_path" => verifier_path), nil]
+  rescue JSON::ParserError, KeyError, SystemCallError, Timeout::Error => e
+    [nil, "trusted-base deployment verifier could not be replayed: #{e.message.lines.first.to_s.strip}"]
+  end
+
+  def valid_verified_criteria?(criteria, criterion_ids)
+    return false unless criteria.is_a?(Array) && criteria.length == criterion_ids.length
+
+    criteria.each_with_index.all? do |row, index|
+      next false unless row.is_a?(Hash) && row.keys.all?(String) && row.keys.sort == %w[evidence id status]
+      next false unless row.fetch("id") == criterion_ids.fetch(index) && row.fetch("status") == "passed"
+
+      evidence = row.fetch("evidence")
+      evidence.is_a?(String) && !evidence.empty? && evidence == evidence.strip &&
+        !evidence.match?(/[|\r\n]/) && !evidence.include?("<!--") && !evidence.include?("-->")
+    end
+  end
+
+  def trusted_verifier_interpreter(repo, blob, label: "trusted-base deployment verifier")
+    shebang = blob.lines.first
+    unless shebang&.start_with?("#!")
+      return [nil, "#{label} must have a supported explicit shebang"]
+    end
+
+    match = shebang.match(%r{\A#!(?<interpreter>/\S+?)(?:[ \t]+(?<argument>\S+))?\r?\n?\z})
+    return [nil, "#{label} has an unsupported shebang"] unless match
+
+    requested_interpreter = match[:interpreter]
+    argument = match[:argument]
+    unless requested_interpreter == ENV_INTERPRETER
+      return [nil, "#{label} absolute shebang must not include arguments"] if argument
+
+      if path_within_repository?(repo, requested_interpreter)
+        return [nil, "#{label} interpreter must resolve outside the candidate repository"]
+      end
+
+      interpreter, resolution_error = resolve_interpreter(repo, requested_interpreter)
+      if interpreter
+        return [interpreter, nil] if supported_interpreter_paths(repo).include?(interpreter)
+
+        return [nil, "#{label} interpreter is unsupported: #{requested_interpreter}"]
+      end
+
+      detail = case resolution_error
+               when :inside_repository
+                 "must resolve outside the candidate repository"
+               when :not_executable
+                 "must be an executable regular file: #{requested_interpreter}"
+               else
+                 "is unavailable: #{requested_interpreter}"
+               end
+      return [nil, "#{label} interpreter #{detail}"]
+    end
+    unless argument&.match?(ENV_PROGRAM)
+      return [nil, "#{label} /usr/bin/env shebang must name one fixed program"]
+    end
+
+    resolve_env_interpreter(repo, argument, label:)
+  end
+
+  def resolve_env_interpreter(repo, program, label:)
+    candidates = SUPPORTED_INTERPRETER_CANDIDATES[program]
+    return [nil, "#{label} /usr/bin/env program is unsupported: #{program}"] unless candidates
+
+    candidates.each do |candidate|
+      interpreter, _error = resolve_interpreter(repo, candidate)
+      return [interpreter, nil] if interpreter
+    end
+
+    [nil, "#{label} interpreter is unavailable: #{program}"]
+  end
+
+  def supported_interpreter_paths(repo)
+    SUPPORTED_INTERPRETER_CANDIDATES.values.flatten.filter_map do |candidate|
+      interpreter, _error = resolve_interpreter(repo, candidate)
+      interpreter
+    end.uniq
+  end
+
+  def resolve_interpreter(repo, path)
+    return [nil, :inside_repository] if path_within_repository?(repo, path)
+
+    realpath = File.realpath(path)
+    return [nil, :inside_repository] if path_within_repository?(repo, realpath)
+
+    stat = File.stat(realpath)
+    return [nil, :not_executable] unless stat.file? && File.executable?(realpath)
+
+    [realpath, nil]
+  rescue Errno::ENOENT, Errno::EACCES
+    [nil, :unavailable]
+  end
+
+  def path_within_repository?(repo, path)
+    repository_paths = [File.expand_path(repo), File.realpath(repo)].uniq
+    candidate_paths = [File.expand_path(path)]
+    candidate_paths << File.realpath(path)
+    candidate_paths.uniq.any? do |candidate_path|
+      repository_paths.any? do |repository_path|
+        candidate_path == repository_path || candidate_path.start_with?("#{repository_path}#{File::SEPARATOR}")
+      end
+    end
+  rescue Errno::ENOENT, Errno::EACCES
+    expanded_path = File.expand_path(path)
+    repository_path = File.expand_path(repo)
+    expanded_path == repository_path || expanded_path.start_with?("#{repository_path}#{File::SEPARATOR}")
+  end
+
+  def trusted_executable_blob(repo, base_sha, verifier_path)
+    executable_blob_at(repo, base_sha, verifier_path, label: "trusted-base deployment verifier")
+  end
+
+  def verifier_interpreter_error_at(repo, sha, verifier_path, label:)
+    blob, error = executable_blob_at(repo, sha, verifier_path, label:)
+    return error if error
+
+    _interpreter, interpreter_error = trusted_verifier_interpreter(repo, blob, label:)
+    interpreter_error
+  end
+
+  def executable_blob_at(repo, sha, verifier_path, label:)
+    listing, _error, status = git_capture(repo, "ls-tree", sha, "--", verifier_path)
+    return [nil, "#{label} metadata is unavailable"] unless status.success?
+
+    match = listing.lines(chomp: true).one? && listing.lines(chomp: true).first.match(
+      /\A(?<mode>\d{6}) (?<type>blob) [0-9a-f]+\t(?<path>[^\r\n]+)\z/
+    )
+    unless match && match[:path] == verifier_path && match[:mode] == "100755"
+      return [nil, "#{label} must be a tracked executable regular file"]
+    end
+
+    blob, _error, blob_status = git_capture(repo, "show", "#{sha}:#{verifier_path}")
+    return [nil, "#{label} blob is unavailable"] unless blob_status.success?
+
+    [blob, nil]
+  end
+
+  def resolve_commit(repo, value)
+    return unless value.to_s.match?(SHA_PATTERN) || value == "HEAD"
+
+    out, _error, status = git_capture(repo, "rev-parse", "--verify", "#{value}^{commit}")
+    status.success? ? out.strip.downcase : nil
+  end
+
+  def ancestor?(repo, base_sha, head_sha)
+    _out, _error, status = git_capture(repo, "merge-base", "--is-ancestor", base_sha, head_sha)
+    status.success?
+  end
+
+  def policy_at(repo, sha, label: "trusted policy")
+    listing, _error, listing_status = git_capture(repo, "ls-tree", sha, "--", POLICY_PATH)
+    return HostedQaPolicy.invalid("#{label} metadata is unavailable") unless listing_status.success?
+    return HostedQaPolicy.parse_value(nil, present: false) if listing.empty?
+
+    match = listing.lines(chomp: true).one? && listing.lines(chomp: true).first.match(
+      /\A100644 blob [0-9a-f]+\t#{Regexp.escape(POLICY_PATH)}\z/
+    )
+    return HostedQaPolicy.invalid("#{label} must be a tracked regular non-executable file") unless match
+
+    out, _error, status = git_capture(repo, "show", "#{sha}:#{POLICY_PATH}")
+    return HostedQaPolicy.invalid("#{label} blob is unavailable") unless status.success?
+
+    HostedQaPolicy.parse(out)
+  end
+
+  def changed_paths(repo, base_sha, head_sha)
+    out, _error, status = git_capture(
+      repo, "diff", "--name-only", "--no-renames", "-z", base_sha, head_sha, "--"
+    )
+    raise IOError, "git diff failed" unless status.success?
+
+    out.split("\0").reject(&:empty?)
+  end
+
+  def git_capture(repo, *arguments)
+    system_git = trusted_system_git(repo)
+    raise Errno::ENOENT, "trusted system git is unavailable" unless system_git
+
+    Open3.capture3(
+      git_environment,
+      system_git,
+      "-C", repo, *arguments,
+      chdir: repo,
+      unsetenv_others: true
+    )
+  end
+
+  def trusted_system_git(repo)
+    return unless SYSTEM_GIT
+
+    repository_realpath = File.realpath(repo)
+    system_git_realpath = File.realpath(SYSTEM_GIT)
+    repository_prefix = "#{repository_realpath}#{File::SEPARATOR}"
+    return if system_git_realpath == repository_realpath || system_git_realpath.start_with?(repository_prefix)
+
+    stat = File.stat(system_git_realpath)
+    system_git_realpath if stat.file? && File.executable?(system_git_realpath)
+  rescue Errno::ENOENT, Errno::EACCES
+    nil
+  end
+
+  def git_environment
+    account = Etc.getpwuid(Process.uid)
+    {
+      "HOME" => account.dir,
+      "USER" => account.name,
+      "LOGNAME" => account.name,
+      "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_NO_REPLACE_OBJECTS" => "1",
+      "GIT_OPTIONAL_LOCKS" => "0",
+      "GIT_TERMINAL_PROMPT" => "0"
+    }
+  rescue ArgumentError
+    raise Errno::ENOENT, "local account identity is unavailable for uid #{Process.uid}"
+  end
+
+  def verifier_environment(repo, directory)
+    account = Etc.getpwuid(Process.uid)
+    path = trusted_path_directories(repo, TRUSTED_INTERPRETER_DIRS).join(File::PATH_SEPARATOR)
+    raise Errno::ENOENT, "trusted verifier PATH is unavailable" if path.empty?
+
+    {
+      "HOME" => directory,
+      "USER" => account.name,
+      "LOGNAME" => account.name,
+      "PATH" => path
+    }
+  rescue ArgumentError
+    raise Errno::ENOENT, "local account identity is unavailable for uid #{Process.uid}"
+  end
+
+  def trusted_path_directories(repo, directories)
+    repository_realpath = File.realpath(repo)
+    repository_prefix = "#{repository_realpath}#{File::SEPARATOR}"
+    directories.filter_map do |directory|
+      realpath = File.realpath(directory)
+      next if realpath == repository_realpath || realpath.start_with?(repository_prefix)
+
+      stat = File.stat(realpath)
+      realpath if stat.directory?
+    rescue Errno::ENOENT, Errno::EACCES
+      nil
+    end.uniq
+  end
+
+  def with_safe_verifier_directory(repo)
+    temporary_root = trusted_path_directories(repo, SYSTEM_TEMP_ROOTS).first
+    raise IOError, "safe hosted QA verifier temporary root is unavailable" unless temporary_root
+
+    Dir.mktmpdir("hosted-qa-verifier-cwd", temporary_root) do |directory|
+      File.chmod(0o700, directory)
+      yield directory
+    end
+  end
+
+  def authenticated_waiver_comment(**arguments)
+    CompletedBatchPublicationPreflight.configure_gh_timeout!
+    CompletedBatchPublicationPreflight.authenticated_waiver_comment(**arguments)
+  end
+
+  def waiver_verifier_for(repository_root)
+    lambda do |**arguments|
+      authenticated_waiver_comment(repository_root:, **arguments)
+    end
+  end
+
+  def blocked_result(base_sha, head_sha, blockers, errors: nil)
+    result = {
+      "eligible" => false,
+      "verdict" => "BLOCKED",
+      "policy_source" => "trusted_base",
+      "base_sha" => base_sha,
+      "head_sha" => head_sha,
+      "blockers" => blockers.uniq
+    }
+    result["errors"] = errors if errors
+    result
+  end
+
+  def unknown_runtime_result(base_sha, head_sha, blockers)
+    {
+      "eligible" => false,
+      "verdict" => "UNKNOWN",
+      "policy_source" => "UNKNOWN",
+      "helper_provenance" => "UNKNOWN",
+      "helper_trust" => { "status" => "unverified", "manifest" => {} },
+      "base_sha" => base_sha,
+      "head_sha" => head_sha,
+      "blockers" => blockers.uniq
+    }
+  end
+
+  def run(argv)
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: hosted-qa-readiness --repo PATH --base-sha SHA --head-sha SHA --evidence PATH|- --trusted-helper-provenance PROVENANCE [--review-target-url URL]"
+      opts.on("--repo PATH") { |value| options[:repo] = value }
+      opts.on("--base-sha SHA") { |value| options[:base_sha] = value }
+      opts.on("--head-sha SHA") { |value| options[:head_sha] = value }
+      opts.on("--evidence PATH") { |value| options[:evidence_path] = value }
+      opts.on("--trusted-helper-provenance PROVENANCE") { |value| options[:trusted_helper_provenance] = value }
+      opts.on("--review-target-url URL") { |value| options[:review_target_url] = value }
+      opts.on("-h", "--help") do
+        puts opts
+        return 0
+      end
+    end
+    parser.parse!(argv)
+    raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+
+    %i[repo base_sha head_sha evidence_path].each do |key|
+      raise OptionParser::MissingArgument, "--#{key.to_s.tr('_', '-')}" if options[key].to_s.empty?
+    end
+    unless options.fetch(:base_sha).match?(SHA_PATTERN) && options.fetch(:head_sha).match?(SHA_PATTERN)
+      raise OptionParser::InvalidArgument, "--base-sha and --head-sha must be full 40-character hex SHAs"
+    end
+
+    unless options[:trusted_helper_provenance]&.match?(HELPER_PROVENANCE_PATTERN)
+      puts JSON.pretty_generate(
+        unknown_runtime_result(
+          options.fetch(:base_sha).downcase,
+          options.fetch(:head_sha).downcase,
+          ["trusted hosted QA helper provenance is missing or invalid"]
+        )
+      )
+      return 1
+    end
+
+    runtime_trust = HostedQaRuntimeTrust.verify(
+      repo_root: options.fetch(:repo),
+      base_sha: options.fetch(:base_sha).downcase,
+      claim: options.fetch(:trusted_helper_provenance),
+      git_capture: method(:git_capture)
+    )
+    unless runtime_trust.accepted
+      puts JSON.pretty_generate(
+        unknown_runtime_result(
+          options.fetch(:base_sha).downcase,
+          options.fetch(:head_sha).downcase,
+          runtime_trust.errors
+        )
+      )
+      return 1
+    end
+
+    evidence = options.fetch(:evidence_path) == "-" ? $stdin.read : File.read(options.fetch(:evidence_path), encoding: "UTF-8")
+    result = assess(
+      repo: options.fetch(:repo),
+      base_sha: options.fetch(:base_sha).downcase,
+      head_sha: options.fetch(:head_sha).downcase,
+      evidence:,
+      review_target_url: options[:review_target_url],
+      waiver_verifier: waiver_verifier_for(options.fetch(:repo))
+    )
+    result["helper_provenance"] = runtime_trust.provenance
+    result["helper_trust"] = {
+      "status" => "mechanically-verified",
+      "manifest" => runtime_trust.manifest
+    }
+    puts JSON.pretty_generate(result)
+    result.fetch("eligible") ? 0 : 1
+  rescue OptionParser::ParseError => e
+    warn "Error: #{e.message}"
+    64
+  rescue SystemCallError => e
+    puts JSON.pretty_generate(blocked_result(options[:base_sha], options[:head_sha], ["hosted QA readiness input could not be read"], errors: [e.message]))
+    1
+  end
+end
+
+exit(HostedQaReadiness.run(ARGV)) if $PROGRAM_NAME == __FILE__
