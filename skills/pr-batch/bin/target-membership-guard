@@ -3,6 +3,113 @@
 
 require "json"
 
+class DuplicateJsonKeyScanner
+  def initialize(source)
+    @source = source
+    @index = 0
+  end
+
+  def find
+    skip_whitespace
+    scan_value
+  end
+
+  private
+
+  def scan_value
+    skip_whitespace
+    case current_byte
+    when 0x7B then scan_object
+    when 0x5B then scan_array
+    when 0x22
+      scan_string
+      nil
+    else scan_primitive
+    end
+  end
+
+  def scan_object
+    @index += 1
+    skip_whitespace
+    if current_byte == 0x7D
+      @index += 1
+      return nil
+    end
+
+    keys = {}
+    loop do
+      key = scan_string
+      return key if keys.key?(key)
+
+      keys[key] = true
+      skip_whitespace
+      @index += 1
+      duplicate = scan_value
+      return duplicate if duplicate
+
+      skip_whitespace
+      if current_byte == 0x7D
+        @index += 1
+        return nil
+      end
+
+      @index += 1
+      skip_whitespace
+    end
+  end
+
+  def scan_array
+    @index += 1
+    skip_whitespace
+    if current_byte == 0x5D
+      @index += 1
+      return nil
+    end
+
+    loop do
+      duplicate = scan_value
+      return duplicate if duplicate
+
+      skip_whitespace
+      if current_byte == 0x5D
+        @index += 1
+        return nil
+      end
+
+      @index += 1
+    end
+  end
+
+  def scan_string
+    start = @index
+    @index += 1
+    loop do
+      case current_byte
+      when 0x22
+        @index += 1
+        return JSON.parse(@source.byteslice(start...@index))
+      when 0x5C
+        @index += 2
+      else
+        @index += 1
+      end
+    end
+  end
+
+  def scan_primitive
+    @index += 1 until current_byte.nil? || [0x2C, 0x5D, 0x7D, 0x20, 0x09, 0x0A, 0x0D].include?(current_byte)
+    nil
+  end
+
+  def skip_whitespace
+    @index += 1 while [0x20, 0x09, 0x0A, 0x0D].include?(current_byte)
+  end
+
+  def current_byte
+    @source.getbyte(@index)
+  end
+end
+
 TARGET_PATTERN = %r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*\z}
 OPERATIONS = %w[
   evidence_delivery
@@ -54,12 +161,28 @@ def canonical_target(target)
   "#{repository.downcase}##{number}"
 end
 
+def repository_qualified_target?(target)
+  return false unless target.is_a?(String) && target.match?(TARGET_PATTERN)
+
+  repository = target.split("#", 2).first
+  repository.split("/", 2).all? { |component| component.match?(/[A-Za-z0-9]/) }
+end
+
+raw_input = $stdin.read
 begin
-  input = JSON.parse($stdin.read)
+  input = JSON.parse(raw_input)
 rescue JSON::ParserError
   emit_unknown(
     "input is not valid JSON",
     next_action: "provide one target-membership-request v1 object and replay the guard"
+  )
+end
+
+duplicate_key = DuplicateJsonKeyScanner.new(raw_input).find
+if duplicate_key
+  emit_unknown(
+    "input contains duplicate JSON object key: #{duplicate_key}",
+    next_action: "remove every duplicate object key and replay the guard"
   )
 end
 
@@ -94,7 +217,7 @@ unless operation.is_a?(String) && OPERATIONS.include?(operation)
   )
 end
 
-unless target.is_a?(String) && target.match?(TARGET_PATTERN)
+unless repository_qualified_target?(target)
   reason = if target == "UNKNOWN"
              "literal UNKNOWN is not a target identity"
            elsif target.is_a?(Array) || target.is_a?(Hash)
@@ -113,7 +236,7 @@ unless target.is_a?(String) && target.match?(TARGET_PATTERN)
 end
 
 unless manifest.is_a?(Array) && !manifest.empty? &&
-       manifest.all? { |entry| entry.is_a?(String) && entry.match?(TARGET_PATTERN) }
+       manifest.all? { |entry| repository_qualified_target?(entry) }
   emit_unknown(
     "canonical target manifest is missing, empty, or invalid",
     target: target,
