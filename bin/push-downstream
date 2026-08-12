@@ -346,9 +346,34 @@ module PushDownstream
   end
 
   def load_presets(path)
-    YAML.safe_load(File.read(path), aliases: false) || {}
+    data = YAML.safe_load(File.read(path), aliases: false) || {}
+    raise "invalid seam presets: top level must be a mapping" unless data.is_a?(Hash)
+
+    validate_seam_preset_layer!(data["defaults"], "defaults") if data.key?("defaults")
+    if data.key?("presets")
+      named = data.fetch("presets")
+      raise "invalid seam presets: presets must be a mapping" unless named.is_a?(Hash)
+
+      named.each do |name, layer|
+        unless name.is_a?(String) && !name.empty?
+          raise "invalid seam presets: preset names must be non-empty strings"
+        end
+
+        validate_seam_preset_layer!(layer, "preset #{name}")
+      end
+    end
+    data
   rescue Psych::Exception => e
     raise "invalid seam presets: #{e.message.lines.first.to_s.strip}"
+  end
+
+  def validate_seam_preset_layer!(layer, label)
+    raise "invalid seam presets: #{label} must be a mapping" unless layer.is_a?(Hash)
+
+    %w[commands policy trust].each do |key|
+      next unless layer.key?(key)
+      raise "invalid seam presets: #{label}.#{key} must be a mapping" unless layer[key].is_a?(Hash)
+    end
   end
 
   def resolve_contract(repo, presets)
@@ -876,6 +901,9 @@ module PushDownstream
     consumers = repos.map { |repo| audit_repo(repo, presets) }
     puts JSON.pretty_generate(audit_report(consumers))
     consumers.all? { |consumer| consumer.fetch("status") == AUDIT_CLEAN } ? 0 : 1
+  rescue RuntimeError, SystemCallError => e
+    warn "audit failed closed: #{e.message}"
+    1
   end
 
   def audit_report(consumers)
@@ -1265,7 +1293,8 @@ module PushDownstream
         repo,
         result.follow_ups,
         clone: clone,
-        expected_head: publisher_local_ref_head(clone, "HEAD")
+        expected_head: publisher_local_ref_head(clone, "HEAD"),
+        expected_base_sha: expected_base_sha
       )
     end
   rescue KeyError, RuntimeError, SystemCallError => e
@@ -1723,9 +1752,38 @@ module PushDownstream
     { ok: false }
   end
 
-  def publisher_ensure_pull_request(repo, follow_ups, clone:, expected_head:)
-    unless publisher_remote_ref_head(clone, repo.fetch(:pr_branch)) == expected_head
-      return publisher_failure(repo, "publisher branch moved while confirming its PR")
+  def publisher_pr_refs_current?(repo, clone:, expected_head:, expected_base_sha:)
+    return false unless expected_head.is_a?(String) && expected_head.match?(/\A[0-9a-f]{40}\z/)
+    return false unless expected_base_sha.is_a?(String) && expected_base_sha.match?(/\A[0-9a-f]{40}\z/)
+    return false unless publisher_remote_ref_head(clone, repo.fetch(:pr_branch)) == expected_head
+
+    publisher_update_refs(
+      repo,
+      [
+        {
+          name: "refs/heads/#{repo.fetch(:base_branch)}",
+          before: expected_base_sha,
+          after: expected_base_sha
+        },
+        {
+          name: "refs/heads/#{repo.fetch(:pr_branch)}",
+          before: expected_head,
+          after: expected_head
+        }
+      ]
+    )
+  rescue KeyError, RuntimeError, SystemCallError
+    false
+  end
+
+  def publisher_ensure_pull_request(repo, follow_ups, clone:, expected_head:, expected_base_sha:)
+    unless publisher_pr_refs_current?(
+      repo, clone: clone, expected_head: expected_head, expected_base_sha: expected_base_sha
+    )
+      return publisher_failure(
+        repo,
+        "publisher branch moved while confirming its PR, or consumer base moved during PR confirmation"
+      )
     end
 
     state = publisher_open_pr_state(repo, any_base: true)
@@ -1740,6 +1798,12 @@ module PushDownstream
     end
 
     if url.nil?
+      unless publisher_pr_refs_current?(
+        repo, clone: clone, expected_head: expected_head, expected_base_sha: expected_base_sha
+      )
+        return publisher_failure(repo, "consumer base moved during PR confirmation before PR create")
+      end
+
       url = create_pr(repo, repo.fetch(:pr_branch), follow_ups)
       return publisher_failure(repo, "PR create failed") if url.nil?
 
@@ -1747,9 +1811,19 @@ module PushDownstream
       unless state.fetch(:ok) && state[:url] == url && state[:base] == repo.fetch(:base_branch)
         return publisher_failure(repo, "created PR could not be verified as the unique open publisher PR")
       end
+      unless publisher_pr_refs_current?(
+        repo, clone: clone, expected_head: expected_head, expected_base_sha: expected_base_sha
+      )
+        return publisher_failure(repo, "consumer base moved during PR confirmation after PR create")
+      end
     end
-    unless publisher_remote_ref_head(clone, repo.fetch(:pr_branch)) == expected_head
-      return publisher_failure(repo, "publisher branch moved while confirming its PR")
+    unless publisher_pr_refs_current?(
+      repo, clone: clone, expected_head: expected_head, expected_base_sha: expected_base_sha
+    )
+      return publisher_failure(
+        repo,
+        "publisher branch moved while confirming its PR, or consumer base moved during PR confirmation"
+      )
     end
 
     puts "PR #{repo.fetch(:nwo)} #{url}"

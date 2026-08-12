@@ -183,6 +183,21 @@ class PushDownstreamConfigTest < Minitest::Test
     end
   end
 
+  def test_audit_fails_closed_for_non_mapping_seam_presets
+    with_config("repos: []\n") do |config|
+      presets = File.join(File.dirname(config), "seam-presets.yml")
+      File.write(presets, "[]\n")
+
+      out, err = capture_io do
+        @status = PushDownstream.run_audit(config, presets, only: nil, include_disabled: false)
+      end
+
+      assert_equal 1, @status
+      assert_empty out
+      assert_includes err, "audit failed closed: invalid seam presets: top level must be a mapping"
+    end
+  end
+
   def test_select_repos_filters_disabled_and_honors_only
     yaml = <<~YAML
       defaults:

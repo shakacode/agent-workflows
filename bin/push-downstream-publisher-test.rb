@@ -321,6 +321,57 @@ class PushDownstreamPublisherReportTest < Minitest::Test
     end
   end
 
+  def test_publisher_fails_closed_for_non_mapping_seam_preset_layers
+    invalid_presets = {
+      "top level" => "[]\n",
+      "top-level scalar" => "invalid\n",
+      "defaults" => "defaults: []\n",
+      "defaults scalar" => "defaults: invalid\n",
+      "preset registry" => "presets: []\n",
+      "named preset" => "presets:\n  selected: []\n",
+      "named preset scalar" => "presets:\n  selected: invalid\n",
+      "nested commands" => "presets:\n  selected:\n    commands: []\n",
+      "nested policy scalar" => "presets:\n  selected:\n    policy: invalid\n",
+      "nested trust" => "presets:\n  selected:\n    trust: []\n"
+    }
+
+    with_clean_source do |root, source_sha|
+      Dir.mktmpdir("push-downstream-publisher-invalid-preset-shapes") do |dir|
+        config = File.join(dir, "downstream.yml")
+        presets = File.join(dir, "seam-presets.yml")
+        File.write(config, <<~YAML)
+          defaults:
+            owner: local
+            base_branch: main
+            pr_branch: agent-workflows/seam-sync
+          repos:
+            - repo: consumer
+              preset: selected
+        YAML
+        drifted = publisher_consumer("local/consumer", "drifted", ["AGENTS.md"])
+        drifted["preset"] = "selected"
+
+        invalid_presets.each do |label, contents|
+          File.write(presets, contents)
+          with_report(publisher_report(source_sha, consumers: [drifted])) do |path|
+            _out, err = capture_io do
+              @status = PushDownstream.run_publisher(
+                path,
+                config,
+                presets,
+                source_sha: source_sha,
+                source_root: root
+              )
+            end
+
+            assert_equal 1, @status, label
+            assert_includes err, "publisher failed closed: invalid seam presets:", label
+          end
+        end
+      end
+    end
+  end
+
   def test_publisher_syncs_only_drifted_consumers_and_never_churns_clean_consumers
     with_clean_source do |root, source_sha|
       Dir.mktmpdir("push-downstream-publisher-selection") do |dir|
@@ -747,6 +798,56 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
             @second_status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
           end
           assert_includes second_err, "consumer base moved before PR confirmation"
+        end
+      ensure
+        ENV["PATH"] = previous_path
+      end
+
+      assert @first_status, first_err
+      refute @second_status
+      assert raced
+      assert_equal target_before_race, bare_ref(remote, repo.fetch(:pr_branch))
+      refute(File.readlines(gh_log, chomp: true).any? { |call| call.start_with?("pr create ") })
+      push_calls = File.readlines(git_log, chomp: true).grep(/(?:\A| -C \S+ )push /)
+      refute(push_calls.any? { |call| call.include?("--force") })
+    end
+  end
+
+  def test_unchanged_publisher_branch_rechecks_base_after_the_initial_assertion
+    Dir.mktmpdir("push-downstream-publisher-post-assert-base-race") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      audit_entry = audit(repo)
+      fake_bin, gh_log, git_log = install_cli_stubs(dir)
+      previous_path = ENV.fetch("PATH")
+      ENV["PATH"] = "#{fake_bin}:#{previous_path}"
+
+      begin
+        _first_out, first_err = capture_io do
+          @first_status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
+        end
+        target_before_race = bare_ref(remote, repo.fetch(:pr_branch))
+        FileUtils.rm_f(File.join(dir, "pr-state"))
+        File.write(gh_log, "")
+        File.write(git_log, "")
+
+        original_assert = PushDownstream.method(:publisher_assert_base)
+        fixture_advance = method(:advance_base)
+        raced = false
+        race_after_assertion = lambda do |target_repo, expected_base|
+          asserted = original_assert.call(target_repo, expected_base)
+          unless raced || !asserted
+            fixture_advance.call(remote, dir)
+            raced = true
+          end
+          asserted
+        end
+
+        with_module_stub(PushDownstream, :publisher_assert_base, race_after_assertion) do
+          _second_out, second_err = capture_io do
+            @second_status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
+          end
+          assert_includes second_err, "consumer base moved during PR confirmation"
         end
       ensure
         ENV["PATH"] = previous_path
@@ -1296,20 +1397,133 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
   def test_pr_confirmation_fails_when_the_remote_branch_moved
     repo = publisher_repo("unused")
     create_pr = ->(*) { flunk "must not create a PR for a moved branch" }
-    with_module_stub(PushDownstream, :publisher_remote_ref_head, ->(*) { "b" * 40 }) do
+    with_module_stub(PushDownstream, :publisher_pr_refs_current?, ->(*) { false }) do
       with_module_stub(PushDownstream, :create_pr, create_pr) do
         _out, err = capture_io do
           @status = PushDownstream.publisher_ensure_pull_request(
             repo,
             [],
             clone: "/unused",
-            expected_head: "a" * 40
+            expected_head: "a" * 40,
+            expected_base_sha: "c" * 40
           )
         end
 
         refute @status
         assert_includes err, "publisher branch moved while confirming its PR"
       end
+    end
+  end
+
+  def test_pr_confirmation_rechecks_base_at_create_and_reuse_boundaries
+    %i[before_create during_create before_reuse].each do |scenario|
+      Dir.mktmpdir("push-downstream-publisher-pr-base-race-#{scenario}") do |dir|
+        remote = seed_remote(dir)
+        repo = publisher_repo(remote)
+        base_head = bare_ref(remote, repo.fetch(:base_branch))
+        branch = repo.fetch(:pr_branch)
+        git!(remote, "update-ref", "refs/heads/#{branch}", base_head)
+        clone = File.join(dir, "clone")
+        git!(dir, "clone", "--branch", "main", remote, clone)
+        fake_bin, gh_log, git_log = install_cli_stubs(dir)
+        File.write(File.join(dir, "pr-state"), "") if scenario == :before_reuse
+        previous_path = ENV.fetch("PATH")
+        ENV["PATH"] = "#{fake_bin}:#{previous_path}"
+        fixture_advance = method(:advance_base)
+        raced = false
+        run_confirmation = lambda do
+          PushDownstream.publisher_ensure_pull_request(
+            repo,
+            [],
+            clone: clone,
+            expected_head: base_head,
+            expected_base_sha: base_head
+          )
+        end
+
+        begin
+          case scenario
+          when :before_create, :before_reuse
+            original_open = PushDownstream.method(:publisher_open_pr_state)
+            race_after_lookup = lambda do |*arguments, **keywords|
+              state = original_open.call(*arguments, **keywords)
+              unless raced
+                fixture_advance.call(remote, dir)
+                raced = true
+              end
+              state
+            end
+            with_module_stub(PushDownstream, :publisher_open_pr_state, race_after_lookup) do
+              @out, @err = capture_io { @status = run_confirmation.call }
+            end
+          when :during_create
+            original_create = PushDownstream.method(:create_pr)
+            race_during_create = lambda do |*arguments|
+              unless raced
+                fixture_advance.call(remote, dir)
+                raced = true
+              end
+              original_create.call(*arguments)
+            end
+            with_module_stub(PushDownstream, :create_pr, race_during_create) do
+              @out, @err = capture_io { @status = run_confirmation.call }
+            end
+          end
+        ensure
+          ENV["PATH"] = previous_path
+        end
+
+        refute @status, scenario
+        assert raced, scenario
+        assert_includes @err, "consumer base moved during PR confirmation", scenario
+        refute_includes @out, "PR local/consumer", scenario
+        assert_equal base_head, bare_ref(remote, branch), scenario
+        create_calls = File.readlines(gh_log, chomp: true).count { |call| call.start_with?("pr create ") }
+        assert_equal(scenario == :during_create ? 1 : 0, create_calls, scenario)
+        push_calls = File.readlines(git_log, chomp: true).grep(/(?:\A| -C \S+ )push /)
+        refute(push_calls.any? { |call| call.include?("--force") }, scenario)
+      end
+    end
+  end
+
+  def test_pr_ref_assertion_fails_closed_for_missing_moved_or_unknown_refs
+    Dir.mktmpdir("push-downstream-publisher-pr-ref-assertion") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      base_head = bare_ref(remote, repo.fetch(:base_branch))
+      branch = repo.fetch(:pr_branch)
+      git!(remote, "update-ref", "refs/heads/#{branch}", base_head)
+      clone = File.join(dir, "clone")
+      git!(dir, "clone", "--branch", "main", remote, clone)
+      competitor = seed_competing_commit(remote, dir)
+      current = lambda do
+        PushDownstream.publisher_pr_refs_current?(
+          repo, clone: clone, expected_head: base_head, expected_base_sha: base_head
+        )
+      end
+
+      assert current.call
+
+      git!(remote, "update-ref", "refs/heads/main", competitor, base_head)
+      refute current.call, "moved base"
+      git!(remote, "update-ref", "refs/heads/main", base_head, competitor)
+      git!(remote, "update-ref", "-d", "refs/heads/main", base_head)
+      refute current.call, "deleted base"
+      git!(remote, "update-ref", "refs/heads/main", base_head)
+
+      git!(remote, "update-ref", "refs/heads/#{branch}", competitor, base_head)
+      refute current.call, "moved publisher branch"
+      git!(remote, "update-ref", "refs/heads/#{branch}", base_head, competitor)
+      git!(remote, "update-ref", "-d", "refs/heads/#{branch}", base_head)
+      refute current.call, "deleted publisher branch"
+      git!(remote, "update-ref", "refs/heads/#{branch}", base_head)
+
+      with_module_stub(PushDownstream, :publisher_update_refs, ->(*) { false }) do
+        refute current.call, "UNKNOWN atomic ref state"
+      end
+      refute PushDownstream.publisher_pr_refs_current?(
+        repo, clone: clone, expected_head: PushDownstream::AUDIT_UNKNOWN, expected_base_sha: base_head
+      )
     end
   end
 
@@ -1332,7 +1546,7 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
       "https://example.test/local/consumer/pull/10"
     end
 
-    with_module_stub(PushDownstream, :publisher_remote_ref_head, ->(*) { "a" * 40 }) do
+    with_module_stub(PushDownstream, :publisher_pr_refs_current?, ->(*) { true }) do
       with_module_stub(PushDownstream, :publisher_open_pr_state, open_pr_state) do
         with_module_stub(PushDownstream, :create_pr, create_pr) do
           _out, err = capture_io do
@@ -1340,7 +1554,8 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
               repo,
               [],
               clone: "/unused",
-              expected_head: "a" * 40
+              expected_head: "a" * 40,
+              expected_base_sha: "c" * 40
             )
           end
 
@@ -1364,7 +1579,7 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
       "https://example.test/local/consumer/pull/10"
     end
 
-    with_module_stub(PushDownstream, :publisher_remote_ref_head, ->(*) { "a" * 40 }) do
+    with_module_stub(PushDownstream, :publisher_pr_refs_current?, ->(*) { true }) do
       with_module_stub(PushDownstream, :publisher_open_pr_state, post_create_state) do
         with_module_stub(PushDownstream, :create_pr, create_pr) do
           _out, err = capture_io do
@@ -1372,7 +1587,8 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
               repo,
               [],
               clone: "/unused",
-              expected_head: "a" * 40
+              expected_head: "a" * 40,
+              expected_base_sha: "c" * 40
             )
           end
 
