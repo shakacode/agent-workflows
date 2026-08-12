@@ -187,7 +187,7 @@ EXPECTED_ROUTE_DISPOSITIONS = {
   "authorized-fallback" => "proceed-as-fallback"
 }.freeze
 ROUTINE_COORDINATOR_ROUTE_RULE =
-  "For multiple interacting targets, routine bounded planning and coordination use the `balanced`/high class. Mechanical dispatch bookkeeping, status reconciliation, and evidence collation may also use that worker class, but do not change a single-target coordinator's Sol/high default. Name the exact `Terra/high` pair only when the active host has verified that pair; otherwise preserve the requested preference and record host-observed values as `UNKNOWN` when unavailable."
+  "For multiple targets, routine bounded planning and coordination use the `balanced`/high class. Mechanical dispatch bookkeeping, status reconciliation, and evidence collation may also use that worker class, but do not change a single-target coordinator's Sol/high default. Name the exact `Terra/high` pair only when the active host has verified that pair; otherwise preserve the requested preference and record host-observed values as `UNKNOWN` when unavailable."
 ROUTINE_MULTI_LANE_COORDINATOR_ROUTE_RULE =
   "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)"
 SOL_XHIGH_EXCEPTION_ROUTE_RULE =
@@ -755,8 +755,8 @@ class ModelRoutingContractTest < Minitest::Test
 
     mutants = {
       "routine coordination defaults to strongest" => text.sub(
-        %r{For multiple interacting targets, routine bounded planning and coordination use\s+the `balanced`/high class},
-        "For multiple interacting targets, routine bounded planning and coordination use Sol/xhigh by default"
+        %r{For multiple targets, routine bounded planning and coordination use\s+the `balanced`/high class},
+        "For multiple targets, routine bounded planning and coordination use Sol/xhigh by default"
       ),
       "routine multi-lane coordinator defaults to Sol/xhigh" => text.sub(
         "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
@@ -764,8 +764,8 @@ class ModelRoutingContractTest < Minitest::Test
       ),
       "routine coordination defaults to strongest only in an HTML comment" =>
         text.sub(
-          %r{For multiple interacting targets, routine bounded planning and coordination use\s+the `balanced`/high class},
-          "For multiple interacting targets, routine bounded planning and coordination use Sol/xhigh by default"
+          %r{For multiple targets, routine bounded planning and coordination use\s+the `balanced`/high class},
+          "For multiple targets, routine bounded planning and coordination use Sol/xhigh by default"
         ) + "\n<!-- #{ROUTINE_COORDINATOR_ROUTE_RULE} -->\n",
       "unverified Terra pair named as exact" => text.sub(
         "only when the active host has verified that pair",

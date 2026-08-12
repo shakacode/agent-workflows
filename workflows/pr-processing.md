@@ -726,7 +726,7 @@ delegates bounded implementation, review, or QA lanes. Default to Sol/high
 because one issue may still require difficult diagnosis, design, or verification
 planning. Prefer Terra/high only after an affirmative simple classification,
 and Sol/xhigh only for a present or disputed pinned high-risk boundary or
-another listed exception. Multiple interacting targets use the routine
+another listed exception. Multiple targets use the routine
 multi-lane balanced/high route unless an exception applies; subagents alone do
 not require that route. When the host exposes a materially different current planner route,
 report one concise non-blocking current-versus-recommended advisory with the
@@ -750,7 +750,7 @@ For Claude planning, one issue or PR remains single-target even when its
 coordinator delegates bounded implementation, review, or QA lanes. Default to
 Opus 5/high, use Sonnet 5/high only after the affirmative simple
 classification, and use Opus 5/xhigh only for a present or disputed pinned
-high-risk boundary or another listed exception. Multiple interacting targets
+high-risk boundary or another listed exception. Multiple targets
 use the routine multi-lane balanced/high route unless an exception applies;
 delegation by itself does not require that route. When the host exposes a materially
 different current planner route, report one concise non-blocking

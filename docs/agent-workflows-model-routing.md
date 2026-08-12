@@ -69,7 +69,7 @@ Sol/xhigh is reserved for the listed exceptions; it is not the routine
 multi-lane coordinator default. Task-specific routing still follows ambiguity,
 consequence, and verification strength.
 
-For multiple interacting targets, routine bounded planning and coordination use
+For multiple targets, routine bounded planning and coordination use
 the `balanced`/high class. Mechanical dispatch bookkeeping, status
 reconciliation, and evidence collation may also use that worker class, but do
 not change a single-target coordinator's Sol/high default. Name the exact
