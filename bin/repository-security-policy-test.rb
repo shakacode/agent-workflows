@@ -70,6 +70,28 @@ class RepositorySecurityPolicyTest < Minitest::Test
     end
   end
 
+  def test_checkout_identity_case_aliases_disable_checkout_credentials
+    Dir.mktmpdir("repository-security-policy") do |root|
+      path = File.join(root, "case-aliases.yml")
+      File.write(path, <<~YAML)
+        jobs:
+          validate:
+            steps:
+              - uses: Actions/checkout@0123456789abcdef0123456789abcdef01234567
+              - uses: actions/Checkout@0123456789abcdef0123456789abcdef01234567
+              - uses: ACTIONS/CHECKOUT@0123456789abcdef0123456789abcdef01234567
+              - uses: actions/checkout-helper@0123456789abcdef0123456789abcdef01234567
+              - uses: actions/checkout/subpath@0123456789abcdef0123456789abcdef01234567
+      YAML
+
+      assert_equal [
+        "case-aliases.yml:jobs.validate.steps.0",
+        "case-aliases.yml:jobs.validate.steps.1",
+        "case-aliases.yml:jobs.validate.steps.2"
+      ], credentialed_checkout_locations([path], root: root)
+    end
+  end
+
   def test_action_reference_scanner_reads_yaml_structure
     workflow = YAML.safe_load(<<~YAML, aliases: true)
       jobs:
@@ -245,13 +267,20 @@ class RepositorySecurityPolicyTest < Minitest::Test
         next [] unless steps.is_a?(Array)
 
         steps.each_with_index.filter_map do |step, index|
-          next unless step.is_a?(Hash) && step["uses"].to_s.start_with?("actions/checkout@")
+          next unless step.is_a?(Hash) && checkout_action_reference?(step["uses"])
           next if step.dig("with", "persist-credentials") == false
 
           "#{path.delete_prefix("#{root}/")}:jobs.#{job_name}.steps.#{index}"
         end
       end
     end
+  end
+
+  def checkout_action_reference?(reference)
+    return false unless reference.is_a?(String)
+
+    identity, separator, action_ref = reference.partition("@")
+    separator == "@" && !action_ref.empty? && identity.casecmp?("actions/checkout")
   end
 
   def action_paths(root = ROOT)
