@@ -746,6 +746,17 @@ For a Claude host, use this provisional recommended advisory profile
 - Independent adversarial QA: Opus 5/xhigh
 - Routine deterministic QA: Opus 5/high
 
+For Claude planning, one issue or PR remains single-target even when its
+coordinator delegates bounded implementation, review, or QA lanes. Default to
+Opus 5/high, use Sonnet 5/high only after the affirmative simple
+classification, and use Opus 5/xhigh only for a present or disputed pinned
+high-risk boundary or another listed exception. Multiple interacting targets
+use the routine multi-lane balanced/high route unless an exception applies;
+delegation by itself does not require that route. When the host exposes a materially
+different current planner route, report one concise non-blocking
+current-versus-recommended advisory with the risk or cost reason; do not infer
+it from `UNKNOWN`, repeat it, stop, or request a restart.
+
 Sonnet 5/high is recommended for the same affirmative simple-task
 classification. When lane risk or bounded delegation requires an execution
 envelope, the coordinator role supplies it regardless of the selected model.

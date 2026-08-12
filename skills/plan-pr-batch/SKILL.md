@@ -94,9 +94,10 @@ Plan a PR batch
      exists. Otherwise use the affirmatively simple single-target route only
      when the target has explicit acceptance criteria, a known bounded file
      surface, no unresolved design or
-     dependency question, no security/release/high-consequence boundary, easy
-     failure detection and rollback, and a strong deterministic verification
-     oracle. Reserve the multi-lane coordinator route for planning
+     dependency question, no security, authorization, concurrency, persistence,
+     lifecycle, routing, release, public-contract, or other high-consequence
+     boundary, easy failure detection and rollback, and a strong deterministic
+     verification oracle. Reserve the multi-lane coordinator route for planning
      multiple interacting targets or retained cross-batch orchestration; do not
      select it merely because one target will use subagents.
      When the host exposes the current planner route and it materially differs
