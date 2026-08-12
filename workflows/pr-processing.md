@@ -1987,8 +1987,10 @@ For a conservative GPT-5.6 recovery explicitly requested by an operator, use
 the recommended profile: routine multi-lane coordination on balanced/high;
 independent adversarial QA on Sol/xhigh; positively classified simple workers
 on Terra/high; unknown or uncertain workers and routine deterministic QA on
-Sol/high; and high-risk or escalated work on Sol/xhigh. Shared workflow text stays portable: exact names
-always come from the operator or verified runtime roster.
+Sol/high; and a pinned high-risk trigger, bounded plan challenge, repeated
+credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST` on Sol/xhigh.
+Shared workflow text stays portable: exact names always come from the operator
+or verified runtime roster.
 
 Use this prompt after filling the route placeholders:
 
