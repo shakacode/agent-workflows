@@ -197,12 +197,6 @@ When structured output is requested, emit findings using
 `docs/review-finding-schema.md` with `source: structural-review` on each
 finding.
 
-Do **not** emit a `review_receipt` from this skill. The receipt `source` field
-is a closed allowlist in `bin/validate-review-findings`, and
-`structural-review` is not in it; emitting one would fail repo validation.
-Findings-only output is the supported mode here. Report scope, coverage, and
-limitations in the prose report instead.
-
 ## Entry Points
 
 - **Batch default: `post-merge-audit`.** Structural drift accumulated across a
