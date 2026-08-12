@@ -1,0 +1,663 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "minitest/autorun"
+require "fileutils"
+require "json"
+require "open3"
+require "rbconfig"
+require "shellwords"
+require "tempfile"
+require "tmpdir"
+
+SCRIPT = File.expand_path("push-downstream", __dir__)
+load SCRIPT
+
+class PushDownstreamPublisherCliTest < Minitest::Test
+  def run_cli(*)
+    Open3.capture2e(RbConfig.ruby, SCRIPT, *)
+  end
+
+  def test_publisher_requires_explicit_confirmation_and_exact_source_sha
+    Tempfile.create(["downstream-seam-audit", ".json"]) do |report|
+      report.write("{}\n")
+      report.flush
+
+      missing_confirmation, confirmation_status = run_cli(
+        "--publish-report", report.path,
+        "--source-sha", "a" * 40
+      )
+      missing_sha, sha_status = run_cli(
+        "--publish-report", report.path,
+        "--confirm-publish"
+      )
+
+      refute confirmation_status.success?
+      assert_includes missing_confirmation, "--confirm-publish is required"
+      refute sha_status.success?
+      assert_includes missing_sha, "--source-sha is required"
+    end
+  end
+
+  def test_publisher_rejects_every_legacy_write_or_selection_mode
+    Tempfile.create(["downstream-seam-audit", ".json"]) do |report|
+      report.write("{}\n")
+      report.flush
+      common = [
+        "--publish-report", report.path,
+        "--source-sha", "a" * 40,
+        "--confirm-publish"
+      ]
+
+      [
+        ["--apply"],
+        ["--audit"],
+        ["--root", "."],
+        ["--policy-fleet", "repo-prefix"],
+        ["--security-audit-fleet", "secure-github-actions"],
+        ["--only", "consumer"],
+        ["--all"],
+        ["--trusted-user", "maintainer"]
+      ].each do |legacy_flags|
+        output, status = run_cli(*(common + legacy_flags))
+
+        refute status.success?, legacy_flags.inspect
+        assert_includes output, "--publish-report cannot be combined", legacy_flags.inspect
+      end
+    end
+  end
+
+  def test_publisher_confirmation_and_source_sha_are_invalid_without_a_report
+    output, status = run_cli("--source-sha", "a" * 40, "--confirm-publish")
+
+    refute status.success?
+    assert_includes output, "--source-sha and --confirm-publish require --publish-report"
+  end
+end
+
+class PushDownstreamPublisherReportTest < Minitest::Test
+  def test_publisher_rejects_malformed_and_unknown_reports_before_authentication
+    reports = [
+      "not json\n",
+      JSON.generate(
+        "schema" => PushDownstream::AUDIT_SCHEMA,
+        "source" => {
+          "repo" => "shakacode/agent-workflows",
+          "sha" => PushDownstream::AUDIT_UNKNOWN,
+          "worktree_clean" => PushDownstream::AUDIT_UNKNOWN
+        },
+        "consumers" => []
+      )
+    ]
+
+    reports.each do |contents|
+      Tempfile.create(["downstream-seam-audit", ".json"]) do |report|
+        report.write(contents)
+        report.flush
+
+        out, err = capture_io do
+          @status = PushDownstream.run_publisher(
+            report.path,
+            "unused-downstream.yml",
+            "unused-presets.yml",
+            source_sha: "a" * 40
+          )
+        end
+
+        assert_equal 1, @status
+        assert_empty out
+        assert_includes err, "invalid publisher audit report"
+      end
+    end
+  end
+
+  def test_publisher_rejects_reported_paths_outside_the_managed_scaffold
+    source_sha = "a" * 40
+    report = publisher_report(
+      source_sha,
+      consumers: [publisher_consumer("local/consumer", "drifted", ["README.md"])]
+    )
+
+    with_report(report) do |path|
+      error = assert_raises(RuntimeError) do
+        PushDownstream.load_publisher_report(path, source_sha: source_sha)
+      end
+      assert_includes error.message, "path outside the managed scaffold"
+    end
+  end
+
+  def test_publisher_rejects_a_summary_that_does_not_match_consumer_states
+    source_sha = "a" * 40
+    report = publisher_report(
+      source_sha,
+      consumers: [publisher_consumer("local/consumer", "drifted", ["AGENTS.md"])]
+    )
+    report["summary"]["clean"] = 1
+
+    with_report(report) do |path|
+      error = assert_raises(RuntimeError) do
+        PushDownstream.load_publisher_report(path, source_sha: source_sha)
+      end
+      assert_includes error.message, "summary does not match consumer states"
+    end
+  end
+
+  def test_publisher_rejects_registry_branches_that_are_invalid_or_target_the_base
+    Dir.mktmpdir("push-downstream-publisher-registry") do |dir|
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        defaults:
+          owner: local
+          base_branch: main
+          pr_branch: main
+        repos:
+          - repo: consumer
+      YAML
+      consumer = publisher_consumer("local/consumer", "drifted", ["AGENTS.md"])
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.publisher_registry_repos(config, [consumer])
+      end
+      assert_includes error.message, "publisher branch must differ from the base branch"
+    end
+  end
+
+  def test_publisher_accepts_intentionally_unapplied_follow_ups_on_a_clean_consumer
+    source_sha = "a" * 40
+    clean = publisher_consumer("local/consumer", "clean", [])
+    clean["follow_ups"] = [PushDownstream::CLAUDE_CONSOLIDATION_FOLLOW_UP]
+    report = publisher_report(source_sha, consumers: [clean])
+
+    with_report(report) do |path|
+      parsed = PushDownstream.load_publisher_report(path, source_sha: source_sha)
+
+      assert_equal [PushDownstream::CLAUDE_CONSOLIDATION_FOLLOW_UP],
+                   parsed.fetch("consumers").first.fetch("follow_ups")
+    end
+  end
+
+  def test_publisher_requires_the_current_clean_source_to_match_the_report
+    Dir.mktmpdir("push-downstream-publisher-source") do |root|
+      git!(root, "init", "-b", "main")
+      File.write(File.join(root, "source.txt"), "one\n")
+      git!(root, "add", "source.txt")
+      git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "source")
+      source_sha = git!(root, "rev-parse", "HEAD").strip
+      report = publisher_report(source_sha, consumers: [])
+
+      File.write(File.join(root, "source.txt"), "dirty\n")
+      with_report(report) do |path|
+        _out, err = capture_io do
+          @status = PushDownstream.run_publisher(
+            path,
+            "unused-downstream.yml",
+            "unused-presets.yml",
+            source_sha: source_sha,
+            source_root: root
+          )
+        end
+
+        assert_equal 1, @status
+        assert_includes err, "current source does not exactly match the clean audit source"
+      end
+    end
+  end
+
+  def test_publisher_rejects_blocked_or_unknown_consumer_state_before_authentication
+    with_clean_source do |root, source_sha|
+      blocked = {
+        "repo" => "local/consumer",
+        "preset" => nil,
+        "base_branch" => "main",
+        "base_sha" => PushDownstream::AUDIT_UNKNOWN,
+        "status" => "blocked",
+        "seam_doctor_issues" => PushDownstream::AUDIT_UNKNOWN,
+        "changed_managed_paths" => PushDownstream::AUDIT_UNKNOWN,
+        "follow_ups" => PushDownstream::AUDIT_UNKNOWN,
+        "reason" => "clone failed"
+      }
+
+      with_report(publisher_report(source_sha, consumers: [blocked])) do |path|
+        _out, err = capture_io do
+          @status = PushDownstream.run_publisher(
+            path,
+            "unused-downstream.yml",
+            "unused-presets.yml",
+            source_sha: source_sha,
+            source_root: root
+          )
+        end
+
+        assert_equal 1, @status
+        assert_includes err, "blocked or UNKNOWN consumer state cannot publish"
+      end
+    end
+  end
+
+  def test_publisher_fails_closed_when_github_authentication_is_unavailable
+    with_clean_source do |root, source_sha|
+      Dir.mktmpdir("push-downstream-publisher-auth") do |dir|
+        config = File.join(dir, "downstream.yml")
+        presets = File.join(dir, "seam-presets.yml")
+        File.write(config, <<~YAML)
+          defaults:
+            owner: local
+            base_branch: main
+            pr_branch: agent-workflows/seam-sync
+          repos:
+            - repo: consumer
+        YAML
+        File.write(presets, "{}\n")
+        fake_bin = File.join(dir, "bin")
+        FileUtils.mkdir_p(fake_bin)
+        File.write(File.join(fake_bin, "gh"), "#!/bin/sh\nexit 1\n")
+        File.chmod(0o755, File.join(fake_bin, "gh"))
+        drifted = {
+          "repo" => "local/consumer",
+          "preset" => nil,
+          "base_branch" => "main",
+          "base_sha" => "b" * 40,
+          "status" => "drifted",
+          "seam_doctor_issues" => ["missing seam"],
+          "changed_managed_paths" => ["AGENTS.md"],
+          "follow_ups" => []
+        }
+
+        with_report(publisher_report(source_sha, consumers: [drifted])) do |path|
+          previous_path = ENV.fetch("PATH")
+          ENV["PATH"] = "#{fake_bin}:#{previous_path}"
+          begin
+            _out, err = capture_io do
+              @status = PushDownstream.run_publisher(
+                path,
+                config,
+                presets,
+                source_sha: source_sha,
+                source_root: root
+              )
+            end
+          ensure
+            ENV["PATH"] = previous_path
+          end
+
+          assert_equal 1, @status
+          assert_includes err, "GitHub authentication is unavailable"
+        end
+      end
+    end
+  end
+
+  def test_publisher_syncs_only_drifted_consumers_and_never_churns_clean_consumers
+    with_clean_source do |root, source_sha|
+      Dir.mktmpdir("push-downstream-publisher-selection") do |dir|
+        config = File.join(dir, "downstream.yml")
+        presets = File.join(dir, "seam-presets.yml")
+        File.write(config, <<~YAML)
+          defaults:
+            owner: local
+            base_branch: main
+            pr_branch: agent-workflows/seam-sync
+          repos:
+            - repo: clean-consumer
+            - repo: drifted-consumer
+        YAML
+        File.write(presets, "{}\n")
+        clean = publisher_consumer("local/clean-consumer", "clean", [])
+        drifted = publisher_consumer("local/drifted-consumer", "drifted", ["AGENTS.md"])
+        published = []
+
+        with_report(publisher_report(source_sha, consumers: [clean, drifted])) do |path|
+          with_module_stub(PushDownstream, :publisher_authentication_ready?, -> { true }) do
+            replacement = lambda do |repo, _contract, entry|
+              published << [repo.fetch(:nwo), entry.fetch("repo")]
+              true
+            end
+            with_module_stub(PushDownstream, :publish_audited_repo, replacement) do
+              out, err = capture_io do
+                @status = PushDownstream.run_publisher(
+                  path,
+                  config,
+                  presets,
+                  source_sha: source_sha,
+                  source_root: root
+                )
+              end
+
+              assert_equal 0, @status, err
+              assert_empty out
+            end
+          end
+        end
+
+        assert_equal [["local/drifted-consumer", "local/drifted-consumer"]], published
+      end
+    end
+  end
+
+  private
+
+  def publisher_report(source_sha, consumers:)
+    counts = PushDownstream::AUDIT_STATUSES.to_h do |status|
+      [status, consumers.count { |consumer| consumer["status"] == status }]
+    end
+    {
+      "schema" => PushDownstream::AUDIT_SCHEMA,
+      "source" => {
+        "repo" => "shakacode/agent-workflows",
+        "sha" => source_sha,
+        "worktree_clean" => true
+      },
+      "summary" => { "total" => consumers.length }.merge(counts),
+      "consumers" => consumers
+    }
+  end
+
+  def publisher_consumer(repo, status, changed_paths)
+    {
+      "repo" => repo,
+      "preset" => nil,
+      "base_branch" => "main",
+      "base_sha" => "c" * 40,
+      "status" => status,
+      "seam_doctor_issues" => status == "clean" ? [] : ["missing seam"],
+      "changed_managed_paths" => changed_paths,
+      "follow_ups" => []
+    }
+  end
+
+  def with_report(report)
+    Tempfile.create(["downstream-seam-audit", ".json"]) do |file|
+      file.write(JSON.generate(report))
+      file.flush
+      yield file.path
+    end
+  end
+
+  def git!(root, *arguments)
+    output, status = Open3.capture2e("git", "-C", root, *arguments)
+    raise "git fixture failed: #{output}" unless status.success?
+
+    output
+  end
+
+  def with_clean_source
+    Dir.mktmpdir("push-downstream-publisher-source") do |root|
+      git!(root, "init", "-b", "main")
+      File.write(File.join(root, "source.txt"), "source\n")
+      git!(root, "add", "source.txt")
+      git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "source")
+      yield root, git!(root, "rev-parse", "HEAD").strip
+    end
+  end
+
+  def with_module_stub(mod, name, replacement)
+    singleton = mod.singleton_class
+    original = mod.method(name)
+    singleton.define_method(name, replacement)
+    yield
+  ensure
+    singleton.define_method(name, original)
+  end
+end
+
+class PushDownstreamPublisherWritePathTest < Minitest::Test
+  CONTRACT = {
+    commands: {
+      "validate" => "echo validate",
+      "test" => "echo test"
+    },
+    policy: PushDownstream.minimum_policy("main")
+  }.freeze
+
+  def test_create_then_replay_reuses_one_pr_without_force_or_churn
+    Dir.mktmpdir("push-downstream-publisher-write") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      audit_entry = audit(repo)
+      fake_bin, gh_log, git_log = install_cli_stubs(dir)
+      previous_path = ENV.fetch("PATH")
+      ENV["PATH"] = "#{fake_bin}:#{previous_path}"
+
+      begin
+        first_out, first_err = capture_io do
+          @first_status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
+        end
+        first_head = bare_ref(remote, repo.fetch(:pr_branch))
+        second_out, second_err = capture_io do
+          @second_status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
+        end
+        second_head = bare_ref(remote, repo.fetch(:pr_branch))
+      ensure
+        ENV["PATH"] = previous_path
+      end
+
+      assert @first_status, first_err
+      assert @second_status, second_err
+      assert_includes first_out, "PR local/consumer https://example.test/local/consumer/pull/1"
+      assert_includes second_out, "PR local/consumer https://example.test/local/consumer/pull/1"
+      assert_equal first_head, second_head
+
+      gh_calls = File.readlines(gh_log, chomp: true)
+      assert_equal(1, gh_calls.count { |call| call.start_with?("pr create ") })
+      refute(gh_calls.any? { |call| call.start_with?("pr merge ") })
+
+      push_calls = File.readlines(git_log, chomp: true).select { |call| call.match?(/(?:\A| -C \S+ )push /) }
+      assert_equal 1, push_calls.length, push_calls.inspect
+      refute(push_calls.any? { |call| call.include?("--force") })
+    end
+  end
+
+  def test_update_fast_forwards_the_same_pr_after_the_consumer_base_advances
+    Dir.mktmpdir("push-downstream-publisher-update") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      first_audit = audit(repo)
+      fake_bin, gh_log, git_log = install_cli_stubs(dir)
+      previous_path = ENV.fetch("PATH")
+      ENV["PATH"] = "#{fake_bin}:#{previous_path}"
+
+      begin
+        _first_out, first_err = capture_io do
+          @first_status = PushDownstream.publish_audited_repo(repo, CONTRACT, first_audit)
+        end
+        first_head = bare_ref(remote, repo.fetch(:pr_branch))
+        new_base = advance_base(remote, dir)
+        updated_contract = Marshal.load(Marshal.dump(CONTRACT))
+        updated_contract.fetch(:commands)["docs"] = "echo docs"
+        second_audit = audit(repo, contract: updated_contract)
+        second_out, second_err = capture_io do
+          @second_status = PushDownstream.publish_audited_repo(repo, updated_contract, second_audit)
+        end
+        second_head = bare_ref(remote, repo.fetch(:pr_branch))
+      ensure
+        ENV["PATH"] = previous_path
+      end
+
+      assert @first_status, first_err
+      assert @second_status, second_err
+      assert_includes second_out, "PR local/consumer https://example.test/local/consumer/pull/1"
+      assert git_success?(remote, "merge-base", "--is-ancestor", first_head, second_head)
+      assert git_success?(remote, "merge-base", "--is-ancestor", new_base, second_head)
+
+      gh_calls = File.readlines(gh_log, chomp: true)
+      assert_equal(1, gh_calls.count { |call| call.start_with?("pr create ") })
+      refute(gh_calls.any? { |call| call.start_with?("pr merge ") })
+      push_calls = File.readlines(git_log, chomp: true).select { |call| call.match?(/(?:\A| -C \S+ )push /) }
+      assert_equal 2, push_calls.length, push_calls.inspect
+      refute(push_calls.any? { |call| call.include?("--force") })
+    end
+  end
+
+  def test_retained_branch_with_hidden_off_scope_history_is_rejected
+    Dir.mktmpdir("push-downstream-publisher-hostile-history") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      audit_entry = audit(repo)
+      seed_hidden_off_scope_branch(remote, dir)
+      fake_bin, gh_log, git_log = install_cli_stubs(dir)
+      previous_path = ENV.fetch("PATH")
+      ENV["PATH"] = "#{fake_bin}:#{previous_path}"
+
+      begin
+        _out, err = capture_io do
+          @status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
+        end
+      ensure
+        ENV["PATH"] = previous_path
+      end
+
+      refute @status
+      assert_includes err, "history is not focused"
+      gh_calls = File.readlines(gh_log, chomp: true)
+      refute(gh_calls.any? { |call| call.start_with?("pr create ") })
+      push_calls = File.readlines(git_log, chomp: true).select { |call| call.match?(/(?:\A| -C \S+ )push /) }
+      assert_empty push_calls
+    end
+  end
+
+  def test_pr_confirmation_fails_when_the_remote_branch_moved
+    repo = publisher_repo("unused")
+    create_pr = ->(*) { flunk "must not create a PR for a moved branch" }
+    with_module_stub(PushDownstream, :publisher_remote_ref_head, ->(*) { "b" * 40 }) do
+      with_module_stub(PushDownstream, :create_pr, create_pr) do
+        _out, err = capture_io do
+          @status = PushDownstream.publisher_ensure_pull_request(
+            repo,
+            [],
+            clone: "/unused",
+            expected_head: "a" * 40
+          )
+        end
+
+        refute @status
+        assert_includes err, "publisher branch moved while confirming its PR"
+      end
+    end
+  end
+
+  private
+
+  def publisher_repo(remote)
+    {
+      repo: "consumer",
+      nwo: "local/consumer",
+      base_branch: "main",
+      pr_branch: "agent-workflows/seam-sync",
+      preset: nil,
+      remote_url: remote
+    }
+  end
+
+  def seed_remote(dir)
+    remote = File.join(dir, "consumer.git")
+    seed = File.join(dir, "seed")
+    system("git", "init", "--bare", remote, out: File::NULL, err: File::NULL)
+    system("git", "clone", remote, seed, out: File::NULL, err: File::NULL)
+    system("git", "-C", seed, "config", "user.name", "Test")
+    system("git", "-C", seed, "config", "user.email", "test@example.com")
+    File.write(File.join(seed, "README.md"), "consumer\n")
+    system("git", "-C", seed, "add", "README.md")
+    system("git", "-C", seed, "commit", "-m", "consumer base", out: File::NULL, err: File::NULL)
+    system("git", "-C", seed, "branch", "-M", "main")
+    system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
+    remote
+  end
+
+  def audit(repo, contract: CONTRACT)
+    replacement = ->(_repo, _presets) { contract }
+    with_module_stub(PushDownstream, :resolve_contract, replacement) do
+      PushDownstream.audit_repo(repo, {})
+    end
+  end
+
+  def advance_base(remote, dir)
+    checkout = File.join(dir, "base-advance")
+    system("git", "clone", "--branch", "main", remote, checkout, out: File::NULL, err: File::NULL)
+    system("git", "-C", checkout, "config", "user.name", "Test")
+    system("git", "-C", checkout, "config", "user.email", "test@example.com")
+    File.write(File.join(checkout, "consumer-owned.txt"), "base advanced\n")
+    system("git", "-C", checkout, "add", "consumer-owned.txt")
+    system("git", "-C", checkout, "commit", "-m", "advance consumer base", out: File::NULL, err: File::NULL)
+    system("git", "-C", checkout, "push", "origin", "main", out: File::NULL, err: File::NULL)
+    `git -C #{checkout.shellescape} rev-parse HEAD`.strip
+  end
+
+  def seed_hidden_off_scope_branch(remote, dir)
+    checkout = File.join(dir, "hostile-history")
+    system("git", "clone", "--branch", "main", remote, checkout, out: File::NULL, err: File::NULL)
+    system("git", "-C", checkout, "config", "user.name", "Test")
+    system("git", "-C", checkout, "config", "user.email", "test@example.com")
+    system("git", "-C", checkout, "checkout", "-b", "agent-workflows/seam-sync", out: File::NULL, err: File::NULL)
+    File.write(File.join(checkout, "README.md"), "temporary hostile change\n")
+    system("git", "-C", checkout, "add", "README.md")
+    system("git", "-C", checkout, "commit", "-m", "touch consumer file", out: File::NULL, err: File::NULL)
+    File.write(File.join(checkout, "README.md"), "consumer\n")
+    system("git", "-C", checkout, "add", "README.md")
+    system("git", "-C", checkout, "commit", "-m", "hide consumer file change", out: File::NULL, err: File::NULL)
+    PushDownstream.reconcile_scaffold(checkout, CONTRACT)
+    system("git", "-C", checkout, "add", ".agents", "AGENTS.md", "CLAUDE.md")
+    system("git", "-C", checkout, "commit", "-m", "add seam", out: File::NULL, err: File::NULL)
+    system(
+      "git", "-C", checkout, "push", "origin", "HEAD:agent-workflows/seam-sync",
+      out: File::NULL, err: File::NULL
+    )
+  end
+
+  def install_cli_stubs(dir)
+    fake_bin = File.join(dir, "fake-bin")
+    FileUtils.mkdir_p(fake_bin)
+    gh_log = File.join(dir, "gh.log")
+    git_log = File.join(dir, "git.log")
+    pr_state = File.join(dir, "pr-state")
+    real_git = `command -v git`.strip
+    File.write(File.join(fake_bin, "git"), <<~SH)
+      #!/bin/sh
+      printf '%s\\n' "$*" >> #{git_log.inspect}
+      exec #{real_git.inspect} "$@"
+    SH
+    File.chmod(0o755, File.join(fake_bin, "git"))
+    File.write(File.join(fake_bin, "gh"), <<~SH)
+      #!/bin/sh
+      printf '%s\\n' "$*" >> #{gh_log.inspect}
+      if [ "$1 $2" = "auth status" ]; then
+        exit 0
+      fi
+      if [ "$1 $2" = "pr list" ]; then
+        if [ -f #{pr_state.inspect} ]; then
+          printf '%s\\n' '[{"url":"https://example.test/local/consumer/pull/1","baseRefName":"main","headRefName":"agent-workflows/seam-sync","headRepository":{"name":"consumer","nameWithOwner":"local/consumer"},"headRepositoryOwner":{"login":"local"}}]'
+        else
+          printf '%s\\n' '[]'
+        fi
+        exit 0
+      fi
+      if [ "$1 $2" = "pr create" ]; then
+        : > #{pr_state.inspect}
+        printf '%s\\n' 'https://example.test/local/consumer/pull/1'
+        exit 0
+      fi
+      exit 99
+    SH
+    File.chmod(0o755, File.join(fake_bin, "gh"))
+    [fake_bin, gh_log, git_log]
+  end
+
+  def bare_ref(remote, branch)
+    output, status = Open3.capture2e("git", "--git-dir", remote, "rev-parse", "refs/heads/#{branch}")
+    raise "missing branch #{branch}: #{output}" unless status.success?
+
+    output.strip
+  end
+
+  def git_success?(remote, *arguments)
+    system("git", "--git-dir", remote, *arguments, out: File::NULL, err: File::NULL)
+  end
+
+  def with_module_stub(mod, name, replacement)
+    singleton = mod.singleton_class
+    original = mod.method(name)
+    singleton.define_method(name, replacement)
+    yield
+  ensure
+    singleton.define_method(name, original)
+  end
+end

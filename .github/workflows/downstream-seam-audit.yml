@@ -1,0 +1,154 @@
+name: Downstream Seam Audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/downstream-seam-audit.yml
+      - bin/agent-workflow-seam-doctor
+      - bin/push-downstream*
+      - downstream.yml
+      - seam-presets.yml
+  schedule:
+    - cron: "17 13 * * 1"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Open or update one seam-sync PR for each audited drifted consumer
+        type: boolean
+        required: true
+        default: false
+      source_sha:
+        description: Exact source SHA to publish; required when publish is selected
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: downstream-seam-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Read-only fleet audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+
+      - name: Configure read-only GitHub authentication
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_SEAM_AUDIT_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          gh auth status --hostname github.com
+          gh auth setup-git --hostname github.com
+
+      - name: Audit enabled downstream consumers
+        id: audit
+        env:
+          REPORT_PATH: ${{ runner.temp }}/downstream-seam-audit.json
+        run: |
+          set -euo pipefail
+          set +e
+          bin/push-downstream --audit | tee "$REPORT_PATH"
+          audit_exit=${PIPESTATUS[0]}
+          set -e
+          if [ "$audit_exit" -ne 0 ] && [ "$audit_exit" -ne 1 ]; then
+            echo "::error::Audit command failed without a complete report (exit $audit_exit)."
+            exit "$audit_exit"
+          fi
+          AUDIT_EXIT="$audit_exit" ruby <<'RUBY'
+          require "json"
+
+          report = JSON.parse(File.binread(ENV.fetch("REPORT_PATH")))
+          abort "unexpected audit schema" unless report["schema"] == "agent-workflows/downstream-seam-audit/v1"
+          source = report.fetch("source")
+          abort "audit source SHA is not exact" unless source["sha"] == ENV.fetch("GITHUB_SHA")
+          abort "audit source worktree was not clean" unless source["worktree_clean"] == true
+          consumers = report.fetch("consumers")
+          abort "audit consumers are not an array" unless consumers.is_a?(Array)
+          counts = %w[clean drifted blocked].to_h do |status|
+            [status, consumers.count { |consumer| consumer["status"] == status }]
+          end
+          abort "audit contains an unknown status" unless counts.values.sum == consumers.length
+          expected_exit = counts["clean"] == consumers.length ? 0 : 1
+          abort "audit exit does not match report state" unless expected_exit == Integer(ENV.fetch("AUDIT_EXIT"), 10)
+          File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
+            output.puts "exit_code=#{expected_exit}"
+            output.puts "blocked=#{counts.fetch('blocked')}"
+          end
+          File.open(ENV.fetch("GITHUB_STEP_SUMMARY"), "a") do |summary|
+            summary.puts "## Downstream seam audit"
+            summary.puts
+            summary.puts "Source: `#{source.fetch('sha')}`"
+            summary.puts
+            summary.puts "| clean | drifted | blocked |"
+            summary.puts "| ---: | ---: | ---: |"
+            summary.puts "| #{counts.fetch('clean')} | #{counts.fetch('drifted')} | #{counts.fetch('blocked')} |"
+          end
+          RUBY
+
+      - name: Enforce audit result when not publishing
+        if: github.event_name != 'workflow_dispatch' || inputs.publish != true
+        env:
+          AUDIT_EXIT: ${{ steps.audit.outputs.exit_code }}
+        run: exit "$AUDIT_EXIT"
+
+  publish:
+    name: Manual focused PR publisher
+    needs: audit
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: downstream-seam-publisher
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+
+      - name: Authenticate, re-audit, and publish audited drift
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_SEAM_PUBLISH_TOKEN }}
+          PUBLISH_SOURCE_SHA: ${{ inputs.source_sha }}
+          REPORT_PATH: ${{ runner.temp }}/downstream-seam-publisher.json
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::DOWNSTREAM_SEAM_PUBLISH_TOKEN is required for manual publishing."
+            exit 1
+          fi
+          if ! [[ "$PUBLISH_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || [ "$PUBLISH_SOURCE_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::source_sha must exactly equal this workflow run's source SHA."
+            exit 1
+          fi
+          gh auth status --hostname github.com
+          gh auth setup-git --hostname github.com
+          set +e
+          bin/push-downstream --audit > "$REPORT_PATH"
+          audit_exit=$?
+          set -e
+          if [ "$audit_exit" -ne 0 ] && [ "$audit_exit" -ne 1 ]; then
+            echo "::error::Publisher audit failed without a complete report (exit $audit_exit)."
+            exit "$audit_exit"
+          fi
+          bin/push-downstream \
+            --publish-report "$REPORT_PATH" \
+            --source-sha "$PUBLISH_SOURCE_SHA" \
+            --confirm-publish

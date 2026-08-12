@@ -10,6 +10,11 @@
 # Presets live in seam-presets.yml and are intentionally conservative. Before
 # opening a consumer PR, verify that every wrapped command/task exists in that
 # target repo.
+#
+# `.github/workflows/downstream-seam-audit.yml` audits every enabled entry. Its
+# scheduled and contract-triggered runs are read-only. The separate manual
+# publisher consumes an exact-SHA audit report and still revalidates every
+# consumer before it opens or updates the configured non-force sync PR.
 
 defaults:
   owner: shakacode

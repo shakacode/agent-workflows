@@ -72,6 +72,8 @@ ruby skills/secure-github-actions/bin/secure-github-actions-contract-test.rb
 
 echo "== push-downstream unit tests =="
 ruby bin/push-downstream-test.rb
+ruby bin/push-downstream-publisher-test.rb
+ruby bin/downstream-seam-audit-workflow-test.rb
 
 echo "== agent workflow drift unit tests =="
 ruby bin/check-agent-workflow-drift-test.rb
