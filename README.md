@@ -308,6 +308,7 @@ This project is available under the MIT License.
 | `run-ci` | Choose and run repo-local CI checks. |
 | `spec` | Turn vague implementation intent into requirements, design, and tasks. |
 | `status` | Report tight progress (done/in-progress/blocked/next) without starting new work. |
+| `structural-review` | Use when a diff is correct but may still be making the codebase worse — file growth, scattered conditionals, thin abstractions, layer violations, or feature-flag branching debt. |
 | `task-observer` | Optionally capture sanitized observations for later skill or workflow improvement review. |
 | `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
 | `triage` | Build a whole-surface issue/PR inventory and batch split. |
