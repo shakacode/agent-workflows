@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+Encoding.default_external = Encoding::UTF_8
+
 require "json"
 require "open3"
 require "optparse"
@@ -49,6 +51,21 @@ def emit_unknown(failure, head_sha: "UNKNOWN", policy_provenance: "UNKNOWN")
   exit
 end
 
+def validate_utf8_strings!(value)
+  case value
+  when Hash
+    value.each do |key, nested_value|
+      validate_utf8_strings!(key)
+      validate_utf8_strings!(nested_value)
+    end
+  when Array
+    value.each { |nested_value| validate_utf8_strings!(nested_value) }
+  when String
+    valid_utf8 = value.dup.force_encoding(Encoding::UTF_8).valid_encoding?
+    raise ArgumentError, "invalid UTF-8 string" unless valid_utf8
+  end
+end
+
 emit_unknown("--repo-root is required") unless options[:repo_root]
 emit_unknown("--trusted-base is required") unless options[:trusted_base]
 
@@ -94,14 +111,24 @@ input = if options[:repo] || options[:pr] || options[:semantic_assessment]
             emit_unknown("semantic assessment path is unavailable or unreadable")
           end
           begin
+            objective = AutonomousMergeEvidence.collect(repo: options[:repo], pr_number: options[:pr])
+            validate_utf8_strings!(objective)
+            semantic_assessment = JSON.parse(semantic_json)
+            begin
+              validate_utf8_strings!(semantic_assessment)
+            rescue ArgumentError => e
+              emit_unknown("malformed or invalid semantic assessment: #{e.message}")
+            end
             {
               "contract" => "autonomous-merge-evaluation",
               "version" => 1,
-              "objective" => AutonomousMergeEvidence.collect(repo: options[:repo], pr_number: options[:pr]),
-              "semantic_assessment" => JSON.parse(semantic_json)
+              "objective" => objective,
+              "semantic_assessment" => semantic_assessment
             }
-          rescue AutonomousMergeEvidence::CollectionError, JSON::ParserError => e
+          rescue AutonomousMergeEvidence::CollectionError, JSON::ParserError, EncodingError => e
             emit_unknown(e.message)
+          rescue ArgumentError => e
+            emit_unknown("malformed or invalid GitHub evidence: #{e.message}")
           end
         else
           begin
