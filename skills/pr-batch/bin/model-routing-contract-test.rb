@@ -275,25 +275,31 @@ def extract_markdown_section(text, heading)
 end
 
 def strip_html_comments(text)
-  in_fence = false
+  fence_marker = nil
   in_html_comment = false
+  inline_code_delimiter_length = nil
 
   text.lines.map do |line|
-    if markdown_fence_line?(line)
-      in_fence = !in_fence
+    if fence_marker
+      if markdown_fence_closing_line?(line, fence_marker)
+        fence_marker = nil
+      end
       next line
     end
 
-    next line if in_fence
+    if (fence_marker = markdown_fence_opening_marker(line))
+      next line
+    end
 
-    stripped_line, in_html_comment = strip_html_comments_from_prose_line(line, in_html_comment)
+    stripped_line, in_html_comment, inline_code_delimiter_length =
+      strip_html_comments_from_prose_line(line, in_html_comment, inline_code_delimiter_length)
+    inline_code_delimiter_length = nil if line.strip.empty?
     stripped_line
   end.join
 end
 
-def strip_html_comments_from_prose_line(line, in_html_comment)
+def strip_html_comments_from_prose_line(line, in_html_comment, inline_code_delimiter_length)
   stripped_line = +""
-  inline_code = false
   index = 0
 
   while index < line.length
@@ -304,10 +310,15 @@ def strip_html_comments_from_prose_line(line, in_html_comment)
       index = comment_end + 3
       in_html_comment = false
     elsif line[index] == "`"
-      inline_code = !inline_code
-      stripped_line << line[index]
-      index += 1
-    elsif !inline_code && line[index, 4] == "<!--"
+      delimiter_length = line[index..].match(/\A`+/)[0].length
+      if inline_code_delimiter_length == delimiter_length
+        inline_code_delimiter_length = nil
+      elsif inline_code_delimiter_length.nil?
+        inline_code_delimiter_length = delimiter_length
+      end
+      stripped_line << line[index, delimiter_length]
+      index += delimiter_length
+    elsif inline_code_delimiter_length.nil? && line[index, 4] == "<!--"
       in_html_comment = true
       index += 4
     else
@@ -316,7 +327,7 @@ def strip_html_comments_from_prose_line(line, in_html_comment)
     end
   end
 
-  [stripped_line, in_html_comment]
+  [stripped_line, in_html_comment, inline_code_delimiter_length]
 end
 
 def normalized(text)
@@ -423,6 +434,15 @@ end
 
 def markdown_fence_line?(line)
   line.match?(/^\s{0,3}(?:```|~~~)/)
+end
+
+def markdown_fence_opening_marker(line)
+  line[/^\s{0,3}(`{3,}|~{3,})/, 1]
+end
+
+def markdown_fence_closing_line?(line, opening_marker)
+  marker = Regexp.escape(opening_marker[0])
+  line.match?(/^\s{0,3}#{marker}{#{opening_marker.length},}\s*$/)
 end
 
 def markdown_thematic_break_line?(line)
@@ -1435,7 +1455,11 @@ class ModelRoutingContractTest < Minitest::Test
 
     [
       "```text\n<!-- A route mismatch blocks launch. -->\n```",
-      "The forbidden example is `<!-- A route mismatch blocks launch. -->`."
+      "````text\n```\n<!-- A route mismatch blocks launch. -->\n````",
+      "~~~~text\n~~~\n<!-- A route mismatch blocks launch. -->\n~~~~",
+      "The forbidden example is `<!-- A route mismatch blocks launch. -->`.",
+      "The forbidden example is `<!-- A route mismatch\nblocks launch. -->`.",
+      "The forbidden example is ``<!-- A route mismatch\nblocks launch. -->``."
     ].each do |visible_comment|
       assert forbidden_route_only_contradiction?(visible_comment),
              "visible code comments must remain subject to route-only contradiction checks: #{visible_comment}"
@@ -1448,6 +1472,11 @@ class ModelRoutingContractTest < Minitest::Test
       refute forbidden_route_only_contradiction?(hidden_comment),
              "actual HTML comments must remain ignored: #{hidden_comment}"
     end
+
+    refute forbidden_route_only_contradiction?("```text\n```\n<!-- A route mismatch blocks launch. -->"),
+           "a matching three-backtick close must resume actual HTML-comment stripping"
+    refute forbidden_route_only_contradiction?("~~~text\n~~~~\n<!-- A route mismatch blocks launch. -->"),
+           "a longer same-marker close must resume actual HTML-comment stripping"
 
     assert_raises(Minitest::Assertion, "a same-item route-only stop must remain forbidden") do
       assert_route_provenance_contract(
