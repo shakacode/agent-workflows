@@ -8,8 +8,8 @@
   "manifest": {
     "schema":"batch-usage-manifest-v1",
     "batch_id":"batch-unknown",
-    "coordinator":{"id":"coordinator","root_thread_id":"root","requested_route":{"host":"codex","model":"requested-root","effort":"xhigh"}},
-    "lanes":[{"id":"missing-lane","root_thread_id":"missing-thread","requested_route":{"host":"codex","model":"requested-worker","effort":"high"},"workers":[]}]
+    "coordinator":{"id":"coordinator","root_thread_id":"root","requested_route":{"host":"codex","model":"requested-root","effort":"xhigh","auth":"MANIFEST_AUTH_SENTINEL_NEVER_EMIT","prompt":"MANIFEST_PROMPT_SENTINEL_NEVER_EMIT","usage":{"total_tokens":999999}}},
+    "lanes":[{"id":"missing-lane","root_thread_id":"missing-thread","requested_route":{"host":"codex","model":"requested-worker","effort":"high","response":"MANIFEST_RESPONSE_SENTINEL_NEVER_EMIT"},"workers":[]}]
   },
   "rollouts": {
     "root.jsonl":[

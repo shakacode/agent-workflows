@@ -111,6 +111,58 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "full_history_before_window_filter", receipt.dig("window", "differencing")
   end
 
+  def test_first_sample_without_last_usage_is_unknown_instead_of_importing_cumulative_history
+    receipt, = run_fixture("missing-first-last")
+
+    expected = {
+      "input_tokens" => "UNKNOWN",
+      "output_tokens" => "UNKNOWN",
+      "cache_read_tokens" => "UNKNOWN",
+      "total_tokens" => "UNKNOWN"
+    }
+    assert_equal expected, receipt.dig("batch", "usage", "descendant_inclusive")
+    assert_equal "UNKNOWN", receipt.dig("evidence", "status")
+    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    assert_includes unknown_codes, "missing_first_last_token_usage"
+  end
+
+  def test_compaction_correlated_repeated_counter_vector_starts_a_new_epoch
+    receipt, = run_fixture("compaction-reset")
+
+    assert_equal 40, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 1, receipt.dig("accounting", "counter_resets")
+    assert_equal 0, receipt.dig("accounting", "replay_records_omitted")
+    assert_equal 1, receipt.dig("accounting", "duplicate_samples_omitted")
+    assert_equal "complete", receipt.dig("evidence", "status")
+  end
+
+  def test_counter_decrease_without_boundary_evidence_is_structured_unknown
+    receipt, = run_fixture("ambiguous-decrease")
+
+    assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 0, receipt.dig("accounting", "counter_resets")
+    assert_equal "UNKNOWN", receipt.dig("evidence", "status")
+    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    assert_includes unknown_codes, "ambiguous_counter_decrease"
+  end
+
+  def test_unknown_cache_counter_does_not_erase_known_primary_counters
+    receipt, = run_fixture("partial-counter-unknown")
+
+    assert_equal(
+      {
+        "input_tokens" => 8,
+        "output_tokens" => 2,
+        "cache_read_tokens" => "UNKNOWN",
+        "total_tokens" => 10
+      },
+      receipt.dig("batch", "usage", "descendant_inclusive")
+    )
+    assert_equal 8, receipt.dig("coordinator", "usage", "self_only", "input_tokens")
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "usage", "self_only", "cache_read_tokens")
+    assert_equal "UNKNOWN", receipt.dig("evidence", "status")
+  end
+
   def test_spawn_edges_roll_up_descendants_once_and_reconcile_unattributed_usage
     receipt, = run_fixture("descendants")
 
@@ -138,9 +190,22 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_includes unknown_codes, "missing_total_token_usage"
     assert_includes unknown_codes, "thread_missing"
     assert_equal false, receipt.dig("privacy", "emitted_or_persisted_content")
-    %w[PROMPT_SENTINEL RESPONSE_SENTINEL TOOL_RESULT_SENTINEL AUTH_SENTINEL ENV_SENTINEL].each do |sentinel|
+    assert_equal %w[effort host model], receipt.dig("coordinator", "requested_route").keys.sort
+    assert_equal %w[effort host model], receipt.dig("lanes", 0, "requested_route").keys.sort
+    %w[
+      PROMPT_SENTINEL RESPONSE_SENTINEL TOOL_RESULT_SENTINEL AUTH_SENTINEL ENV_SENTINEL
+      MANIFEST_AUTH_SENTINEL MANIFEST_PROMPT_SENTINEL MANIFEST_RESPONSE_SENTINEL
+    ].each do |sentinel|
       refute_includes output, sentinel
     end
+    return unless defined?(JSONSchemer)
+
+    schema = receipt_schema
+    assert_empty JSONSchemer.schema(schema).validate(receipt).to_a
+
+    spoofed = JSON.parse(JSON.generate(receipt))
+    spoofed.dig("coordinator", "requested_route")["usage"] = blank_usage_for_test
+    refute_empty JSONSchemer.schema(schema).validate(spoofed).to_a
   end
 
   def test_optional_credit_equivalents_require_explicit_dated_model_mapping_and_disclaim_billing
@@ -152,6 +217,29 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "2026-08-04", credits.fetch("effective_date")
     assert_includes credits.fetch("disclaimer"), "not a bill"
     assert_equal 4, credits.fetch("model_values").length
+    return unless defined?(JSONSchemer)
+
+    schema = receipt_schema
+    assert_empty JSONSchemer.schema(schema).validate(receipt).to_a
+
+    empty_value = JSON.parse(JSON.generate(receipt))
+    empty_value.dig("credit_equivalents", "model_values").replace([{}])
+    refute_empty JSONSchemer.schema(schema).validate(empty_value).to_a
+
+    negative_credits = JSON.parse(JSON.generate(receipt))
+    negative_credits.dig("credit_equivalents", "model_values", 0)["credits"] = -1
+    refute_empty JSONSchemer.schema(schema).validate(negative_credits).to_a
+
+    unknown_value = JSON.parse(JSON.generate(receipt))
+    unknown_value["credit_equivalents"]["status"] = "UNKNOWN"
+    unknown_value.dig("credit_equivalents", "model_values").replace(
+      [{ "host" => "codex", "model" => "unmapped-model", "status" => "UNKNOWN", "code" => "rate_mapping_missing" }]
+    )
+    assert_empty JSONSchemer.schema(schema).validate(unknown_value).to_a
+
+    missing_unknown_code = JSON.parse(JSON.generate(unknown_value))
+    missing_unknown_code.dig("credit_equivalents", "model_values", 0).delete("code")
+    refute_empty JSONSchemer.schema(schema).validate(missing_unknown_code).to_a
   end
 
   def test_output_is_deterministic_across_replays_and_public_contract_is_versioned
@@ -185,5 +273,21 @@ class BatchUsageReceiptTest < Minitest::Test
       assert_includes surface, "durable artifact reference"
       assert_includes surface, "informational"
     end
+  end
+
+  private
+
+  def blank_usage_for_test
+    {
+      "input_tokens" => 0,
+      "output_tokens" => 0,
+      "cache_read_tokens" => 0,
+      "total_tokens" => 0
+    }
+  end
+
+  def receipt_schema
+    root = File.expand_path("../../..", __dir__)
+    JSON.parse(File.read(File.join(root, "docs/schemas/batch-usage-receipt-v1.schema.json")))
   end
 end

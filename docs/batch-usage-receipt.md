@@ -70,7 +70,8 @@ scope and requested routes:
 `requested_route` is an instruction and remains separate from
 `observed_routes`, which comes only from `state_5.sqlite` and rollout
 `turn_context` metadata. Requested host/model/effort never fills an unavailable
-observed value.
+observed value. The reporter projects each requested route to exactly
+`host`, `model`, and `effort`; extra manifest keys are ignored and never emitted.
 
 ## Scope And Reconciliation
 
@@ -112,13 +113,15 @@ Supported Codex `event_msg/token_count` records carry cumulative
 
 1. walks the complete physical rollout in file order;
 2. differences cumulative `total_token_usage` samples;
-3. applies the inherited-seed omission rule: when the first `total_token_usage`
-   differs from the first `last_token_usage`, only that first
-   `last_token_usage` is the first delta;
+3. derives the first delta per counter only from the first `last_token_usage`;
+   when it differs from `total_token_usage`, the inherited cumulative seed is
+   omitted, and a missing first-last counter becomes literal `UNKNOWN` rather
+   than importing cumulative history;
 4. omits copied fork history, repeated cumulative samples, and detected replay
    samples while recording separate counts;
-5. records a counter reset and starts a new cumulative epoch when a previously
-   unseen counter vector decreases;
+5. records a counter reset and starts a new cumulative epoch when a counter
+   decrease follows a compaction boundary; a copied fork boundary corroborates
+   replay, while an uncorroborated decrease becomes structured `UNKNOWN`;
 6. only then applies the half-open time window to each computed delta.
 
 `last_token_usage` is never summed. Compaction markers are counted but do not by
@@ -142,8 +145,10 @@ the [Review Finding Schema](review-finding-schema.md) where compatible:
 - `total_tokens` maps the host's reported `total_tokens` and does not add cache
   reads again.
 
-The helper does not infer absent counters. Unsupported or missing evidence
-produces literal `UNKNOWN` counter values plus structured entries in
+The helper does not infer absent counters. Uncertainty propagates independently
+per counter, so known input/output/total values remain known when only the cache
+counter is missing. Unsupported or missing evidence produces literal `UNKNOWN`
+counter values plus structured entries in
 `evidence.unknown`, each with `status: "UNKNOWN"` and a stable `code`. Examples
 include `state_database_unsupported`, `thread_missing`, `rollout_missing`,
 `malformed_jsonl`, `missing_total_token_usage`, and

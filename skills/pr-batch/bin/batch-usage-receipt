@@ -76,9 +76,14 @@ module BatchUsageReceipt
   end
 
   def vector_for_first_sample(total, last)
-    comparable = TOKEN_FIELDS.all? { |field| total[field].is_a?(Integer) && last&.dig(field).is_a?(Integer) }
-    inherited_seed = comparable && !same_known_vector?(total, last)
-    [inherited_seed ? last : total, inherited_seed]
+    missing_fields = TOKEN_FIELDS.reject { |field| last&.dig(field).is_a?(Integer) }
+    delta = TOKEN_FIELDS.to_h do |field|
+      [field, last&.dig(field).is_a?(Integer) ? last[field] : UNKNOWN]
+    end
+    inherited_seed = TOKEN_FIELDS.any? do |field|
+      total[field].is_a?(Integer) && last&.dig(field).is_a?(Integer) && total[field] != last[field]
+    end
+    [delta, inherited_seed, missing_fields]
   end
 
   def in_window?(timestamp, from_time, to_time)
@@ -108,6 +113,7 @@ module BatchUsageReceipt
         "session_rebind_attempts_ignored" => 0
       }
       @unknown_reasons = []
+      @global_unknown_usage_fields = []
       @route_usage = {}
       @first_session_id = nil
       @first_session_seen = false
@@ -123,9 +129,9 @@ module BatchUsageReceipt
       end
 
       previous = nil
-      seen = {}
       replay_prefix = false
       first_usage = true
+      compaction_since_usage = false
       current_route = state_route
 
       File.foreach(@path, encoding: "UTF-8").with_index(1) do |line, line_number|
@@ -166,6 +172,7 @@ module BatchUsageReceipt
           replay_prefix = false
         when "compacted"
           @accounting["compactions"] += 1
+          compaction_since_usage = true
         when "turn_context"
           next if replay_prefix || !payload.is_a?(Hash)
 
@@ -182,12 +189,11 @@ module BatchUsageReceipt
             next
           end
 
-          signature = TOKEN_FIELDS.map { |field| total[field] }.join(":")
           if replay_prefix
             @accounting["replay_records_omitted"] += 1
             previous = total
-            seen[signature] = true
             first_usage = false
+            compaction_since_usage = false
             next
           end
 
@@ -196,18 +202,21 @@ module BatchUsageReceipt
             next
           end
 
-          if seen[signature] && previous && vector_decreased?(total, previous)
-            @accounting["replay_records_omitted"] += 1
-            next
-          end
-
           delta = if first_usage
-                    value, inherited_seed = vector_for_first_sample(total, last)
+                    value, inherited_seed, missing_fields = vector_for_first_sample(total, last)
                     @accounting["inherited_seeds_omitted"] += 1 if inherited_seed
+                    unless missing_fields.empty?
+                      unknown("missing_first_last_token_usage", fields: missing_fields, affects_usage: false)
+                    end
                     value
                   elsif vector_decreased?(total, previous)
-                    @accounting["counter_resets"] += 1
-                    total
+                    if compaction_since_usage
+                      @accounting["counter_resets"] += 1
+                      total
+                    else
+                      unknown("ambiguous_counter_decrease", line: line_number, affects_usage: false)
+                      unknown_usage
+                    end
                   else
                     vector_difference(total, previous)
                   end
@@ -216,8 +225,8 @@ module BatchUsageReceipt
           # time window. This prevents a boundary-straddling sample from
           # importing all pre-window history.
           previous = total
-          seen[signature] = true
           first_usage = false
+          compaction_since_usage = false
           unless valid_timestamp?(record["timestamp"])
             unknown("invalid_usage_timestamp", line: line_number)
             next
@@ -240,15 +249,13 @@ module BatchUsageReceipt
     end
 
     def totals
-      return unknown_usage unless @unknown_reasons.empty?
-
-      @route_usage.values.reduce(blank_usage) { |sum, usage| add_usage(sum, usage) }
+      apply_global_unknowns(@route_usage.values.reduce(blank_usage) { |sum, usage| add_usage(sum, usage) })
     end
 
     def observed_routes
       @route_usage.keys.sort.map do |key|
         route = JSON.parse(key)
-        route.merge("usage" => @route_usage.fetch(key))
+        route.merge("usage" => apply_global_unknowns(@route_usage.fetch(key)))
       end
     end
 
@@ -277,7 +284,14 @@ module BatchUsageReceipt
     def add_route_usage(route, usage)
       key = JSON.generate(route.sort.to_h)
       @route_usage[key] = add_usage(@route_usage.fetch(key, blank_usage), usage)
-      unknown("usage_counter_missing") unless known_usage?(usage)
+      missing_fields = TOKEN_FIELDS.reject { |field| usage[field].is_a?(Integer) }
+      return if missing_fields.empty?
+
+      unknown("usage_counter_missing", fields: missing_fields, affects_usage: false)
+    end
+
+    def apply_global_unknowns(usage)
+      usage.merge(@global_unknown_usage_fields.to_h { |field| [field, UNKNOWN] })
     end
 
     def valid_timestamp?(value)
@@ -287,9 +301,10 @@ module BatchUsageReceipt
       false
     end
 
-    def unknown(code, extra = {})
+    def unknown(code, affects_usage: true, **extra)
       reason = { "status" => UNKNOWN, "code" => code }.merge(extra.transform_keys(&:to_s))
       @unknown_reasons << reason unless @unknown_reasons.include?(reason)
+      @global_unknown_usage_fields |= TOKEN_FIELDS if affects_usage
     end
 
     def finalize_identity
@@ -571,7 +586,7 @@ module BatchUsageReceipt
 
     def aggregate(thread_ids)
       selected = readers(thread_ids)
-      return unknown_usage if selected.any? { |reader| !reader.unknown_reasons.empty? } || thread_ids.any? { |id| reader_for(id).nil? }
+      return unknown_usage if thread_ids.any? { |id| reader_for(id).nil? }
 
       selected.reduce(blank_usage) { |sum, reader| add_usage(sum, reader.totals) }
     end
@@ -583,7 +598,7 @@ module BatchUsageReceipt
         "scope" => scope,
         "id" => id,
         "root_thread_id" => root_thread_id,
-        "requested_route" => requested_route,
+        "requested_route" => requested_route.slice("host", "model", "effort"),
         "observed_routes" => merge_observed_routes(selected_readers),
         "usage" => {
           "self_only" => aggregate([root_thread_id]),

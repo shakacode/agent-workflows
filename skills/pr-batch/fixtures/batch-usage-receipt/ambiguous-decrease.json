@@ -1,0 +1,22 @@
+{
+  "name": "counter decrease without a reset boundary is unknown",
+  "window": {"from":"2026-08-08T00:00:00Z","to":"2026-08-09T00:00:00Z"},
+  "threads": [
+    {"id":"root","rollout":"root.jsonl","model_provider":"openai","model":"gpt-test","reasoning_effort":"high"}
+  ],
+  "edges": [],
+  "manifest": {
+    "schema":"batch-usage-manifest-v1",
+    "batch_id":"batch-ambiguous-decrease",
+    "coordinator":{"id":"coordinator","root_thread_id":"root","requested_route":{"host":"codex","model":"requested-root","effort":"high"}},
+    "lanes":[]
+  },
+  "rollouts": {
+    "root.jsonl":[
+      {"timestamp":"2026-08-08T00:00:00Z","type":"session_meta","payload":{"id":"root","session_id":"root"}},
+      {"timestamp":"2026-08-08T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"cached_input_tokens":2,"output_tokens":2,"total_tokens":10},"last_token_usage":{"input_tokens":8,"cached_input_tokens":2,"output_tokens":2,"total_tokens":10}}}},
+      {"timestamp":"2026-08-08T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":16,"cached_input_tokens":4,"output_tokens":4,"total_tokens":20},"last_token_usage":{"input_tokens":8,"cached_input_tokens":2,"output_tokens":2,"total_tokens":10}}}},
+      {"timestamp":"2026-08-08T00:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":4,"cached_input_tokens":1,"output_tokens":1,"total_tokens":5},"last_token_usage":{"input_tokens":4,"cached_input_tokens":1,"output_tokens":1,"total_tokens":5}}}}
+    ]
+  }
+}

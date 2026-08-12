@@ -60,9 +60,19 @@
       },
       "additionalProperties": false
     },
-    "route": {
+    "requestedRoute": {
       "type": "object",
       "required": ["host", "model", "effort"],
+      "properties": {
+        "host": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "effort": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "observedRoute": {
+      "type": "object",
+      "required": ["host", "provider", "model", "effort", "usage"],
       "properties": {
         "host": {"type": "string", "minLength": 1},
         "provider": {"type": "string", "minLength": 1},
@@ -90,8 +100,8 @@
         "scope": {"enum": ["coordinator", "worker"]},
         "id": {"type": "string", "minLength": 1},
         "root_thread_id": {"type": "string", "minLength": 1},
-        "requested_route": {"$ref": "#/$defs/route"},
-        "observed_routes": {"type": "array", "items": {"$ref": "#/$defs/route"}},
+        "requested_route": {"$ref": "#/$defs/requestedRoute"},
+        "observed_routes": {"type": "array", "items": {"$ref": "#/$defs/observedRoute"}},
         "usage": {
           "type": "object",
           "required": ["self_only", "descendant_inclusive"],
@@ -112,8 +122,8 @@
         "scope": {"const": "lane"},
         "id": {"type": "string", "minLength": 1},
         "root_thread_id": {"type": "string", "minLength": 1},
-        "requested_route": {"$ref": "#/$defs/route"},
-        "observed_routes": {"type": "array", "items": {"$ref": "#/$defs/route"}},
+        "requested_route": {"$ref": "#/$defs/requestedRoute"},
+        "observed_routes": {"type": "array", "items": {"$ref": "#/$defs/observedRoute"}},
         "usage": {
           "type": "object",
           "required": ["self_only", "descendant_inclusive", "unattributed"],
@@ -174,6 +184,28 @@
       },
       "additionalProperties": true
     },
+    "availableCreditModelValue": {
+      "type": "object",
+      "required": ["host", "model", "status", "credits"],
+      "properties": {
+        "host": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "status": {"const": "available"},
+        "credits": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "unknownCreditModelValue": {
+      "type": "object",
+      "required": ["host", "model", "status", "code"],
+      "properties": {
+        "host": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "status": {"const": "UNKNOWN"},
+        "code": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
     "creditEquivalents": {
       "type": "object",
       "required": ["status", "source", "effective_date", "model_values", "disclaimer"],
@@ -181,7 +213,15 @@
         "status": {"enum": ["available", "UNKNOWN"]},
         "source": {"type": "string", "minLength": 1},
         "effective_date": {"type": "string", "format": "date"},
-        "model_values": {"type": "array", "items": {"type": "object"}},
+        "model_values": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {"$ref": "#/$defs/availableCreditModelValue"},
+              {"$ref": "#/$defs/unknownCreditModelValue"}
+            ]
+          }
+        },
         "disclaimer": {"type": "string", "pattern": "not a bill"}
       },
       "additionalProperties": false
