@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add a portable `secure-github-actions` skill and fail-closed parser-backed gate for workflow and composite-action shell interpolation, inherited secrets, immutable external references with readable version comments, and a closed repo-owned `trusted_actions` allowlist; activate it in review lenses, the seam doctor, source validation, and read-only targeted downstream audit reporting.** [issue 273](https://github.com/shakacode/agent-workflows/issues/273).
 - **Add a dedicated, locally reproducible lint gate for tracked Ruby, shell, Markdown, YAML, and GitHub Actions files, with pinned tool versions, read-only CI permissions, and the canonical `.agents/bin/lint` command.** [issue 310](https://github.com/shakacode/agent-workflows/issues/310).
 - **Add a fail-closed queue-or-guarded-direct merge-submission seam whose fixed-argv repository guard runs from receipt-base-bound private Git state, resolves trusted script interpreters independently from checkout-controlled paths and injection variables, and requires exact live post-mutation reconciliation.** [issue 292](https://github.com/shakacode/agent-workflows/issues/292).
 - **Document that current install and upgrade paths are development channels without independent human release approval, and track an immutable human-reviewed stable channel.** [issue 296](https://github.com/shakacode/agent-workflows/issues/296).

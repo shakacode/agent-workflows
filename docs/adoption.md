@@ -84,8 +84,30 @@ notes.
    override the deterministic repository-name abbreviation used in batch titles
    and thread handles. The initializer does not add this optional key.
 
-   Initialization adds the optional merge-submission seam in its simplest
-   portable form:
+   Repositories that use repository-based GitHub Actions and reusable workflows
+   must also add a closed, exact `trusted_actions` allowlist. Its entries are
+   case-insensitive `owner/repository` identities, with no refs, subpaths, or
+   wildcards:
+
+   ```yaml
+   trusted_actions:
+     - actions/checkout
+     - ruby/setup-ruby
+   ```
+
+   A missing or invalid allowlist trusts no external action. Adding an identity
+   never waives the independent full-SHA and readable-version-comment rules.
+   Maintainers must review the action before adding it. The scanner reads this
+   policy from the checkout under review and cannot prove that a pull request
+   left it unchanged, so compare every `trusted_actions` addition with the
+   trusted base.
+
+   For `docker://` references, the scanner enforces digest immutability, but
+   `trusted_actions` does not mechanically approve the container. Maintainers
+   must manually review the exact registry, image, and digest.
+
+   Initialization adds the optional merge-submission seam in its portable,
+   fail-closed form:
 
    ```yaml
    merge_submission:
@@ -168,7 +190,14 @@ notes.
 8. **Validate the contract.** Initialization runs the same seam-doctor check.
    After resolving any fail-closed wrapper guidance, rerun
    `agent-workflow-seam-doctor` with `--shared` pointing at the cloned or
-   installed pack root. Then run one dry workflow pass without making changes.
+   installed pack root. The doctor scans `.github/workflows/*.{yml,yaml}` and
+   recursively discovers eligible tracked or unignored `action.yml` / `action.yaml` descriptors.
+   Unreferenced ignored descriptors and excluded roots are not discovered. Any
+   explicitly referenced ignored local actions are resolved separately and scanned.
+   Workflow/action changes also activate the same checks in `$autoreview` and `$adversarial-pr-review`.
+   A clean mechanical scan is necessary but not sufficient: review permissions,
+   triggers, untrusted checkout/execution, and credential persistence manually.
+   Then run one dry workflow pass without making changes.
 
 9. **Make `AGENTS.md` canonical.** Tool-specific files such as `CLAUDE.md`
    should stay thin and link back to `AGENTS.md`.
@@ -347,6 +376,11 @@ malformed schema.
 - `agent-workflows-status --host <codex|claude>` reports `UP_TO_DATE`, or the
   upgrade decision is recorded.
 - `agent-workflow-seam-doctor --shared <path-to-shakacode/agent-workflows>` passes.
+- `/path/to/trusted/agent-workflows/skills/secure-github-actions/bin/secure-github-actions-scan <path-to-consumer>`
+  passes, and a human reviews
+  GitHub Actions permissions, triggers, checkout trust, and credentials.
+- Every `docker://` reference is digest-pinned, and a human reviews its exact
+  registry, image, and digest.
 - Every generated wrapper's underlying command exists in the target repo.
 - `pr-security-preflight --repo OWNER/REPO --trust-config .agents/trusted-github-actors.yml --strict-trust <exact-targets>`
   reports `SECURITY_PREFLIGHT_OK` for maintainer-approved exact targets.
