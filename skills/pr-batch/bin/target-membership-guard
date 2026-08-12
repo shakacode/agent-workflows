@@ -168,7 +168,14 @@ def repository_qualified_target?(target)
   repository.split("/", 2).all? { |component| component.match?(/[A-Za-z0-9]/) }
 end
 
-raw_input = $stdin.read
+raw_input = $stdin.read.force_encoding(Encoding::UTF_8)
+unless raw_input.valid_encoding?
+  emit_unknown(
+    "input is not valid UTF-8",
+    next_action: "provide UTF-8 encoded JSON and replay the guard"
+  )
+end
+
 begin
   input = JSON.parse(raw_input)
 rescue JSON::ParserError

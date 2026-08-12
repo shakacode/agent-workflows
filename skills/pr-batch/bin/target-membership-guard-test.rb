@@ -121,6 +121,34 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_equal first_stdout, second_stdout
   end
 
+  def test_malformed_utf8_fails_closed_before_json_parsing_or_duplicate_scanning
+    malformed_inputs = {
+      "duplicate object key" => "{\"\xFF\":1,\"\xFF\":2}".b,
+      "single object key" => "{\"\xFF\":1}".b,
+      "string value" => "{\"metadata\":\"\xFF\"}".b
+    }
+
+    malformed_inputs.each do |location, input|
+      first_stdout, first_stderr, first_status = invoke_raw(input, parse: false)
+      second_stdout, second_stderr, second_status = invoke_raw(input, parse: false)
+      result = JSON.parse(first_stdout)
+
+      assert_equal 2, first_status.exitstatus, "#{location}: #{first_stderr}"
+      assert_empty first_stderr, location
+      assert_equal first_status.exitstatus, second_status.exitstatus, location
+      assert_equal first_stdout, second_stdout, location
+      assert_equal first_stderr, second_stderr, location
+      assert_equal "UNKNOWN", result.fetch("status"), location
+      assert_equal "UNKNOWN", result.fetch("disposition"), location
+      assert_equal "UNKNOWN", result.fetch("target_membership"), location
+      assert_equal false, result.fetch("control_allowed"), location
+      assert_equal false, result.fetch("evidence_delivery_allowed"), location
+      assert_equal "input is not valid UTF-8", result.fetch("reason"), location
+      assert_equal "provide UTF-8 encoded JSON and replay the guard",
+                   result.fetch("next_action"), location
+    end
+  end
+
   def test_blocks_control_for_a_foreign_target_as_evidence_only
     result, stderr, status = invoke("target" => "shakacode/hichee#9992")
 
