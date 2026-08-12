@@ -11,7 +11,7 @@ class TargetMembershipGuardTest < Minitest::Test
   CONTROL_OPERATIONS = %w[
     claim supersede replacement worker_spawn dispatch ownership
     heartbeat_mutation lease_mutation resource_lock_handoff
-    repository_mutation github_mutation
+    repository_mutation github_mutation control_transfer
   ].freeze
 
   def invoke(overrides = {})
@@ -34,7 +34,7 @@ class TargetMembershipGuardTest < Minitest::Test
   end
 
   def test_allows_control_for_an_exact_manifest_member
-    result, stderr, status = invoke
+    result, stderr, status = invoke("human_authorized_control_transfer" => true)
 
     assert_predicate status, :success?, stderr
     assert_equal "allowed", result.fetch("status")
@@ -137,28 +137,36 @@ class TargetMembershipGuardTest < Minitest::Test
   end
 
   def test_allows_foreign_target_evidence_delivery_without_control
-    result, stderr, status = invoke(
-      "target" => "shakacode/hichee#9992",
-      "operation" => "evidence_delivery"
-    )
+    [false, true].each do |human_authority|
+      result, stderr, status = invoke(
+        "target" => "shakacode/hichee#9992",
+        "operation" => "evidence_delivery",
+        "human_authorized_control_transfer" => human_authority
+      )
 
-    assert_predicate status, :success?, stderr
-    assert_equal "allowed", result.fetch("status")
-    assert_equal "foreign-target / evidence-only", result.fetch("disposition")
-    assert_equal false, result.fetch("target_membership")
-    assert_equal false, result.fetch("control_allowed")
-    assert_equal true, result.fetch("evidence_delivery_allowed")
+      assert_predicate status, :success?, stderr
+      assert_equal "allowed", result.fetch("status")
+      assert_equal "foreign-target / evidence-only", result.fetch("disposition")
+      assert_equal false, result.fetch("target_membership")
+      assert_equal false, result.fetch("control_allowed")
+      assert_equal true, result.fetch("evidence_delivery_allowed")
+    end
   end
 
   def test_manifest_member_evidence_delivery_remains_evidence_only
-    result, stderr, status = invoke("operation" => "evidence_delivery")
+    [false, true].each do |human_authority|
+      result, stderr, status = invoke(
+        "operation" => "evidence_delivery",
+        "human_authorized_control_transfer" => human_authority
+      )
 
-    assert_predicate status, :success?, stderr
-    assert_equal "allowed", result.fetch("status")
-    assert_equal "manifest-member / evidence-only", result.fetch("disposition")
-    assert_equal true, result.fetch("target_membership")
-    assert_equal false, result.fetch("control_allowed")
-    assert_equal true, result.fetch("evidence_delivery_allowed")
+      assert_predicate status, :success?, stderr
+      assert_equal "allowed", result.fetch("status")
+      assert_equal "manifest-member / evidence-only", result.fetch("disposition")
+      assert_equal true, result.fetch("target_membership")
+      assert_equal false, result.fetch("control_allowed")
+      assert_equal true, result.fetch("evidence_delivery_allowed")
+    end
   end
 
   def test_denies_control_transfer_without_explicit_human_authority
@@ -234,7 +242,8 @@ class TargetMembershipGuardTest < Minitest::Test
   def test_punctuated_repository_identity_remains_valid_and_case_normalized
     result, stderr, status = invoke(
       "canonical_target_manifest" => ["shaka-code/.agent_workflows-guard#403"],
-      "target" => "Shaka-Code/.Agent_Workflows-Guard#403"
+      "target" => "Shaka-Code/.Agent_Workflows-Guard#403",
+      "human_authorized_control_transfer" => true
     )
 
     assert_predicate status, :success?, stderr
@@ -286,14 +295,58 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_equal "canonical target manifest is missing, empty, or invalid", result.fetch("reason")
   end
 
-  def test_every_control_boundary_uses_the_same_membership_decision
+  def test_every_control_boundary_requires_membership_and_explicit_human_authority
     CONTROL_OPERATIONS.each do |operation|
-      result, stderr, status = invoke("operation" => operation)
+      result, stderr, status = invoke(
+        "operation" => operation,
+        "human_authorized_control_transfer" => false
+      )
+
+      assert_equal 3, status.exitstatus, "#{operation}: #{stderr}"
+      assert_equal "blocked", result.fetch("status"), operation
+      assert_equal true, result.fetch("target_membership"), operation
+      assert_equal false, result.fetch("control_allowed"), operation
+      assert_equal true, result.fetch("evidence_delivery_allowed"), operation
+
+      result, stderr, status = invoke(
+        "operation" => operation,
+        "human_authorized_control_transfer" => true
+      )
 
       assert_predicate status, :success?, "#{operation}: #{stderr}"
       assert_equal operation, result.fetch("operation")
       assert_equal true, result.fetch("target_membership")
       assert_equal true, result.fetch("control_allowed")
+
+      [false, true].each do |human_authority|
+        result, stderr, status = invoke(
+          "target" => "shakacode/hichee#9992",
+          "operation" => operation,
+          "human_authorized_control_transfer" => human_authority
+        )
+
+        assert_equal 3, status.exitstatus, "#{operation}/#{human_authority}: #{stderr}"
+        assert_equal "blocked", result.fetch("status"), operation
+        assert_equal "foreign-target / evidence-only", result.fetch("disposition"), operation
+        assert_equal false, result.fetch("target_membership"), operation
+        assert_equal false, result.fetch("control_allowed"), operation
+        assert_equal true, result.fetch("evidence_delivery_allowed"), operation
+      end
+    end
+  end
+
+  def test_malformed_target_remains_unknown_regardless_of_human_authority
+    [false, true].each do |human_authority|
+      result, stderr, status = invoke(
+        "target" => "UNKNOWN",
+        "human_authorized_control_transfer" => human_authority
+      )
+
+      assert_equal 2, status.exitstatus, stderr
+      assert_equal "UNKNOWN", result.fetch("status")
+      assert_equal "UNKNOWN", result.fetch("target_membership")
+      assert_equal false, result.fetch("control_allowed")
+      assert_equal false, result.fetch("evidence_delivery_allowed")
     end
   end
 
@@ -374,6 +427,7 @@ class TargetMembershipGuardTest < Minitest::Test
       assert_includes normalized_text, "self-asserted worker input", relative_path
       assert_includes normalized_text, "Duplicate JSON object keys anywhere", relative_path
       assert_includes normalized_text, "unrelated nested metadata", relative_path
+      assert_includes normalized_text, "Every packet-driven operation other than `evidence_delivery`", relative_path
     end
   end
 end

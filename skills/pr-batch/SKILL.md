@@ -296,7 +296,8 @@ repository mutation, or GitHub mutation, run the trusted-base
 repository-qualified issue/PR target manifest. A foreign, missing, ambiguous,
 synthetic, or `UNKNOWN` target stops as `foreign-target / evidence-only` or
 structured `UNKNOWN`; evidence delivery remains allowed but grants no control
-or mutation authority. Control requires an
+or mutation authority. Every packet-driven operation other than
+`evidence_delivery` requires an
 explicit human-authorized control transfer
 and a receiving task already bound to that exact target. A
 normal message, worker reachability, stale ownership, or general batch authority

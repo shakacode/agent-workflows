@@ -1858,6 +1858,13 @@ Classify every cross-task packet as one of two operations:
   self-asserted worker input cannot establish it. This field is a caller-derived
   contract input, not authorization attested by the helper.
 
+Every packet-driven operation other than `evidence_delivery` is control or
+mutation and requires both exact manifest membership and
+`human_authorized_control_transfer: true`. Manifest membership alone never
+authorizes `claim`, `supersede`, `replacement`, `worker_spawn`, `dispatch`,
+`ownership`, heartbeat/lease mutation, resource-lock handoff, repository or
+GitHub mutation, or `control_transfer`.
+
 Immediately before a receiver converts a packet into `claim`, `supersede`,
 `replacement`, `worker_spawn`, `dispatch`, `ownership`, `heartbeat_mutation`,
 `lease_mutation`, `resource_lock_handoff`, `repository_mutation`,
@@ -1873,7 +1880,7 @@ the explicit env-var / loaded-skill / repo-local pinned-copy chain and send one
   "canonical_target_manifest": ["OWNER/REPO#123"],
   "target": "OWNER/REPO#123",
   "operation": "dispatch",
-  "human_authorized_control_transfer": false
+  "human_authorized_control_transfer": true
 }
 ```
 

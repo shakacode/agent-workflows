@@ -260,14 +260,16 @@ end
 member = canonical_manifest.include?(canonical_target(target))
 evidence_only = operation == "evidence_delivery"
 control_transfer = operation == "control_transfer"
-control_allowed = member && !evidence_only && (!control_transfer || human_authorized_control_transfer)
+control_allowed = member && !evidence_only && human_authorized_control_transfer
 allowed = evidence_only || control_allowed
 
 disposition = if member
                 if evidence_only
                   "manifest-member / evidence-only"
-                elsif control_transfer && !human_authorized_control_transfer
+                elsif !human_authorized_control_transfer && control_transfer
                   "control-transfer-authority-required"
+                elsif !human_authorized_control_transfer
+                  "human-authority-required"
                 elsif control_transfer
                   "control-transfer-authorized"
                 else
@@ -279,20 +281,20 @@ disposition = if member
 
 reason = if member && evidence_only
            "evidence delivery does not grant control or mutation authority"
-         elsif member && control_transfer && !human_authorized_control_transfer
-           "control transfer requires explicit human authority"
+         elsif member && !human_authorized_control_transfer
+           "packet-driven control or mutation requires explicit human authority"
          elsif member && control_transfer
            "explicit human authority and receiving-task target membership are both verified"
          elsif member
-           "target is an exact member of the receiving task manifest"
+           "explicit human authority and receiving-task target membership are both verified"
          elsif evidence_only
            "foreign-target evidence delivery is allowed without control or mutation authority"
          else
            "target is not a member of the receiving task manifest"
          end
 
-next_action = if member && control_transfer && !human_authorized_control_transfer
-                "obtain explicit human authority before transferring control"
+next_action = if member && !evidence_only && !human_authorized_control_transfer
+                "obtain explicit human authority before packet-driven control or mutation"
               elsif member
                 "continue only within the verified target-bound task"
               else
