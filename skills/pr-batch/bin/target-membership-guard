@@ -1,0 +1,193 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+
+TARGET_PATTERN = %r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*\z}
+OPERATIONS = %w[
+  evidence_delivery
+  claim
+  supersede
+  replacement
+  worker_spawn
+  dispatch
+  ownership
+  heartbeat_mutation
+  lease_mutation
+  resource_lock_handoff
+  repository_mutation
+  github_mutation
+  control_transfer
+].freeze
+
+def emit(result, exit_status)
+  puts JSON.generate(
+    {
+      "contract" => "target-membership-decision",
+      "version" => 1
+    }.merge(result)
+  )
+  exit exit_status
+end
+
+def emit_unknown(reason, next_action:, target: "UNKNOWN", operation: "UNKNOWN",
+                 human_authorized_control_transfer: false)
+  emit(
+    {
+      "status" => "UNKNOWN",
+      "disposition" => "UNKNOWN",
+      "target" => target,
+      "operation" => operation,
+      "target_membership" => "UNKNOWN",
+      "human_authorized_control_transfer" => human_authorized_control_transfer,
+      "control_allowed" => false,
+      "evidence_delivery_allowed" => false,
+      "reason" => reason,
+      "next_action" => next_action
+    },
+    2
+  )
+end
+
+def canonical_target(target)
+  repository, number = target.split("#", 2)
+  "#{repository.downcase}##{number}"
+end
+
+begin
+  input = JSON.parse($stdin.read)
+rescue JSON::ParserError
+  emit_unknown(
+    "input is not valid JSON",
+    next_action: "provide one target-membership-request v1 object and replay the guard"
+  )
+end
+
+unless input.is_a?(Hash) && input["contract"] == "target-membership-request" && input["version"] == 1
+  emit_unknown(
+    "invalid target-membership-request contract or version",
+    next_action: "provide one target-membership-request v1 object and replay the guard"
+  )
+end
+
+manifest = input["canonical_target_manifest"]
+target = input["target"]
+operation = input["operation"]
+human_authorized_control_transfer = input["human_authorized_control_transfer"]
+
+unless [true, false].include?(human_authorized_control_transfer)
+  emit_unknown(
+    "human_authorized_control_transfer must be true or false",
+    target: target.is_a?(String) ? target : "UNKNOWN",
+    operation: operation.is_a?(String) ? operation : "UNKNOWN",
+    next_action: "record explicit human transfer authority as true or false and replay the guard"
+  )
+end
+
+unless operation.is_a?(String) && OPERATIONS.include?(operation)
+  emit_unknown(
+    "operation is missing or unsupported",
+    target: target.is_a?(String) ? target : "UNKNOWN",
+    operation: operation.is_a?(String) ? operation : "UNKNOWN",
+    human_authorized_control_transfer: human_authorized_control_transfer,
+    next_action: "select one supported operation and replay the guard"
+  )
+end
+
+unless target.is_a?(String) && target.match?(TARGET_PATTERN)
+  reason = if target == "UNKNOWN"
+             "literal UNKNOWN is not a target identity"
+           elsif target.is_a?(Array) || target.is_a?(Hash)
+             "ambiguous target identity; expected one scalar repository-qualified issue/PR"
+           elsif target.is_a?(String) && target.start_with?("adhoc:")
+             "synthetic targets cannot establish cross-task membership"
+           else
+             "target identity is missing or is not one exact repository-qualified issue/PR identity"
+           end
+  emit_unknown(
+    reason,
+    operation: operation,
+    human_authorized_control_transfer: human_authorized_control_transfer,
+    next_action: "resolve one exact repository-qualified issue/PR target and replay the guard"
+  )
+end
+
+unless manifest.is_a?(Array) && !manifest.empty? &&
+       manifest.all? { |entry| entry.is_a?(String) && entry.match?(TARGET_PATTERN) }
+  emit_unknown(
+    "canonical target manifest is missing, empty, or invalid",
+    target: target,
+    operation: operation,
+    human_authorized_control_transfer: human_authorized_control_transfer,
+    next_action: "restore the durable canonical repository-qualified target manifest and replay the guard"
+  )
+end
+
+canonical_manifest = manifest.map { |entry| canonical_target(entry) }
+if canonical_manifest.uniq.length != canonical_manifest.length
+  emit_unknown(
+    "canonical target manifest is ambiguous after repository identity normalization",
+    target: target,
+    operation: operation,
+    human_authorized_control_transfer: human_authorized_control_transfer,
+    next_action: "remove duplicate or ambiguous target identities from the durable manifest and replay the guard"
+  )
+end
+
+member = canonical_manifest.include?(canonical_target(target))
+evidence_only = operation == "evidence_delivery"
+control_transfer = operation == "control_transfer"
+control_allowed = member && !evidence_only && (!control_transfer || human_authorized_control_transfer)
+allowed = evidence_only || control_allowed
+
+disposition = if member
+                if evidence_only
+                  "manifest-member / evidence-only"
+                elsif control_transfer && !human_authorized_control_transfer
+                  "control-transfer-authority-required"
+                elsif control_transfer
+                  "control-transfer-authorized"
+                else
+                  "manifest-member"
+                end
+              else
+                "foreign-target / evidence-only"
+              end
+
+reason = if member && evidence_only
+           "evidence delivery does not grant control or mutation authority"
+         elsif member && control_transfer && !human_authorized_control_transfer
+           "control transfer requires explicit human authority"
+         elsif member && control_transfer
+           "explicit human authority and receiving-task target membership are both verified"
+         elsif member
+           "target is an exact member of the receiving task manifest"
+         elsif evidence_only
+           "foreign-target evidence delivery is allowed without control or mutation authority"
+         else
+           "target is not a member of the receiving task manifest"
+         end
+
+next_action = if member && control_transfer && !human_authorized_control_transfer
+                "obtain explicit human authority before transferring control"
+              elsif member
+                "continue only within the verified target-bound task"
+              else
+                "route evidence to the exact target-bound task or obtain an explicit human-authorized control transfer to a task already bound to that target"
+              end
+
+emit(
+  {
+    "status" => allowed ? "allowed" : "blocked",
+    "disposition" => disposition,
+    "target" => target,
+    "operation" => operation,
+    "target_membership" => member,
+    "human_authorized_control_transfer" => human_authorized_control_transfer,
+    "control_allowed" => control_allowed,
+    "evidence_delivery_allowed" => true,
+    "reason" => reason,
+    "next_action" => next_action
+  },
+  allowed ? 0 : 3
+)

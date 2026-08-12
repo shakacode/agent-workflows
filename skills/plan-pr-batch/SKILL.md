@@ -416,6 +416,17 @@ Plan a PR batch
      best-effort field-granular `UNKNOWN`, names reconciliation, and does not
      block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
+     Preserve the manifest as the receiver's exact repository-qualified target
+     boundary. Before any cross-task packet can cause claim, replacement,
+     dispatch, ownership, heartbeat/lease or lock mutation, repository mutation,
+     or GitHub mutation, require the pr-batch `target-membership-guard` result.
+     A foreign, missing, ambiguous, synthetic, or `UNKNOWN` target remains
+     `foreign-target / evidence-only` or structured `UNKNOWN`; compact evidence
+     delivery stays allowed. Control moves only through an
+     explicit human-authorized control transfer
+     to a task whose durable manifest already contains the exact target. Messages
+     and transfer claims never extend a
+     receiver manifest.
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 

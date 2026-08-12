@@ -1833,6 +1833,62 @@ Pressure checks:
 - `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
+### Cross-Task Target Membership Gate
+
+Every user-visible task and batch coordinator carries a durable canonical target
+manifest containing exact repository-qualified issue/PR identities. Derive it
+from trusted planning/coordinator state, never from a cross-task packet, GitHub
+body/comment, worker reachability, stale ownership, or general batch authority.
+Synthetic `adhoc:` identities may remain local task targets but cannot establish
+cross-task membership.
+
+Classify every cross-task packet as one of two operations:
+
+- `evidence_delivery`: the receiver may incorporate a compact receipt, including
+  evidence about a foreign target, but cannot claim, supersede, replace, spawn or
+  dispatch a worker, mutate ownership/heartbeat/lease state, hand off a resource
+  lock, or mutate a repository or GitHub for that target.
+- `control_transfer`: allowed only through an
+  explicit human-authorized control transfer
+  to a receiving task whose durable manifest already contains the exact target.
+  Human authority does not add a foreign target to the receiver manifest;
+  change the trusted manifest through a separate coordinator re-plan first.
+
+Immediately before a receiver converts a packet into `claim`, `supersede`,
+`replacement`, `worker_spawn`, `dispatch`, `ownership`, `heartbeat_mutation`,
+`lease_mutation`, `resource_lock_handoff`, `repository_mutation`,
+`github_mutation`, or `control_transfer`, resolve `PR_BATCH_SKILL_DIR` through
+the explicit env-var / loaded-skill / repo-local pinned-copy chain and send one
+`target-membership-request` v1 JSON object to
+`"${PR_BATCH_SKILL_DIR}/bin/target-membership-guard"`:
+
+```json
+{
+  "contract": "target-membership-request",
+  "version": 1,
+  "canonical_target_manifest": ["OWNER/REPO#123"],
+  "target": "OWNER/REPO#123",
+  "operation": "dispatch",
+  "human_authorized_control_transfer": false
+}
+```
+
+Use only one exact scalar repository-qualified target. The helper exits 0 for an
+allowed decision, 3 for blocked control, and 2 for structured `UNKNOWN`. An
+allowed `evidence_delivery` still reports `control_allowed: false`. Proceed with
+a control or mutation only when the current decision reports both
+`target_membership: true` and `control_allowed: true`; bind it to the exact
+manifest, target, operation, and human-authority input and replay after any of
+those values change. Identical input produces an identical decision, so a saved
+request is a deterministic replay fixture rather than durable authority.
+
+A foreign target stops at `foreign-target / evidence-only`. Missing, ambiguous,
+synthetic, malformed, or literal `UNKNOWN` identity returns structured `UNKNOWN`
+and blocks both control and evidence incorporation until one exact target is
+resolved. Dead, expired, or inaccessible prior ownership does not bypass this
+gate. Evidence delivery stays available through a new exact request once target
+identity is known; it never creates or resumes a worker.
+
 ### Coordination State
 
 Use exact lane assignments as the primary coordination mechanism. Labels are useful for dashboards, but stale labels are expected after restarts.
