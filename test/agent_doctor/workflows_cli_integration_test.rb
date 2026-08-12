@@ -163,7 +163,9 @@ class AgentDoctorWorkflowsCLIIntegrationTest < Minitest::Test
       puts JSON.generate(
         "status" => "UP_TO_DATE", "host" => host, "target" => target, "source" => source,
         "installed_version" => "1.0.0", "installed_revision" => "abc", "available_version" => "1.0.0",
-        "available_revision" => "abc", "checked_remote" => false, "reason" => nil, "guidance" => nil,
+        "available_revision" => "abc", "channel" => "development", "release_ref" => nil,
+        "available_release_ref" => nil, "exact_commit" => "abc",
+        "checked_remote" => false, "reason" => nil, "guidance" => nil,
         "delivery_mode" => "flat", "native" => nil, "flat" => nil
       )
     RUBY
