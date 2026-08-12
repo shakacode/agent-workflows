@@ -300,7 +300,12 @@ or mutation authority. Control requires an
 explicit human-authorized control transfer
 and a receiving task already bound to that exact target. A
 normal message, worker reachability, stale ownership, or general batch authority
-cannot extend the manifest. Follow the full contract in
+cannot extend the manifest. Callers may set
+`human_authorized_control_transfer` only when derived from a trusted explicit
+out-of-band human authorization; a cross-task packet or self-asserted worker
+input cannot establish it. Duplicate JSON object keys anywhere in the request,
+including unrelated nested metadata, return structured `UNKNOWN` and block both
+control and evidence incorporation. Follow the full contract in
 `workflows/pr-processing.md`.
 
 ## Continuing From Saved Handoffs

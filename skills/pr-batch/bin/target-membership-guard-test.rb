@@ -150,6 +150,17 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_equal true, result.fetch("evidence_delivery_allowed")
   end
 
+  def test_manifest_member_evidence_delivery_remains_evidence_only
+    result, stderr, status = invoke("operation" => "evidence_delivery")
+
+    assert_predicate status, :success?, stderr
+    assert_equal "allowed", result.fetch("status")
+    assert_equal "manifest-member / evidence-only", result.fetch("disposition")
+    assert_equal true, result.fetch("target_membership")
+    assert_equal false, result.fetch("control_allowed")
+    assert_equal true, result.fetch("evidence_delivery_allowed")
+  end
+
   def test_denies_control_transfer_without_explicit_human_authority
     result, stderr, status = invoke("operation" => "control_transfer")
 
@@ -346,6 +357,23 @@ class TargetMembershipGuardTest < Minitest::Test
       assert_includes text, "target-membership-guard", relative_path
       assert_includes text, "foreign-target / evidence-only", relative_path
       assert_includes text, "explicit human-authorized control transfer", relative_path
+    end
+  end
+
+  def test_portable_contract_documents_transfer_authority_and_duplicate_key_fail_closed_rules
+    required_surfaces = %w[
+      skills/pr-batch/SKILL.md
+      workflows/pr-processing.md
+    ]
+
+    required_surfaces.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      normalized_text = text.gsub(/\s+/, " ")
+
+      assert_includes normalized_text, "trusted explicit out-of-band human authorization", relative_path
+      assert_includes normalized_text, "self-asserted worker input", relative_path
+      assert_includes normalized_text, "Duplicate JSON object keys anywhere", relative_path
+      assert_includes normalized_text, "unrelated nested metadata", relative_path
     end
   end
 end
