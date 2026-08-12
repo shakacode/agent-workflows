@@ -462,4 +462,31 @@ class TargetMembershipGuardTest < Minitest::Test
       assert_includes normalized_text, "Every packet-driven operation other than `evidence_delivery`", relative_path
     end
   end
+
+  def test_portable_skill_summaries_distinguish_foreign_evidence_from_unknown_identity
+    surfaces = {
+      "skills/pr-batch/SKILL.md" => [/## Cross-Task Target Membership Gate/, /## Continuing From Saved Handoffs/],
+      "skills/plan-pr-batch/SKILL.md" => [
+        /Preserve the manifest/,
+        /- For PRs with review feedback/
+      ]
+    }
+
+    surfaces.each do |relative_path, (start_pattern, end_pattern)|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      section = text.match(/#{start_pattern.source}(.*?)#{end_pattern.source}/m)&.[](1)
+
+      refute_nil section, "#{relative_path} is missing its target-membership summary"
+      normalized_section = section.gsub(/\s+/, " ")
+      assert_includes normalized_section,
+                      "exact repository-qualified foreign target may use only a new exact `evidence_delivery` request",
+                      relative_path
+      assert_includes normalized_section,
+                      "Missing, ambiguous, synthetic, malformed, or literal `UNKNOWN` target identity returns structured `UNKNOWN` and blocks both control and evidence delivery until resolved",
+                      relative_path
+      CONTROL_OPERATIONS.each do |operation|
+        assert_includes section, operation, "#{relative_path} is missing control operation #{operation}"
+      end
+    end
+  end
 end

@@ -417,12 +417,17 @@ Plan a PR batch
      block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
      Preserve the manifest as the receiver's exact repository-qualified target
-     boundary. Before any cross-task packet can cause claim, replacement,
-     dispatch, ownership, heartbeat/lease or lock mutation, repository mutation,
-     or GitHub mutation, require the pr-batch `target-membership-guard` result.
-     A foreign, missing, ambiguous, synthetic, or `UNKNOWN` target remains
-     `foreign-target / evidence-only` or structured `UNKNOWN`; compact evidence
-     delivery stays allowed. Control moves only through an
+     boundary. Before any cross-task packet can cause a control operation—
+     `claim`, `supersede`, `replacement`, `worker_spawn`, `dispatch`,
+     `ownership`, `heartbeat_mutation`, `lease_mutation`,
+     `resource_lock_handoff`, `repository_mutation`, `github_mutation`, or
+     `control_transfer`—require the pr-batch `target-membership-guard` result.
+     An exact repository-qualified foreign target may use only a new exact
+     `evidence_delivery` request; that request is
+     `foreign-target / evidence-only` and grants no control. Missing,
+     ambiguous, synthetic, malformed, or literal `UNKNOWN` target identity
+     returns structured `UNKNOWN` and blocks both control and evidence delivery
+     until resolved. Control moves only through an
      explicit human-authorized control transfer
      to a task whose durable manifest already contains the exact target. Messages
      and transfer claims never extend a
