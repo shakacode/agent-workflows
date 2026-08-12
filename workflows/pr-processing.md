@@ -573,6 +573,97 @@ tasks processed by Codex workers, subagents, worktrees, or multiple machines.
 For one target, keep the same intake and handoff fields while collapsing wave
 packing and collision analysis to a batch of one.
 
+### Canonical Task Topology And Delegation Control
+
+The ordinary implementation topology is one user-visible task -> one
+repository-qualified canonical issue, or one existing PR when no issue exists
+-> one execution lane -> at most one implementation PR for that lane. This is
+also the ordinary shape for a batch of one. It does not prohibit bounded
+checker, reviewer, or QA children inside that lane, and it never weakens
+security preflight, ownership/claim fencing, typed dependencies, exact-head QA,
+review, CI, merge-authority, or completed-batch audit gates. Do not add a
+retroactive issue merely because an existing PR is the canonical target.
+
+More than one canonical target in one user-visible task is explicit
+`multi-target-supervision-exception` v1 mode, not ordinary batching. Before
+launch, record a durable human approval and all of: a closed reason
+(`independent_read_heavy`, `atomic_cross_issue_migration`, or
+`tightly_coupled_dependency_wave`), justification, exact target count,
+concurrency, aggregate budget, exact per-lane budgets, shared-context
+justification, expected savings, and rollback. Every repository-qualified
+target still has one distinct lane identity and one implementation-PR limit.
+Issue count, model strength, or generic parallelism is not justification.
+Rollback stops the shared wave and relaunches each target through ordinary mode;
+do not discard useful held-local work or bypass ordinary cancellation and claim
+fencing.
+
+Use the deterministic JSON-in/JSON-out
+`skills/pr-batch/bin/canonical-task-control` helper before launch and at the
+operations below. Its `canonical-task-control` v1 input and closed nested
+contracts validate the topology or exception, compact coordinator state, child
+packet/receipt lifecycle, delegation admission, budget checkpoint, and matched
+pilot. Malformed, missing, contradictory, or nested `UNKNOWN` evidence fails
+closed except where the contract explicitly returns an `unknowns` field and a
+non-mutating rollback/coalescing decision. The helper makes no coordination,
+repository, GitHub, child-thread, compaction, or budget mutation itself.
+
+Keep the coordinator as a compact control plane. Persist a
+`compact-coordinator-manifest` v1 containing current requirements, ownership,
+heads, gates, budgets, decisions, and compact receipt references; never retain
+raw child transcripts, test logs, polling history, or unrelated target history
+as coordinator state. Emit a `coordinator-compaction-checkpoint` v1 after plan
+settlement and before dispatch, after each worker report/review wave, before a
+monitor, before cross-task handoff, and whenever the configured rendered-context
+threshold is crossed. The optional repo seam is
+`canonical_task_control.context_compaction_threshold`; `n/a`, missing evidence,
+or unavailable #398 calibration remains literal `UNKNOWN` and never invents a
+universal threshold. A required boundary without a satisfied checkpoint and
+known evidence reference blocks its operation.
+
+Every child receives one `task-scoped-child-packet` v1 bound to child, lane,
+repository-qualified target, role, narrow scope, acceptance criteria,
+verification, and stop conditions. Accept only one matching
+`compact-child-receipt` v1 with status, exact head, summary, findings,
+verification, and open decisions. After accepting a completed receipt, close
+the child and record `resumable: false`. Resume an old child only through an
+explicit new decision-continuity justification and the ordinary budget,
+ownership, and replacement gates; convenience is not continuity. A fresh child
+normally receives the compact manifest, exact diff package, accepted receipts,
+and open findings instead.
+
+Before delegation, task resume, worker spawn, retry, or review wave, require a
+current #399/repository-policy budget decision with a known evidence reference.
+Before waking another task, also bind source and target task plus
+repository-qualified identities; classify target state as active, idle, paused,
+stale, or terminal; estimate rendered context and descendant fan-out from
+available metadata; record the configured threshold; and compact at the
+cross-task boundary. An active target receives one coalesced queued message and
+is not woken again. Never wake for unchanged evidence, acknowledgement, or a
+handoff that can be assembled deterministically. Terminal targets are not
+woken. Missing estimates, a stale target, or an over-threshold estimate needs a
+durable human approval before a new-evidence wake.
+
+Integrate #398 execution provenance only through a verified
+`execution-provenance-evidence` v1 reference. Attribute source-edge,
+target-self, and target-descendant deltas, then separately record the reconciled
+aggregate physical delta so descendants are not added twice. When #398 cannot
+produce the receipt or a field, record the receipt, affected deltas, and
+reconciliation as field-granular `UNKNOWN`; do not invent values or treat local
+cumulative counters as billing/credit evidence.
+
+The promotion experiment is `canonical-task-matched-pilot` v1. It requires at
+least ten matched representative implementation pairs with the same task class
+and context topology. For each ordinary and explicit-multi-target arm, bind an
+#398 execution receipt and record total tokens, credit equivalents, elapsed
+time, human coordination time, correction turns, first-pass acceptance,
+escaped P0/P1 defects, and gate compliance. Publish the result. Promote the
+ordinary default only when configured policy says usage is materially lower,
+there is no escaped P0/P1 regression, and gate compliance remains preserved.
+Any failed or `UNKNOWN` criterion retains explicit multi-target mode as the
+rollback. The pilot contract may carry a configured material-reduction
+percentage; no universal percentage or successful receipt exists until #398
+evidence and the matched run establish it.
+
 ### Short Invocation
 
 The user should not need to write a long launch prompt. If the request is short, interview for the missing fields instead of guessing:

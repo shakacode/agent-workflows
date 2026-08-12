@@ -440,6 +440,26 @@ A promotion experiment must use matched task classes and context topology,
 record requested-versus-observed execution evidence, and publish its comparison
 results; this evidence is not complete.
 
+Topology is independent from route strength. The ordinary implementation
+default is one user-visible task, one repository-qualified canonical issue or
+existing PR, one lane, and at most one implementation PR for that lane. Bounded
+checker/reviewer/QA children remain valid and do not make the task multi-target.
+A stronger coordinator route, more available context, or a high lane cap never
+justifies retaining multiple canonical targets under one supervisor.
+
+Any multi-target comparison uses the versioned exception contract from
+`workflows/pr-processing.md`: human approval, reason, target count, concurrency,
+aggregate/per-lane budgets, shared-context savings, and rollback. The matched
+pilot has at least ten representative pairs with matching task class and context
+topology and reports total tokens, credit equivalents, elapsed time, human
+coordination time, correction turns, first-pass acceptance, escaped P0/P1
+defects, and gate compliance for both arms. Promotion requires configured
+materially lower usage, no escaped P0/P1 regression, and no weakened gate
+compliance. Missing #398 receipts, unsupported observed execution, or any
+`UNKNOWN` criterion retains explicit multi-target mode as rollback; never infer
+a receipt, billing equivalence, or universal percentage from local cumulative
+counters.
+
 | Scenario class | Risk | Recommended route | Samples | Evidence strength |
 | --- | --- | --- | --- | --- |
 | Bounded helper or localized bug fix | low | profile prior | 0 | `UNKNOWN` |

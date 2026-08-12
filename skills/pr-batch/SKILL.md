@@ -37,6 +37,52 @@ Run a Codex batch
 Run a Claude batch
 ```
 
+## Canonical Task Default
+
+For ordinary implementation, one user-visible task owns exactly one
+repository-qualified canonical issue or existing PR, one execution lane, and at
+most one implementation PR for that lane. A single target may still use bounded
+maker, checker, reviewer, and QA children; role separation does not create more
+canonical targets. Preserve every existing security, claim/ownership,
+dependency, exact-head QA, review, CI, merge-authority, and audit gate.
+
+More than one canonical target under one user-visible supervisor is explicit
+`multi-target-supervision-exception` v1 mode. Before launch it requires durable
+human approval, a closed reason, justification, exact target count and
+concurrency, aggregate and per-lane budgets, shared-context justification,
+expected savings, and rollback. Every target keeps its own repository-qualified
+lane identity and implementation-PR limit. Issue count, generic parallelism, or
+a stronger supervisor route is not justification.
+
+Resolve `PR_BATCH_SKILL_DIR`, then run
+`"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control"` with the canonical
+`canonical-task-control` v1 JSON before launch, child-receipt acceptance,
+cross-task delegation, and the context-amplifying #399 checkpoints (delegation,
+resume, worker spawn, retry, and review wave). Follow
+`workflows/pr-processing.md` -> **Canonical Task Topology And Delegation
+Control** for the closed schemas and pilot contract. The helper is
+decision-only. Missing/malformed facts fail closed; unsupported #398 execution
+provenance stays field-granular `UNKNOWN` and retains explicit multi-target mode
+as rollback rather than inventing receipts, attribution, billing equivalence,
+or a universal compaction/promotion threshold.
+
+Keep coordinator state as a `compact-coordinator-manifest` v1, not raw child
+transcripts or logs. Emit compaction checkpoints at plan settlement before
+dispatch, after each worker report/review wave, before monitoring or cross-task
+handoff, and at a configured context threshold. Give each child a task-scoped
+packet and accept one compact durable receipt. Close completed children with
+`resumable: false`; resume only when explicit decision continuity justifies it
+and all ordinary budget/ownership/replacement gates pass.
+
+Cross-task delegation binds source and target task plus repository-qualified
+target identities. Coalesce messages when the target is active and do not wake
+it again; do not wake terminal targets or wake for unchanged evidence,
+acknowledgement, or a deterministically assembled handoff. A stale target,
+missing estimate, or over-threshold context requires durable human approval.
+Attribute verified #398 usage separately to the source edge, target self, and
+target descendants, and reconcile the aggregate physical delta without double
+counting.
+
 ## Single-Target Mode
 
 Use this mode for one direct-prompt task, GitHub issue, or pull request. It keeps

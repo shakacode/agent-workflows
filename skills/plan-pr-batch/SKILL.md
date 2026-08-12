@@ -81,6 +81,50 @@ $plan-pr-batch
 Plan a PR batch
 ```
 
+## Canonical Task Planning Default
+
+Plan ordinary implementation as one user-visible task -> one
+repository-qualified canonical issue or existing PR -> one execution lane -> at
+most one implementation PR for that lane. Bounded checker, reviewer, and QA
+children remain inside that canonical lane and preserve independent role,
+security, ownership, dependency, exact-head QA, review, CI, merge-authority, and
+audit gates.
+
+If a plan needs more than one canonical target under one supervisor, classify it
+as `multi-target-supervision-exception` v1 before packing waves. Require durable
+human approval plus a closed reason, justification, exact target count,
+concurrency, aggregate and per-lane budgets, shared-context justification,
+expected savings, and rollback. Keep each target's repository-qualified lane
+identity and implementation-PR limit distinct. Issue count or available
+parallelism is not sufficient justification. If any field or approval is
+missing or `UNKNOWN`, split the targets into ordinary tasks or stop for the
+exact human decision.
+
+The Batch Plan carries a `compact-coordinator-manifest` v1 and planned
+compaction checkpoints: after plan settlement before dispatch, after every
+worker report/review wave, before monitor scheduling or cross-task handoff, and
+at the repository-configured context threshold. Do not invent that threshold;
+an uncalibrated `canonical_task_control.context_compaction_threshold` remains
+`UNKNOWN` pending #398 evidence. Plan task-scoped child packets, compact child
+receipts, and completed-child closure with `resumable: false` by default.
+
+Plan a current #399/repository budget checkpoint before delegation, resume,
+worker spawn, retry, and review wave. Cross-task delegation also plans source
+and target task/repository/target identities, target lifecycle state, available
+context and descendant estimates, active-target message coalescing, and a human
+approval boundary for stale/missing/over-threshold estimates. Verified #398
+receipts keep source-edge, target-self, target-descendant, and aggregate
+physical deltas separate; unsupported evidence stays field-granular `UNKNOWN`.
+
+Resolve `PR_BATCH_SKILL_DIR` and run
+`"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control"` with the versioned JSON
+before calling the plan launchable. For pilot plans, use the canonical matched
+pilot contract from `workflows/pr-processing.md`: at least ten matched
+representative implementation pairs and every required usage, elapsed,
+coordination, correction, acceptance, defect, and gate-compliance metric.
+Promote only on configured materially lower usage, no escaped P0/P1 regression,
+and preserved gates; otherwise retain explicit multi-target mode as rollback.
+
 ## Workflow
 
 1. Intake
@@ -633,6 +677,13 @@ backend must say so in the declaration.
 
 - Objective:
 - Repository:
+- Canonical task topology: `ordinary` with one repository-qualified target and
+  lane, or `multi-target-supervision-exception v1` with the durable approval,
+  reason, target count, concurrency, budgets, shared-context savings, and
+  rollback evidence.
+- Compact coordinator control: manifest reference, required compaction
+  checkpoints, configured threshold/source or `UNKNOWN`, child packet/receipt
+  plan, completed-child non-resumability, and #399 pre-action budget evidence.
 - Batch title(s):
 - Included items:
   - `PR #N` or `Issue #N`: title, URL, state, role in batch
