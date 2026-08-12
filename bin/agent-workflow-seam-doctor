@@ -1561,6 +1561,7 @@ module AgentWorkflowSeamDoctor
     issues.concat(binstub_issues(root))
     issues.concat(policy_issues(root))
     issues.concat(trust_issues(root))
+    issues.concat(workflow_security_issues(root, shared_roots))
 
     issues.concat(shared_root_issues(shared_roots))
 
@@ -1569,6 +1570,45 @@ module AgentWorkflowSeamDoctor
     end
 
     issues
+  end
+
+  def workflow_security_issues(root, shared_roots)
+    unless load_secure_github_actions_scanner(shared_roots)
+      return ["workflow security scan failed closed: trusted secure-github-actions scanner is unavailable"]
+    end
+
+    SecureGitHubActions::Scanner.new(root).scan.findings.map do |finding|
+      location = finding.fetch("location")
+      "workflow security finding: #{location.fetch('file')}:#{location.fetch('line')} " \
+        "[#{finding.fetch('rule_id')}] #{finding.fetch('title')}"
+    end
+  rescue ArgumentError, SystemCallError => e
+    ["workflow security scan failed closed: #{e.message}"]
+  end
+
+  def load_secure_github_actions_scanner(shared_roots)
+    return true if defined?(SecureGitHubActions::Scanner)
+
+    candidates = shared_roots.flat_map do |shared_root|
+      expanded = File.expand_path(shared_root)
+      [
+        File.join(expanded, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb"),
+        File.join(expanded, "secure-github-actions/lib/secure_github_actions_scanner.rb"),
+        File.join(expanded, "lib/secure_github_actions_scanner.rb")
+      ]
+    end
+    fallbacks = [
+      File.expand_path("../skills/secure-github-actions/lib/secure_github_actions_scanner.rb", __dir__),
+      File.expand_path("../lib/agent-workflows/secure_github_actions_scanner.rb", __dir__)
+    ]
+    candidates.concat(fallbacks)
+    scanner = candidates.find { |path| File.file?(path) && !File.symlink?(path) }
+    return false unless scanner
+
+    require scanner
+    defined?(SecureGitHubActions::Scanner)
+  rescue LoadError
+    false
   end
 
   def pointer_section_issues(text)
@@ -1686,6 +1726,7 @@ module AgentWorkflowSeamDoctor
 
     config.each do |key, value|
       next if REQUIRED_POLICY_KEYS.include?(key)
+      next if key == "trusted_actions" && value == []
 
       autonomous_merge = key == "autonomous_merge"
       next unless unresolved_policy_value?(
@@ -1976,14 +2017,13 @@ module AgentWorkflowSeamDoctor
 
   def shared_markdown_paths(root, shared_roots: [])
     repo_patterns = [
-      File.join(root, ".agents/skills/**/*.md"),
-      File.join(root, ".agents/workflows/**/*.md")
+      ".agents/skills/**/*.md",
+      ".agents/workflows/**/*.md"
     ]
-    shared_patterns = shared_roots.flat_map { |shared_root| shared_markdown_patterns(shared_root) }
+    repo_paths = markdown_paths(root, repo_patterns)
+    shared_paths = shared_roots.flat_map { |shared_root| shared_markdown_paths_for_root(shared_root) }
 
-    (repo_patterns + shared_patterns).flat_map { |pattern| Dir.glob(pattern) }.map do |path|
-      File.expand_path(path)
-    end.uniq.sort
+    (repo_paths + shared_paths).uniq.sort
   end
 
   def shared_root_issues(shared_roots)
@@ -1998,17 +2038,23 @@ module AgentWorkflowSeamDoctor
   end
 
   def shared_markdown_paths_for_root(shared_root)
-    shared_markdown_patterns(shared_root).flat_map { |pattern| Dir.glob(pattern) }.uniq.sort
+    markdown_paths(shared_root, shared_markdown_patterns)
   end
 
-  def shared_markdown_patterns(shared_root)
-    expanded = File.expand_path(shared_root)
+  def shared_markdown_patterns
     [
-      File.join(expanded, "skills/**/*.md"),
-      File.join(expanded, "workflows/**/*.md"),
+      "skills/**/*.md",
+      "workflows/**/*.md",
       # Also support passing an installed skill root directly, without a parent skills/ directory.
-      File.join(expanded, "**/SKILL.md")
+      "**/SKILL.md"
     ]
+  end
+
+  def markdown_paths(root, patterns)
+    expanded = File.expand_path(root)
+    patterns.flat_map do |pattern|
+      Dir.glob(pattern, base: expanded).map { |relative| File.join(expanded, relative) }
+    end.uniq.sort
   end
 
   def executable_placeholder_issues(root, path)

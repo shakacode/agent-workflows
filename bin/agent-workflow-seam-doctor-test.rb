@@ -28,8 +28,8 @@ module AgentWorkflowSeamDoctorTestHelpers
     "ci_change_detector" => "n/a"
   }.freeze
 
-  def with_repo
-    Dir.mktmpdir("agent-workflow-seam-doctor-test") do |dir|
+  def with_repo(prefix = "agent-workflow-seam-doctor-test")
+    Dir.mktmpdir(prefix) do |dir|
       FileUtils.mkdir_p(File.join(dir, ".agents/bin"))
       FileUtils.mkdir_p(File.join(dir, ".agents/skills/example"))
       FileUtils.mkdir_p(File.join(dir, ".agents/workflows"))
@@ -118,6 +118,30 @@ module AgentWorkflowSeamDoctorTestHelpers
           "rationale" => "The repository guard revalidates policy immediately before direct squash."
         }
       }
+    }
+  end
+
+  def fake_scanner_source(findings)
+    <<~RUBY
+      module SecureGitHubActions
+        ScanResult = Struct.new(:findings)
+
+        class Scanner
+          def initialize(_root); end
+
+          def scan
+            ScanResult.new(#{findings.inspect})
+          end
+        end
+      end
+    RUBY
+  end
+
+  def scanner_finding(rule_id)
+    {
+      "location" => { "file" => ".github/workflows/fixture.yml", "line" => 1 },
+      "rule_id" => rule_id,
+      "title" => "scanner selected"
     }
   end
 
@@ -321,6 +345,141 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "missing policy key: review_gate"
+    end
+  end
+
+  def test_workflow_security_gate_is_part_of_seam_validation
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      workflow_path = File.join(root, ".github/workflows/unsafe.yml")
+      FileUtils.mkdir_p(File.dirname(workflow_path))
+      File.write(workflow_path, <<~'YAML')
+        jobs:
+          build:
+            steps:
+              - run: echo "${{ github.event.pull_request.title }}"
+      YAML
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "secure-github-actions/expression-in-run"
+      assert_includes out, ".github/workflows/unsafe.yml"
+    end
+  end
+
+  def test_workflow_security_gate_discovers_action_under_metacharacter_root
+    with_repo("agent-workflow-seam-doctor-test[fixture]") do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      action_path = File.join(root, "components/example/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "secure-github-actions/expression-in-run"
+      assert_includes out, "components/example/action.yml"
+    end
+  end
+
+  def test_explicit_shared_scanner_supported_layouts_precede_installed_companion
+    layouts = {
+      "pack root" => {
+        scanner: "skills/secure-github-actions/lib/secure_github_actions_scanner.rb",
+        skill: "skills/secure-github-actions/SKILL.md"
+      },
+      "direct skill root" => {
+        scanner: "lib/secure_github_actions_scanner.rb",
+        skill: "SKILL.md"
+      },
+      "skills container" => {
+        scanner: "secure-github-actions/lib/secure_github_actions_scanner.rb",
+        skill: "secure-github-actions/SKILL.md"
+      }
+    }
+
+    layouts.each do |label, layout|
+      { "relative" => true, "absolute" => false }.each do |form, relative|
+        with_repo do |root|
+          write_valid_binstub_contract(root)
+          write_skill(root, "No commands here.\n")
+
+          Dir.mktmpdir("agent-workflow-seam-doctor-installed") do |installed_root|
+            Dir.mktmpdir("agent-workflow-seam-doctor-shared") do |shared_root|
+              installed_script = File.join(installed_root, "bin/agent-workflow-seam-doctor")
+              companion_scanner = File.join(installed_root, "lib/agent-workflows/secure_github_actions_scanner.rb")
+              shared_scanner = File.join(shared_root, layout.fetch(:scanner))
+              shared_skill = File.join(shared_root, layout.fetch(:skill))
+              [installed_script, companion_scanner, shared_scanner, shared_skill].each do |path|
+                FileUtils.mkdir_p(File.dirname(path))
+              end
+              FileUtils.cp_r(File.join(__dir__, "agent_doctor"), File.dirname(installed_script))
+              FileUtils.cp(SCRIPT, installed_script)
+              File.write(companion_scanner, fake_scanner_source([]))
+              File.write(shared_scanner, fake_scanner_source([scanner_finding("explicit-shared-scanner")]))
+              File.write(shared_skill, "# Secure GitHub Actions\n")
+
+              shared_argument = relative ? File.basename(shared_root) : shared_root
+              out, status = Open3.capture2e(
+                "ruby", installed_script, "--root", root, "--shared", shared_argument,
+                chdir: File.dirname(shared_root)
+              )
+
+              assertion_label = "#{form} #{label}"
+              refute status.success?, "#{assertion_label}: #{out}"
+              assert_includes out, "explicit-shared-scanner", assertion_label
+            end
+          end
+        end
+      end
+    end
+  end
+
+  def test_multiple_explicit_shared_scanners_use_caller_order_before_fallbacks
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+
+      Dir.mktmpdir("agent-workflow-seam-doctor-installed") do |installed_root|
+        Dir.mktmpdir("agent-workflow-seam-doctor-shared-first") do |first_root|
+          Dir.mktmpdir("agent-workflow-seam-doctor-shared-second") do |second_root|
+            installed_script = File.join(installed_root, "bin/agent-workflow-seam-doctor")
+            companion_scanner = File.join(installed_root, "lib/agent-workflows/secure_github_actions_scanner.rb")
+            first_scanner = File.join(first_root, "lib/secure_github_actions_scanner.rb")
+            second_scanner = File.join(
+              second_root, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb"
+            )
+            skill_paths = [File.join(first_root, "SKILL.md"),
+                           File.join(second_root, "skills/secure-github-actions/SKILL.md")]
+            [installed_script, companion_scanner, first_scanner, second_scanner, *skill_paths].each do |path|
+              FileUtils.mkdir_p(File.dirname(path))
+            end
+            FileUtils.cp_r(File.join(__dir__, "agent_doctor"), File.dirname(installed_script))
+            FileUtils.cp(SCRIPT, installed_script)
+            File.write(companion_scanner, fake_scanner_source([]))
+            File.write(first_scanner, fake_scanner_source([scanner_finding("first-explicit-scanner")]))
+            File.write(second_scanner, fake_scanner_source([scanner_finding("second-explicit-scanner")]))
+            skill_paths.each { |path| File.write(path, "# Secure GitHub Actions\n") }
+
+            out, status = Open3.capture2e(
+              "ruby", installed_script, "--root", root,
+              "--shared", first_root, "--shared", second_root
+            )
+
+            refute status.success?, out
+            assert_includes out, "first-explicit-scanner"
+            refute_includes out, "second-explicit-scanner"
+          end
+        end
+      end
     end
   end
 
@@ -977,6 +1136,182 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_explicit_empty_trusted_actions_is_a_valid_closed_allowlist
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("trusted_actions" => []))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS agent workflow seam is complete"
+    end
+  end
+
+  def test_mapping_trusted_actions_fails_without_actions
+    assert_malformed_trusted_actions_fails({})
+  end
+
+  def test_scalar_trusted_actions_fails_without_actions
+    assert_malformed_trusted_actions_fails("owner/action")
+  end
+
+  def test_wildcard_trusted_actions_fails_without_actions
+    assert_malformed_trusted_actions_fails(["owner/*"])
+  end
+
+  def test_non_string_trusted_actions_fails_without_actions
+    assert_malformed_trusted_actions_fails([123])
+  end
+
+  def test_duplicate_trusted_actions_fails_without_actions
+    assert_malformed_trusted_actions_fails(["owner/action", "owner/action"])
+  end
+
+  def test_no_actions_consumer_allows_valid_or_missing_trusted_actions
+    policies = {
+      "missing" => POLICY,
+      "valid exact entries" => POLICY.merge("trusted_actions" => ["owner/action", "other/workflows"])
+    }
+    policies.each do |label, policy|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, policy)
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        assert status.success?, "#{label}: #{out}"
+      end
+    end
+  end
+
+  def test_required_policy_is_scanned_without_actions_or_trusted_actions
+    [POLICY, POLICY.merge("trusted_actions" => [])].each do |policy|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, policy)
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        assert status.success?, out
+      end
+    end
+  end
+
+  def test_multidocument_trusted_actions_policy_fails_without_actions
+    policy_text = "#{POLICY.to_yaml}---\ntrusted_actions:\n  - owner/action\n"
+
+    assert_trusted_actions_policy_text_fails(policy_text)
+  end
+
+  def test_trailing_policy_document_without_trusted_actions_fails_without_actions
+    policy_text = "#{POLICY.to_yaml}---\nmetadata: trailing\n"
+
+    assert_trusted_actions_policy_text_fails(policy_text)
+  end
+
+  def test_duplicate_trusted_actions_keys_fail_without_actions
+    policy_text = "#{POLICY.to_yaml}trusted_actions:\n  - owner/action\n" \
+                  "trusted_actions:\n  - other/workflows\n"
+
+    assert_trusted_actions_policy_text_fails(policy_text)
+  end
+
+  def test_non_scalar_and_alias_trusted_actions_entries_fail_without_backtrace
+    entries = [
+      "trusted_actions:\n  - owner: action\n",
+      "trusted_actions:\n  - [owner/action]\n",
+      "shared_action: &action owner/action\ntrusted_actions:\n  - *action\n"
+    ]
+
+    entries.each do |entry|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        File.write(File.join(root, ".agents/agent-workflow.yml"), "#{POLICY.to_yaml}#{entry}")
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, out
+        assert_includes out, "secure-github-actions/invalid-trusted-actions-policy"
+        refute_includes out, "NoMethodError"
+      end
+    end
+  end
+
+  def test_policy_type_change_during_check_fails_closed_without_actions
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      original_policy_issues = AgentWorkflowSeamDoctor.method(:policy_issues)
+      singleton = AgentWorkflowSeamDoctor.singleton_class
+      changed = false
+      singleton.define_method(:policy_issues) do |checked_root|
+        issues = original_policy_issues.call(checked_root)
+        unless changed
+          File.rename(policy_path, "#{policy_path}.before-type-change")
+          Dir.mkdir(policy_path)
+          changed = true
+        end
+        issues
+      end
+
+      begin
+        issues = AgentWorkflowSeamDoctor.check(root)
+      ensure
+        singleton.define_method(:policy_issues, original_policy_issues)
+      end
+
+      assert_includes issues.join("\n"), "secure-github-actions/invalid-trusted-actions-policy"
+    end
+  end
+
+  def test_static_symlinked_policy_fails_closed_without_actions
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      target_path = File.join(root, ".agents/policy-target.yml")
+      File.rename(policy_path, target_path)
+      File.symlink(target_path, policy_path)
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "secure-github-actions/invalid-trusted-actions-policy"
+    end
+  end
+
+  def assert_malformed_trusted_actions_fails(value)
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("trusted_actions" => value))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?, value.inspect
+      assert_match(/trusted[_-]actions/i, out, value.inspect)
+    end
+  end
+
+  def assert_trusted_actions_policy_text_fails(policy_text)
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      File.write(File.join(root, ".agents/agent-workflow.yml"), policy_text)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?, out
+      assert_match(/trusted[_-]actions|invalid policy config/i, out)
+    end
+  end
+
   def test_invalid_autonomous_merge_policy_is_reported_by_the_seam_doctor
     with_repo do |root|
       write_valid_binstub_contract(root)
@@ -1513,6 +1848,27 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
       assert status.success?, out
     end
   end
+
+  def test_repository_root_with_glob_metacharacters_scans_executable_placeholders
+    Dir.mktmpdir("agent-workflow-seam-doctor-metachar") do |outer|
+      root = File.join(outer, "repository[fixture]")
+      FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+      FileUtils.mkdir_p(File.join(root, ".agents/skills/example"))
+      FileUtils.mkdir_p(File.join(root, ".agents/workflows"))
+      write_valid_binstub_contract(root)
+      write_skill(root, <<~MARKDOWN)
+        ```bash
+        gh issue create --title "<follow-up prefix> Review"
+        ```
+      MARKDOWN
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, ".agents/skills/example/SKILL.md"
+      assert_includes out, "<follow-up prefix>"
+    end
+  end
 end
 
 class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
@@ -1536,6 +1892,30 @@ class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
         refute status.success?
         assert_includes out, "[shared]"
         assert_includes out, "skills/shared/SKILL.md"
+      end
+    end
+  end
+
+  def test_shared_root_with_glob_metacharacters_scans_executable_placeholders
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+
+      Dir.mktmpdir("agent-workflow-shared-root-metachar") do |outer|
+        shared_root = File.join(outer, "shared[pack]")
+        FileUtils.mkdir_p(File.join(shared_root, "skills/shared"))
+        File.write(File.join(shared_root, "skills/shared/SKILL.md"), <<~MARKDOWN)
+          ```bash
+          gh issue create --title "<follow-up prefix> Review"
+          ```
+        MARKDOWN
+
+        out, status = run_doctor(root, "--shared", shared_root)
+
+        refute status.success?
+        assert_includes out, "skills/shared/SKILL.md"
+        assert_includes out, "<follow-up prefix>"
+        refute_includes out, "shared root has no skill/workflow Markdown"
       end
     end
   end

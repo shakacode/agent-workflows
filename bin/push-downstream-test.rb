@@ -218,6 +218,483 @@ class PushDownstreamConfigTest < Minitest::Test
   end
 end
 
+class PushDownstreamSecurityAuditFleetTest < Minitest::Test
+  SOURCE_REGISTRY = File.expand_path("../downstream.yml", __dir__)
+
+  def test_source_registry_declares_narrow_shakapacker_audit_fleet
+    fleet = PushDownstream.load_security_audit_fleet(SOURCE_REGISTRY, "secure-github-actions")
+    repos = fleet.fetch(:repos)
+    repo_names = repos.map { |repo| repo.fetch(:nwo) }
+    base_branches = repos.map { |repo| repo.fetch(:base_branch) }
+
+    assert_equal "secure-github-actions", fleet.fetch(:name)
+    assert_equal ["shakacode/shakapacker"], repo_names
+    assert_equal ["main"], base_branches
+  end
+
+  def test_security_audit_fleet_is_read_only_and_head_bound
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      consumer = File.join(dir, "consumer")
+      malicious_scanner = File.join(
+        consumer,
+        ".agents/skills/secure-github-actions/bin/secure-github-actions-scan"
+      )
+      malicious_marker = File.join(dir, "consumer-scanner-ran")
+      FileUtils.mkdir_p(File.join(consumer, ".github/workflows"))
+      FileUtils.mkdir_p(File.dirname(malicious_scanner))
+      File.write(File.join(consumer, ".github/workflows/unsafe.yml"), <<~'YAML')
+        jobs:
+          build:
+            steps:
+              - run: echo "${{ github.event.pull_request.title }}"
+      YAML
+      File.write(malicious_scanner, "#!/bin/sh\ntouch #{Shellwords.escape(malicious_marker)}\nexit 0\n")
+      File.chmod(0o755, malicious_scanner)
+      git!(consumer, "init", "-b", "main")
+      git!(consumer, "add", ".")
+      git!(consumer, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "-m", "fixture")
+      head = git!(consumer, "rev-parse", "HEAD").strip
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: shakapacker
+                base_branch: main
+                remote_url: #{consumer.inspect}
+      YAML
+
+      out, err = capture_io do
+        @status = PushDownstream.run_security_audit_fleet(
+          config,
+          fleet_name: "workflow-security",
+          only: ["shakapacker"]
+        )
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      report = JSON.parse(out)
+      assert_equal "github-actions-fleet-audit", report.fetch("contract")
+      assert_equal true, report.fetch("read_only")
+      repo = report.fetch("repositories").fetch(0)
+      assert_equal "shakacode/shakapacker", repo.fetch("repository")
+      assert_equal head, repo.fetch("head_sha")
+      assert_equal "noncompliant", repo.fetch("status")
+      assert_includes repo.fetch("rule_ids"), "secure-github-actions/expression-in-run"
+      assert_equal "coordinator-owned-targeted-pr", repo.dig("rollout", "mode")
+      assert_equal "maintainer-decision-required", repo.dig("rollout", "trusted_actions")
+      assert_equal head, git!(consumer, "rev-parse", "HEAD").strip
+      assert_empty git!(consumer, "status", "--short")
+      refute_path_exists malicious_marker
+    end
+  end
+
+  def test_security_audit_does_not_disclose_temporary_clone_path_for_root_replacement
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      consumer = File.join(dir, "consumer")
+      FileUtils.mkdir_p(File.join(consumer, ".github/workflows"))
+      File.write(File.join(consumer, ".github/workflows/clean.yml"), "jobs: {}\n")
+      git!(consumer, "init", "-b", "main")
+      git!(consumer, "add", ".")
+      git!(consumer, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "-m", "fixture")
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: consumer
+                base_branch: main
+                remote_url: #{consumer.inspect}
+      YAML
+
+      scanner_class = SecureGitHubActions::Scanner
+      original_new = scanner_class.method(:new)
+      scanner_class.singleton_class.define_method(:new) do |root|
+        scanner = original_new.call(root)
+        File.rename(root, "#{root}-replaced")
+        File.write(root, "not a directory\n")
+        scanner
+      end
+
+      begin
+        out, err = capture_io do
+          @status = PushDownstream.run_security_audit_fleet(
+            config,
+            fleet_name: "workflow-security",
+            only: nil
+          )
+        end
+      ensure
+        scanner_class.singleton_class.define_method(:new, original_new)
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      repo = JSON.parse(out).fetch("repositories").fetch(0)
+      assert_equal "noncompliant", repo.fetch("status")
+      assert_equal ["."], repo.fetch("findings").map { |finding| finding.fetch("file") }.uniq
+      refute_includes out, "push-downstream-security-audit"
+    end
+  end
+
+  def test_security_audit_reports_malformed_trusted_actions_as_noncompliant
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      consumer = File.join(dir, "consumer")
+      FileUtils.mkdir_p(File.join(consumer, ".github/workflows"))
+      FileUtils.mkdir_p(File.join(consumer, ".agents"))
+      File.write(File.join(consumer, ".github/workflows/test.yml"), <<~YAML)
+        jobs:
+          build:
+            steps:
+              - uses: owner/action@0123456789abcdef0123456789abcdef01234567 # v1.2.3
+      YAML
+      File.write(File.join(consumer, ".agents/agent-workflow.yml"), <<~YAML)
+        trusted_actions:
+          - owner: action
+      YAML
+      git!(consumer, "init", "-b", "main")
+      git!(consumer, "add", ".")
+      git!(consumer, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "-m", "fixture")
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: consumer
+                base_branch: main
+                remote_url: #{consumer.inspect}
+      YAML
+
+      out, err = capture_io do
+        @status = PushDownstream.run_security_audit_fleet(
+          config,
+          fleet_name: "workflow-security",
+          only: nil
+        )
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      repo = JSON.parse(out).fetch("repositories").fetch(0)
+      assert_equal "noncompliant", repo.fetch("status")
+      assert_includes repo.fetch("rule_ids"), "secure-github-actions/invalid-trusted-actions-policy"
+    end
+  end
+
+  def test_security_audit_rejects_sequence_and_scalar_registries_without_backtrace
+    ["- invalid\n", "invalid\n", "false\n", "null\n"].each do |yaml|
+      with_security_audit_config(yaml) do |config|
+        out, err = capture_io do
+          @status = PushDownstream.run_security_audit_fleet(
+            config,
+            fleet_name: "workflow-security",
+            only: nil
+          )
+        end
+
+        assert_equal 1, @status
+        assert_empty out
+        assert_includes err, "FAIL security audit fleet workflow-security: invalid downstream registry: top level must be a mapping"
+        refute_includes err, "backtrace"
+      end
+    end
+  end
+
+  def test_security_audit_rejects_invalid_remote_url_types_and_shapes_without_backtrace
+    invalid_remote_urls = [{ "url" => "/tmp/repo" }, ["/tmp/repo"], "", "--upload-pack=evil"]
+    invalid_remote_urls.each do |remote_url|
+      yaml = YAML.dump(
+        "security_audit_fleets" => {
+          "workflow-security" => {
+            "repos" => [{
+              "owner" => "shakacode",
+              "repo" => "consumer",
+              "base_branch" => "main",
+              "remote_url" => remote_url
+            }]
+          }
+        }
+      )
+
+      with_security_audit_config(yaml) do |config|
+        out, err = capture_io do
+          @status = PushDownstream.run_security_audit_fleet(
+            config,
+            fleet_name: "workflow-security",
+            only: nil
+          )
+        end
+
+        assert_equal 1, @status
+        assert_empty out
+        assert_includes err, "invalid security audit fleet remote_url"
+        refute_includes err, "backtrace"
+      end
+    end
+  end
+
+  def test_security_audit_rejects_remote_helper_syntax_before_execution
+    Dir.mktmpdir("push-downstream-security-audit-helper") do |dir|
+      marker = File.join(dir, "helper-ran")
+      helper = File.join(dir, "helper")
+      File.write(helper, "#!/bin/sh\ntouch #{marker}\nexit 1\n")
+      File.chmod(0o755, helper)
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: consumer
+                base_branch: main
+                remote_url: ext::#{helper}
+      YAML
+      previous = ENV["GIT_ALLOW_PROTOCOL"]
+      ENV["GIT_ALLOW_PROTOCOL"] = "ext"
+
+      begin
+        out, err = capture_io do
+          @status = PushDownstream.run_security_audit_fleet(
+            config,
+            fleet_name: "workflow-security",
+            only: nil
+          )
+        end
+      ensure
+        previous ? ENV["GIT_ALLOW_PROTOCOL"] = previous : ENV.delete("GIT_ALLOW_PROTOCOL")
+      end
+
+      assert_equal 1, @status
+      assert_empty out
+      assert_includes err, "invalid security audit fleet remote_url"
+      refute_path_exists marker
+    end
+  end
+
+  def test_security_audit_clone_ignores_hostile_transport_configuration
+    Dir.mktmpdir("push-downstream-security-audit-helper") do |dir|
+      marker = File.join(dir, "helper-ran")
+      helper = File.join(dir, "helper")
+      File.write(helper, "#!/bin/sh\ntouch #{marker}\nexit 1\n")
+      File.chmod(0o755, helper)
+      global_config = File.join(dir, "global.gitconfig")
+      File.write(global_config, <<~CONFIG)
+        [protocol "ext"]
+          allow = always
+        [url "ext::#{helper} "]
+          insteadOf = https://127.0.0.1:1/
+      CONFIG
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: consumer
+                base_branch: main
+                remote_url: https://127.0.0.1:1/repository.git
+      YAML
+      hostile_environment = {
+        "GIT_ALLOW_PROTOCOL" => "ext:https",
+        "GIT_CONFIG_GLOBAL" => global_config,
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "protocol.ext.allow",
+        "GIT_CONFIG_VALUE_0" => "always"
+      }
+      previous_environment = hostile_environment.keys.to_h { |name| [name, ENV[name]] }
+      hostile_environment.each { |name, value| ENV[name] = value }
+
+      begin
+        out, err = capture_io do
+          @status = PushDownstream.run_security_audit_fleet(
+            config,
+            fleet_name: "workflow-security",
+            only: nil
+          )
+        end
+      ensure
+        previous_environment.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      report = JSON.parse(out).fetch("repositories").fetch(0)
+      assert_equal "UNKNOWN", report.fetch("status")
+      assert_equal "clone-or-base-resolution-failed", report.fetch("reason")
+      refute_path_exists marker
+    end
+  end
+
+  def test_security_audit_rejects_unsafe_owner_and_repo_components_before_clone
+    invalid_components = [
+      "../escaped",
+      "nested/name",
+      "nested\\name",
+      ".",
+      "..",
+      "-option",
+      "bad\0name",
+      "bad\nname"
+    ]
+
+    %w[owner repo].product(invalid_components).each do |field, invalid|
+      entry = {
+        "owner" => "shakacode",
+        "repo" => "consumer",
+        "base_branch" => "main"
+      }
+      entry[field] = invalid
+      yaml = YAML.dump(
+        "security_audit_fleets" => {
+          "workflow-security" => { "repos" => [entry] }
+        }
+      )
+
+      with_security_audit_config(yaml) do |config|
+        error = assert_raises(RuntimeError) do
+          PushDownstream.load_security_audit_fleet(config, "workflow-security")
+        end
+        assert_includes error.message, "invalid security audit fleet #{field}"
+      end
+    end
+  end
+
+  def test_security_audit_accepts_legitimate_github_owner_and_repo_components
+    yaml = YAML.dump(
+      "security_audit_fleets" => {
+        "workflow-security" => {
+          "repos" => [
+            { "owner" => "shakacode-2", "repo" => ".github", "base_branch" => "main" },
+            { "owner" => "OpenAI", "repo" => "agent_workflows.v2", "base_branch" => "main" }
+          ]
+        }
+      }
+    )
+
+    with_security_audit_config(yaml) do |config|
+      repos = PushDownstream.load_security_audit_fleet(config, "workflow-security").fetch(:repos)
+      repo_names = repos.map { |repo| repo.fetch(:nwo) }
+
+      assert_equal ["shakacode-2/.github", "OpenAI/agent_workflows.v2"], repo_names
+    end
+  end
+
+  def test_security_audit_cli_rejects_apply
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - { owner: shakacode, repo: shakapacker, base_branch: main }
+      YAML
+
+      out, status = Open3.capture2e(
+        RbConfig.ruby, SCRIPT,
+        "--config", config,
+        "--security-audit-fleet", "workflow-security",
+        "--apply"
+      )
+
+      assert_equal 1, status.exitstatus
+      assert_includes out, "--apply cannot be combined with --security-audit-fleet"
+    end
+  end
+
+  def test_security_audit_reports_unknown_when_exact_head_cannot_be_resolved
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      config = File.join(dir, "downstream.yml")
+      missing_remote = File.join(dir, "missing.git")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: missing
+                base_branch: main
+                remote_url: #{missing_remote.inspect}
+      YAML
+
+      out, err = capture_io do
+        @status = PushDownstream.run_security_audit_fleet(
+          config,
+          fleet_name: "workflow-security",
+          only: nil
+        )
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      repo = JSON.parse(out).fetch("repositories").fetch(0)
+      assert_equal "UNKNOWN", repo.fetch("status")
+      assert_equal "UNKNOWN", repo.fetch("head_sha")
+      assert_equal "clone-or-base-resolution-failed", repo.fetch("reason")
+    end
+  end
+
+  def test_security_audit_reports_unknown_when_base_name_resolves_only_to_a_tag
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      consumer = File.join(dir, "consumer")
+      FileUtils.mkdir_p(File.join(consumer, ".github/workflows"))
+      File.write(File.join(consumer, ".github/workflows/clean.yml"), "jobs: {}\n")
+      git!(consumer, "init", "-b", "trunk")
+      git!(consumer, "add", ".")
+      git!(consumer, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "-m", "fixture")
+      git!(consumer, "tag", "main")
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: tag-only
+                base_branch: main
+                remote_url: #{consumer.inspect}
+      YAML
+
+      out, err = capture_io do
+        @status = PushDownstream.run_security_audit_fleet(
+          config,
+          fleet_name: "workflow-security",
+          only: nil
+        )
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      repo = JSON.parse(out).fetch("repositories").fetch(0)
+      assert_equal "UNKNOWN", repo.fetch("status")
+      assert_equal "UNKNOWN", repo.fetch("head_sha")
+      assert_equal "base-branch-ref-missing-or-head-mismatch", repo.fetch("reason")
+    end
+  end
+
+  private
+
+  def with_security_audit_config(yaml)
+    Dir.mktmpdir("push-downstream-security-audit-config") do |dir|
+      config = File.join(dir, "downstream.yml")
+      File.write(config, yaml)
+      yield config
+    end
+  end
+
+  def git!(root, *arguments)
+    out, status = Open3.capture2e("git", "-C", root, *arguments)
+    raise "git fixture failed: #{out}" unless status.success?
+
+    out
+  end
+end
+
 class PushDownstreamAdapterTest < Minitest::Test
   def test_resolve_contract_layers_defaults_preset_and_overrides
     presets = {
@@ -992,6 +1469,41 @@ class PushDownstreamAuditTest < Minitest::Test
       assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("seam_doctor_issues")
       assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("changed_managed_paths")
       assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("follow_ups")
+    end
+  end
+
+  def test_audit_clone_ignores_hostile_transport_configuration
+    Dir.mktmpdir("push-downstream-audit-helper") do |dir|
+      marker = File.join(dir, "helper-ran")
+      helper = File.join(dir, "helper")
+      File.write(helper, "#!/bin/sh\ntouch #{marker}\nexit 1\n")
+      File.chmod(0o755, helper)
+      global_config = File.join(dir, "global.gitconfig")
+      File.write(global_config, <<~CONFIG)
+        [protocol "ext"]
+          allow = always
+        [url "ext::#{helper} "]
+          insteadOf = https://127.0.0.1:1/
+      CONFIG
+      hostile_environment = {
+        "GIT_ALLOW_PROTOCOL" => "ext:https",
+        "GIT_CONFIG_GLOBAL" => global_config,
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "protocol.ext.allow",
+        "GIT_CONFIG_VALUE_0" => "always"
+      }
+      previous_environment = hostile_environment.keys.to_h { |name| [name, ENV[name]] }
+      hostile_environment.each { |name, value| ENV[name] = value }
+
+      begin
+        entry = audit("https://127.0.0.1:1/repository.git")
+      ensure
+        previous_environment.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
+      end
+
+      assert_equal "blocked", entry.fetch("status")
+      assert_equal "clone of main failed", entry.fetch("reason")
+      refute_path_exists marker
     end
   end
 
@@ -3038,6 +3550,10 @@ class PushDownstreamCliTest < Minitest::Test
     fleet_out, fleet_status = run_cli("--audit", "--policy-fleet", "repo-prefix")
     refute fleet_status.success?, fleet_out
     assert_includes fleet_out, "--audit cannot be combined with --root or --policy-fleet"
+
+    security_out, security_status = run_cli("--audit", "--security-audit-fleet", "workflow-security")
+    refute security_status.success?, security_out
+    assert_includes security_out, "--audit cannot be combined with --security-audit-fleet"
 
     trust_out, trust_status = run_cli("--audit", "--trusted-user", "justin808")
     refute trust_status.success?, trust_out
