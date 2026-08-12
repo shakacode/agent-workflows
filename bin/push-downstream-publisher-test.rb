@@ -515,6 +515,83 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     end
   end
 
+  def test_retained_unaudited_content_inside_an_expected_managed_path_is_rejected
+    Dir.mktmpdir("push-downstream-publisher-retained-content") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      audit_entry = audit(repo)
+      seed_retained_managed_content_branch(remote, dir)
+      fake_bin, gh_log, git_log = install_cli_stubs(dir)
+      previous_path = ENV.fetch("PATH")
+      ENV["PATH"] = "#{fake_bin}:#{previous_path}"
+
+      begin
+        _out, err = capture_io do
+          @status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
+        end
+      ensure
+        ENV["PATH"] = previous_path
+      end
+
+      refute @status
+      assert_includes err, "managed content does not exactly match the audited desired state"
+      refute(File.readlines(gh_log, chomp: true).any? { |call| call.start_with?("pr create ") })
+      assert_empty File.readlines(git_log, chomp: true).grep(/(?:\A| -C \S+ )push /)
+      retained = git!(remote, "show", "agent-workflows/seam-sync:AGENTS.md")
+      assert_includes retained, "## Consumer rules"
+    end
+  end
+
+  def test_audit_and_publisher_reject_managed_path_symlinks_without_external_writes
+    Dir.mktmpdir("push-downstream-managed-symlink") do |dir|
+      audit_remote = seed_remote(File.join(dir, "audit"))
+      audit_external = seed_managed_symlink(audit_remote, File.join(dir, "audit"), "external")
+      audit_repo = publisher_repo(audit_remote)
+
+      audit_entry = audit(audit_repo)
+
+      assert_equal "blocked", audit_entry.fetch("status")
+      assert_includes audit_entry.fetch("reason"), "managed scaffold path contains a symlink"
+      assert_equal ["sentinel.txt"], Dir.children(audit_external)
+      assert_equal "unchanged\n", File.binread(File.join(audit_external, "sentinel.txt"))
+
+      publish_remote = seed_remote(File.join(dir, "publish"))
+      publish_external = seed_managed_symlink(publish_remote, File.join(dir, "publish"), "external")
+      publish_repo = publisher_repo(publish_remote)
+      expected_paths = %w[
+        .agents/agent-workflow.yml
+        .agents/bin/README.md
+        .agents/bin/test
+        .agents/bin/validate
+        AGENTS.md
+        CLAUDE.md
+      ].sort
+      publish_audit = {
+        "base_sha" => bare_ref(publish_remote, "main"),
+        "changed_managed_paths" => expected_paths
+      }
+      fake_bin, gh_log, git_log = install_cli_stubs(File.join(dir, "publish"))
+      previous_path = ENV.fetch("PATH")
+      ENV["PATH"] = "#{fake_bin}:#{previous_path}"
+
+      begin
+        _out, err = capture_io do
+          @publish_status = PushDownstream.publish_audited_repo(publish_repo, CONTRACT, publish_audit)
+        end
+      ensure
+        ENV["PATH"] = previous_path
+      end
+
+      refute @publish_status
+      assert_includes err, "managed scaffold path contains a symlink"
+      assert_equal ["sentinel.txt"], Dir.children(publish_external)
+      assert_equal "unchanged\n", File.binread(File.join(publish_external, "sentinel.txt"))
+      assert_empty File.readlines(git_log, chomp: true).grep(/(?:\A| -C \S+ )push /)
+      gh_calls = File.file?(gh_log) ? File.readlines(gh_log, chomp: true) : []
+      refute(gh_calls.any? { |call| call.start_with?("pr create ") })
+    end
+  end
+
   def test_pr_confirmation_fails_when_the_remote_branch_moved
     repo = publisher_repo("unused")
     create_pr = ->(*) { flunk "must not create a PR for a moved branch" }
@@ -535,6 +612,79 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     end
   end
 
+  def test_pr_confirmation_rejects_an_alternate_base_pr_before_creating_a_second_pr
+    repo = publisher_repo("unused")
+    queries = []
+    created = false
+    open_pr_state = lambda do |_repo, any_base: false|
+      queries << any_base
+      if any_base
+        { ok: true, url: "https://example.test/local/consumer/pull/9", base: "release" }
+      elsif created
+        { ok: true, url: "https://example.test/local/consumer/pull/10", base: "main" }
+      else
+        { ok: true, url: nil, base: nil }
+      end
+    end
+    create_pr = lambda do |*|
+      created = true
+      "https://example.test/local/consumer/pull/10"
+    end
+
+    with_module_stub(PushDownstream, :publisher_remote_ref_head, ->(*) { "a" * 40 }) do
+      with_module_stub(PushDownstream, :publisher_open_pr_state, open_pr_state) do
+        with_module_stub(PushDownstream, :create_pr, create_pr) do
+          _out, err = capture_io do
+            @status = PushDownstream.publisher_ensure_pull_request(
+              repo,
+              [],
+              clone: "/unused",
+              expected_head: "a" * 40
+            )
+          end
+
+          refute @status
+          assert_includes err, "open PR on another base"
+        end
+      end
+    end
+
+    refute created
+    assert_equal [true], queries
+
+    post_create_queries = []
+    created = false
+    post_create_state = lambda do |_repo, any_base: false|
+      post_create_queries << any_base
+      created ? { ok: false } : { ok: true, url: nil, base: nil }
+    end
+    create_pr = lambda do |*|
+      created = true
+      "https://example.test/local/consumer/pull/10"
+    end
+
+    with_module_stub(PushDownstream, :publisher_remote_ref_head, ->(*) { "a" * 40 }) do
+      with_module_stub(PushDownstream, :publisher_open_pr_state, post_create_state) do
+        with_module_stub(PushDownstream, :create_pr, create_pr) do
+          _out, err = capture_io do
+            @status = PushDownstream.publisher_ensure_pull_request(
+              repo,
+              [],
+              clone: "/unused",
+              expected_head: "a" * 40
+            )
+          end
+
+          refute @status
+          assert_includes err, "unique open publisher PR"
+        end
+      end
+    end
+
+    assert created
+    assert_equal [true, true], post_create_queries
+  end
+
   private
 
   def publisher_repo(remote)
@@ -549,6 +699,7 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
   end
 
   def seed_remote(dir)
+    FileUtils.mkdir_p(dir)
     remote = File.join(dir, "consumer.git")
     seed = File.join(dir, "seed")
     system("git", "init", "--bare", remote, out: File::NULL, err: File::NULL)
@@ -561,6 +712,21 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     system("git", "-C", seed, "branch", "-M", "main")
     system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
     remote
+  end
+
+  def seed_managed_symlink(remote, dir, name)
+    checkout = File.join(dir, "managed-symlink-seed")
+    external = File.join(dir, name)
+    FileUtils.mkdir_p(external)
+    File.binwrite(File.join(external, "sentinel.txt"), "unchanged\n")
+    system("git", "clone", "--branch", "main", remote, checkout, out: File::NULL, err: File::NULL)
+    system("git", "-C", checkout, "config", "user.name", "Test")
+    system("git", "-C", checkout, "config", "user.email", "test@example.com")
+    File.symlink(external, File.join(checkout, ".agents"))
+    system("git", "-C", checkout, "add", ".agents")
+    system("git", "-C", checkout, "commit", "-m", "add hostile managed symlink", out: File::NULL, err: File::NULL)
+    system("git", "-C", checkout, "push", "origin", "main", out: File::NULL, err: File::NULL)
+    external
   end
 
   def audit(repo, contract: CONTRACT)
@@ -597,6 +763,24 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     PushDownstream.reconcile_scaffold(checkout, CONTRACT)
     system("git", "-C", checkout, "add", ".agents", "AGENTS.md", "CLAUDE.md")
     system("git", "-C", checkout, "commit", "-m", "add seam", out: File::NULL, err: File::NULL)
+    system(
+      "git", "-C", checkout, "push", "origin", "HEAD:agent-workflows/seam-sync",
+      out: File::NULL, err: File::NULL
+    )
+  end
+
+  def seed_retained_managed_content_branch(remote, dir)
+    checkout = File.join(dir, "retained-content")
+    system("git", "clone", "--branch", "main", remote, checkout, out: File::NULL, err: File::NULL)
+    system("git", "-C", checkout, "config", "user.name", "Test")
+    system("git", "-C", checkout, "config", "user.email", "test@example.com")
+    system("git", "-C", checkout, "checkout", "-b", "agent-workflows/seam-sync", out: File::NULL, err: File::NULL)
+    PushDownstream.reconcile_scaffold(checkout, CONTRACT)
+    File.open(File.join(checkout, "AGENTS.md"), "a") do |file|
+      file.write("\n## Consumer rules\n\nUnaudited retained content.\n")
+    end
+    system("git", "-C", checkout, "add", ".agents", "AGENTS.md", "CLAUDE.md")
+    system("git", "-C", checkout, "commit", "-m", "add seam with retained content", out: File::NULL, err: File::NULL)
     system(
       "git", "-C", checkout, "push", "origin", "HEAD:agent-workflows/seam-sync",
       out: File::NULL, err: File::NULL
@@ -646,6 +830,13 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     raise "missing branch #{branch}: #{output}" unless status.success?
 
     output.strip
+  end
+
+  def git!(root, *arguments)
+    output, status = Open3.capture2e("git", "-C", root, *arguments)
+    raise "git fixture failed: #{output}" unless status.success?
+
+    output
   end
 
   def git_success?(remote, *arguments)

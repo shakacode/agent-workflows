@@ -135,23 +135,47 @@ module PushDownstream
 
   def load_config(path)
     data = YAML.safe_load(File.read(path), aliases: false) || {}
+    raise "invalid downstream registry: top level must be a mapping" unless data.is_a?(Hash)
+
     defaults = data["defaults"] || {}
-    (data["repos"] || []).map do |entry|
+    repos = data["repos"] || []
+    unless defaults.is_a?(Hash) && repos.is_a?(Array)
+      raise "invalid downstream registry: defaults must be a mapping and repos must be an array"
+    end
+
+    repos.map do |entry|
+      raise "invalid downstream registry: repo entry must be a mapping" unless entry.is_a?(Hash)
+
       merged = defaults.merge(entry)
       owner = merged.fetch("owner")
       repo = merged.fetch("repo")
+      base_branch = merged.fetch("base_branch")
+      pr_branch = merged.fetch("pr_branch")
+      raise "invalid downstream registry owner" unless valid_github_owner?(owner)
+      raise "invalid downstream registry repo" unless valid_github_repo?(repo)
+      unless publisher_valid_branch?(base_branch)
+        raise "invalid downstream registry base_branch for #{owner}/#{repo}"
+      end
+      unless publisher_valid_branch?(pr_branch)
+        raise "invalid downstream registry pr_branch for #{owner}/#{repo}"
+      end
+
       {
         owner: owner,
         repo: repo,
         nwo: "#{owner}/#{repo}",
-        base_branch: merged.fetch("base_branch"),
-        pr_branch: merged.fetch("pr_branch"),
+        base_branch: base_branch,
+        pr_branch: pr_branch,
         enabled: merged.fetch("enabled", true),
         tier: merged["tier"],
         preset: merged["preset"],
         overrides: merged["overrides"] || {}
       }
     end
+  rescue KeyError => e
+    raise "invalid downstream registry: missing #{e.key}"
+  rescue Psych::Exception => e
+    raise "invalid downstream registry: #{e.message.lines.first.to_s.strip}"
   end
 
   def load_policy_fleet(config_path, fleet_name)
@@ -956,6 +980,10 @@ module PushDownstream
   def publisher_managed_path?(path)
     return false unless path.is_a?(String) && !path.empty? && !path.match?(/[\0\r\n]/)
 
+    managed_scaffold_paths.include?(path)
+  end
+
+  def managed_scaffold_paths
     fixed_paths = [
       "AGENTS.md",
       "CLAUDE.md",
@@ -963,7 +991,38 @@ module PushDownstream
       TRUST_CONFIG,
       ".agents/bin/README.md"
     ]
-    fixed_paths.include?(path) || COMMAND_ORDER.any? { |command| path == ".agents/bin/#{command}" }
+    fixed_paths + COMMAND_ORDER.map { |command| ".agents/bin/#{command}" }
+  end
+
+  def validate_managed_scaffold_paths!(root)
+    clone_root = File.expand_path(root)
+    root_stat = File.lstat(clone_root)
+    unless root_stat.directory? && !root_stat.symlink?
+      raise "managed scaffold clone root is not a safe directory"
+    end
+
+    managed_scaffold_paths.each do |relative_path|
+      target = File.expand_path(relative_path, clone_root)
+      unless target.start_with?("#{clone_root}#{File::SEPARATOR}")
+        raise "managed scaffold path escapes the clone root: #{relative_path}"
+      end
+
+      current = clone_root
+      relative_path.split(File::SEPARATOR).each do |component|
+        current = File.join(current, component)
+        begin
+          stat = File.lstat(current)
+        rescue Errno::ENOENT
+          break
+        end
+        if stat.symlink?
+          raise "managed scaffold path contains a symlink: #{relative_path}"
+        end
+      end
+    end
+    true
+  rescue Errno::EACCES, Errno::ENOTDIR => e
+    raise "managed scaffold path could not be safely inspected: #{e.message}"
   end
 
   def run_publisher(report_path, config_path, presets_path, source_sha:,
@@ -1037,11 +1096,25 @@ module PushDownstream
     false
   end
 
+  def clone_destination!(temporary_root, repo_component)
+    root = File.expand_path(temporary_root)
+    root_stat = File.lstat(root)
+    destination = File.expand_path(repo_component.to_s, root)
+    unless root_stat.directory? && !root_stat.symlink? &&
+           File.dirname(destination) == root && File.basename(destination) == repo_component
+      raise "clone destination is not a contained direct child of the temporary root"
+    end
+
+    destination
+  rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR => e
+    raise "clone destination could not be safely resolved: #{e.message}"
+  end
+
   def publish_audited_repo(repo, contract, audit_entry)
     expected_base_sha = audit_entry.fetch("base_sha")
     expected_paths = audit_entry.fetch("changed_managed_paths").sort
     Dir.mktmpdir("push-downstream-publisher") do |dir|
-      clone = File.join(dir, repo.fetch(:repo))
+      clone = clone_destination!(dir, repo.fetch(:repo))
       cloned = system(
         PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "clone", "--no-tags",
         "--branch", repo.fetch(:base_branch), repo_url(repo), clone,
@@ -1055,6 +1128,10 @@ module PushDownstream
       unless base_head == expected_base_sha && tracked_base_head == expected_base_sha
         return publisher_failure(repo, "consumer base moved or could not be bound to the audit SHA")
       end
+
+      desired_state = publisher_desired_managed_state!(
+        clone, dir, contract, expected_base_sha, expected_paths
+      )
 
       branch = repo.fetch(:pr_branch)
       branch_state, remote_branch_head = publisher_remote_branch_state(clone, branch)
@@ -1090,6 +1167,7 @@ module PushDownstream
       end
 
       begin
+        validate_managed_scaffold_paths!(clone)
         result = reconcile_scaffold(clone, contract)
         issues = AgentWorkflowSeamDoctor.check(clone)
       rescue RuntimeError, SystemCallError => e
@@ -1108,6 +1186,11 @@ module PushDownstream
       final_paths = publisher_cached_diff_paths(clone, base_ref)
       unless final_paths == expected_paths
         return publisher_failure(repo, "applied diff does not exactly match the audited managed paths")
+      end
+
+      final_state = publisher_index_managed_state(clone, expected_paths)
+      unless final_state == desired_state
+        return publisher_failure(repo, "managed content does not exactly match the audited desired state")
       end
 
       staged_changes = publisher_cached_changes?(clone)
@@ -1161,6 +1244,49 @@ module PushDownstream
       PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", dir, *arguments,
       out: File::NULL, err: File::NULL
     )
+  end
+
+  def publisher_desired_managed_state!(clone, temporary_root, contract, expected_base_sha, expected_paths)
+    desired = clone_destination!(temporary_root, "desired-state")
+    added = publisher_git(clone, "worktree", "add", "--detach", desired, expected_base_sha)
+    raise "audited desired state worktree could not be created" unless added
+
+    validate_managed_scaffold_paths!(desired)
+    reconcile_scaffold(desired, contract)
+    unless expected_paths.empty? || publisher_git(desired, "add", "--all", "--", *expected_paths)
+      raise "audited desired managed paths could not be staged"
+    end
+
+    state = publisher_index_managed_state(desired, expected_paths)
+    raise "audited desired managed content could not be inspected" if state.nil?
+
+    state
+  ensure
+    publisher_git(clone, "worktree", "remove", "--force", desired) if added
+  end
+
+  def publisher_index_managed_state(clone, expected_paths)
+    return {} if expected_paths.empty?
+
+    output, status = Open3.capture2(
+      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone,
+      "ls-files", "--stage", "-z", "--", *expected_paths
+    )
+    return nil unless status.success?
+
+    state = expected_paths.to_h { |path| [path, nil] }
+    output.split("\0").each do |entry|
+      match = entry.match(/\A(100644|100755) ([0-9a-f]{40,64}) 0\t(.+)\z/)
+      return nil unless match
+
+      mode, blob, path = match.captures
+      return nil unless state.key?(path) && state[path].nil?
+
+      state[path] = [mode, blob]
+    end
+    state
+  rescue RuntimeError, SystemCallError
+    nil
   end
 
   def publisher_local_ref_head(clone, ref)
@@ -1300,16 +1426,23 @@ module PushDownstream
       return publisher_failure(repo, "publisher branch moved while confirming its PR")
     end
 
-    state = publisher_open_pr_state(repo)
+    state = publisher_open_pr_state(repo, any_base: true)
     return publisher_failure(repo, "open PR state is UNKNOWN after publish") unless state.fetch(:ok)
 
     url = state[:url]
+    if url && state[:base] != repo.fetch(:base_branch)
+      return publisher_failure(repo, "publisher branch has an open PR on another base")
+    end
+    if url.nil? && state[:base]
+      return publisher_failure(repo, "open PR state is UNKNOWN after publish")
+    end
+
     if url.nil?
       url = create_pr(repo, repo.fetch(:pr_branch), follow_ups)
       return publisher_failure(repo, "PR create failed") if url.nil?
 
-      state = publisher_open_pr_state(repo)
-      unless state.fetch(:ok) && state[:url] == url
+      state = publisher_open_pr_state(repo, any_base: true)
+      unless state.fetch(:ok) && state[:url] == url && state[:base] == repo.fetch(:base_branch)
         return publisher_failure(repo, "created PR could not be verified as the unique open publisher PR")
       end
     end
@@ -1329,7 +1462,11 @@ module PushDownstream
     end
 
     Dir.mktmpdir("push-downstream-audit") do |dir|
-      clone = File.join(dir, repo.fetch(:repo))
+      begin
+        clone = clone_destination!(dir, repo.fetch(:repo))
+      rescue RuntimeError, SystemCallError => e
+        return audit_blocked(repo, "clone destination could not be safely resolved: #{e.message}")
+      end
 
       # Every shell-out below is guarded so one consumer degrades to a blocked
       # entry instead of aborting the fleet audit. Open3.capture2 raises when the
@@ -1356,6 +1493,7 @@ module PushDownstream
       end
 
       begin
+        validate_managed_scaffold_paths!(clone)
         issues = AgentWorkflowSeamDoctor.check(clone)
       rescue RuntimeError, SystemCallError => e
         # The doctor reads consumer files and shells out (bash -n), so a single

@@ -89,6 +89,59 @@ class PushDownstreamConfigTest < Minitest::Test
     end
   end
 
+  def test_load_config_rejects_traversal_and_unsafe_registry_components
+    invalid_values = [
+      ["owner", "../owner"],
+      ["repo", "../escaped"],
+      ["base_branch", "../main"],
+      ["pr_branch", "-publisher"]
+    ]
+
+    invalid_values.each do |field, value|
+      registry = {
+        "defaults" => {
+          "owner" => "local",
+          "base_branch" => "main",
+          "pr_branch" => "agent-workflows/seam-sync"
+        },
+        "repos" => [{ "repo" => "consumer", field => value }]
+      }
+
+      with_config(registry.to_yaml) do |path|
+        error = assert_raises(RuntimeError, "expected #{field}=#{value.inspect} to fail closed") do
+          PushDownstream.load_config(path)
+        end
+        assert_includes error.message, "invalid downstream registry"
+      end
+    end
+  end
+
+  def test_clone_destination_must_be_a_contained_direct_child_of_the_temporary_root
+    Dir.mktmpdir("push-downstream-clone-destination") do |dir|
+      assert_equal File.join(dir, "consumer"), PushDownstream.clone_destination!(dir, "consumer")
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.clone_destination!(dir, "../escaped")
+      end
+      assert_includes error.message, "clone destination is not a contained direct child"
+    end
+
+    unsafe_repo = {
+      repo: "../escaped",
+      nwo: "local/../escaped",
+      base_branch: "main",
+      pr_branch: "agent-workflows/seam-sync",
+      remote_url: "/unused"
+    }
+    contract = { commands: {}, policy: PushDownstream.minimum_policy("main") }
+    entry = with_module_stub(PushDownstream, :resolve_contract, ->(*) { contract }) do
+      PushDownstream.audit_repo(unsafe_repo, {})
+    end
+
+    assert_equal "blocked", entry.fetch("status")
+    assert_includes entry.fetch("reason"), "clone destination"
+  end
+
   def test_select_repos_filters_disabled_and_honors_only
     yaml = <<~YAML
       defaults:
