@@ -85,8 +85,11 @@ Every field in `execution_provenance` is required:
 - `host.executable` and `host.version` record the executing host program.
   `session_id` and `thread_id` separately preserve either host identifier; use
   literal `UNKNOWN` when a host does not expose one.
-- `started_at` and `ended_at` are RFC 3339 timestamps. The end cannot precede
-  the start.
+- `started_at` and `ended_at` are calendar-valid RFC 3339 timestamps. Hours are
+  `00`-`23`, minutes and offset minutes are `00`-`59`, and offset hours are
+  `00`-`23`. Second `60` is accepted only when the signed offset converts the
+  represented UTC minute to `23:59`; the validator does not consult an external
+  leap-second calendar. The end cannot precede the start.
 - `influenced_commits` is an array of full 40- or 64-character hexadecimal Git
   object IDs. `attribution_confidence` is `exact`, `timeline-derived`, `mixed`,
   or literal `UNKNOWN`. An empty list with known confidence records a known

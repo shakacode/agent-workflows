@@ -47,6 +47,7 @@ module ValidateExecutionProvenance
   ATTRIBUTION_CONFIDENCES = %w[exact timeline-derived mixed UNKNOWN].freeze
   ROUTE_FIELDS = %w[model effort].freeze
   HOST_FIELDS = %w[executable version].freeze
+  RFC3339_PATTERN = /\A(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?<zone>Z|(?<offset_sign>[+-])(?<offset_hour>\d{2}):(?<offset_minute>\d{2}))\z/
 
   module_function
 
@@ -313,11 +314,37 @@ module ValidateExecutionProvenance
 
   def parse_rfc3339(value)
     return unless value.is_a?(String)
-    return unless value.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/)
+
+    match = RFC3339_PATTERN.match(value)
+    return unless match
+    return unless rfc3339_components_in_range?(match)
 
     DateTime.rfc3339(value)
   rescue ArgumentError
     nil
+  end
+
+  def rfc3339_components_in_range?(match)
+    return false unless match[:hour].to_i.between?(0, 23)
+    return false unless match[:minute].to_i.between?(0, 59)
+    return false unless match[:second].to_i.between?(0, 60)
+
+    unless match[:zone] == "Z"
+      return false unless match[:offset_hour].to_i.between?(0, 23)
+      return false unless match[:offset_minute].to_i.between?(0, 59)
+    end
+    return true unless match[:second].to_i == 60
+
+    local_minute = (match[:hour].to_i * 60) + match[:minute].to_i
+    utc_minute = (local_minute - rfc3339_offset_minutes(match)) % (24 * 60)
+    utc_minute == (23 * 60) + 59
+  end
+
+  def rfc3339_offset_minutes(match)
+    return 0 if match[:zone] == "Z"
+
+    magnitude = (match[:offset_hour].to_i * 60) + match[:offset_minute].to_i
+    match[:offset_sign] == "+" ? magnitude : -magnitude
   end
 end
 

@@ -269,6 +269,65 @@ class ValidateExecutionProvenanceTest < Minitest::Test
                     "receipt: execution_provenance.started_at must be an RFC 3339 timestamp"
   end
 
+  def test_timestamps_range_check_time_and_offset_components
+    invalid_timestamps = %w[
+      2026-08-11T24:00:00Z
+      2026-08-11T10:60:00Z
+      2026-08-11T10:00:00+24:00
+      2026-08-11T10:00:00+99:99
+      2026-08-11T10:00:00-01:60
+    ]
+    invalid_timestamps.each do |timestamp|
+      document = valid_document
+      document.fetch("execution_provenance")["started_at"] = timestamp
+
+      assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
+                      "receipt: execution_provenance.started_at must be an RFC 3339 timestamp",
+                      timestamp
+    end
+
+    %w[
+      2026-08-11T10:00:00Z
+      2026-08-11T10:00:00+00:00
+      2026-08-11T10:00:00+23:59
+      2026-08-11T10:00:00-23:59
+    ].each do |timestamp|
+      document = valid_document
+      receipt = document.fetch("execution_provenance")
+      receipt["started_at"] = timestamp
+      receipt["ended_at"] = timestamp
+
+      assert_empty ValidateExecutionProvenance.validate_document(document, "receipt"), timestamp
+    end
+  end
+
+  def test_leap_second_requires_the_last_represented_utc_minute_of_the_day
+    %w[
+      2026-08-11T10:00:60Z
+      2026-12-31T23:59:61Z
+    ].each do |timestamp|
+      document = valid_document
+      document.fetch("execution_provenance")["started_at"] = timestamp
+
+      assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
+                      "receipt: execution_provenance.started_at must be an RFC 3339 timestamp",
+                      timestamp
+    end
+
+    %w[
+      2026-12-31T23:59:60Z
+      2027-01-01T00:59:60+01:00
+      2026-12-31T18:59:60-05:00
+    ].each do |timestamp|
+      document = valid_document
+      receipt = document.fetch("execution_provenance")
+      receipt["started_at"] = timestamp
+      receipt["ended_at"] = timestamp
+
+      assert_empty ValidateExecutionProvenance.validate_document(document, "receipt"), timestamp
+    end
+  end
+
   def test_identity_host_and_reason_fields_are_explicit
     document = valid_document
     receipt = document.fetch("execution_provenance")
