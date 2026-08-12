@@ -61,6 +61,15 @@ the same security, coordination, validation, review, QA, readiness, handoff, and
 closeout gates as a multi-target batch; only batch packing and collision analysis
 collapse to one lane.
 
+Before any coordination operation, apply the canonical **Coordination Applicability Gate**
+in `workflows/pr-processing.md` and persist either
+`coordination_not_applicable` or `coordination_required` from trusted topology
+and repository/operator policy. Ordinary one-agent, one-target serialized work
+is `coordination_not_applicable`; do not contact a backend or emit a coordination
+warning merely because this skill represents it as a batch of one. This does not
+relax canonical issue/existing-PR target identity or foreign-target control-
+transfer guards.
+
 When no planner/triage handoff supplies dependency artifacts, synthesize and
 persist a verified one-lane `stage-dependency-plan` v1 file with a known plan id
 and `edges: []`, plus a `stage-dependency-gate` v1 live replay: use the actual
@@ -148,9 +157,10 @@ facts remain fail-closed and stop before mutation.
   automatic interactive exact-diff walkthrough before the one final merge
   decision. Do not silently default it.
 
-The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
-a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
-checks, and the canonical terminal state and handoff evidence.
+The single lane still gets a Lane Card, claim/heartbeat behavior when
+`coordination_required` and configured, a one-row file-touch map, a Batch QA
+Lane decision, current-head review and CI checks, and the canonical terminal
+state and handoff evidence.
 
 Resolve the target repo's `base_branch` from `.agents/agent-workflow.yml` when present, otherwise from the `AGENTS.md`
 **Agent Workflow Configuration** seam. If neither declares it, report
@@ -623,7 +633,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
-- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+- For `coordination_required`, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop. For `coordination_not_applicable`, preserve serial order in the local stage plan and make no coordination call.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
@@ -718,6 +728,8 @@ informational and never replaces a closeout gate.
 
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
+For `coordination_required`, apply the existing declaration hardening below.
+
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
@@ -730,6 +742,10 @@ reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+The paragraph above applies only to `coordination_required`. For
+`coordination_not_applicable`, omit the `coordination:` declaration and do not
+describe coordination as unavailable or degraded.
 
 When QA Evidence or P0/P1/P2/Must-Fix review-finding dispositions are part of a
 ready/merge claim, include replayable `qa-evidence v2` and
@@ -773,9 +789,10 @@ Use [.agents/workflows/pr-processing.md](../../workflows/pr-processing.md) as th
 canonical source for coordination state and worker rules. Keep this skill as a
 routing entry point; do not duplicate the full protocol here.
 
-In short: exact lane assignments beat labels; a selected private backend is the
-source of truth when bounded health and target-scoped status probes pass; claim
-refusals hard-stop machine agents; workers heartbeat at phase transitions;
+In short: apply the canonical applicability gate first. For
+`coordination_required`, exact lane assignments beat labels; a selected private
+backend is the source of truth when bounded health and target-scoped status
+probes pass; claim refusals hard-stop machine agents; workers heartbeat at phase transitions;
 dependency-sensitive lanes re-check coordination before rebase, push, readiness,
 and closeout; broad status reads are audit-only; exact independent lanes may
 proceed in claim-only mode only after the canonical workflow allows it; and
@@ -803,7 +820,8 @@ worktree so two workers never share one working directory — Codex or
 multi-machine workers use `git worktree add`; in-process Claude Code
 `Agent`/`Workflow` subagents pass `isolation: 'worktree'`. The main agent owns
 final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
-Workers emit the canonical Lane Card after a successful claim, on
+Workers emit the canonical Lane Card after a successful claim when
+`coordination_required`, or after a `coordination_not_applicable` decision, on
 blocked/cancelled state, and as the final handoff header. The actor that opens
 or updates the PR emits the PR-open Lane Card when the PR is opened. The card
 shows claim holder and `dashboard_url` from backend metadata or `UNKNOWN`;
