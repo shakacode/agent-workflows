@@ -777,6 +777,35 @@ class BatchPlanPreflightTest < Minitest::Test
                     "expansion-path-reservation-stale"
   end
 
+  def test_planned_path_evidence_does_not_make_matching_expansion_path_reservation_stale
+    input = input_for(
+      maps: { "lane-a" => planned_path_evidence(%w[lib/lane-a.rb lib/expanded.rb]) },
+      reservations: [expansion_path_reservation]
+    )
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    refute_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-stale"
+  end
+
+  def test_planned_path_evidence_does_not_make_matching_expansion_rename_reservation_stale
+    rename = { "old" => "lib/old", "new" => "lib/new" }
+    input = input_for(
+      maps: { "lane-a" => planned_path_evidence(%w[lib/lane-a.rb lib/old lib/new], renames: [rename]) },
+      reservations: [expansion_rename_reservation]
+    )
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    refute_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-stale"
+  end
+
   def test_backend_risky_capacity_uses_verified_paths_union_active_reservations
     lanes = Array.new(4) do |index|
       lane("lane-#{index}").merge("serialization_group" => "expanded-path-writers")

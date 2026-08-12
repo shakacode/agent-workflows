@@ -439,6 +439,8 @@ module BatchPlanPreflight
   end
 
   def reservation_reflected?(reservation, map)
+    return false unless valid_file_touch_map_shape?(map) && map["source"] == "verified"
+
     if reservation["type"] == "expansion-rename-reservation"
       Array(map["renames"]).include?(reservation["rename"])
     else
