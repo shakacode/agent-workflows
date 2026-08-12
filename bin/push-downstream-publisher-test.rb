@@ -409,6 +409,25 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     policy: PushDownstream.minimum_policy("main")
   }.freeze
 
+  def test_cli_stub_git_lookup_fails_clearly_when_git_is_missing_from_path
+    Dir.mktmpdir("push-downstream-missing-git") do |dir|
+      empty_path = File.join(dir, "empty-path")
+      FileUtils.mkdir_p(empty_path)
+      previous_path = ENV["PATH"]
+      ENV["PATH"] = empty_path
+
+      begin
+        error = assert_raises(RuntimeError) do
+          install_cli_stubs(File.join(dir, "stubs"))
+        end
+      ensure
+        ENV["PATH"] = previous_path
+      end
+
+      assert_equal "git executable was not found on PATH", error.message
+    end
+  end
+
   def test_create_then_replay_reuses_one_pr_without_force_or_churn
     Dir.mktmpdir("push-downstream-publisher-write") do |dir|
       remote = seed_remote(dir)
@@ -793,7 +812,12 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     gh_log = File.join(dir, "gh.log")
     git_log = File.join(dir, "git.log")
     pr_state = File.join(dir, "pr-state")
-    real_git = `command -v git`.strip
+    real_git = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).filter_map do |directory|
+      candidate = File.expand_path("git", directory.empty? ? Dir.pwd : directory)
+      candidate if File.file?(candidate) && File.executable?(candidate)
+    end.first
+    raise "git executable was not found on PATH" unless real_git
+
     File.write(File.join(fake_bin, "git"), <<~SH)
       #!/bin/sh
       printf '%s\\n' "$*" >> #{git_log.inspect}
