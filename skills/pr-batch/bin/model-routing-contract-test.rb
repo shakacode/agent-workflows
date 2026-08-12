@@ -191,6 +191,8 @@ ROUTE_ONLY_SUBJECT_PATTERN = /
     `?UNKNOWN`?\s+(?:observed\ )?(?:#{ROUTE_ONLY_FIELD_SOURCE}|observation) |
     observed\ route\s+differs\s+from\s+(?:the\ )?requested\ route |
     requested\ route\s+differs\s+from\s+(?:the\ )?observed\ route |
+    observed\ route\s+does\s+not\s+match\s+(?:the\ )?requested\ route |
+    requested\ route\s+does\s+not\s+match\s+(?:the\ )?observed\ route |
     (?:the\s+)?requested\s+and\s+observed\s+routes\s+do\s+not\s+match |
     inherited\ route |
     silent[-\s]substitution |
@@ -203,7 +205,7 @@ ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE =
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
 # This bounded, guide-derived stop/prohibition vocabulary needs matching mutation coverage whenever routing-guide phrasing changes.
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+(?:blocked|stopped|prevented)|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:must|should|may|can|will|shall)\\s+be\\s+blocked|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+the\\s+lane|halts?\\s+the\\s+lane|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+(?:blocked|stopped|prevented)|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:must|should|may|can|will|shall)\\s+be\\s+(?:blocked|stopped|prevented)|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -401,6 +403,12 @@ def markdown_lazy_blockquote_continuation_line?(line)
   !line.match?(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/)
 end
 
+def append_blockquote_structural_segments(segments, blockquote_content)
+  return if blockquote_content.empty?
+
+  segments.concat(markdown_structural_segments(blockquote_content))
+end
+
 def markdown_structural_segments(block)
   segments = []
   current_segment = +""
@@ -414,7 +422,7 @@ def markdown_structural_segments(block)
       content = markdown_blockquote_content(line)
 
       if content.strip.empty?
-        segments << current_segment unless current_segment.empty?
+        append_blockquote_structural_segments(segments, current_segment)
         current_segment = +""
         in_blockquote = false
         next
@@ -435,7 +443,7 @@ def markdown_structural_segments(block)
     end
 
     if in_blockquote
-      segments << current_segment unless current_segment.empty?
+      append_blockquote_structural_segments(segments, current_segment)
       current_segment = +""
       in_blockquote = false
     end
@@ -468,7 +476,11 @@ def markdown_structural_segments(block)
     end
   end
 
-  segments << current_segment unless current_segment.empty?
+  if in_blockquote
+    append_blockquote_structural_segments(segments, current_segment)
+  else
+    segments << current_segment unless current_segment.empty?
+  end
   segments
 end
 
@@ -1076,12 +1088,16 @@ class ModelRoutingContractTest < Minitest::Test
       "route mismatch blocks both launch and review" => "A route mismatch blocks both launch and review.",
       "observed requested routes differ passive blocked launch" => "When the observed route differs from the requested route, launch is blocked.",
       "requested observed routes differ passive blocked review" => "When the requested route differs from the observed route, review is blocked.",
+      "observed route does not match requested route" => "When the observed route does not match the requested route, launch is blocked.",
+      "requested route does not match observed route" => "When the requested route does not match the observed route, review is blocked.",
       "requested and observed routes do not match" => "When the requested and observed routes do not match, launch is blocked.",
       "route mismatch prevents both launch and review" => "A route mismatch prevents both launch and review.",
       "outcome-first prevents both planning and fallback" => "Prevent both planning and fallback when a route mismatch occurs.",
       "outcome-first passive blocked launch" => "When a route mismatch occurs, launch is blocked.",
       "outcome-first passive stopped launch" => "Launch is stopped when a route mismatch occurs.",
       "outcome-first passive prevented review" => "Review is prevented when a route mismatch occurs.",
+      "outcome-first modal passive stopped launch" => "Launch must be stopped when a route mismatch occurs.",
+      "outcome-first modal passive prevented review" => "Review should be prevented when an inherited route occurs.",
       "cross-sentence passive blocked launch" => "A route mismatch occurs. Launch is blocked.",
       "ordinary sentence preserves route antecedent for pronoun outcome" => "A route mismatch occurs. A status note is recorded. This blocks launch.",
       "ordinary CI note preserves route antecedent for pronoun outcome" => "A route mismatch occurs. An exact-head CI note is recorded. This blocks launch.",
@@ -1231,6 +1247,9 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not block both launch and review.",
       "When the observed route differs from the requested route, launch is not blocked.",
       "When the requested route differs from the observed route, review is not blocked.",
+      "When the observed route does not match the requested route, launch is not blocked.",
+      "When the requested route does not match the observed route, review is not blocked.",
+      "When the observed route does not match the requested route, launch is blocked only if an independent risk gate blocks execution.",
       "When the requested and observed routes do not match, launch is not blocked.",
       "When the requested and observed routes do not match, launch is blocked only if an independent risk gate blocks execution.",
       "A route mismatch does not prevent both launch and review.",
@@ -1241,6 +1260,8 @@ class ModelRoutingContractTest < Minitest::Test
       "When a route mismatch occurs, launch is not blocked.",
       "Launch is not stopped when a route mismatch occurs.",
       "Review is not prevented when a route mismatch occurs.",
+      "Launch must not be stopped when a route mismatch occurs.",
+      "Review should not be prevented when an inherited route occurs.",
       "A route mismatch occurs. Launch is blocked only if an independent risk gate blocks execution.",
       "A route mismatch occurs. Launch must be blocked only if an independent scope gate blocks execution.",
       "A route mismatch means review and audit are not blocked.",
@@ -1336,6 +1357,10 @@ class ModelRoutingContractTest < Minitest::Test
       "multiline HTML comment" => "<!-- A route mismatch\nblocks launch. -->",
       "blockquote boundary" => "A route mismatch does not stop the lane.\n> Destructive scope expansion blocks execution.",
       "blockquote paragraph boundary" => "> Route mismatch\n>\n> Destructive scope expansion blocks execution.",
+      "blockquote heading boundary" => "> Route mismatch\n> ### Scope gate\n> Destructive scope expansion blocks execution.",
+      "blockquote list boundary" => "> Route mismatch\n> - Scope gate\n> Destructive scope expansion blocks execution.",
+      "blockquote fenced boundary" => "> Route mismatch\n> ```text\n> Destructive scope expansion blocks execution.\n> ```",
+      "blockquote thematic-break boundary" => "> Route mismatch\n> ***\n> Destructive scope expansion blocks execution.",
       "lazy blockquote continuation boundary" => "> A route mismatch occurs.\nThis remains quoted and advisory.",
       "Markdown list items" => "- route mismatch: record honestly\n- independent risk gate: blocks execution",
       "Markdown list-item pronoun boundary" => "- A route mismatch occurs.\n- It stops the lane before any edit begins.",
