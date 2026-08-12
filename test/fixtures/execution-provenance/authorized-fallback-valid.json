@@ -9,6 +9,7 @@
     "route_policy": "exact-route",
     "requested": { "model": "gpt-5.6-sol", "effort": "xhigh" },
     "observed": { "model": "gpt-5.6-sol", "effort": "high" },
+    "coordinator": { "model": "UNKNOWN", "effort": "UNKNOWN" },
     "dispatcher": "codex",
     "binding_source": "structured-api-result",
     "host": { "executable": "codex-api", "version": "2026-08-11" },

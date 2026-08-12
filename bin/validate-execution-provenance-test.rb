@@ -70,6 +70,23 @@ class ValidateExecutionProvenanceTest < Minitest::Test
     assert_includes failures, "receipt: execution_provenance.route_policy must be exact-route"
   end
 
+  def test_schema_rejects_extra_keys_at_every_object_level
+    document = valid_document
+    receipt = document.fetch("execution_provenance")
+    document["extra"] = true
+    receipt["extra"] = true
+    %w[requested observed coordinator].each { |field| receipt.fetch(field)["extra"] = true }
+    receipt.fetch("host")["extra"] = true
+
+    failures = ValidateExecutionProvenance.validate_document(document, "receipt")
+    assert_includes failures, "receipt: unknown top-level fields: extra"
+    assert_includes failures, "receipt: execution_provenance unknown fields: extra"
+    %w[requested observed coordinator].each do |field|
+      assert_includes failures, "receipt: execution_provenance.#{field} unknown fields: extra"
+    end
+    assert_includes failures, "receipt: execution_provenance.host unknown fields: extra"
+  end
+
   def test_requested_and_observed_evidence_are_explicit_and_host_bound
     document = valid_document
     receipt = document.fetch("execution_provenance")
@@ -85,6 +102,46 @@ class ValidateExecutionProvenanceTest < Minitest::Test
     assert_includes failures,
                     "receipt: execution_provenance.binding_source must be one of: host-session-metadata, " \
                     "structured-command-result, structured-api-result, UNKNOWN"
+  end
+
+  def test_coordinator_route_tuple_is_required
+    document = valid_document
+    document.fetch("execution_provenance").delete("coordinator")
+
+    failures = ValidateExecutionProvenance.validate_document(document, "receipt")
+
+    assert_includes failures, "receipt: execution_provenance.coordinator must be present"
+  end
+
+  def test_coordinator_pair_inheritance_requires_matching_known_coordinator_route
+    document = JSON.parse(
+      File.read(File.join(FIXTURE_ROOT, "coordinator-pair-inheritance-valid.json"))
+    )
+    receipt = document.fetch("execution_provenance")
+    receipt["coordinator"] = { "model" => "UNKNOWN", "effort" => "UNKNOWN" }
+
+    failures = ValidateExecutionProvenance.validate_document(document, "receipt")
+    assert_includes failures,
+                    "receipt: execution_provenance.coordinator-pair-inheritance requires a known coordinator tuple"
+
+    receipt["coordinator"] = { "model" => "gpt-5.6-sol", "effort" => "UNKNOWN" }
+    assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
+                    "receipt: execution_provenance.coordinator must be entirely known or entirely UNKNOWN"
+
+    receipt["coordinator"] = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
+                    "receipt: execution_provenance.coordinator-pair-inheritance requires coordinator to equal observed"
+  end
+
+  def test_other_dispositions_require_unknown_coordinator_route
+    document = valid_document
+    document.fetch("execution_provenance")["coordinator"] = {
+      "model" => "gpt-5.6-sol",
+      "effort" => "high"
+    }
+
+    assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
+                    "receipt: execution_provenance.bound-exact-match requires coordinator to be entirely UNKNOWN"
   end
 
   def test_unknown_observed_exact_route_requires_mismatch_disposition
@@ -178,11 +235,14 @@ class ValidateExecutionProvenanceTest < Minitest::Test
 
     receipt["influenced_commits"] = []
     receipt["attribution_confidence"] = "exact"
-    assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
-                    "receipt: execution_provenance.exact attribution requires at least one influenced commit"
-
-    receipt["influenced_commits"] = ["a" * 64]
     assert_empty ValidateExecutionProvenance.validate_document(document, "receipt")
+
+    receipt["influenced_commits"] = ["a" * 40, "b" * 64]
+    assert_empty ValidateExecutionProvenance.validate_document(document, "receipt")
+
+    receipt["attribution_confidence"] = "UNKNOWN"
+    assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
+                    "receipt: execution_provenance.UNKNOWN attribution requires an empty influenced_commits array"
   end
 
   def test_timestamps_are_rfc3339_and_ordered
@@ -201,6 +261,14 @@ class ValidateExecutionProvenanceTest < Minitest::Test
                     "receipt: execution_provenance.ended_at must not precede started_at"
   end
 
+  def test_timestamps_reject_invalid_calendar_dates
+    document = valid_document
+    document.fetch("execution_provenance")["started_at"] = "2026-02-29T10:00:00Z"
+
+    assert_includes ValidateExecutionProvenance.validate_document(document, "receipt"),
+                    "receipt: execution_provenance.started_at must be an RFC 3339 timestamp"
+  end
+
   def test_identity_host_and_reason_fields_are_explicit
     document = valid_document
     receipt = document.fetch("execution_provenance")
@@ -213,10 +281,21 @@ class ValidateExecutionProvenanceTest < Minitest::Test
     failures = ValidateExecutionProvenance.validate_document(document, "receipt")
     assert_includes failures, "receipt: execution_provenance.batch must be a non-empty string"
     assert_includes failures, "receipt: execution_provenance.host.version must be explicitly present"
-    assert_includes failures, "receipt: execution_provenance.dispatcher must use literal UNKNOWN when unknown"
+    assert_includes failures, "receipt: execution_provenance.dispatcher must be a known string"
     assert_includes failures, "receipt: execution_provenance.session_id must use literal UNKNOWN when unknown"
     assert_includes failures,
                     "receipt: execution_provenance.mismatch_reason must use literal UNKNOWN when unknown"
+  end
+
+  def test_lane_identity_fields_reject_literal_unknown
+    document = valid_document
+    receipt = document.fetch("execution_provenance")
+    %w[batch lane target scenario_class dispatcher].each { |field| receipt[field] = "UNKNOWN" }
+
+    failures = ValidateExecutionProvenance.validate_document(document, "receipt")
+    %w[batch lane target scenario_class dispatcher].each do |field|
+      assert_includes failures, "receipt: execution_provenance.#{field} must be a known string"
+    end
   end
 
   def test_mismatch_reason_and_authority_match_the_disposition

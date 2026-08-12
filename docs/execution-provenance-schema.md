@@ -29,6 +29,10 @@ route, or define aggregation semantics.
       "model": "gpt-5.6-sol",
       "effort": "high"
     },
+    "coordinator": {
+      "model": "UNKNOWN",
+      "effort": "UNKNOWN"
+    },
     "dispatcher": "codex",
     "binding_source": "host-session-metadata",
     "host": {
@@ -57,7 +61,8 @@ Every field in `execution_provenance` is required:
 
 - `batch`, `lane`, and `target` identify the execution lane and its canonical
   target. `scenario_class` names the caller's stable task class without adding
-  evaluator or recommendation semantics.
+  evaluator or recommendation semantics. These fields and `dispatcher` are
+  known non-empty strings; literal `UNKNOWN` is invalid for lane identity.
 - `role` is `implementation`, `review`, `QA`, or `integration`.
 - `route_policy` is `exact-route`. This version encodes the exact-route table;
   it does not invent behavior for advisory requests.
@@ -66,6 +71,11 @@ Every field in `execution_provenance` is required:
 - `observed.model` and `observed.effort` are separate host-observed facts. Each
   component must be present. When host evidence is unavailable, both are
   literal `UNKNOWN`; they are never copied or defaulted from `requested`.
+- `coordinator.model` and `coordinator.effort` make coordinator-pair
+  inheritance machine-checkable. For `coordinator-pair-inheritance`, both are
+  known, equal the observed tuple, and differ from the requested tuple. For
+  every other disposition, both are literal `UNKNOWN` so the receipt cannot
+  carry an unrelated coordinator-route assertion.
 - `dispatcher` records the dispatcher, while `binding_source` is
   `host-session-metadata`, `structured-command-result`,
   `structured-api-result`, or `UNKNOWN`. A known observed tuple requires one of
@@ -79,14 +89,20 @@ Every field in `execution_provenance` is required:
   the start.
 - `influenced_commits` is an array of full 40- or 64-character hexadecimal Git
   object IDs. `attribution_confidence` is `exact`, `timeline-derived`, `mixed`,
-  or literal `UNKNOWN`. Known confidence requires at least one commit; unknown
-  confidence requires an empty list.
+  or literal `UNKNOWN`. An empty list with known confidence records a known
+  absence of influenced commits; unknown confidence also requires an empty
+  list because no commit may be asserted without attribution evidence.
 - `mismatch_reason` records why an exact request was not satisfied, or literal
   `UNKNOWN` for `bound-exact-match`. `recorded_authority` names the authority
   recorded before an authorized fallback, or literal `UNKNOWN` otherwise.
 - `disposition` is one exact case from the model-routing disposition table:
   `bound-exact-match`, `unbound-exact-route`, `silent-substitution`,
   `coordinator-pair-inheritance`, or `authorized-fallback`.
+
+This v0 contract is closed: the top level contains only `schema` and
+`execution_provenance`; the receipt contains only the required fields above;
+`requested`, `observed`, and `coordinator` contain only `model` and `effort`;
+and `host` contains only `executable` and `version`. Extra keys are invalid.
 
 ## Fail-Closed Rules
 

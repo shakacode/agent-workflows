@@ -9,6 +9,7 @@
     "route_policy": "exact-route",
     "requested": { "model": "claude-opus", "effort": "high" },
     "observed": { "model": "gpt-5.6-sol", "effort": "high" },
+    "coordinator": { "model": "UNKNOWN", "effort": "UNKNOWN" },
     "dispatcher": "codex",
     "binding_source": "host-session-metadata",
     "host": { "executable": "codex", "version": "1.2.3" },

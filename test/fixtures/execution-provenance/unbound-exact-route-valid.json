@@ -9,6 +9,7 @@
     "route_policy": "exact-route",
     "requested": { "model": "gpt-5.6-sol", "effort": "high" },
     "observed": { "model": "UNKNOWN", "effort": "UNKNOWN" },
+    "coordinator": { "model": "UNKNOWN", "effort": "UNKNOWN" },
     "dispatcher": "codex",
     "binding_source": "UNKNOWN",
     "host": { "executable": "codex", "version": "UNKNOWN" },

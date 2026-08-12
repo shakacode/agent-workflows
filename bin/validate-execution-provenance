@@ -2,10 +2,11 @@
 # frozen_string_literal: true
 
 require "json"
-require "time"
+require "date"
 
 module ValidateExecutionProvenance
   SCHEMA = "execution-provenance-v0"
+  TOP_LEVEL_FIELDS = %w[schema execution_provenance].freeze
   REQUIRED_FIELDS = %w[
     batch
     lane
@@ -15,6 +16,7 @@ module ValidateExecutionProvenance
     route_policy
     requested
     observed
+    coordinator
     dispatcher
     binding_source
     host
@@ -43,6 +45,8 @@ module ValidateExecutionProvenance
     authorized-fallback
   ].freeze
   ATTRIBUTION_CONFIDENCES = %w[exact timeline-derived mixed UNKNOWN].freeze
+  ROUTE_FIELDS = %w[model effort].freeze
+  HOST_FIELDS = %w[executable version].freeze
 
   module_function
 
@@ -88,7 +92,7 @@ module ValidateExecutionProvenance
   def validate_document(document, label)
     return ["#{label}: top-level value must be a JSON object"] unless document.is_a?(Hash)
 
-    failures = []
+    failures = validate_extra_fields(document, TOP_LEVEL_FIELDS, label, scope: "top-level")
     failures << "#{label}: schema must be #{SCHEMA.inspect}" unless document["schema"] == SCHEMA
     receipt = document["execution_provenance"]
     unless receipt.is_a?(Hash)
@@ -96,6 +100,7 @@ module ValidateExecutionProvenance
       return failures
     end
 
+    failures.concat(validate_extra_fields(receipt, REQUIRED_FIELDS, "#{label}: execution_provenance"))
     REQUIRED_FIELDS.each do |field|
       failures << "#{label}: execution_provenance.#{field} must be present" unless receipt.key?(field)
     end
@@ -108,6 +113,7 @@ module ValidateExecutionProvenance
     failures.concat(validate_metadata(receipt, "#{label}: execution_provenance"))
     failures.concat(validate_route_tuple(receipt["requested"], "#{label}: execution_provenance.requested", known: true))
     failures.concat(validate_route_tuple(receipt["observed"], "#{label}: execution_provenance.observed", known: false))
+    failures.concat(validate_route_tuple(receipt["coordinator"], "#{label}: execution_provenance.coordinator", known: false))
     unless BINDING_SOURCES.include?(receipt["binding_source"])
       failures << "#{label}: execution_provenance.binding_source must be one of: #{BINDING_SOURCES.join(', ')}"
     end
@@ -123,14 +129,15 @@ module ValidateExecutionProvenance
       next unless receipt.key?(field)
 
       failures << "#{label}.#{field} must be a non-empty string" unless non_empty_string?(receipt[field])
-      if unknown_sentinel_variant?(receipt[field])
-        failures << "#{label}.#{field} must use literal UNKNOWN when unknown"
+      if receipt[field] == "UNKNOWN" || unknown_sentinel_variant?(receipt[field])
+        failures << "#{label}.#{field} must be a known string"
       end
     end
 
     host = receipt["host"]
     if host.is_a?(Hash)
-      %w[executable version].each do |field|
+      failures.concat(validate_extra_fields(host, HOST_FIELDS, "#{label}.host"))
+      HOST_FIELDS.each do |field|
         unless host.key?(field)
           failures << "#{label}.host.#{field} must be explicitly present"
           next
@@ -180,9 +187,7 @@ module ValidateExecutionProvenance
     unless ATTRIBUTION_CONFIDENCES.include?(confidence)
       failures << "#{label}.attribution_confidence must be one of: #{ATTRIBUTION_CONFIDENCES.join(', ')}"
     end
-    if ATTRIBUTION_CONFIDENCES.include?(confidence) && confidence != "UNKNOWN" && commits.empty?
-      failures << "#{label}.#{confidence} attribution requires at least one influenced commit"
-    elsif confidence == "UNKNOWN" && !commits.empty?
+    if confidence == "UNKNOWN" && !commits.empty?
       failures << "#{label}.UNKNOWN attribution requires an empty influenced_commits array"
     end
     failures
@@ -211,6 +216,13 @@ module ValidateExecutionProvenance
     end
 
     requested = receipt["requested"]
+    coordinator = receipt["coordinator"]
+    coordinator_values = %w[model effort].map { |field| coordinator[field] } if coordinator.is_a?(Hash)
+    coordinator_unknown = coordinator_values&.all? { |value| value == "UNKNOWN" }
+    coordinator_known = coordinator_values&.all? { |value| non_empty_string?(value) && value != "UNKNOWN" }
+    if coordinator.is_a?(Hash) && !(coordinator_unknown || coordinator_known)
+      failures << "#{label}.coordinator must be entirely known or entirely UNKNOWN"
+    end
     same_route = requested.is_a?(Hash) && %w[model effort].all? { |field| requested[field] == observed[field] }
     case disposition
     when "bound-exact-match"
@@ -237,6 +249,12 @@ module ValidateExecutionProvenance
         failures << "#{label}.coordinator-pair-inheritance requires a known observed tuple"
       end
       failures << "#{label}.coordinator-pair-inheritance requires observed to differ from requested" if same_route
+      unless coordinator_known
+        failures << "#{label}.coordinator-pair-inheritance requires a known coordinator tuple"
+      end
+      if coordinator_known && %w[model effort].any? { |field| coordinator[field] != observed[field] }
+        failures << "#{label}.coordinator-pair-inheritance requires coordinator to equal observed"
+      end
     end
     if disposition != "bound-exact-match" && receipt["mismatch_reason"] == "UNKNOWN"
       failures << "#{label}.#{disposition} requires a non-UNKNOWN mismatch_reason"
@@ -244,14 +262,17 @@ module ValidateExecutionProvenance
     if disposition != "authorized-fallback" && receipt["recorded_authority"] != "UNKNOWN"
       failures << "#{label}.#{disposition} requires recorded_authority UNKNOWN"
     end
+    if disposition != "coordinator-pair-inheritance" && coordinator.is_a?(Hash) && !coordinator_unknown
+      failures << "#{label}.#{disposition} requires coordinator to be entirely UNKNOWN"
+    end
     failures
   end
 
   def validate_route_tuple(tuple, label, known:)
     return ["#{label} must be an object"] unless tuple.is_a?(Hash)
 
-    failures = []
-    %w[model effort].each do |field|
+    failures = validate_extra_fields(tuple, ROUTE_FIELDS, label)
+    ROUTE_FIELDS.each do |field|
       unless tuple.key?(field)
         failures << "#{label}.#{field} must be explicitly present"
         next
@@ -266,6 +287,14 @@ module ValidateExecutionProvenance
       end
     end
     failures
+  end
+
+  def validate_extra_fields(object, allowed, label, scope: nil)
+    extras = object.keys - allowed
+    return [] if extras.empty?
+
+    prefix = scope == "top-level" ? "#{label}: unknown top-level" : "#{label} unknown"
+    ["#{prefix} fields: #{extras.sort.join(', ')}"]
   end
 
   def non_empty_string?(value)
@@ -286,7 +315,7 @@ module ValidateExecutionProvenance
     return unless value.is_a?(String)
     return unless value.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/)
 
-    Time.iso8601(value)
+    DateTime.rfc3339(value)
   rescue ArgumentError
     nil
   end
