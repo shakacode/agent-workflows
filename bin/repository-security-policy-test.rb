@@ -43,29 +43,31 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_empty mutable_uses, "mutable GitHub Actions references:\n#{mutable_uses.join("\n")}"
   end
 
-  def test_non_push_workflow_jobs_disable_checkout_credentials
-    credentialed_checkouts = Dir.glob(File.join(ROOT, ".github/workflows/*.{yml,yaml}")).sort.flat_map do |path|
-      workflow = load_yaml_file(path)
-      jobs = workflow.is_a?(Hash) ? workflow["jobs"] : nil
-      next [] unless jobs.is_a?(Hash)
-
-      jobs.flat_map do |job_name, job|
-        next [] unless job.is_a?(Hash) && !job_uses_git_push?(job)
-
-        steps = job["steps"]
-        next [] unless steps.is_a?(Array)
-
-        steps.each_with_index.filter_map do |step, index|
-          next unless step.is_a?(Hash) && step["uses"].to_s.start_with?("actions/checkout@")
-          next if step.dig("with", "persist-credentials") == false
-
-          "#{path.delete_prefix("#{ROOT}/")}:jobs.#{job_name}.steps.#{index}"
-        end
-      end
-    end
+  def test_all_checkout_steps_disable_checkout_credentials
+    workflow_paths = Dir.glob(File.join(ROOT, ".github/workflows/*.{yml,yaml}")).sort
+    credentialed_checkouts = credentialed_checkout_locations(workflow_paths)
 
     assert_empty credentialed_checkouts,
-                 "checkout credentials persisted in non-push jobs:\n#{credentialed_checkouts.join("\n")}"
+                 "checkout credentials persisted:\n#{credentialed_checkouts.join("\n")}"
+  end
+
+  def test_multiline_data_containing_git_push_does_not_exempt_checkout_credentials
+    Dir.mktmpdir("repository-security-policy") do |root|
+      path = File.join(root, "heredoc.yml")
+      File.write(path, <<~YAML)
+        jobs:
+          validate:
+            steps:
+              - name: Render harmless example
+                run: |
+                  cat <<'EXAMPLE'
+                  git push origin example
+                  EXAMPLE
+              - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+      YAML
+
+      assert_equal ["heredoc.yml:jobs.validate.steps.1"], credentialed_checkout_locations([path], root: root)
+    end
   end
 
   def test_action_reference_scanner_reads_yaml_structure
@@ -230,6 +232,28 @@ class RepositorySecurityPolicyTest < Minitest::Test
     YAML.safe_load_file(path, permitted_classes: YAML_TIMESTAMP_CLASSES, aliases: true)
   end
 
+  def credentialed_checkout_locations(workflow_paths, root: ROOT)
+    workflow_paths.flat_map do |path|
+      workflow = load_yaml_file(path)
+      jobs = workflow.is_a?(Hash) ? workflow["jobs"] : nil
+      next [] unless jobs.is_a?(Hash)
+
+      jobs.flat_map do |job_name, job|
+        next [] unless job.is_a?(Hash)
+
+        steps = job["steps"]
+        next [] unless steps.is_a?(Array)
+
+        steps.each_with_index.filter_map do |step, index|
+          next unless step.is_a?(Hash) && step["uses"].to_s.start_with?("actions/checkout@")
+          next if step.dig("with", "persist-credentials") == false
+
+          "#{path.delete_prefix("#{root}/")}:jobs.#{job_name}.steps.#{index}"
+        end
+      end
+    end
+  end
+
   def action_paths(root = ROOT)
     paths = Dir.glob("**/action.{yml,yaml}", File::FNM_DOTMATCH, base: root).reject do |relative|
       SecureGitHubActions.excluded_action_root?(root, relative)
@@ -257,15 +281,6 @@ class RepositorySecurityPolicyTest < Minitest::Test
     return true if reference.match?(%r{\Adocker://[^\s@]+@sha256:[0-9a-fA-F]{64}\z})
 
     reference.match?(%r{\A[^\s@/]+/[^\s@/]+(?:/[^\s@/]+)*@[0-9a-f]{40}\z})
-  end
-
-  def job_uses_git_push?(job)
-    steps = job["steps"]
-    return false unless steps.is_a?(Array)
-
-    steps.any? do |step|
-      step.is_a?(Hash) && step["run"].to_s.match?(/(?:\A|[;&|]\s*|\n\s*)git\s+push(?:\s|\z)/)
-    end
   end
 
   def workflow_uses(workflow)
