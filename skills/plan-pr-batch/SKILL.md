@@ -133,7 +133,8 @@ grants only its explicit held-local permissions.
 
 Resolve `PR_BATCH_SKILL_DIR` and run
 `"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control" --trusted-evidence PATH
---trusted-evidence-id ID` with the versioned JSON
+--trusted-evidence-id ID --trusted-evidence-root ROOT --trust-config PATH
+--review-findings-validator PATH` with the versioned JSON
 before calling the plan launchable. For pilot plans, use the canonical matched
 pilot contract from `workflows/pr-processing.md`: at least ten matched
 representative implementation pairs and every required usage, elapsed,
@@ -143,6 +144,10 @@ on configured materially lower token and credit usage, no escaped P0/P1 regressi
 and preserved gates; otherwise retain explicit multi-target mode as rollback.
 Until #398 supplies a trusted metric-bound receipt/result, delegation mutation
 and pilot promotion remain structurally blocked and provenance stays `UNKNOWN`.
+Plan the trusted bundle/config/validator as owned regular files under the
+coordinator root, never symlinks or group/world writable. This is procedural,
+not cryptographic, trust. Human authority resolves only through `trusted_users`.
+All nested evidence expires within the bundle and within one hour.
 
 ## Workflow
 

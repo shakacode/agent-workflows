@@ -467,6 +467,11 @@ v1 file passed by explicit path and ID. Its current/expiry times, task/target,
 exact heads, capability state, and payload digest are SHA-256 bound; stdin only
 references the ID and cannot self-assert route, authority, stage, #392 review,
 #399 budget, or #398 metric evidence.
+The trusted bundle, trust config, and review validator are owner/mode checked
+regular files realpathed beneath a coordinator root. This is procedural rather
+than cryptographic trust. Human authority actors resolve through
+`trusted_users`; nested evidence has at most a one-hour, bundle-contained
+validity window, and review findings must pass the repository validator module.
 
 | Scenario class | Risk | Recommended route | Samples | Evidence strength |
 | --- | --- | --- | --- | --- |

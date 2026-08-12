@@ -607,7 +607,8 @@ case variants cannot duplicate a target or delegate back into it.
 
 Use the deterministic JSON-in/JSON-out
 `skills/pr-batch/bin/canonical-task-control --trusted-evidence PATH
---trusted-evidence-id ID` helper before launch and at the
+--trusted-evidence-id ID --trusted-evidence-root ROOT --trust-config PATH
+--review-findings-validator PATH` helper before launch and at the
 operations below. Its `canonical-task-control` v1 input and closed nested
 contracts validate the topology or exception, compact coordinator state, child
 packet/receipt lifecycle, delegation admission, budget checkpoint, and matched
@@ -622,6 +623,13 @@ operation/action/scope, task/targets, exact lane heads, capability state,
 issue/expiry times, and the canonical payload digest. The helper reports its
 SHA-256 binding. Missing, malformed, expired, `UNKNOWN`, mismatched, or
 payload-tampered trusted evidence fails closed.
+Realpath all three coordinator-provided files under `ROOT`; reject symlinks,
+non-regular files, an owner other than the effective user, and group/world
+writes. This is a procedural filesystem boundary, not a cryptographic trust
+anchor. Resolve human authority actors case-insensitively through repo-local
+`trusted_users`; nonhuman result roles stay closed by contract. Nested evidence
+must carry issued, observed, and expiry times ordered around the current time,
+inside the trusted bundle interval, with a maximum one-hour lifetime.
 
 The `launch` operation is a composite gate. It requires an input-bound trusted
 `canonical-task-policy` v1 record, a compact manifest with exact lane heads,
@@ -696,6 +704,12 @@ blocked with field-granular `UNKNOWN` until the future mechanism supplies a
 trusted metric-bound receipt/result. Unavailable #399 evidence similarly blocks
 context-amplifying actions without erasing independently permitted held-local
 stage work.
+Do not accept the schema result's `valid` string alone: load the exact
+root-bound repository `bin/validate-review-findings` module and require
+`ValidateReviewFindings.validate_document` to return zero failures for the
+in-memory document. Restrict task, lane, child, pair, and representative
+task/batch identities to portable ASCII IDs rather than relying on Unicode
+case folding.
 
 The promotion experiment is `canonical-task-matched-pilot` v1. It requires at
 least ten matched representative implementation pairs with the same task class

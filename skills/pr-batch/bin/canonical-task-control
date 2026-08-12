@@ -4,6 +4,7 @@
 require "json"
 require "digest"
 require "time"
+require "yaml"
 
 module CanonicalTaskControl
   class InvalidInput < StandardError; end
@@ -13,6 +14,13 @@ module CanonicalTaskControl
   TRUSTED_KEYS = %w[
     contract version id source actor role operation task_id targets action scope
     issued_at expires_at heads capabilities payload_digest payload
+  ].freeze
+  MAX_EVIDENCE_LIFETIME_SECONDS = 3600
+  FRESH_EVIDENCE_CONTRACTS = %w[
+    authority-evidence adhoc-authority-evidence budget-evidence typed-gate-evidence
+    stage-dependency-gate coordinator-compaction-checkpoint execution-provenance-evidence
+    dependency-gate-evidence pilot-execution-result-evidence pilot-publication-evidence
+    pilot-promotion-policy-evidence exact-diff-review-result review-findings-validation-result
   ].freeze
 
   def materialize_request(input, trusted, expected_id)
@@ -55,6 +63,9 @@ module CanonicalTaskControl
     expires_at = parse_time!(trusted["expires_at"], "expires_at")
     now = Time.now.utc
     raise InvalidInput, "trusted evidence is not current" unless issued_at <= now && expires_at > now && issued_at < expires_at
+    if expires_at - issued_at > MAX_EVIDENCE_LIFETIME_SECONDS
+      raise InvalidInput, "trusted evidence lifetime exceeds maximum"
+    end
 
     require_exact_keys!(trusted["capabilities"], %w[issue_398 issue_399])
     unless %w[unavailable available].include?(trusted["capabilities"]["issue_398"]) &&
@@ -103,7 +114,59 @@ module CanonicalTaskControl
     "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(trusted)))}"
   end
 
-  def run(input, capabilities:)
+  def secure_file_under_root!(path, root, label)
+    raise InvalidInput, "#{label} may not be a symlink" if File.symlink?(path)
+
+    real_root = File.realpath(root)
+    raise InvalidInput, "trusted evidence root must be a directory" unless File.directory?(real_root)
+
+    real_path = File.realpath(path)
+    unless real_path.start_with?("#{real_root}#{File::SEPARATOR}")
+      raise InvalidInput, "#{label} must be inside trusted evidence root"
+    end
+
+    stat = File.stat(real_path)
+    raise InvalidInput, "#{label} must be a regular file" unless stat.file?
+    raise InvalidInput, "#{label} owner must equal effective user" unless stat.uid == Process.euid
+    raise InvalidInput, "#{label} file permissions are insecure" unless (stat.mode & 0o022).zero?
+
+    real_path
+  rescue SystemCallError => e
+    raise InvalidInput, "#{label} unreadable: #{e.class}"
+  end
+
+  def load_trust_config!(path, root)
+    real_path = secure_file_under_root!(path, root, "trust config")
+    data = YAML.safe_load_file(real_path, permitted_classes: [], aliases: false)
+    raise InvalidInput, "trust config must be an object" unless data.is_a?(Hash)
+
+    users = data["trusted_users"]
+    unless users.is_a?(Array) && users.all? { |actor| known_string?(actor) }
+      raise InvalidInput, "trust config trusted_users must be an array of known actors"
+    end
+
+    users.map { |actor| canonical_scalar(actor) }.uniq
+  rescue Psych::Exception => e
+    raise InvalidInput, "trust config malformed: #{e.class}"
+  end
+
+  def load_review_validator!(path, root)
+    real_path = secure_file_under_root!(path, root, "review findings validator")
+    expected = File.join(File.realpath(root), "bin", "validate-review-findings")
+    raise InvalidInput, "review findings validator identity mismatch" unless real_path == expected
+
+    load real_path
+    unless defined?(ValidateReviewFindings) && ValidateReviewFindings.respond_to?(:validate_document)
+      raise InvalidInput, "review findings validator module unavailable"
+    end
+
+    ValidateReviewFindings
+  end
+
+  def run(input, capabilities:, trusted_users:, bundle_window:, review_validator:)
+    @trusted_users = trusted_users
+    @bundle_window = bundle_window.map { |value| parse_time!(value, "bundle validity") }
+    @review_validator = review_validator
     raise InvalidInput, "top-level JSON must be an object" unless input.is_a?(Hash)
 
     operation = input["operation"]
@@ -129,10 +192,11 @@ module CanonicalTaskControl
     task_keys << "exception" if task.is_a?(Hash) && task["topology_mode"] == "multi_target_exception"
     task_keys << "adhoc_override" if task.is_a?(Hash) && task.key?("adhoc_override")
     require_exact_keys!(task, task_keys)
-    raise InvalidInput, "task.id must be known" unless known_string?(task["id"])
+    raise InvalidInput, "task.id must be a portable ASCII id" unless portable_id?(task["id"])
     raise InvalidInput, "implementation_pr_limit must be 1 per lane" unless task["implementation_pr_limit"] == 1
 
     validate_topology!(task)
+    validate_nested_freshness!(input)
 
     unknowns = []
     accepted_child_receipts = []
@@ -221,6 +285,47 @@ module CanonicalTaskControl
       "accepted_child_receipts" => accepted_child_receipts,
       "closed_children" => closed_children
     }.merge(pilot_result.reject { |key, _value| key == "unknowns" })
+  end
+
+  def validate_nested_freshness!(value)
+    case value
+    when Array
+      value.each { |entry| validate_nested_freshness!(entry) }
+    when Hash
+      if FRESH_EVIDENCE_CONTRACTS.include?(value["contract"]) && value["support"] != "unsupported"
+        validate_evidence_window!(value)
+      end
+      value.each_value { |entry| validate_nested_freshness!(entry) }
+    end
+  end
+
+  def validate_evidence_window!(evidence)
+    %w[issued_at observed_at expires_at].each do |field|
+      raise InvalidInput, "nested evidence #{field} is required" unless evidence.key?(field)
+    end
+    issued = parse_utc_time!(evidence["issued_at"], "nested evidence issued_at")
+    observed = parse_utc_time!(evidence["observed_at"], "nested evidence observed_at")
+    expires = parse_utc_time!(evidence["expires_at"], "nested evidence expires_at")
+    now = Time.now.utc
+    unless issued <= observed && observed <= now && now <= expires
+      raise InvalidInput, "nested evidence is not current"
+    end
+    if expires - issued > MAX_EVIDENCE_LIFETIME_SECONDS
+      raise InvalidInput, "nested evidence lifetime exceeds maximum"
+    end
+
+    bundle_issued, bundle_expires = @bundle_window
+    return if issued >= bundle_issued && expires <= bundle_expires
+
+    raise InvalidInput, "nested evidence validity must be inside trusted bundle validity"
+  end
+
+  def parse_utc_time!(value, field)
+    raise InvalidInput, "#{field} must be RFC3339 UTC" unless rfc3339_utc?(value)
+
+    Time.iso8601(value).utc
+  rescue ArgumentError
+    raise InvalidInput, "#{field} must be RFC3339 UTC"
   end
 
   def validate_launch!(input, task)
@@ -359,13 +464,20 @@ module CanonicalTaskControl
   end
 
   def validate_bound_evidence!(evidence, contract:, task:, action:, allowed_roles:, extra_keys: [])
-    keys = %w[contract version actor role task_id repository target action scope status observed_at evidence_ref] + extra_keys
+    keys = %w[
+      contract version actor role task_id repository target action scope status
+      issued_at observed_at expires_at evidence_ref
+    ] + extra_keys
     require_exact_keys!(evidence, keys)
     unless evidence["contract"] == contract && evidence["version"] == 1
       raise InvalidInput, "unsupported #{contract} contract"
     end
     raise InvalidInput, "evidence actor must be known" unless known_string?(evidence["actor"])
     raise InvalidInput, "evidence role is unauthorized" unless allowed_roles.include?(evidence["role"])
+    if %w[maintainer budget_owner].include?(evidence["role"]) &&
+       !@trusted_users.include?(canonical_scalar(evidence["actor"]))
+      raise InvalidInput, "human authority actor is not trusted"
+    end
     unless canonical_scalar(evidence["task_id"]) == canonical_scalar(task["id"])
       raise InvalidInput, "evidence task binding mismatch"
     end
@@ -391,7 +503,7 @@ module CanonicalTaskControl
     dependency = pilot["dependency"]
     dependency_keys = %w[
       contract version issue actor role task_id repository target action scope
-      status observed_at result_ref
+      status issued_at observed_at expires_at result_ref
     ]
     require_exact_keys!(dependency, dependency_keys)
     unless dependency["contract"] == "dependency-gate-evidence" && dependency["version"] == 1 && dependency["issue"] == 398
@@ -459,7 +571,9 @@ module CanonicalTaskControl
     gate_regression = false
     pairs.each do |pair|
       require_exact_keys!(pair, %w[pair_id task_class context_topology ordinary multi_target])
-      %w[pair_id task_class context_topology].each do |key|
+      raise InvalidInput, "pilot pair id must be a portable ASCII id" unless portable_id?(pair["pair_id"])
+
+      %w[task_class context_topology].each do |key|
         raise InvalidInput, "pilot pair #{key} must be known" unless known_string?(pair[key])
       end
       pair_ids << pair["pair_id"]
@@ -525,7 +639,10 @@ module CanonicalTaskControl
     require_exact_keys!(arm, keys)
     raise InvalidInput, "pilot arm identity mismatch" unless arm["arm_identity"] == expected_arm
 
-    %w[task_identity batch_identity task_class context_topology].each do |key|
+    %w[task_identity batch_identity].each do |key|
+      raise InvalidInput, "pilot arm #{key} must be a portable ASCII id" unless portable_id?(arm[key])
+    end
+    %w[task_class context_topology].each do |key|
       raise InvalidInput, "pilot arm #{key} must be known" unless known_string?(arm[key])
     end
     unless arm["task_class"] == pair["task_class"] && arm["context_topology"] == pair["context_topology"]
@@ -564,7 +681,7 @@ module CanonicalTaskControl
   def validate_pilot_execution_evidence!(evidence, arm)
     keys = %w[
       contract version support producer_issue actor role task_identity batch_identity
-      arm_identity task_class context_topology status observed_at receipt_ref result_ref
+      arm_identity task_class context_topology status issued_at observed_at expires_at receipt_ref result_ref
     ]
     require_exact_keys!(evidence, keys)
     unless evidence["contract"] == "pilot-execution-result-evidence" && evidence["version"] == 1
@@ -742,7 +859,7 @@ module CanonicalTaskControl
   def validate_usage!(usage, source:, target:)
     keys = %w[
       contract version support producer_issue actor role source_task_id target_task_id
-      repository target action scope status observed_at receipt_ref result_ref
+      repository target action scope status issued_at observed_at expires_at receipt_ref result_ref
       source_edge_delta target_self_delta target_descendant_delta
       aggregate_physical_delta reconciliation
     ]
@@ -844,7 +961,7 @@ module CanonicalTaskControl
     boundaries = checkpoints.map do |checkpoint|
       keys = %w[
         contract version boundary actor role task_id repository target action
-        scope status observed_at evidence_ref
+        scope status issued_at observed_at expires_at evidence_ref
       ]
       require_exact_keys!(checkpoint, keys)
       unless checkpoint["contract"] == "coordinator-compaction-checkpoint" && checkpoint["version"] == 1
@@ -909,7 +1026,10 @@ module CanonicalTaskControl
         raise InvalidInput, "unsupported task-scoped child packet"
       end
 
-      %w[child_id lane_id role scope].each do |key|
+      %w[child_id lane_id].each do |key|
+        raise InvalidInput, "child packet #{key} must be a portable ASCII id" unless portable_id?(packet[key])
+      end
+      %w[role scope].each do |key|
         raise InvalidInput, "child packet #{key} must be known" unless known_string?(packet[key])
       end
       %w[acceptance_criteria verification stop_conditions].each do |key|
@@ -931,6 +1051,9 @@ module CanonicalTaskControl
       require_exact_keys!(receipt, keys)
       unless receipt["contract"] == "compact-child-receipt" && receipt["version"] == 1
         raise InvalidInput, "unsupported compact child receipt"
+      end
+      unless portable_id?(receipt["child_id"]) && portable_id?(receipt["lane_id"])
+        raise InvalidInput, "child receipt ids must be portable ASCII ids"
       end
       raise InvalidInput, "child receipt status must be completed" unless receipt["status"] == "completed"
       raise InvalidInput, "child receipt summary must be known" unless known_string?(receipt["summary"])
@@ -960,6 +1083,9 @@ module CanonicalTaskControl
                           ])
       raise InvalidInput, "completed children must be closed" unless state["status"] == "closed"
       raise InvalidInput, "completed children are non-resumable by default" unless state["resumable"] == false
+      unless portable_id?(state["child_id"]) && portable_id?(state["lane_id"])
+        raise InvalidInput, "child state ids must be portable ASCII ids"
+      end
 
       validate_review_binding!(state)
       validate_child_binding!(state, task_lanes, task)
@@ -997,6 +1123,7 @@ module CanonicalTaskControl
     require_exact_keys!(result, %w[
                           contract version base_sha head_sha round review_package_ref status findings
                           findings_evidence_ref batch_id task_id plan_id spec_id diff_identity schema_validation
+                          issued_at observed_at expires_at
                         ])
     unless result["contract"] == "exact-diff-review-result" && result["version"] == 1 && result["status"] == "verified"
       raise InvalidInput, "unsupported exact diff review result"
@@ -1012,7 +1139,9 @@ module CanonicalTaskControl
     raise InvalidInput, "review findings evidence must be durable HTTPS" unless durable_ref?(result["findings_evidence_ref"])
 
     validation = result["schema_validation"]
-    require_exact_keys!(validation, %w[contract version validator status findings_digest])
+    require_exact_keys!(validation, %w[
+                          contract version validator status findings_digest issued_at observed_at expires_at
+                        ])
     unless validation["contract"] == "review-findings-validation-result" && validation["version"] == 1 &&
            validation["validator"] == "bin/validate-review-findings" && validation["status"] == "valid"
       raise InvalidInput, "trusted review findings schema validation is required"
@@ -1020,6 +1149,12 @@ module CanonicalTaskControl
 
     digest = "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(result['findings'])))}"
     raise InvalidInput, "review findings digest mismatch" unless validation["findings_digest"] == digest
+
+    document = { "schema" => "review-finding-v0", "review_findings" => result["findings"] }
+    failures = @review_validator.validate_document(document, "trusted review findings")
+    return if failures.empty?
+
+    raise InvalidInput, "repository review findings validation failed: #{failures.join('; ')}"
   end
 
   def child_binding(record)
@@ -1176,7 +1311,7 @@ module CanonicalTaskControl
 
   def validate_lane!(lane)
     require_exact_keys!(lane, %w[id repository target])
-    raise InvalidInput, "lane.id must be known" unless known_string?(lane["id"])
+    raise InvalidInput, "lane.id must be a portable ASCII id" unless portable_id?(lane["id"])
 
     validate_target!(lane.slice("repository", "target"))
   end
@@ -1190,6 +1325,10 @@ module CanonicalTaskControl
 
   def known_string?(value)
     value.is_a?(String) && !value.strip.empty? && value.strip != "UNKNOWN"
+  end
+
+  def portable_id?(value)
+    value.is_a?(String) && value.match?(/\A[A-Za-z0-9][A-Za-z0-9_.:-]*\z/)
   end
 
   def known_string_array?(value)
@@ -1245,36 +1384,53 @@ end
 
 if ARGV == ["--help"]
   puts <<~HELP
-    Usage: canonical-task-control --trusted-evidence PATH --trusted-evidence-id ID < input.json
+    Usage: canonical-task-control --trusted-evidence PATH --trusted-evidence-id ID \
+      --trusted-evidence-root ROOT --trust-config PATH \
+      --review-findings-validator PATH < input.json
 
     Validate canonical-task-control v1 JSON and emit one deterministic decision.
     Operations: launch, accept_child_receipt, delegation, budget_action,
     pilot_evaluation. The helper is read-only and performs no external mutation.
   HELP
   exit 0
-elsif ARGV.length != 4 || ARGV[0] != "--trusted-evidence" || ARGV[2] != "--trusted-evidence-id"
+elsif ARGV.length.odd?
   warn "INVALID_INPUT: trusted evidence is required"
   exit 1
 end
 
-trusted_path = ARGV[1]
-trusted_id = ARGV[3]
-if !CanonicalTaskControl.known_string?(trusted_path) || !CanonicalTaskControl.known_string?(trusted_id)
+options = ARGV.each_slice(2).to_h
+required_options = %w[
+  --trusted-evidence --trusted-evidence-id --trusted-evidence-root --trust-config
+  --review-findings-validator
+]
+unless ARGV.length == required_options.length * 2 && options.keys.sort == required_options.sort
+  warn "INVALID_INPUT: trusted evidence is required"
+  exit 1
+end
+
+trusted_path = options["--trusted-evidence"]
+trusted_id = options["--trusted-evidence-id"]
+trusted_root = options["--trusted-evidence-root"]
+trust_config_path = options["--trust-config"]
+review_validator_path = options["--review-findings-validator"]
+if [trusted_path, trusted_id, trusted_root, trust_config_path, review_validator_path].any? do |value|
+     !CanonicalTaskControl.known_string?(value)
+   end
   warn "INVALID_INPUT: trusted evidence path/id invalid"
   exit 1
 end
 
 begin
-  trusted = JSON.parse(File.read(trusted_path))
-rescue Errno::ENOENT, Errno::EACCES, JSON::ParserError => e
-  warn "INVALID_INPUT: trusted evidence unreadable: #{e.class}"
-  exit 1
-end
-
-begin
+  trusted_realpath = CanonicalTaskControl.secure_file_under_root!(trusted_path, trusted_root, "trusted evidence")
+  trusted_users = CanonicalTaskControl.load_trust_config!(trust_config_path, trusted_root)
+  review_validator = CanonicalTaskControl.load_review_validator!(review_validator_path, trusted_root)
+  trusted = JSON.parse(File.read(trusted_realpath))
   input = JSON.parse($stdin.read)
   materialized, trusted_binding, capabilities = CanonicalTaskControl.materialize_request(input, trusted, trusted_id)
-  decision = CanonicalTaskControl.run(materialized, capabilities: capabilities)
+  decision = CanonicalTaskControl.run(
+    materialized, capabilities: capabilities, trusted_users: trusted_users,
+                  bundle_window: trusted.values_at("issued_at", "expires_at"), review_validator: review_validator
+  )
   decision["trusted_evidence_id"] = trusted_id
   decision["trusted_evidence_binding"] = trusted_binding
   puts JSON.generate(decision)

@@ -9,6 +9,8 @@ require "tempfile"
 require "time"
 
 HELPER = File.expand_path("canonical-task-control", __dir__)
+REPO_ROOT = File.expand_path("../../..", __dir__)
+REVIEW_VALIDATOR = File.join(REPO_ROOT, "bin", "validate-review-findings")
 
 class CanonicalTaskControlTest < Minitest::Test
   def test_launch_rejects_a_bare_task_without_composite_gate_evidence
@@ -63,6 +65,65 @@ class CanonicalTaskControlTest < Minitest::Test
     _result, stderr, status = run_helper(input, trusted_bundle: bundle)
     refute status.success?
     assert_includes stderr, "payload digest mismatch"
+  end
+
+  def test_group_or_world_writable_trusted_evidence_fails_closed
+    input = launch_input
+    bundle = trusted_bundle_for(input)
+    Tempfile.create(["canonical-task-insecure", ".json"], __dir__) do |file|
+      file.write(JSON.generate(bundle))
+      file.flush
+      File.chmod(0o666, file.path)
+      request = input.slice("contract", "version", "operation", "task").merge(
+        "trusted_evidence_refs" => [bundle.fetch("id")]
+      )
+      _stdout, stderr, status = Open3.capture3(
+        "ruby", HELPER, "--trusted-evidence", file.path,
+        "--trusted-evidence-id", bundle.fetch("id"),
+        "--trusted-evidence-root", REPO_ROOT,
+        "--trust-config", File.join(REPO_ROOT, ".agents", "trusted-github-actors.yml"),
+        "--review-findings-validator", REVIEW_VALIDATOR,
+        stdin_data: JSON.generate(request)
+      )
+
+      refute status.success?
+      assert_includes stderr, "trusted evidence file permissions are insecure"
+    end
+  end
+
+  def test_symlinked_or_outside_root_trusted_evidence_fails_closed
+    input = launch_input
+    bundle = trusted_bundle_for(input)
+    request = input.slice("contract", "version", "operation", "task").merge(
+      "trusted_evidence_refs" => [bundle.fetch("id")]
+    )
+    Tempfile.create(["canonical-task-outside", ".json"]) do |outside|
+      outside.write(JSON.generate(bundle))
+      outside.flush
+      Tempfile.create(["canonical-task-trust", ".yml"], REPO_ROOT) do |trust|
+        trust.write("trusted_users:\n  - trusted-actor-1\n")
+        trust.flush
+        _stdout, stderr, status = capture_helper(request, bundle.fetch("id"), outside.path, trust.path)
+        refute status.success?
+        assert_includes stderr, "inside trusted evidence root"
+      end
+    end
+
+    Tempfile.create(["canonical-task-real", ".json"], REPO_ROOT) do |real|
+      real.write(JSON.generate(bundle))
+      real.flush
+      link = File.join(REPO_ROOT, ".canonical-task-symlink-#{Process.pid}")
+      File.symlink(real.path, link)
+      Tempfile.create(["canonical-task-trust", ".yml"], REPO_ROOT) do |trust|
+        trust.write("trusted_users:\n  - trusted-actor-1\n")
+        trust.flush
+        _stdout, stderr, status = capture_helper(request, bundle.fetch("id"), link, trust.path)
+        refute status.success?
+        assert_includes stderr, "may not be a symlink"
+      end
+    ensure
+      File.unlink(link) if link && File.exist?(link)
+    end
   end
 
   def test_ordinary_topology_allows_one_repository_qualified_target_lane_and_pr_limit
@@ -127,6 +188,29 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "#398 mechanism is unavailable"
   end
 
+  def test_old_nested_evidence_fails_even_inside_a_current_trusted_bundle
+    input = launch_input
+    evidence = input["budget_gate"].first
+    evidence["issued_at"] = "2000-01-01T00:00:00Z"
+    evidence["observed_at"] = "2000-01-01T00:00:01Z"
+    evidence["expires_at"] = "2000-01-01T00:10:00Z"
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "nested evidence is not current"
+  end
+
+  def test_untrusted_human_actor_cannot_authorize
+    input = launch_input
+    input["policy"]["evidence"].first["actor"] = "not-in-trusted-users"
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "human authority actor is not trusted"
+  end
+
   def test_multi_target_mode_requires_and_accepts_a_complete_versioned_exception
     input = launch_input(multi_target_task)
 
@@ -167,6 +251,20 @@ class CanonicalTaskControlTest < Minitest::Test
 
     refute status.success?
     assert_includes stderr, "canonical targets must be unique case-insensitively"
+  end
+
+  def test_operational_ids_reject_non_ascii_casefold_ambiguity
+    input = launch_input
+    input["task"]["id"] = "task-Straße"
+    input["policy"]["evidence"].each { |record| record["task_id"] = "task-Straße" }
+    input["lifecycle"]["checkpoints"].each { |record| record["task_id"] = "task-Straße" }
+    input["budget_gate"].each { |record| record["task_id"] = "task-Straße" }
+    input["typed_gates"].each { |record| record["task_id"] = "task-Straße" }
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "portable ASCII id"
   end
 
   def test_ad_hoc_target_requires_a_trusted_task_specific_durable_override
@@ -234,6 +332,20 @@ class CanonicalTaskControlTest < Minitest::Test
     _result, stderr, status = run_helper(input)
     refute status.success?
     assert_includes stderr, "findings digest mismatch"
+  end
+
+  def test_recomputed_digest_cannot_bypass_repository_review_findings_validator
+    input = child_receipt_input
+    invalid_findings = ["not-a-review-finding-object"]
+    receipt = input["children"]["receipts"].first
+    receipt["findings"] = invalid_findings
+    receipt["review_result"]["findings"] = invalid_findings
+    receipt["review_result"]["schema_validation"]["findings_digest"] = findings_digest(invalid_findings)
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "repository review findings validation failed"
   end
 
   def test_nested_unknown_manifest_and_child_evidence_fail_closed
@@ -692,7 +804,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "action" => "compact_coordinator",
       "scope" => "canonical task control",
       "status" => "satisfied",
-      "observed_at" => "2026-08-12T12:00:00Z",
+      **evidence_times,
       "evidence_ref" => "https://example.test/checkpoints/#{boundary}"
     }
   end
@@ -709,7 +821,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "action" => action,
       "scope" => "canonical task control",
       "status" => "passed",
-      "observed_at" => "2026-08-12T12:00:00Z",
+      **evidence_times,
       "evidence_ref" => "https://example.test/evidence/#{contract}/#{action}"
     }
     if contract == "budget-evidence"
@@ -718,6 +830,15 @@ class CanonicalTaskControlTest < Minitest::Test
       evidence["unit"] = "tokens"
     end
     evidence
+  end
+
+  def evidence_times
+    now = Time.now.utc
+    {
+      "issued_at" => (now - 30).iso8601,
+      "observed_at" => (now - 20).iso8601,
+      "expires_at" => (now + 300).iso8601
+    }
   end
 
   def delegation_input(target_state:, context:, threshold:, message_class:, human_approval:)
@@ -735,7 +856,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "action" => "delegation",
       "scope" => "source edge and target execution",
       "status" => "verified",
-      "observed_at" => "2026-08-12T12:00:00Z",
+      **evidence_times,
       "receipt_ref" => "https://example.test/receipts/398/delegation",
       "result_ref" => "https://example.test/results/398/delegation",
       "source_edge_delta" => 10,
@@ -784,7 +905,7 @@ class CanonicalTaskControlTest < Minitest::Test
   def unsupported_usage
     keys = %w[
       producer_issue actor role source_task_id target_task_id repository target
-      action scope status observed_at receipt_ref result_ref source_edge_delta
+      action scope status issued_at observed_at expires_at receipt_ref result_ref source_edge_delta
       target_self_delta target_descendant_delta aggregate_physical_delta reconciliation
     ]
     {
@@ -852,7 +973,7 @@ class CanonicalTaskControlTest < Minitest::Test
         "action" => "evaluate_pilot",
         "scope" => "canonical task matched pilot",
         "status" => "satisfied",
-        "observed_at" => "2026-08-12T12:00:00Z",
+        **evidence_times,
         "result_ref" => "https://example.test/results/398/dependency"
       },
       "pairs" => pairs,
@@ -885,7 +1006,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "arm_identity" => arm,
       "task_class" => "implementation-bounded",
       "context_topology" => "one-maker-one-checker",
-      "status" => "verified", "observed_at" => "2026-08-12T12:00:00Z",
+      "status" => "verified", **evidence_times,
       "receipt_ref" => "https://example.test/receipts/398/#{slug}/#{index}",
       "result_ref" => "https://example.test/results/398/#{slug}/#{index}"
     }
@@ -894,7 +1015,7 @@ class CanonicalTaskControlTest < Minitest::Test
   def unsupported_pilot_evidence
     keys = %w[
       producer_issue actor role task_identity batch_identity arm_identity task_class
-      context_topology status observed_at receipt_ref result_ref
+      context_topology status issued_at observed_at expires_at receipt_ref result_ref
     ]
     {
       "contract" => "pilot-execution-result-evidence", "version" => 1,
@@ -950,12 +1071,14 @@ class CanonicalTaskControlTest < Minitest::Test
             "round" => 1,
             "review_package_ref" => "https://example.test/reviews/packages/checker-402-round-1",
             "status" => "verified", "findings" => findings,
+            **evidence_times,
             "findings_evidence_ref" => "https://example.test/reviews/results/checker-402-round-1",
             **review_identity,
             "schema_validation" => {
               "contract" => "review-findings-validation-result", "version" => 1,
               "validator" => "bin/validate-review-findings", "status" => "valid",
-              "findings_digest" => findings_digest(findings)
+              "findings_digest" => findings_digest(findings),
+              **evidence_times
             }
           }
         }],
@@ -990,32 +1113,43 @@ class CanonicalTaskControlTest < Minitest::Test
     return run_helper_without_trusted(input) unless trusted
 
     bundle = trusted_bundle || trusted_bundle_for(input)
-    Tempfile.create(["canonical-task-trusted", ".json"]) do |file|
+    Tempfile.create(["canonical-task-trusted", ".json"], REPO_ROOT) do |file|
       file.write(JSON.generate(bundle))
       file.flush
-      request = input.slice("contract", "version", "operation", "task").merge(
-        "trusted_evidence_refs" => ["trusted-evidence-1"]
-      )
-      stdout, stderr, status = Open3.capture3(
-        "ruby", HELPER, "--trusted-evidence", file.path,
-        "--trusted-evidence-id", "trusted-evidence-1",
-        stdin_data: JSON.generate(request)
-      )
-      return [stdout.empty? ? {} : JSON.parse(stdout), stderr, status]
+      Tempfile.create(["canonical-task-trust", ".yml"], REPO_ROOT) do |trust|
+        trust.write("trusted_users:\n  - trusted-actor-1\n")
+        trust.flush
+        request = input.slice("contract", "version", "operation", "task").merge(
+          "trusted_evidence_refs" => ["trusted-evidence-1"]
+        )
+        stdout, stderr, status = capture_helper(request, "trusted-evidence-1", file.path, trust.path)
+        return [stdout.empty? ? {} : JSON.parse(stdout), stderr, status]
+      end
     end
   end
 
   def run_request_with_bundle(request, bundle)
-    Tempfile.create(["canonical-task-trusted", ".json"]) do |file|
+    Tempfile.create(["canonical-task-trusted", ".json"], REPO_ROOT) do |file|
       file.write(JSON.generate(bundle))
       file.flush
-      stdout, stderr, status = Open3.capture3(
-        "ruby", HELPER, "--trusted-evidence", file.path,
-        "--trusted-evidence-id", bundle.fetch("id"),
-        stdin_data: JSON.generate(request)
-      )
-      return [stdout.empty? ? {} : JSON.parse(stdout), stderr, status]
+      Tempfile.create(["canonical-task-trust", ".yml"], REPO_ROOT) do |trust|
+        trust.write("trusted_users:\n  - trusted-actor-1\n")
+        trust.flush
+        stdout, stderr, status = capture_helper(request, bundle.fetch("id"), file.path, trust.path)
+        return [stdout.empty? ? {} : JSON.parse(stdout), stderr, status]
+      end
     end
+  end
+
+  def capture_helper(request, id, evidence_path, trust_path)
+    Open3.capture3(
+      "ruby", HELPER, "--trusted-evidence", evidence_path,
+      "--trusted-evidence-id", id,
+      "--trusted-evidence-root", REPO_ROOT,
+      "--trust-config", trust_path,
+      "--review-findings-validator", REVIEW_VALIDATOR,
+      stdin_data: JSON.generate(request)
+    )
   end
 
   def run_helper_without_trusted(input)
@@ -1038,7 +1172,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "action" => input.fetch("operation"),
       "scope" => "canonical task control",
       "issued_at" => (Time.now.utc - 60).iso8601,
-      "expires_at" => (Time.now.utc + 3600).iso8601,
+      "expires_at" => (Time.now.utc + 3000).iso8601,
       "heads" => input.dig("manifest", "current_heads") ||
         input.fetch("task").fetch("lanes").to_h do |lane|
           [lane.fetch("id"), "8cf266b0c1753797e56aefb1b152a16edd4b5a46"]

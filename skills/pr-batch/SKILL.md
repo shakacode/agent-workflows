@@ -57,7 +57,8 @@ a stronger supervisor route is not justification.
 
 Resolve `PR_BATCH_SKILL_DIR`, then run
 `"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control" --trusted-evidence PATH
---trusted-evidence-id ID` with the canonical
+--trusted-evidence-id ID --trusted-evidence-root ROOT --trust-config PATH
+--review-findings-validator PATH` with the canonical
 `canonical-task-control` v1 JSON before launch, child-receipt acceptance,
 cross-task delegation, and the context-amplifying #399 checkpoints (delegation,
 resume, worker spawn, retry, and review wave). Follow
@@ -71,7 +72,11 @@ trusted record ID. A separate coordinator-owned closed
 `canonical-task-trusted-evidence` v1 file binds operation, task, targets, exact
 lane heads, capability state, and payload digest; the decision reports its
 SHA-256 binding. Stdin cannot grant itself policy, authority, stage, review,
-budget, or telemetry trust.
+budget, or telemetry trust. The helper realpaths coordinator-provided files
+under `ROOT`, rejecting symlinks, non-regular files, wrong ownership, and
+group/world writes. These procedural seams do not provide cryptographic trust.
+Human authority actors must be in the trust config's `trusted_users`; closed
+nonhuman result roles remain contract-specific.
 
 `launch` is a composite gate, never a bare topology check. Supply the trusted
 `canonical-task-policy` v1 record, compact manifest with exact lane heads,
@@ -95,7 +100,10 @@ and all ordinary budget/ownership/replacement gates pass.
 Packet, receipt, closed state, and trusted #392 result bind the exact
 batch/task/plan/spec, lane/target/role/scope, diff identity, base/head, package,
 and review round. Findings require a trusted schema-validator result for their
-exact digest.
+exact digest plus a successful in-memory call to the identity-checked repository
+`ValidateReviewFindings.validate_document` implementation. Nested evidence is
+current only when issued/observed/expiry are ordered, inside the bundle window,
+and no more than one hour apart. Operational IDs use portable ASCII syntax.
 
 Cross-task delegation binds source and target task plus repository-qualified
 target identities. Coalesce messages when the target is active and do not wake
