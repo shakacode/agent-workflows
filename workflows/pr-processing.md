@@ -2167,7 +2167,8 @@ and public claim-comment operation in this section.
   do not infer support from a different backend implementation.
 - When the trusted repo seam sets `coordination_backend: n/a` and applicability is
   `coordination_not_applicable`, skip private claims and public claim comments and
-  record the trusted single-controller assumption in durable coordinator state.
+  record the trusted single-operator assumption in the Lane Card and final handoff
+  as applicability evidence, without a `coordination:` declaration.
   If applicability is `coordination_required`, `n/a` is not a waiver: serialize
   into one controlled session and re-evaluate, or stop before launch.
 - For an ad-hoc lane when the configured private backend is unavailable, public claim fallback is unavailable because there is no issue or PR comment surface.
