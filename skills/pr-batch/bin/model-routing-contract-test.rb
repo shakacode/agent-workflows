@@ -261,6 +261,8 @@ DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN =
   /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\b/i
 DIRECT_INDEPENDENT_BLOCKER_FIRST_CLAUSE_PATTERN =
   /\A\s*(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\s*,\s*(?:while|and)\s+/i
+NEUTRAL_ROUTE_PREDICATE_WITH_INDEPENDENT_BLOCKER_PATTERN =
+  /\A\s*(?:an?\s+)?(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+is\s+(?:recorded|logged|observed|noted)\s*;\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\b/i
 INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN =
   /\bonly\s+an\s+independent\s+(?:risk|scope|evidence|authority)\s+gate\s+blocks\s+execution\s+when\s+/i
 CONCRETE_INDEPENDENT_BLOCKER_SENTENCE_PATTERN =
@@ -457,6 +459,13 @@ def strip_independent_blocker_first_clause(sentence)
   remaining
 end
 
+def strip_neutral_route_predicate_with_independent_blocker_clause(sentence)
+  neutral_clause = sentence.match(NEUTRAL_ROUTE_PREDICATE_WITH_INDEPENDENT_BLOCKER_PATTERN)
+  return sentence unless neutral_clause
+
+  sentence[neutral_clause.end(0)..]
+end
+
 def strip_route_occurrence_with_independent_blocker_clause(sentence)
   subject = sentence.match(ROUTE_ONLY_SUBJECT_PATTERN)
   return sentence unless subject
@@ -649,7 +658,8 @@ end
 
 def unguarded_route_only_sentence(sentence)
   blocker_first_clause_stripped = strip_independent_blocker_first_clause(sentence)
-  gate_first_clause_stripped = strip_independent_gate_first_clause(blocker_first_clause_stripped)
+  neutral_predicate_stripped = strip_neutral_route_predicate_with_independent_blocker_clause(blocker_first_clause_stripped)
+  gate_first_clause_stripped = strip_independent_gate_first_clause(neutral_predicate_stripped)
   independent_blocker_stripped = strip_route_occurrence_with_independent_blocker_clause(gate_first_clause_stripped)
   permitted_clause_stripped = strip_negated_route_outcome_with_independent_blocker_clause(independent_blocker_stripped)
   strip_allowed_route_only_outcome_clauses(permitted_clause_stripped)
@@ -1366,6 +1376,10 @@ class ModelRoutingContractTest < Minitest::Test
       "direct blocker followed by unconditional different route" => "A route mismatch does not stop the lane; destructive scope expansion blocks execution, yet a different route disqualifies the lane.",
       "same-sentence independent blocker followed by inherited route" => "A route mismatch occurs, but an exact-head CI gate blocks launch, yet an inherited route blocks launch.",
       "inherited route owns blocker-first clause" => "An inherited route blocks launch, while a route mismatch is merely recorded.",
+      "neutral route predicate followed by inherited route blocker" => "A route mismatch is recorded; an inherited route blocks launch.",
+      "neutral route predicate followed by different route blocker" => "A route mismatch is noted; a different route blocks launch.",
+      "neutral route predicate followed by pronoun blocker" => "A route mismatch is observed; it blocks launch.",
+      "neutral route predicate followed by bare blocker" => "A route mismatch is logged; blocks launch.",
       "exact-head CI blocker followed by unconditional route outcome" => "A route mismatch does not stop the lane; an exact-head CI gate blocks execution, yet an inherited route forbids launch.",
       "unconditional outcome before direct blocker" => "A different route disqualifies the lane; a route mismatch does not stop the lane; destructive scope expansion blocks execution.",
       "prohibition between permitted clause and independent blocker" => "A route mismatch does not stop the lane, and an inherited route forbids launch, but an independent risk gate blocks execution.",
@@ -1485,6 +1499,10 @@ class ModelRoutingContractTest < Minitest::Test
       "A credential check blocks launch, while a route mismatch is merely recorded.",
       "An exact-head CI gate blocks launch, while a route mismatch is merely recorded.",
       "An independent risk gate blocks launch, while a route mismatch is merely recorded.",
+      "A route mismatch is recorded; a credential check blocks launch.",
+      "A route mismatch is logged; an exact-head CI gate blocks launch.",
+      "A route mismatch is observed; an independent risk gate blocks execution.",
+      "A route mismatch is noted; a credential check blocks launch.",
       "A route mismatch occurs. An independent scope gate triggers. It blocks execution.",
       "A route mismatch occurs. An independent evidence gate triggers. It blocks execution.",
       "A route mismatch occurs. An independent authority gate triggers. It blocks execution.",
