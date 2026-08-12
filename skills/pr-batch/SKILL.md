@@ -56,7 +56,8 @@ lane identity and implementation-PR limit. Issue count, generic parallelism, or
 a stronger supervisor route is not justification.
 
 Resolve `PR_BATCH_SKILL_DIR`, then run
-`"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control"` with the canonical
+`"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control" --trusted-evidence PATH
+--trusted-evidence-id ID` with the canonical
 `canonical-task-control` v1 JSON before launch, child-receipt acceptance,
 cross-task delegation, and the context-amplifying #399 checkpoints (delegation,
 resume, worker spawn, retry, and review wave). Follow
@@ -65,13 +66,21 @@ Control** for the closed schemas and pilot contract. The helper is
 decision-only. Missing/malformed facts fail closed; unsupported #398 execution
 provenance stays field-granular `UNKNOWN` and retains explicit multi-target mode
 as rollback rather than inventing receipts, attribution, billing equivalence,
-or a universal compaction/promotion threshold.
+or a universal compaction/promotion threshold. Stdin references only the
+trusted record ID. A separate coordinator-owned closed
+`canonical-task-trusted-evidence` v1 file binds operation, task, targets, exact
+lane heads, capability state, and payload digest; the decision reports its
+SHA-256 binding. Stdin cannot grant itself policy, authority, stage, review,
+budget, or telemetry trust.
 
 `launch` is a composite gate, never a bare topology check. Supply the trusted
 `canonical-task-policy` v1 record, compact manifest with exact lane heads,
 task-bound plan-settlement and dispatch checkpoints, structured current
-worker-spawn budget evidence, and structured security, ownership, and typed
-stage-dependency evidence for every target. Authority, budget, checkpoint, and
+worker-spawn budget evidence, and structured security, ownership, dispatcher,
+and typed stage-dependency results for every target. Manifest gate/budget claims
+must reconcile exactly. A pending stage result returns only its explicit
+held-local permissions and never implies worker spawn, push, hosted CI, or final
+readiness. Authority, budget, checkpoint, and
 gate evidence binds actor/role, exact task/repository/target/action/scope,
 status/time, and durable evidence reference. Arbitrary strings or URLs do not
 carry authority.
@@ -83,6 +92,10 @@ handoff, and at a configured context threshold. Give each child a task-scoped
 packet and accept one compact durable receipt. Close completed children with
 `resumable: false`; resume only when explicit decision continuity justifies it
 and all ordinary budget/ownership/replacement gates pass.
+Packet, receipt, closed state, and trusted #392 result bind the exact
+batch/task/plan/spec, lane/target/role/scope, diff identity, base/head, package,
+and review round. Findings require a trusted schema-validator result for their
+exact digest.
 
 Cross-task delegation binds source and target task plus repository-qualified
 target identities. Coalesce messages when the target is active and do not wake
@@ -94,7 +107,10 @@ An unknown descendant estimate is also missing. Attribute verified #398 usage
 separately to the source edge, target self, and target descendants; require a
 durable verified receipt/result and exact arithmetic equality with the aggregate
 physical delta. Unsupported provenance stays all-`UNKNOWN` and blocks wake or
-promotion.
+promotion. At present #398 is unavailable, so available claims, delegation
+mutation, and pilot promotion fail closed. Unavailable #399 evidence likewise
+blocks context-amplifying actions while preserving independently authorized
+held-local stage permissions.
 
 ## Single-Target Mode
 

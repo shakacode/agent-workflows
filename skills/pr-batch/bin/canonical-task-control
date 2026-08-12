@@ -2,13 +2,108 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
+require "time"
 
 module CanonicalTaskControl
   class InvalidInput < StandardError; end
 
   module_function
 
-  def run(input)
+  TRUSTED_KEYS = %w[
+    contract version id source actor role operation task_id targets action scope
+    issued_at expires_at heads capabilities payload_digest payload
+  ].freeze
+
+  def materialize_request(input, trusted, expected_id)
+    raise InvalidInput, "top-level JSON must be an object" unless input.is_a?(Hash)
+
+    require_exact_keys!(input, %w[contract version operation task trusted_evidence_refs])
+    raise InvalidInput, "trusted evidence is required" unless trusted.is_a?(Hash)
+
+    require_exact_keys!(trusted, TRUSTED_KEYS)
+    unless trusted["contract"] == "canonical-task-trusted-evidence" && trusted["version"] == 1
+      raise InvalidInput, "unsupported trusted evidence contract"
+    end
+    raise InvalidInput, "trusted evidence id mismatch" unless trusted["id"] == expected_id
+    unless input["trusted_evidence_refs"] == [expected_id]
+      raise InvalidInput, "stdin must reference exactly the trusted evidence id"
+    end
+    unless trusted["source"] == "coordinator" && known_string?(trusted["actor"]) && trusted["role"] == "coordinator"
+      raise InvalidInput, "trusted evidence source/actor/role invalid"
+    end
+    unless trusted["operation"] == input["operation"] && trusted["action"] == input["operation"]
+      raise InvalidInput, "trusted evidence operation/action mismatch"
+    end
+
+    task = input["task"]
+    raise InvalidInput, "trusted evidence task binding mismatch" unless task.is_a?(Hash) &&
+                                                                        canonical_scalar(trusted["task_id"]) == canonical_scalar(task["id"]) &&
+                                                                        trusted_targets_match?(trusted["targets"], task["targets"])
+    raise InvalidInput, "trusted evidence scope invalid" unless known_string?(trusted["scope"])
+
+    heads = trusted["heads"]
+    raise InvalidInput, "trusted evidence heads must be an object" unless heads.is_a?(Hash)
+
+    expected_lanes = task.fetch("lanes").map { |lane| canonical_scalar(lane.fetch("id")) }
+    actual_lanes = heads.keys.map { |lane_id| canonical_scalar(lane_id) }
+    unless actual_lanes.uniq.length == actual_lanes.length && actual_lanes.sort == expected_lanes.sort && heads.values.all? { |sha| full_sha?(sha) }
+      raise InvalidInput, "trusted evidence heads must exactly cover task lanes"
+    end
+
+    issued_at = parse_time!(trusted["issued_at"], "issued_at")
+    expires_at = parse_time!(trusted["expires_at"], "expires_at")
+    now = Time.now.utc
+    raise InvalidInput, "trusted evidence is not current" unless issued_at <= now && expires_at > now && issued_at < expires_at
+
+    require_exact_keys!(trusted["capabilities"], %w[issue_398 issue_399])
+    unless %w[unavailable available].include?(trusted["capabilities"]["issue_398"]) &&
+           %w[unavailable available].include?(trusted["capabilities"]["issue_399"])
+      raise InvalidInput, "trusted capability values invalid"
+    end
+    if trusted["capabilities"]["issue_398"] != "unavailable"
+      raise InvalidInput, "#398 mechanism is unavailable; execution provenance must remain UNKNOWN"
+    end
+    raise InvalidInput, "trusted evidence payload must be an object" unless trusted["payload"].is_a?(Hash)
+
+    expected_payload_digest = "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(trusted['payload'])))}"
+    raise InvalidInput, "trusted evidence payload digest mismatch" unless trusted["payload_digest"] == expected_payload_digest
+
+    materialized = input.slice("contract", "version", "operation", "task").merge(trusted["payload"])
+    if materialized["manifest"] && materialized["manifest"]["current_heads"] != heads
+      raise InvalidInput, "trusted evidence head binding mismatch"
+    end
+
+    [materialized, trusted_binding(trusted), trusted["capabilities"]]
+  end
+
+  def trusted_targets_match?(left, right)
+    return false unless left.is_a?(Array) && right.is_a?(Array)
+
+    left.map { |target| canonical_target_key(target) }.sort == right.map { |target| canonical_target_key(target) }.sort
+  rescue NoMethodError
+    false
+  end
+
+  def parse_time!(value, field)
+    Time.iso8601(value.to_s).utc
+  rescue ArgumentError
+    raise InvalidInput, "trusted evidence #{field} must be RFC3339"
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash then value.keys.sort.to_h { |key| [key, canonicalize(value[key])] }
+    when Array then value.map { |entry| canonicalize(entry) }
+    else value
+    end
+  end
+
+  def trusted_binding(trusted)
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(trusted)))}"
+  end
+
+  def run(input, capabilities:)
     raise InvalidInput, "top-level JSON must be an object" unless input.is_a?(Hash)
 
     operation = input["operation"]
@@ -49,7 +144,19 @@ module CanonicalTaskControl
     pilot_result = {}
     case operation
     when "launch"
-      validate_launch!(input, task)
+      launch = validate_launch!(input, task)
+      allowed_actions = launch.fetch("permissions")
+      unless launch.fetch("stage_result") == "passed" && allowed_actions.include?("worker_spawn") &&
+             capabilities["issue_399"] == "available"
+        verdict = "block"
+        allowed_actions -= ["worker_spawn"]
+        blockers << "stage_dependency_pending_or_worker_spawn_not_permitted" unless launch.fetch("stage_result") == "passed" &&
+                                                                                    launch.fetch("permissions").include?("worker_spawn")
+        if capabilities["issue_399"] != "available"
+          blockers << "issue_399_budget_evidence_UNKNOWN"
+          unknowns << "budget_evidence"
+        end
+      end
     when "accept_child_receipt"
       validate_manifest!(input.fetch("manifest"), task: task, reject_unknown: true)
       unknowns.concat(validate_lifecycle!(input.fetch("lifecycle"), required_boundaries: ["review_wave"], task: task))
@@ -60,6 +167,13 @@ module CanonicalTaskControl
       unknowns.concat(validate_lifecycle!(lifecycle, required_boundaries: ["cross_task_handoff"], task: task))
       validate_budget_gate!(input.fetch("budget_gate"), task: task, action: "delegation")
       delegation_decision = validate_delegation!(input.fetch("delegation"), task, lifecycle["context_threshold"])
+      if capabilities["issue_398"] != "available" && %w[allow coalesce].include?(delegation_decision["verdict"])
+        delegation_decision = {
+          "verdict" => "block", "allowed_actions" => [], "wake_target" => false,
+          "blockers" => ["issue_398_execution_evidence_unavailable"],
+          "unknowns" => ["execution_provenance"]
+        }
+      end
       verdict = delegation_decision.fetch("verdict")
       allowed_actions = delegation_decision.fetch("allowed_actions")
       wake_target = delegation_decision.fetch("wake_target")
@@ -67,6 +181,14 @@ module CanonicalTaskControl
       unknowns.concat(delegation_decision.fetch("unknowns"))
     when "pilot_evaluation"
       pilot_result = validate_pilot!(input.fetch("pilot"), task)
+      if capabilities["issue_398"] != "available"
+        pilot_result = pilot_result.merge(
+          "pilot_verdict" => "retain_multi_target_rollback",
+          "token_reduction_percent" => "UNKNOWN",
+          "credit_reduction_percent" => "UNKNOWN",
+          "unknowns" => (pilot_result.fetch("unknowns") + ["execution_provenance"]).uniq.sort
+        )
+      end
       verdict = pilot_result.fetch("pilot_verdict") == "promote_ordinary_default" ? "allow" : "block"
       allowed_actions = ["publish_pilot_result"]
       unknowns.concat(pilot_result.fetch("unknowns"))
@@ -77,7 +199,14 @@ module CanonicalTaskControl
       raise InvalidInput, "unsupported budget action" unless allowed_budget_actions.include?(action)
 
       validate_budget_gate!(input.fetch("budget_gate"), task: task, action: action)
-      allowed_actions = [action]
+      if capabilities["issue_399"] == "available"
+        allowed_actions = [action]
+      else
+        verdict = "block"
+        allowed_actions = []
+        blockers << "issue_399_budget_evidence_UNKNOWN"
+        unknowns << "budget_evidence"
+      end
     end
 
     {
@@ -109,7 +238,8 @@ module CanonicalTaskControl
       raise InvalidInput, "lifecycle threshold must match the trusted policy record"
     end
 
-    validate_launch_budget!(input.fetch("budget_gate"), task)
+    budgets = validate_launch_budget!(input.fetch("budget_gate"), task)
+    reconcile_manifest_budget!(manifest.fetch("budgets"), budgets)
     validate_typed_gates!(input.fetch("typed_gates"), task, manifest)
   end
 
@@ -143,23 +273,62 @@ module CanonicalTaskControl
     raise InvalidInput, "launch budget evidence must bind #399" unless records.all? { |record| record["policy_issue"] == 399 }
 
     records.each { |record| validate_budget_evidence_values!(record) }
+    records
+  end
+
+  def reconcile_manifest_budget!(manifest_budget, records)
+    require_exact_keys!(manifest_budget, %w[status policy_issue amount unit])
+    raise InvalidInput, "manifest budget status mismatch" unless manifest_budget["status"] == "passed"
+    raise InvalidInput, "manifest budget must bind #399" unless manifest_budget["policy_issue"] == 399
+
+    amounts = records.map { |record| record["amount"] }
+    units = records.map { |record| record["unit"] }.uniq
+    return if units == [manifest_budget["unit"]] && amounts.sum == manifest_budget["amount"]
+
+    raise InvalidInput, "manifest budget does not reconcile with trusted budget results"
   end
 
   def validate_typed_gates!(records, task, manifest)
     raise InvalidInput, "typed gate evidence must be an array" unless records.is_a?(Array)
 
-    required = %w[security ownership stage_dependency]
+    required = %w[security ownership dispatcher stage_dependency]
     required.each do |gate|
       subset = records.select { |record| record.is_a?(Hash) && record["gate"] == gate }
+      evidence_contract = gate == "stage_dependency" ? "stage-dependency-gate" : "typed-gate-evidence"
       validate_target_evidence_set!(
-        subset, task, contract: "typed-gate-evidence", action: "launch_worker",
+        subset, task, contract: evidence_contract, action: "launch_worker",
                       allowed_roles: %w[maintainer coordinator security_checker ownership_checker dependency_checker],
-                      extra_keys: %w[gate lane_id base_sha head_sha]
+                      extra_keys: %w[gate lane_id base_sha head_sha result_id result permissions]
       )
-      subset.each { |record| validate_typed_gate_head!(record, task, manifest) }
+      subset.each do |record|
+        validate_typed_gate_head!(record, task, manifest)
+        raise InvalidInput, "typed gate result id must be known" unless known_string?(record["result_id"])
+        unless %w[passed pending blocked].include?(record["result"])
+          raise InvalidInput, "typed gate result must be passed, pending, or blocked"
+        end
+        raise InvalidInput, "typed gate permissions must be an array" unless record["permissions"].is_a?(Array)
+
+        allowed_permissions = %w[branch_worktree_create patch_edit commit worker_spawn]
+        unless record["permissions"].uniq.length == record["permissions"].length &&
+               (record["permissions"] - allowed_permissions).empty?
+          raise InvalidInput, "typed gate permissions are invalid"
+        end
+        if gate != "stage_dependency" && !record["permissions"].empty?
+          raise InvalidInput, "only stage dependency result may carry permissions"
+        end
+        unless manifest.fetch("gates")[gate] == record["result"]
+          raise InvalidInput, "manifest gate result mismatch"
+        end
+      end
     end
     expected_count = task.fetch("targets").length * required.length
     raise InvalidInput, "typed gates must contain exactly one required gate per target" unless records.length == expected_count
+
+    stage_records = records.select { |record| record["gate"] == "stage_dependency" }
+    stage_results = stage_records.map { |record| record["result"] }.uniq
+    raise InvalidInput, "stage dependency results must agree" unless stage_results.length == 1
+
+    { "stage_result" => stage_results.first, "permissions" => stage_records.flat_map { |record| record["permissions"] }.uniq.sort }
   end
 
   def validate_typed_gate_head!(record, task, manifest)
@@ -731,6 +900,7 @@ module CanonicalTaskControl
     packet_ids = packets.map do |packet|
       keys = %w[
         contract version child_id lane_id repository target role scope
+        batch_id task_id plan_id spec_id diff_identity
         base_sha head_sha review_round review_package_ref
         acceptance_criteria verification stop_conditions
       ]
@@ -746,7 +916,7 @@ module CanonicalTaskControl
         raise InvalidInput, "child packet #{key} must be a known array" unless known_string_array?(packet[key])
       end
       validate_review_binding!(packet)
-      validate_child_binding!(packet, task_lanes)
+      validate_child_binding!(packet, task_lanes, task)
       canonical_scalar(packet["child_id"])
     end
     raise InvalidInput, "child packet ids must be unique" unless packet_ids.uniq.length == packet_ids.length
@@ -754,7 +924,8 @@ module CanonicalTaskControl
     receipt_ids = receipts.map do |receipt|
       keys = %w[
         contract version child_id lane_id repository target status head_sha
-        role scope base_sha review_round review_package_ref summary findings
+        role scope batch_id task_id plan_id spec_id diff_identity
+        base_sha review_round review_package_ref summary findings
         verification open_decisions review_result
       ]
       require_exact_keys!(receipt, keys)
@@ -776,21 +947,22 @@ module CanonicalTaskControl
       validate_review_result!(receipt["review_result"], receipt)
       raise InvalidInput, "child receipt evidence may not contain nested UNKNOWN" if nested_unknown?(receipt)
 
-      validate_child_binding!(receipt, task_lanes)
+      validate_child_binding!(receipt, task_lanes, task)
       canonical_scalar(receipt["child_id"])
     end
     raise InvalidInput, "child receipt ids must be unique" unless receipt_ids.uniq.length == receipt_ids.length
 
     state_ids = states.map do |state|
       require_exact_keys!(state, %w[
-                            child_id lane_id repository target role scope base_sha head_sha
+                            child_id lane_id repository target role scope
+                            batch_id task_id plan_id spec_id diff_identity base_sha head_sha
                             review_round review_package_ref status resumable
                           ])
       raise InvalidInput, "completed children must be closed" unless state["status"] == "closed"
       raise InvalidInput, "completed children are non-resumable by default" unless state["resumable"] == false
 
       validate_review_binding!(state)
-      validate_child_binding!(state, task_lanes)
+      validate_child_binding!(state, task_lanes, task)
       canonical_scalar(state["child_id"])
     end
     raise InvalidInput, "child state ids must be unique" unless state_ids.uniq.length == state_ids.length
@@ -809,6 +981,12 @@ module CanonicalTaskControl
   end
 
   def validate_review_binding!(record)
+    %w[batch_id task_id plan_id spec_id].each do |key|
+      raise InvalidInput, "review #{key} must be known" unless known_string?(record[key])
+    end
+    unless record["diff_identity"].to_s.match?(/\Asha256:[0-9a-f]{64}\z/)
+      raise InvalidInput, "review diff identity must be sha256"
+    end
     raise InvalidInput, "review base/head must be full SHAs" unless full_sha?(record["base_sha"]) && full_sha?(record["head_sha"])
     raise InvalidInput, "review base and head must differ" if canonical_scalar(record["base_sha"]) == canonical_scalar(record["head_sha"])
     raise InvalidInput, "review round must be positive" unless positive_integer?(record["review_round"])
@@ -818,26 +996,43 @@ module CanonicalTaskControl
   def validate_review_result!(result, receipt)
     require_exact_keys!(result, %w[
                           contract version base_sha head_sha round review_package_ref status findings
-                          findings_evidence_ref
+                          findings_evidence_ref batch_id task_id plan_id spec_id diff_identity schema_validation
                         ])
     unless result["contract"] == "exact-diff-review-result" && result["version"] == 1 && result["status"] == "verified"
       raise InvalidInput, "unsupported exact diff review result"
     end
 
-    expected = [receipt["base_sha"], receipt["head_sha"], receipt["review_round"], receipt["review_package_ref"]]
-    actual = [result["base_sha"], result["head_sha"], result["round"], result["review_package_ref"]]
+    identity_keys = %w[batch_id task_id plan_id spec_id diff_identity]
+    expected = [receipt["base_sha"], receipt["head_sha"], receipt["review_round"], receipt["review_package_ref"]] +
+               identity_keys.map { |key| receipt[key] }
+    actual = [result["base_sha"], result["head_sha"], result["round"], result["review_package_ref"]] +
+             identity_keys.map { |key| result[key] }
     raise InvalidInput, "review result binding mismatch" unless actual == expected
     raise InvalidInput, "review result findings must equal receipt findings" unless result["findings"] == receipt["findings"]
     raise InvalidInput, "review findings evidence must be durable HTTPS" unless durable_ref?(result["findings_evidence_ref"])
+
+    validation = result["schema_validation"]
+    require_exact_keys!(validation, %w[contract version validator status findings_digest])
+    unless validation["contract"] == "review-findings-validation-result" && validation["version"] == 1 &&
+           validation["validator"] == "bin/validate-review-findings" && validation["status"] == "valid"
+      raise InvalidInput, "trusted review findings schema validation is required"
+    end
+
+    digest = "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(result['findings'])))}"
+    raise InvalidInput, "review findings digest mismatch" unless validation["findings_digest"] == digest
   end
 
   def child_binding(record)
-    %w[lane_id repository target role scope base_sha head_sha review_round review_package_ref].map do |key|
+    %w[lane_id repository target role scope batch_id task_id plan_id spec_id diff_identity base_sha head_sha review_round review_package_ref].map do |key|
       %w[lane_id repository target role].include?(key) ? canonical_scalar(record[key]) : record[key]
     end
   end
 
-  def validate_child_binding!(record, task_lanes)
+  def validate_child_binding!(record, task_lanes, task)
+    unless canonical_scalar(record["task_id"]) == canonical_scalar(task["id"])
+      raise InvalidInput, "child record task binding mismatch"
+    end
+
     lane = task_lanes[canonical_scalar(record["lane_id"])]
     raise InvalidInput, "child record lane is outside the task" unless lane
     return if canonical_target_key(record) == canonical_target_key(lane)
@@ -1050,21 +1245,39 @@ end
 
 if ARGV == ["--help"]
   puts <<~HELP
-    Usage: canonical-task-control < input.json
+    Usage: canonical-task-control --trusted-evidence PATH --trusted-evidence-id ID < input.json
 
     Validate canonical-task-control v1 JSON and emit one deterministic decision.
     Operations: launch, accept_child_receipt, delegation, budget_action,
     pilot_evaluation. The helper is read-only and performs no external mutation.
   HELP
   exit 0
-elsif !ARGV.empty?
-  warn "INVALID_INPUT: unexpected arguments"
+elsif ARGV.length != 4 || ARGV[0] != "--trusted-evidence" || ARGV[2] != "--trusted-evidence-id"
+  warn "INVALID_INPUT: trusted evidence is required"
+  exit 1
+end
+
+trusted_path = ARGV[1]
+trusted_id = ARGV[3]
+if !CanonicalTaskControl.known_string?(trusted_path) || !CanonicalTaskControl.known_string?(trusted_id)
+  warn "INVALID_INPUT: trusted evidence path/id invalid"
+  exit 1
+end
+
+begin
+  trusted = JSON.parse(File.read(trusted_path))
+rescue Errno::ENOENT, Errno::EACCES, JSON::ParserError => e
+  warn "INVALID_INPUT: trusted evidence unreadable: #{e.class}"
   exit 1
 end
 
 begin
   input = JSON.parse($stdin.read)
-  puts JSON.generate(CanonicalTaskControl.run(input))
+  materialized, trusted_binding, capabilities = CanonicalTaskControl.materialize_request(input, trusted, trusted_id)
+  decision = CanonicalTaskControl.run(materialized, capabilities: capabilities)
+  decision["trusted_evidence_id"] = trusted_id
+  decision["trusted_evidence_binding"] = trusted_binding
+  puts JSON.generate(decision)
 rescue JSON::ParserError, KeyError, CanonicalTaskControl::InvalidInput => e
   warn "INVALID_INPUT: #{e.message}"
   exit 1

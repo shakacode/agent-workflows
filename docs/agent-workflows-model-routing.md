@@ -462,6 +462,11 @@ compliance. Missing #398 receipts, unsupported observed execution, or any
 `UNKNOWN` criterion retains explicit multi-target mode as rollback; never infer
 a receipt, billing equivalence, or universal percentage from local cumulative
 counters.
+Operational decisions use a separate closed `canonical-task-trusted-evidence`
+v1 file passed by explicit path and ID. Its current/expiry times, task/target,
+exact heads, capability state, and payload digest are SHA-256 bound; stdin only
+references the ID and cannot self-assert route, authority, stage, #392 review,
+#399 budget, or #398 metric evidence.
 
 | Scenario class | Risk | Recommended route | Samples | Evidence strength |
 | --- | --- | --- | --- | --- |

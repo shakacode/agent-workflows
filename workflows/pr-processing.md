@@ -606,7 +606,8 @@ Compare repository, target, task, and lane identities case-insensitively so
 case variants cannot duplicate a target or delegate back into it.
 
 Use the deterministic JSON-in/JSON-out
-`skills/pr-batch/bin/canonical-task-control` helper before launch and at the
+`skills/pr-batch/bin/canonical-task-control --trusted-evidence PATH
+--trusted-evidence-id ID` helper before launch and at the
 operations below. Its `canonical-task-control` v1 input and closed nested
 contracts validate the topology or exception, compact coordinator state, child
 packet/receipt lifecycle, delegation admission, budget checkpoint, and matched
@@ -614,12 +615,23 @@ pilot. Malformed, missing, contradictory, or nested `UNKNOWN` evidence fails
 closed except where the contract explicitly returns an `unknowns` field and a
 non-mutating rollback/coalescing decision. The helper makes no coordination,
 repository, GitHub, child-thread, compaction, or budget mutation itself.
+Stdin references exactly one trusted evidence ID and carries no operational
+evidence. The separate coordinator-owned closed
+`canonical-task-trusted-evidence` v1 file binds source/actor/role,
+operation/action/scope, task/targets, exact lane heads, capability state,
+issue/expiry times, and the canonical payload digest. The helper reports its
+SHA-256 binding. Missing, malformed, expired, `UNKNOWN`, mismatched, or
+payload-tampered trusted evidence fails closed.
 
 The `launch` operation is a composite gate. It requires an input-bound trusted
 `canonical-task-policy` v1 record, a compact manifest with exact lane heads,
 task/target-bound `plan_settlement` and `dispatch` checkpoints, current
 structured worker-spawn budget evidence, and structured security, ownership,
-and typed stage-dependency evidence for every target. Evidence records bind
+dispatcher, and typed stage-dependency results for every target. Manifest gates
+and budgets must exactly reconcile with those results. A pending stage result
+permits only the held-local branch/edit/commit actions it explicitly carries;
+it cannot authorize worker spawn, push, hosted CI, remote review, or final
+readiness. Evidence records bind
 actor/role, exact task/repository/target/action/scope, passed/satisfied status,
 observation time, and durable HTTPS reference. A bare task, arbitrary string,
 or unbound URL never authorizes launch.
@@ -644,8 +656,10 @@ verification, and stop conditions. Accept only one matching
 `compact-child-receipt` v1 with status, exact head, summary, findings,
 verification, and open decisions. Packet, receipt, and closed state bind one to
 one across child/lane/target/role/scope plus the exact manifest head and one
-#392-compatible base/head, review package, review round, and findings-result
-record. Nested `UNKNOWN` evidence fails closed. After accepting a completed receipt, close
+#392-compatible batch/task/plan/spec identity, exact diff identity, base/head,
+review package, review round, and findings-result record. Findings require a
+trusted schema-validator result bound to their exact digest. Nested `UNKNOWN`
+evidence fails closed. After accepting a completed receipt, close
 the child and record `resumable: false`. Resume an old child only through an
 explicit new decision-continuity justification and the ordinary budget,
 ownership, and replacement gates; convenience is not continuity. A fresh child
@@ -676,6 +690,12 @@ descendants are not added twice. When #398 cannot produce the receipt or a
 field, every unsupported evidence field remains literal `UNKNOWN` and blocks
 wake/promotion; do not invent values or treat local
 cumulative counters as billing/credit evidence.
+The current contract records #398 as unavailable and rejects any assertion that
+it is available. Cross-task mutation and pilot promotion therefore remain
+blocked with field-granular `UNKNOWN` until the future mechanism supplies a
+trusted metric-bound receipt/result. Unavailable #399 evidence similarly blocks
+context-amplifying actions without erasing independently permitted held-local
+stage work.
 
 The promotion experiment is `canonical-task-matched-pilot` v1. It requires at
 least ten matched representative implementation pairs with the same task class

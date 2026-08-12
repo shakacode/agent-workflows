@@ -2,17 +2,67 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 require "minitest/autorun"
 require "open3"
+require "tempfile"
+require "time"
 
 HELPER = File.expand_path("canonical-task-control", __dir__)
 
 class CanonicalTaskControlTest < Minitest::Test
   def test_launch_rejects_a_bare_task_without_composite_gate_evidence
-    _result, stderr, status = run_helper(base_input)
+    _result, stderr, status = run_helper(base_input, trusted: false)
 
     refute status.success?
-    assert_includes stderr, "launch requires composite gate evidence"
+    assert_includes stderr, "trusted evidence is required"
+  end
+
+  def test_stdin_cannot_self_authenticate_without_separate_trusted_evidence
+    input = launch_input
+
+    _result, stderr, status = run_helper(input, trusted: false)
+
+    refute status.success?
+    assert_includes stderr, "trusted evidence is required"
+  end
+
+  def test_trusted_evidence_id_and_task_binding_must_match
+    input = launch_input
+    bundle = trusted_bundle_for(input)
+    bundle["id"] = "different-id"
+
+    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+
+    refute status.success?
+    assert_includes stderr, "trusted evidence id mismatch"
+
+    bundle = trusted_bundle_for(input)
+    bundle["task_id"] = "foreign-task"
+    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+    refute status.success?
+    assert_includes stderr, "trusted evidence task binding mismatch"
+  end
+
+  def test_expired_unknown_or_payload_tampered_trusted_evidence_fails_closed
+    input = launch_input
+    bundle = trusted_bundle_for(input)
+    bundle["expires_at"] = (Time.now.utc - 1).iso8601
+    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+    refute status.success?
+    assert_includes stderr, "not current"
+
+    bundle = trusted_bundle_for(input)
+    bundle["actor"] = "UNKNOWN"
+    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+    refute status.success?
+    assert_includes stderr, "source/actor/role invalid"
+
+    bundle = trusted_bundle_for(input)
+    bundle["payload"]["manifest"]["decisions"] = ["tampered after approval"]
+    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+    refute status.success?
+    assert_includes stderr, "payload digest mismatch"
   end
 
   def test_ordinary_topology_allows_one_repository_qualified_target_lane_and_pr_limit
@@ -20,8 +70,61 @@ class CanonicalTaskControlTest < Minitest::Test
 
     assert status.success?, stderr
     assert_equal "allow", result.fetch("verdict")
-    assert_equal ["launch"], result.fetch("allowed_actions")
+    assert_equal %w[branch_worktree_create commit patch_edit worker_spawn], result.fetch("allowed_actions")
     assert_empty result.fetch("blockers")
+  end
+
+  def test_launch_reconciles_pending_stage_and_only_returns_held_local_permissions
+    input = launch_input
+    input["manifest"]["gates"]["stage_dependency"] = "pending"
+    stage = input["typed_gates"].find { |record| record["gate"] == "stage_dependency" }
+    stage["result"] = "pending"
+    stage["permissions"] = %w[branch_worktree_create patch_edit commit]
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "block", result.fetch("verdict")
+    assert_equal %w[branch_worktree_create commit patch_edit], result.fetch("allowed_actions")
+    assert_includes result.fetch("blockers"), "stage_dependency_pending_or_worker_spawn_not_permitted"
+    refute_includes result.fetch("allowed_actions"), "push"
+  end
+
+  def test_launch_rejects_manifest_and_typed_gate_contradictions
+    input = launch_input
+    input["manifest"]["gates"]["stage_dependency"] = "pending"
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "manifest gate result mismatch"
+  end
+
+  def test_launch_blocks_worker_spawn_when_399_is_unavailable_but_preserves_held_local_permissions
+    input = launch_input
+    bundle = trusted_bundle_for(input)
+    bundle["capabilities"]["issue_399"] = "unavailable"
+
+    result, stderr, status = run_helper(input, trusted_bundle: bundle)
+
+    assert status.success?, stderr
+    assert_equal "block", result.fetch("verdict")
+    assert_equal %w[branch_worktree_create commit patch_edit], result.fetch("allowed_actions")
+    assert_includes result.fetch("unknowns"), "budget_evidence"
+  end
+
+  def test_current_helper_rejects_claim_that_398_is_available
+    input = delegation_input(
+      target_state: "active", context: 40_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    bundle = trusted_bundle_for(input)
+    bundle["capabilities"]["issue_398"] = "available"
+
+    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+
+    refute status.success?
+    assert_includes stderr, "#398 mechanism is unavailable"
   end
 
   def test_multi_target_mode_requires_and_accepts_a_complete_versioned_exception
@@ -115,6 +218,24 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "packet/receipt/state bindings must match"
   end
 
+  def test_child_receipt_rejects_swapped_plan_and_changed_findings_without_matching_validation
+    input = child_receipt_input
+    input["children"]["receipts"].first["plan_id"] = "foreign-plan"
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "review result binding mismatch"
+
+    input = child_receipt_input
+    input["children"]["receipts"].first["findings"] = [{ "severity" => "blocking", "summary" => "new" }]
+    input["children"]["receipts"].first["review_result"]["findings"] =
+      input["children"]["receipts"].first["findings"]
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "findings digest mismatch"
+  end
+
   def test_nested_unknown_manifest_and_child_evidence_fail_closed
     input = child_receipt_input
     input["manifest"]["ownership"]["checker"] = "owner-UNKNOWN-later"
@@ -140,10 +261,10 @@ class CanonicalTaskControlTest < Minitest::Test
     result, stderr, status = run_helper(input)
 
     assert status.success?, stderr
-    assert_equal "coalesce", result.fetch("verdict")
+    assert_equal "block", result.fetch("verdict")
     refute result.fetch("wake_target")
-    assert_equal ["queue_coalesced_message"], result.fetch("allowed_actions")
-    assert_empty result.fetch("unknowns")
+    assert_empty result.fetch("allowed_actions")
+    assert_includes result.fetch("unknowns"), "execution_provenance"
   end
 
   def test_idle_delegation_wakes_only_new_evidence_within_policy_or_with_human_approval
@@ -153,8 +274,8 @@ class CanonicalTaskControlTest < Minitest::Test
     )
     result, stderr, status = run_helper(within_policy)
     assert status.success?, stderr
-    assert_equal "allow", result.fetch("verdict")
-    assert result.fetch("wake_target")
+    assert_equal "block", result.fetch("verdict")
+    refute result.fetch("wake_target")
 
     unchanged = delegation_input(
       target_state: "idle", context: 40_000, threshold: 50_000,
@@ -171,8 +292,8 @@ class CanonicalTaskControlTest < Minitest::Test
     )
     result, stderr, status = run_helper(over_policy)
     assert status.success?, stderr
-    assert_equal "allow", result.fetch("verdict")
-    assert result.fetch("wake_target")
+    assert_equal "block", result.fetch("verdict")
+    refute result.fetch("wake_target")
   end
 
   def test_cross_task_wake_rejects_the_same_canonical_target_even_with_case_variants
@@ -280,7 +401,8 @@ class CanonicalTaskControlTest < Minitest::Test
     result, stderr, status = run_helper(input)
 
     assert status.success?, stderr
-    assert_equal "promote_ordinary_default", result.fetch("pilot_verdict")
+    assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict")
+    assert_includes result.fetch("unknowns"), "execution_provenance"
     assert_equal 10, result.fetch("matched_pair_count")
   end
 
@@ -329,6 +451,20 @@ class CanonicalTaskControlTest < Minitest::Test
 
     refute status.success?
     assert_includes stderr, "receipt/result references must be globally unique"
+  end
+
+  def test_stdin_cannot_change_pilot_metrics_outside_the_trusted_bundle
+    input = base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot_input)
+    bundle = trusted_bundle_for(input)
+    request = input.slice("contract", "version", "operation", "task").merge(
+      "trusted_evidence_refs" => [bundle.fetch("id")],
+      "metrics" => { "total_tokens" => 1 }
+    )
+
+    _result, stderr, status = run_request_with_bundle(request, bundle)
+
+    refute status.success?
+    assert_includes stderr, "keys must be exactly"
   end
 
   def test_malformed_exception_and_resumable_completed_child_fail_closed
@@ -392,7 +528,7 @@ class CanonicalTaskControlTest < Minitest::Test
     [[], nil, "not-an-object", 42].each do |value|
       _stdout, stderr, status = run_raw(JSON.generate(value))
       refute status.success?
-      assert_equal "INVALID_INPUT: top-level JSON must be an object\n", stderr
+      assert_equal "INVALID_INPUT: trusted evidence is required\n", stderr
     end
 
     _stdout, stderr, status = run_raw("{")
@@ -432,16 +568,24 @@ class CanonicalTaskControlTest < Minitest::Test
           action: "worker_spawn", role: "budget_owner"
         )
       end,
-      "typed_gates" => %w[security ownership stage_dependency].flat_map do |gate|
+      "typed_gates" => %w[security ownership dispatcher stage_dependency].flat_map do |gate|
         task.fetch("targets").map.with_index do |target, index|
           lane = task.fetch("lanes")[index]
           bound_evidence(
-            contract: "typed-gate-evidence", task: task, target: target,
+            contract: gate == "stage_dependency" ? "stage-dependency-gate" : "typed-gate-evidence",
+            task: task, target: target,
             action: "launch_worker", role: "coordinator"
           ).merge(
             "gate" => gate, "lane_id" => lane.fetch("id"),
             "base_sha" => "7cf266b0c1753797e56aefb1b152a16edd4b5a46",
-            "head_sha" => "8cf266b0c1753797e56aefb1b152a16edd4b5a46"
+            "head_sha" => "8cf266b0c1753797e56aefb1b152a16edd4b5a46",
+            "result_id" => "#{gate}-#{lane.fetch('id')}-result",
+            "result" => "passed",
+            "permissions" => if gate == "stage_dependency"
+                               %w[branch_worktree_create patch_edit commit worker_spawn]
+                             else
+                               []
+                             end
           )
         end
       end
@@ -523,8 +667,14 @@ class CanonicalTaskControlTest < Minitest::Test
       "requirements" => ["one canonical target"],
       "ownership" => { "maker" => "maker-aw-i402", "checker" => "checker-402" },
       "current_heads" => task.fetch("lanes").to_h { |lane| [lane.fetch("id"), "8cf266b0c1753797e56aefb1b152a16edd4b5a46"] },
-      "gates" => { "security" => "passed", "dependency" => "pending" },
-      "budgets" => { "status" => "passed", "source" => "trusted-policy-v1" },
+      "gates" => {
+        "security" => "passed", "ownership" => "passed",
+        "dispatcher" => "passed", "stage_dependency" => "passed"
+      },
+      "budgets" => {
+        "status" => "passed", "policy_issue" => 399,
+        "amount" => 50_000 * task.fetch("targets").length, "unit" => "tokens"
+      },
       "decisions" => ["ordinary topology"]
     }
   end
@@ -753,6 +903,12 @@ class CanonicalTaskControlTest < Minitest::Test
   end
 
   def child_receipt_input
+    review_identity = {
+      "batch_id" => "batch-402", "task_id" => "task-402",
+      "plan_id" => "plan-402-v1", "spec_id" => "spec-402-v1",
+      "diff_identity" => "sha256:#{'a' * 64}"
+    }
+    findings = []
     base_input.merge(
       "operation" => "accept_child_receipt",
       "manifest" => compact_manifest,
@@ -770,6 +926,7 @@ class CanonicalTaskControlTest < Minitest::Test
           "base_sha" => "7cf266b0c1753797e56aefb1b152a16edd4b5a46",
           "head_sha" => "8cf266b0c1753797e56aefb1b152a16edd4b5a46",
           "review_round" => 1,
+          **review_identity,
           "review_package_ref" => "https://example.test/reviews/packages/checker-402-round-1",
           "acceptance_criteria" => ["No blockers."], "verification" => ["targeted test"],
           "stop_conditions" => ["Stop on scope growth."]
@@ -782,8 +939,9 @@ class CanonicalTaskControlTest < Minitest::Test
           "base_sha" => "7cf266b0c1753797e56aefb1b152a16edd4b5a46",
           "status" => "completed", "head_sha" => "8cf266b0c1753797e56aefb1b152a16edd4b5a46",
           "review_round" => 1,
+          **review_identity,
           "review_package_ref" => "https://example.test/reviews/packages/checker-402-round-1",
-          "summary" => "No findings.", "findings" => [],
+          "summary" => "No findings.", "findings" => findings,
           "verification" => ["targeted test passed"], "open_decisions" => [],
           "review_result" => {
             "contract" => "exact-diff-review-result", "version" => 1,
@@ -791,8 +949,14 @@ class CanonicalTaskControlTest < Minitest::Test
             "head_sha" => "8cf266b0c1753797e56aefb1b152a16edd4b5a46",
             "round" => 1,
             "review_package_ref" => "https://example.test/reviews/packages/checker-402-round-1",
-            "status" => "verified", "findings" => [],
-            "findings_evidence_ref" => "https://example.test/reviews/results/checker-402-round-1"
+            "status" => "verified", "findings" => findings,
+            "findings_evidence_ref" => "https://example.test/reviews/results/checker-402-round-1",
+            **review_identity,
+            "schema_validation" => {
+              "contract" => "review-findings-validation-result", "version" => 1,
+              "validator" => "bin/validate-review-findings", "status" => "valid",
+              "findings_digest" => findings_digest(findings)
+            }
           }
         }],
         "states" => [{
@@ -802,6 +966,7 @@ class CanonicalTaskControlTest < Minitest::Test
           "base_sha" => "7cf266b0c1753797e56aefb1b152a16edd4b5a46",
           "head_sha" => "8cf266b0c1753797e56aefb1b152a16edd4b5a46",
           "review_round" => 1,
+          **review_identity,
           "review_package_ref" => "https://example.test/reviews/packages/checker-402-round-1",
           "status" => "closed", "resumable" => false
         }]
@@ -809,9 +974,79 @@ class CanonicalTaskControlTest < Minitest::Test
     )
   end
 
-  def run_helper(input)
+  def findings_digest(findings)
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(findings)))}"
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash then value.keys.sort.to_h { |key| [key, canonicalize(value[key])] }
+    when Array then value.map { |entry| canonicalize(entry) }
+    else value
+    end
+  end
+
+  def run_helper(input, trusted: true, trusted_bundle: nil)
+    return run_helper_without_trusted(input) unless trusted
+
+    bundle = trusted_bundle || trusted_bundle_for(input)
+    Tempfile.create(["canonical-task-trusted", ".json"]) do |file|
+      file.write(JSON.generate(bundle))
+      file.flush
+      request = input.slice("contract", "version", "operation", "task").merge(
+        "trusted_evidence_refs" => ["trusted-evidence-1"]
+      )
+      stdout, stderr, status = Open3.capture3(
+        "ruby", HELPER, "--trusted-evidence", file.path,
+        "--trusted-evidence-id", "trusted-evidence-1",
+        stdin_data: JSON.generate(request)
+      )
+      return [stdout.empty? ? {} : JSON.parse(stdout), stderr, status]
+    end
+  end
+
+  def run_request_with_bundle(request, bundle)
+    Tempfile.create(["canonical-task-trusted", ".json"]) do |file|
+      file.write(JSON.generate(bundle))
+      file.flush
+      stdout, stderr, status = Open3.capture3(
+        "ruby", HELPER, "--trusted-evidence", file.path,
+        "--trusted-evidence-id", bundle.fetch("id"),
+        stdin_data: JSON.generate(request)
+      )
+      return [stdout.empty? ? {} : JSON.parse(stdout), stderr, status]
+    end
+  end
+
+  def run_helper_without_trusted(input)
     stdout, stderr, status = Open3.capture3("ruby", HELPER, stdin_data: JSON.generate(input))
     [stdout.empty? ? {} : JSON.parse(stdout), stderr, status]
+  end
+
+  def trusted_bundle_for(input)
+    payload = input.reject { |key, _value| %w[contract version operation task].include?(key) }
+    {
+      "contract" => "canonical-task-trusted-evidence",
+      "version" => 1,
+      "id" => "trusted-evidence-1",
+      "source" => "coordinator",
+      "actor" => "coordinator-1",
+      "role" => "coordinator",
+      "operation" => input.fetch("operation"),
+      "task_id" => input.fetch("task").fetch("id"),
+      "targets" => input.fetch("task").fetch("targets"),
+      "action" => input.fetch("operation"),
+      "scope" => "canonical task control",
+      "issued_at" => (Time.now.utc - 60).iso8601,
+      "expires_at" => (Time.now.utc + 3600).iso8601,
+      "heads" => input.dig("manifest", "current_heads") ||
+        input.fetch("task").fetch("lanes").to_h do |lane|
+          [lane.fetch("id"), "8cf266b0c1753797e56aefb1b152a16edd4b5a46"]
+        end,
+      "capabilities" => { "issue_398" => "unavailable", "issue_399" => "available" },
+      "payload_digest" => findings_digest(payload),
+      "payload" => payload
+    }
   end
 
   def run_raw(json)

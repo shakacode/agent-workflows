@@ -124,9 +124,16 @@ every target. Each evidence record binds actor/role, task/repository/target,
 action/scope, status/time, and durable reference. Ordinary implementation needs
 an issue or existing PR; ad-hoc requires a task-specific durable maintainer
 override. Canonicalize repository-qualified identities case-insensitively.
+Materialize that input from one coordinator-owned closed
+`canonical-task-trusted-evidence` v1 file passed by path and exact ID; stdin
+references the ID only. Bind current time/expiry, exact lane heads, capability
+state, and payload digest. Reconcile manifest security, ownership, dispatcher,
+stage, and #399 budget claims with their typed results. Pending stage evidence
+grants only its explicit held-local permissions.
 
 Resolve `PR_BATCH_SKILL_DIR` and run
-`"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control"` with the versioned JSON
+`"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control" --trusted-evidence PATH
+--trusted-evidence-id ID` with the versioned JSON
 before calling the plan launchable. For pilot plans, use the canonical matched
 pilot contract from `workflows/pr-processing.md`: at least ten matched
 representative implementation pairs and every required usage, elapsed,
@@ -134,6 +141,8 @@ coordination, correction, acceptance, defect, and gate-compliance metric.
 Bind the threshold and publication to structured trusted evidence. Promote only
 on configured materially lower token and credit usage, no escaped P0/P1 regression,
 and preserved gates; otherwise retain explicit multi-target mode as rollback.
+Until #398 supplies a trusted metric-bound receipt/result, delegation mutation
+and pilot promotion remain structurally blocked and provenance stays `UNKNOWN`.
 
 ## Workflow
 
