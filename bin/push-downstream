@@ -8,6 +8,7 @@ require "fileutils"
 require "json"
 require "open3"
 require "optparse"
+require "securerandom"
 require "tmpdir"
 require "yaml"
 
@@ -43,10 +44,12 @@ module PushDownstream
     "git", "-c", "protocol.ext.allow=never", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}"
   ].freeze
   AUDIT_GIT_CLONE_ARGUMENTS = ["clone", "--depth", "1", "--no-tags"].freeze
+  AUDIT_GH_AUTH_ENV = "DOWNSTREAM_SEAM_AUDIT_GH_AUTH"
   PUBLISH_GIT_ENVIRONMENT = AUDIT_GIT_ENVIRONMENT.merge("GIT_CONFIG_GLOBAL" => nil).freeze
   PUBLISH_GIT_PREFIX = AUDIT_GIT_PREFIX.freeze
   FALLBACK_GIT_USER_NAME = "Agent Workflows"
   FALLBACK_GIT_USER_EMAIL = "agent-workflows@users.noreply.github.com"
+  ZERO_OID = "0" * 40
   NEW_AGENTS_HEADER = "# AGENTS.md\n"
   THIN_CLAUDE = "# CLAUDE.md\n\nSee @AGENTS.md for canonical agent instructions, commands, and policy.\n"
   CLAUDE_CONSOLIDATION_FOLLOW_UP = "existing CLAUDE.md preserved; consolidate it to import @AGENTS.md"
@@ -143,6 +146,7 @@ module PushDownstream
       raise "invalid downstream registry: defaults must be a mapping and repos must be an array"
     end
 
+    seen_repositories = {}
     repos.map do |entry|
       raise "invalid downstream registry: repo entry must be a mapping" unless entry.is_a?(Hash)
 
@@ -156,9 +160,17 @@ module PushDownstream
       unless publisher_valid_branch?(base_branch)
         raise "invalid downstream registry base_branch for #{owner}/#{repo}"
       end
+
       unless publisher_valid_branch?(pr_branch)
         raise "invalid downstream registry pr_branch for #{owner}/#{repo}"
       end
+
+      repository_key = "#{owner}/#{repo}".downcase
+      if seen_repositories.key?(repository_key)
+        raise "duplicate downstream registry repository: #{seen_repositories.fetch(repository_key)}"
+      end
+
+      seen_repositories[repository_key] = "#{owner}/#{repo}"
 
       {
         owner: owner,
@@ -1048,9 +1060,12 @@ module PushDownstream
     end
     raise "GitHub authentication is unavailable" unless publisher_authentication_ready?
 
-    publish_plan.all? { |repo, contract, consumer| publish_audited_repo(repo, contract, consumer) } ? 0 : 1
+    publish_results = publish_plan.map do |repo, contract, consumer|
+      publish_audited_repo(repo, contract, consumer)
+    end
+    publish_results.all? ? 0 : 1
   rescue RuntimeError, SystemCallError => e
-    warn "invalid publisher audit report: #{e.message}"
+    warn "publisher failed closed: #{e.message}"
     1
   end
 
@@ -1110,9 +1125,19 @@ module PushDownstream
     raise "clone destination could not be safely resolved: #{e.message}"
   end
 
+  def audit_clone_git_prefix
+    mode = ENV[AUDIT_GH_AUTH_ENV]
+    return AUDIT_GIT_PREFIX if mode.nil? || mode.empty?
+    raise "invalid audit GitHub authentication mode" unless mode == "1"
+
+    [*AUDIT_GIT_PREFIX, "-c", "credential.https://github.com.helper=!gh auth git-credential"]
+  end
+
   def publish_audited_repo(repo, contract, audit_entry)
     expected_base_sha = audit_entry.fetch("base_sha")
     expected_paths = audit_entry.fetch("changed_managed_paths").sort
+    return publisher_failure(repo, "no changed managed paths were audited") if expected_paths.empty?
+
     Dir.mktmpdir("push-downstream-publisher") do |dir|
       clone = clone_destination!(dir, repo.fetch(:repo))
       cloned = system(
@@ -1218,8 +1243,8 @@ module PushDownstream
         unless current_branch_state == branch_state && current_remote_head == remote_branch_head
           return publisher_failure(repo, "publisher branch moved before publish")
         end
-        unless publisher_git(clone, "push", "origin", "HEAD:refs/heads/#{branch}")
-          return publisher_failure(repo, "non-force publisher push failed")
+        unless publisher_publish_branch(repo, clone, branch, remote_branch_head, local_branch_head)
+          return publisher_failure(repo, "conditional non-force publisher update failed")
         end
       end
 
@@ -1244,6 +1269,120 @@ module PushDownstream
       PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", dir, *arguments,
       out: File::NULL, err: File::NULL
     )
+  end
+
+  def publisher_publish_branch(repo, clone, branch, expected_remote_head, new_head)
+    staging = "agent-workflows/staging/#{SecureRandom.hex(16)}"
+    unless publisher_git(clone, "push", "origin", "#{new_head}:refs/heads/#{staging}")
+      return false
+    end
+
+    updated = publisher_atomic_ref_update(repo, branch, expected_remote_head, new_head, staging)
+    unless updated
+      cleaned = publisher_delete_staging_ref(repo, staging, new_head)
+      warn "FAIL #{repo.fetch(:nwo)}: publisher staging ref cleanup failed: #{staging}" unless cleaned
+      return false
+    end
+
+    target_state, target_head = publisher_remote_branch_state(clone, branch)
+    staging_state, = publisher_remote_branch_state(clone, staging)
+    target_state == :present && target_head == new_head && staging_state == :absent
+  rescue RuntimeError, SystemCallError => e
+    warn "FAIL #{repo.fetch(:nwo)}: conditional publisher update could not be completed: #{e.message}"
+    false
+  end
+
+  def publisher_atomic_ref_update(repo, branch, expected_remote_head, new_head, staging)
+    updates = [
+      { name: "refs/heads/#{branch}", before: expected_remote_head || ZERO_OID, after: new_head },
+      { name: "refs/heads/#{staging}", before: new_head, after: ZERO_OID }
+    ]
+    publisher_update_refs(repo, updates)
+  end
+
+  def publisher_delete_staging_ref(repo, staging, expected_head)
+    publisher_update_refs(
+      repo,
+      [{ name: "refs/heads/#{staging}", before: expected_head, after: ZERO_OID }]
+    )
+  end
+
+  def publisher_update_refs(repo, updates)
+    remote = repo[:remote_url]
+    return publisher_local_update_refs(remote, updates) if remote && publisher_local_bare_remote?(remote)
+
+    repository_id = publisher_github_repository_id(repo)
+    return false unless repository_id
+
+    declarations = ["$repositoryId: ID!"]
+    arguments = ["-F", "repositoryId=#{repository_id}"]
+    ref_updates = updates.each_with_index.map do |update, index|
+      declarations.push(
+        "$name#{index}: GitRefname!", "$before#{index}: GitObjectID!", "$after#{index}: GitObjectID!"
+      )
+      arguments.push(
+        "-f", "name#{index}=#{update.fetch(:name)}",
+        "-f", "before#{index}=#{update.fetch(:before)}",
+        "-f", "after#{index}=#{update.fetch(:after)}"
+      )
+      "{name: $name#{index}, beforeOid: $before#{index}, afterOid: $after#{index}, force: false}"
+    end
+    query = <<~GRAPHQL.delete("\n")
+      mutation(#{declarations.join(', ')}) {
+        updateRefs(input: {repositoryId: $repositoryId, refUpdates: [#{ref_updates.join(', ')}]}) {
+          clientMutationId
+        }
+      }
+    GRAPHQL
+    output, status = Open3.capture2("gh", "api", "graphql", "-f", "query=#{query}", *arguments)
+    return false unless status.success?
+
+    response = JSON.parse(output)
+    response["errors"].nil? && response.dig("data", "updateRefs").is_a?(Hash)
+  rescue JSON::ParserError, RuntimeError, SystemCallError
+    false
+  end
+
+  def publisher_github_repository_id(repo)
+    query = "query($nwo: String!) { repository(nameWithOwner: $nwo) { id } }"
+    output, status = Open3.capture2(
+      "gh", "api", "graphql", "-f", "query=#{query}", "-f", "nwo=#{repo.fetch(:nwo)}"
+    )
+    return nil unless status.success?
+
+    response = JSON.parse(output)
+    identifier = response.dig("data", "repository", "id")
+    identifier if identifier.is_a?(String) && !identifier.empty?
+  rescue JSON::ParserError, RuntimeError, SystemCallError
+    nil
+  end
+
+  def publisher_local_bare_remote?(remote)
+    expanded = File.expand_path(remote)
+    return false unless File.directory?(expanded) && !File.symlink?(expanded)
+
+    output, status = Open3.capture2(
+      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "--git-dir", expanded,
+      "rev-parse", "--is-bare-repository"
+    )
+    status.success? && output.strip == "true"
+  rescue RuntimeError, SystemCallError
+    false
+  end
+
+  def publisher_local_update_refs(remote, updates)
+    commands = ["start"]
+    updates.each do |update|
+      commands << "update #{update.fetch(:name)} #{update.fetch(:after)} #{update.fetch(:before)}"
+    end
+    commands.concat(%w[prepare commit])
+    _output, status = Open3.capture2e(
+      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "--git-dir", File.expand_path(remote),
+      "update-ref", "--stdin", stdin_data: "#{commands.join("\n")}\n"
+    )
+    status.success?
+  rescue RuntimeError, SystemCallError
+    false
   end
 
   def publisher_desired_managed_state!(clone, temporary_root, contract, expected_base_sha, expected_paths)
@@ -1475,7 +1614,7 @@ module PushDownstream
       # Errno::ENOMEM), so it needs the same guard under resource pressure.
       begin
         cloned = system(
-          AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, *AUDIT_GIT_CLONE_ARGUMENTS,
+          AUDIT_GIT_ENVIRONMENT, *audit_clone_git_prefix, *AUDIT_GIT_CLONE_ARGUMENTS,
           "--branch", repo.fetch(:base_branch), repo_url(repo), clone,
           out: File::NULL, err: File::NULL
         )
@@ -1487,10 +1626,17 @@ module PushDownstream
       end
 
       begin
-        base_sha = audit_local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
+        head_sha = audit_local_ref_head(clone, "HEAD")
+        base_ref = "refs/remotes/origin/#{repo.fetch(:base_branch)}^{commit}"
+        tracked_base_sha = audit_local_ref_head(clone, base_ref)
       rescue RuntimeError, SystemCallError => e
         return audit_blocked(repo, "consumer base commit could not be resolved: #{e.message}")
       end
+      unless head_sha&.match?(/\A[0-9a-f]{40}\z/) && tracked_base_sha == head_sha
+        return audit_blocked(repo, "base branch ref missing or HEAD mismatch")
+      end
+
+      base_sha = head_sha
 
       begin
         validate_managed_scaffold_paths!(clone)

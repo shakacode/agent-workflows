@@ -35,6 +35,8 @@ jobs:
     name: Read-only fleet audit
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      blocked: ${{ steps.audit.outputs.blocked }}
     steps:
       - name: Checkout exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -52,11 +54,12 @@ jobs:
         run: |
           set -euo pipefail
           gh auth status --hostname github.com
-          gh auth setup-git --hostname github.com
 
       - name: Audit enabled downstream consumers
         id: audit
         env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_SEAM_AUDIT_TOKEN || github.token }}
+          DOWNSTREAM_SEAM_AUDIT_GH_AUTH: "1"
           REPORT_PATH: ${{ runner.temp }}/downstream-seam-audit.json
         run: |
           set -euo pipefail
@@ -126,10 +129,16 @@ jobs:
       - name: Authenticate, re-audit, and publish audited drift
         env:
           GH_TOKEN: ${{ secrets.DOWNSTREAM_SEAM_PUBLISH_TOKEN }}
+          DOWNSTREAM_SEAM_AUDIT_GH_AUTH: "1"
+          PRIOR_AUDIT_BLOCKED: ${{ needs.audit.outputs.blocked }}
           PUBLISH_SOURCE_SHA: ${{ inputs.source_sha }}
           REPORT_PATH: ${{ runner.temp }}/downstream-seam-publisher.json
         run: |
           set -euo pipefail
+          if [ "$PRIOR_AUDIT_BLOCKED" != "0" ]; then
+            echo "::error::Publisher stopped because the audit has blocked consumers."
+            exit 1
+          fi
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::error::DOWNSTREAM_SEAM_PUBLISH_TOKEN is required for manual publishing."
             exit 1

@@ -178,6 +178,13 @@ log, and never invoke a consumer mutation command. Drift makes a report-only
 run non-green so it cannot be overlooked. The protected publisher independently
 repeats the audit at that exact source SHA before it considers consumer writes.
 
+`DOWNSTREAM_SEAM_AUDIT_TOKEN` is optional for public consumers. Configure it
+with read access when the registry includes private consumers; without it, the
+workflow falls back to `github.token`, which normally cannot clone private
+repositories outside this repository. The audit injects the selected `gh`
+credential helper only into the clone command, ignores ambient Git configuration,
+and does not persist checkout credentials.
+
 Publishing is a separate, explicitly selected manual-dispatch path. Configure
 the protected `downstream-seam-publisher` GitHub environment and its
 `DOWNSTREAM_SEAM_PUBLISH_TOKEN` secret with contents and pull-request access to
@@ -198,11 +205,14 @@ The publisher requires the report to cover the enabled registry exactly. It
 skips clean consumers and re-fetches every drifted consumer at the report's
 exact base SHA. It stages exactly the audited managed paths, rejects hidden
 off-scope branch history, and opens or updates the configured sync branch with
-ordinary non-force pushes. Replay reuses the same repository-owned PR and does
-not commit or push when its branch is already current. It never auto-merges a
-consumer PR. A retained branch on another base, duplicate or unprovable PR
-state, branch race, base race, authentication failure, or fetch failure stops
-that publish as non-clean.
+non-force conditional ref updates. Commit objects are uploaded with an ordinary
+push to a unique staging ref; the target moves only when its exact prior state
+still matches the audit, and staging cleanup is part of or follows that guarded
+operation. Replay reuses the same repository-owned PR and does not commit or
+publish when its branch is already current. It never auto-merges a consumer PR.
+A retained branch on another base, duplicate or unprovable PR state, branch
+race, base race, authentication failure, or fetch failure stops that publish as
+non-clean.
 
 ### Policy-Only Fleets
 

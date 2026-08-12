@@ -38,9 +38,13 @@ class DownstreamSeamAuditWorkflowTest < Minitest::Test
     assert_equal({ "contents" => "read" }, @workflow.fetch("permissions"))
     audit = @workflow.fetch("jobs").fetch("audit")
     audit_text = YAML.dump(audit)
+    assert_equal "${{ steps.audit.outputs.blocked }}", audit.fetch("outputs").fetch("blocked")
     assert_includes audit_text, "bin/push-downstream --audit"
     refute_includes audit_text, "--apply"
     refute_includes audit_text, "DOWNSTREAM_SEAM_PUBLISH_TOKEN"
+    assert_includes audit_text, "secrets.DOWNSTREAM_SEAM_AUDIT_TOKEN"
+    assert_includes audit_text, "DOWNSTREAM_SEAM_AUDIT_GH_AUTH"
+    refute_includes audit_text, "gh auth setup-git"
     assert_includes audit_text, "persist-credentials: false"
 
     publisher = @workflow.fetch("jobs").fetch("publish")
@@ -48,6 +52,8 @@ class DownstreamSeamAuditWorkflowTest < Minitest::Test
     assert_includes publisher.fetch("if"), "inputs.publish == true"
     assert_equal "downstream-seam-publisher", publisher.fetch("environment")
     publisher_text = YAML.dump(publisher)
+    assert_includes publisher_text, "PRIOR_AUDIT_BLOCKED"
+    assert_includes publisher_text, "Publisher stopped because the audit has blocked consumers"
     assert_includes publisher_text, "secrets.DOWNSTREAM_SEAM_PUBLISH_TOKEN"
     assert_includes publisher_text, "--publish-report"
     assert_includes publisher_text, "bin/push-downstream --audit"

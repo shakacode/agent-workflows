@@ -116,6 +116,25 @@ class PushDownstreamConfigTest < Minitest::Test
     end
   end
 
+  def test_load_config_rejects_duplicate_repositories_before_mode_selection
+    yaml = <<~YAML
+      defaults:
+        owner: ShakaCode
+        base_branch: main
+        pr_branch: agent-workflows/seam-sync
+      repos:
+        - repo: Consumer
+        - repo: consumer
+          enabled: false
+    YAML
+
+    with_config(yaml) do |path|
+      error = assert_raises(RuntimeError) { PushDownstream.load_config(path) }
+      assert_includes error.message, "duplicate downstream registry repository"
+      assert_includes error.message, "ShakaCode/Consumer"
+    end
+  end
+
   def test_clone_destination_must_be_a_contained_direct_child_of_the_temporary_root
     Dir.mktmpdir("push-downstream-clone-destination") do |dir|
       assert_equal File.join(dir, "consumer"), PushDownstream.clone_destination!(dir, "consumer")
@@ -140,6 +159,28 @@ class PushDownstreamConfigTest < Minitest::Test
 
     assert_equal "blocked", entry.fetch("status")
     assert_includes entry.fetch("reason"), "clone destination"
+  end
+
+  def test_audit_clone_auth_is_explicit_command_local_and_rejects_unknown_modes
+    previous = ENV["DOWNSTREAM_SEAM_AUDIT_GH_AUTH"]
+    ENV.delete("DOWNSTREAM_SEAM_AUDIT_GH_AUTH")
+    assert_equal PushDownstream::AUDIT_GIT_PREFIX, PushDownstream.audit_clone_git_prefix
+
+    ENV["DOWNSTREAM_SEAM_AUDIT_GH_AUTH"] = "1"
+    authenticated = PushDownstream.audit_clone_git_prefix
+    assert_equal PushDownstream::AUDIT_GIT_PREFIX, authenticated.first(PushDownstream::AUDIT_GIT_PREFIX.length)
+    assert_includes authenticated, "credential.https://github.com.helper=!gh auth git-credential"
+    refute_includes authenticated, "--global"
+
+    ENV["DOWNSTREAM_SEAM_AUDIT_GH_AUTH"] = "unexpected"
+    error = assert_raises(RuntimeError) { PushDownstream.audit_clone_git_prefix }
+    assert_includes error.message, "invalid audit GitHub authentication mode"
+  ensure
+    if previous
+      ENV["DOWNSTREAM_SEAM_AUDIT_GH_AUTH"] = previous
+    else
+      ENV.delete("DOWNSTREAM_SEAM_AUDIT_GH_AUTH")
+    end
   end
 
   def test_select_repos_filters_disabled_and_honors_only
@@ -1525,6 +1566,27 @@ class PushDownstreamAuditTest < Minitest::Test
     end
   end
 
+  def test_audit_rejects_a_tag_when_the_configured_base_branch_is_missing
+    Dir.mktmpdir("push-downstream-audit-tag-only") do |dir|
+      remote = File.join(dir, "consumer.git")
+      seed = File.join(dir, "seed")
+      git!(dir, "init", "--bare", remote)
+      git!(dir, "init", "-b", "seed", seed)
+      File.write(File.join(seed, "README.md"), "tag only\n")
+      git!(seed, "add", "README.md")
+      git!(seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed")
+      git!(seed, "tag", "main")
+      git!(seed, "remote", "add", "origin", remote)
+      git!(seed, "push", "origin", "refs/tags/main")
+
+      entry = audit(remote)
+
+      assert_equal "blocked", entry.fetch("status")
+      assert_includes entry.fetch("reason"), "base branch ref missing or HEAD mismatch"
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("base_sha")
+    end
+  end
+
   def test_audit_clone_ignores_hostile_transport_configuration
     Dir.mktmpdir("push-downstream-audit-helper") do |dir|
       marker = File.join(dir, "helper-ran")
@@ -1821,6 +1883,13 @@ class PushDownstreamAuditTest < Minitest::Test
     system("git", "-C", seed, "branch", "-M", "main")
     system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
     [remote, seed]
+  end
+
+  def git!(root, *arguments)
+    output, status = Open3.capture2e("git", "-C", root, *arguments)
+    raise "git fixture failed: #{output}" unless status.success?
+
+    output
   end
 
   def with_module_stub(mod, name, replacement)

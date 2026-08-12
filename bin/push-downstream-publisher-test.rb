@@ -6,7 +6,6 @@ require "fileutils"
 require "json"
 require "open3"
 require "rbconfig"
-require "shellwords"
 require "tempfile"
 require "tmpdir"
 
@@ -106,7 +105,7 @@ class PushDownstreamPublisherReportTest < Minitest::Test
 
         assert_equal 1, @status
         assert_empty out
-        assert_includes err, "invalid publisher audit report"
+        assert_includes err, "publisher failed closed"
       end
     end
   end
@@ -334,6 +333,48 @@ class PushDownstreamPublisherReportTest < Minitest::Test
     end
   end
 
+  def test_publisher_attempts_every_drifted_consumer_after_one_fails
+    with_clean_source do |root, source_sha|
+      Dir.mktmpdir("push-downstream-publisher-multi-consumer") do |dir|
+        config = File.join(dir, "downstream.yml")
+        presets = File.join(dir, "seam-presets.yml")
+        File.write(config, <<~YAML)
+          defaults:
+            owner: local
+            base_branch: main
+            pr_branch: agent-workflows/seam-sync
+          repos:
+            - repo: first
+            - repo: second
+        YAML
+        File.write(presets, "{}\n")
+        consumers = %w[first second].map do |name|
+          publisher_consumer("local/#{name}", "drifted", ["AGENTS.md"])
+        end
+        attempted = []
+
+        with_report(publisher_report(source_sha, consumers: consumers)) do |path|
+          with_module_stub(PushDownstream, :publisher_authentication_ready?, -> { true }) do
+            replacement = lambda do |repo, _contract, _entry|
+              attempted << repo.fetch(:nwo)
+              repo.fetch(:repo) == "second"
+            end
+            with_module_stub(PushDownstream, :publish_audited_repo, replacement) do
+              _out, _err = capture_io do
+                @status = PushDownstream.run_publisher(
+                  path, config, presets, source_sha: source_sha, source_root: root
+                )
+              end
+            end
+          end
+        end
+
+        assert_equal 1, @status
+        assert_equal %w[local/first local/second], attempted
+      end
+    end
+  end
+
   private
 
   def publisher_report(source_sha, consumers:)
@@ -464,6 +505,140 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
       assert_equal 1, push_calls.length, push_calls.inspect
       refute(push_calls.any? { |call| call.include?("--force") })
     end
+  end
+
+  def test_publisher_rejects_an_empty_audited_path_list_before_staging_or_push
+    Dir.mktmpdir("push-downstream-publisher-empty-paths") do |dir|
+      remote = seed_remote(dir)
+      repo = publisher_repo(remote)
+      checkout = File.join(dir, "current")
+      git!(dir, "clone", "--branch", "main", remote, checkout)
+      git!(checkout, "config", "user.name", "Test")
+      git!(checkout, "config", "user.email", "test@example.com")
+      PushDownstream.reconcile_scaffold(checkout, CONTRACT)
+      git!(checkout, "add", ".agents", "AGENTS.md", "CLAUDE.md")
+      git!(checkout, "commit", "-m", "adopt seam")
+      git!(checkout, "push", "origin", "main")
+      audit_entry = audit(repo)
+      assert_equal "clean", audit_entry.fetch("status")
+      fake_bin, _gh_log, git_log = install_cli_stubs(dir)
+      previous_path = ENV.fetch("PATH")
+      ENV["PATH"] = "#{fake_bin}:#{previous_path}"
+
+      begin
+        _out, err = capture_io do
+          @status = PushDownstream.publish_audited_repo(repo, CONTRACT, audit_entry)
+        end
+      ensure
+        ENV["PATH"] = previous_path
+      end
+
+      refute @status
+      assert_includes err, "no changed managed paths"
+      git_calls = File.file?(git_log) ? File.readlines(git_log, chomp: true) : []
+      refute(git_calls.any? { |call| call.include?("add --all --") })
+      refute(git_calls.any? { |call| call.match?(/(?:\A| -C \S+ )push /) })
+    end
+  end
+
+  def test_publisher_branch_compare_and_swap_handles_present_and_absent_races_without_force
+    scenarios = {
+      present: { initial: :present, race: nil, succeeds: true },
+      deleted: { initial: :present, race: :deleted, succeeds: false },
+      changed: { initial: :present, race: :changed, succeeds: false },
+      absent: { initial: :absent, race: nil, succeeds: true },
+      appeared: { initial: :absent, race: :appeared, succeeds: false }
+    }
+
+    scenarios.each do |name, scenario|
+      Dir.mktmpdir("push-downstream-publisher-cas-#{name}") do |dir|
+        remote = seed_remote(dir)
+        repo = publisher_repo(remote)
+        branch = repo.fetch(:pr_branch)
+        base_head = bare_ref(remote, "main")
+        git!(remote, "update-ref", "refs/heads/#{branch}", base_head) if scenario.fetch(:initial) == :present
+        competitor = seed_competing_commit(remote, dir)
+        clone = File.join(dir, "clone")
+        git!(dir, "clone", "--branch", "main", remote, clone)
+        git!(clone, "config", "user.name", "Test")
+        git!(clone, "config", "user.email", "test@example.com")
+        File.write(File.join(clone, "publisher.txt"), "publisher\n")
+        git!(clone, "add", "publisher.txt")
+        git!(clone, "commit", "-m", "publisher")
+        new_head = git!(clone, "rev-parse", "HEAD").strip
+        expected = scenario.fetch(:initial) == :present ? base_head : nil
+        git_calls = []
+        original_git = PushDownstream.method(:publisher_git)
+        original_update = PushDownstream.method(:publisher_atomic_ref_update)
+        fixture_git = method(:git!)
+        record_git = lambda do |root, *arguments|
+          git_calls << arguments
+          original_git.call(root, *arguments)
+        end
+        raced = false
+        inject_race = lambda do |target_repo, target_branch, before, after, staging|
+          unless raced
+            case scenario[:race]
+            when :deleted
+              fixture_git.call(remote, "update-ref", "-d", "refs/heads/#{branch}", base_head)
+            when :changed, :appeared
+              fixture_git.call(remote, "update-ref", "refs/heads/#{branch}", competitor)
+            end
+            raced = true
+          end
+          original_update.call(target_repo, target_branch, before, after, staging)
+        end
+
+        with_module_stub(PushDownstream, :publisher_git, record_git) do
+          with_module_stub(PushDownstream, :publisher_atomic_ref_update, inject_race) do
+            @published = PushDownstream.publisher_publish_branch(repo, clone, branch, expected, new_head)
+          end
+        end
+
+        assert_equal scenario.fetch(:succeeds), @published, name
+        expected_target =
+          case scenario[:race]
+          when :deleted then nil
+          when :changed, :appeared then competitor
+          else new_head
+          end
+        actual_target = bare_ref_or_nil(remote, branch)
+        expected_target.nil? ? assert_nil(actual_target, name) : assert_equal(expected_target, actual_target, name)
+        assert_empty git!(remote, "for-each-ref", "--format=%(refname)", "refs/heads/agent-workflows/staging/").lines,
+                     name
+        refute(git_calls.flatten.any? { |argument| argument.include?("--force") }, name)
+      end
+    end
+  end
+
+  def test_github_ref_update_contract_uses_exact_before_oid_and_force_false
+    repo = { nwo: "local/consumer" }
+    calls = []
+    success = Object.new
+    success.define_singleton_method(:success?) { true }
+    capture = lambda do |*arguments|
+      calls << arguments
+      [JSON.generate("data" => { "updateRefs" => { "clientMutationId" => nil } }), success]
+    end
+    updates = [
+      { name: "refs/heads/agent-workflows/seam-sync", before: "a" * 40, after: "b" * 40 },
+      { name: "refs/heads/agent-workflows/staging/test", before: "b" * 40, after: PushDownstream::ZERO_OID }
+    ]
+
+    with_module_stub(PushDownstream, :publisher_github_repository_id, ->(_repo) { "R_test" }) do
+      with_module_stub(Open3, :capture2, capture) do
+        assert PushDownstream.publisher_update_refs(repo, updates)
+      end
+    end
+
+    command = calls.fetch(0)
+    query = command.find { |argument| argument.start_with?("query=") }
+    assert_includes query, "beforeOid: $before0"
+    assert_includes query, "afterOid: $after0"
+    assert_includes query, "force: false"
+    assert_includes command, "before0=#{'a' * 40}"
+    assert_includes command, "after1=#{PushDownstream::ZERO_OID}"
+    refute(command.any? { |argument| argument.include?("--force") })
   end
 
   def test_update_fast_forwards_the_same_pr_after_the_consumer_base_advances
@@ -764,7 +939,19 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     system("git", "-C", checkout, "add", "consumer-owned.txt")
     system("git", "-C", checkout, "commit", "-m", "advance consumer base", out: File::NULL, err: File::NULL)
     system("git", "-C", checkout, "push", "origin", "main", out: File::NULL, err: File::NULL)
-    `git -C #{checkout.shellescape} rev-parse HEAD`.strip
+    git!(checkout, "rev-parse", "HEAD").strip
+  end
+
+  def seed_competing_commit(remote, dir)
+    checkout = File.join(dir, "competitor")
+    git!(dir, "clone", "--branch", "main", remote, checkout)
+    git!(checkout, "config", "user.name", "Test")
+    git!(checkout, "config", "user.email", "test@example.com")
+    File.write(File.join(checkout, "competitor.txt"), "competitor\n")
+    git!(checkout, "add", "competitor.txt")
+    git!(checkout, "commit", "-m", "competitor")
+    git!(checkout, "push", "origin", "HEAD:refs/heads/competitor")
+    git!(checkout, "rev-parse", "HEAD").strip
   end
 
   def seed_hidden_off_scope_branch(remote, dir)
@@ -854,6 +1041,11 @@ class PushDownstreamPublisherWritePathTest < Minitest::Test
     raise "missing branch #{branch}: #{output}" unless status.success?
 
     output.strip
+  end
+
+  def bare_ref_or_nil(remote, branch)
+    output, status = Open3.capture2e("git", "--git-dir", remote, "rev-parse", "--verify", "refs/heads/#{branch}")
+    status.success? ? output.strip : nil
   end
 
   def git!(root, *arguments)
