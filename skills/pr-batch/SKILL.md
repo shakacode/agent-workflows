@@ -434,13 +434,17 @@ boundary on every operation. Initialize it from the exact preflighted object.
 The CLI path must equal the absolute coordinator-owned `state_path` in that
 object. Treat the coordinator-selected trusted plan as authority outside mutable
 budget state; the helper binds to it but cannot authenticate an arbitrary
-caller-selected path.
+caller-selected path. Keep the plan and mutable state as distinct canonical
+artifacts; reject equal, aliased, or ancestor/file-colliding paths before state
+or lock creation. Initialization carries the exact trusted budget projection.
 Plans with no budget metadata retain legacy behavior.
 
 Reserve conservative headroom before every coordinator/worker model turn,
 spawn, retry, review wave, scheduled continuation, monitor wake, resume,
 replacement, escalation, or cross-task delegation. The locked helper prevents
-concurrent over-allocation and replays reservation/release ids safely. Unchanged
+concurrent over-allocation and replays reservation/release ids safely. Exact
+existing reservation IDs replay their durable outcome before telemetry freshness
+is considered; changed payloads fail the digest fence. Unchanged
 active targets coalesce. Every valid reservation-id outcome is durably fenced
 to its exact request digest, including coalesced and blocked decisions.
 Cross-task admission resolves canonical source and
@@ -449,7 +453,8 @@ reserves the target batch/lane before its turn. Paused targets need resume
 admission; retained descendants are included in the estimate.
 
 Reconcile only fresh `authoritative-token-usage-receipt v1` evidence from a
-named host/runtime/backend producer. Count each physical self or descendant
+named host/runtime/backend producer with an exact durable non-self-attested URI
+reference. Count each physical self or descendant
 segment once in its owning lane and aggregate, release unused reservation, and
 fail closed on missing, stale, malformed, duplicate, conflicting, or `UNKNOWN`
 telemetry. `UNKNOWN` segment ownership retains the active reservation and
@@ -467,7 +472,9 @@ RSA-PSS-SHA256 signature over every canonical attestation field except the
 signature against the immutable plan's pinned verifier key. Unsupported,
 unlisted, wrong-key, free-form, or self-attested claims do not authorize work.
 Approval blocks every new expensive action until a
-scope-matched unexpired decision. Hard returns `budget-exhausted / NOT COMPLETE`; unchanged retries and
+scope-matched unexpired decision. Every unresolved approval stop keeps closeout
+`NOT COMPLETE`; an approval receipt alone is insufficient until an explicit
+approved admission resolves the decision. Hard returns `budget-exhausted / NOT COMPLETE`; unchanged retries and
 automatic continuations stay stopped until a scoped increase or resume decision
 restores headroom. No budget approval or override grants or weakens security,
 review, QA, exact-head, ownership, or merge gates. The bounded overshoot is one

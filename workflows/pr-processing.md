@@ -669,6 +669,8 @@ path, matching plan id, and canonical `sha256:` digest. Private keys never enter
 stale, malformed, or `UNKNOWN` required data blocks new
 expensive work. Do not invent universal absolute limits or substitute dollars,
 plan meters, cached-token discounts, prompt length, or message count.
+Trusted plan and mutable state are distinct canonical artifacts; equal expanded
+paths, resolvable aliases, and ancestor/file collisions fail preflight.
 
 Resolve `PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
 repo-local pinned-copy chain. Initialize and operate the durable state through:
@@ -686,6 +688,10 @@ Pass that external binding on every operation, including restart and closeout.
 The coordinator-selected path is a trust input outside mutable budget state;
 the helper cannot authenticate an arbitrary caller-selected path, but persisted
 state alone cannot replace the budget or verifier authority.
+Compare the trusted budget's expanded `state_path` to CLI `--state` and reject
+plan/state artifact collisions before creating a state directory or lock.
+Initialization requires an exact duplicate projection of the externally trusted
+budget; null or omitted projections are invalid.
 
 Before every coordinator or worker model turn, spawn, retry, review wave,
 scheduled continuation, monitor wake, resume, replacement, escalation, or
@@ -694,7 +700,9 @@ lock, fsynced temporary state, and atomic rename serialize concurrent
 reservations and make ids replay-safe. Unchanged active targets coalesce.
 Every valid reservation-id decision, including coalesced and blocked outcomes,
 is durably fenced to the exact request digest; later changed-payload reuse fails
-closed even after the active target or predecessor is released.
+closed even after the active target or predecessor is released. Exact existing
+IDs replay the recorded outcome before telemetry freshness is evaluated, so
+aged telemetry cannot allocate twice or rewrite a decision.
 Treat command time as a durable monotonic watermark; future-dated human
 decisions and time rollback fail closed. Replacement/escalation always names a
 released or reconciled predecessor, and persisted reservations contain only
@@ -706,7 +714,9 @@ target requires explicit resume admission.
 
 Reconcile predicted use only from a fresh
 `authoritative-token-usage-receipt v1` emitted by a named
-host/runtime/coordination producer with durable evidence. Count every unique
+host/runtime/coordination producer with an exact durable URI reference. Reject
+plain, `UNKNOWN`, self-attested, worker-self-attested, unsupported-kind, or
+extra-field producer evidence. Count every unique
 physical self/descendant segment exactly once in its owning lane and aggregate;
 bind every segment to the admitted target envelope and release unused
 reservation. Missing, stale, malformed, duplicate, conflicting,
@@ -744,6 +754,9 @@ examples are in [Hierarchical Token Budgets](../docs/token-budgets.md).
 Duplicate JSON object keys fail before evaluation. Every restart validates
 reservation/usage ledgers against all counters, and complete closeout requires
 zero reserved tokens in every scope.
+Every unresolved `approval-required` decision also keeps closeout `NOT COMPLETE`;
+an approval receipt alone is insufficient until an explicit approved
+admission resolves that decision.
 It also deterministically replays exact typed control-event payloads from a
 unique external-plan-bound initialization root, checking each pre/post-state and all
 approval, override/expiry, stop, checkpoint, fence, charge-back, and receipt

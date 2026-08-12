@@ -430,6 +430,9 @@ Plan a PR batch
      consumer-specific custody/signing through `AGENTS.md`. Do not invent universal absolute limits.
      Reserve `aggregate` and `coordinator` for the parent scopes; they cannot be
      lane ids.
+     Require trusted-plan and mutable-state paths to be distinct canonical
+     artifacts; equal, resolvable aliases, and ancestor/file collisions fail
+     preflight.
      Partial, inline, stale, malformed, duplicate-key, or `UNKNOWN` budget metadata fails the
      batch-plan preflight. A plan with no budget metadata remains legacy
      compatible. Record the coordinator-owned durable runtime state path and

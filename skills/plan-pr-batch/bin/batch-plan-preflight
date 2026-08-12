@@ -343,6 +343,15 @@ module BatchPlanPreflight
         "Persist the external trusted plan path, matching batch id, and exact canonical sha256 budget digest."
       )
     end
+    if anchor.is_a?(Hash) && absolute_path?(anchor["trusted_plan_path"]) &&
+       absolute_path?(budget["state_path"]) &&
+       artifact_path_collision?(anchor["trusted_plan_path"], budget["state_path"])
+      violations << violation(
+        "token-budget-artifact-collision",
+        "$.plan.token_budget_anchor.trusted_plan_path",
+        "Trusted token-budget plan and mutable runtime state must be distinct canonical artifacts."
+      )
+    end
 
     scopes = budget["scopes"]
     unless scopes.is_a?(Hash) && scopes.keys.sort == %w[aggregate coordinator lanes]
@@ -459,6 +468,19 @@ module BatchPlanPreflight
     value.is_a?(String) && !value.empty? && value != "UNKNOWN" && Pathname.new(value).absolute?
   rescue ArgumentError
     false
+  end
+
+  def artifact_path_collision?(left, right)
+    expanded_left = File.expand_path(left)
+    expanded_right = File.expand_path(right)
+    return true if expanded_left == expanded_right
+    return true if expanded_left.start_with?("#{expanded_right}#{File::SEPARATOR}") ||
+                   expanded_right.start_with?("#{expanded_left}#{File::SEPARATOR}")
+    return false unless File.exist?(expanded_left) && File.exist?(expanded_right)
+
+    File.identical?(expanded_left, expanded_right) || File.realpath(expanded_left) == File.realpath(expanded_right)
+  rescue SystemCallError
+    true
   end
 
   def single_positive_integer_field?(value, field)

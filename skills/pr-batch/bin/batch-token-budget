@@ -218,6 +218,19 @@ module BatchTokenBudget
     false
   end
 
+  def artifact_path_collision?(left, right)
+    expanded_left = File.expand_path(left)
+    expanded_right = File.expand_path(right)
+    return true if expanded_left == expanded_right
+    return true if expanded_left.start_with?("#{expanded_right}#{File::SEPARATOR}") ||
+                   expanded_right.start_with?("#{expanded_left}#{File::SEPARATOR}")
+    return false unless File.exist?(expanded_left) && File.exist?(expanded_right)
+
+    File.identical?(expanded_left, expanded_right) || File.realpath(expanded_left) == File.realpath(expanded_right)
+  rescue SystemCallError
+    true
+  end
+
   def valid_limit?(value)
     value.is_a?(Hash) && value.keys == ["limit_tokens"] && positive_integer?(value["limit_tokens"])
   end
@@ -649,7 +662,10 @@ module BatchTokenBudget
                     else
                       return false
                     end
-    command.keys.sort == (%w[action batch_id evaluated_at type version] + action_fields).sort
+    return false unless command.keys.sort == (%w[action batch_id evaluated_at type version] + action_fields).sort
+    return false if command["action"] == "initialize" && !command["budget"].is_a?(Hash)
+
+    true
   end
 
   def append_control_event(state, command, prior_state, trusted_budget, trusted_plan_binding)
@@ -1050,7 +1066,7 @@ module BatchTokenBudget
 
   def initialize_command(state, command, trusted_budget, trusted_plan_binding)
     supplied_budget = command["budget"]
-    if supplied_budget && canonicalize(supplied_budget) != trusted_budget
+    unless supplied_budget.is_a?(Hash) && canonicalize(supplied_budget) == trusted_budget
       raise InvalidInput, "initialize-budget-anchor-mismatch"
     end
 
@@ -1095,6 +1111,15 @@ module BatchTokenBudget
 
   def reserve_command(original_state, command)
     reservation = command["reservation"]
+    if reservation.is_a?(Hash) && nonempty_string?(reservation["id"])
+      request_digest = digest(reservation)
+      fence = original_state.dig("reservation_decisions", reservation["id"])
+      if fence
+        raise InvalidInput, "reservation-replay-mismatch" unless fence["request_digest"] == request_digest
+
+        return replay_reservation_decision(original_state, fence.fetch("outcomes").last)
+      end
+    end
     unless valid_reservation?(reservation, original_state, command["evaluated_at"])
       telemetry = reservation.is_a?(Hash) ? reservation["telemetry"] : nil
       reason = if !telemetry.is_a?(Hash) || telemetry["status"] == "UNKNOWN"
@@ -1111,13 +1136,6 @@ module BatchTokenBudget
 
     reservation_id = reservation.fetch("id")
     request_digest = digest(reservation)
-    fence = original_state.dig("reservation_decisions", reservation_id)
-    if fence
-      raise InvalidInput, "reservation-replay-mismatch" unless fence["request_digest"] == request_digest
-
-      prior_outcome = fence.fetch("outcomes").last
-      return replay_reservation_decision(original_state, prior_outcome) if %w[blocked coalesced].include?(prior_outcome["status"])
-    end
     existing = original_state.dig("reservations", reservation_id)
     if existing
       raise InvalidInput, "reservation-replay-mismatch" unless existing["request_digest"] == request_digest
@@ -1594,6 +1612,9 @@ module BatchTokenBudget
     current_hard_stop = state.fetch("admission_decisions").values.any? do |decision|
       decision["status"] == "budget-exhausted" && decision["resolved_by_reservation_id"].nil?
     end
+    current_approval_stop = state.fetch("admission_decisions").values.any? do |decision|
+      decision["status"] == "approval-required" && decision["resolved_by_reservation_id"].nil?
+    end
     reconciliations = state.fetch("reservations").values.filter_map { |record| record["reconciliation_receipt"] }
     overshoot_by_scope = reconciliations.each_with_object(Hash.new(0)) do |reconciliation, totals_by_scope|
       reservation = state.dig("reservations", reconciliation.fetch("reservation_id"))
@@ -1610,7 +1631,7 @@ module BatchTokenBudget
     end
     status = if exhausted_scope || current_hard_stop || unresolved_hard_checkpoint
                "budget-exhausted"
-             elsif active_reservations.positive? || reserved_scope || unattributed.positive?
+             elsif current_approval_stop || active_reservations.positive? || reserved_scope || unattributed.positive?
                "not-complete"
              else
                "complete"
@@ -1742,7 +1763,7 @@ module BatchTokenBudget
     producer = usage_receipt["producer"]
     return false unless producer.is_a?(Hash) && producer.keys.sort == %w[evidence_ref kind] &&
                         %w[host-reported coordination-backend authoritative-runtime].include?(producer["kind"]) &&
-                        nonempty_string?(producer["evidence_ref"])
+                        durable_reference?(producer["evidence_ref"])
 
     segments = usage_receipt["segments"]
     segments.is_a?(Array) && !segments.empty? && segments.all? { |segment| valid_usage_segment?(segment, state) } &&
@@ -2098,6 +2119,17 @@ begin
     "id" => options.fetch(:trusted_plan_id),
     "digest" => options.fetch(:trusted_plan_digest)
   }
+  expanded_state_path = File.expand_path(state_path)
+  unless expanded_state_path == File.expand_path(trusted_budget.fetch("state_path"))
+    raise BatchTokenBudget::InvalidInput, "state-path-mismatch"
+  end
+  if BatchTokenBudget.artifact_path_collision?(trusted_plan_binding.fetch("path"), expanded_state_path)
+    raise BatchTokenBudget::InvalidInput, "trusted-plan-state-path-collision"
+  end
+  unless BatchTokenBudget.valid_command_shape?(command)
+    raise BatchTokenBudget::InvalidInput, "unsupported-command-contract"
+  end
+
   FileUtils.mkdir_p(File.dirname(state_path))
   File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     lock.flock(File::LOCK_EX)
@@ -2110,11 +2142,6 @@ begin
             end
     if state && !BatchTokenBudget.valid_state?(state, trusted_budget, trusted_plan_binding)
       raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state"
-    end
-
-    declared_state_path = state&.dig("budget", "state_path") || command.dig("budget", "state_path")
-    if declared_state_path.is_a?(String) && File.expand_path(declared_state_path) != File.expand_path(state_path)
-      raise BatchTokenBudget::InvalidInput, "state-path-mismatch"
     end
 
     next_state, result = BatchTokenBudget.evaluate(state, command, trusted_budget, trusted_plan_binding)
