@@ -589,12 +589,26 @@ host_aware_batch_sizing_phrase_checks = {
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
     ["- Batch size target: `codex`, `claude`, or `generic`", 1],
-    ["less than 300 characters of headroom", 1]
+    ["less than 300 characters of headroom", 1],
+    ["Default single-target planner: Sol/high", 1],
+    ["Affirmatively simple single-target planner: Terra/high", 1],
+    ["Default single-target planner: Opus 5/high", 1],
+    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Opus 5/xhigh exception:", 1],
+    ["`claude-profile v1`", 1],
+    ["subagents alone do", 1]
   ],
   "skills/plan-pr-batch/SKILL.md" => [
     ["`codex`: up to 10 independent items, or 8", 1],
     ["`claude`: up to 5 independent items, or 3", 1],
-    ["`generic`: use the Claude-sized 5/3", 1]
+    ["`generic`: use the Claude-sized 5/3", 1],
+    ["Default single-target planner: Sol/high", 1],
+    ["Affirmatively simple single-target planner: Terra/high", 1],
+    ["Default single-target planner: Opus 5/high", 1],
+    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Opus 5/xhigh exception:", 1],
+    ["`claude-profile v1`", 1],
+    ["advise from `UNKNOWN`, repeat", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
     ["Use `codex` for up to 10", 1],
@@ -642,7 +656,14 @@ if enforce_restart_docs_drift
 
   host_aware_batch_sizing_phrase_checks["docs/pr-batch-skills.md"] = [
     ["Codex-targeted waves may use up to 10", 1],
-    ["Claude and generic waves use up to 5", 1]
+    ["Claude and generic waves use up to 5", 1],
+    ["Default single-target planner: Sol/high", 1],
+    ["Affirmatively simple single-target planner: Terra/high", 1],
+    ["Default single-target planner: Opus 5/high", 1],
+    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Opus 5/xhigh exception:", 1],
+    ["`claude-profile v1`", 1],
+    ["The advisory never blocks, requests a", 1]
   ]
   host_aware_batch_sizing_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text
 

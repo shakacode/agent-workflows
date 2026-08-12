@@ -53,6 +53,8 @@ helper is still missing.
 For a verified Codex GPT-5.6 host, use this recommended exact profile while
 keeping provider-neutral classes for other runtimes:
 
+- Default single-target planner: Sol/high
+- Affirmatively simple single-target planner: Terra/high
 - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -61,14 +63,16 @@ keeping provider-neutral classes for other runtimes:
 - Routine deterministic QA: Sol/high
 
 For a verified Claude host, use this provisional recommended exact profile
-(`claude-profile v0`):
+(`claude-profile v1`):
 
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Default single-target planner: Opus 5/high
+- Affirmatively simple single-target planner: Sonnet 5/high
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
 
 Memorable invocation:
 
@@ -82,6 +86,31 @@ Plan a PR batch
 1. Intake
    - Before reading GitHub targets or shaping the batch, record coordinator,
      worker, and checker model/effort preferences. Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+     A one-issue or one-PR batch is single-target even when its coordinator
+     later delegates bounded implementation, review, or QA lanes. Prefer the
+     default single-target planner route because a single issue may still need
+     difficult diagnosis, design, or verification planning. Use the
+     pinned high-risk route first when a present or disputed high-risk boundary
+     exists. Otherwise use the affirmatively simple single-target route only
+     when the target has explicit acceptance criteria, a known bounded file
+     surface, no unresolved design or
+     dependency question, no security, authorization, concurrency, persistence,
+     lifecycle, routing, release, public-contract, or other high-consequence
+     boundary, easy failure detection and rollback, and a strong deterministic
+     verification oracle. Reserve the multi-lane coordinator route for planning
+     multiple targets or retained cross-batch orchestration; do not
+     select it merely because one target will use subagents.
+     When the host exposes the current planner route and it materially differs
+     from this recommendation, include one concise non-blocking advisory in the
+     Batch Plan: current route, recommended route, and the risk or cost reason.
+     A materially lower route is worth flagging when ambiguity, consequence, or
+     weak verification needs more planning capability. Recommend the classified
+     lower-cost route when the current route is unnecessarily stronger,
+     including the default single-target tier; recommend the cheapest
+     single-target route only after the target is affirmatively simple. Do not
+     advise from `UNKNOWN`, repeat
+     the advisory, stop planning, ask for a restart, or treat the mismatch as a
+     readiness gate. Continue on the current route or closest available route.
      Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
      Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
      Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
@@ -529,7 +558,8 @@ backend must say so in the declaration.
 - Dependencies and sequencing:
 - Subagent split:
 - Coordinator model/effort preference: exact pair or dispatch-resolved class,
-  effort, rationale, and availability evidence.
+  effort, rationale, availability evidence, and any one-time non-blocking route
+  advisory (or `none`).
 - Worker model/effort preferences: initial and escalation pairs or classes,
   lane ids, escalation threshold and maximum, and availability evidence;
   unavailable preferences remain advisory and never alone block readiness.

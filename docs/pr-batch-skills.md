@@ -19,6 +19,8 @@ for cancellation, see
 
 For a verified Codex GPT-5.6 host, the recommended exact routing profile is:
 
+- Default single-target planner: Sol/high
+- Affirmatively simple single-target planner: Terra/high
 - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -27,14 +29,16 @@ For a verified Codex GPT-5.6 host, the recommended exact routing profile is:
 - Routine deterministic QA: Sol/high
 
 For a verified Claude host, the provisional recommended exact routing profile
-(`claude-profile v0`) is:
+(`claude-profile v1`) is:
 
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Default single-target planner: Opus 5/high
+- Affirmatively simple single-target planner: Sonnet 5/high
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
 
 Other runtimes continue to use the portable `fastest-low-cost`, `balanced`, and
 `strongest` classes as advisory preferences. Dispatch may bind an exact
@@ -168,6 +172,22 @@ omit the queue summary and note that queue state is unavailable.
    When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
    Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
    Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
+   Treat one issue or PR as a single-target plan even when `$pr-batch` will use
+   bounded implementation, review, or QA subagents. On Codex, default
+   single-target `$plan-pr-batch` work to Sol/high. Use Terra/high only after an
+   affirmative simple classification, and reserve Sol/xhigh for a
+   present/disputed high-risk boundary or another listed exception. Multiple
+   targets use the routine multi-lane balanced/high route unless an
+   exception applies.
+   On Claude, use Opus 5/high by default, Sonnet 5/high only after the same
+   affirmative simple classification, and Opus 5/xhigh for the corresponding
+   high-risk or escalation exceptions.
+   A straightforward exact target may go directly to `$pr-batch` when no
+   selection, shaping, dependency, or planning decision remains.
+   If the host exposes a materially different current planner route,
+   `$plan-pr-batch` reports one concise advisory with the current and recommended
+   routes plus its risk or cost rationale. The advisory never blocks, requests a
+   restart, or repeats; `UNKNOWN` route observations produce no advisory.
    Before worker launch, resolve `PR_BATCH_SKILL_DIR` through the explicit
    env-var / loaded-skill / repo-local pinned-copy chain, then use
    `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`: a

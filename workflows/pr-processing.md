@@ -698,6 +698,8 @@ escalation assignment, its evidence gate, and a maximum escalation count.
 
 For a Codex GPT-5.6 host, use this recommended advisory profile:
 
+- Default single-target planner: Sol/high
+- Affirmatively simple single-target planner: Terra/high
 - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -713,33 +715,59 @@ change, and easy failure detection and rollback. Sol/xhigh is the recommended
 route for a present or disputed high-risk boundary, and Sol/high is the
 recommendation for another missing or disputed simplicity criterion. If either
 is unavailable, use the closest available route or runtime default and record it
-honestly. Sol/xhigh is the preferred initiating/coordinating route; Terra or
-Luna may still serve as a fallback coordinator or worker, with the actual route
-recorded honestly. Luna remains outside this profile's recommended worker
-roster. Shared workflow text remains portable for other providers and model
-generations.
+honestly. Sol/xhigh is the preferred high-risk or listed-exception
+initiating/coordinating route; Terra or Luna may still serve as a fallback
+coordinator or worker, with the actual route recorded honestly. Luna remains
+outside this profile's recommended worker roster. Shared workflow text remains
+portable for other providers and model generations.
+
+For planning, one issue or PR remains single-target even when its coordinator
+delegates bounded implementation, review, or QA lanes. Default to Sol/high
+because one issue may still require difficult diagnosis, design, or verification
+planning. Prefer Terra/high only after an affirmative simple classification,
+and Sol/xhigh only for a present or disputed pinned high-risk boundary or
+another listed exception. Multiple targets use the routine
+multi-lane balanced/high route unless an exception applies; subagents alone do
+not require that route. When the host exposes a materially different current planner route,
+report one concise non-blocking current-versus-recommended advisory with the
+risk or cost reason; do not infer it from `UNKNOWN`, repeat it, stop, or request
+a restart.
 
 For a Claude host, use this provisional recommended advisory profile
-(`claude-profile v0`; see the Conservative Claude Profile in
+(`claude-profile v1`; see the Conservative Claude Profile in
 `docs/agent-workflows-model-routing.md`):
 
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Default single-target planner: Opus 5/high
+- Affirmatively simple single-target planner: Sonnet 5/high
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
+
+For Claude planning, one issue or PR remains single-target even when its
+coordinator delegates bounded implementation, review, or QA lanes. Default to
+Opus 5/high, use Sonnet 5/high only after the affirmative simple
+classification, and use Opus 5/xhigh only for a present or disputed pinned
+high-risk boundary or another listed exception. Multiple targets
+use the routine multi-lane balanced/high route unless an exception applies;
+delegation by itself does not require that route. When the host exposes a materially
+different current planner route, report one concise non-blocking
+current-versus-recommended advisory with the risk or cost reason; do not infer
+it from `UNKNOWN`, repeat it, stop, or request a restart.
 
 Sonnet 5/high is recommended for the same affirmative simple-task
 classification. When lane risk or bounded delegation requires an execution
 envelope, the coordinator role supplies it regardless of the selected model.
-Opus 4.8/xhigh is the recommended route for a present or disputed high-risk
-boundary or another missing or disputed simplicity criterion; if unavailable,
-use the closest available route or runtime default and record it honestly. Opus
-4.8/xhigh is the preferred initiating/coordinating route; Sonnet or Haiku may
-still serve as a fallback coordinator or worker, with the actual route recorded
-honestly. Haiku remains outside this profile's recommended worker roster. Fable
-5 stays an experimental candidate, never a default route.
+Opus 5/xhigh is reserved for the listed high-risk and escalation exceptions;
+ordinary missing or disputed simplicity criteria use Opus 5/high. If either is
+unavailable, use the closest available route or runtime default and record it
+honestly. Opus 5/xhigh is the preferred high-risk or listed-exception
+initiating/coordinating route; Sonnet or Haiku may still serve as a fallback
+coordinator or worker, with the actual route recorded honestly. Haiku remains
+outside this profile's recommended worker roster. Fable 5 stays an experimental
+candidate, never a default route.
 
 Classify the route from what is difficult (diagnosis/strategy versus execution),
 blast radius, verification strength, acceptance-criteria clarity, and previous
@@ -2284,11 +2312,13 @@ goal; its objective, targets, `merge_authority`, QA decision, and completion
 contract remain authoritative.
 
 For a conservative GPT-5.6 recovery explicitly requested by an operator, use
-the recommended profile: multi-lane coordinator and independent adversarial QA
-on Sol/xhigh; positively classified simple workers on Terra/high; unknown or
-uncertain workers and routine deterministic QA on Sol/high; and high-risk or
-escalated work on Sol/xhigh. Shared workflow text stays portable: exact names
-always come from the operator or verified runtime roster.
+the recommended profile: routine multi-lane coordination on balanced/high;
+independent adversarial QA on Sol/xhigh; positively classified simple workers
+on Terra/high; unknown or uncertain workers and routine deterministic QA on
+Sol/high; and a pinned high-risk trigger, bounded plan challenge, repeated
+credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST` on Sol/xhigh.
+Shared workflow text stays portable: exact names always come from the operator
+or verified runtime roster.
 
 Use this prompt after filling the route placeholders:
 
