@@ -183,7 +183,19 @@ read_installed_metadata_value() {
         puts "corrupt"
         exit
       end
-      metadata = JSON.parse(file.read)
+      source = file.read
+      metadata = JSON.parse(source)
+      path_stat = File.lstat(path)
+      file.rewind
+      reread_source = file.read
+      final_stat = file.stat
+      unless path_stat.file? && !path_stat.symlink? &&
+             path_stat.dev == opened_stat.dev && path_stat.ino == opened_stat.ino &&
+             final_stat.file? && final_stat.dev == opened_stat.dev && final_stat.ino == opened_stat.ino &&
+             reread_source == source
+        puts "corrupt"
+        exit
+      end
       unless metadata.is_a?(Hash)
         puts "corrupt"
         exit
@@ -196,6 +208,14 @@ read_installed_metadata_value() {
       value = metadata[key]
       unless value.is_a?(String) && !value.empty?
         puts "corrupt"
+        exit
+      end
+      if key == "delivery_mode"
+        case value
+        when "flat" then puts "delivery_mode:flat"
+        when "plugin-companion" then puts "delivery_mode:plugin-companion"
+        else puts "delivery_mode:invalid"
+        end
         exit
       end
       puts "valid:#{[value].pack("m0")}"
@@ -211,6 +231,15 @@ read_installed_metadata_value() {
   fi
 
   case "$protocol" in
+    delivery_mode:flat)
+      installed_metadata_state="valid"
+      installed_metadata_value="flat"
+      ;;
+    delivery_mode:plugin-companion)
+      installed_metadata_state="valid"
+      installed_metadata_value="plugin-companion"
+      ;;
+    delivery_mode:invalid) installed_metadata_state="invalid" ;;
     valid:*)
       encoded_value="${protocol#valid:}"
       if decoded_value="$(ruby -e 'print ARGV.fetch(0).unpack1("m0")' "$encoded_value" 2>/dev/null && printf '\036')" &&
@@ -230,6 +259,11 @@ report_corrupt_install_metadata() {
   echo "Restore a valid backup of that file. If none exists, preserve the corrupt target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
 }
 
+report_invalid_install_delivery_mode() {
+  echo "Installed metadata delivery_mode must be flat or plugin-companion." >&2
+  echo "Restore a valid backup of $target/$metadata_name or reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
+}
+
 resolve_delivery_mode() {
   local metadata_path="$target/$metadata_name"
   local recorded_mode
@@ -246,6 +280,10 @@ resolve_delivery_mode() {
       [[ -n "$delivery_mode" ]] || delivery_mode="$recorded_mode"
       ;;
     key_absent) [[ -n "$delivery_mode" ]] || delivery_mode="flat" ;;
+    invalid)
+      report_invalid_install_delivery_mode
+      return 64
+      ;;
     corrupt)
       report_corrupt_install_metadata
       return 65
@@ -894,6 +932,11 @@ if [[ -f "$migration_receipt" ]]; then
       esac
       ;;
     key_absent) prior_delivery_mode="flat" ;;
+    invalid)
+      report_invalid_install_delivery_mode
+      echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+      exit 64
+      ;;
     corrupt)
       report_corrupt_install_metadata
       echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2

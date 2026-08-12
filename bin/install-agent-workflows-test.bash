@@ -1637,7 +1637,7 @@ test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots() 
 }
 
 test_invalid_recorded_delivery_mode_fails_before_mutation() {
-  local tmp target output status metadata_before sentinel_before target_paths_before
+  local tmp target output status metadata_before sentinel_before target_paths_before variant
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   mkdir -p "$target"
@@ -1657,28 +1657,35 @@ test_invalid_recorded_delivery_mode_fails_before_mutation() {
   sentinel_before="$(shasum "$target/sentinel.txt")"
   target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
 
-  set +e
-  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
-  status=$?
-  set -e
+  for variant in omitted explicit; do
+    set +e
+    if [[ "$variant" = omitted ]]; then
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+    else
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+    fi
+    status=$?
+    set -e
 
-  [[ "$status" -eq 64 ]] || fail "invalid recorded delivery mode exited $status: $output"
-  assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion, got: hybrid"
-  assert_not_contains "$output" "JSON::ParserError"
-  assert_not_contains "$output" "common.rb"
-  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
-    fail "invalid recorded delivery mode mutated metadata"
-  [[ "$sentinel_before" = "$(shasum "$target/sentinel.txt")" ]] || \
-    fail "invalid recorded delivery mode mutated sentinel"
-  [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
-    fail "invalid recorded delivery mode changed the target tree"
-  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "invalid recorded delivery mode created install lock"
-  [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "invalid recorded delivery mode created staging receipt"
-  [[ ! -e "$target/skills" ]] || fail "invalid recorded delivery mode created a flat skill layout"
+    [[ "$status" -eq 64 ]] || fail "invalid recorded delivery mode exited $status on $variant path: $output"
+    assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion."
+    assert_contains "$output" "Restore a valid backup"
+    assert_not_contains "$output" "JSON::ParserError"
+    assert_not_contains "$output" "common.rb"
+    [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+      fail "invalid recorded delivery mode mutated metadata on $variant path"
+    [[ "$sentinel_before" = "$(shasum "$target/sentinel.txt")" ]] || \
+      fail "invalid recorded delivery mode mutated sentinel on $variant path"
+    [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+      fail "invalid recorded delivery mode changed the target tree on $variant path"
+    [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "invalid recorded delivery mode created install lock"
+    [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "invalid recorded delivery mode created staging receipt"
+    [[ ! -e "$target/skills" ]] || fail "invalid recorded delivery mode created a flat skill layout"
+  done
 }
 
 test_newline_recorded_delivery_modes_fail_before_mutation() {
-  local value tmp target output status metadata_before target_paths_before
+  local value variant tmp target output status metadata_before target_paths_before
   for value in '"\n"' '"flat\n"'; do
     tmp="$(mktemp -d)"
     target="$tmp/codex-home"
@@ -1687,20 +1694,27 @@ test_newline_recorded_delivery_modes_fail_before_mutation() {
     metadata_before="$(shasum "$target/.agent-workflows-install.json")"
     target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
 
-    set +e
-    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
-    status=$?
-    set -e
+    for variant in omitted explicit; do
+      set +e
+      if [[ "$variant" = omitted ]]; then
+        output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+      else
+        output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+      fi
+      status=$?
+      set -e
 
-    [[ "$status" -eq 64 ]] || fail "newline recorded delivery mode exited $status: $output"
-    assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion"
-    assert_not_contains "$output" "JSON::ParserError"
-    [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
-      fail "newline recorded mode changed metadata"
-    [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
-      fail "newline recorded mode changed target tree"
-    [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "newline recorded mode created install lock"
-    [[ ! -e "$target/skills" ]] || fail "newline recorded mode created flat skills"
+      [[ "$status" -eq 64 ]] || fail "newline recorded delivery mode exited $status on $variant path: $output"
+      assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion"
+      assert_contains "$output" "Restore a valid backup"
+      assert_not_contains "$output" "JSON::ParserError"
+      [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+        fail "newline recorded mode changed metadata on $variant path"
+      [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+        fail "newline recorded mode changed target tree on $variant path"
+      [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "newline recorded mode created install lock"
+      [[ ! -e "$target/skills" ]] || fail "newline recorded mode created flat skills"
+    done
   done
 }
 
@@ -1842,6 +1856,7 @@ RUBY
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "recovery-time corruption leaked install lock"
   [[ "$status" -eq 65 ]] || fail "recovery-time corrupt metadata exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved pending recovery receipt"
 }
 
 test_recovery_metadata_path_race_fails_before_pending_recovery_mutation() {
@@ -1891,6 +1906,7 @@ RUBY
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "path-race corruption leaked install lock"
   [[ "$status" -eq 65 ]] || fail "recovery-time metadata path race exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved pending recovery receipt"
 }
 
 test_metadata_parser_runtime_failure_is_corrupt() {
@@ -1969,8 +1985,9 @@ RUBY
   assert_file "$staging/user-owned-skill/SKILL.md"
   [[ ! -e "$target/skills/user-owned-skill" ]] || fail "invalid-string race restored staged skill"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "invalid-string race leaked install lock"
-  [[ "$status" -eq 64 ]] || fail "recovery-time invalid string exited $status: $output"
-  assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion"
+  [[ "$status" -eq 65 ]] || fail "recovery-time invalid string race exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved pending recovery receipt"
 }
 
 test_recovery_metadata_delete_race_is_corrupt() {
@@ -2015,6 +2032,170 @@ RUBY
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "metadata delete race leaked install lock"
   [[ "$status" -eq 65 ]] || fail "recovery-time metadata delete race exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_recovery_second_read_overwrite_is_corrupt_before_mutation() {
+  local tmp target staging receipt injection counter output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-second-read-overwrite"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/overwrite-metadata-after-second-read.rb"
+  counter="$tmp/metadata-read-count"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  cat > "$injection" <<'RUBY'
+require "json"
+module OverwriteMetadataAfterSecondRead
+  def parse(source, *args)
+    value = super
+    counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+    count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+    File.write(counter, count)
+    if count == 2
+      File.write(ENV.fetch("QA_INSTALL_METADATA"), "{\"delivery_mode\":[\"flat\"]}\n")
+    end
+    value
+  end
+end
+JSON.singleton_class.prepend(OverwriteMetadataAfterSecondRead)
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "second-read overwrite changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "second-read overwrite restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "second-read overwrite leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "second-read overwrite exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_recovery_second_read_delete_is_corrupt_before_mutation() {
+  local tmp target staging receipt injection counter output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-second-read-delete"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/delete-metadata-after-second-read.rb"
+  counter="$tmp/metadata-read-count"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  cat > "$injection" <<'RUBY'
+require "json"
+module DeleteMetadataAfterSecondRead
+  def parse(source, *args)
+    value = super
+    counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+    count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+    File.write(counter, count)
+    File.unlink(ENV.fetch("QA_INSTALL_METADATA")) if count == 2
+    value
+  end
+end
+JSON.singleton_class.prepend(DeleteMetadataAfterSecondRead)
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "second-read delete changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "second-read delete restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "second-read delete leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "second-read delete exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_recovery_unsupported_string_between_reads_preserves_receipt() {
+  local tmp target staging receipt injection counter output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-invalid-between-reads"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/write-invalid-metadata-after-first-reader-exits.rb"
+  counter="$tmp/metadata-reader-count"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  cat > "$injection" <<'RUBY'
+require "json"
+if ARGV.length == 2 && ARGV.fetch(0) == ENV["QA_INSTALL_METADATA"] && ARGV.fetch(1) == "delivery_mode"
+  counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+  count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count)
+  if count == 1
+    at_exit do
+      File.write(ENV.fetch("QA_INSTALL_METADATA"), "{\"delivery_mode\":\"hybrid\"}\n")
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "unsupported recovery mode changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "unsupported recovery mode restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "unsupported recovery mode leaked install lock"
+  [[ "$status" -eq 64 ]] || fail "unsupported recovery mode exited $status: $output"
+  assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion."
+  assert_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_nul_recorded_delivery_mode_fails_before_pending_recovery_mutation() {
+  local tmp target staging receipt output status receipt_before metadata_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-nul-mode"
+  receipt="$target/.agent-workflows-migration-staging"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '%s\n' '{"delivery_mode":"flat\u0000"}' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "NUL delivery mode changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "NUL delivery mode restored staged skill"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "NUL delivery mode changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "NUL delivery mode leaked install lock"
+  [[ "$status" -eq 64 ]] || fail "NUL delivery mode exited $status: $output"
+  assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion"
+  assert_not_contains "$output" "Preserved pending recovery receipt"
 }
 
 test_legacy_install_metadata_without_delivery_mode_remains_flat() {
@@ -2916,6 +3097,10 @@ main() {
     test_metadata_parser_runtime_failure_is_corrupt
     test_recovery_invalid_string_race_fails_before_pending_recovery_mutation
     test_recovery_metadata_delete_race_is_corrupt
+    test_recovery_second_read_overwrite_is_corrupt_before_mutation
+    test_recovery_second_read_delete_is_corrupt_before_mutation
+    test_recovery_unsupported_string_between_reads_preserves_receipt
+    test_nul_recorded_delivery_mode_fails_before_pending_recovery_mutation
     test_legacy_install_metadata_without_delivery_mode_remains_flat
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
