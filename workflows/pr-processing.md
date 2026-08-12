@@ -779,7 +779,10 @@ and approval percentages with hard at 100, a telemetry freshness limit, a
 cross-task delegation approval threshold, and an absolute coordinator-owned
 `state_path`, plus a nonempty immutable allowlist of unique verifier ids with
 canonical RSA public keys of at least 2048 bits using only
-`rsa-pss-sha256`. Private keys never enter plans or state. Partial, inline,
+`rsa-pss-sha256`; canonical key fingerprints must also be unique across ids.
+Persist the exact budget object separately and record
+`plan.token_budget_anchor` with its absolute coordinator-selected trusted plan
+path, matching plan id, and canonical `sha256:` digest. Private keys never enter plans or state. Partial, inline,
 stale, malformed, or `UNKNOWN` required data blocks new
 expensive work. Do not invent universal absolute limits or substitute dollars,
 plan meters, cached-token discounts, prompt length, or message count.
@@ -789,8 +792,17 @@ repo-local pinned-copy chain. Initialize and operate the durable state through:
 
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/batch-token-budget" \
-  --state <plan.state_path> < batch-token-budget-command-v1.json
+  --state <plan.state_path> \
+  --trusted-plan <plan.token_budget_anchor.trusted_plan_path> \
+  --trusted-plan-id <plan.token_budget_anchor.trusted_plan_id> \
+  --trusted-plan-digest <plan.token_budget_anchor.trusted_plan_digest> \
+  < batch-token-budget-command-v1.json
 ```
+
+Pass that external binding on every operation, including restart and closeout.
+The coordinator-selected path is a trust input outside mutable budget state;
+the helper cannot authenticate an arbitrary caller-selected path, but persisted
+state alone cannot replace the budget or verifier authority.
 
 Before every coordinator or worker model turn, spawn, retry, review wave,
 scheduled continuation, monitor wake, resume, replacement, escalation, or
@@ -818,8 +830,9 @@ reservation. Missing, stale, malformed, duplicate, conflicting,
 or `UNKNOWN` telemetry allows read-only discovery and checkpointing only. A
 segment with `UNKNOWN` ownership cannot reconcile or release its active
 reservation. Receipt objects use exact field allowlists.
-cross-task charge-back records source causality for actual target self plus
-descendant use without incrementing physical aggregate totals twice.
+Cross-task charge-back records source causality for actual target self plus
+descendant use without incrementing physical aggregate totals twice. It retains
+an exact bidirectional link to the matching reconciled reservation.
 Replacement or escalation waits for predecessor release/reconciliation.
 
 Warning persists a compact checkpoint and continues. Approval and override
@@ -827,7 +840,7 @@ commands embed a strict `proven-human-attestation v1` bound to batch, immutable
 budget digest, scope, exact action/id, actor, issuance/expiry, and a
 durable verification receipt reference. The helper canonicalizes every field
 except `signature` and verifies the strict-base64 RSA-PSS-SHA256 signature
-against the immutable plan's pinned verifier key. Unsupported, unlisted,
+against the freshly loaded external plan's pinned verifier key. Unsupported, unlisted,
 wrong-key, free-form, or self-attested claims do not authorize work.
 Approval starts no new expensive action without a scope-matched unexpired
 attestation.
@@ -848,9 +861,10 @@ examples are in [Hierarchical Token Budgets](../docs/token-budgets.md).
 Duplicate JSON object keys fail before evaluation. Every restart validates
 reservation/usage ledgers against all counters, and complete closeout requires
 zero reserved tokens in every scope.
-It also validates an exact append-only control-event digest chain and all
+It also deterministically replays exact typed control-event payloads from a
+unique external-plan-bound initialization root, checking each pre/post-state and all
 approval, override/expiry, stop, checkpoint, fence, charge-back, and receipt
-cross-references; missing, reordered, tampered, unknown, or orphaned records
+cross-references; missing, reordered, rehashed, edited, unknown, or orphaned records
 fail before mutation.
 
 ### Model And Effort Routing

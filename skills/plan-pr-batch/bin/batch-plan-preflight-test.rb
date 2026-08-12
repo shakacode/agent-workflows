@@ -305,6 +305,19 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
+  def token_budget_anchor(budget)
+    {
+      "trusted_plan_path" => "/var/tmp/batch-plan-1-token-budget-plan.json",
+      "trusted_plan_id" => budget.fetch("batch_id"),
+      "trusted_plan_digest" => "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(budget)))}"
+    }
+  end
+
+  def enable_token_budget(input, candidate = token_budget)
+    input.fetch("plan")["token_budget"] = candidate
+    input.fetch("plan")["token_budget_anchor"] = token_budget_anchor(candidate)
+  end
+
   def test_ordinary_durable_lane_state_advances_serialized_work_without_trust_material
     lanes = [lane("lane-b"), lane("lane-a")]
     lanes.each { |record| record["serialization_group"] = "changelog-writers" }
@@ -895,7 +908,7 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def test_complete_opt_in_hierarchical_token_budget_is_accepted
     input = input_for
-    input.fetch("plan")["token_budget"] = token_budget
+    enable_token_budget(input)
 
     result, stderr, status = evaluate(input)
 
@@ -904,12 +917,51 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.fetch("violations")
   end
 
+  def test_opt_in_token_budget_requires_an_exact_external_anchor_binding
+    missing = input_for
+    missing.fetch("plan")["token_budget"] = token_budget
+
+    result, _stderr, status = evaluate(missing)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-anchor-invalid"
+
+    orphan = input_for
+    orphan.fetch("plan")["token_budget_anchor"] = token_budget_anchor(token_budget)
+    orphan_result, _orphan_stderr, orphan_status = evaluate(orphan)
+    refute orphan_status.success?
+    assert_includes orphan_result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-anchor-without-budget"
+
+    mismatches = {
+      "unknown-path" => proc { |anchor| anchor["trusted_plan_path"] = "UNKNOWN" },
+      "relative-path" => proc { |anchor| anchor["trusted_plan_path"] = "tmp/budget-plan.json" },
+      "wrong-id" => proc { |anchor| anchor["trusted_plan_id"] = "different-batch" },
+      "wrong-digest" => proc { |anchor| anchor["trusted_plan_digest"] = "sha256:#{'0' * 64}" }
+    }
+    mismatches.each do |name, mutate|
+      input = input_for
+      enable_token_budget(input)
+      mutate.call(input.dig("plan", "token_budget_anchor"))
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, name
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-anchor-invalid", name
+    end
+  end
+
   def test_token_budget_rejects_untrusted_or_malformed_verifier_records
     mutations = {
       "unknown-algorithm" => proc { |records| records[0]["algorithm"] = "UNKNOWN" },
       "malformed-key" => proc { |records| records[0]["public_key_pem"] = "not-a-public-key" },
       "private-key" => proc { |records| records[0]["public_key_pem"] = TEST_VERIFIER_KEY.to_pem },
       "duplicate-id" => proc { |records| records << records[0].dup },
+      "duplicate-key-different-id" => proc do |records|
+        records << records[0].merge("id" => "different-verifier-id")
+      end,
       "empty" => proc(&:clear)
     }
     mutations.each do |name, mutate|

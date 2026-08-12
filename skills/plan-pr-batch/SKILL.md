@@ -570,14 +570,17 @@ the whole launch before dispatch.
      delegation approval threshold; and an absolute coordinator-owned
      `state_path`; plus a nonempty exact allowlist of unique trusted verifier
      ids with canonical RSA public keys of at least 2048 bits and algorithm
-     `rsa-pss-sha256`. Keep private keys outside plans/state and resolve
+     `rsa-pss-sha256`, rejecting duplicate canonical key fingerprints across
+     ids. Persist that exact budget object separately and add
+     `plan.token_budget_anchor` with its absolute coordinator-selected path,
+     matching plan id, and canonical `sha256:` digest. Keep private keys outside plans/state and resolve
      consumer-specific custody/signing through `AGENTS.md`. Do not invent universal absolute limits.
      Reserve `aggregate` and `coordinator` for the parent scopes; they cannot be
      lane ids.
      Partial, inline, stale, malformed, duplicate-key, or `UNKNOWN` budget metadata fails the
      batch-plan preflight. A plan with no budget metadata remains legacy
-     compatible. Record the coordinator-owned durable runtime state path in the
-     Batch Plan and goal prompt. See
+     compatible. Record the coordinator-owned durable runtime state path and
+     exact trusted-plan invocation binding in the Batch Plan and goal prompt. See
      [Hierarchical Token Budgets](../../docs/token-budgets.md).
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
@@ -740,8 +743,9 @@ backend must say so in the declaration.
   name the registration evidence or the durable backend-`n/a` handoff.
 - Token budget: `none` for a plan with no budget metadata, or the complete
   `batch-token-budget v1` aggregate/coordinator/all-lanes object, thresholds,
-  telemetry/delegation policy, and durable state path. Any present budget field
-  makes complete valid scope coverage mandatory.
+  telemetry/delegation policy, durable state path, and separately persisted
+  trusted-plan path/id/digest passed on every helper operation. Any present
+  budget field makes complete valid scope coverage mandatory.
 - Batch size target: `codex`, `claude`, or `generic`; max items per wave and
   split rationale.
 - While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.

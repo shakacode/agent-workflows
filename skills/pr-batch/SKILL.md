@@ -492,7 +492,8 @@ Before implementation or worker launch, produce:
     and all-lane limits; warning/approval/hard thresholds; telemetry freshness;
     delegation threshold; a nonempty immutable allowlist of unique
     `rsa-pss-sha256` verifier ids and canonical RSA public keys of at least 2048
-    bits; durable state path; current per-scope totals; and
+    bits with unique canonical key fingerprints; a separately persisted trusted
+    plan path plus expected plan id/digest; durable state path; current per-scope totals; and
     latest receipt cutoff. Any partial or `UNKNOWN` required value blocks new
     expensive work, not read-only discovery or checkpointing.
 <!-- host-branch: codex-only start -->
@@ -532,10 +533,15 @@ whose committed lockfiles change.
 When the Batch Plan carries `batch-token-budget v1`, resolve
 `PR_BATCH_SKILL_DIR` through the explicit environment variable, loaded skill
 base, then repo-local pinned-copy chain and run
-`"${PR_BATCH_SKILL_DIR}/bin/batch-token-budget" --state <plan.state_path>` as the
-admission/accounting boundary. Initialize it from the exact preflighted object.
+`"${PR_BATCH_SKILL_DIR}/bin/batch-token-budget" --state <plan.state_path>
+--trusted-plan <plan.token_budget_anchor.trusted_plan_path> --trusted-plan-id
+<plan.token_budget_anchor.trusted_plan_id> --trusted-plan-digest
+<plan.token_budget_anchor.trusted_plan_digest>` as the admission/accounting
+boundary on every operation. Initialize it from the exact preflighted object.
 The CLI path must equal the absolute coordinator-owned `state_path` in that
-object.
+object. Treat the coordinator-selected trusted plan as authority outside mutable
+budget state; the helper binds to it but cannot authenticate an arbitrary
+caller-selected path.
 Plans with no budget metadata retain legacy behavior.
 
 Reserve conservative headroom before every coordinator/worker model turn,
@@ -556,7 +562,8 @@ fail closed on missing, stale, malformed, duplicate, conflicting, or `UNKNOWN`
 telemetry. `UNKNOWN` segment ownership retains the active reservation and
 cannot release headroom. Never use worker self-attestation as authoritative. Cross-task causal
 charge-back includes target self plus descendant use without incrementing a
-physical aggregate twice. Replacement/escalation waits until its predecessor is
+physical aggregate twice and retains an exact one-to-one reverse link to its
+reconciled reservation. Replacement/escalation waits until its predecessor is
 released or reconciled.
 
 Warning persists a compact checkpoint and continues. Approval and override
@@ -579,8 +586,9 @@ all remaining gates, receipt cutoff, resume conditions, and a copy-paste resume
 action. Closeout reports allocated, consumed, currently reserved, cumulatively
 released, and unattributed tokens for aggregate/coordinator/every lane, plus
 overshoot. Duplicate JSON keys and ledger/counter inconsistencies fail on load;
-an exact chained control-event ledger detects missing, reordered, tampered, or
-orphaned control records, and complete closeout requires zero reserved tokens in
+an exact typed control-event reducer replays from the external-plan-bound root
+and detects missing, reordered, rehashed, edited, or orphaned control records;
+complete closeout requires zero reserved tokens in
 every scope. Full JSON contracts are in
 [Hierarchical Token Budgets](../../docs/token-budgets.md).
 
