@@ -280,6 +280,7 @@ module BatchPlanPreflight
   def validate_token_budget(plan, lane_ids)
     inline_budget = plan.fetch("lanes").any? { |lane| lane.is_a?(Hash) && lane.key?("token_budget") }
     budget = plan["token_budget"]
+    anchor = plan["token_budget_anchor"]
     violations = []
     if inline_budget
       violations << violation(
@@ -288,7 +289,16 @@ module BatchPlanPreflight
         "Place the complete batch-token-budget v1 object at plan.token_budget; inline partial lane budgets are invalid."
       )
     end
-    return violations if budget.nil?
+    if budget.nil?
+      if anchor
+        violations << violation(
+          "token-budget-anchor-without-budget",
+          "$.plan.token_budget_anchor",
+          "A trusted token-budget anchor is valid only with a complete plan.token_budget object."
+        )
+      end
+      return violations
+    end
 
     unless budget.is_a?(Hash) && budget["type"] == "batch-token-budget" && budget["version"] == 1
       violations << violation(
@@ -319,6 +329,18 @@ module BatchPlanPreflight
         "token-budget-state-path-invalid",
         "$.plan.token_budget.state_path",
         "Token budget requires an absolute coordinator-owned durable state path."
+      )
+    end
+    expected_budget_digest = "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(budget)))}"
+    unless anchor.is_a?(Hash) && anchor.keys.sort == %w[
+      trusted_plan_digest trusted_plan_id trusted_plan_path
+    ] && absolute_path?(anchor["trusted_plan_path"]) &&
+           anchor["trusted_plan_id"] == budget["batch_id"] &&
+           anchor["trusted_plan_digest"] == expected_budget_digest
+      violations << violation(
+        "token-budget-anchor-invalid",
+        "$.plan.token_budget_anchor",
+        "Persist the external trusted plan path, matching batch id, and exact canonical sha256 budget digest."
       )
     end
 
@@ -409,17 +431,22 @@ module BatchPlanPreflight
     return false unless verifiers.is_a?(Array) && !verifiers.empty?
     return false unless verifiers.map { |record| record["id"] if record.is_a?(Hash) }.uniq.length == verifiers.length
 
-    verifiers.all? do |record|
-      next false unless record.is_a?(Hash) && record.keys.sort == %w[algorithm id public_key_pem] &&
-                        nonempty_identity?(record["id"]) && record["algorithm"] == "rsa-pss-sha256" &&
-                        nonempty_identity?(record["public_key_pem"])
+    canonical_keys = verifiers.map do |record|
+      return false unless record.is_a?(Hash) && record.keys.sort == %w[algorithm id public_key_pem] &&
+                          nonempty_identity?(record["id"]) && record["algorithm"] == "rsa-pss-sha256" &&
+                          nonempty_identity?(record["public_key_pem"])
 
       key = OpenSSL::PKey.read(record["public_key_pem"])
-      key.is_a?(OpenSSL::PKey::RSA) && !key.private? && key.n.num_bits >= 2048 &&
-        record["public_key_pem"] == key.public_key.to_pem
-    rescue OpenSSL::PKey::PKeyError
-      false
+      return false unless key.is_a?(OpenSSL::PKey::RSA) && !key.private? && key.n.num_bits >= 2048
+
+      canonical_pem = key.public_key.to_pem
+      return false unless record["public_key_pem"] == canonical_pem
+
+      canonical_pem
     end
+    canonical_keys.uniq.length == canonical_keys.length
+  rescue OpenSSL::PKey::PKeyError
+    false
   end
 
   def token_limit(scope)

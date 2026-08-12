@@ -41,6 +41,17 @@ metadata is present, partial or inline lane budgets fail closed.
 }
 ```
 
+Persist that exact canonical object separately as the trusted runtime plan and
+record its coordinator-selected binding next to `plan.token_budget`:
+
+```json
+"token_budget_anchor": {
+  "trusted_plan_path": "/absolute/coordinator-owned/batch-399-token-budget-plan.json",
+  "trusted_plan_id": "batch-399",
+  "trusted_plan_digest": "sha256:<canonical batch-token-budget object digest>"
+}
+```
+
 The `batch_id` must match the plan id, `state_path` must be the absolute
 coordinator-owned path passed to every helper invocation, lane scope ids must
 exactly match every planned lane, and coordinator/lane limits cannot exceed the
@@ -48,8 +59,9 @@ aggregate limit.
 Lane ids `aggregate` and `coordinator` are reserved for their parent scopes.
 Thresholds must be strictly increasing and `hard_percent` is exactly 100.
 `trusted_verifiers` is a nonempty exact allowlist of unique verifier ids and
-canonical public keys. Version 1 supports only `rsa-pss-sha256` with RSA keys of
-at least 2048 bits. The matching private key stays outside the plan and durable
+canonical public keys. Verifier ids and canonical public-key fingerprints must
+both be unique. Version 1 supports only `rsa-pss-sha256` with RSA keys of at
+least 2048 bits. The matching private key stays outside the plan and durable
 state; consumer-specific key custody and signing commands resolve through the
 consumer's `AGENTS.md` seams.
 
@@ -67,12 +79,23 @@ coordinator-owned state file before the first expensive action:
 
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/batch-token-budget" \
-  --state <exact-plan-state-path> < initialize-command.json
+  --state <exact-plan-state-path> \
+  --trusted-plan <exact-token-budget-plan-path> \
+  --trusted-plan-id <exact-batch-id> \
+  --trusted-plan-digest <sha256:canonical-budget-digest> \
+  < initialize-command.json
 ```
 
 The helper takes one `batch-token-budget-command v1` JSON object on stdin and
 emits one deterministic result on stdout. The CLI path must match the plan's
-`state_path`; mismatches and invalid envelopes exit nonzero.
+`state_path`; mismatches and invalid envelopes exit nonzero. Every operation,
+including initialize, replay, closeout, and read-only result paths, reloads and
+validates the same external trusted plan binding before reading or mutating
+state. The coordinator-selected `--trusted-plan` path is trusted input outside
+the mutable budget state: the helper cannot authenticate an arbitrary path a
+caller chooses. Its guarantee is that persisted-state forgery alone cannot
+replace the budget or verifier authority because every invocation must match
+the separately held path, id, and canonical digest.
 Admission denials are valid decisions and exit zero so callers can persist the
 receipt and checkpoint safely. State updates use an exclusive adjacent lock,
 an fsynced private temporary file, and atomic rename. Replaying an id with a
@@ -81,7 +104,8 @@ coalesced or blocked request, is durably fenced by its canonical request digest;
 an exact replay returns the recorded decision, while later payload changes
 cannot reuse that id after the target or predecessor changes state. Commands and
 persisted state reject duplicate JSON object keys at every nesting level.
-The initialization digest remains bound to the immutable preflighted plan;
+The initialization receipt, immutable base projection, and unique root control
+event remain bound to the externally supplied immutable preflighted plan;
 scoped overrides update a separate effective-budget digest, so restart replay
 and unresolved threshold evidence cannot be hidden by a limit change.
 `evaluated_at` is a monotonic durable watermark: a command cannot roll state
@@ -146,8 +170,9 @@ not authorization:
 
 The signature covers canonical JSON for every attestation field except
 `signature`, including the durable receipt reference. The helper resolves the
-verifier only from the immutable base budget and verifies RSA-PSS-SHA256 with
-the pinned public key before mutation. Override attestations use action type
+verifier only from the freshly loaded external trusted plan and verifies
+RSA-PSS-SHA256 with the pinned public key before mutation. Persisted or
+caller-supplied replacement verifier material has no authority. Override attestations use action type
 `increase-budget-limit` and bind their decision id plus the exact old and new
 limits. Free-form `status: verified` has no authority. `UNKNOWN`, unsupported,
 unlisted, wrong-key, future, expired, malformed, unsigned, mismatched, or
@@ -182,7 +207,10 @@ overshoot inside a running turn.
 Cross-task reconciliation can include a `batch-token-charge-back v1` source and
 target identity. The resulting causal attribution reports actual self plus
 descendant tokens but explicitly does not increment physical aggregate totals
-a second time.
+a second time. Restart validation requires a one-to-one reverse link: every
+reconciled reservation naming a charge-back resolves to exactly one record with
+the same reservation, source, target, and actual tokens, and every charge-back
+resolves back to that reservation.
 
 Release a reservation durably when a worker is stopped before usage. A
 replacement or escalation cannot reserve until its named predecessor is
@@ -213,12 +241,16 @@ counter mismatches are corrupt state, and `COMPLETE` additionally requires zero
 reserved tokens in every scope.
 The state also carries an append-only `batch-token-budget-control-event v1`
 chain. Each exact typed event binds its sequence, predecessor digest, action,
-and the canonical post-action state digest. Restart validates the chain plus
+external plan path/id/digest, canonical command payload, pre-state digest, and
+post-state digest. A deterministic reducer starts from the external budget and
+replays the unique initialization root plus every subsequent event, then
+requires the reconstructed controlled projection to equal persisted state.
+Restart validates that replay plus
 approval/attestation, override/expiry, threshold/stop, checkpoint resolution,
 reservation/fence, usage/reconciliation, charge-back, and receipt
-cross-references. Inflated limits, deleted control records, missing or reordered
-events, digest changes, unknown event fields/types, or orphan references fail
-before any command can mutate state.
+cross-references. Inflated limits, deleted control records, missing, reordered,
+rehashed, or edited events, digest changes, unknown event fields/types, replaced
+final state, or orphan references fail before any command can mutate state.
 
 Scheduled monitors and same-thread heartbeats use the same reservation command
 before loading model context. They do not auto-continue at approval or hard

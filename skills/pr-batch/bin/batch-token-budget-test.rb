@@ -37,14 +37,41 @@ class BatchTokenBudgetTest < Minitest::Test
   end
 
   def run_helper(state_path, input)
+    install_trusted_plan(state_path, input.fetch("budget")) if input["action"] == "initialize" && input["budget"]
     run_helper_raw(state_path, JSON.generate(input))
   end
 
-  def run_helper_raw(state_path, input)
+  def trusted_plan_path(state_path)
+    "#{state_path}.trusted-plan.json"
+  end
+
+  def install_trusted_plan(state_path, candidate = budget(state_path: state_path))
+    path = trusted_plan_path(state_path)
+    File.write(path, JSON.generate(canonicalize(candidate)))
+    @trusted_anchor_bindings ||= {}
+    @trusted_anchor_bindings[state_path] = {
+      "path" => path,
+      "id" => candidate.fetch("batch_id"),
+      "digest" => "sha256:#{object_digest(candidate)}"
+    }
+  end
+
+  def trusted_anchor_binding(state_path)
+    @trusted_anchor_bindings ||= {}
+    @trusted_anchor_bindings[state_path] ||= install_trusted_plan(state_path)
+  end
+
+  def run_helper_raw(state_path, input, anchor: trusted_anchor_binding(state_path))
     stdout, stderr, status = Open3.capture3(
       HELPER,
       "--state",
       state_path,
+      "--trusted-plan",
+      anchor.fetch("path"),
+      "--trusted-plan-id",
+      anchor.fetch("id"),
+      "--trusted-plan-digest",
+      anchor.fetch("digest"),
       stdin_data: input
     )
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
@@ -57,6 +84,7 @@ class BatchTokenBudgetTest < Minitest::Test
   end
 
   def initialize_budget(state_path)
+    install_trusted_plan(state_path)
     run_helper(state_path, command("initialize", "budget" => budget(state_path: state_path)))
   end
 
@@ -141,8 +169,23 @@ class BatchTokenBudgetTest < Minitest::Test
 
   def rehash_control_tail(state)
     tail = state.fetch("control_events").last
-    tail["state_digest"] = object_digest(state.reject { |key, _value| key == "control_events" })
+    if tail.key?("post_state_digest")
+      tail["post_state_digest"] = object_digest(state.reject { |key, _value| key == "control_events" })
+    else
+      tail["state_digest"] = object_digest(state.reject { |key, _value| key == "control_events" })
+    end
     tail["digest"] = object_digest(tail.reject { |key, _value| key == "digest" })
+  end
+
+  def rechain_control_events(state)
+    previous_digest = "0" * 64
+    state.fetch("control_events").each_with_index do |event, index|
+      event["sequence"] = index + 1
+      event["previous_digest"] = previous_digest
+      event["pre_state_digest"] = index.zero? ? "0" * 64 : state.fetch("control_events")[index - 1]["post_state_digest"] if event.key?("pre_state_digest")
+      event["digest"] = object_digest(event.reject { |key, _value| key == "digest" })
+      previous_digest = event.fetch("digest")
+    end
   end
 
   def human_attestation(state_path, id:, scope_id:, action:, issued_at: "2026-08-12T11:58:00Z",
@@ -248,6 +291,127 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_every_operation_requires_the_same_external_immutable_budget_anchor
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+
+      initialized, stderr, status = run_helper(
+        state_path,
+        command("initialize", "budget" => candidate)
+      )
+
+      assert status.success?, stderr
+      assert_equal "initialized", initialized.fetch("status")
+      state = JSON.parse(File.read(state_path))
+      assert_equal anchor.fetch("id"), state.dig("receipts", 0, "trusted_plan_id")
+      assert_equal anchor.fetch("digest"), state.dig("receipts", 0, "trusted_plan_digest")
+      assert_equal anchor.fetch("path"), state.dig("receipts", 0, "trusted_plan_path")
+      assert_equal anchor.fetch("id"), state.dig("control_events", 0, "payload", "trusted_plan_id")
+      assert_equal anchor.fetch("digest"), state.dig("control_events", 0, "payload", "trusted_plan_digest")
+      assert_equal anchor.fetch("path"), state.dig("control_events", 0, "payload", "trusted_plan_path")
+      assert_equal anchor, state.fetch("trusted_plan_binding")
+      state_before = File.read(state_path)
+
+      missing_stdout, missing_stderr, missing_status = Open3.capture3(
+        HELPER,
+        "--state",
+        state_path,
+        stdin_data: JSON.generate(command("closeout"))
+      )
+      refute missing_status.success?
+      assert_empty missing_stdout
+      assert_equal "trusted-plan-required", JSON.parse(missing_stderr).fetch("reason")
+      assert_equal state_before, File.read(state_path)
+
+      bad_bindings = {
+        "unknown-path" => [anchor.merge("path" => "UNKNOWN"), "trusted-plan-path-unknown"],
+        "unreadable-path" => [anchor.merge("path" => "#{state_path}.missing"), "trusted-plan-unreadable"],
+        "unknown-id" => [anchor.merge("id" => "UNKNOWN"), "trusted-plan-id-invalid"],
+        "wrong-id" => [anchor.merge("id" => "other-batch"), "trusted-plan-id-mismatch"],
+        "unknown-digest" => [anchor.merge("digest" => "UNKNOWN"), "trusted-plan-digest-invalid"],
+        "wrong-digest" => [anchor.merge("digest" => "sha256:#{'0' * 64}"), "trusted-plan-digest-mismatch"]
+      }
+      bad_bindings.each do |name, (bad_anchor, expected_reason)|
+        output, operation_stderr, operation_status = run_helper_raw(
+          state_path,
+          JSON.generate(command("closeout")),
+          anchor: bad_anchor
+        )
+        refute operation_status.success?, name
+        assert_nil output, name
+        assert_equal expected_reason, JSON.parse(operation_stderr).fetch("reason"), name
+        assert_equal state_before, File.read(state_path), name
+      end
+
+      alternate_path = "#{anchor.fetch('path')}.copy"
+      File.write(alternate_path, File.read(anchor.fetch("path")))
+      output, alternate_stderr, alternate_status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout")),
+        anchor: anchor.merge("path" => alternate_path)
+      )
+      refute alternate_status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(alternate_stderr).fetch("reason")
+      assert_equal state_before, File.read(state_path)
+
+      replacement_key = OpenSSL::PKey::RSA.generate(2048)
+      replacement_budget = canonicalize(candidate)
+      replacement_budget.dig("trusted_verifiers", 0)["public_key_pem"] = replacement_key.public_key.to_pem
+      output, replacement_stderr, replacement_status = run_helper_raw(
+        state_path,
+        JSON.generate(command("initialize", "budget" => replacement_budget)),
+        anchor: anchor
+      )
+      refute replacement_status.success?
+      assert_nil output
+      assert_equal "initialize-budget-anchor-mismatch", JSON.parse(replacement_stderr).fetch("reason")
+      assert_equal state_before, File.read(state_path)
+
+      forged_state = JSON.parse(state_before)
+      forged_state["base_budget"] = replacement_budget
+      forged_state["budget_digest"] = object_digest(replacement_budget)
+      rehash_control_tail(forged_state)
+      File.write(state_path, JSON.generate(forged_state))
+      output, forged_stderr, forged_status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout")),
+        anchor: anchor
+      )
+      refute forged_status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(forged_stderr).fetch("reason")
+      File.write(state_path, state_before)
+
+      File.write(anchor.fetch("path"), "not-json")
+      output, malformed_stderr, malformed_status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout")),
+        anchor: anchor
+      )
+      refute malformed_status.success?
+      assert_nil output
+      assert_equal "trusted-plan-malformed", JSON.parse(malformed_stderr).fetch("reason")
+      assert_equal state_before, File.read(state_path)
+
+      duplicate_plan = JSON.generate(candidate).sub(
+        '"batch_id":"batch-399"',
+        '"batch_id":"batch-399","batch_id":"shadow-batch"'
+      )
+      File.write(anchor.fetch("path"), duplicate_plan)
+      output, duplicate_stderr, duplicate_status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout")),
+        anchor: anchor
+      )
+      refute duplicate_status.success?
+      assert_nil output
+      assert_equal "trusted-plan-malformed", JSON.parse(duplicate_stderr).fetch("reason")
+      assert_equal state_before, File.read(state_path)
+    end
+  end
+
   def test_initialize_rejects_untrusted_or_malformed_verifier_keys
     Dir.mktmpdir("batch-token-budget-verifier-contract") do |directory|
       mutations = {
@@ -255,6 +419,9 @@ class BatchTokenBudgetTest < Minitest::Test
         "malformed-key" => proc { |records| records[0]["public_key_pem"] = "not-a-public-key" },
         "private-key" => proc { |records| records[0]["public_key_pem"] = TEST_VERIFIER_KEY.to_pem },
         "duplicate-id" => proc { |records| records << records[0].dup },
+        "duplicate-key-different-id" => proc do |records|
+          records << records[0].merge("id" => "different-verifier-id")
+        end,
         "empty" => proc(&:clear)
       }
       mutations.each do |name, mutate|
@@ -268,7 +435,7 @@ class BatchTokenBudgetTest < Minitest::Test
 
         refute status.success?, name
         assert_nil output, name
-        assert_equal "invalid-budget-contract", JSON.parse(stderr).fetch("reason"), name
+        assert_equal "trusted-plan-contract-invalid", JSON.parse(stderr).fetch("reason"), name
         refute File.file?(state_path), name
       end
     end
@@ -1841,6 +2008,137 @@ class BatchTokenBudgetTest < Minitest::Test
         assert_nil output, name
         assert_equal "corrupt-persisted-state", JSON.parse(tamper_stderr).fetch("reason"), name
       end
+    end
+  end
+
+  def test_restart_rejects_deleted_root_or_middle_control_events_after_public_chain_rehash
+    Dir.mktmpdir("batch-token-budget-semantic-control-replay") do |directory|
+      {
+        "deleted-initialization" => 0,
+        "deleted-middle" => 1
+      }.each do |name, deletion_index|
+        state_path = File.join(directory, "#{name}.json")
+        initialize_budget(state_path)
+        reserve(state_path, id: "#{name}-reservation", tokens: 100)
+        run_helper(
+          state_path,
+          command(
+            "release",
+            "release" => {
+              "type" => "batch-token-release",
+              "version" => 1,
+              "id" => "#{name}-release",
+              "reservation_id" => "#{name}-reservation",
+              "reason" => "Finish semantic replay probe."
+            }
+          )
+        )
+        state = JSON.parse(File.read(state_path))
+        assert_operator state.fetch("control_events").length, :>=, 3
+        state.fetch("control_events").delete_at(deletion_index)
+        rechain_control_events(state)
+        File.write(state_path, JSON.generate(state))
+
+        output, stderr, status = run_helper(state_path, command("closeout"))
+
+        refute status.success?, name
+        assert_nil output, name
+        assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason"), name
+      end
+    end
+  end
+
+  def test_restart_reducer_rejects_payload_and_final_projection_forgery_after_chain_rehash
+    Dir.mktmpdir("batch-token-budget-control-payload-tamper") do |directory|
+      {
+        "edited-payload" => proc do |state|
+          state.dig("control_events", 1, "payload", "command", "reservation")["tokens"] = 1
+          rechain_control_events(state)
+        end,
+        "replaced-final-state" => proc do |state|
+          state.dig("budget", "scopes", "aggregate")["limit_tokens"] = 10_000
+          state.dig("budget", "scopes", "lanes", "lane-a")["limit_tokens"] = 10_000
+          state.dig("scopes", "aggregate")["limit_tokens"] = 10_000
+          state.dig("scopes", "lanes", "lane-a")["limit_tokens"] = 10_000
+          state["effective_budget_digest"] = object_digest(state.fetch("budget"))
+          state.dig("control_events", -1)["post_state_digest"] = object_digest(
+            state.reject { |key, _value| key == "control_events" }
+          )
+          rechain_control_events(state)
+        end,
+        "orphaned-anchor" => proc do |state|
+          state.dig("control_events", 0, "payload")["trusted_plan_digest"] = "sha256:#{'0' * 64}"
+          rechain_control_events(state)
+        end
+      }.each do |name, tamper|
+        state_path = File.join(directory, "#{name}.json")
+        initialize_budget(state_path)
+        reserve(state_path, id: "#{name}-reservation", tokens: 100)
+        state = JSON.parse(File.read(state_path))
+        tamper.call(state)
+        File.write(state_path, JSON.generate(state))
+
+        output, stderr, status = run_helper(state_path, command("closeout"))
+
+        refute status.success?, name
+        assert_nil output, name
+        assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason"), name
+      end
+    end
+  end
+
+  def test_restart_rejects_deleted_charge_back_even_after_control_tail_rehash
+    with_state do |state_path|
+      cross_budget = budget(state_path: state_path)
+      cross_budget["delegation"]["approval_threshold_tokens"] = 400
+      run_helper(state_path, command("initialize", "budget" => cross_budget))
+      source = task_identity(task_id: "charge-source")
+      source["batch_id"] = "source-batch"
+      target = task_identity(task_id: "task-lane-a")
+      cross_task = reservation(
+        id: "charge-reservation",
+        tokens: 100,
+        kind: "cross-task-delegation",
+        overrides: { "source" => source, "target" => target }
+      )
+      run_helper(state_path, command("reserve", "reservation" => cross_task))
+      usage = usage_receipt(
+        id: "charge-usage",
+        segments: [{
+          "id" => "charge-self",
+          "kind" => "self",
+          "scope_id" => "lane-a",
+          "target_id" => "task-lane-a",
+          "tokens" => 100
+        }]
+      )
+      reconciled, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "reservation_id" => "charge-reservation",
+          "usage_receipt" => usage,
+          "charge_back" => {
+            "type" => "batch-token-charge-back",
+            "version" => 1,
+            "id" => "charge-cause",
+            "source" => source,
+            "target" => target
+          }
+        )
+      )
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      state = JSON.parse(File.read(state_path))
+      state.fetch("charge_backs").delete("charge-cause")
+      rehash_control_tail(state)
+      File.write(state_path, JSON.generate(state))
+
+      output, restart_stderr, restart_status = run_helper(state_path, command("closeout"))
+      refute restart_status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(restart_stderr).fetch("reason")
     end
   end
 

@@ -170,17 +170,46 @@ module BatchTokenBudget
     return false unless verifiers.is_a?(Array) && !verifiers.empty?
     return false unless verifiers.map { |record| record["id"] if record.is_a?(Hash) }.uniq.length == verifiers.length
 
-    verifiers.all? do |record|
-      next false unless record.is_a?(Hash) && record.keys.sort == %w[algorithm id public_key_pem] &&
-                        nonempty_string?(record["id"]) && record["algorithm"] == "rsa-pss-sha256" &&
-                        nonempty_string?(record["public_key_pem"])
+    canonical_keys = verifiers.map do |record|
+      return false unless record.is_a?(Hash) && record.keys.sort == %w[algorithm id public_key_pem] &&
+                          nonempty_string?(record["id"]) && record["algorithm"] == "rsa-pss-sha256" &&
+                          nonempty_string?(record["public_key_pem"])
 
       key = OpenSSL::PKey.read(record["public_key_pem"])
-      key.is_a?(OpenSSL::PKey::RSA) && !key.private? && key.n.num_bits >= 2048 &&
-        record["public_key_pem"] == key.public_key.to_pem
-    rescue OpenSSL::PKey::PKeyError
-      false
+      return false unless key.is_a?(OpenSSL::PKey::RSA) && !key.private? && key.n.num_bits >= 2048
+
+      canonical_pem = key.public_key.to_pem
+      return false unless record["public_key_pem"] == canonical_pem
+
+      canonical_pem
     end
+    canonical_keys.uniq.length == canonical_keys.length
+  rescue OpenSSL::PKey::PKeyError
+    false
+  end
+
+  def trusted_plan_digest(budget)
+    "sha256:#{digest(budget)}"
+  end
+
+  def load_trusted_plan(path, expected_id, expected_digest)
+    raise InvalidInput, "trusted-plan-path-unknown" unless nonempty_string?(path)
+    raise InvalidInput, "trusted-plan-path-invalid" unless Pathname.new(path).absolute?
+    raise InvalidInput, "trusted-plan-id-invalid" unless nonempty_string?(expected_id)
+    unless nonempty_string?(expected_digest) && expected_digest.match?(/\Asha256:[0-9a-f]{64}\z/)
+      raise InvalidInput, "trusted-plan-digest-invalid"
+    end
+
+    budget = parse_json_strict(File.read(path, encoding: "UTF-8"))
+    raise InvalidInput, "trusted-plan-contract-invalid" unless valid_budget?(budget)
+    raise InvalidInput, "trusted-plan-id-mismatch" unless budget["batch_id"] == expected_id
+    raise InvalidInput, "trusted-plan-digest-mismatch" unless trusted_plan_digest(budget) == expected_digest
+
+    canonicalize(budget)
+  rescue Errno::ENOENT, Errno::EACCES, Errno::EISDIR
+    raise InvalidInput, "trusted-plan-unreadable"
+  rescue JSON::ParserError
+    raise InvalidInput, "trusted-plan-malformed"
   end
 
   def absolute_state_path?(value)
@@ -204,7 +233,7 @@ module BatchTokenBudget
     }
   end
 
-  def initial_state(budget, evaluated_at)
+  def initial_state(budget, evaluated_at, trusted_plan_binding)
     {
       "contract" => "batch-token-budget-state",
       "version" => 1,
@@ -213,6 +242,7 @@ module BatchTokenBudget
       "budget" => canonicalize(budget),
       "budget_digest" => digest(budget),
       "effective_budget_digest" => digest(budget),
+      "trusted_plan_binding" => canonicalize(trusted_plan_binding),
       "last_evaluated_at" => evaluated_at,
       "revision" => 0,
       "scopes" => {
@@ -387,9 +417,18 @@ module BatchTokenBudget
     end
   end
 
-  def valid_receipt_ledger?(state)
+  def valid_receipt_ledger?(state, trusted_budget, trusted_plan_binding)
     receipts = state.fetch("receipts")
     return false unless receipts.length == state.fetch("revision") + 1
+
+    initialization_receipts = receipts.select do |receipt|
+      receipt["type"] == "batch-token-budget-initialization-receipt"
+    end
+    return false unless initialization_receipts.length == 1 && receipts.first == initialization_receipts.first
+    return false unless initialization_receipts.first["budget_digest"] == digest(trusted_budget) &&
+                        initialization_receipts.first["trusted_plan_id"] == trusted_budget["batch_id"] &&
+                        initialization_receipts.first["trusted_plan_digest"] == trusted_plan_digest(trusted_budget) &&
+                        initialization_receipts.first["trusted_plan_path"] == trusted_plan_binding["path"]
 
     receipts.each_with_index.all? do |receipt, index|
       receipt.is_a?(Hash) && RECEIPT_TYPES.include?(receipt["type"]) && receipt["version"] == 1 &&
@@ -398,7 +437,7 @@ module BatchTokenBudget
     end
   end
 
-  def valid_human_decision_ledgers?(state)
+  def valid_human_decision_ledgers?(state, trusted_budget)
     approvals_valid = state.fetch("approvals").all? do |approval_id, record|
       decision = record["decision"]
       attestation = decision.is_a?(Hash) && decision["attestation"]
@@ -409,7 +448,8 @@ module BatchTokenBudget
         record["attestation_digest"] == digest(attestation) && record["scope_id"] == decision["scope_id"] &&
         record["expires_at"] == attestation["expires_at"] &&
         valid_human_attestation?(attestation, state, attestation["issued_at"], record["scope_id"],
-                                 { "type" => "approve-next-admission", "decision_id" => approval_id }) &&
+                                 { "type" => "approve-next-admission", "decision_id" => approval_id },
+                                 trusted_budget) &&
         ledger_receipt?(state, record["receipt"], "batch-token-budget-approval-receipt") &&
         record.dig("receipt", "approval_id") == approval_id &&
         record.dig("receipt", "attestation_digest") == record["attestation_digest"] &&
@@ -435,7 +475,8 @@ module BatchTokenBudget
         record["old_limit_tokens"] == decision["old_limit_tokens"] &&
         record["new_limit_tokens"] == decision["new_limit_tokens"] &&
         record["expires_at"] == attestation["expires_at"] && [true, false].include?(record["active"]) &&
-        valid_human_attestation?(attestation, state, attestation["issued_at"], record["scope_id"], expected_action) &&
+        valid_human_attestation?(attestation, state, attestation["issued_at"], record["scope_id"], expected_action,
+                                 trusted_budget) &&
         ledger_receipt?(state, record["receipt"], "batch-token-budget-override-receipt") &&
         record.dig("receipt", "override_id") == override_id &&
         record.dig("receipt", "attestation_digest") == record["attestation_digest"]
@@ -559,7 +600,7 @@ module BatchTokenBudget
   end
 
   def valid_charge_back_ledgers?(state)
-    state.fetch("charge_backs").all? do |charge_back_id, record|
+    records_valid = state.fetch("charge_backs").all? do |charge_back_id, record|
       reservation = record.is_a?(Hash) && state.dig("reservations", record["reservation_id"])
       summary = record.is_a?(Hash) && record["summary"]
       record.is_a?(Hash) && record.keys.sort == %w[digest reservation_id summary] &&
@@ -571,55 +612,122 @@ module BatchTokenBudget
         summary["target"] == reservation.dig("request", "target") &&
         summary["tokens"] == reservation.dig("reconciliation_receipt", "actual_tokens")
     end
+    records_valid && state.fetch("reservations").all? do |reservation_id, reservation|
+      charge_back_id = reservation["charge_back_id"]
+      next true unless reservation["status"] == "reconciled" && charge_back_id
+
+      matches = state.fetch("charge_backs").select do |candidate_id, record|
+        candidate_id == charge_back_id && record["reservation_id"] == reservation_id &&
+          record.dig("summary", "source") == reservation.dig("request", "source") &&
+          record.dig("summary", "target") == reservation.dig("request", "target") &&
+          record.dig("summary", "tokens") == reservation.dig("reconciliation_receipt", "actual_tokens")
+      end
+      matches.length == 1
+    end
   end
 
   def control_projection(state)
     canonicalize(state.reject { |key, _value| key == "control_events" })
   end
 
-  def append_control_event(state, action)
+  def valid_command_shape?(command)
+    return false unless command.is_a?(Hash) && command["type"] == "batch-token-budget-command" &&
+                        command["version"] == 1
+
+    action_fields = case command["action"]
+                    when "initialize" then %w[budget]
+                    when "reserve" then %w[reservation]
+                    when "approve" then %w[approval]
+                    when "override" then %w[override]
+                    when "reconcile"
+                      fields = %w[reservation_id usage_receipt]
+                      fields << "charge_back" if command.key?("charge_back")
+                      fields
+                    when "release" then %w[release]
+                    when "checkpoint" then %w[checkpoint]
+                    when "closeout" then []
+                    else
+                      return false
+                    end
+    command.keys.sort == (%w[action batch_id evaluated_at type version] + action_fields).sort
+  end
+
+  def append_control_event(state, command, prior_state, trusted_budget, trusted_plan_binding)
     previous_digest = state.fetch("control_events").last&.fetch("digest") || "0" * 64
     event = {
       "type" => "batch-token-budget-control-event",
       "version" => 1,
       "sequence" => state.fetch("control_events").length + 1,
-      "action" => action,
+      "action" => command.fetch("action"),
       "previous_digest" => previous_digest,
-      "state_digest" => digest(control_projection(state))
+      "pre_state_digest" => prior_state ? digest(control_projection(prior_state)) : "0" * 64,
+      "post_state_digest" => digest(control_projection(state)),
+      "payload" => {
+        "command" => canonicalize(command),
+        "trusted_plan_path" => trusted_plan_binding.fetch("path"),
+        "trusted_plan_id" => trusted_budget.fetch("batch_id"),
+        "trusted_plan_digest" => trusted_plan_digest(trusted_budget)
+      }
     }
     event["digest"] = digest(event)
     state.fetch("control_events") << canonicalize(event)
   end
 
-  def valid_control_events?(state)
+  def valid_control_events?(state, trusted_budget, trusted_plan_binding)
     events = state["control_events"]
     return false unless events.is_a?(Array) && !events.empty?
 
     previous_digest = "0" * 64
+    replayed_state = nil
     events.each_with_index do |event, index|
       return false unless event.is_a?(Hash) && event.keys.sort == %w[
-        action digest previous_digest sequence state_digest type version
+        action digest payload post_state_digest pre_state_digest previous_digest sequence type version
       ] && event["type"] == "batch-token-budget-control-event" && event["version"] == 1 &&
                           event["sequence"] == index + 1 && CONTROL_ACTIONS.include?(event["action"]) &&
                           event["previous_digest"] == previous_digest &&
-                          event["state_digest"].is_a?(String) && event["state_digest"].match?(/\A[0-9a-f]{64}\z/) &&
+                          event["pre_state_digest"].is_a?(String) &&
+                          event["pre_state_digest"].match?(/\A[0-9a-f]{64}\z/) &&
+                          event["post_state_digest"].is_a?(String) &&
+                          event["post_state_digest"].match?(/\A[0-9a-f]{64}\z/) &&
                           event["digest"] == digest(event.reject { |key, _value| key == "digest" })
 
+      payload = event["payload"]
+      command = payload.is_a?(Hash) && payload.keys.sort == %w[
+        command trusted_plan_digest trusted_plan_id trusted_plan_path
+      ] && payload["command"]
+      return false unless valid_command_shape?(command) && command["action"] == event["action"]
+      return false unless payload["trusted_plan_id"] == trusted_budget["batch_id"] &&
+                          payload["trusted_plan_digest"] == trusted_plan_digest(trusted_budget) &&
+                          payload["trusted_plan_path"] == trusted_plan_binding["path"]
+      return false unless index.zero? ? event["action"] == "initialize" : event["action"] != "initialize"
+
+      expected_pre_state_digest = replayed_state ? digest(control_projection(replayed_state)) : "0" * 64
+      return false unless event["pre_state_digest"] == expected_pre_state_digest
+
+      next_state, = apply_command(replayed_state, command, trusted_budget, trusted_plan_binding)
+      return false if replayed_state && digest(control_projection(next_state)) == expected_pre_state_digest
+      return false unless event["post_state_digest"] == digest(control_projection(next_state))
+
+      replayed_state = deep_copy(next_state)
+      replayed_state["control_events"] = deep_copy(events.first(index + 1))
       previous_digest = event["digest"]
     end
-    events.last["state_digest"] == digest(control_projection(state))
+    control_projection(replayed_state) == control_projection(state)
   end
 
-  def valid_state?(state)
+  def valid_state?(state, trusted_budget, trusted_plan_binding)
     valid = state.is_a?(Hash) && state["contract"] == "batch-token-budget-state" && state["version"] == 1 &&
             state.keys.sort == %w[
               admission_decisions approvals base_budget batch_id budget budget_digest charge_backs checkpoint_resolutions
               checkpoints contract control_events effective_budget_digest last_evaluated_at overrides receipts
-              reservation_decisions reservations revision scopes usage_receipts usage_segments version
+              reservation_decisions reservations revision scopes trusted_plan_binding usage_receipts usage_segments version
             ] &&
-            nonempty_string?(state["batch_id"]) && valid_budget?(state["base_budget"]) &&
+            valid_budget?(trusted_budget) && state["base_budget"] == canonicalize(trusted_budget) &&
+            state["trusted_plan_binding"] == canonicalize(trusted_plan_binding) &&
+            nonempty_string?(state["batch_id"]) && state["batch_id"] == trusted_budget["batch_id"] &&
+            valid_budget?(state["base_budget"]) &&
             valid_budget?(state["budget"]) &&
-            state["budget_digest"] == digest(state["base_budget"]) &&
+            state["budget_digest"] == digest(trusted_budget) &&
             state["effective_budget_digest"] == digest(state["budget"]) &&
             nonnegative_integer?(state["revision"]) &&
             timestamp?(state["last_evaluated_at"]) &&
@@ -657,10 +765,12 @@ module BatchTokenBudget
                                                         aggregate["unattributed_tokens"]
 
     valid_accounting_ledgers?(state) && valid_reservation_decision_ledgers?(state) &&
-      valid_receipt_ledger?(state) && valid_human_decision_ledgers?(state) &&
+      valid_receipt_ledger?(state, trusted_budget, trusted_plan_binding) &&
+      valid_human_decision_ledgers?(state, trusted_budget) &&
       valid_effective_budget_replay?(state) && valid_admission_decision_ledgers?(state) &&
-      valid_checkpoint_ledgers?(state) && valid_charge_back_ledgers?(state) && valid_control_events?(state)
-  rescue KeyError, NoMethodError, TypeError, ArgumentError, OpenSSL::PKey::PKeyError
+      valid_checkpoint_ledgers?(state) && valid_charge_back_ledgers?(state) &&
+      valid_control_events?(state, trusted_budget, trusted_plan_binding)
+  rescue InvalidInput, KeyError, NoMethodError, TypeError, ArgumentError, OpenSSL::PKey::PKeyError
     false
   end
 
@@ -938,9 +1048,13 @@ module BatchTokenBudget
     )
   end
 
-  def initialize_command(state, command)
-    budget = command["budget"]
-    raise InvalidInput, "invalid-budget-contract" unless valid_budget?(budget)
+  def initialize_command(state, command, trusted_budget, trusted_plan_binding)
+    supplied_budget = command["budget"]
+    if supplied_budget && canonicalize(supplied_budget) != trusted_budget
+      raise InvalidInput, "initialize-budget-anchor-mismatch"
+    end
+
+    budget = trusted_budget
     raise InvalidInput, "batch-id-mismatch" unless budget["batch_id"] == command["batch_id"]
 
     if state
@@ -957,11 +1071,14 @@ module BatchTokenBudget
       }]
     end
 
-    state = initial_state(budget, command.fetch("evaluated_at"))
+    state = initial_state(budget, command.fetch("evaluated_at"), trusted_plan_binding)
     init_receipt = receipt(
       "batch-token-budget-initialization-receipt",
       state,
-      "budget_digest" => state.fetch("budget_digest")
+      "budget_digest" => state.fetch("budget_digest"),
+      "trusted_plan_path" => trusted_plan_binding.fetch("path"),
+      "trusted_plan_id" => trusted_budget.fetch("batch_id"),
+      "trusted_plan_digest" => trusted_plan_digest(trusted_budget)
     )
     state["receipts"] << init_receipt
     [state, {
@@ -1259,7 +1376,7 @@ module BatchTokenBudget
     )
   end
 
-  def valid_human_attestation?(attestation, state, evaluated_at, scope_id, expected_action)
+  def valid_human_attestation?(attestation, state, evaluated_at, scope_id, expected_action, trusted_budget)
     return false unless attestation.is_a?(Hash) && attestation["type"] == "proven-human-attestation" &&
                         attestation["version"] == 1 && attestation.keys.sort == %w[
                           action actor algorithm batch_id budget_digest expires_at id issued_at receipt_ref scope_id
@@ -1277,7 +1394,7 @@ module BatchTokenBudget
                         seconds_between(attestation["expires_at"], evaluated_at) >= 0 &&
                         seconds_between(attestation["expires_at"], attestation["issued_at"]).positive?
 
-    verifier = state.dig("base_budget", "trusted_verifiers").find do |record|
+    verifier = trusted_budget.fetch("trusted_verifiers").find do |record|
       record["id"] == attestation["verifier_id"]
     end
     return false unless verifier && verifier["algorithm"] == attestation["algorithm"]
@@ -1290,7 +1407,7 @@ module BatchTokenBudget
     false
   end
 
-  def valid_approval?(approval, state, evaluated_at)
+  def valid_approval?(approval, state, evaluated_at, trusted_budget)
     return false unless approval.is_a?(Hash) && approval["type"] == "batch-token-budget-approval" &&
                         approval["version"] == 1 && approval.keys.sort == %w[
                           attestation batch_id decision id reason scope_id type version
@@ -1304,7 +1421,8 @@ module BatchTokenBudget
       state,
       evaluated_at,
       approval["scope_id"],
-      { "type" => "approve-next-admission", "decision_id" => approval["id"] }
+      { "type" => "approve-next-admission", "decision_id" => approval["id"] },
+      trusted_budget
     )
   end
 
@@ -1319,9 +1437,11 @@ module BatchTokenBudget
     raise InvalidInput, "human-attestation-replay-mismatch"
   end
 
-  def approve_command(original_state, command)
+  def approve_command(original_state, command, trusted_budget)
     approval = command["approval"]
-    raise InvalidInput, "invalid-approval" unless valid_approval?(approval, original_state, command["evaluated_at"])
+    unless valid_approval?(approval, original_state, command["evaluated_at"], trusted_budget)
+      raise InvalidInput, "invalid-approval"
+    end
 
     existing = original_state.dig("approvals", approval.fetch("id"))
     if existing
@@ -1380,7 +1500,7 @@ module BatchTokenBudget
     state["effective_budget_digest"] = digest(state.fetch("budget"))
   end
 
-  def valid_override?(override, state, evaluated_at)
+  def valid_override?(override, state, evaluated_at, trusted_budget)
     return false unless override.is_a?(Hash) && override["type"] == "batch-token-budget-override" &&
                         override["version"] == 1 && nonempty_string?(override["id"]) &&
                         override["batch_id"] == state["batch_id"]
@@ -1400,11 +1520,11 @@ module BatchTokenBudget
       "new_limit_tokens" => override["new_limit_tokens"]
     }
     valid_human_attestation?(
-      override["attestation"], state, evaluated_at, override["scope_id"], expected_action
+      override["attestation"], state, evaluated_at, override["scope_id"], expected_action, trusted_budget
     )
   end
 
-  def override_command(original_state, command)
+  def override_command(original_state, command, trusted_budget)
     override = command["override"]
     existing = override.is_a?(Hash) && original_state.dig("overrides", override["id"])
     if existing
@@ -1412,7 +1532,9 @@ module BatchTokenBudget
 
       return [original_state, result(original_state, "replayed", "receipt" => existing.fetch("receipt"))]
     end
-    raise InvalidInput, "invalid-override" unless valid_override?(override, original_state, command["evaluated_at"])
+    unless valid_override?(override, original_state, command["evaluated_at"], trusted_budget)
+      raise InvalidInput, "invalid-override"
+    end
 
     ensure_attestation_id_available!(original_state, override.fetch("attestation"), override.fetch("id"))
 
@@ -1836,10 +1958,8 @@ module BatchTokenBudget
     )]
   end
 
-  def evaluate(state, command)
-    unless command.is_a?(Hash) && command["type"] == "batch-token-budget-command" && command["version"] == 1
-      raise InvalidInput, "unsupported-command-contract"
-    end
+  def apply_command(state, command, trusted_budget, trusted_plan_binding)
+    raise InvalidInput, "unsupported-command-contract" unless valid_command_shape?(command)
     raise InvalidInput, "invalid-batch-id" unless nonempty_string?(command["batch_id"])
     raise InvalidInput, "invalid-evaluated-at" unless timestamp?(command["evaluated_at"])
     raise InvalidInput, "state-required" if command["action"] != "initialize" && state.nil?
@@ -1853,13 +1973,13 @@ module BatchTokenBudget
     next_state, command_result =
       case command["action"]
       when "initialize"
-        initialize_command(state, command)
+        initialize_command(state, command, trusted_budget, trusted_plan_binding)
       when "reserve"
         reserve_command(state, command)
       when "approve"
-        approve_command(state, command)
+        approve_command(state, command, trusted_budget)
       when "override"
-        override_command(state, command)
+        override_command(state, command, trusted_budget)
       when "reconcile"
         reconcile_command(state, command)
       when "release"
@@ -1875,10 +1995,15 @@ module BatchTokenBudget
       next_state = deep_copy(next_state)
       next_state["last_evaluated_at"] = command.fetch("evaluated_at")
     end
+    [next_state, command_result]
+  end
+
+  def evaluate(state, command, trusted_budget, trusted_plan_binding)
+    next_state, command_result = apply_command(state, command, trusted_budget, trusted_plan_binding)
     prior_projection_digest = state && digest(control_projection(state))
     if state.nil? || digest(control_projection(next_state)) != prior_projection_digest
       next_state = deep_copy(next_state)
-      append_control_event(next_state, command.fetch("action"))
+      append_control_event(next_state, command, state, trusted_budget, trusted_plan_binding)
     end
     [next_state, command_result]
   end
@@ -1931,13 +2056,27 @@ end
 
 options = {}
 OptionParser.new do |parser|
-  parser.banner = "Usage: batch-token-budget --state PATH < command.json"
+  parser.banner = "Usage: batch-token-budget --state PATH --trusted-plan PATH --trusted-plan-id ID " \
+                  "--trusted-plan-digest SHA256 < command.json"
   parser.on("--state PATH", "Durable batch budget state path") { |value| options[:state_path] = value }
+  parser.on("--trusted-plan PATH", "Immutable batch-token-budget v1 plan path") do |value|
+    options[:trusted_plan_path] = value
+  end
+  parser.on("--trusted-plan-id ID", "Expected immutable batch plan id") { |value| options[:trusted_plan_id] = value }
+  parser.on("--trusted-plan-digest SHA256", "Expected immutable batch plan digest") do |value|
+    options[:trusted_plan_digest] = value
+  end
 end.parse!
 
 state_path = options[:state_path]
 unless state_path.is_a?(String) && !state_path.empty?
   warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => "missing-state-path")
+  exit 1
+end
+
+unless options.values_at(:trusted_plan_path, :trusted_plan_id, :trusted_plan_digest).all?
+  warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input",
+                     "reason" => "trusted-plan-required")
   exit 1
 end
 
@@ -1949,6 +2088,16 @@ rescue JSON::ParserError
 end
 
 begin
+  trusted_budget = BatchTokenBudget.load_trusted_plan(
+    options.fetch(:trusted_plan_path),
+    options.fetch(:trusted_plan_id),
+    options.fetch(:trusted_plan_digest)
+  )
+  trusted_plan_binding = {
+    "path" => File.expand_path(options.fetch(:trusted_plan_path)),
+    "id" => options.fetch(:trusted_plan_id),
+    "digest" => options.fetch(:trusted_plan_digest)
+  }
   FileUtils.mkdir_p(File.dirname(state_path))
   File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     lock.flock(File::LOCK_EX)
@@ -1959,15 +2108,19 @@ begin
                 raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state"
               end
             end
-    raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state" if state && !BatchTokenBudget.valid_state?(state)
+    if state && !BatchTokenBudget.valid_state?(state, trusted_budget, trusted_plan_binding)
+      raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state"
+    end
 
     declared_state_path = state&.dig("budget", "state_path") || command.dig("budget", "state_path")
     if declared_state_path.is_a?(String) && File.expand_path(declared_state_path) != File.expand_path(state_path)
       raise BatchTokenBudget::InvalidInput, "state-path-mismatch"
     end
 
-    next_state, result = BatchTokenBudget.evaluate(state, command)
-    raise BatchTokenBudget::InvalidInput, "invalid-next-state" unless BatchTokenBudget.valid_state?(next_state)
+    next_state, result = BatchTokenBudget.evaluate(state, command, trusted_budget, trusted_plan_binding)
+    unless BatchTokenBudget.valid_state?(next_state, trusted_budget, trusted_plan_binding)
+      raise BatchTokenBudget::InvalidInput, "invalid-next-state"
+    end
 
     BatchTokenBudget.persist(state_path, next_state) unless next_state.equal?(state)
     puts JSON.generate(result)
