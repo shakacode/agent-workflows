@@ -421,7 +421,10 @@ Plan a PR batch
      positive raw-token limits for aggregate, coordinator, and every planned
      lane id; warning/approval/hard percentages; telemetry freshness; and the
      delegation approval threshold; and an absolute coordinator-owned
-     `state_path`. Do not invent universal absolute limits.
+     `state_path`; plus a nonempty exact allowlist of unique trusted verifier
+     ids with canonical RSA public keys of at least 2048 bits and algorithm
+     `rsa-pss-sha256`. Keep private keys outside plans/state and resolve
+     consumer-specific custody/signing through `AGENTS.md`. Do not invent universal absolute limits.
      Reserve `aggregate` and `coordinator` for the parent scopes; they cannot be
      lane ids.
      Partial, inline, stale, malformed, duplicate-key, or `UNKNOWN` budget metadata fails the

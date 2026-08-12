@@ -32,7 +32,12 @@ metadata is present, partial or inline lane budgets fail closed.
     "hard_percent": 100
   },
   "telemetry": { "max_age_seconds": 900 },
-  "delegation": { "approval_threshold_tokens": 250000 }
+  "delegation": { "approval_threshold_tokens": 250000 },
+  "trusted_verifiers": [{
+    "id": "budget-approval-coordinator",
+    "algorithm": "rsa-pss-sha256",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\n<canonical RSA public key, at least 2048 bits>\n-----END PUBLIC KEY-----\n"
+  }]
 }
 ```
 
@@ -42,6 +47,11 @@ exactly match every planned lane, and coordinator/lane limits cannot exceed the
 aggregate limit.
 Lane ids `aggregate` and `coordinator` are reserved for their parent scopes.
 Thresholds must be strictly increasing and `hard_percent` is exactly 100.
+`trusted_verifiers` is a nonempty exact allowlist of unique verifier ids and
+canonical public keys. Version 1 supports only `rsa-pss-sha256` with RSA keys of
+at least 2048 bits. The matching private key stays outside the plan and durable
+state; consumer-specific key custody and signing commands resolve through the
+consumer's `AGENTS.md` seams.
 
 The aggregate scope counts coordinator plus every physical lane/descendant
 token. The coordinator scope counts root self-use and directly owned
@@ -126,23 +136,22 @@ not authorization:
     "actor": "<verified-human-identity>",
     "issued_at": "2026-08-12T11:58:00Z",
     "expires_at": "2026-08-12T13:00:00Z",
-    "provenance": {
-      "type": "coordinator-verified-provenance-receipt",
-      "version": 1,
-      "status": "verified",
-      "verifier_id": "<coordinator-identity>",
-      "receipt_ref": "<durable-independent-verification-receipt>"
-    }
+    "verifier_id": "budget-approval-coordinator",
+    "algorithm": "rsa-pss-sha256",
+    "receipt_ref": "coordination://human-decisions/approval-1",
+    "signature": "<strict-base64 RSA-PSS-SHA256 signature>"
   }
 }
 ```
 
-The helper validates this independently verified provenance shape and its
-batch, immutable budget, scope, action/id, issuance, and expiry bindings. It
-does not itself authenticate a GitHub user or coordination backend. Override
-attestations use action type `increase-budget-limit` and bind their decision id
-plus the exact old and new limits. `UNKNOWN`, future, expired, malformed,
-unverified, mismatched, or rebound attestations fail closed. An override changes
+The signature covers canonical JSON for every attestation field except
+`signature`, including the durable receipt reference. The helper resolves the
+verifier only from the immutable base budget and verifies RSA-PSS-SHA256 with
+the pinned public key before mutation. Override attestations use action type
+`increase-budget-limit` and bind their decision id plus the exact old and new
+limits. Free-form `status: verified` has no authority. `UNKNOWN`, unsupported,
+unlisted, wrong-key, future, expired, malformed, unsigned, mismatched, or
+rebound attestations fail closed. An override changes
 no sibling or future-batch scope. Persisted approval and hard decisions continue
 to block their affected scope until an applicable human approval or sufficient
 scoped headroom is followed by admission of the stopped target; an unrelated
@@ -202,6 +211,14 @@ Every state load recomputes accounting from reservation, release,
 reconciliation, usage-receipt, and segment ledgers. Missing ledger entries or
 counter mismatches are corrupt state, and `COMPLETE` additionally requires zero
 reserved tokens in every scope.
+The state also carries an append-only `batch-token-budget-control-event v1`
+chain. Each exact typed event binds its sequence, predecessor digest, action,
+and the canonical post-action state digest. Restart validates the chain plus
+approval/attestation, override/expiry, threshold/stop, checkpoint resolution,
+reservation/fence, usage/reconciliation, charge-back, and receipt
+cross-references. Inflated limits, deleted control records, missing or reordered
+events, digest changes, unknown event fields/types, or orphan references fail
+before any command can mutate state.
 
 Scheduled monitors and same-thread heartbeats use the same reservation command
 before loading model context. They do not auto-continue at approval or hard

@@ -383,7 +383,9 @@ Before implementation or worker launch, produce:
     launch.
 13. For an opt-in `batch-token-budget v1`, the exact aggregate, coordinator,
     and all-lane limits; warning/approval/hard thresholds; telemetry freshness;
-    delegation threshold; durable state path; current per-scope totals; and
+    delegation threshold; a nonempty immutable allowlist of unique
+    `rsa-pss-sha256` verifier ids and canonical RSA public keys of at least 2048
+    bits; durable state path; current per-scope totals; and
     latest receipt cutoff. Any partial or `UNKNOWN` required value blocks new
     expensive work, not read-only discovery or checkpointing.
 <!-- host-branch: codex-only start -->
@@ -453,9 +455,11 @@ released or reconciled.
 Warning persists a compact checkpoint and continues. Approval and override
 commands require a `proven-human-attestation v1` bound to the batch, immutable
 budget digest, scope, exact action/id, actor, issuance/expiry, and a
-coordinator-verified provenance receipt reference; free-form or self-attested
-strings do not authorize work. The helper validates that shape, not the external
-identity system. Approval blocks every new expensive action until a
+durable verification receipt reference. The helper verifies a strict-base64
+RSA-PSS-SHA256 signature over every canonical attestation field except the
+signature against the immutable plan's pinned verifier key. Unsupported,
+unlisted, wrong-key, free-form, or self-attested claims do not authorize work.
+Approval blocks every new expensive action until a
 scope-matched unexpired decision. Hard returns `budget-exhausted / NOT COMPLETE`; unchanged retries and
 automatic continuations stay stopped until a scoped increase or resume decision
 restores headroom. No budget approval or override grants or weakens security,
@@ -468,7 +472,9 @@ all remaining gates, receipt cutoff, resume conditions, and a copy-paste resume
 action. Closeout reports allocated, consumed, currently reserved, cumulatively
 released, and unattributed tokens for aggregate/coordinator/every lane, plus
 overshoot. Duplicate JSON keys and ledger/counter inconsistencies fail on load;
-complete closeout requires zero reserved tokens in every scope. Full JSON contracts are in
+an exact chained control-event ledger detects missing, reordered, tampered, or
+orphaned control records, and complete closeout requires zero reserved tokens in
+every scope. Full JSON contracts are in
 [Hierarchical Token Budgets](../../docs/token-budgets.md).
 
 ## Stage-Typed Dependencies

@@ -660,7 +660,10 @@ the plan must declare the exact batch id, positive raw-token limits for the
 aggregate, coordinator, and every planned lane id, strictly increasing warning
 and approval percentages with hard at 100, a telemetry freshness limit, a
 cross-task delegation approval threshold, and an absolute coordinator-owned
-`state_path`. Partial, inline, stale, malformed, or `UNKNOWN` required data blocks new
+`state_path`, plus a nonempty immutable allowlist of unique verifier ids with
+canonical RSA public keys of at least 2048 bits using only
+`rsa-pss-sha256`. Private keys never enter plans or state. Partial, inline,
+stale, malformed, or `UNKNOWN` required data blocks new
 expensive work. Do not invent universal absolute limits or substitute dollars,
 plan meters, cached-token discounts, prompt length, or message count.
 
@@ -705,9 +708,10 @@ Replacement or escalation waits for predecessor release/reconciliation.
 Warning persists a compact checkpoint and continues. Approval and override
 commands embed a strict `proven-human-attestation v1` bound to batch, immutable
 budget digest, scope, exact action/id, actor, issuance/expiry, and a
-coordinator-verified provenance receipt reference. The helper validates that
-independently verified shape without claiming to authenticate the external
-identity system; free-form or self-attested strings do not authorize work.
+durable verification receipt reference. The helper canonicalizes every field
+except `signature` and verifies the strict-base64 RSA-PSS-SHA256 signature
+against the immutable plan's pinned verifier key. Unsupported, unlisted,
+wrong-key, free-form, or self-attested claims do not authorize work.
 Approval starts no new expensive action without a scope-matched unexpired
 attestation.
 Hard returns `budget-exhausted / NOT COMPLETE`, with no unchanged retry or
@@ -727,6 +731,10 @@ examples are in [Hierarchical Token Budgets](../docs/token-budgets.md).
 Duplicate JSON object keys fail before evaluation. Every restart validates
 reservation/usage ledgers against all counters, and complete closeout requires
 zero reserved tokens in every scope.
+It also validates an exact append-only control-event digest chain and all
+approval, override/expiry, stop, checkpoint, fence, charge-back, and receipt
+cross-references; missing, reordered, tampered, unknown, or orphaned records
+fail before mutation.
 
 ### Model And Effort Routing
 

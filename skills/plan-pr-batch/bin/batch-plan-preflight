@@ -4,6 +4,7 @@
 require "json"
 require "date"
 require "digest"
+require "openssl"
 require "uri"
 require "pathname"
 
@@ -297,7 +298,9 @@ module BatchPlanPreflight
       )
       return violations
     end
-    unless budget.keys.sort == %w[batch_id delegation scopes state_path telemetry thresholds type version]
+    unless budget.keys.sort == %w[
+      batch_id delegation scopes state_path telemetry thresholds trusted_verifiers type version
+    ]
       violations << violation(
         "token-budget-fields-invalid",
         "$.plan.token_budget",
@@ -392,7 +395,31 @@ module BatchPlanPreflight
         "Delegation policy requires exactly one positive approval_threshold_tokens value."
       )
     end
+    unless valid_trusted_verifiers?(budget["trusted_verifiers"])
+      violations << violation(
+        "token-budget-trusted-verifiers-invalid",
+        "$.plan.token_budget.trusted_verifiers",
+        "Declare one or more unique RSA-PSS-SHA256 verifier ids with canonical RSA public keys of at least 2048 bits."
+      )
+    end
     violations
+  end
+
+  def valid_trusted_verifiers?(verifiers)
+    return false unless verifiers.is_a?(Array) && !verifiers.empty?
+    return false unless verifiers.map { |record| record["id"] if record.is_a?(Hash) }.uniq.length == verifiers.length
+
+    verifiers.all? do |record|
+      next false unless record.is_a?(Hash) && record.keys.sort == %w[algorithm id public_key_pem] &&
+                        nonempty_identity?(record["id"]) && record["algorithm"] == "rsa-pss-sha256" &&
+                        nonempty_identity?(record["public_key_pem"])
+
+      key = OpenSSL::PKey.read(record["public_key_pem"])
+      key.is_a?(OpenSSL::PKey::RSA) && !key.private? && key.n.num_bits >= 2048 &&
+        record["public_key_pem"] == key.public_key.to_pem
+    rescue OpenSSL::PKey::PKeyError
+      false
+    end
   end
 
   def token_limit(scope)
