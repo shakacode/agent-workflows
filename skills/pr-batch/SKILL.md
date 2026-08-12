@@ -655,6 +655,16 @@ requests already handled, no-PR rationales, autonomous nit outcomes,
 confidence notes, decision-point counts per PR, QA Evidence blocks, and per-PR
 merge-ledger summaries.
 
+At terminal closeout, use the resolved sibling
+`bin/batch-usage-receipt` helper for supported Codex rollout JSONL plus
+`state_5.sqlite` evidence, following
+[Batch Usage Receipt v1](../../docs/batch-usage-receipt.md). Put the compact
+batch total or a durable artifact reference in FYI / decisions made. Preserve
+structured `UNKNOWN` for unavailable evidence, keep requested and observed
+routes separate, and never attach raw rollout/database data or emit prompt,
+response, tool-result, auth, secret, or environment content. Usage telemetry is
+informational and never replaces a closeout gate.
+
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
 Batch Coordination Declaration: every final batch handoff must carry exactly one

@@ -1706,7 +1706,11 @@ Split batch handoffs into two sections:
   evidence, QA Evidence blocks that include `Tested at`, the QA required
   decision and rationale, QA lane status, review churn notes, autonomous nit
   outcomes, confidence notes, decision-point counts per PR, already-answered
-  questions, and a per-PR merge-ledger table or JSON artifact path.
+  questions, a per-PR merge-ledger table or JSON artifact path, and the compact
+  `batch-usage-receipt-v1` total or durable artifact reference described in
+  [Batch Usage Receipt v1](../docs/batch-usage-receipt.md). Preserve structured
+  `UNKNOWN` when supported host evidence is missing; usage telemetry is
+  informational and never substitutes for a readiness gate.
 
 Every target must use one explicit final state:
 
@@ -2821,6 +2825,18 @@ The closeout lane is:
     coordination/target/exact-head-QA publication preflight described above;
     do not emit a complete receipt while it is blocked or reuse a prior
     snapshot after any lane, target head/state, or QA evidence changes.
+    During this terminal closeout, generate the metadata-only
+    `batch-usage-receipt-v1` from the resolved pr-batch
+    `bin/batch-usage-receipt` helper when supported Codex rollout JSONL and
+    `state_5.sqlite` evidence are available. Save the JSON to the repository's
+    ordinary durable artifact store when one exists, and include either its
+    durable reference or a compact batch total in FYI / decisions made. Keep
+    requested routes distinct from observed routes and preserve structured
+    `UNKNOWN` for unsupported or missing evidence. Never attach the rollout or
+    database itself, and never copy prompt, response, tool-result, auth, secret,
+    or environment content into the handoff. Usage evidence remains
+    informational and does not block or satisfy CI, review, QA, merge, audit, or
+    archive-readiness gates.
 14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` only when archive-ready and the union is empty. Otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line, with every normalized blocker. Before emitting that final message, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff.
 
 ## Self-Review Gate

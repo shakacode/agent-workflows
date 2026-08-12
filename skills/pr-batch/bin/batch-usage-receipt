@@ -1,0 +1,778 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Builds a deterministic, metadata-only usage receipt from Codex rollout JSONL
+# and state_5.sqlite. Rollout records are consumed one line at a time; only
+# whitelisted session, route, timestamp, and cumulative usage metadata survives
+# each iteration.
+
+require "date"
+require "digest"
+require "json"
+require "open3"
+require "optparse"
+require "time"
+
+module BatchUsageReceipt
+  SCHEMA = "batch-usage-receipt-v1"
+  MANIFEST_SCHEMA = "batch-usage-manifest-v1"
+  RATE_CARD_SCHEMA = "batch-usage-rate-card-v1"
+  TOKEN_FIELDS = %w[input_tokens output_tokens cache_read_tokens total_tokens].freeze
+  UNKNOWN = "UNKNOWN"
+
+  InputError = Class.new(StandardError)
+
+  module_function
+
+  def blank_usage(value = 0)
+    TOKEN_FIELDS.to_h { |field| [field, value] }
+  end
+
+  def unknown_usage
+    blank_usage(UNKNOWN)
+  end
+
+  def known_usage?(usage)
+    TOKEN_FIELDS.all? { |field| usage[field].is_a?(Integer) }
+  end
+
+  def add_usage(left, right)
+    TOKEN_FIELDS.to_h do |field|
+      values = [left[field], right[field]]
+      [field, values.all? { |value| value.is_a?(Integer) } ? values.sum : UNKNOWN]
+    end
+  end
+
+  def canonical_usage(raw)
+    return unless raw.is_a?(Hash)
+
+    {
+      "input_tokens" => nonnegative_integer(raw["input_tokens"]),
+      "output_tokens" => nonnegative_integer(raw["output_tokens"]),
+      "cache_read_tokens" => nonnegative_integer(raw["cached_input_tokens"] || raw["cache_read_tokens"]),
+      "total_tokens" => nonnegative_integer(raw["total_tokens"])
+    }
+  end
+
+  def nonnegative_integer(value)
+    value if value.is_a?(Integer) && value >= 0
+  end
+
+  def same_known_vector?(left, right)
+    left && right && TOKEN_FIELDS.all? { |field| left[field] == right[field] }
+  end
+
+  def vector_decreased?(current, previous)
+    TOKEN_FIELDS.any? do |field|
+      current[field].is_a?(Integer) && previous[field].is_a?(Integer) && current[field] < previous[field]
+    end
+  end
+
+  def vector_difference(current, previous)
+    TOKEN_FIELDS.to_h do |field|
+      values = [current[field], previous[field]]
+      [field, values.all? { |value| value.is_a?(Integer) } ? current[field] - previous[field] : UNKNOWN]
+    end
+  end
+
+  def vector_for_first_sample(total, last)
+    comparable = TOKEN_FIELDS.all? { |field| total[field].is_a?(Integer) && last&.dig(field).is_a?(Integer) }
+    inherited_seed = comparable && !same_known_vector?(total, last)
+    [inherited_seed ? last : total, inherited_seed]
+  end
+
+  def in_window?(timestamp, from_time, to_time)
+    parsed = Time.iso8601(timestamp)
+    parsed >= from_time && parsed < to_time
+  rescue ArgumentError, TypeError
+    false
+  end
+
+  class RolloutReader
+    include BatchUsageReceipt
+
+    attr_reader :accounting, :first_session_id, :physical_id, :unknown_reasons, :route_usage
+
+    def initialize(path:, state_thread:, from_time:, to_time:)
+      @path = path
+      @state_thread = state_thread
+      @from_time = from_time
+      @to_time = to_time
+      @accounting = {
+        "usage_samples" => 0,
+        "duplicate_samples_omitted" => 0,
+        "replay_records_omitted" => 0,
+        "counter_resets" => 0,
+        "inherited_seeds_omitted" => 0,
+        "compactions" => 0,
+        "session_rebind_attempts_ignored" => 0
+      }
+      @unknown_reasons = []
+      @route_usage = {}
+      @first_session_id = nil
+      @first_session_seen = false
+      @forked_physical_session = false
+      @copy_boundary_seen = false
+    end
+
+    def read
+      unless File.file?(@path)
+        unknown("rollout_missing")
+        finalize_identity
+        return self
+      end
+
+      previous = nil
+      seen = {}
+      replay_prefix = false
+      first_usage = true
+      current_route = state_route
+
+      File.foreach(@path, encoding: "UTF-8").with_index(1) do |line, line_number|
+        begin
+          record = JSON.parse(line)
+        rescue JSON::ParserError
+          unknown("malformed_jsonl", line: line_number)
+          next
+        end
+        next unless record.is_a?(Hash)
+
+        payload = record["payload"]
+        case record["type"]
+        when "session_meta"
+          next unless payload.is_a?(Hash)
+
+          candidate = payload["id"]
+          if @first_session_seen
+            next unless candidate.is_a?(String) && candidate != @first_session_id
+
+            @accounting["session_rebind_attempts_ignored"] += 1
+            replay_prefix = true if @forked_physical_session && !@copy_boundary_seen
+          else
+            @first_session_seen = true
+            @first_session_id = candidate if candidate.is_a?(String) && !candidate.empty?
+            unknown("missing_first_session_id") unless @first_session_id
+            @forked_physical_session = @first_session_id &&
+                                       payload["session_id"].is_a?(String) &&
+                                       payload["session_id"] != @first_session_id &&
+                                       payload["parent_thread_id"].is_a?(String) &&
+                                       !payload["parent_thread_id"].empty?
+            if @first_session_id && @first_session_id != @state_thread.fetch("id")
+              unknown("state_thread_first_session_mismatch")
+            end
+          end
+        when "inter_agent_communication_metadata"
+          @copy_boundary_seen = true if replay_prefix
+          replay_prefix = false
+        when "compacted"
+          @accounting["compactions"] += 1
+        when "turn_context"
+          next if replay_prefix || !payload.is_a?(Hash)
+
+          current_route = observed_route(payload)
+        when "event_msg"
+          next unless payload.is_a?(Hash) && payload["type"] == "token_count"
+
+          @accounting["usage_samples"] += 1
+          info = payload["info"]
+          total = canonical_usage(info.is_a?(Hash) ? info["total_token_usage"] : nil)
+          last = canonical_usage(info.is_a?(Hash) ? info["last_token_usage"] : nil)
+          unless total
+            unknown("missing_total_token_usage", line: line_number)
+            next
+          end
+
+          signature = TOKEN_FIELDS.map { |field| total[field] }.join(":")
+          if replay_prefix
+            @accounting["replay_records_omitted"] += 1
+            previous = total
+            seen[signature] = true
+            first_usage = false
+            next
+          end
+
+          if same_known_vector?(total, previous)
+            @accounting["duplicate_samples_omitted"] += 1
+            next
+          end
+
+          if seen[signature] && previous && vector_decreased?(total, previous)
+            @accounting["replay_records_omitted"] += 1
+            next
+          end
+
+          delta = if first_usage
+                    value, inherited_seed = vector_for_first_sample(total, last)
+                    @accounting["inherited_seeds_omitted"] += 1 if inherited_seed
+                    value
+                  elsif vector_decreased?(total, previous)
+                    @accounting["counter_resets"] += 1
+                    total
+                  else
+                    vector_difference(total, previous)
+                  end
+
+          # Deliberately update the cumulative baseline before applying the
+          # time window. This prevents a boundary-straddling sample from
+          # importing all pre-window history.
+          previous = total
+          seen[signature] = true
+          first_usage = false
+          unless valid_timestamp?(record["timestamp"])
+            unknown("invalid_usage_timestamp", line: line_number)
+            next
+          end
+          next unless in_window?(record["timestamp"], @from_time, @to_time)
+
+          add_route_usage(current_route, delta)
+        end
+      end
+
+      unknown("copied_history_boundary_missing") if replay_prefix
+      unknown("missing_first_session_meta") unless @first_session_id
+      unknown("missing_usage_evidence") if @accounting["usage_samples"].zero?
+      finalize_identity
+      self
+    rescue SystemCallError, EncodingError => e
+      unknown("rollout_read_error", detail: e.class.name)
+      finalize_identity
+      self
+    end
+
+    def totals
+      return unknown_usage unless @unknown_reasons.empty?
+
+      @route_usage.values.reduce(blank_usage) { |sum, usage| add_usage(sum, usage) }
+    end
+
+    def observed_routes
+      @route_usage.keys.sort.map do |key|
+        route = JSON.parse(key)
+        route.merge("usage" => @route_usage.fetch(key))
+      end
+    end
+
+    private
+
+    def state_route
+      {
+        "host" => "codex",
+        "provider" => nonempty_string(@state_thread["model_provider"]) || UNKNOWN,
+        "model" => nonempty_string(@state_thread["model"]) || UNKNOWN,
+        "effort" => nonempty_string(@state_thread["reasoning_effort"]) || UNKNOWN
+      }
+    end
+
+    def observed_route(payload)
+      state_route.merge(
+        "model" => nonempty_string(payload["model"]) || state_route["model"],
+        "effort" => nonempty_string(payload["effort"]) || state_route["effort"]
+      )
+    end
+
+    def nonempty_string(value)
+      value if value.is_a?(String) && !value.strip.empty?
+    end
+
+    def add_route_usage(route, usage)
+      key = JSON.generate(route.sort.to_h)
+      @route_usage[key] = add_usage(@route_usage.fetch(key, blank_usage), usage)
+      unknown("usage_counter_missing") unless known_usage?(usage)
+    end
+
+    def valid_timestamp?(value)
+      Time.iso8601(value)
+      true
+    rescue ArgumentError, TypeError
+      false
+    end
+
+    def unknown(code, extra = {})
+      reason = { "status" => UNKNOWN, "code" => code }.merge(extra.transform_keys(&:to_s))
+      @unknown_reasons << reason unless @unknown_reasons.include?(reason)
+    end
+
+    def finalize_identity
+      seed = ["codex-rollout-v1", @first_session_id || @state_thread.fetch("id")].join("\0")
+      @physical_id = "sha256:#{Digest::SHA256.hexdigest(seed)}"
+    end
+  end
+
+  class Reporter
+    include BatchUsageReceipt
+
+    def initialize(manifest:, database_path:, from_time:, to_time:, rate_card: nil)
+      @manifest = manifest
+      @database_path = database_path
+      @from_time = from_time
+      @to_time = to_time
+      @rate_card = rate_card
+      @unknown = []
+      @threads = {}
+      @children = Hash.new { |hash, key| hash[key] = [] }
+      @readers_by_thread = {}
+      @readers_by_rollout = {}
+    end
+
+    def build
+      validate_manifest!
+      load_state
+      roots = manifest_roots
+      relevant_threads = roots.flat_map { |root| closure(root) }.uniq.sort
+      record_scope_topology_unknowns
+      relevant_threads.each { |thread_id| reader_for(thread_id) }
+
+      coordinator = scope_receipt(
+        "coordinator", @manifest.fetch("coordinator").fetch("id"),
+        @manifest.fetch("coordinator").fetch("root_thread_id"),
+        @manifest.fetch("coordinator").fetch("requested_route")
+      )
+      lanes = @manifest.fetch("lanes").map { |lane| lane_receipt(lane) }
+      batch_thread_ids = relevant_threads
+      batch_usage = aggregate(batch_thread_ids)
+      attributed_ids = [@manifest.dig("coordinator", "root_thread_id")]
+      lanes.each { |lane| attributed_ids.concat(lane.fetch("_thread_ids")) }
+      unattributed_ids = batch_thread_ids - attributed_ids.uniq
+
+      receipt = {
+        "schema" => SCHEMA,
+        "batch" => {
+          "scope" => "batch",
+          "id" => @manifest.fetch("batch_id"),
+          "usage" => {
+            "descendant_inclusive" => batch_usage,
+            "unattributed" => aggregate(unattributed_ids)
+          },
+          "reconciliation" => {
+            "status" => reconciliation_status(batch_usage, coordinator, lanes, unattributed_ids),
+            "equation" => "batch descendant-inclusive = coordinator self-only + lane descendant-inclusive + unattributed"
+          }
+        },
+        "coordinator" => strip_internal(coordinator),
+        "lanes" => lanes.map { |lane| strip_internal(lane) },
+        "window" => {
+          "from_inclusive" => @from_time.utc.iso8601,
+          "to_exclusive" => @to_time.utc.iso8601,
+          "differencing" => "full_history_before_window_filter"
+        },
+        "accounting" => aggregate_accounting(relevant_threads),
+        "evidence" => {
+          "status" => @unknown.empty? ? "complete" : UNKNOWN,
+          "sources" => ["codex_rollout_jsonl", "state_5.sqlite"],
+          "unknown" => @unknown.sort_by { |item| JSON.generate(item) }
+        },
+        "privacy" => {
+          "mode" => "metadata_only",
+          "emitted_or_persisted_content" => false,
+          "excluded" => %w[prompt response tool_result auth secret environment]
+        }
+      }
+      receipt["credit_equivalents"] = credit_equivalents(batch_usage) if @rate_card
+      receipt
+    end
+
+    private
+
+    def validate_manifest!
+      raise InputError, "manifest schema must be #{MANIFEST_SCHEMA}" unless @manifest["schema"] == MANIFEST_SCHEMA
+
+      require_string!(@manifest["batch_id"], "batch_id")
+      coordinator = @manifest["coordinator"]
+      raise InputError, "coordinator must be an object" unless coordinator.is_a?(Hash)
+
+      %w[id root_thread_id].each { |key| require_string!(coordinator[key], "coordinator.#{key}") }
+      validate_route!(coordinator["requested_route"], "coordinator.requested_route")
+      lanes = @manifest["lanes"]
+      raise InputError, "lanes must be an array" unless lanes.is_a?(Array)
+
+      lane_ids = {}
+      root_ids = { coordinator.fetch("root_thread_id") => true }
+      lanes.each_with_index do |lane, index|
+        raise InputError, "lanes[#{index}] must be an object" unless lane.is_a?(Hash)
+
+        %w[id root_thread_id].each { |key| require_string!(lane[key], "lanes[#{index}].#{key}") }
+        raise InputError, "duplicate lane id #{lane['id']}" if lane_ids[lane["id"]]
+        raise InputError, "scope roots must be unique: #{lane['root_thread_id']}" if root_ids[lane["root_thread_id"]]
+
+        lane_ids[lane["id"]] = true
+        root_ids[lane["root_thread_id"]] = true
+        validate_route!(lane["requested_route"], "lanes[#{index}].requested_route")
+        workers = lane["workers"] || []
+        raise InputError, "lanes[#{index}].workers must be an array" unless workers.is_a?(Array)
+
+        workers.each_with_index do |worker, worker_index|
+          unless worker.is_a?(Hash)
+            raise InputError, "lanes[#{index}].workers[#{worker_index}] must be an object"
+          end
+
+          %w[id thread_id].each do |key|
+            require_string!(worker[key], "lanes[#{index}].workers[#{worker_index}].#{key}")
+          end
+          validate_route!(worker["requested_route"], "lanes[#{index}].workers[#{worker_index}].requested_route")
+        end
+      end
+    end
+
+    def require_string!(value, label)
+      raise InputError, "#{label} must be a nonempty string" unless value.is_a?(String) && !value.strip.empty?
+    end
+
+    def validate_route!(route, label)
+      raise InputError, "#{label} must be an object" unless route.is_a?(Hash)
+
+      %w[host model effort].each { |key| require_string!(route[key], "#{label}.#{key}") }
+    end
+
+    def load_state
+      unless File.file?(@database_path)
+        @unknown << { "status" => UNKNOWN, "code" => "state_database_missing" }
+        return
+      end
+
+      query = <<~SQL
+        SELECT json_object(
+          'threads', (
+            SELECT json_group_array(json_object(
+              'id', id,
+              'rollout_path', rollout_path,
+              'model_provider', model_provider,
+              'model', model,
+              'reasoning_effort', reasoning_effort
+            )) FROM threads
+          ),
+          'edges', (
+            SELECT json_group_array(json_object(
+              'parent_thread_id', parent_thread_id,
+              'child_thread_id', child_thread_id
+            )) FROM thread_spawn_edges
+          )
+        );
+      SQL
+      stdout, _, status = Open3.capture3("sqlite3", "-readonly", "-batch", "-noheader", @database_path, query)
+      unless status.success?
+        @unknown << { "status" => UNKNOWN, "code" => "state_database_unsupported" }
+        return
+      end
+
+      snapshot = JSON.parse(stdout)
+      snapshot.fetch("threads").each do |row|
+        @threads[row.fetch("id")] = row
+      end
+      snapshot.fetch("edges").each do |row|
+        @children[row.fetch("parent_thread_id")] << row.fetch("child_thread_id")
+      end
+    rescue Errno::ENOENT
+      @unknown << { "status" => UNKNOWN, "code" => "sqlite3_cli_unavailable" }
+    rescue JSON::ParserError, KeyError, NoMethodError
+      @unknown << { "status" => UNKNOWN, "code" => "state_database_unsupported" }
+    ensure
+      @children.each_value(&:sort!)
+    end
+
+    def manifest_roots
+      [@manifest.dig("coordinator", "root_thread_id")] + @manifest.fetch("lanes").map { |lane| lane["root_thread_id"] }
+    end
+
+    def record_scope_topology_unknowns
+      lane_closures = @manifest.fetch("lanes").to_h do |lane|
+        [lane.fetch("id"), closure(lane.fetch("root_thread_id"))]
+      end
+      lane_closures.to_a.combination(2) do |(left_id, left_threads), (right_id, right_threads)|
+        overlap = left_threads & right_threads
+        next if overlap.empty?
+
+        @unknown << {
+          "status" => UNKNOWN,
+          "code" => "lane_scope_overlap",
+          "lane_ids" => [left_id, right_id].sort,
+          "thread_ids" => overlap.sort
+        }
+      end
+
+      @manifest.fetch("lanes").each do |lane|
+        lane_threads = lane_closures.fetch(lane.fetch("id"))
+        worker_closures = (lane["workers"] || []).to_h do |worker|
+          [worker.fetch("id"), closure(worker.fetch("thread_id"))]
+        end
+        worker_closures.each do |worker_id, worker_threads|
+          next if (worker_threads - lane_threads).empty?
+
+          @unknown << {
+            "status" => UNKNOWN,
+            "code" => "worker_outside_lane_scope",
+            "lane_id" => lane.fetch("id"),
+            "worker_id" => worker_id
+          }
+        end
+        worker_closures.to_a.combination(2) do |(left_id, left_threads), (right_id, right_threads)|
+          next if (left_threads & right_threads).empty?
+
+          @unknown << {
+            "status" => UNKNOWN,
+            "code" => "worker_scope_overlap",
+            "lane_id" => lane.fetch("id"),
+            "worker_ids" => [left_id, right_id].sort
+          }
+        end
+      end
+    end
+
+    def closure(root)
+      return [root] unless @threads.key?(root)
+
+      result = []
+      stack = [root]
+      until stack.empty?
+        thread_id = stack.pop
+        next if result.include?(thread_id)
+
+        result << thread_id
+        stack.concat(@children[thread_id].reverse)
+      end
+      result
+    end
+
+    def reader_for(thread_id)
+      return @readers_by_thread[thread_id] if @readers_by_thread.key?(thread_id)
+
+      state_thread = @threads[thread_id]
+      unless state_thread
+        @unknown << { "status" => UNKNOWN, "code" => "thread_missing", "thread_id" => thread_id }
+        return @readers_by_thread[thread_id] = nil
+      end
+
+      rollout_path = state_thread["rollout_path"]
+      rollout_key = canonical_rollout_key(rollout_path)
+      existing = @readers_by_rollout[rollout_key]
+      return @readers_by_thread[thread_id] = existing if existing
+
+      reader = RolloutReader.new(
+        path: rollout_path,
+        state_thread: state_thread,
+        from_time: @from_time,
+        to_time: @to_time
+      ).read
+      reader.unknown_reasons.each do |reason|
+        @unknown << reason.merge("thread_id" => thread_id, "physical_rollout_id" => reader.physical_id)
+      end
+      @readers_by_rollout[rollout_key] = reader
+      @readers_by_thread[thread_id] = reader
+    end
+
+    def canonical_rollout_key(path)
+      File.realpath(path)
+    rescue SystemCallError
+      File.expand_path(path)
+    end
+
+    def readers(thread_ids)
+      thread_ids.filter_map { |thread_id| reader_for(thread_id) }.uniq(&:physical_id)
+    end
+
+    def aggregate(thread_ids)
+      selected = readers(thread_ids)
+      return unknown_usage if selected.any? { |reader| !reader.unknown_reasons.empty? } || thread_ids.any? { |id| reader_for(id).nil? }
+
+      selected.reduce(blank_usage) { |sum, reader| add_usage(sum, reader.totals) }
+    end
+
+    def scope_receipt(scope, id, root_thread_id, requested_route)
+      inclusive_ids = closure(root_thread_id)
+      selected_readers = readers(inclusive_ids)
+      {
+        "scope" => scope,
+        "id" => id,
+        "root_thread_id" => root_thread_id,
+        "requested_route" => requested_route,
+        "observed_routes" => merge_observed_routes(selected_readers),
+        "usage" => {
+          "self_only" => aggregate([root_thread_id]),
+          "descendant_inclusive" => aggregate(inclusive_ids)
+        },
+        "evidence" => evidence_for(selected_readers, inclusive_ids),
+        "_thread_ids" => inclusive_ids
+      }
+    end
+
+    def lane_receipt(lane)
+      receipt = scope_receipt("lane", lane.fetch("id"), lane.fetch("root_thread_id"), lane.fetch("requested_route"))
+      workers = (lane["workers"] || []).map do |worker|
+        scope_receipt("worker", worker.fetch("id"), worker.fetch("thread_id"), worker.fetch("requested_route"))
+      end
+      attributed = workers.flat_map { |worker| worker.fetch("_thread_ids") }.uniq
+      receipt["usage"]["unattributed"] = aggregate(receipt.fetch("_thread_ids") - attributed)
+      receipt["workers"] = workers
+      worker_sum = workers.reduce(blank_usage) do |sum, worker|
+        add_usage(sum, worker.dig("usage", "descendant_inclusive"))
+      end
+      reconciled = add_usage(worker_sum, receipt.dig("usage", "unattributed"))
+      receipt["reconciliation"] = {
+        "status" => if known_usage?(reconciled) && reconciled == receipt.dig("usage", "descendant_inclusive")
+                      "balanced"
+                    else
+                      UNKNOWN
+                    end,
+        "equation" => "lane descendant-inclusive = named worker descendant-inclusive union + unattributed"
+      }
+      receipt
+    end
+
+    def evidence_for(selected_readers, expected_thread_ids)
+      evidence = {
+        "status" => if expected_thread_ids.any? { |thread_id| reader_for(thread_id).nil? } ||
+                       selected_readers.any? { |reader| !reader.unknown_reasons.empty? }
+                      UNKNOWN
+                    else
+                      "complete"
+                    end,
+        "physical_rollout_ids" => selected_readers.map(&:physical_id).sort,
+        "first_session_ids" => selected_readers.map(&:first_session_id).compact.sort
+      }
+      evidence["first_session_id"] = evidence["first_session_ids"].first if evidence["first_session_ids"].length == 1
+      evidence
+    end
+
+    def merge_observed_routes(selected_readers)
+      grouped = {}
+      selected_readers.each do |reader|
+        reader.observed_routes.each do |route|
+          usage = route.fetch("usage")
+          identity = route.reject { |key, _| key == "usage" }
+          key = JSON.generate(identity.sort.to_h)
+          grouped[key] = add_usage(grouped.fetch(key, blank_usage), usage)
+        end
+      end
+      grouped.keys.sort.map { |key| JSON.parse(key).merge("usage" => grouped.fetch(key)) }
+    end
+
+    def strip_internal(value)
+      case value
+      when Hash
+        value.each_with_object({}) do |(key, child), clean|
+          clean[key] = strip_internal(child) unless key.start_with?("_")
+        end
+      when Array
+        value.map { |child| strip_internal(child) }
+      else
+        value
+      end
+    end
+
+    def aggregate_accounting(thread_ids)
+      readers(thread_ids).each_with_object(Hash.new(0)) do |reader, totals|
+        reader.accounting.each { |key, value| totals[key] += value }
+      end.sort.to_h
+    end
+
+    def reconciliation_status(batch_usage, coordinator, lanes, unattributed_ids)
+      parts = coordinator.dig("usage", "self_only")
+      lanes.each { |lane| parts = add_usage(parts, lane.dig("usage", "descendant_inclusive")) }
+      parts = add_usage(parts, aggregate(unattributed_ids))
+      known_usage?(batch_usage) && known_usage?(parts) && parts == batch_usage ? "balanced" : UNKNOWN
+    end
+
+    def credit_equivalents(batch_usage)
+      validate_rate_card!
+      mappings = @rate_card.fetch("model_mappings")
+      route_totals = readers(manifest_roots.flat_map { |root| closure(root) }).flat_map(&:observed_routes)
+      grouped = route_totals.group_by { |route| [route["host"], route["model"]] }
+      values = grouped.sort_by { |key, _| key }.map do |(host, model), routes|
+        mapping = mappings.find { |entry| entry["host"] == host && entry["model"] == model }
+        unless mapping
+          next({ "host" => host, "model" => model, "status" => UNKNOWN, "code" => "rate_mapping_missing" })
+        end
+
+        usage = routes.reduce(blank_usage) { |sum, route| add_usage(sum, route.fetch("usage")) }
+        unless known_usage?(usage)
+          next({ "host" => host, "model" => model, "status" => UNKNOWN, "code" => "usage_unknown" })
+        end
+
+        credits = (usage["input_tokens"] * mapping.fetch("input_credits_per_million") +
+                   usage["output_tokens"] * mapping.fetch("output_credits_per_million")) / 1_000_000.0
+        {
+          "host" => host,
+          "model" => model,
+          "status" => "available",
+          "credits" => credits.round(9)
+        }
+      end
+      {
+        "status" => if !known_usage?(batch_usage) || values.any? { |value| value["status"] == UNKNOWN }
+                      UNKNOWN
+                    else
+                      "available"
+                    end,
+        "source" => @rate_card.fetch("source"),
+        "effective_date" => @rate_card.fetch("effective_date"),
+        "model_values" => values,
+        "disclaimer" => "Analytical credit equivalents only; this is not a bill, invoice, charge, or authoritative provider cost."
+      }
+    end
+
+    def validate_rate_card!
+      raise InputError, "rate-card schema must be #{RATE_CARD_SCHEMA}" unless @rate_card["schema"] == RATE_CARD_SCHEMA
+
+      require_string!(@rate_card["source"], "rate-card.source")
+      Date.iso8601(@rate_card.fetch("effective_date"))
+      mappings = @rate_card["model_mappings"]
+      raise InputError, "rate-card.model_mappings must be an array" unless mappings.is_a?(Array)
+
+      mappings.each_with_index do |mapping, index|
+        unless mapping.is_a?(Hash)
+          raise InputError, "rate-card.model_mappings[#{index}] must be an object"
+        end
+
+        %w[host model].each { |key| require_string!(mapping[key], "rate-card.model_mappings[#{index}].#{key}") }
+        %w[input_credits_per_million output_credits_per_million].each do |key|
+          value = mapping[key]
+          raise InputError, "rate-card.model_mappings[#{index}].#{key} must be nonnegative" unless value.is_a?(Numeric) && value >= 0
+        end
+      end
+      identities = mappings.map { |mapping| [mapping["host"], mapping["model"]] }
+      raise InputError, "rate-card host/model mappings must be unique" unless identities.uniq.length == identities.length
+    rescue Date::Error, KeyError
+      raise InputError, "rate-card.effective_date must be an ISO 8601 date"
+    end
+  end
+
+  def parse_time(value, label)
+    Time.iso8601(value)
+  rescue ArgumentError, TypeError
+    raise InputError, "#{label} must be an ISO 8601 timestamp"
+  end
+
+  def run(argv)
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: batch-usage-receipt --state-db PATH --manifest PATH --from TIME --to TIME [--rate-card PATH]"
+      opts.on("--state-db PATH") { |value| options[:database] = value }
+      opts.on("--manifest PATH") { |value| options[:manifest] = value }
+      opts.on("--from TIME") { |value| options[:from] = value }
+      opts.on("--to TIME") { |value| options[:to] = value }
+      opts.on("--rate-card PATH") { |value| options[:rate_card] = value }
+    end
+    parser.parse!(argv)
+    raise InputError, parser.banner unless argv.empty? && %i[database manifest from to].all? { |key| options[key] }
+
+    manifest = JSON.parse(File.read(options.fetch(:manifest), encoding: "UTF-8"))
+    rate_card = options[:rate_card] && JSON.parse(File.read(options[:rate_card], encoding: "UTF-8"))
+    from_time = parse_time(options.fetch(:from), "--from")
+    to_time = parse_time(options.fetch(:to), "--to")
+    raise InputError, "--to must be after --from" unless to_time > from_time
+
+    receipt = Reporter.new(
+      manifest: manifest,
+      database_path: options.fetch(:database),
+      from_time: from_time,
+      to_time: to_time,
+      rate_card: rate_card
+    ).build
+    puts JSON.pretty_generate(receipt)
+    0
+  rescue OptionParser::ParseError, JSON::ParserError, Errno::ENOENT, InputError => e
+    warn "ERROR: #{e.message}"
+    64
+  end
+end
+
+exit BatchUsageReceipt.run(ARGV) if $PROGRAM_NAME == __FILE__
