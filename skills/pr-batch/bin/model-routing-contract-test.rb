@@ -260,7 +260,7 @@ DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN =
 DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN =
   /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\b/i
 DIRECT_INDEPENDENT_BLOCKER_FIRST_CLAUSE_PATTERN =
-  /\A\s*(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\s*,\s*(?:while|and)\s+/i
+  /\A\s*(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+(?:blocks?|halts?)\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\s*,\s*(?:while|and)\s+/i
 NEUTRAL_ROUTE_PREDICATE_WITH_INDEPENDENT_BLOCKER_PATTERN =
   /\A\s*(?:an?\s+)?(?:#{ROUTE_ONLY_SUBJECT_PATTERN})\s+is\s+(?:recorded|logged|observed|noted)\s*;\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\b/i
 INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN =
@@ -1508,6 +1508,7 @@ class ModelRoutingContractTest < Minitest::Test
       "A credential check blocks launch, while a route mismatch is merely recorded.",
       "An exact-head CI gate blocks launch, while a route mismatch is merely recorded.",
       "An independent risk gate blocks launch, while a route mismatch is merely recorded.",
+      "An independent risk gate halts launch, while a route mismatch is recorded.",
       "A route mismatch is recorded; a credential check blocks launch.",
       "A route mismatch is logged; an exact-head CI gate blocks launch.",
       "A route mismatch is observed; an independent risk gate blocks execution.",
