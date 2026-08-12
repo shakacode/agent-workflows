@@ -47,14 +47,17 @@ _Avoid_: status (overloaded), phase by itself when release phase is in scope
 ### Batch lifecycle
 
 **Batch**:
-A coordinator-scoped unit of work: objective, instructions, targets, and lanes. Depending on repo policy and dependency risk, it may be recorded in the private backend, mirrored through public claim comments, or carried only in the coordinator handoff.
+A coordinator-scoped unit of work: objective, instructions, targets, named
+waves, and lanes. Depending on repo policy and dependency risk, it may be
+recorded in the private backend, mirrored through public claim comments, or
+carried only in the coordinator handoff.
 _Avoid_: run, job
 
 **Lane**:
 One durable, agent-owned work stream: either a direct single-PR task in the
 current chat or one worker's slice of a batch. A lane has a named owner plus
-its target or targets and optional dependencies; a worker instance executes
-the lane but is not the lane.
+its target or targets and optional dependencies; an **Instance** executes the
+lane but is not the lane.
 _Avoid_: track, slot, worker (the worker is the agent; the lane is the work)
 
 **Wave**:
@@ -68,8 +71,9 @@ _Avoid_: active lane, dependency-ready wave
 
 **Serialization group**:
 A named set of lanes whose concurrent execution is limited. The currently
-supported limit is `max_concurrency: 1`; an active or blocked member occupies
-its slot until its durable lifecycle state changes.
+supported limit is `max_concurrency: 1`. A member occupies its slot while its
+durable lifecycle state is `active` or `blocked`, including `active` ↔
+`blocked` transitions, and releases it only after it leaves both states.
 _Avoid_: dependency group, lock
 
 **Stage-typed dependency**:
@@ -217,16 +221,16 @@ _Avoid_: force kill (without the cleanup steps it names)
 
 ## Relationships
 
-- **Batch → Wave → Lane → Worker instance**: a batch contains named scheduling
-  waves; a wave contains lanes; a worker instance executes one lane. For
-  example, `docs-batch → wave-1 → lane-glossary → worker instance A`. A direct
+- **Batch → Wave → Lane → Instance**: a batch contains named scheduling
+  waves; a wave contains lanes; an **Instance** executes one lane. For
+  example, `docs-batch → wave-1 → lane-glossary → instance A`. A direct
   PR task can also be one standalone **Lane** without batch planning or worker
   split machinery. A **Lane** has exactly one owner identity at a time.
 - An **Active wave** is the scheduling cohort considered now. Lanes in later
   **Waves** are deferred, and that deferral does not establish a dependency.
   A **Serialization group** with `max_concurrency: 1` admits one member at a
-  time; an active or blocked member keeps its slot until its lifecycle state
-  changes.
+  time; a member retains its slot through `active` ↔ `blocked` transitions and
+  releases it only after leaving both states.
 - A **Stage-typed dependency** connects predecessor and dependent **Lanes**;
   backend dependency state supplies facts, while `stage-dependency-gate` decides
   which lifecycle actions remain gated. Its **Stage dependency critical path**
