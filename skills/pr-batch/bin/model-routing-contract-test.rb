@@ -755,7 +755,7 @@ class ModelRoutingContractTest < Minitest::Test
 
     mutants = {
       "routine coordination defaults to strongest" => text.sub(
-        /For multiple interacting targets, routine bounded planning and coordination use\s+the `balanced`\/high class/,
+        %r{For multiple interacting targets, routine bounded planning and coordination use\s+the `balanced`/high class},
         "For multiple interacting targets, routine bounded planning and coordination use Sol/xhigh by default"
       ),
       "routine multi-lane coordinator defaults to Sol/xhigh" => text.sub(
@@ -764,7 +764,7 @@ class ModelRoutingContractTest < Minitest::Test
       ),
       "routine coordination defaults to strongest only in an HTML comment" =>
         text.sub(
-          /For multiple interacting targets, routine bounded planning and coordination use\s+the `balanced`\/high class/,
+          %r{For multiple interacting targets, routine bounded planning and coordination use\s+the `balanced`/high class},
           "For multiple interacting targets, routine bounded planning and coordination use Sol/xhigh by default"
         ) + "\n<!-- #{ROUTINE_COORDINATOR_ROUTE_RULE} -->\n",
       "unverified Terra pair named as exact" => text.sub(
