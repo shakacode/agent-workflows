@@ -38,6 +38,7 @@ host="codex"
 target=""
 mode="copy"
 delivery_mode=""
+installed_metadata_was_absent=false
 metadata_name=".agent-workflows-install.json"
 doctor_managed_marker=".agent-workflows-managed"
 doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
@@ -251,6 +252,7 @@ read_installed_metadata_value() {
     key_absent) installed_metadata_state="key_absent" ;;
     corrupt) ;;
   esac
+  return 0
 }
 
 capture_installed_metadata_for_recovery() {
@@ -268,6 +270,10 @@ capture_installed_metadata_for_recovery() {
 
   if installed_metadata_recovery_residue_exists; then
     return 66
+  fi
+  if [[ ! -e "$recovery_metadata_path" && ! -L "$recovery_metadata_path" ]]; then
+    [[ "$installed_metadata_was_absent" = "true" ]] && return 68
+    return 1
   fi
   if ! original_attestation="$(regular_file_attestation "$recovery_metadata_path")"; then
     return 1
@@ -392,10 +398,19 @@ recovery_metadata_restore_binding_intact() {
      "$backup_attestation" = "$recovery_metadata_backup_identity|$recovery_metadata_digest" ]]
 }
 
+recovery_metadata_sentinel_intact() {
+  [[ "$recovery_metadata_captured" = "true" ]] || return 1
+  [[ "$(regular_file_attestation "$recovery_metadata_path" 2>/dev/null || true)" = \
+     "$recovery_metadata_sentinel_identity|$recovery_metadata_digest" ]]
+}
+
 restore_captured_recovery_metadata() {
   local expected_restore_attestation snapshot_attestation restored_attestation restore_source
   [[ "$recovery_metadata_captured" = "true" ]] || return 0
-  recovery_metadata_restore_binding_intact || return 1
+  recovery_metadata_restore_binding_intact || {
+    recovery_metadata_sentinel_intact && return 67
+    return 65
+  }
   snapshot_attestation="$(regular_file_attestation "$recovery_metadata_snapshot")" || true
   if [[ "$snapshot_attestation" = "$recovery_metadata_snapshot_identity|$recovery_metadata_digest" ]]; then
     restore_source="$recovery_metadata_snapshot"
@@ -405,10 +420,11 @@ restore_captured_recovery_metadata() {
     expected_restore_attestation="$recovery_metadata_backup_identity|$recovery_metadata_digest"
   fi
   if ! mv "$restore_source" "$recovery_metadata_path"; then
-    return 1
+    recovery_metadata_sentinel_intact && return 67
+    return 65
   fi
-  restored_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 1
-  [[ "$restored_attestation" = "$expected_restore_attestation" ]] || return 1
+  restored_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 65
+  [[ "$restored_attestation" = "$expected_restore_attestation" ]] || return 65
   recovery_metadata_captured=false
   rm -f "$recovery_metadata_snapshot" "$recovery_metadata_backup" 2>/dev/null || true
   if ! rmdir "$recovery_metadata_quarantine" 2>/dev/null; then
@@ -439,6 +455,16 @@ report_corrupt_install_metadata() {
   echo "Restore a valid backup of that file. If none exists, preserve the corrupt target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
 }
 
+report_recovery_metadata_restore_failure() {
+  recovery_metadata_restore_reported=true
+  if recovery_metadata_sentinel_intact; then
+    echo "RECOVERY_METADATA_RESTORE_FAILED: verified install metadata remains in place; preserved recovery metadata quarantine for retry." >&2
+  else
+    report_corrupt_install_metadata
+    echo "RECOVERY_FAILED: install metadata could not be restored; preserved pending recovery state." >&2
+  fi
+}
+
 report_invalid_install_delivery_mode() {
   echo "Installed metadata delivery_mode must be flat or plugin-companion." >&2
   echo "Restore a valid backup of $target/$metadata_name or reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
@@ -449,6 +475,7 @@ resolve_delivery_mode() {
   local recorded_mode
 
   if [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]; then
+    installed_metadata_was_absent=true
     [[ -n "$delivery_mode" ]] || delivery_mode="flat"
     return 0
   fi
@@ -555,17 +582,107 @@ commit_metadata() {
   mv "$metadata_tmp" "$metadata_path"
 }
 
+recovery_directory_identity() {
+  ruby -e '
+    path = ARGV.fetch(0)
+    stat = File.lstat(path)
+    exit 1 unless stat.directory? && !stat.symlink?
+    verified = File.lstat(path)
+    exit 1 unless verified.directory? && !verified.symlink? &&
+                  verified.dev == stat.dev && verified.ino == stat.ino
+    print "#{stat.dev}:#{stat.ino}"
+  ' "$1" 2>/dev/null
+}
+
+move_bound_recovery_path() {
+  ruby -e '
+    begin
+      source = File.expand_path(ARGV.fetch(0))
+      destination = File.expand_path(ARGV.fetch(1))
+      bound_path = File.expand_path(ARGV.fetch(2))
+      expected_identity = ARGV.fetch(3)
+      other_bound_path = ARGV[4] && File.expand_path(ARGV[4])
+      other_expected_identity = ARGV[5]
+      unless source == bound_path || File.dirname(source) == bound_path ||
+             File.dirname(destination) == bound_path
+        exit 67
+      end
+      bound_stat = File.lstat(bound_path)
+      unless bound_stat.directory? && !bound_stat.symlink? &&
+             "#{bound_stat.dev}:#{bound_stat.ino}" == expected_identity
+        exit 67
+      end
+      other_bound_stat = nil
+      if other_bound_path
+        unless source == other_bound_path || File.dirname(source) == other_bound_path ||
+               destination == other_bound_path || File.dirname(destination) == other_bound_path
+          exit 67
+        end
+        other_bound_stat = File.lstat(other_bound_path)
+        unless other_bound_stat.directory? && !other_bound_stat.symlink? &&
+               "#{other_bound_stat.dev}:#{other_bound_stat.ino}" == other_expected_identity
+          exit 67
+        end
+      end
+      begin
+        File.lstat(destination)
+        exit 67
+      rescue Errno::ENOENT
+        nil
+      end
+      File.lstat(source)
+      verified_stat = File.lstat(bound_path)
+      unless verified_stat.directory? && !verified_stat.symlink? &&
+             verified_stat.dev == bound_stat.dev && verified_stat.ino == bound_stat.ino
+        exit 67
+      end
+      if other_bound_path
+        other_verified_stat = File.lstat(other_bound_path)
+        unless other_verified_stat.directory? && !other_verified_stat.symlink? &&
+               other_verified_stat.dev == other_bound_stat.dev &&
+               other_verified_stat.ino == other_bound_stat.ino
+          exit 67
+        end
+      end
+      File.rename(source, destination)
+    rescue SystemCallError
+      exit 1
+    rescue StandardError
+      exit 67
+    end
+  ' "$@" 2>/dev/null
+}
+
 restore_recovery_staging_moves() {
   local staging="$1"
-  shift
-  local destination staged_path index
+  local staging_identity="$2"
+  local skills_root="$3"
+  local skills_identity="$4"
+  shift 4
+  local destination staged_path index move_status
   local -a destinations=("$@")
   for ((index = ${#destinations[@]} - 1; index >= 0; index--)); do
     destination="${destinations[$index]}"
     staged_path="$staging/$(basename "$destination")"
-    if [[ -e "$staged_path" || -L "$staged_path" || ! -e "$destination" && ! -L "$destination" ]] ||
-       ! mv "$destination" "$staging/"; then
+    move_status=0
+    if [[ -e "$staged_path" || -L "$staged_path" || ! -e "$destination" && ! -L "$destination" ]]; then
+      move_status=1
+    else
+      move_bound_recovery_path "$destination" "$staged_path" "$staging" "$staging_identity" \
+        "$skills_root" "$skills_identity" || move_status=$?
+    fi
+    if [[ "$move_status" -ne 0 ]]; then
       echo "RECOVERY_STAGING_RESTORE_FAILED: preserved all remaining recovery artifacts for manual recovery." >&2
+      if [[ "$move_status" -eq 67 ]]; then
+        if [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
+          echo "RECOVERY_STAGING_BINDING_CHANGED: refused to restore through a replaced staging path." >&2
+        elif [[ "$(recovery_directory_identity "$skills_root" 2>/dev/null || true)" != "$skills_identity" ]]; then
+          echo "RECOVERY_SKILLS_BINDING_CHANGED: refused to restore through a replaced skills path." >&2
+        else
+          echo "RECOVERY_PATH_BINDING_CHANGED: refused an unbound recovery move." >&2
+        fi
+        return 67
+      fi
       return 1
     fi
   done
@@ -574,11 +691,19 @@ restore_recovery_staging_moves() {
 rollback_migration_staging() {
   local staging="$1"
   local bind_recovery_metadata="${2:-false}"
+  local staging_identity="${3:-}"
   local skills_root="$target/skills"
-  local staged_path destination
+  local staged_path destination move_status restore_status reversal_status skills_identity
   local -a moved_destinations=()
   local moved_count=0
-  [[ -n "$staging" && -d "$staging" ]] || return 0
+  [[ -n "$staging" ]] || return 0
+  if [[ -z "$staging_identity" ]]; then
+    [[ -d "$staging" ]] || return 0
+    staging_identity="$(recovery_directory_identity "$staging")" || return 1
+  elif [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
+    echo "RECOVERY_STAGING_BINDING_CHANGED: preserved recovery artifacts without moving them." >&2
+    return 67
+  fi
   if [[ -L "$skills_root" || -e "$skills_root" && ! -d "$skills_root" ]]; then
     echo "ROLLBACK_FAILED: unsafe skills root: $skills_root" >&2
     return 1
@@ -592,12 +717,16 @@ rollback_migration_staging() {
     echo "ROLLBACK_FAILED: unsafe skills root: $skills_root" >&2
     return 1
   fi
+  skills_identity="$(recovery_directory_identity "$skills_root")" || return 1
   for staged_path in "$staging"/*; do
     [[ -e "$staged_path" || -L "$staged_path" ]] || continue
     if [[ -L "$skills_root" || ! -d "$skills_root" ]]; then
       echo "ROLLBACK_FAILED: skills root changed during rollback: $skills_root" >&2
       if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
-        restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_destinations[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
       fi
       return 1
     fi
@@ -605,34 +734,66 @@ rollback_migration_staging() {
     if [[ -e "$destination" || -L "$destination" ]]; then
       echo "ROLLBACK_FAILED: destination appeared during migration: $destination" >&2
       if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
-        restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_destinations[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
       fi
       return 1
     fi
-    if ! mv "$staged_path" "$target/skills/"; then
+    move_status=0
+    move_bound_recovery_path "$staged_path" "$destination" "$staging" "$staging_identity" \
+      "$skills_root" "$skills_identity" || move_status=$?
+    if [[ "$move_status" -ne 0 ]]; then
       if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
-        restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_destinations[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+      fi
+      if [[ "$move_status" -eq 67 ]]; then
+        if [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
+          echo "RECOVERY_STAGING_BINDING_CHANGED: preserved recovery artifacts without following a replaced staging path." >&2
+        elif [[ "$(recovery_directory_identity "$skills_root" 2>/dev/null || true)" != "$skills_identity" ]]; then
+          echo "RECOVERY_SKILLS_BINDING_CHANGED: preserved recovery artifacts without following a replaced skills path." >&2
+        else
+          echo "RECOVERY_PATH_BINDING_CHANGED: refused an unbound recovery move." >&2
+        fi
+        return 67
       fi
       return 1
     fi
     if [[ "$bind_recovery_metadata" = "true" ]]; then
       moved_destinations[moved_count]="$destination"
       moved_count=$((moved_count + 1))
-      if ! recovery_metadata_binding_intact; then
-        restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+      if [[ "$recovery_metadata_captured" = "true" ]] && ! recovery_metadata_binding_intact; then
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_destinations[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
         return 65
       fi
     fi
   done
-  if [[ "$bind_recovery_metadata" = "true" ]] && ! restore_captured_recovery_metadata; then
+  restore_status=0
+  if [[ "$bind_recovery_metadata" = "true" ]]; then
+    restore_captured_recovery_metadata || restore_status=$?
+  fi
+  if [[ "$restore_status" -ne 0 ]]; then
     if [[ "$moved_count" -gt 0 ]]; then
-      restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+      reversal_status=0
+      restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+        "${moved_destinations[@]}" || reversal_status=$?
+      [[ "$reversal_status" -eq 0 ]] || return "$reversal_status"
     fi
-    return 65
+    return "$restore_status"
   fi
   if ! rmdir "$staging"; then
     if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
-      restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+      restore_status=0
+      restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+        "${moved_destinations[@]}" || restore_status=$?
+      [[ "$restore_status" -eq 0 ]] || return "$restore_status"
     fi
     return 1
   fi
@@ -685,27 +846,53 @@ remove_recovery_cleanup_root() {
 
 cleanup_recovery_staging() {
   local staging="$1"
-  local cleanup_root cleanup_staging
+  local staging_identity="$2"
+  local cleanup_root cleanup_staging move_status restore_status cleanup_root_identity target_identity
+  target_identity="$(recovery_directory_identity "$target")" || return 1
   cleanup_root="$(mktemp -d "$target/.agent-workflows-recovery-cleanup-XXXXXX")" || return 1
   cleanup_staging="$cleanup_root/staging"
   if ! validate_recovery_cleanup_root "$cleanup_root" true; then
     echo "RECOVERY_CLEANUP_ROOT_REJECTED: preserved rejected cleanup path $cleanup_root without moving recovery staging." >&2
     return 1
   fi
-  if ! mv "$staging" "$cleanup_staging"; then
+  cleanup_root_identity="$(recovery_directory_identity "$cleanup_root")" || return 1
+  move_status=0
+  move_bound_recovery_path "$staging" "$cleanup_staging" "$staging" "$staging_identity" \
+    "$cleanup_root" "$cleanup_root_identity" || move_status=$?
+  if [[ "$move_status" -ne 0 ]]; then
     rmdir "$cleanup_root" 2>/dev/null || true
+    if [[ "$move_status" -eq 67 ]]; then
+      if [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
+        echo "RECOVERY_STAGING_BINDING_CHANGED: preserved recovery artifacts without following a replaced staging path." >&2
+      else
+        echo "RECOVERY_CLEANUP_BINDING_CHANGED: preserved recovery artifacts without following a replaced cleanup path." >&2
+      fi
+      return 67
+    fi
     return 1
   fi
-  if ! recovery_metadata_binding_intact || ! restore_captured_recovery_metadata; then
-    if ! mv "$cleanup_staging" "$staging"; then
+  restore_status=0
+  if ! recovery_metadata_binding_intact; then
+    restore_status=65
+  else
+    restore_captured_recovery_metadata || restore_status=$?
+  fi
+  if [[ "$restore_status" -ne 0 ]]; then
+    if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_staging" "$staging_identity" \
+      "$target" "$target_identity"; then
       echo "RECOVERY_STAGING_RESTORE_FAILED: preserved $cleanup_root for manual recovery." >&2
     else
       rmdir "$cleanup_root" 2>/dev/null || true
     fi
-    return 65
+    return "$restore_status"
+  fi
+  if [[ "$(recovery_directory_identity "$cleanup_staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
+    echo "RECOVERY_STAGING_BINDING_CHANGED: preserved $cleanup_root and recovery receipt for manual recovery." >&2
+    return 67
   fi
   if ! remove_recovery_cleanup_root "$cleanup_root"; then
-    if ! mv "$cleanup_staging" "$staging"; then
+    if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_staging" "$staging_identity" \
+      "$target" "$target_identity"; then
       echo "RECOVERY_STAGING_RESTORE_FAILED: preserved $cleanup_root for manual recovery." >&2
     else
       rmdir "$cleanup_root" 2>/dev/null || true
@@ -718,10 +905,21 @@ report_pending_recovery_corruption() {
   local migration_receipt="$1"
   local recovered_staging="$2"
   if ! restore_captured_recovery_metadata; then
-    echo "RECOVERY_FAILED: install metadata could not be restored; preserved pending recovery state." >&2
+    report_recovery_metadata_restore_failure
   fi
-  report_corrupt_install_metadata
+  if [[ "$recovery_metadata_restore_reported" != "true" ]]; then
+    report_corrupt_install_metadata
+  fi
   echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
+}
+
+report_pending_recovery_integrity_failure() {
+  local migration_receipt="$1"
+  local recovered_staging="$2"
+  if ! restore_captured_recovery_metadata; then
+    report_recovery_metadata_restore_failure
+  fi
+  echo "RECOVERY_FAILED: recovery paths changed during the operation; preserved $migration_receipt for $recovered_staging and any named cleanup artifacts." >&2
 }
 
 valid_migration_staging_path() {
@@ -746,7 +944,7 @@ valid_migration_staging_path() {
     stat = File.lstat(staging)
     exit 1 unless stat.directory? && !stat.symlink?
     exit 1 unless File.realpath(File.dirname(staging)) == File.realpath(target)
-  ' "$1" "$2"
+  ' "$1" "$2" 2>/dev/null
 }
 
 ensure_real_directory() {
@@ -1221,9 +1419,10 @@ fi
 release_install_lock() {
   local status=$?
   trap - EXIT
-  if [[ "${recovery_metadata_captured:-false}" = "true" ]] && ! restore_captured_recovery_metadata; then
-    report_corrupt_install_metadata
-    echo "RECOVERY_FAILED: install metadata could not be restored; preserved pending recovery state." >&2
+  if [[ "${recovery_metadata_captured:-false}" = "true" &&
+        "${recovery_metadata_restore_reported:-false}" != "true" ]] &&
+     ! restore_captured_recovery_metadata; then
+    report_recovery_metadata_restore_failure
     status=65
   fi
   rmdir "$install_lock" 2>/dev/null || true
@@ -1233,6 +1432,8 @@ trap release_install_lock EXIT
 migration_staging=""
 migration_receipt="$target/.agent-workflows-migration-staging"
 recovery_metadata_captured=false
+recovery_metadata_restore_reported=false
+recovery_staging_identity=""
 if [[ -f "$migration_receipt" ]]; then
   IFS= read -r recovered_staging < "$migration_receipt" || recovered_staging=""
   recovered_staging="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$recovered_staging")"
@@ -1240,12 +1441,18 @@ if [[ -f "$migration_receipt" ]]; then
     echo "RECOVERY_FAILED: unsafe migration staging receipt; preserved $migration_receipt" >&2
     exit 1
   fi
+  if ! recovery_staging_identity="$(recovery_directory_identity "$recovered_staging")" ||
+     [[ -z "$recovery_staging_identity" ]]; then
+    echo "RECOVERY_STAGING_BINDING_CHANGED: preserved $migration_receipt and recovery artifacts without moving them." >&2
+    exit 65
+  fi
   set +e
   capture_installed_metadata_for_recovery
   capture_status=$?
   set -e
   case "$capture_status" in
     0) ;;
+    68) prior_delivery_mode="flat" ;;
     66)
       report_corrupt_install_metadata true
       echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
@@ -1257,17 +1464,23 @@ if [[ -f "$migration_receipt" ]]; then
       ;;
     *)
       if [[ "$recovery_metadata_captured" = "true" ]] && ! restore_captured_recovery_metadata; then
-        echo "RECOVERY_FAILED: install metadata could not be restored; preserved pending recovery state." >&2
+        report_recovery_metadata_restore_failure
       fi
-      report_corrupt_install_metadata
+      if [[ "$recovery_metadata_restore_reported" != "true" ]]; then
+        report_corrupt_install_metadata
+      fi
       echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
       exit 65
       ;;
   esac
-  read_installed_metadata_value delivery_mode "$recovery_metadata_snapshot"
-  if ! recovery_metadata_binding_intact; then
-    installed_metadata_state="corrupt"
-    installed_metadata_value=""
+  if [[ "$capture_status" -ne 68 ]]; then
+    read_installed_metadata_value delivery_mode "$recovery_metadata_snapshot"
+    if ! recovery_metadata_binding_intact; then
+      installed_metadata_state="corrupt"
+      installed_metadata_value=""
+    fi
+  else
+    installed_metadata_state="absent"
   fi
   case "$installed_metadata_state" in
     valid)
@@ -1281,9 +1494,10 @@ if [[ -f "$migration_receipt" ]]; then
       esac
       ;;
     key_absent) prior_delivery_mode="flat" ;;
+    absent) prior_delivery_mode="flat" ;;
     invalid)
       if ! restore_captured_recovery_metadata; then
-        report_corrupt_install_metadata
+        report_recovery_metadata_restore_failure
         echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
         exit 65
       fi
@@ -1293,35 +1507,44 @@ if [[ -f "$migration_receipt" ]]; then
       ;;
     corrupt)
       if ! restore_captured_recovery_metadata; then
-        echo "RECOVERY_FAILED: install metadata could not be restored; preserved pending recovery state." >&2
+        report_recovery_metadata_restore_failure
       fi
-      report_corrupt_install_metadata
+      if [[ "$recovery_metadata_restore_reported" != "true" ]]; then
+        report_corrupt_install_metadata
+      fi
       echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
       exit 65
       ;;
   esac
   if [[ "$prior_delivery_mode" = "plugin-companion" ]]; then
     set +e
-    cleanup_recovery_staging "$recovered_staging"
+    cleanup_recovery_staging "$recovered_staging" "$recovery_staging_identity"
     recovery_status=$?
     set -e
     if [[ "$recovery_status" -eq 65 ]]; then
       report_pending_recovery_corruption "$migration_receipt" "$recovered_staging"
       exit 65
+    elif [[ "$recovery_status" -eq 67 ]]; then
+      report_pending_recovery_integrity_failure "$migration_receipt" "$recovered_staging"
+      exit 65
     elif [[ "$recovery_status" -ne 0 ]]; then
       echo "CLEANUP_PENDING: committed plugin-companion mode; preserved $migration_receipt for $recovered_staging" >&2
       exit 1
     fi
-  elif [[ ! -d "$recovered_staging" ]]; then
-    echo "RECOVERY_FAILED: flat migration staging is missing; preserved $migration_receipt" >&2
-    exit 1
+  elif [[ "$(recovery_directory_identity "$recovered_staging" 2>/dev/null || true)" != "$recovery_staging_identity" ]]; then
+    echo "RECOVERY_STAGING_BINDING_CHANGED: preserved recovery artifacts without moving them." >&2
+    report_pending_recovery_integrity_failure "$migration_receipt" "$recovered_staging"
+    exit 65
   else
     set +e
-    rollback_migration_staging "$recovered_staging" true
+    rollback_migration_staging "$recovered_staging" true "$recovery_staging_identity"
     recovery_status=$?
     set -e
     if [[ "$recovery_status" -eq 65 ]]; then
       report_pending_recovery_corruption "$migration_receipt" "$recovered_staging"
+      exit 65
+    elif [[ "$recovery_status" -eq 67 ]]; then
+      report_pending_recovery_integrity_failure "$migration_receipt" "$recovered_staging"
       exit 65
     elif [[ "$recovery_status" -ne 0 ]]; then
       echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
@@ -1329,7 +1552,7 @@ if [[ -f "$migration_receipt" ]]; then
     fi
   fi
   if ! restore_captured_recovery_metadata; then
-    report_corrupt_install_metadata
+    report_recovery_metadata_restore_failure
     echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
     exit 65
   fi
