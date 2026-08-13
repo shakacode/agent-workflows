@@ -862,6 +862,342 @@ test_install_lock_blocks_concurrent_migration_before_mutation() {
     "$target/.agent-workflows-install.json"
 }
 
+test_recovery_restore_holds_install_lock_against_retry() {
+  local tmp target staging receipt metadata fake_bin real_mv marker gate primary_pid
+  local retry_output retry_status primary_status attempt
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-missing-for-lock-test"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_mv="$(command -v mv)"
+  marker="$tmp/restore-started"
+  gate="$tmp/allow-restore"
+  mkdir -p "$staging/user-owned-skill" "$target/skills/user-owned-skill" "$fake_bin"
+  printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf 'collision\n' > "$target/skills/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$2" = "$QA_INSTALL_METADATA" &&
+      ( "${1##*/}" = "metadata" || "${1##*/}" = "original-backup" ) ]]; then
+  : > "$QA_RESTORE_MARKER"
+  for ((attempt = 0; attempt < 1000; attempt++)); do
+    [[ -e "$QA_RESTORE_GATE" ]] && break
+    sleep 0.01
+  done
+  [[ -e "$QA_RESTORE_GATE" ]] || exit 99
+fi
+exec "$QA_REAL_MV" "$@"
+SH
+  chmod +x "$fake_bin/mv"
+
+  PATH="$fake_bin:$PATH" QA_INSTALL_METADATA="$metadata" QA_REAL_MV="$real_mv" \
+    QA_RESTORE_MARKER="$marker" QA_RESTORE_GATE="$gate" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/primary.out" 2>&1 &
+  primary_pid=$!
+  for ((attempt = 0; attempt < 500; attempt++)); do
+    [[ -e "$marker" ]] && break
+    kill -0 "$primary_pid" 2>/dev/null || break
+    sleep 0.01
+  done
+  if [[ ! -e "$marker" ]]; then
+    : > "$gate"
+    wait "$primary_pid" || true
+    fail "primary recovery did not reach metadata restoration: $(cat "$tmp/primary.out")"
+  fi
+
+  set +e
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  retry_status=$?
+  set -e
+  : > "$gate"
+  set +e
+  wait "$primary_pid"
+  primary_status=$?
+  set -e
+
+  [[ "$retry_status" -ne 0 ]] || fail "retry acquired the install lock during recovery restoration"
+  assert_contains "$retry_output" "another agent-workflows install or migration holds"
+  [[ "$primary_status" -ne 0 ]] || fail "rollback-collision recovery unexpectedly succeeded"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "recovery restoration leaked install lock"
+  assert_file "$metadata"
+  assert_file "$receipt"
+}
+
+test_recovery_metadata_change_during_rollback_preserves_staging_and_tree() {
+  local tmp target staging receipt metadata fake_bin real_mv marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-binding-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_mv="$(command -v mv)"
+  marker="$tmp/metadata-changed-before-staged-move"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$1" = "$QA_STAGED_SKILL" && "$2" = "$QA_SKILLS_ROOT/" ]]; then
+  printf '[]\n' > "$QA_INSTALL_METADATA"
+  : > "$QA_RACE_MARKER"
+fi
+exec "$QA_REAL_MV" "$@"
+SH
+  chmod +x "$fake_bin/mv"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" \
+    QA_STAGED_SKILL="$staging/user-owned-skill" QA_SKILLS_ROOT="$target/skills" \
+    QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "metadata change during rollback exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "corrupt recovery left a staged skill in the target tree"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "corrupt recovery leaked install lock"
+}
+
+test_recovery_metadata_change_during_companion_cleanup_preserves_staging() {
+  local tmp target staging receipt metadata fake_bin real_mv marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-binding-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_mv="$(command -v mv)"
+  marker="$tmp/metadata-changed-before-staging-cleanup"
+  mkdir -p "$staging/old-flat-skill" "$fake_bin"
+  printf 'old flat skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$1" = "$QA_STAGING" &&
+      "$2" = "$QA_TARGET"/.agent-workflows-recovery-cleanup-*/staging ]]; then
+  printf '[]\n' > "$QA_INSTALL_METADATA"
+  : > "$QA_RACE_MARKER"
+fi
+exec "$QA_REAL_MV" "$@"
+SH
+  chmod +x "$fake_bin/mv"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_STAGING="$staging" \
+    QA_TARGET="$target" QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "metadata change during companion cleanup exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  [[ ! -e "$target/skills/old-flat-skill" ]] || fail "corrupt companion cleanup changed the target tree"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "corrupt companion cleanup leaked install lock"
+}
+
+test_recovery_hardlink_unavailable_is_named_without_blaming_metadata() {
+  local tmp target staging receipt metadata fake_bin real_ln output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-no-hardlinks"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_ln="$(command -v ln)"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/ln" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$1" = "$QA_INSTALL_METADATA" && "$2" = */metadata ]]; then
+  exit 77
+fi
+exec "$QA_REAL_LN" "$@"
+SH
+  chmod +x "$fake_bin/ln"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_LN="$real_ln" QA_INSTALL_METADATA="$metadata" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 && "$status" -ne 65 ]] || fail "hardlink-unavailable recovery exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "hardlink-unavailable recovery changed target tree"
+}
+
+test_recovery_partial_backup_copy_failure_removes_quarantine() {
+  local tmp target staging receipt metadata fake_bin real_cp output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-partial-copy"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_cp="$(command -v cp)"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/cp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 3 && "$1" = "-pP" && "$2" = "$QA_INSTALL_METADATA" && "$3" = */original-backup ]]; then
+  printf 'partial\n' > "$3"
+  exit 77
+fi
+exec "$QA_REAL_CP" "$@"
+SH
+  chmod +x "$fake_bin/cp"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_CP="$real_cp" QA_INSTALL_METADATA="$metadata" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 && "$status" -ne 65 ]] || fail "partial backup copy exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "partial backup copy leaked recovery quarantine"
+  assert_file "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance() {
+  local tmp target staging receipt metadata fake_bin real_mv output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-late-capture"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_mv="$(command -v mv)"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$1" = */sentinel && "$2" = "$QA_INSTALL_METADATA" ]]; then
+  "$QA_REAL_MV" "$@"
+  printf 'changed after capture\n' > "${1%/sentinel}/metadata"
+  exit 0
+fi
+exec "$QA_REAL_MV" "$@"
+SH
+  chmod +x "$fake_bin/mv"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_INSTALL_METADATA="$metadata" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "late capture corruption exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved recovery metadata quarantine"
+  assert_file "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_snapshot_only_corruption_restores_before_reporting() {
+  local tmp target staging receipt metadata fake_bin real_mv output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-snapshot-corrupt"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_mv="$(command -v mv)"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$1" = "$QA_STAGED_SKILL" && "$2" = "$QA_SKILLS_ROOT/" ]]; then
+  snapshot="$(find "$QA_TARGET" -maxdepth 2 -path '*/.agent-workflows-install.json.recovery-*/metadata' -print -quit)"
+  printf 'snapshot changed\n' > "$snapshot"
+fi
+exec "$QA_REAL_MV" "$@"
+SH
+  chmod +x "$fake_bin/mv"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_TARGET="$target" \
+    QA_STAGED_SKILL="$staging/user-owned-skill" QA_SKILLS_ROOT="$target/skills" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "snapshot-only corruption exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved recovery metadata quarantine"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "restorable snapshot-only corruption leaked quarantine"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "snapshot-only corruption changed target tree"
+}
+
+test_nul_in_recorded_source_is_corrupt_before_symlink_adoption() {
+  local tmp target recorded_source link_source metadata output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  recorded_source="$tmp/recorded-source"
+  link_source="$tmp/recordedsource"
+  metadata="$target/.agent-workflows-install.json"
+  mkdir -p "$target/bin" "$link_source/bin/agent_doctor"
+  printf 'unmanaged\n' > "$link_source/bin/agent_doctor/sentinel"
+  ln -s "$link_source/bin/agent_doctor" "$target/bin/agent_doctor"
+  ruby -rjson -e '
+    FileUtils.mkdir_p(File.dirname(ARGV.fetch(0)))
+    source = ARGV.fetch(1).sub("recorded-source", "recorded\0source")
+    File.write(ARGV.fetch(0), JSON.generate({"mode" => "symlink", "source" => source}) + "\n")
+  ' -rfileutils "$metadata" "$recorded_source"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "NUL-coerced recorded source adopted an unmanaged symlink"
+  assert_contains "$output" "Refusing unmanaged workflow doctor symlink"
+  assert_symlink "$target/bin/agent_doctor"
+  assert_file "$link_source/bin/agent_doctor/sentinel"
+}
+
 test_repeat_install_replays_recorded_companion_delivery_mode() {
   local tmp target
   tmp="$(mktemp -d)"
@@ -1945,6 +2281,65 @@ RUBY
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
 }
 
+test_metadata_attestation_hashes_opened_inode_without_reopening_path() {
+  local tmp target staging receipt metadata replacement injection marker fake_bin real_mktemp
+  local quarantine_attempt output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-attestation-path-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  replacement="$tmp/replacement.json"
+  injection="$tmp/replace-path-after-lstat.rb"
+  marker="$tmp/path-replaced-after-lstat"
+  fake_bin="$tmp/fake-bin"
+  real_mktemp="$(command -v mktemp)"
+  quarantine_attempt="$tmp/quarantine-attempted"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '[]\n' > "$replacement"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+require "digest"
+class << File
+  alias_method :qa_original_lstat, :lstat
+  def lstat(path)
+    stat = qa_original_lstat(path)
+    if path == ENV.fetch("QA_METADATA_PATH") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+      File.rename(ENV.fetch("QA_REPLACEMENT_PATH"), path)
+    end
+    stat
+  end
+end
+RUBY
+  cat > "$fake_bin/mktemp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *".agent-workflows-install.json.recovery-"* ]]; then
+  : > "$QA_QUARANTINE_ATTEMPT"
+fi
+exec "$QA_REAL_MKTEMP" "$@"
+SH
+  chmod +x "$fake_bin/mktemp"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKTEMP="$real_mktemp" QA_QUARANTINE_ATTEMPT="$quarantine_attempt" \
+    QA_METADATA_PATH="$metadata" QA_REPLACEMENT_PATH="$replacement" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "metadata pathname replacement exited $status: $output"
+  assert_file "$marker"
+  [[ ! -e "$quarantine_attempt" ]] || fail "mixed-inode attestation advanced to recovery quarantine creation"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "mixed-inode attestation mutated recovery staging"
+}
+
 test_recovery_invalid_string_race_fails_before_pending_recovery_mutation() {
   local tmp target staging receipt injection counter output status receipt_before
   tmp="$(mktemp -d)"
@@ -2587,8 +2982,8 @@ test_nul_recorded_delivery_mode_fails_before_pending_recovery_mutation() {
   [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
     fail "NUL delivery mode changed install metadata"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "NUL delivery mode leaked install lock"
-  [[ "$status" -eq 64 ]] || fail "NUL delivery mode exited $status: $output"
-  assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion"
+  [[ "$status" -eq 65 ]] || fail "NUL delivery mode exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
   assert_not_contains "$output" "Preserved pending recovery receipt"
 }
 
@@ -3463,6 +3858,14 @@ main() {
     test_flat_crash_recovery_rejects_symlink_skills_root_before_move
     test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data
     test_install_lock_blocks_concurrent_migration_before_mutation
+    test_recovery_restore_holds_install_lock_against_retry
+    test_recovery_metadata_change_during_rollback_preserves_staging_and_tree
+    test_recovery_metadata_change_during_companion_cleanup_preserves_staging
+    test_recovery_hardlink_unavailable_is_named_without_blaming_metadata
+    test_recovery_partial_backup_copy_failure_removes_quarantine
+    test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance
+    test_snapshot_only_corruption_restores_before_reporting
+    test_nul_in_recorded_source_is_corrupt_before_symlink_adoption
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_repeat_flat_install_accepts_installer_created_uncommitted_skill
     test_repeat_flat_copy_install_blocks_modified_installer_created_uncommitted_skill
@@ -3489,6 +3892,7 @@ main() {
     test_recovery_metadata_race_fails_before_pending_recovery_mutation
     test_recovery_metadata_path_race_fails_before_pending_recovery_mutation
     test_metadata_parser_runtime_failure_is_corrupt
+    test_metadata_attestation_hashes_opened_inode_without_reopening_path
     test_recovery_invalid_string_race_fails_before_pending_recovery_mutation
     test_recovery_metadata_delete_race_is_corrupt
     test_recovery_second_read_overwrite_is_corrupt_before_mutation

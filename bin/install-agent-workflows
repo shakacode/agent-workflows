@@ -206,7 +206,7 @@ read_installed_metadata_value() {
         exit
       end
       value = metadata[key]
-      unless value.is_a?(String) && !value.empty?
+      unless value.is_a?(String) && !value.empty? && !value.include?("\0")
         puts "corrupt"
         exit
       end
@@ -267,7 +267,7 @@ capture_installed_metadata_for_recovery() {
   recovery_metadata_captured=false
 
   if installed_metadata_recovery_residue_exists; then
-    return 1
+    return 66
   fi
   if ! original_attestation="$(regular_file_attestation "$recovery_metadata_path")"; then
     return 1
@@ -280,14 +280,15 @@ capture_installed_metadata_for_recovery() {
   fi
 
   if ! recovery_metadata_quarantine="$(mktemp -d "$target/$metadata_name.recovery-XXXXXX")"; then
-    return 1
+    return 70
   fi
   recovery_metadata_snapshot="$recovery_metadata_quarantine/metadata"
   recovery_metadata_backup="$recovery_metadata_quarantine/original-backup"
   recovery_metadata_sentinel="$recovery_metadata_quarantine/sentinel"
   if ! cp -pP "$recovery_metadata_path" "$recovery_metadata_backup"; then
+    rm -f "$recovery_metadata_backup" 2>/dev/null || true
     rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
-    return 1
+    return 70
   fi
   if ! current_attestation="$(regular_file_attestation "$recovery_metadata_path")" ||
      [[ "$current_attestation" != "$original_attestation" ]] ||
@@ -307,7 +308,7 @@ capture_installed_metadata_for_recovery() {
      [[ "${sentinel_attestation#*|}" != "$recovery_metadata_digest" ]]; then
     rm -f "$recovery_metadata_backup" "$recovery_metadata_sentinel" 2>/dev/null || true
     rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
-    return 1
+    return 70
   fi
   sentinel_identity="${sentinel_attestation%%|*}"
 
@@ -316,7 +317,7 @@ capture_installed_metadata_for_recovery() {
      [[ "$snapshot_attestation" != "$original_attestation" ]]; then
     rm -f "$recovery_metadata_snapshot" "$recovery_metadata_backup" "$recovery_metadata_sentinel" 2>/dev/null || true
     rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
-    return 1
+    return 70
   fi
   if ! current_attestation="$(regular_file_attestation "$recovery_metadata_path")" ||
      [[ "$current_attestation" != "$original_attestation" ]] ||
@@ -347,10 +348,27 @@ installed_metadata_recovery_residue_exists() {
 
 regular_file_attestation() {
   ruby -rdigest -e '
-    path = ARGV.fetch(0)
-    stat = File.lstat(path)
-    abort unless stat.file? && !stat.symlink?
-    print "#{stat.dev}:#{stat.ino}|#{Digest::SHA256.file(path).hexdigest}"
+    file = nil
+    begin
+      path = ARGV.fetch(0)
+      path_stat = File.lstat(path)
+      abort unless path_stat.file? && !path_stat.symlink? && File.const_defined?(:NOFOLLOW)
+      file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      opened_stat = file.stat
+      abort unless opened_stat.file? && opened_stat.dev == path_stat.dev && opened_stat.ino == path_stat.ino
+      digest = Digest::SHA256.new
+      while (chunk = file.read(64 * 1024))
+        digest.update(chunk)
+      end
+      final_stat = file.stat
+      path_stat = File.lstat(path)
+      abort unless final_stat.file? && final_stat.dev == opened_stat.dev && final_stat.ino == opened_stat.ino &&
+                   path_stat.file? && !path_stat.symlink? &&
+                   path_stat.dev == opened_stat.dev && path_stat.ino == opened_stat.ino
+      print "#{opened_stat.dev}:#{opened_stat.ino}|#{digest.hexdigest}"
+    ensure
+      file&.close
+    end
   ' "$1" 2>/dev/null
 }
 
@@ -537,10 +555,29 @@ commit_metadata() {
   mv "$metadata_tmp" "$metadata_path"
 }
 
+restore_recovery_staging_moves() {
+  local staging="$1"
+  shift
+  local destination staged_path index
+  local -a destinations=("$@")
+  for ((index = ${#destinations[@]} - 1; index >= 0; index--)); do
+    destination="${destinations[$index]}"
+    staged_path="$staging/$(basename "$destination")"
+    if [[ -e "$staged_path" || -L "$staged_path" || ! -e "$destination" && ! -L "$destination" ]] ||
+       ! mv "$destination" "$staging/"; then
+      echo "RECOVERY_STAGING_RESTORE_FAILED: preserved all remaining recovery artifacts for manual recovery." >&2
+      return 1
+    fi
+  done
+}
+
 rollback_migration_staging() {
   local staging="$1"
+  local bind_recovery_metadata="${2:-false}"
   local skills_root="$target/skills"
-  local staged_path
+  local staged_path destination
+  local -a moved_destinations=()
+  local moved_count=0
   [[ -n "$staging" && -d "$staging" ]] || return 0
   if [[ -L "$skills_root" || -e "$skills_root" && ! -d "$skills_root" ]]; then
     echo "ROLLBACK_FAILED: unsafe skills root: $skills_root" >&2
@@ -559,15 +596,83 @@ rollback_migration_staging() {
     [[ -e "$staged_path" || -L "$staged_path" ]] || continue
     if [[ -L "$skills_root" || ! -d "$skills_root" ]]; then
       echo "ROLLBACK_FAILED: skills root changed during rollback: $skills_root" >&2
+      if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
+        restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+      fi
       return 1
     fi
-    if [[ -e "$target/skills/$(basename "$staged_path")" || -L "$target/skills/$(basename "$staged_path")" ]]; then
-      echo "ROLLBACK_FAILED: destination appeared during migration: $target/skills/$(basename "$staged_path")" >&2
+    destination="$target/skills/$(basename "$staged_path")"
+    if [[ -e "$destination" || -L "$destination" ]]; then
+      echo "ROLLBACK_FAILED: destination appeared during migration: $destination" >&2
+      if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
+        restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+      fi
       return 1
     fi
-    mv "$staged_path" "$target/skills/"
+    if ! mv "$staged_path" "$target/skills/"; then
+      if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
+        restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+      fi
+      return 1
+    fi
+    if [[ "$bind_recovery_metadata" = "true" ]]; then
+      moved_destinations[moved_count]="$destination"
+      moved_count=$((moved_count + 1))
+      if ! recovery_metadata_binding_intact; then
+        restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+        return 65
+      fi
+    fi
   done
-  rmdir "$staging"
+  if [[ "$bind_recovery_metadata" = "true" ]] && ! restore_captured_recovery_metadata; then
+    if [[ "$moved_count" -gt 0 ]]; then
+      restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+    fi
+    return 65
+  fi
+  if ! rmdir "$staging"; then
+    if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
+      restore_recovery_staging_moves "$staging" "${moved_destinations[@]}" || true
+    fi
+    return 1
+  fi
+}
+
+cleanup_recovery_staging() {
+  local staging="$1"
+  local cleanup_root cleanup_staging
+  cleanup_root="$(mktemp -d "$target/.agent-workflows-recovery-cleanup-XXXXXX")" || return 1
+  cleanup_staging="$cleanup_root/staging"
+  if ! mv "$staging" "$cleanup_staging"; then
+    rmdir "$cleanup_root" 2>/dev/null || true
+    return 1
+  fi
+  if ! recovery_metadata_binding_intact || ! restore_captured_recovery_metadata; then
+    if ! mv "$cleanup_staging" "$staging"; then
+      echo "RECOVERY_STAGING_RESTORE_FAILED: preserved $cleanup_root for manual recovery." >&2
+    else
+      rmdir "$cleanup_root" 2>/dev/null || true
+    fi
+    return 65
+  fi
+  if ! rm -rf "$cleanup_root"; then
+    if ! mv "$cleanup_staging" "$staging"; then
+      echo "RECOVERY_STAGING_RESTORE_FAILED: preserved $cleanup_root for manual recovery." >&2
+    else
+      rmdir "$cleanup_root" 2>/dev/null || true
+    fi
+    return 1
+  fi
+}
+
+report_pending_recovery_corruption() {
+  local migration_receipt="$1"
+  local recovered_staging="$2"
+  if ! restore_captured_recovery_metadata; then
+    echo "RECOVERY_FAILED: install metadata could not be restored; preserved pending recovery state." >&2
+  fi
+  report_corrupt_install_metadata
+  echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
 }
 
 valid_migration_staging_path() {
@@ -1084,14 +1189,32 @@ if [[ -f "$migration_receipt" ]]; then
   recovered_staging="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$recovered_staging")"
   if ! valid_migration_staging_path "$target" "$recovered_staging"; then
     echo "RECOVERY_FAILED: unsafe migration staging receipt; preserved $migration_receipt" >&2
-    rmdir "$install_lock" 2>/dev/null || true
     exit 1
   fi
-  if ! capture_installed_metadata_for_recovery; then
-    report_corrupt_install_metadata true
-    echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
-    exit 65
-  fi
+  set +e
+  capture_installed_metadata_for_recovery
+  capture_status=$?
+  set -e
+  case "$capture_status" in
+    0) ;;
+    66)
+      report_corrupt_install_metadata true
+      echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+      exit 65
+      ;;
+    70)
+      echo "RECOVERY_METADATA_CAPTURE_UNAVAILABLE: this filesystem could not create a bound metadata snapshot; preserved $migration_receipt and $recovered_staging." >&2
+      exit 1
+      ;;
+    *)
+      if [[ "$recovery_metadata_captured" = "true" ]] && ! restore_captured_recovery_metadata; then
+        echo "RECOVERY_FAILED: install metadata could not be restored; preserved pending recovery state." >&2
+      fi
+      report_corrupt_install_metadata
+      echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+      exit 65
+      ;;
+  esac
   read_installed_metadata_value delivery_mode "$recovery_metadata_snapshot"
   if ! recovery_metadata_binding_intact; then
     installed_metadata_state="corrupt"
@@ -1129,19 +1252,32 @@ if [[ -f "$migration_receipt" ]]; then
       ;;
   esac
   if [[ "$prior_delivery_mode" = "plugin-companion" ]]; then
-    if ! rm -rf "$recovered_staging"; then
+    set +e
+    cleanup_recovery_staging "$recovered_staging"
+    recovery_status=$?
+    set -e
+    if [[ "$recovery_status" -eq 65 ]]; then
+      report_pending_recovery_corruption "$migration_receipt" "$recovered_staging"
+      exit 65
+    elif [[ "$recovery_status" -ne 0 ]]; then
       echo "CLEANUP_PENDING: committed plugin-companion mode; preserved $migration_receipt for $recovered_staging" >&2
-      rmdir "$install_lock" 2>/dev/null || true
       exit 1
     fi
   elif [[ ! -d "$recovered_staging" ]]; then
     echo "RECOVERY_FAILED: flat migration staging is missing; preserved $migration_receipt" >&2
-    rmdir "$install_lock" 2>/dev/null || true
     exit 1
-  elif ! rollback_migration_staging "$recovered_staging"; then
-    echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
-    rmdir "$install_lock" 2>/dev/null || true
-    exit 1
+  else
+    set +e
+    rollback_migration_staging "$recovered_staging" true
+    recovery_status=$?
+    set -e
+    if [[ "$recovery_status" -eq 65 ]]; then
+      report_pending_recovery_corruption "$migration_receipt" "$recovered_staging"
+      exit 65
+    elif [[ "$recovery_status" -ne 0 ]]; then
+      echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
+      exit 1
+    fi
   fi
   if ! restore_captured_recovery_metadata; then
     report_corrupt_install_metadata
