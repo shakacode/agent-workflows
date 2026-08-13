@@ -468,8 +468,78 @@ recovery_metadata_sentinel_intact() {
      "$recovery_metadata_sentinel_identity|$recovery_metadata_digest" ]]
 }
 
+replace_bound_recovery_metadata() {
+  ruby -rdigest -e '
+    source_file = nil
+    destination_file = nil
+    target_file = nil
+    attestation = lambda do |file|
+      stat = file.stat
+      digest = Digest::SHA256.new
+      while (chunk = file.read(64 * 1024))
+        digest.update(chunk)
+      end
+      final_stat = file.stat
+      abort unless final_stat.file? && final_stat.dev == stat.dev && final_stat.ino == stat.ino
+      "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}"
+    end
+    begin
+      source = File.expand_path(ARGV.fetch(0))
+      destination = File.expand_path(ARGV.fetch(1))
+      expected_source = ARGV.fetch(2)
+      expected_destination = ARGV.fetch(3)
+      target = File.expand_path(ARGV.fetch(4))
+      exit 67 unless File.dirname(destination) == target &&
+                     File.basename(destination) == ".agent-workflows-install.json"
+      target_path_stat = File.lstat(target)
+      target_file = File.open(target, File::RDONLY | File::NOFOLLOW)
+      target_stat = target_file.stat
+      exit 67 unless target_stat.directory? && target_stat.dev == target_path_stat.dev &&
+                     target_stat.ino == target_path_stat.ino
+
+      source_path_stat = File.lstat(source)
+      source_file = File.open(source, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      source_stat = source_file.stat
+      exit 67 unless source_stat.file? && source_stat.dev == source_path_stat.dev &&
+                     source_stat.ino == source_path_stat.ino && attestation.call(source_file) == expected_source
+
+      destination_path_stat = File.lstat(destination)
+      destination_file = File.open(destination, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      destination_stat = destination_file.stat
+      exit 67 unless destination_stat.file? && destination_stat.dev == destination_path_stat.dev &&
+                     destination_stat.ino == destination_path_stat.ino &&
+                     attestation.call(destination_file) == expected_destination
+
+      named_target_stat = File.lstat(target)
+      named_source_stat = File.lstat(source)
+      named_destination_stat = File.lstat(destination)
+      exit 67 unless named_target_stat.dev == target_stat.dev && named_target_stat.ino == target_stat.ino &&
+                     named_source_stat.dev == source_stat.dev && named_source_stat.ino == source_stat.ino &&
+                     named_destination_stat.dev == destination_stat.dev &&
+                     named_destination_stat.ino == destination_stat.ino
+
+      File.rename(source, destination)
+      restored_path_stat = File.lstat(destination)
+      restored_file = File.open(destination, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      restored_stat = restored_file.stat
+      restored_attestation = attestation.call(restored_file)
+      unless restored_stat.file? && restored_stat.dev == restored_path_stat.dev &&
+             restored_stat.ino == restored_path_stat.ino && restored_attestation == expected_source
+        exit 65
+      end
+    rescue StandardError
+      exit 65
+    ensure
+      restored_file&.close
+      destination_file&.close
+      source_file&.close
+      target_file&.close
+    end
+  ' "$1" "$2" "$3" "$4" "$target" 2>/dev/null
+}
+
 restore_captured_recovery_metadata() {
-  local expected_restore_attestation snapshot_attestation restored_attestation restore_source
+  local expected_restore_attestation replace_status snapshot_attestation restored_attestation restore_source
   [[ "$recovery_metadata_captured" = "true" ]] || return 0
   recovery_metadata_restore_binding_intact || {
     recovery_metadata_sentinel_intact && return 67
@@ -483,10 +553,10 @@ restore_captured_recovery_metadata() {
     restore_source="$recovery_metadata_backup"
     expected_restore_attestation="$recovery_metadata_backup_identity|$recovery_metadata_digest"
   fi
-  if ! mv "$restore_source" "$recovery_metadata_path"; then
-    recovery_metadata_sentinel_intact && return 67
-    return 65
-  fi
+  replace_status=0
+  replace_bound_recovery_metadata "$restore_source" "$recovery_metadata_path" \
+    "$expected_restore_attestation" "$recovery_metadata_sentinel_identity|$recovery_metadata_digest" || replace_status=$?
+  [[ "$replace_status" -eq 0 ]] || return "$replace_status"
   restored_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 65
   [[ "$restored_attestation" = "$expected_restore_attestation" ]] || return 65
   if ! write_recovery_metadata_cleanup_receipt; then

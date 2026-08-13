@@ -888,39 +888,41 @@ test_install_lock_blocks_concurrent_migration_before_mutation() {
 }
 
 test_recovery_restore_holds_install_lock_against_retry() {
-  local tmp target staging receipt metadata fake_bin real_mv marker gate primary_pid
+  local tmp target staging receipt metadata injection marker gate primary_pid
   local retry_output retry_status primary_status attempt
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-missing-for-lock-test"
   receipt="$target/.agent-workflows-migration-staging"
   metadata="$target/.agent-workflows-install.json"
-  fake_bin="$tmp/fake-bin"
-  real_mv="$(command -v mv)"
+  injection="$tmp/pause-metadata-restore.rb"
   marker="$tmp/restore-started"
   gate="$tmp/allow-restore"
-  mkdir -p "$staging/user-owned-skill" "$target/skills/user-owned-skill" "$fake_bin"
+  mkdir -p "$staging/user-owned-skill" "$target/skills/user-owned-skill"
   printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
   printf 'collision\n' > "$target/skills/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
   printf '%s\n' "$staging" > "$receipt"
-  cat > "$fake_bin/mv" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$#" -eq 2 && "$2" = "$QA_INSTALL_METADATA" &&
-      ( "${1##*/}" = "metadata" || "${1##*/}" = "original-backup" ) ]]; then
-  : > "$QA_RESTORE_MARKER"
-  for ((attempt = 0; attempt < 1000; attempt++)); do
-    [[ -e "$QA_RESTORE_GATE" ]] && break
-    sleep 0.01
-  done
-  [[ -e "$QA_RESTORE_GATE" ]] || exit 99
-fi
-exec "$QA_REAL_MV" "$@"
-SH
-  chmod +x "$fake_bin/mv"
+  cat > "$injection" <<'RUBY'
+class << File
+  alias qa_original_restore_rename rename
 
-  PATH="$fake_bin:$PATH" QA_INSTALL_METADATA="$metadata" QA_REAL_MV="$real_mv" \
+  def rename(source, destination)
+    if destination == ENV.fetch("QA_INSTALL_METADATA") &&
+       %w[metadata original-backup].include?(File.basename(source))
+      File.write(ENV.fetch("QA_RESTORE_MARKER"), "started\n")
+      1_000.times do
+        break if File.exist?(ENV.fetch("QA_RESTORE_GATE"))
+        sleep 0.01
+      end
+      exit 99 unless File.exist?(ENV.fetch("QA_RESTORE_GATE"))
+    end
+    qa_original_restore_rename(source, destination)
+  end
+end
+RUBY
+
+  QA_INSTALL_METADATA="$metadata" RUBYOPT="-r$injection" \
     QA_RESTORE_MARKER="$marker" QA_RESTORE_GATE="$gate" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/primary.out" 2>&1 &
   primary_pid=$!
@@ -3593,32 +3595,34 @@ RUBY
 }
 
 test_recovery_restore_atomically_replaces_placeholder() {
-  local tmp target staging receipt metadata fake_bin real_mv observer output status
+  local tmp target staging receipt metadata injection observer output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-atomic-restore"
   receipt="$target/.agent-workflows-migration-staging"
   metadata="$target/.agent-workflows-install.json"
-  fake_bin="$tmp/fake-bin"
-  real_mv="$(command -v mv)"
+  injection="$tmp/observe-metadata-rename.rb"
   observer="$tmp/restore-observer.log"
-  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  mkdir -p "$staging/user-owned-skill"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
   printf '%s\n' "$staging" > "$receipt"
-  cat > "$fake_bin/mv" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$#" -eq 2 && "$2" = "$QA_INSTALL_METADATA" &&
-      ( "${1##*/}" = "metadata" || "${1##*/}" = "original-backup" ) ]]; then
-  printf 'restore-intercepted\n' >> "$QA_OBSERVER_LOG"
-fi
-exec "$QA_REAL_MV" "$@"
-SH
-  chmod +x "$fake_bin/mv"
+  cat > "$injection" <<'RUBY'
+class << File
+  alias qa_original_restore_rename rename
+
+  def rename(source, destination)
+    if destination == ENV.fetch("QA_INSTALL_METADATA") &&
+       %w[metadata original-backup].include?(File.basename(source))
+      File.write(ENV.fetch("QA_OBSERVER_LOG"), "restore-intercepted\n")
+    end
+    qa_original_restore_rename(source, destination)
+  end
+end
+RUBY
 
   set +e
-  output="$(PATH="$fake_bin:$PATH" QA_INSTALL_METADATA="$metadata" QA_REAL_MV="$real_mv" QA_OBSERVER_LOG="$observer" \
+  output="$(QA_INSTALL_METADATA="$metadata" QA_OBSERVER_LOG="$observer" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
   set -e
@@ -3631,34 +3635,37 @@ SH
 }
 
 test_recovery_restore_directory_race_preserves_backup() {
-  local tmp target staging receipt metadata fake_bin real_mv observer output status quarantine
+  local tmp target staging receipt metadata injection observer output status quarantine
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-restore-directory-race"
   receipt="$target/.agent-workflows-migration-staging"
   metadata="$target/.agent-workflows-install.json"
-  fake_bin="$tmp/fake-bin"
-  real_mv="$(command -v mv)"
+  injection="$tmp/replace-metadata-with-directory.rb"
   observer="$tmp/restore-directory-race.log"
-  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  mkdir -p "$staging/user-owned-skill"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
   printf '%s\n' "$staging" > "$receipt"
-  cat > "$fake_bin/mv" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$#" -eq 2 && "$2" = "$QA_INSTALL_METADATA" &&
-      ( "${1##*/}" = "metadata" || "${1##*/}" = "original-backup" ) ]]; then
-  printf 'restore-directory-race\n' >> "$QA_OBSERVER_LOG"
-  rm -f "$2"
-  mkdir "$2"
-fi
-exec "$QA_REAL_MV" "$@"
-SH
-  chmod +x "$fake_bin/mv"
+  cat > "$injection" <<'RUBY'
+class << File
+  alias qa_original_restore_rename rename
+
+  def rename(source, destination)
+    if destination == ENV.fetch("QA_INSTALL_METADATA") &&
+       %w[metadata original-backup].include?(File.basename(source))
+      File.unlink(destination)
+      Dir.mkdir(destination)
+      File.write(File.join(destination, "metadata"), "replacement directory\n")
+      File.write(ENV.fetch("QA_OBSERVER_LOG"), "restore-directory-race\n")
+    end
+    qa_original_restore_rename(source, destination)
+  end
+end
+RUBY
 
   set +e
-  output="$(PATH="$fake_bin:$PATH" QA_INSTALL_METADATA="$metadata" QA_REAL_MV="$real_mv" QA_OBSERVER_LOG="$observer" \
+  output="$(QA_INSTALL_METADATA="$metadata" QA_OBSERVER_LOG="$observer" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
   set -e
@@ -3670,6 +3677,56 @@ SH
   [[ -n "$quarantine" ]] || fail "restore directory race did not preserve quarantine: $output"
   assert_file "$quarantine/original-backup"
   assert_file "$metadata/metadata"
+}
+
+test_recovery_restore_destination_symlink_does_not_write_outside_target() {
+  local tmp target staging receipt metadata outside injection observer output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-restore-symlink-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  outside="$tmp/outside"
+  injection="$tmp/replace-metadata-before-rename.rb"
+  observer="$tmp/restore-symlink-race.log"
+  mkdir -p "$staging/user-owned-skill" "$outside"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  cat > "$injection" <<'RUBY'
+class << File
+  alias qa_original_restore_rename rename
+
+  def rename(source, destination)
+    if destination == ENV.fetch("QA_INSTALL_METADATA") &&
+       %w[metadata original-backup].include?(File.basename(source)) &&
+       !File.exist?(ENV.fetch("QA_OBSERVER_LOG"))
+      File.unlink(destination)
+      File.symlink(ENV.fetch("QA_OUTSIDE"), destination)
+      File.write(ENV.fetch("QA_OBSERVER_LOG"), "restore-symlink-race\n")
+    end
+    qa_original_restore_rename(source, destination)
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_OUTSIDE="$outside" QA_OBSERVER_LOG="$observer" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_contains "$(cat "$observer")" "restore-symlink-race"
+  [[ "$status" -eq 0 ]] || fail "bound metadata restore exited $status: $output"
+  assert_file "$outside/SENTINEL"
+  [[ -z "$(find "$outside" -mindepth 1 ! -name SENTINEL -print -quit)" ]] || \
+    fail "metadata restoration wrote outside target"
+  assert_file "$metadata"
+  [[ ! -L "$metadata" ]] || fail "bound metadata restore left replacement symlink"
+  [[ ! -e "$receipt" ]] || fail "bound metadata restore left completed receipt"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
 }
 
 test_recovery_keeps_parseable_metadata_visible_during_capture() {
@@ -4721,6 +4778,7 @@ main() {
     test_recovery_cleanup_residue_does_not_wedge_completed_recovery
     test_recovery_restore_atomically_replaces_placeholder
     test_recovery_restore_directory_race_preserves_backup
+    test_recovery_restore_destination_symlink_does_not_write_outside_target
     test_recovery_keeps_parseable_metadata_visible_during_capture
     test_recovery_unsupported_string_between_reads_preserves_receipt
     test_nul_recorded_delivery_mode_fails_before_pending_recovery_mutation
