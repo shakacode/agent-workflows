@@ -2538,7 +2538,7 @@ test_repeat_companion_install_blocks_new_current_native_skill_collision() {
 }
 
 test_repeat_companion_install_blocks_native_skill_removed_from_current_source() {
-  local tmp source target plugin_root metadata_before output status
+  local tmp source target plugin_root metadata_before skill_to_remove output status
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
@@ -2554,7 +2554,10 @@ test_repeat_companion_install_blocks_native_skill_removed_from_current_source() 
 
   mkdir -p "$plugin_root/skills/address-review" "$target/skills/address-review"
   cp "$source/skills/address-review/SKILL.md" "$plugin_root/skills/address-review/SKILL.md"
-  rm -rf "$source/skills/address-review"
+  skill_to_remove="$source/skills/address-review"
+  [[ "$skill_to_remove" = "$tmp/source/skills/address-review" && -d "$skill_to_remove" && ! -L "$skill_to_remove" ]] || \
+    fail "refusing to remove unexpected test skill path: $skill_to_remove"
+  rm -r -- "$skill_to_remove"
   git -C "$source" add -u skills/address-review
   git -C "$source" commit --quiet -m "remove address-review skill"
   printf 'flat duplicate\n' > "$target/skills/address-review/SKILL.md"
