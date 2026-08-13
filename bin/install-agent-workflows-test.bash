@@ -3539,7 +3539,7 @@ test_corrupt_metadata_with_residue_reports_both_problems() {
 }
 
 test_recovery_cleanup_residue_does_not_wedge_completed_recovery() {
-  local tmp target staging receipt metadata injection counter output status quarantine
+  local tmp target staging later_staging receipt metadata injection counter output status quarantine
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-cleanup-residue"
@@ -3574,6 +3574,22 @@ RUBY
   [[ -n "$quarantine" ]] || fail "cleanup-only residue was not preserved"
   assert_file "$quarantine/cleanup-residue"
   assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING: preserved $quarantine"
+
+  later_staging="$target/.agent-workflows-flat-migration-after-cleanup-residue"
+  mkdir -p "$later_staging/later-owned-skill"
+  printf 'later user-owned\n' > "$later_staging/later-owned-skill/SKILL.md"
+  printf '%s\n' "$later_staging" > "$receipt"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "cleanup-only residue blocked later recovery with status $status: $output"
+  [[ ! -e "$receipt" ]] || fail "later recovery left its completed receipt"
+  [[ ! -e "$later_staging" ]] || fail "later recovery left its staging directory"
+  assert_file "$target/skills/later-owned-skill/SKILL.md"
+  assert_file "$quarantine/cleanup-residue"
 }
 
 test_recovery_restore_atomically_replaces_placeholder() {

@@ -265,10 +265,12 @@ capture_installed_metadata_for_recovery() {
   recovery_metadata_sentinel_identity=""
   recovery_metadata_snapshot_identity=""
   recovery_metadata_backup_identity=""
+  recovery_metadata_quarantine_identity=""
+  recovery_metadata_cleanup_receipt=""
   recovery_metadata_digest=""
   recovery_metadata_captured=false
 
-  if installed_metadata_recovery_residue_exists; then
+  if installed_metadata_blocking_recovery_residue_exists; then
     return 66
   fi
   if [[ ! -e "$recovery_metadata_path" && ! -L "$recovery_metadata_path" ]]; then
@@ -280,12 +282,20 @@ capture_installed_metadata_for_recovery() {
   fi
   original_identity="${original_attestation%%|*}"
   recovery_metadata_digest="${original_attestation#*|}"
-  if [[ -z "$original_identity" || -z "$recovery_metadata_digest" ||
-        "$original_attestation" = "$recovery_metadata_digest" ]]; then
+  if [[ -z "$original_identity" || -z "$recovery_metadata_digest" ]]; then
     return 1
   fi
 
   if ! recovery_metadata_quarantine="$(mktemp -d "$target/$metadata_name.recovery-XXXXXX")"; then
+    return 70
+  fi
+  if ! recovery_metadata_quarantine_identity="$(recovery_directory_identity "$recovery_metadata_quarantine")"; then
+    rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
+    return 70
+  fi
+  recovery_metadata_cleanup_receipt="$target/$metadata_name.cleanup-complete-${recovery_metadata_quarantine##*.recovery-}"
+  if [[ -e "$recovery_metadata_cleanup_receipt" || -L "$recovery_metadata_cleanup_receipt" ]]; then
+    rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
     return 70
   fi
   recovery_metadata_snapshot="$recovery_metadata_quarantine/metadata"
@@ -344,12 +354,66 @@ capture_installed_metadata_for_recovery() {
   fi
 }
 
-installed_metadata_recovery_residue_exists() {
-  local residue
+installed_metadata_blocking_recovery_residue_exists() {
+  local cleanup_receipt residue
   for residue in "$target/$metadata_name".recovery-*; do
-    [[ -e "$residue" || -L "$residue" ]] && return 0
+    [[ -e "$residue" || -L "$residue" ]] || continue
+    cleanup_receipt="$target/$metadata_name.cleanup-complete-${residue##*.recovery-}"
+    recovery_metadata_cleanup_receipt_valid "$residue" "$cleanup_receipt" && continue
+    return 0
   done
   return 1
+}
+
+recovery_metadata_cleanup_receipt_valid() {
+  ruby -e '
+    receipt_file = nil
+    begin
+      residue = File.expand_path(ARGV.fetch(0))
+      receipt = File.expand_path(ARGV.fetch(1))
+      residue_stat = File.lstat(residue)
+      abort unless residue_stat.directory? && !residue_stat.symlink?
+      %w[metadata original-backup sentinel].each do |name|
+        path = File.join(residue, name)
+        begin
+          File.lstat(path)
+          abort
+        rescue Errno::ENOENT
+          nil
+        end
+      end
+      receipt_stat = File.lstat(receipt)
+      abort unless receipt_stat.file? && !receipt_stat.symlink? && File.const_defined?(:NOFOLLOW)
+      receipt_file = File.open(receipt, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      opened_stat = receipt_file.stat
+      abort unless opened_stat.file? && opened_stat.dev == receipt_stat.dev && opened_stat.ino == receipt_stat.ino
+      identity = receipt_file.read
+      final_stat = receipt_file.stat
+      named_stat = File.lstat(receipt)
+      abort unless final_stat.dev == opened_stat.dev && final_stat.ino == opened_stat.ino &&
+                   named_stat.file? && !named_stat.symlink? &&
+                   named_stat.dev == opened_stat.dev && named_stat.ino == opened_stat.ino
+      abort unless identity == "#{residue_stat.dev}:#{residue_stat.ino}"
+    ensure
+      receipt_file&.close
+    end
+  ' "$1" "$2" 2>/dev/null
+}
+
+write_recovery_metadata_cleanup_receipt() {
+  ruby -e '
+    file = nil
+    begin
+      path = File.expand_path(ARGV.fetch(0))
+      identity = ARGV.fetch(1)
+      file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
+      file.write(identity)
+      file.flush
+      file.fsync
+    ensure
+      file&.close
+    end
+  ' "$recovery_metadata_cleanup_receipt" "$recovery_metadata_quarantine_identity" 2>/dev/null
 }
 
 regular_file_attestation() {
@@ -425,10 +489,16 @@ restore_captured_recovery_metadata() {
   fi
   restored_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 65
   [[ "$restored_attestation" = "$expected_restore_attestation" ]] || return 65
+  if ! write_recovery_metadata_cleanup_receipt; then
+    recovery_metadata_captured=false
+    return 70
+  fi
   recovery_metadata_captured=false
   rm -f "$recovery_metadata_snapshot" "$recovery_metadata_backup" 2>/dev/null || true
   if ! rmdir "$recovery_metadata_quarantine" 2>/dev/null; then
     echo "RECOVERY_METADATA_CLEANUP_PENDING: preserved $recovery_metadata_quarantine" >&2
+  else
+    rm -f "$recovery_metadata_cleanup_receipt" 2>/dev/null || true
   fi
 }
 
