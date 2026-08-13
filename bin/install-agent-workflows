@@ -818,28 +818,73 @@ validate_recovery_cleanup_root() {
 }
 
 remove_recovery_cleanup_root() {
-  ruby -rfileutils -e '
+  ruby -rfileutils -rsecurerandom -e '
+    target_file = nil
+    original_target_mode = nil
+    captured = nil
+    cleanup_captured = false
     begin
       target = File.realpath(ARGV.fetch(0))
       cleanup_root = File.expand_path(ARGV.fetch(1))
+      target_parent = File.realpath(File.dirname(target))
+      target_parent_stat = File.lstat(target_parent)
+      abort unless target_parent_stat.directory? && !target_parent_stat.symlink?
+      target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      target_stat = target_file.stat
+      named_target_stat = File.lstat(target)
+      abort unless target_stat.directory? &&
+                   target_stat.dev == named_target_stat.dev && target_stat.ino == named_target_stat.ino
+      parent_writable_by_others = (target_parent_stat.mode & 0o022) != 0
+      abort if parent_writable_by_others &&
+               (!target_parent_stat.sticky? || target_stat.uid != Process.euid)
+      original_target_mode = target_stat.mode & 0o7777
+      if (original_target_mode & 0o022) != 0
+        abort unless target_stat.uid == Process.euid
+        target_file.chmod(original_target_mode & ~0o022)
+      end
+      secured_target_stat = File.lstat(target)
+      abort unless secured_target_stat.dev == target_stat.dev && secured_target_stat.ino == target_stat.ino
       abort unless File.basename(cleanup_root).match?(/\A\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+\z/)
       abort unless File.realpath(File.dirname(cleanup_root)) == target
       cleanup_stat = File.lstat(cleanup_root)
-      abort unless cleanup_stat.directory? && !cleanup_stat.symlink?
+      abort unless cleanup_stat.directory? && !cleanup_stat.symlink? && cleanup_stat.uid == Process.euid
       cleanup_realpath = File.realpath(cleanup_root)
       abort unless File.dirname(cleanup_realpath) == target &&
                    File.basename(cleanup_realpath) == File.basename(cleanup_root)
       verified_stat = File.lstat(cleanup_root)
       abort unless verified_stat.dev == cleanup_stat.dev && verified_stat.ino == cleanup_stat.ino
-      FileUtils.remove_entry(cleanup_root)
-      begin
-        File.lstat(cleanup_root)
-        abort
-      rescue Errno::ENOENT
-        nil
+      10.times do
+        candidate = File.join(target, ".agent-workflows-recovery-delete-#{SecureRandom.hex(16)}")
+        begin
+          File.lstat(candidate)
+        rescue Errno::ENOENT
+          captured = candidate
+          break
+        end
       end
+      abort unless captured
+      File.rename(cleanup_root, captured)
+      cleanup_captured = true
+      captured_stat = File.lstat(captured)
+      unless captured_stat.dev == cleanup_stat.dev && captured_stat.ino == cleanup_stat.ino
+        puts captured
+        exit 67
+      end
+      FileUtils.remove_entry_secure(captured)
     rescue StandardError
-      exit 1
+      puts captured if cleanup_captured && captured
+      exit(cleanup_captured ? 69 : 1)
+    ensure
+      if target_file
+        begin
+          target_file.chmod(original_target_mode) if original_target_mode
+        rescue StandardError
+          puts captured if cleanup_captured && captured
+          exit 69
+        ensure
+          target_file.close
+        end
+      end
     end
   ' "$target" "$1" 2>/dev/null
 }
@@ -847,7 +892,7 @@ remove_recovery_cleanup_root() {
 cleanup_recovery_staging() {
   local staging="$1"
   local staging_identity="$2"
-  local cleanup_root cleanup_staging move_status restore_status cleanup_root_identity target_identity
+  local cleanup_root cleanup_staging move_status restore_status remove_status remove_artifact cleanup_root_identity target_identity
   target_identity="$(recovery_directory_identity "$target")" || return 1
   cleanup_root="$(mktemp -d "$target/.agent-workflows-recovery-cleanup-XXXXXX")" || return 1
   cleanup_staging="$cleanup_root/staging"
@@ -890,7 +935,15 @@ cleanup_recovery_staging() {
     echo "RECOVERY_STAGING_BINDING_CHANGED: preserved $cleanup_root and recovery receipt for manual recovery." >&2
     return 67
   fi
-  if ! remove_recovery_cleanup_root "$cleanup_root"; then
+  remove_status=0
+  remove_artifact="$(remove_recovery_cleanup_root "$cleanup_root")" || remove_status=$?
+  if [[ "$remove_status" -eq 67 ]]; then
+    echo "RECOVERY_CLEANUP_BINDING_CHANGED: preserved ${remove_artifact:-$cleanup_root} and recovery receipt after cleanup path replacement." >&2
+    return 67
+  elif [[ "$remove_status" -eq 69 ]]; then
+    echo "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: preserved ${remove_artifact:-$cleanup_root} and recovery receipt; recovery staging was not restored." >&2
+    return 1
+  elif [[ "$remove_status" -ne 0 ]]; then
     if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_staging" "$staging_identity" \
       "$target" "$target_identity"; then
       echo "RECOVERY_STAGING_RESTORE_FAILED: preserved $cleanup_root for manual recovery." >&2

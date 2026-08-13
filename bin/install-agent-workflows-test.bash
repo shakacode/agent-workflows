@@ -1376,6 +1376,81 @@ RUBY
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "cleanup root replacement leaked install lock"
 }
 
+test_companion_cleanup_root_swap_during_deletion_preserves_all_entries() {
+  local tmp target staging receipt preserved_root injection marker output status replacement
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-delete-swap"
+  receipt="$target/.agent-workflows-migration-staging"
+  preserved_root="$tmp/preserved-cleanup-root"
+  injection="$tmp/swap-cleanup-root-during-removal.rb"
+  marker="$tmp/cleanup-root-swapped"
+  mkdir -p "$staging/old-flat-skill"
+  write_native_scw_state codex "$target"
+  chmod 0777 "$target"
+  printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+require "fileutils"
+
+swap_cleanup_root = lambda do |cleanup_root|
+  next if File.exist?(ENV.fetch("QA_RACE_MARKER"))
+
+  File.rename(cleanup_root, ENV.fetch("QA_PRESERVED_CLEANUP_ROOT"))
+  Dir.mkdir(cleanup_root)
+  File.write(File.join(cleanup_root, "UNRELATED"), "unrelated replacement\n")
+  File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+end
+
+module FileUtils
+  class << self
+    alias qa_original_remove_entry remove_entry
+
+    define_method(:remove_entry) do |path, force = false|
+      if File.dirname(File.expand_path(path)) == ENV.fetch("QA_TARGET") &&
+         File.basename(path).match?(/\A\.agent-workflows-recovery-cleanup-/)
+        Object.const_get(:QA_SWAP_CLEANUP_ROOT).call(File.expand_path(path))
+      end
+      qa_original_remove_entry(path, force)
+    end
+  end
+end
+
+QA_SWAP_CLEANUP_ROOT = swap_cleanup_root
+
+class << File
+  alias qa_original_cleanup_rename rename
+
+  def rename(source, destination)
+    if File.basename(source).match?(/\A\.agent-workflows-recovery-cleanup-/) &&
+       File.basename(destination).match?(/\A\.agent-workflows-recovery-delete-/)
+      QA_SWAP_CLEANUP_ROOT.call(File.expand_path(source))
+    end
+    qa_original_cleanup_rename(source, destination)
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" QA_PRESERVED_CLEANUP_ROOT="$preserved_root" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "cleanup deletion path swap exited $status: $output"
+  assert_contains "$output" "RECOVERY_CLEANUP_BINDING_CHANGED"
+  assert_file "$receipt"
+  assert_file "$preserved_root/staging/old-flat-skill/SKILL.md"
+  replacement="$(find "$tmp" -name UNRELATED -print -quit)"
+  [[ -n "$replacement" ]] || fail "cleanup deletion path swap deleted the unrelated replacement"
+  assert_contains "$(cat "$replacement")" "unrelated replacement"
+  assert_contains "$output" "$(dirname "$replacement")"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "cleanup deletion path swap leaked install lock"
+}
+
 test_missing_metadata_backup_reports_restore_failure_without_corrupt_guidance() {
   local tmp target staging receipt metadata injection counter output status quarantine
   tmp="$(mktemp -d)"
@@ -1617,6 +1692,8 @@ test_companion_cleanup_supports_world_writable_target() {
   [[ ! -e "$staging" ]] || fail "world-writable target left recovery staging"
   [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-recovery-cleanup-*' -print -quit)" ]] || \
     fail "world-writable target left recovery cleanup root"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-recovery-delete-*' -print -quit)" ]] || \
+    fail "world-writable target left captured recovery cleanup root"
 }
 
 test_recovery_hardlink_unavailable_is_named_without_blaming_metadata() {
@@ -4574,6 +4651,7 @@ main() {
     test_recovery_skills_root_replacement_during_reversal_preserves_outside_data
     test_companion_cleanup_post_move_replacement_has_named_retry_failure
     test_companion_cleanup_root_replacement_cannot_move_staging_outside_target
+    test_companion_cleanup_root_swap_during_deletion_preserves_all_entries
     test_missing_metadata_backup_reports_restore_failure_without_corrupt_guidance
     test_transient_metadata_restore_failure_preserves_receipt_after_reversal
     test_mid_rollback_backup_change_does_not_blame_intact_metadata
