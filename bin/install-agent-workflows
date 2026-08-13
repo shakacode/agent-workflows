@@ -164,7 +164,7 @@ metadata_value() {
 
 read_installed_metadata_value() {
   local key="$1"
-  local metadata_path="$target/$metadata_name"
+  local metadata_path="${2:-$target/$metadata_name}"
   local protocol encoded_value decoded_value sentinel=$'\036'
   installed_metadata_state="corrupt"
   installed_metadata_value=""
@@ -253,8 +253,170 @@ read_installed_metadata_value() {
   esac
 }
 
+capture_installed_metadata_for_recovery() {
+  local original_attestation current_attestation backup_attestation snapshot_attestation sentinel_attestation
+  local original_identity backup_identity sentinel_identity
+  recovery_metadata_path="$target/$metadata_name"
+  recovery_metadata_quarantine=""
+  recovery_metadata_snapshot=""
+  recovery_metadata_backup=""
+  recovery_metadata_sentinel_identity=""
+  recovery_metadata_snapshot_identity=""
+  recovery_metadata_backup_identity=""
+  recovery_metadata_digest=""
+  recovery_metadata_captured=false
+
+  if installed_metadata_recovery_residue_exists; then
+    return 1
+  fi
+  if ! original_attestation="$(regular_file_attestation "$recovery_metadata_path")"; then
+    return 1
+  fi
+  original_identity="${original_attestation%%|*}"
+  recovery_metadata_digest="${original_attestation#*|}"
+  if [[ -z "$original_identity" || -z "$recovery_metadata_digest" ||
+        "$original_attestation" = "$recovery_metadata_digest" ]]; then
+    return 1
+  fi
+
+  if ! recovery_metadata_quarantine="$(mktemp -d "$target/$metadata_name.recovery-XXXXXX")"; then
+    return 1
+  fi
+  recovery_metadata_snapshot="$recovery_metadata_quarantine/metadata"
+  recovery_metadata_backup="$recovery_metadata_quarantine/original-backup"
+  recovery_metadata_sentinel="$recovery_metadata_quarantine/sentinel"
+  if ! cp -pP "$recovery_metadata_path" "$recovery_metadata_backup"; then
+    rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
+    return 1
+  fi
+  if ! current_attestation="$(regular_file_attestation "$recovery_metadata_path")" ||
+     [[ "$current_attestation" != "$original_attestation" ]] ||
+     ! backup_attestation="$(regular_file_attestation "$recovery_metadata_backup")"; then
+    rm -f "$recovery_metadata_backup" 2>/dev/null || true
+    rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
+    return 1
+  fi
+  backup_identity="${backup_attestation%%|*}"
+  if [[ "${backup_attestation#*|}" != "$recovery_metadata_digest" || -z "$backup_identity" ]]; then
+    rm -f "$recovery_metadata_backup" 2>/dev/null || true
+    rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
+    return 1
+  fi
+  if ! cp -pP "$recovery_metadata_backup" "$recovery_metadata_sentinel" ||
+     ! sentinel_attestation="$(regular_file_attestation "$recovery_metadata_sentinel")" ||
+     [[ "${sentinel_attestation#*|}" != "$recovery_metadata_digest" ]]; then
+    rm -f "$recovery_metadata_backup" "$recovery_metadata_sentinel" 2>/dev/null || true
+    rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
+    return 1
+  fi
+  sentinel_identity="${sentinel_attestation%%|*}"
+
+  if ! ln "$recovery_metadata_path" "$recovery_metadata_snapshot" ||
+     ! snapshot_attestation="$(regular_file_attestation "$recovery_metadata_snapshot")" ||
+     [[ "$snapshot_attestation" != "$original_attestation" ]]; then
+    rm -f "$recovery_metadata_snapshot" "$recovery_metadata_backup" "$recovery_metadata_sentinel" 2>/dev/null || true
+    rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
+    return 1
+  fi
+  if ! current_attestation="$(regular_file_attestation "$recovery_metadata_path")" ||
+     [[ "$current_attestation" != "$original_attestation" ]] ||
+     ! mv "$recovery_metadata_sentinel" "$recovery_metadata_path"; then
+    rm -f "$recovery_metadata_snapshot" "$recovery_metadata_backup" "$recovery_metadata_sentinel" 2>/dev/null || true
+    rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
+    return 1
+  fi
+  recovery_metadata_sentinel_identity="$sentinel_identity"
+  recovery_metadata_snapshot_identity="$original_identity"
+  recovery_metadata_backup_identity="$backup_identity"
+  recovery_metadata_captured=true
+  if ! snapshot_attestation="$(regular_file_attestation "$recovery_metadata_snapshot")" ||
+     [[ "$snapshot_attestation" != "$original_attestation" ]] ||
+     ! current_attestation="$(regular_file_attestation "$recovery_metadata_path")" ||
+     [[ "$current_attestation" != "$sentinel_attestation" ]]; then
+    return 1
+  fi
+}
+
+installed_metadata_recovery_residue_exists() {
+  local residue
+  for residue in "$target/$metadata_name".recovery-*; do
+    [[ -e "$residue" || -L "$residue" ]] && return 0
+  done
+  return 1
+}
+
+regular_file_attestation() {
+  ruby -rdigest -e '
+    path = ARGV.fetch(0)
+    stat = File.lstat(path)
+    abort unless stat.file? && !stat.symlink?
+    print "#{stat.dev}:#{stat.ino}|#{Digest::SHA256.file(path).hexdigest}"
+  ' "$1" 2>/dev/null
+}
+
+recovery_metadata_binding_intact() {
+  local sentinel_attestation snapshot_attestation backup_attestation
+  [[ "$recovery_metadata_captured" = "true" ]] || return 1
+  sentinel_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 1
+  snapshot_attestation="$(regular_file_attestation "$recovery_metadata_snapshot")" || return 1
+  backup_attestation="$(regular_file_attestation "$recovery_metadata_backup")" || return 1
+  [[ "$sentinel_attestation" = "$recovery_metadata_sentinel_identity|$recovery_metadata_digest" &&
+     "$snapshot_attestation" = "$recovery_metadata_snapshot_identity|$recovery_metadata_digest" &&
+     "$backup_attestation" = "$recovery_metadata_backup_identity|$recovery_metadata_digest" ]]
+}
+
+recovery_metadata_restore_binding_intact() {
+  local sentinel_attestation backup_attestation
+  [[ "$recovery_metadata_captured" = "true" ]] || return 1
+  sentinel_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 1
+  backup_attestation="$(regular_file_attestation "$recovery_metadata_backup")" || return 1
+  [[ "$sentinel_attestation" = "$recovery_metadata_sentinel_identity|$recovery_metadata_digest" &&
+     "$backup_attestation" = "$recovery_metadata_backup_identity|$recovery_metadata_digest" ]]
+}
+
+restore_captured_recovery_metadata() {
+  local expected_restore_attestation snapshot_attestation restored_attestation restore_source
+  [[ "$recovery_metadata_captured" = "true" ]] || return 0
+  recovery_metadata_restore_binding_intact || return 1
+  snapshot_attestation="$(regular_file_attestation "$recovery_metadata_snapshot")" || true
+  if [[ "$snapshot_attestation" = "$recovery_metadata_snapshot_identity|$recovery_metadata_digest" ]]; then
+    restore_source="$recovery_metadata_snapshot"
+    expected_restore_attestation="$recovery_metadata_snapshot_identity|$recovery_metadata_digest"
+  else
+    restore_source="$recovery_metadata_backup"
+    expected_restore_attestation="$recovery_metadata_backup_identity|$recovery_metadata_digest"
+  fi
+  if ! mv "$restore_source" "$recovery_metadata_path"; then
+    return 1
+  fi
+  restored_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 1
+  [[ "$restored_attestation" = "$expected_restore_attestation" ]] || return 1
+  recovery_metadata_captured=false
+  rm -f "$recovery_metadata_snapshot" "$recovery_metadata_backup" 2>/dev/null || true
+  if ! rmdir "$recovery_metadata_quarantine" 2>/dev/null; then
+    echo "RECOVERY_METADATA_CLEANUP_PENDING: preserved $recovery_metadata_quarantine" >&2
+  fi
+}
+
 report_corrupt_install_metadata() {
+  local residue_may_explain="${1:-false}"
   local metadata_path="$target/$metadata_name"
+  local residue
+  local residue_present=false
+  for residue in "$metadata_path".recovery-*; do
+    [[ -e "$residue" || -L "$residue" ]] || continue
+    residue_present=true
+    if [[ ! -d "$residue" || -L "$residue" ]]; then
+      echo "Unexpected recovery residue $residue blocks recovery; remove it only after confirming it holds no needed data." >&2
+    fi
+  done
+  for residue in "$metadata_path".recovery-*; do
+    [[ -d "$residue" && ! -L "$residue" ]] || continue
+    echo "Preserved recovery metadata quarantine $residue; do not delete it while recovering the target." >&2
+  done
+  if [[ "$residue_present" = "true" && "$residue_may_explain" = "true" ]]; then
+    return 0
+  fi
   echo "CORRUPT_INSTALL_METADATA: cannot read valid install metadata from $metadata_path." >&2
   echo "Restore a valid backup of that file. If none exists, preserve the corrupt target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
 }
@@ -905,12 +1067,18 @@ fi
 release_install_lock() {
   local status=$?
   trap - EXIT
+  if [[ "${recovery_metadata_captured:-false}" = "true" ]] && ! restore_captured_recovery_metadata; then
+    report_corrupt_install_metadata
+    echo "RECOVERY_FAILED: install metadata could not be restored; preserved pending recovery state." >&2
+    status=65
+  fi
   rmdir "$install_lock" 2>/dev/null || true
   exit "$status"
 }
 trap release_install_lock EXIT
 migration_staging=""
 migration_receipt="$target/.agent-workflows-migration-staging"
+recovery_metadata_captured=false
 if [[ -f "$migration_receipt" ]]; then
   IFS= read -r recovered_staging < "$migration_receipt" || recovered_staging=""
   recovered_staging="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$recovered_staging")"
@@ -919,7 +1087,16 @@ if [[ -f "$migration_receipt" ]]; then
     rmdir "$install_lock" 2>/dev/null || true
     exit 1
   fi
-  read_installed_metadata_value delivery_mode
+  if ! capture_installed_metadata_for_recovery; then
+    report_corrupt_install_metadata true
+    echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+    exit 65
+  fi
+  read_installed_metadata_value delivery_mode "$recovery_metadata_snapshot"
+  if ! recovery_metadata_binding_intact; then
+    installed_metadata_state="corrupt"
+    installed_metadata_value=""
+  fi
   case "$installed_metadata_state" in
     valid)
       prior_delivery_mode="$installed_metadata_value"
@@ -933,11 +1110,19 @@ if [[ -f "$migration_receipt" ]]; then
       ;;
     key_absent) prior_delivery_mode="flat" ;;
     invalid)
+      if ! restore_captured_recovery_metadata; then
+        report_corrupt_install_metadata
+        echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+        exit 65
+      fi
       report_invalid_install_delivery_mode
       echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
       exit 64
       ;;
     corrupt)
+      if ! restore_captured_recovery_metadata; then
+        echo "RECOVERY_FAILED: install metadata could not be restored; preserved pending recovery state." >&2
+      fi
       report_corrupt_install_metadata
       echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
       exit 65
@@ -957,6 +1142,11 @@ if [[ -f "$migration_receipt" ]]; then
     echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
     rmdir "$install_lock" 2>/dev/null || true
     exit 1
+  fi
+  if ! restore_captured_recovery_metadata; then
+    report_corrupt_install_metadata
+    echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
+    exit 65
   fi
   rm -f "$migration_receipt"
 fi
