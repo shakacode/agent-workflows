@@ -355,11 +355,12 @@ The skill is report-first. It reads PR metadata and the diff, and that is
 all: checking out the fork, executing anything from it, running its scripts,
 installing its dependencies, and reading or exposing secrets are
 non-overridable NOs inside this skill — even a maintainer request cannot
-authorize them here. The output is an intake report (fork metadata, scope,
-check and review evidence, trust boundaries) ending in a recommended
-disposition — decline, request a narrowly scoped revision, accept as
-follow-up, or adopt independently — that feeds your decision as maintainer.
-The preferred follow-up for a good change is recreating it on a
+authorize them here. The output is an intake report (fork metadata, check
+and review evidence, trust boundaries, scope) whose key line is a
+recommended disposition — decline, request a narrowly scoped revision,
+accept as follow-up, or adopt independently — feeding your decision as
+maintainer; the report closes with follow-up and attribution details. The
+preferred follow-up for a good change is recreating it on a
 maintainer-owned branch that credits the contributor.
 
 Like Steps 3 and 4, this needs a live agent session, so the transcript below
@@ -378,10 +379,10 @@ Fork intake report
   association FIRST_TIME_CONTRIBUTOR.
 - PR metadata: #61; base branch main; head SHA 3f9c2e1...; mergeability
   clean.
-- Scope: 2 files, +18 -3; adds input validation to the CSV importer; no
-  workflow, script, or dependency changes.
 - Trust boundaries: trusted local policy and base checkout; untrusted fork
   diff and PR text.
+- Scope: 2 files, +18 -3; adds input validation to the CSV importer; no
+  workflow, script, or dependency changes.
 - Validation evidence: checks green on the head SHA; no reviews yet.
 - Gate state: maintainer decision needed.
 - Disposition: accept as follow-up — recreate on a maintainer-owned branch
@@ -437,6 +438,106 @@ Report only: no comments, labels, or approvals were created.
 A `DISCUSS` finding like that one is exactly the point of the exercise: it
 is not an order to change the code, it is a decision surfaced for a human
 before merge.
+
+## Getting The Best Results
+
+The six steps above get you running. The habits below, grouped by work
+stage, are how you get the most out of the pack — each one links to the
+skill or document that implements it.
+
+### When You Plan A Change
+
+- **Vague idea? Write a spec first.** The `spec` skill turns fuzzy intent
+  into numbered requirements, a design, and executable tasks before any
+  batch planning. It asks only blocking questions; other assumptions get
+  recorded in the spec itself ([spec skill](../skills/spec/SKILL.md)).
+- **Not sure the work is worth doing?** The `evaluate-issue` skill treats
+  AI-found gaps as leads, not priorities — real customer reports, verified
+  regressions, and security or correctness issues come first — and ends in
+  a clear disposition such as fix now, park, or close
+  ([evaluate-issue skill](../skills/evaluate-issue/SKILL.md)).
+- **Challenge the approach before code exists.** The `plan-review` skill
+  reviews a plan (not code) for goal fit, fit with the repo's existing code
+  and conventions, simplicity — the smallest thing that solves the real
+  problem — and whether the load-bearing decisions are named now
+  ([plan-review skill](../skills/plan-review/SKILL.md)).
+- **Spend model strength where it pays.** Start workers on the least
+  expensive safe route and escalate only with evidence; use the strongest
+  route when deciding, challenging, or validating the plan is the hard
+  part, and the balanced route when the plan is already credible
+  ([model routing](agent-workflows-model-routing.md), with per-host
+  profiles in [PR batch skills usage](pr-batch-skills.md)).
+
+### When A Feature Needs Several PRs
+
+- **Chain the planning skills.** `spec` produces the tasks, `plan-pr-batch`
+  verifies exact targets and shapes the lanes, and `pr-batch` runs them —
+  the skill-roles table in
+  [PR batch skills usage](pr-batch-skills.md) shows each hand-off.
+- **Map file collisions before running anything in parallel.**
+  `plan-pr-batch` builds a file-touch map so items that touch the same
+  paths never share a parallel wave — collisions get sequenced or deferred
+  — and it keeps each wave within small host-aware caps
+  ([plan-pr-batch skill](../skills/plan-pr-batch/SKILL.md)).
+- **Keep maker and checker separate.** Each lane gets one worker, and an
+  independent checker — distinct from every maker in the batch — evaluates
+  the result; a role collision (or `UNKNOWN` independence) blocks that
+  lane's merge ([pr-batch skill](../skills/pr-batch/SKILL.md)).
+- **Decide merge authority up front**, exactly as in Step 4: `none`, `ask`,
+  or `auto_merge_when_gates_pass`, never silently defaulted. `ask` buys you
+  the exact-diff walkthrough plus one final merge question per PR.
+
+### When You Build And Test
+
+- **Let a failing test lead.** The `tdd` skill runs RED, GREEN, REFACTOR:
+  a bug fix starts as one failing regression test, confirmed to fail for
+  the right reason before you touch production code — and a new test that
+  passes immediately only describes existing behavior, so tighten it
+  ([tdd skill](../skills/tdd/SKILL.md)).
+- **Run `verify` before every PR create or update** — the same Step 3
+  loop: checks chosen from the repo seam, one PASS or FAIL line per
+  command, stop on the first failure.
+- **Prove a bug fix, do not assert it.** The `verify-pr-fix` skill
+  reproduces the failure before the fix, confirms it is gone after, and
+  states plainly what was not exercised — evidence before assertions
+  ([verify-pr-fix skill](../skills/verify-pr-fix/SKILL.md)).
+- **Local checks green but hosted CI red?** The `replicate-ci` skill
+  reproduces the failing check in a CI-matched environment and reports the
+  parity delta: reproduction result, environment difference, next action
+  ([replicate-ci skill](../skills/replicate-ci/SKILL.md)).
+
+### When You Review
+
+- **Match the skill to the job.** Use `pr-walkthrough` to understand a PR,
+  `adversarial-pr-review` to red-team it (Step 5 covers both), and
+  `address-review` to triage inbound review comments into must-fix,
+  discuss, optional, or skipped
+  ([address-review skill](../skills/address-review/SKILL.md)).
+- **Converge the review loop instead of chasing it.** Every push
+  re-triggers all configured review agents on the new head SHA, so
+  one-commit-per-comment never ends. Batch all confirmed blockers into a
+  single push; settle remaining advisory threads in-thread — reply with
+  rationale, then resolve, without a commit — and never resolve a
+  confirmed blocker by reply alone
+  ([review-loop convergence](../workflows/pr-processing.md#review-loop-convergence-push-amplification)).
+- **AI reviewer output is advisory** unless a finding is confirmed as a
+  real blocker — Step 5's rule, applied to every bot on every PR.
+
+### When You Merge And Afterward
+
+- **Keep the changelog honest.** The `update-changelog` skill analyzes
+  merged PRs and fills in missing entries — use it before releases instead
+  of reconstructing history later
+  ([update-changelog skill](../skills/update-changelog/SKILL.md)).
+- **Audit after parallel work.** After concurrent agent work, before a
+  release candidate, or after a suspected bad merge, the
+  `post-merge-audit` skill checks for missed reviews, missing changelog
+  entries, cross-PR interactions, and release risk
+  ([post-merge-audit skill](../skills/post-merge-audit/SKILL.md)).
+- **The habit underneath all of these:** record what you cannot verify as
+  `UNKNOWN` instead of guessing, and never present constructed output as a
+  real run — the same honesty rule this guide follows for its own output
+  blocks.
 
 ## Keep The Pack Current
 
