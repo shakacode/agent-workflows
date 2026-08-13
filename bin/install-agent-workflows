@@ -638,11 +638,60 @@ rollback_migration_staging() {
   fi
 }
 
+validate_recovery_cleanup_root() {
+  ruby -e '
+    target = File.realpath(ARGV.fetch(0))
+    cleanup_root = File.expand_path(ARGV.fetch(1))
+    require_empty = ARGV.fetch(2) == "true"
+    abort unless File.basename(cleanup_root).match?(/\A\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+\z/)
+    abort unless File.realpath(File.dirname(cleanup_root)) == target
+    cleanup_stat = File.lstat(cleanup_root)
+    abort unless cleanup_stat.directory? && !cleanup_stat.symlink?
+    cleanup_realpath = File.realpath(cleanup_root)
+    abort unless File.dirname(cleanup_realpath) == target &&
+                 File.basename(cleanup_realpath) == File.basename(cleanup_root)
+    verified_stat = File.lstat(cleanup_root)
+    abort unless verified_stat.dev == cleanup_stat.dev && verified_stat.ino == cleanup_stat.ino
+    abort if require_empty && !Dir.empty?(cleanup_root)
+  ' "$target" "$1" "${2:-false}" 2>/dev/null
+}
+
+remove_recovery_cleanup_root() {
+  ruby -rfileutils -e '
+    begin
+      target = File.realpath(ARGV.fetch(0))
+      cleanup_root = File.expand_path(ARGV.fetch(1))
+      abort unless File.basename(cleanup_root).match?(/\A\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+\z/)
+      abort unless File.realpath(File.dirname(cleanup_root)) == target
+      cleanup_stat = File.lstat(cleanup_root)
+      abort unless cleanup_stat.directory? && !cleanup_stat.symlink?
+      cleanup_realpath = File.realpath(cleanup_root)
+      abort unless File.dirname(cleanup_realpath) == target &&
+                   File.basename(cleanup_realpath) == File.basename(cleanup_root)
+      verified_stat = File.lstat(cleanup_root)
+      abort unless verified_stat.dev == cleanup_stat.dev && verified_stat.ino == cleanup_stat.ino
+      FileUtils.remove_entry(cleanup_root)
+      begin
+        File.lstat(cleanup_root)
+        abort
+      rescue Errno::ENOENT
+        nil
+      end
+    rescue StandardError
+      exit 1
+    end
+  ' "$target" "$1" 2>/dev/null
+}
+
 cleanup_recovery_staging() {
   local staging="$1"
   local cleanup_root cleanup_staging
   cleanup_root="$(mktemp -d "$target/.agent-workflows-recovery-cleanup-XXXXXX")" || return 1
   cleanup_staging="$cleanup_root/staging"
+  if ! validate_recovery_cleanup_root "$cleanup_root" true; then
+    echo "RECOVERY_CLEANUP_ROOT_REJECTED: preserved rejected cleanup path $cleanup_root without moving recovery staging." >&2
+    return 1
+  fi
   if ! mv "$staging" "$cleanup_staging"; then
     rmdir "$cleanup_root" 2>/dev/null || true
     return 1
@@ -655,7 +704,7 @@ cleanup_recovery_staging() {
     fi
     return 65
   fi
-  if ! rm -rf "$cleanup_root"; then
+  if ! remove_recovery_cleanup_root "$cleanup_root"; then
     if ! mv "$cleanup_staging" "$staging"; then
       echo "RECOVERY_STAGING_RESTORE_FAILED: preserved $cleanup_root for manual recovery." >&2
     else

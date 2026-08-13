@@ -1012,6 +1012,120 @@ SH
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "corrupt companion cleanup leaked install lock"
 }
 
+test_companion_cleanup_rejects_mktemp_path_outside_target() {
+  local tmp target staging receipt outside fake_bin real_mktemp output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-wrong-root"
+  receipt="$target/.agent-workflows-migration-staging"
+  outside="$tmp/outside-cleanup-root"
+  fake_bin="$tmp/fake-bin"
+  real_mktemp="$(command -v mktemp)"
+  mkdir -p "$staging/old-flat-skill" "$outside" "$fake_bin"
+  printf 'old flat skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mktemp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" = *".agent-workflows-recovery-cleanup-XXXXXX"* ]]; then
+  printf '%s\n' "$QA_OUTSIDE_CLEANUP_ROOT"
+  exit 0
+fi
+exec "$QA_REAL_MKTEMP" "$@"
+SH
+  chmod +x "$fake_bin/mktemp"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKTEMP="$real_mktemp" \
+    QA_OUTSIDE_CLEANUP_ROOT="$outside" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "companion cleanup accepted an out-of-target cleanup root"
+  assert_file "$outside/SENTINEL"
+  assert_file "$receipt"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  [[ ! -e "$target/skills/old-flat-skill" ]] || fail "unsafe cleanup root changed target tree"
+  assert_contains "$output" "CLEANUP_PENDING"
+}
+
+test_companion_cleanup_rejects_symlinked_cleanup_root() {
+  local tmp target staging receipt outside fake_bin real_mktemp output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-symlink-root"
+  receipt="$target/.agent-workflows-migration-staging"
+  outside="$tmp/outside-cleanup-root"
+  fake_bin="$tmp/fake-bin"
+  real_mktemp="$(command -v mktemp)"
+  mkdir -p "$staging/old-flat-skill" "$outside/staging" "$fake_bin"
+  printf 'old flat skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  printf 'foreign staging\n' > "$outside/staging/FOREIGN.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mktemp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" = *".agent-workflows-recovery-cleanup-XXXXXX"* ]]; then
+  cleanup_root="$QA_TARGET/.agent-workflows-recovery-cleanup-Symlink1"
+  ln -s "$QA_OUTSIDE_CLEANUP_ROOT" "$cleanup_root"
+  printf '%s\n' "$cleanup_root"
+  exit 0
+fi
+exec "$QA_REAL_MKTEMP" "$@"
+SH
+  chmod +x "$fake_bin/mktemp"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKTEMP="$real_mktemp" QA_TARGET="$target" \
+    QA_OUTSIDE_CLEANUP_ROOT="$outside" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "companion cleanup accepted a symlinked cleanup root"
+  assert_file "$outside/SENTINEL"
+  assert_file "$outside/staging/FOREIGN.md"
+  assert_symlink "$target/.agent-workflows-recovery-cleanup-Symlink1"
+  [[ ! -e "$outside/staging/.agent-workflows-flat-migration-cleanup-symlink-root" ]] || \
+    fail "companion cleanup moved staging through a symlinked cleanup root"
+  assert_file "$receipt"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  [[ ! -e "$target/skills/old-flat-skill" ]] || fail "symlinked cleanup root changed target tree"
+  assert_contains "$output" "CLEANUP_PENDING"
+  assert_contains "$output" "RECOVERY_CLEANUP_ROOT_REJECTED"
+}
+
+test_companion_cleanup_supports_world_writable_target() {
+  local tmp target staging receipt output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-world-writable"
+  receipt="$target/.agent-workflows-migration-staging"
+  mkdir -p "$staging/old-flat-skill"
+  write_native_scw_state codex "$target"
+  chmod 0777 "$target"
+  printf 'old flat skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "world-writable target cleanup exited $status: $output"
+  assert_not_contains "$output" "CLEANUP_PENDING"
+  [[ ! -e "$receipt" ]] || fail "world-writable target left recovery receipt"
+  [[ ! -e "$staging" ]] || fail "world-writable target left recovery staging"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-recovery-cleanup-*' -print -quit)" ]] || \
+    fail "world-writable target left recovery cleanup root"
+}
+
 test_recovery_hardlink_unavailable_is_named_without_blaming_metadata() {
   local tmp target staging receipt metadata fake_bin real_ln output status
   tmp="$(mktemp -d)"
@@ -3861,6 +3975,9 @@ main() {
     test_recovery_restore_holds_install_lock_against_retry
     test_recovery_metadata_change_during_rollback_preserves_staging_and_tree
     test_recovery_metadata_change_during_companion_cleanup_preserves_staging
+    test_companion_cleanup_rejects_mktemp_path_outside_target
+    test_companion_cleanup_rejects_symlinked_cleanup_root
+    test_companion_cleanup_supports_world_writable_target
     test_recovery_hardlink_unavailable_is_named_without_blaming_metadata
     test_recovery_partial_backup_copy_failure_removes_quarantine
     test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance
