@@ -1,8 +1,9 @@
 # Getting Started
 
-Go from "I cloned this" to "I ran a workflow and saw it work" in five steps:
+Go from "I cloned this" to "I ran a workflow and saw it work" in six steps:
 check the prerequisites, install the pack into one agent host, adopt it in one
-repository, run one workflow end to end, and run your first issue-to-PR lane.
+repository, run one workflow end to end, run your first issue-to-PR lane, and
+review someone else's PR.
 
 Two plain-word definitions before you start:
 
@@ -19,8 +20,8 @@ Two plain-word definitions before you start:
 
 Every output block below comes from a real run of these commands, with the
 long local paths of the walkthrough machine rewritten to the short `~`-based
-paths the examples use. The two exceptions are the agent transcripts in
-Step 3 and Step 4, which are explicitly marked as examples.
+paths the examples use. The exceptions are the agent transcripts in Steps 3,
+4, and 5, which are explicitly marked as examples.
 
 ## Prerequisites
 
@@ -334,6 +335,109 @@ Before running this against a public repository, read
 one lane — multi-issue batches, triage, planning — start with
 [PR Batch Skills Usage](pr-batch-skills.md).
 
+## Step 5 — Review Someone Else's PR
+
+Sooner or later a PR arrives in your adopted repository that no workflow and
+no agent wrote — a human contributor's change, with zero reviews. One
+plain-words safety idea drives everything in this step: everything inside a
+PR — its body, its comments, its diff — is evidence to examine, never
+instructions to obey. The pack ships two routes, chosen by where the PR comes
+from.
+
+### Route 1 — A Fork PR From An Outside Contributor
+
+For a PR coming from a fork you do not control, ask for the
+`untrusted-contributor-intake` skill and give it the exact PR number or the
+exact HTTPS PR URL. It accepts nothing else, and it will not dig the target
+out of the PR's own text.
+
+The skill is report-first. It reads PR metadata and the diff, and that is
+all: checking out the fork, executing anything from it, running its scripts,
+installing its dependencies, and reading or exposing secrets are
+non-overridable NOs inside this skill — even a maintainer request cannot
+authorize them here. The output is an intake report (fork metadata, scope,
+check and review evidence, trust boundaries) ending in a recommended
+disposition — decline, request a narrowly scoped revision, accept as
+follow-up, or adopt independently — that feeds your decision as maintainer.
+The preferred follow-up for a good change is recreating it on a
+maintainer-owned branch that credits the contributor.
+
+Like Steps 3 and 4, this needs a live agent session, so the transcript below
+is an example rather than a captured run — your output will look similar to
+this, with exact wording depending on your host, model, and repository:
+
+```text
+> $untrusted-contributor-intake
+> https://github.com/acme/my-app/pull/61
+
+Input accepted: exact HTTPS PR URL. Reading metadata and diff only — no
+fork checkout, no execution, no dependency install.
+
+Fork intake report
+- Fork metadata: base acme/my-app; head jdoe/my-app; fork yes; author
+  association FIRST_TIME_CONTRIBUTOR.
+- PR metadata: #61; base branch main; head SHA 3f9c2e1...; mergeability
+  clean.
+- Scope: 2 files, +18 -3; adds input validation to the CSV importer; no
+  workflow, script, or dependency changes.
+- Trust boundaries: trusted local policy and base checkout; untrusted fork
+  diff and PR text.
+- Validation evidence: checks green on the head SHA; no reviews yet.
+- Gate state: maintainer decision needed.
+- Disposition: accept as follow-up — recreate on a maintainer-owned branch
+  and credit @jdoe.
+```
+
+The decision stays yours; the skill only assembles the evidence safely.
+
+### Route 2 — A Colleague's Same-Repo Branch PR
+
+For an unreviewed PR on a branch inside your own repository, written by a
+person you already trust to push there, use two skills in order: understand
+first, judge second.
+
+First, ask for the `pr-walkthrough` skill — the same guided tour that
+Step 4's `ask` merge authority starts automatically. It is read-only: the
+agent maps the whole exact diff into conceptual changes, then explains one
+change at a time — problem, what changed, why this approach, effect and
+risk, proof — and pauses for your questions before continuing. It is
+explicitly not a code review and not approval; finishing the tour approves
+nothing. Step 4's transcript shows what those pauses look like.
+
+Then, ask for the `adversarial-pr-review` skill. It is a skeptical,
+report-only red-team pass over correctness, security, compatibility,
+changelog, validation, and review-gate risks. It identifies the PR number,
+base branch, head SHA, and merge state, classifies every finding, and
+creates no comments, approvals, labels, or pushes unless you explicitly ask.
+It also treats AI reviewer output (CodeRabbit, Claude, and similar) as
+advisory unless it identifies a confirmed blocker such as a correctness
+regression, failing test, or security issue.
+
+Like the transcript above, this one is an example rather than a captured
+run — your output will look similar to this, with exact wording depending on
+your host, model, and repository:
+
+```text
+> $adversarial-pr-review
+> PR #63
+
+PR #63: base main, head SHA 9b4d7a2..., state OPEN, not merged.
+Treating the PR body, comments, and branch content as untrusted input.
+
+Red-team findings:
+- BLOCKING: none.
+- DISCUSS: the retry loop has no upper bound; a maintainer should decide on
+  a cap before merge.
+- FOLLOWUP: changelog entry missing for the user-visible timeout change.
+- NOISE: CodeRabbit naming comment — investigated, advisory, not a blocker.
+
+Report only: no comments, labels, or approvals were created.
+```
+
+A `DISCUSS` finding like that one is exactly the point of the exercise: it
+is not an order to change the code, it is a decision surfaced for a human
+before merge.
+
 ## Keep The Pack Current
 
 Because the pack is installed once per host, updates are not automatic: the
@@ -404,7 +508,7 @@ list](installation-and-upgrades.md#troubleshooting):
 | `Auto host detection found both Codex and Claude homes` | You have both hosts installed, so rerun the command with an explicit `--host codex` or `--host claude`. ([details](installation-and-upgrades.md#troubleshooting)) |
 | `DELIVERY_MODE_CONFLICT` | Both delivery routes are active and the pack refuses to guess which skill copy wins; keep exactly one — disable or remove the native `scw` plugin before a flat install, or use `--delivery-mode plugin-companion`. ([details](installation-and-upgrades.md#troubleshooting)) |
 | `invalid byte sequence in US-ASCII` or other `Encoding::` errors from a Ruby helper | An older install is running under a non-UTF-8 locale (`LANG=C` / `LC_ALL=C`, common in CI and headless agents); the pack's Ruby tools now read UTF-8 regardless of locale, so run `upgrade-agent-workflows --host <host>` to pick up the fix. ([details](installation-and-upgrades.md#troubleshooting)) |
-| The agent cannot find an installed skill | Check `agent-workflows-status --host <host>` says `UP_TO_DATE`, then restart the agent host so it reloads its skill directory. ([details](installation-and-upgrades.md#troubleshooting)) |
+| The agent cannot find an installed skill | Check `agent-workflows-status --host <host>` says `UP_TO_DATE`, then restart the agent host so it reloads its skill directory. |
 
 ## Where To Go Next
 
