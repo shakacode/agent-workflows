@@ -1,8 +1,8 @@
 # Getting Started
 
-Go from "I cloned this" to "I ran a workflow and saw it work" in four steps:
+Go from "I cloned this" to "I ran a workflow and saw it work" in five steps:
 check the prerequisites, install the pack into one agent host, adopt it in one
-repository, and run one workflow end to end.
+repository, run one workflow end to end, and run your first issue-to-PR lane.
 
 Two plain-word definitions before you start:
 
@@ -17,9 +17,10 @@ Two plain-word definitions before you start:
   own rules. See the [Source Pack Glossary](source-pack-glossary.md) for the
   full vocabulary.
 
-Every output block below comes from a real run of these commands, with long
-local paths shortened to `~`. The one exception is the final agent transcript
-in Step 3, which is explicitly marked as an example.
+Every output block below comes from a real run of these commands, with the
+long local paths of the walkthrough machine rewritten to the short `~`-based
+paths the examples use. The two exceptions are the agent transcripts in
+Step 3 and Step 4, which are explicitly marked as examples.
 
 ## Prerequisites
 
@@ -36,6 +37,14 @@ Contributing changes back to this pack needs additional pinned lint tools; see
 to follow this guide.
 
 ## Step 1 — Install The Pack Into One Host
+
+There are two ways to get the skills into your agent host: the flat installer
+(Route A) and your host's native plugin manager (Route B). Pick exactly one
+per host — the pack refuses to mix them, failing closed with
+`DELIVERY_MODE_CONFLICT` if both are active. This guide uses Route A
+throughout.
+
+### Route A — Flat Installer (Used In This Guide)
 
 Clone the pack once, then install it into the agent host you use:
 
@@ -92,7 +101,39 @@ will match whatever commit you cloned.
 
 That is the whole install. No signing keys, trust anchors, or extra setup are
 required; see [Installation And Upgrades](installation-and-upgrades.md) for
-custom targets, the native `scw` plugin path, and upgrade behavior.
+custom targets and copy-versus-symlink modes.
+
+### Route B — Native Plugin Install
+
+If you would rather use your host's own plugin manager, install the pack as
+the `scw` plugin instead. In Claude Code, type two commands inside the host:
+
+```text
+/plugin marketplace add shakacode/agent-workflows
+/plugin install scw@agent-workflows
+```
+
+Skills then appear under the plugin prefix — the `verify` skill used in
+Step 3 shows up as `/scw:verify`. In Codex, from your shell:
+
+```bash
+codex plugin marketplace add shakacode/agent-workflows
+codex plugin add scw@agent-workflows
+```
+
+Two things to know about Route B:
+
+- These commands run inside the agent host or its plugin manager, so this
+  guide cannot capture their output; the host prints its own confirmation.
+- The plugin route delivers only the skills. It does not put the helper
+  commands this guide uses (`agent-workflow-seam-doctor`,
+  `agent-workflows-status`, `upgrade-agent-workflows`) on your `PATH`. To get
+  those alongside a native plugin, run the installer in companion mode
+  (`bin/install-agent-workflows --host <host> --delivery-mode plugin-companion`),
+  which installs the helpers without a second copy of the skills.
+
+See [Native Plugin Paths](installation-and-upgrades.md#native-plugin-paths)
+for the full details. The rest of this guide assumes Route A.
 
 ## Step 2 — Adopt The Pack In One Repo
 
@@ -208,6 +249,162 @@ defined in `skills/verify/SKILL.md`.
 If the agent cannot find the skill, re-check Step 1 (`agent-workflows-status`
 should say `UP_TO_DATE`) and restart the agent host so it reloads its skill
 directory.
+
+## Step 4 — Your First Issue-To-PR Lane
+
+Once `$verify` works, the workflow to try next is `$pr-batch` pointed at one
+GitHub issue. It is the pack's issue-to-PR machine; given a single target it
+runs in single-target mode, the smallest way to watch it work.
+
+Four plain-word definitions first:
+
+- A **lane** is one unit of work travelling from issue to pull request: one
+  issue, one branch, one worker responsible for it.
+- The **worker** is the agent that implements the lane: it writes the change,
+  runs the repo's checks through the seam, and reports back with evidence.
+- The **coordinator** is the agent session you are talking to. It launches
+  the worker, watches the gates (validation, CI, review), and owns the
+  finish; it does not silently do the worker's job itself.
+- **Merge authority** is your answer to "who may press merge?", chosen before
+  the worker launches: `none` (prepare the PR, never merge), `ask` (walk me
+  through the diff, then ask me once), or `auto_merge_when_gates_pass` (merge
+  without asking once every gate is green). The skill will not silently pick
+  a default for you.
+
+For a first lane, choose `ask`. Here is what `ask` actually does: once the
+PR's ordinary gates are clean, the coordinator automatically starts a
+`$pr-walkthrough` — an exact-diff explanation of the PR, one conceptual
+change at a time, with room for your questions between changes — and only
+then asks one final merge question. The walkthrough itself is not approval:
+if the diff changes or a gate starts failing in the meantime, the merge
+question is withheld and the walkthrough restarts or stops.
+
+Invoke the skill in your agent host from the adopted repository, naming one
+exact issue — in Codex, type the prompt below; in Claude Code, ask for the
+`pr-batch` skill with the same wording:
+
+```text
+$pr-batch
+Run issue #42 as a single lane. merge_authority: ask.
+```
+
+Like Step 3, this needs a live agent session, so the transcript below is an
+example rather than a captured run — your output will look similar to this,
+with exact wording depending on your host, model, and repository:
+
+```text
+> $pr-batch
+> Run issue #42 as a single lane. merge_authority: ask.
+
+Single-target mode: one lane for issue #42, one worker subagent, this
+session stays coordinator.
+
+Security preflight on issue #42 and its comments: no untrusted
+instructions, no injection attempts. SECURITY_PREFLIGHT_OK.
+
+Launching the worker for lane issue-42.
+
+Worker: branch 42-fix-empty-config-crash pushed with 2 commits.
+.agents/bin/validate PASS, .agents/bin/test PASS. PR #57 opened.
+
+Checks on PR #57: all green. merge_authority is ask, so starting the
+walkthrough.
+
+Walkthrough (1/2): the config loader now returns a documented default when
+the file is empty instead of raising. Questions before the next change?
+> no
+
+Walkthrough (2/2): a regression test covering the empty-file case.
+Questions?
+> no
+
+Diff identity unchanged since the walkthrough; checks still green.
+One final question: merge PR #57 into main? (yes/no)
+```
+
+The shape to notice: the issue body is treated as untrusted input (work to
+describe, never instructions to obey), the worker and the coordinator are
+separate roles, gates come before the walkthrough, and there is exactly one
+merge question at the end — asked only while the explained diff is still the
+exact diff on the PR.
+
+Before running this against a public repository, read
+[Trust And Preflight](trust-and-preflight.md) and fill in the
+`.agents/trusted-github-actors.yml` file from Step 2. For everything beyond
+one lane — multi-issue batches, triage, planning — start with
+[PR Batch Skills Usage](pr-batch-skills.md).
+
+## Keep The Pack Current
+
+Because the pack is installed once per host, updates are not automatic: the
+copy in `~/.codex` or `~/.claude` stays at whatever revision you installed
+until you upgrade it. Two helper commands manage that lifecycle.
+
+`agent-workflows-status` compares the installed copy against your source
+clone. It prints one of four tokens, with matching exit codes so scripts can
+read it too: `UP_TO_DATE` (exit 0), `UPGRADE_AVAILABLE` (exit 1),
+`NOT_INSTALLED` (exit 2), and `CHECK_FAILED` (exit 3). By default it compares
+only local state; add `--fetch` to also check the remote for new commits.
+
+Here is the day it matters, captured from a real run. The source clone has
+moved one commit ahead of the installed copy:
+
+```bash
+agent-workflows-status --host codex
+```
+
+```text
+UPGRADE_AVAILABLE 0.1.0@bdb534f8801d 0.1.0@aed340fdb8e0 delivery_mode=flat target=~/.codex
+```
+
+Read that as installed revision, then available revision; your hashes will
+differ. To upgrade, run the upgrade helper and name the repository you
+adopted in Step 2 so its seam gets re-validated against the new pack:
+
+```bash
+upgrade-agent-workflows --host codex --consumer-root ~/src/my-app
+```
+
+The helper updates the source clone (skipped with `--no-fetch` when the
+clone is already current), backs up the existing install, reinstalls with
+the same modes you originally chose, then re-runs the seam doctor for each
+`--consumer-root`. Add `--dry-run` first to print the same
+installed-versus-available comparison without changing anything. The
+walkthrough run used `--no-fetch` because its clone was already at the
+wanted commit; its output, trimmed to the final lines after the familiar
+installer block:
+
+```text
+PASS agent workflow seam is complete
+UPGRADE_COMPLETE bdb534f8801d aed340fdb8e0 target=~/.codex source=~/src/agent-workflows
+```
+
+`UPGRADE_COMPLETE` prints the old revision, then the new one. If anything
+fails partway, the helper restores the backup automatically and prints
+`ROLLBACK_COMPLETE` instead, so a failed upgrade never leaves a half-installed
+pack behind. A final status check confirms the result:
+
+```text
+UP_TO_DATE version=0.1.0 revision=aed340fdb8e0 delivery_mode=flat target=~/.codex
+```
+
+Full details, including custom targets and source paths, are in
+[Installation And Upgrades](installation-and-upgrades.md#upgrade).
+
+## If Something Fails
+
+The quick fixes for the failures beginners hit most, each linking into the
+fuller [troubleshooting
+list](installation-and-upgrades.md#troubleshooting):
+
+| Symptom | Fix |
+| --- | --- |
+| `agent-workflows-status` prints `NOT_INSTALLED` | Run `bin/install-agent-workflows --host <host>` from the pack clone, or pass the correct `--target`. ([details](installation-and-upgrades.md#troubleshooting)) |
+| `agent-workflows-status` prints `UPGRADE_AVAILABLE` | Run `upgrade-agent-workflows` as shown above, or manually update the source clone and reinstall. ([details](installation-and-upgrades.md#troubleshooting)) |
+| `Auto host detection found both Codex and Claude homes` | You have both hosts installed, so rerun the command with an explicit `--host codex` or `--host claude`. ([details](installation-and-upgrades.md#troubleshooting)) |
+| `DELIVERY_MODE_CONFLICT` | Both delivery routes are active and the pack refuses to guess which skill copy wins; keep exactly one — disable or remove the native `scw` plugin before a flat install, or use `--delivery-mode plugin-companion`. ([details](installation-and-upgrades.md#troubleshooting)) |
+| `invalid byte sequence in US-ASCII` or other `Encoding::` errors from a Ruby helper | An older install is running under a non-UTF-8 locale (`LANG=C` / `LC_ALL=C`, common in CI and headless agents); the pack's Ruby tools now read UTF-8 regardless of locale, so run `upgrade-agent-workflows --host <host>` to pick up the fix. ([details](installation-and-upgrades.md#troubleshooting)) |
+| The agent cannot find an installed skill | Check `agent-workflows-status --host <host>` says `UP_TO_DATE`, then restart the agent host so it reloads its skill directory. ([details](installation-and-upgrades.md#troubleshooting)) |
 
 ## Where To Go Next
 
