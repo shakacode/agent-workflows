@@ -1226,7 +1226,7 @@ SH
   cat > "$injection" <<'RUBY'
 if ARGV.length >= 4 && ARGV.fetch(0) == ENV.fetch("QA_STAGING") &&
    ARGV.fetch(1).match?(%r{/\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+/staging\z}) &&
-   ARGV.fetch(2) == ENV.fetch("QA_STAGING") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
   File.rename(ENV.fetch("QA_STAGING"), ENV.fetch("QA_PRESERVED_STAGING"))
   File.symlink(ENV.fetch("QA_OUTSIDE_STAGING"), ENV.fetch("QA_STAGING"))
   File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
@@ -1351,6 +1351,201 @@ RUBY
   assert_file "$preserved_skills/a-first-skill/SKILL.md"
   assert_file "$staging/b-second-skill/SKILL.md"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "skills root replacement leaked install lock"
+}
+
+test_recovery_destination_appearing_at_move_is_not_replaced() {
+  local tmp target staging receipt injection marker output status destination
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-destination-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/create-destination-before-rename.rb"
+  marker="$tmp/destination-created"
+  destination="$target/skills/user-owned-skill"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'staged skill\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryMoveHook
+  def self.call(phase, _source_parent, source_name, destination_parent, destination_name)
+    return unless phase == :before_rename && source_name == "user-owned-skill"
+    marker = ENV.fetch("QA_RACE_MARKER")
+    return if File.exist?(marker)
+    destination = File.join(destination_parent, destination_name)
+    Dir.mkdir(destination)
+    File.write(File.join(destination, "SENTINEL"), "appeared destination\n")
+    File.write(marker, "created\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "destination appearing at recovery move exited $status: $output"
+  assert_contains "$output" "RECOVERY_PATH_BINDING_CHANGED"
+  assert_file "$destination/SENTINEL"
+  assert_contains "$(cat "$destination/SENTINEL")" "appeared destination"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  assert_file "$receipt"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "destination race leaked install lock"
+}
+
+test_flat_crash_recovery_restores_staged_symlink_skill() {
+  local tmp target staging receipt source_skill output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-symlink-skill"
+  receipt="$target/.agent-workflows-migration-staging"
+  source_skill="$tmp/source-skill"
+  mkdir -p "$staging" "$source_skill"
+  printf 'source skill\n' > "$source_skill/SKILL.md"
+  ln -s "$source_skill" "$staging/symlink-skill"
+  printf '{"delivery_mode":"flat","mode":"symlink","source":"%s"}\n' "$ROOT" \
+    > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  mkdir "$target/.agent-workflows-install.json.tmp"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "metadata preflight unexpectedly succeeded after symlink recovery"
+  assert_symlink "$target/skills/symlink-skill"
+  [[ "$(readlink "$target/skills/symlink-skill")" = "$source_skill" ]] || \
+    fail "recovery changed the staged symlink target"
+  [[ ! -e "$receipt" ]] || fail "successful symlink recovery preserved receipt"
+  [[ ! -e "$staging" ]] || fail "successful symlink recovery preserved staging"
+}
+
+test_recovery_source_replacement_after_inventory_is_not_moved() {
+  local tmp target staging receipt injection marker preserved output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-source-entry-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/replace-source-before-open.rb"
+  marker="$tmp/source-replaced"
+  preserved="$tmp/preserved-original"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'original staged skill\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryMoveHook
+  def self.call(phase, source_parent, source_name, _destination_parent, _destination_name)
+    return unless phase == :before_source_open && source_name == "user-owned-skill"
+    marker = ENV.fetch("QA_RACE_MARKER")
+    return if File.exist?(marker)
+    source = File.join(source_parent, source_name)
+    File.rename(source, ENV.fetch("QA_PRESERVED_SOURCE"))
+    Dir.mkdir(source)
+    File.write(File.join(source, "SKILL.md"), "replacement skill\n")
+    File.write(marker, "replaced\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" QA_PRESERVED_SOURCE="$preserved" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "source replacement after inventory exited $status: $output"
+  assert_contains "$output" "RECOVERY_PATH_BINDING_CHANGED"
+  assert_file "$marker"
+  assert_file "$preserved/SKILL.md"
+  assert_contains "$(cat "$preserved/SKILL.md")" "original staged skill"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  assert_contains "$(cat "$staging/user-owned-skill/SKILL.md")" "replacement skill"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "replacement source was moved"
+  assert_file "$receipt"
+}
+
+test_recovery_identity_failure_reverses_earlier_moves() {
+  local tmp target staging receipt injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-identity-failure"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/remove-second-before-identity.rb"
+  marker="$tmp/second-entry-removed"
+  mkdir -p "$staging/a-first-skill" "$staging/b-second-skill"
+  printf 'first staged skill\n' > "$staging/a-first-skill/SKILL.md"
+  printf 'second staged skill\n' > "$staging/b-second-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RemoveSecondRecoveryEntry
+  def lstat(path)
+    if ARGV == [path] && path.end_with?("/b-second-skill") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.rename(path, ENV.fetch("QA_PRESERVED_SOURCE"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "removed\n")
+    end
+    super
+  end
+end
+File.singleton_class.prepend(RemoveSecondRecoveryEntry)
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" QA_PRESERVED_SOURCE="$tmp/preserved-second" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "identity failure after earlier move exited $status: $output"
+  assert_file "$marker"
+  assert_file "$staging/a-first-skill/SKILL.md"
+  [[ ! -e "$target/skills/a-first-skill" ]] || fail "identity failure did not reverse earlier move"
+  assert_file "$tmp/preserved-second/SKILL.md"
+  assert_file "$receipt"
+}
+
+test_recovery_post_move_verification_failure_reverses_committed_move() {
+  local tmp target staging receipt injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-post-move-verify"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/fail-after-recovery-move.rb"
+  marker="$tmp/post-move-hook-ran"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'staged skill\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryMoveHook
+  def self.call(phase, _source_parent, source_name, _destination_parent, _destination_name)
+    return unless phase == :after_rename_before_verify && source_name == "user-owned-skill"
+    marker = ENV.fetch("QA_RACE_MARKER")
+    return if File.exist?(marker)
+    File.write(marker, "reached\n")
+    raise "injected post-move verification failure"
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "post-move verification failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_PATH_BINDING_CHANGED"
+  assert_file "$marker"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  assert_contains "$(cat "$staging/user-owned-skill/SKILL.md")" "staged skill"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "committed recovery move was not reversed"
+  assert_file "$receipt"
 }
 
 test_companion_cleanup_post_move_replacement_has_named_retry_failure() {
@@ -1830,13 +2025,15 @@ test_recovery_capture_supports_system_ruby_2_6() {
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
   printf '%s\n' "$staging" > "$receipt"
-  cat > "$fake_bin/ruby" <<'SH'
+cat > "$fake_bin/ruby" <<'SH'
 #!/bin/sh
-if [ "$#" -eq 10 ] && [ "$7" = ".agent-workflows-install.json" ]; then
+case "$*" in
+  *renameatx_np*|*".agent-workflows-install.json"*)
   /usr/bin/ruby -e 'abort RUBY_VERSION unless RUBY_VERSION.start_with?("2.6.")'
   printf 'system-ruby-2.6\n' >> "$QA_SYSTEM_RUBY_MARKER"
   exec /usr/bin/ruby "$@"
-fi
+  ;;
+esac
 exec "$QA_DEFAULT_RUBY" "$@"
 SH
   chmod +x "$fake_bin/ruby"
@@ -5055,6 +5252,11 @@ main() {
     test_recovery_staging_replacement_during_companion_cleanup_preserves_artifacts
     test_recovery_staging_disappearing_after_identity_capture_fails_closed
     test_recovery_skills_root_replacement_during_reversal_preserves_outside_data
+    test_recovery_destination_appearing_at_move_is_not_replaced
+    test_flat_crash_recovery_restores_staged_symlink_skill
+    test_recovery_source_replacement_after_inventory_is_not_moved
+    test_recovery_identity_failure_reverses_earlier_moves
+    test_recovery_post_move_verification_failure_reverses_committed_move
     test_companion_cleanup_post_move_replacement_has_named_retry_failure
     test_companion_cleanup_root_replacement_cannot_move_staging_outside_target
     test_companion_cleanup_root_swap_during_deletion_preserves_all_entries

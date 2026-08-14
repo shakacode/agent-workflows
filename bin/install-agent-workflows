@@ -730,7 +730,9 @@ replace_bound_recovery_metadata() {
         digest.update(chunk)
       end
       final_stat = file.stat
-      abort unless final_stat.file? && final_stat.dev == stat.dev && final_stat.ino == stat.ino
+      raise "metadata attestation changed during read" unless final_stat.file? &&
+                                                               final_stat.dev == stat.dev &&
+                                                               final_stat.ino == stat.ino
       "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}"
     end
     begin
@@ -1286,61 +1288,113 @@ recovery_directory_identity() {
   ' "$1" 2>/dev/null
 }
 
-move_bound_recovery_path() {
+recovery_path_identity() {
   ruby -e '
+    path = ARGV.fetch(0)
+    stat = File.lstat(path)
+    verified = File.lstat(path)
+    exit 1 unless verified.dev == stat.dev && verified.ino == stat.ino
+    print "#{stat.dev}:#{stat.ino}"
+  ' "$1" 2>/dev/null
+}
+
+move_bound_recovery_path() {
+  ruby -rfiddle -e '
+    renamed = false
     begin
       source = File.expand_path(ARGV.fetch(0))
       destination = File.expand_path(ARGV.fetch(1))
-      bound_path = File.expand_path(ARGV.fetch(2))
-      expected_identity = ARGV.fetch(3)
-      other_bound_path = ARGV[4] && File.expand_path(ARGV[4])
-      other_expected_identity = ARGV[5]
-      unless source == bound_path || File.dirname(source) == bound_path ||
-             File.dirname(destination) == bound_path
-        exit 67
-      end
-      bound_stat = File.lstat(bound_path)
-      unless bound_stat.directory? && !bound_stat.symlink? &&
-             "#{bound_stat.dev}:#{bound_stat.ino}" == expected_identity
-        exit 67
-      end
-      other_bound_stat = nil
-      if other_bound_path
-        unless source == other_bound_path || File.dirname(source) == other_bound_path ||
-               destination == other_bound_path || File.dirname(destination) == other_bound_path
-          exit 67
+      source_parent = File.expand_path(ARGV.fetch(2))
+      source_parent_identity = ARGV.fetch(3)
+      destination_parent = File.expand_path(ARGV.fetch(4))
+      destination_parent_identity = ARGV.fetch(5)
+      expected_source_identity = ARGV[6]
+      exit 67 unless File.dirname(source) == source_parent && File.dirname(destination) == destination_parent
+      exit 67 unless File.const_defined?(:NOFOLLOW)
+
+      flags = File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      source_parent_file = File.open(source_parent, flags)
+      destination_parent_file = File.open(destination_parent, flags)
+      source_parent_stat = source_parent_file.stat
+      destination_parent_stat = destination_parent_file.stat
+      exit 67 unless source_parent_stat.directory? &&
+                     "#{source_parent_stat.dev}:#{source_parent_stat.ino}" == source_parent_identity
+      exit 67 unless destination_parent_stat.directory? &&
+                     "#{destination_parent_stat.dev}:#{destination_parent_stat.ino}" == destination_parent_identity
+
+      handle = Fiddle.dlopen(nil)
+      openat = Fiddle::Function.new(handle["openat"],
+                                    [Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT],
+                                    Fiddle::TYPE_INT)
+      source_name = File.basename(source)
+      destination_name = File.basename(destination)
+      open_entry = lambda do |parent_fd, name|
+        fd = openat.call(parent_fd, name, flags)
+        if fd == -1 && Fiddle.last_error == Errno::ELOOP::Errno
+          link_flags = if RUBY_PLATFORM.include?("darwin")
+                         0x00200000 # O_SYMLINK
+                       else
+                         File::NOFOLLOW | 0x00200000 # O_PATH | O_NOFOLLOW
+                       end
+          fd = openat.call(parent_fd, name, link_flags)
         end
-        other_bound_stat = File.lstat(other_bound_path)
-        unless other_bound_stat.directory? && !other_bound_stat.symlink? &&
-               "#{other_bound_stat.dev}:#{other_bound_stat.ino}" == other_expected_identity
-          exit 67
-        end
+        fd
       end
-      begin
-        File.lstat(destination)
-        exit 67
-      rescue Errno::ENOENT
-        nil
+      RecoveryMoveHook.call(:before_source_open, source_parent, source_name,
+                            destination_parent, destination_name) if defined?(RecoveryMoveHook)
+      source_fd = open_entry.call(source_parent_file.fileno, source_name)
+      exit 67 if source_fd == -1
+      source_file = IO.for_fd(source_fd, autoclose: true)
+      source_stat = source_file.stat
+      if expected_source_identity
+        exit 67 unless "#{source_stat.dev}:#{source_stat.ino}" == expected_source_identity
       end
-      File.lstat(source)
-      verified_stat = File.lstat(bound_path)
-      unless verified_stat.directory? && !verified_stat.symlink? &&
-             verified_stat.dev == bound_stat.dev && verified_stat.ino == bound_stat.ino
+      destination_fd = open_entry.call(destination_parent_file.fileno, destination_name)
+      if destination_fd != -1
+        IO.for_fd(destination_fd, autoclose: true).close
         exit 67
       end
-      if other_bound_path
-        other_verified_stat = File.lstat(other_bound_path)
-        unless other_verified_stat.directory? && !other_verified_stat.symlink? &&
-               other_verified_stat.dev == other_bound_stat.dev &&
-               other_verified_stat.ino == other_bound_stat.ino
-          exit 67
-        end
+      exit 67 unless Fiddle.last_error == Errno::ENOENT::Errno
+      RecoveryMoveHook.call(:before_rename, source_parent, source_name,
+                            destination_parent, destination_name) if defined?(RecoveryMoveHook)
+
+      if RUBY_PLATFORM.include?("darwin")
+        rename = Fiddle::Function.new(handle["renameatx_np"],
+                                      [Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP,
+                                       Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT],
+                                      Fiddle::TYPE_INT)
+        result = rename.call(source_parent_file.fileno, source_name,
+                             destination_parent_file.fileno, destination_name, 0x00000004)
+      else
+        rename = Fiddle::Function.new(handle["renameat2"],
+                                      [Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP,
+                                       Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT],
+                                      Fiddle::TYPE_INT)
+        result = rename.call(source_parent_file.fileno, source_name,
+                             destination_parent_file.fileno, destination_name, 0x00000001)
       end
-      File.rename(source, destination)
-    rescue SystemCallError
-      exit 1
-    rescue StandardError
-      exit 67
+      exit 67 if result == -1
+      renamed = true
+      RecoveryMoveHook.call(:after_rename_before_verify, source_parent, source_name,
+                            destination_parent, destination_name) if defined?(RecoveryMoveHook)
+      moved_fd = open_entry.call(destination_parent_file.fileno, destination_name)
+      exit 67 if moved_fd == -1
+      moved_file = IO.for_fd(moved_fd, autoclose: true)
+      moved_stat = moved_file.stat
+      exit 67 unless moved_stat.dev == source_stat.dev && moved_stat.ino == source_stat.ino
+      stale_source_fd = open_entry.call(source_parent_file.fileno, source_name)
+      if stale_source_fd != -1
+        IO.for_fd(stale_source_fd, autoclose: true).close
+        exit 67
+      end
+      exit 67 unless Fiddle.last_error == Errno::ENOENT::Errno
+    rescue Fiddle::DLError, SystemCallError, StandardError
+      exit renamed ? 68 : 67
+    ensure
+      source_file&.close
+      moved_file&.close
+      source_parent_file&.close
+      destination_parent_file&.close
     end
   ' "$@" 2>/dev/null
 }
@@ -1351,21 +1405,22 @@ restore_recovery_staging_moves() {
   local skills_root="$3"
   local skills_identity="$4"
   shift 4
-  local destination staged_path index move_status
-  local -a destinations=("$@")
-  for ((index = ${#destinations[@]} - 1; index >= 0; index--)); do
-    destination="${destinations[$index]}"
+  local destination staged_path expected_identity index move_status
+  local -a move_records=("$@")
+  for ((index = ${#move_records[@]} - 2; index >= 0; index -= 2)); do
+    destination="${move_records[$index]}"
+    expected_identity="${move_records[$((index + 1))]}"
     staged_path="$staging/$(basename "$destination")"
     move_status=0
     if [[ -e "$staged_path" || -L "$staged_path" || ! -e "$destination" && ! -L "$destination" ]]; then
       move_status=1
     else
-      move_bound_recovery_path "$destination" "$staged_path" "$staging" "$staging_identity" \
-        "$skills_root" "$skills_identity" || move_status=$?
+      move_bound_recovery_path "$destination" "$staged_path" "$skills_root" "$skills_identity" \
+        "$staging" "$staging_identity" "$expected_identity" || move_status=$?
     fi
     if [[ "$move_status" -ne 0 ]]; then
       echo "RECOVERY_STAGING_RESTORE_FAILED: preserved all remaining recovery artifacts for manual recovery." >&2
-      if [[ "$move_status" -eq 67 ]]; then
+      if [[ "$move_status" -eq 67 || "$move_status" -eq 68 ]]; then
         if [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
           echo "RECOVERY_STAGING_BINDING_CHANGED: refused to restore through a replaced staging path." >&2
         elif [[ "$(recovery_directory_identity "$skills_root" 2>/dev/null || true)" != "$skills_identity" ]]; then
@@ -1385,8 +1440,8 @@ rollback_migration_staging() {
   local bind_recovery_metadata="${2:-false}"
   local staging_identity="${3:-}"
   local skills_root="$target/skills"
-  local staged_path destination move_status restore_status reversal_status skills_identity
-  local -a moved_destinations=()
+  local staged_path destination source_identity move_status restore_status reversal_status skills_identity
+  local -a moved_records=()
   local moved_count=0
   [[ -n "$staging" ]] || return 0
   if [[ -z "$staging_identity" ]]; then
@@ -1417,7 +1472,7 @@ rollback_migration_staging() {
       if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
         restore_status=0
         restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
-          "${moved_destinations[@]}" || restore_status=$?
+          "${moved_records[@]}" || restore_status=$?
         [[ "$restore_status" -eq 0 ]] || return "$restore_status"
       fi
       return 1
@@ -1428,22 +1483,37 @@ rollback_migration_staging() {
       if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
         restore_status=0
         restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
-          "${moved_destinations[@]}" || restore_status=$?
+          "${moved_records[@]}" || restore_status=$?
         [[ "$restore_status" -eq 0 ]] || return "$restore_status"
       fi
       return 1
     fi
-    move_status=0
-    move_bound_recovery_path "$staged_path" "$destination" "$staging" "$staging_identity" \
-      "$skills_root" "$skills_identity" || move_status=$?
-    if [[ "$move_status" -ne 0 ]]; then
-      if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
+    if ! source_identity="$(recovery_path_identity "$staged_path")"; then
+      if [[ "$moved_count" -gt 0 ]]; then
         restore_status=0
         restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
-          "${moved_destinations[@]}" || restore_status=$?
+          "${moved_records[@]}" || restore_status=$?
         [[ "$restore_status" -eq 0 ]] || return "$restore_status"
       fi
-      if [[ "$move_status" -eq 67 ]]; then
+      return 67
+    fi
+    move_status=0
+    move_bound_recovery_path "$staged_path" "$destination" "$staging" "$staging_identity" \
+      "$skills_root" "$skills_identity" "$source_identity" || move_status=$?
+    if [[ "$move_status" -eq 0 || "$move_status" -eq 68 ]]; then
+      moved_records[moved_count]="$destination"
+      moved_count=$((moved_count + 1))
+      moved_records[moved_count]="$source_identity"
+      moved_count=$((moved_count + 1))
+    fi
+    if [[ "$move_status" -ne 0 ]]; then
+      if [[ "$move_status" -eq 68 || "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_records[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+      fi
+      if [[ "$move_status" -eq 67 || "$move_status" -eq 68 ]]; then
         if [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
           echo "RECOVERY_STAGING_BINDING_CHANGED: preserved recovery artifacts without following a replaced staging path." >&2
         elif [[ "$(recovery_directory_identity "$skills_root" 2>/dev/null || true)" != "$skills_identity" ]]; then
@@ -1456,12 +1526,10 @@ rollback_migration_staging() {
       return 1
     fi
     if [[ "$bind_recovery_metadata" = "true" ]]; then
-      moved_destinations[moved_count]="$destination"
-      moved_count=$((moved_count + 1))
       if [[ "$recovery_metadata_captured" = "true" ]] && ! recovery_metadata_binding_intact; then
         restore_status=0
         restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
-          "${moved_destinations[@]}" || restore_status=$?
+          "${moved_records[@]}" || restore_status=$?
         [[ "$restore_status" -eq 0 ]] || return "$restore_status"
         return 65
       fi
@@ -1475,7 +1543,7 @@ rollback_migration_staging() {
     if [[ "$moved_count" -gt 0 ]]; then
       reversal_status=0
       restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
-        "${moved_destinations[@]}" || reversal_status=$?
+        "${moved_records[@]}" || reversal_status=$?
       [[ "$reversal_status" -eq 0 ]] || return "$reversal_status"
     fi
     return "$restore_status"
@@ -1484,7 +1552,7 @@ rollback_migration_staging() {
     if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
       restore_status=0
       restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
-        "${moved_destinations[@]}" || restore_status=$?
+        "${moved_records[@]}" || restore_status=$?
       [[ "$restore_status" -eq 0 ]] || return "$restore_status"
     fi
     return 1
@@ -1594,8 +1662,8 @@ cleanup_recovery_staging() {
   fi
   cleanup_root_identity="$(recovery_directory_identity "$cleanup_root")" || return 1
   move_status=0
-  move_bound_recovery_path "$staging" "$cleanup_staging" "$staging" "$staging_identity" \
-    "$cleanup_root" "$cleanup_root_identity" || move_status=$?
+  move_bound_recovery_path "$staging" "$cleanup_staging" "$target" "$target_identity" \
+    "$cleanup_root" "$cleanup_root_identity" "$staging_identity" || move_status=$?
   if [[ "$move_status" -ne 0 ]]; then
     rmdir "$cleanup_root" 2>/dev/null || true
     if [[ "$move_status" -eq 67 ]]; then
@@ -1615,8 +1683,8 @@ cleanup_recovery_staging() {
     restore_captured_recovery_metadata || restore_status=$?
   fi
   if [[ "$restore_status" -ne 0 ]]; then
-    if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_staging" "$staging_identity" \
-      "$target" "$target_identity"; then
+    if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_root" "$cleanup_root_identity" \
+      "$target" "$target_identity" "$staging_identity"; then
       echo "RECOVERY_STAGING_RESTORE_FAILED: preserved $cleanup_root for manual recovery." >&2
     else
       rmdir "$cleanup_root" 2>/dev/null || true
@@ -1636,8 +1704,8 @@ cleanup_recovery_staging() {
     echo "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: preserved ${remove_artifact:-$cleanup_root} and recovery receipt; recovery staging was not restored." >&2
     return 1
   elif [[ "$remove_status" -ne 0 ]]; then
-    if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_staging" "$staging_identity" \
-      "$target" "$target_identity"; then
+    if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_root" "$cleanup_root_identity" \
+      "$target" "$target_identity" "$staging_identity"; then
       echo "RECOVERY_STAGING_RESTORE_FAILED: preserved $cleanup_root for manual recovery." >&2
     else
       rmdir "$cleanup_root" 2>/dev/null || true
@@ -2234,13 +2302,6 @@ if [[ -f "$migration_receipt" ]]; then
   case "$installed_metadata_state" in
     valid)
       prior_delivery_mode="$installed_metadata_value"
-      case "$prior_delivery_mode" in
-        flat|plugin-companion) ;;
-        *)
-          echo "Installed metadata delivery_mode must be flat or plugin-companion, got: $prior_delivery_mode" >&2
-          exit 64
-          ;;
-      esac
       ;;
     key_absent) prior_delivery_mode="flat" ;;
     absent) prior_delivery_mode="flat" ;;
