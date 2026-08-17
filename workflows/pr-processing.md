@@ -963,7 +963,15 @@ For each user-visible UI change:
    `measured_substitute: before_value=52px; after_value=0px; tolerance=1px`
    (or the deterministic `baseline_value` / `candidate_value` aliases). Every
    value and the tolerance require units. Stills or incidental numbers in URLs
-   do not satisfy an interaction claim.
+   do not satisfy an interaction claim. Use the repository's browser harness
+   when it names one. Otherwise, when Playwright is available, create the
+   browser context with `recordVideo: { dir, size }` and an explicit matching
+   viewport; drive baseline and candidate with the same script, viewport, and
+   test data; wait on asserted UI states rather than sleeps; close the context
+   before resolving or copying the video; and inspect every clip. Brief
+   post-assertion pauses may make the recording readable. Keep generated proof
+   in a repository-defined ignored artifact directory or task-owned temporary
+   directory, never committed as PR evidence.
 5. For a visual fix, exercise an intentionally unfixed negative control and
    record the observed failing assertion or mismatch. If no visual fix is in
    scope, give a reasoned `not applicable`.

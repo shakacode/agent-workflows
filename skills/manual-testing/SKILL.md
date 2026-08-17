@@ -72,6 +72,15 @@ blocker. Do not fake a manual pass from static inspection.
      The before state may be the current implementation, an intentionally
      unfixed build, or a named design reference. Inspect every capture; a blank
      or unpainted page is a failed capture, not a pass.
+   - For browser interaction or other time-dependent behavior, use the
+     repository's browser harness. If the repository names no recorder and
+     Playwright is available, create the browser context with
+     `recordVideo: { dir, size }` and an explicit matching viewport. Drive the
+     baseline and candidate with the same script, viewport, and test data; wait
+     on asserted UI states rather than sleeps, using brief post-assertion pauses
+     only when needed to make the recording readable. Close the context before
+     resolving or copying the video so Playwright flushes it, then watch every
+     clip before accepting it as evidence.
    - Put the artifacts where every intended reviewer can open them. For
      GitHub-only or public work, prefer GitHub PR attachments. When an
      authenticated browser/file-upload capability is available, use GitHub's UI
@@ -104,6 +113,9 @@ blocker. Do not fake a manual pass from static inspection.
      use exact labeled evidence such as `measured_substitute:
      before_value=52px; after_value=0px; tolerance=1px`; every value and
      tolerance needs a unit. Incidental URL IDs do not count.
+     Keep generated proof in a repository-defined ignored artifact directory or
+     task-owned temporary directory; do not commit screenshots or recordings as
+     PR evidence.
    - For a visual fix, rerun an intentionally unfixed negative control and
      record the observed failing assertion or mismatch. A reasoned `not
      applicable` is required when no visual fix is in scope.

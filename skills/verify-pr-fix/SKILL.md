@@ -1,7 +1,7 @@
 ---
 name: verify-pr-fix
 description: >-
-  Manually verify that a bug-fix PR actually works by reproducing the failure before the fix and confirming it is gone after, with captured evidence, then posting findings to the PR (and optionally the linked issue). Use when asked to manually verify a PR/fix, reproduce an issue and its fix, confirm a fix works end to end, or take screenshots proving a change.
+  Manually verify that a bug-fix PR actually works by reproducing the failure before the fix and confirming it is gone after, with captured evidence, then posting findings to the PR (and optionally the linked issue). Use when asked to manually verify a PR/fix, reproduce an issue and its fix, confirm a fix works end to end, or capture screenshots or clips proving a change.
 argument-hint: '[PR URL or number]'
 ---
 
@@ -61,10 +61,17 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    `git checkout HEAD -- <file>`, or leave the worktree), then run the identical reproduction. Capture the
    now-passing result and confirm the specific signal flipped (orphans 6/6 -> 0/6, exit code, status, DOM).
    Confirm `git status` is clean so the "after" really ran against post-fix code.
-6. **Capture evidence.** Save real terminal output. For UI/browser changes take screenshots via Playwright
-   MCP. For a shareable visual of terminal results you may
-   render the captured output with the visualize tool, but the render must reproduce real output verbatim —
-   never stage numbers.
+6. **Capture evidence.** Save real terminal output. For a static UI/browser change, capture paired
+   before/after screenshots. For interaction, transition, loading, timing, or other temporal behavior,
+   capture paired short clips through the repository's browser harness. If the repository names no
+   recorder and Playwright is available, create the browser context with `recordVideo: { dir, size }` and
+   an explicit matching viewport. Drive both clips with the same script, viewport, and test data; wait on
+   asserted UI states rather than sleeps, use brief post-assertion pauses only for readability, close the
+   context before resolving or copying the video, and watch every clip before accepting it. Follow the
+   Durable Visual Evidence Gate in `workflows/pr-processing.md`: publish reviewer-visible evidence, keep
+   the result blocked while it is local-only, and do not commit generated screenshots or recordings as PR
+   evidence. For a shareable visual of terminal results you may render the captured output with the
+   visualize tool, but the render must reproduce real output verbatim — never stage numbers.
 7. **Clean up.** Kill spawned processes, remove scratch dirs/worktrees, and confirm nothing leaked
    (`pgrep -fl <marker>` should report none).
 8. **Report to the PR.** Post a comment with the structured format below. Before posting to GitHub (an
@@ -81,7 +88,8 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
   the real supervisor (e.g. Foreman: signal only the master PID, SIGKILL after its ~5s window).
 - **Rendering / hydration / framework output** (render output, FOUC, streaming, cache keys): boot the
   relevant integration test app, hit the affected route, compare server-rendered output vs hydrated DOM,
-  watch the renderer log, diff cache keys. Browser-visible? Screenshot before/after with Playwright MCP.
+  watch the renderer log, diff cache keys. For browser-visible output, use paired screenshots for static
+  states and paired clips for temporal behavior.
 - **Generators / installers / scaffolding**: run the generator into a temp app and diff the produced files
   against expectation; for behavioral output, boot the generated app.
 - **Caching / dedupe / digests**: construct the colliding or repeated inputs and assert hit/miss and that
