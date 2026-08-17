@@ -444,26 +444,9 @@ module BatchUsageReceipt
         return
       end
 
-      query = <<~SQL
-        SELECT json_object(
-          'threads', (
-            SELECT json_group_array(json_object(
-              'id', id,
-              'rollout_path', rollout_path,
-              'model_provider', model_provider,
-              'model', model,
-              'reasoning_effort', reasoning_effort
-            )) FROM threads
-          ),
-          'edges', (
-            SELECT json_group_array(json_object(
-              'parent_thread_id', parent_thread_id,
-              'child_thread_id', child_thread_id
-            )) FROM thread_spawn_edges
-          )
-        );
-      SQL
-      stdout, _, status = Open3.capture3("sqlite3", "-readonly", "-batch", "-noheader", @database_path, query)
+      stdout, _, status = Open3.capture3(
+        "sqlite3", "-readonly", "-batch", "-noheader", @database_path, state_query
+      )
       unless status.success?
         @unknown << { "status" => UNKNOWN, "code" => "state_database_unsupported" }
         return
@@ -482,6 +465,65 @@ module BatchUsageReceipt
       @unknown << { "status" => UNKNOWN, "code" => "state_database_unsupported" }
     ensure
       @children.each_value(&:sort!)
+    end
+
+    def state_query
+      roots = manifest_thread_ids.map { |thread_id| "(#{sql_text_literal(thread_id)})" }.join(",\n        ")
+      <<~SQL
+        WITH RECURSIVE
+        roots(id) AS (
+          VALUES #{roots}
+        ),
+        reachable(id) AS (
+          SELECT id FROM roots
+          UNION
+          SELECT edge.child_thread_id
+          FROM thread_spawn_edges AS edge
+          JOIN reachable ON reachable.id = edge.parent_thread_id
+        ),
+        scoped_threads AS (
+          SELECT thread.id, thread.rollout_path, thread.model_provider, thread.model, thread.reasoning_effort
+          FROM threads AS thread
+          JOIN reachable ON reachable.id = thread.id
+          ORDER BY thread.id
+        ),
+        scoped_edges AS (
+          SELECT edge.parent_thread_id, edge.child_thread_id
+          FROM thread_spawn_edges AS edge
+          JOIN reachable ON reachable.id = edge.parent_thread_id
+          ORDER BY edge.parent_thread_id, edge.child_thread_id
+        )
+        SELECT json_object(
+          'threads', (
+            SELECT json_group_array(json_object(
+              'id', id,
+              'rollout_path', rollout_path,
+              'model_provider', model_provider,
+              'model', model,
+              'reasoning_effort', reasoning_effort
+            )) FROM scoped_threads
+          ),
+          'edges', (
+            SELECT json_group_array(json_object(
+              'parent_thread_id', parent_thread_id,
+              'child_thread_id', child_thread_id
+            )) FROM scoped_edges
+          )
+        );
+      SQL
+    end
+
+    def manifest_thread_ids
+      ids = [@manifest.dig("coordinator", "root_thread_id")]
+      @manifest.fetch("lanes").each do |lane|
+        ids << lane.fetch("root_thread_id")
+        (lane["workers"] || []).each { |worker| ids << worker.fetch("thread_id") }
+      end
+      ids.uniq.sort
+    end
+
+    def sql_text_literal(value)
+      "CAST(X'#{value.encode('UTF-8').b.unpack1('H*')}' AS TEXT)"
     end
 
     def manifest_roots
@@ -557,6 +599,11 @@ module BatchUsageReceipt
       end
 
       rollout_path = state_thread["rollout_path"]
+      unless rollout_path.is_a?(String) && !rollout_path.strip.empty?
+        @unknown << { "status" => UNKNOWN, "code" => "rollout_path_missing", "thread_id" => thread_id }
+        return @readers_by_thread[thread_id] = nil
+      end
+
       rollout_key = canonical_rollout_key(rollout_path)
       existing = @readers_by_rollout[rollout_key]
       return @readers_by_thread[thread_id] = existing if existing

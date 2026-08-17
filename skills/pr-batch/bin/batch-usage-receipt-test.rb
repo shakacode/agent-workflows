@@ -14,6 +14,7 @@ end
 
 HELPER = File.expand_path("batch-usage-receipt", __dir__)
 FIXTURES = File.expand_path("../fixtures/batch-usage-receipt", __dir__)
+load HELPER
 
 class BatchUsageReceiptTest < Minitest::Test
   def sql_quote(value)
@@ -35,7 +36,7 @@ class BatchUsageReceiptTest < Minitest::Test
       statements = +<<~SQL
         CREATE TABLE threads (
           id TEXT PRIMARY KEY,
-          rollout_path TEXT NOT NULL,
+          rollout_path TEXT,
           model_provider TEXT NOT NULL,
           model TEXT,
           reasoning_effort TEXT
@@ -47,8 +48,9 @@ class BatchUsageReceiptTest < Minitest::Test
         );
       SQL
       fixture.fetch("threads").each do |thread|
+        rollout_path = thread["rollout"] && File.join(directory, thread["rollout"])
         values = [
-          thread.fetch("id"), File.join(directory, thread.fetch("rollout")),
+          thread.fetch("id"), rollout_path,
           thread.fetch("model_provider"), thread["model"], thread["reasoning_effort"]
         ].map { |value| sql_quote(value) }
         statements << "INSERT INTO threads VALUES (#{values.join(', ')});\n"
@@ -206,6 +208,33 @@ class BatchUsageReceiptTest < Minitest::Test
     spoofed = JSON.parse(JSON.generate(receipt))
     spoofed.dig("coordinator", "requested_route")["usage"] = blank_usage_for_test
     refute_empty JSONSchemer.schema(schema).validate(spoofed).to_a
+  end
+
+  def test_missing_rollout_path_is_structured_unknown_instead_of_crashing
+    receipt, = run_fixture("rollout-path-missing")
+
+    assert_equal "UNKNOWN", receipt.dig("evidence", "status")
+    assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "rollout_path_missing" }
+    assert_equal "root-thread", reason.fetch("thread_id")
+  end
+
+  def test_state_query_is_scoped_to_manifest_roots_and_declared_workers
+    fixture = JSON.parse(File.read(File.join(FIXTURES, "replay.json"), encoding: "UTF-8"))
+    reporter = BatchUsageReceipt::Reporter.new(
+      manifest: fixture.fetch("manifest"),
+      database_path: "/unused/state_5.sqlite",
+      from_time: Time.iso8601(fixture.dig("window", "from")),
+      to_time: Time.iso8601(fixture.dig("window", "to"))
+    )
+
+    query = reporter.send(:state_query)
+
+    assert_includes query, "WITH RECURSIVE"
+    assert_includes query, "JOIN reachable"
+    %w[root-thread child-thread].each do |thread_id|
+      assert_includes query, thread_id.unpack1("H*")
+    end
   end
 
   def test_optional_credit_equivalents_require_explicit_dated_model_mapping_and_disclaim_billing
