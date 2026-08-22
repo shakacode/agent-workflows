@@ -9,6 +9,32 @@ SCRIPT = File.expand_path("autonomous-merge-closeout", __dir__)
 
 class AutonomousMergeCloseoutTest < Minitest::Test
   HEAD_SHA = "a" * 40
+  PORTABLE_GATES = %w[
+    architectural-product-judgment
+    autonomous-merge-policy-change
+    changed-files-limit
+    changed-lines-limit
+    commit-count-limit
+    infrastructure-delivery
+    irreversible-external-effect
+    persistent-data-storage
+    public-compatibility
+    reviewed-heads-limit
+    security-auth-privacy
+  ].freeze
+  EXPECTED_SUMMARY_REASON = {
+    "architectural-product-judgment" => "requires architectural or product judgment",
+    "autonomous-merge-policy-change" => "changes rules that govern autonomous merge",
+    "changed-files-limit" => "changed-file limit",
+    "changed-lines-limit" => "changed-line limit",
+    "commit-count-limit" => "commit-count limit",
+    "infrastructure-delivery" => "changes infrastructure or delivery behavior",
+    "irreversible-external-effect" => "can cause an irreversible external effect",
+    "persistent-data-storage" => "changes persistent data or storage behavior",
+    "public-compatibility" => "changes a public compatibility contract",
+    "reviewed-heads-limit" => "reviewed-head limit",
+    "security-auth-privacy" => "changes security, authentication, privacy, or a trust boundary"
+  }.freeze
 
   def test_policy_change_names_the_actual_path_after_the_plain_english_summary
     result = evaluator_result(
@@ -47,6 +73,27 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     assert status.success?, output
     assert_includes output, "changes security, authentication, privacy, or a trust boundary"
     assert_includes output, "trusted semantic assessment"
+  end
+
+  def test_every_portable_gate_has_an_accurate_human_first_summary
+    PORTABLE_GATES.each do |gate|
+      path_matches = if gate == "autonomous-merge-policy-change"
+                       [{ "path" => "workflows/pr-processing.md", "gate" => gate, "reason" => "policy" }]
+                     else
+                       []
+                     end
+      output, status = render(evaluator_result(gates: [gate], path_matches:))
+
+      assert status.success?, "#{gate}: #{output}"
+      summary = output.lines.first
+      assert_includes summary, EXPECTED_SUMMARY_REASON.fetch(gate), gate
+      if %w[
+        infrastructure-delivery irreversible-external-effect persistent-data-storage public-compatibility
+      ].include?(gate)
+        refute_includes summary, "repository limit", gate
+      end
+      assert_operator output.index(summary), :<, output.index(gate), gate
+    end
   end
 
   def test_combined_gates_are_individually_explained_with_one_exact_action
@@ -131,10 +178,75 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     refute_includes output, "Next action:"
   end
 
+  def test_path_match_gate_absent_from_triggered_gates_fails_closed
+    result = evaluator_result(
+      gates: ["architectural-product-judgment"],
+      path_matches: [
+        {
+          "path" => "workflows/pr-processing.md",
+          "gate" => "autonomous-merge-policy-change",
+          "reason" => "policy"
+        }
+      ]
+    )
+
+    assert_fail_closed(result, "path_matches contains gates absent from triggered_gates")
+  end
+
+  def test_unknown_path_reason_fails_closed
+    result = evaluator_result(
+      gates: ["repo-path:checkout"],
+      path_matches: [{ "path" => "lib/checkout.rb", "gate" => "repo-path:checkout", "reason" => "mystery" }]
+    )
+
+    assert_fail_closed(result, "path_matches must contain valid path evidence")
+  end
+
+  def test_missing_policy_provenance_fails_closed
+    assert_fail_closed(
+      evaluator_result(gates: ["security-auth-privacy"], policy_provenance: nil),
+      "policy_provenance must be git:<full hexadecimal SHA> or exact UNKNOWN"
+    )
+  end
+
+  def test_invalid_non_unknown_rollback_fails_closed
+    assert_fail_closed(
+      evaluator_result(gates: ["security-auth-privacy"], rollback_assessment: "probably-reversible"),
+      "rollback_assessment is invalid for the evaluator verdict"
+    )
+  end
+
+  def test_repo_path_gate_without_matching_path_evidence_fails_closed_with_usage_status
+    assert_fail_closed(
+      evaluator_result(gates: ["repo-path:checkout"]),
+      "repo-path gates require matching path evidence"
+    )
+  end
+
+  def test_generated_path_shape_remains_supported
+    result = evaluator_result(
+      gates: ["security-auth-privacy"],
+      path_matches: [{ "path" => "dist/generated.js", "classification" => "generated" }]
+    )
+
+    _output, status = render(result)
+
+    assert status.success?
+  end
+
   private
 
   def render(result, format: "markdown")
     Open3.capture2e("ruby", SCRIPT, "--format", format, stdin_data: JSON.generate(result))
+  end
+
+  def assert_fail_closed(result, error)
+    output, status = render(result)
+
+    assert_equal 64, status.exitstatus, output
+    assert_includes output, error
+    refute_includes output, "Auto-merge is paused"
+    refute_includes output, "Next action:"
   end
 
   def evaluator_result(

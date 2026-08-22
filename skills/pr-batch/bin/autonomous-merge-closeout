@@ -9,12 +9,27 @@ module AutonomousMergeCloseout
   CONTRACT = "autonomous-merge-closeout"
   VERSION = 1
   SHA_PATTERN = /\A[0-9a-f]{40}\z/i
+  POLICY_PROVENANCE_PATTERN = /\Agit:[0-9a-f]{40}\z/i
   SUPPORTED_VERDICTS = %w[human-approval-required UNKNOWN].freeze
-  SUMMARY_GROUPS = [
-    ["autonomous-merge-policy-change", "changes rules that govern autonomous merge"],
-    ["architectural-product-judgment", "requires architectural or product judgment"],
-    ["security-auth-privacy", "changes security, authentication, privacy, or a trust boundary"]
+  ROLLBACK_ASSESSMENTS = %w[
+    code-only-rollback-established
+    forward-recovery-established
+    not-applicable
   ].freeze
+  PATH_REASONS = %w[migration infrastructure release security hot-path policy other].freeze
+  SUMMARY_REASONS = {
+    "architectural-product-judgment" => "requires architectural or product judgment",
+    "autonomous-merge-policy-change" => "changes rules that govern autonomous merge",
+    "changed-files-limit" => "crosses the repository's changed-file limit for autonomous merge",
+    "changed-lines-limit" => "crosses the repository's changed-line limit for autonomous merge",
+    "commit-count-limit" => "crosses the repository's commit-count limit for autonomous merge",
+    "infrastructure-delivery" => "changes infrastructure or delivery behavior",
+    "irreversible-external-effect" => "can cause an irreversible external effect",
+    "persistent-data-storage" => "changes persistent data or storage behavior",
+    "public-compatibility" => "changes a public compatibility contract",
+    "reviewed-heads-limit" => "crosses the repository's reviewed-head limit for autonomous merge",
+    "security-auth-privacy" => "changes security, authentication, privacy, or a trust boundary"
+  }.freeze
   GATE_EXPLANATIONS = {
     "architectural-product-judgment" =>
       "The trusted semantic assessment says this PR requires architectural or product judgment that automation cannot supply.",
@@ -82,25 +97,51 @@ module AutonomousMergeCloseout
     unless failures.is_a?(Array) && failures.all? { |failure| nonempty_string?(failure) }
       errors << "evidence_failures must be a list of nonempty strings"
     end
+    policy_provenance = result["policy_provenance"]
+    unless policy_provenance == "UNKNOWN" ||
+           (policy_provenance.is_a?(String) && policy_provenance.match?(POLICY_PROVENANCE_PATTERN))
+      errors << "policy_provenance must be git:<full hexadecimal SHA> or exact UNKNOWN"
+    end
+    rollback = result["rollback_assessment"]
+    unless ROLLBACK_ASSESSMENTS.include?(rollback) || (verdict == "UNKNOWN" && rollback == "UNKNOWN")
+      errors << "rollback_assessment is invalid for the evaluator verdict"
+    end
+
+    if gates.is_a?(Array) && path_matches.is_a?(Array)
+      matched_gates = path_matches.filter_map { |match| match["gate"] if match.is_a?(Hash) }
+      unexpected_path_gates = matched_gates - gates
+      unless unexpected_path_gates.empty?
+        errors << "path_matches contains gates absent from triggered_gates: #{unexpected_path_gates.uniq.sort.join(', ')}"
+      end
+      missing_repo_path_evidence = gates.grep(/\Arepo-path:/) - matched_gates
+      unless missing_repo_path_evidence.empty?
+        errors << "repo-path gates require matching path evidence: #{missing_repo_path_evidence.join(', ')}"
+      end
+    end
 
     if verdict == "human-approval-required"
       errors << "human-approval-required needs at least one triggered gate" if gates.is_a?(Array) && gates.empty?
       errors << "human-approval-required cannot carry evidence failures" if failures.is_a?(Array) && !failures.empty?
-      rollback = result["rollback_assessment"]
-      errors << "human-approval-required needs a known rollback assessment" unless
-        nonempty_string?(rollback) && rollback != "UNKNOWN"
+      errors << "human-approval-required needs trusted-base policy provenance" unless
+        policy_provenance.is_a?(String) && policy_provenance.match?(POLICY_PROVENANCE_PATTERN)
     elsif verdict == "UNKNOWN"
       errors << "UNKNOWN needs at least one evidence failure" if failures.is_a?(Array) && failures.empty?
-      errors << "UNKNOWN needs policy provenance" unless nonempty_string?(result["policy_provenance"])
     end
     errors
   end
 
   def valid_path_match?(match)
     return false unless match.is_a?(Hash) && nonempty_string?(match["path"])
-    return true unless match.key?("gate")
 
-    AutonomousMergeDecision.canonical_gate?(match["gate"]) && nonempty_string?(match["reason"])
+    if match.key?("gate")
+      return false unless match.keys.sort == %w[gate path reason]
+
+      return AutonomousMergeDecision.canonical_gate?(match["gate"]) && PATH_REASONS.include?(match["reason"])
+    end
+
+    return false unless match.keys.sort == %w[classification path]
+
+    match["classification"] == "generated"
   end
 
   def nonempty_string?(value)
@@ -111,8 +152,9 @@ module AutonomousMergeCloseout
     gates = result.fetch("triggered_gates")
     head_sha = result.fetch("head_sha").downcase
     gate_explanations = gates.map { |gate| explain_gate(gate, result) }
-    summary_reasons = SUMMARY_GROUPS.filter_map { |gate, text| text if gates.include?(gate) }
-    summary_reasons << "crosses repository limits reserved for human review" if summary_reasons.empty?
+    summary_reasons = gates.map do |gate|
+      gate.start_with?("repo-path:") ? "touches a path the repository reserves for human review" : SUMMARY_REASONS.fetch(gate)
+    end.uniq
     summary = "Auto-merge is paused because this PR #{sentence_list(summary_reasons)}. " \
               "A verified human with merge authority must approve these risks for the current commit."
     distinction = "This is a policy and authority gate. It does not report a code defect, failed CI, or a review finding; " \
