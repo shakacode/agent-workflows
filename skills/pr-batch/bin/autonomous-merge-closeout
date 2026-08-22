@@ -11,7 +11,7 @@ module AutonomousMergeCloseout
   SHA_PATTERN = /\A[0-9a-f]{40}\z/i
   POLICY_PATH = ".agents/agent-workflow.yml"
   BASE_OID_PATTERN = "[0-9a-f]{40}"
-  POLICY_BLOB_OID_PATTERN = "[0-9a-f]{40,64}"
+  POLICY_BLOB_OID_PATTERN = "(?:[0-9a-f]{40}|[0-9a-f]{64})"
   POLICY_PROVENANCE_PATTERNS = {
     configured: /\Agit:#{BASE_OID_PATTERN}:#{Regexp.escape(POLICY_PATH)}@#{POLICY_BLOB_OID_PATTERN}\z/,
     portable_defaults: /\Agit:#{BASE_OID_PATTERN}:#{Regexp.escape(POLICY_PATH)}\(absent; portable-defaults\)\z/,

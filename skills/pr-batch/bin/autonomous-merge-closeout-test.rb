@@ -274,6 +274,32 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     end
   end
 
+  def test_intermediate_length_policy_blob_oids_fail_closed_for_both_verdicts
+    [41, 63].each do |length|
+      provenance = "git:#{BASE_SHA}:#{POLICY_PATH}@#{'c' * length}"
+      results = [
+        evaluator_result(gates: ["security-auth-privacy"], policy_provenance: provenance),
+        evaluator_result(
+          verdict: "UNKNOWN",
+          gates: [],
+          rollback_assessment: "UNKNOWN",
+          evidence_failures: ["evaluator evidence is incomplete"],
+          policy_provenance: provenance
+        )
+      ]
+
+      results.each do |result|
+        stdout, stderr, status = render_streams(result)
+
+        assert_equal 64, status.exitstatus, "#{result.fetch('verdict')}: #{provenance}"
+        assert_empty stdout, "#{result.fetch('verdict')}: #{provenance}"
+        assert_includes stderr,
+                        "policy_provenance is not an evaluator-produced form for #{result.fetch('verdict')}"
+        refute_includes stderr, "Next action:"
+      end
+    end
+  end
+
   def test_invalid_non_unknown_rollback_fails_closed
     assert_fail_closed(
       evaluator_result(gates: ["security-auth-privacy"], rollback_assessment: "probably-reversible"),
