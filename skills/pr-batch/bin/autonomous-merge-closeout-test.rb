@@ -9,6 +9,10 @@ SCRIPT = File.expand_path("autonomous-merge-closeout", __dir__)
 
 class AutonomousMergeCloseoutTest < Minitest::Test
   HEAD_SHA = "a" * 40
+  BASE_SHA = "b" * 40
+  POLICY_BLOB_SHA = "c" * 40
+  POLICY_BLOB_SHA_64 = "d" * 64
+  POLICY_PATH = ".agents/agent-workflow.yml"
   PORTABLE_GATES = %w[
     architectural-product-judgment
     autonomous-merge-policy-change
@@ -151,7 +155,7 @@ class AutonomousMergeCloseoutTest < Minitest::Test
   def test_json_format_preserves_exact_machine_facts
     source = evaluator_result(
       gates: ["security-auth-privacy"],
-      policy_provenance: "git:#{'b' * 40}"
+      policy_provenance: "git:#{BASE_SHA}:#{POLICY_PATH}@#{POLICY_BLOB_SHA}"
     )
 
     output, status = render(source, format: "json")
@@ -205,8 +209,69 @@ class AutonomousMergeCloseoutTest < Minitest::Test
   def test_missing_policy_provenance_fails_closed
     assert_fail_closed(
       evaluator_result(gates: ["security-auth-privacy"], policy_provenance: nil),
-      "policy_provenance must be git:<full hexadecimal SHA> or exact UNKNOWN"
+      "policy_provenance is not an evaluator-produced form"
     )
+  end
+
+  def test_real_evaluator_policy_provenance_forms_remain_compatible
+    human_forms = [
+      "git:#{BASE_SHA}:#{POLICY_PATH}@#{POLICY_BLOB_SHA}",
+      "git:#{BASE_SHA}:#{POLICY_PATH}@#{POLICY_BLOB_SHA_64}",
+      "git:#{BASE_SHA}:#{POLICY_PATH}(absent; portable-defaults)"
+    ]
+    unknown_forms = [
+      "git:#{BASE_SHA}:#{POLICY_PATH}@#{POLICY_BLOB_SHA}",
+      "git:#{BASE_SHA}:#{POLICY_PATH}@#{POLICY_BLOB_SHA_64}",
+      "git:#{BASE_SHA}:#{POLICY_PATH}(absent; portable-defaults)",
+      "git:#{BASE_SHA}:#{POLICY_PATH}",
+      "git:#{BASE_SHA}",
+      "UNKNOWN"
+    ]
+
+    human_forms.each do |provenance|
+      output, status = render(evaluator_result(gates: ["security-auth-privacy"], policy_provenance: provenance))
+
+      assert status.success?, "#{provenance}: #{output}"
+      assert_includes output, "Policy provenance: `#{provenance}`"
+    end
+    unknown_forms.each do |provenance|
+      output, status = render(
+        evaluator_result(
+          verdict: "UNKNOWN",
+          gates: [],
+          rollback_assessment: "UNKNOWN",
+          evidence_failures: ["evaluator evidence is incomplete"],
+          policy_provenance: provenance
+        )
+      )
+
+      assert status.success?, "#{provenance}: #{output}"
+      assert_includes output, "Policy provenance: `#{provenance}`"
+    end
+  end
+
+  def test_malformed_and_verdict_incompatible_policy_provenance_fails_on_stderr_only
+    malformed = [
+      "git:#{BASE_SHA}:#{POLICY_PATH}@not-a-blob",
+      "git:#{BASE_SHA}:#{POLICY_PATH}@#{'c' * 39}",
+      "git:#{BASE_SHA}:#{POLICY_PATH}@#{'c' * 65}",
+      "git:#{BASE_SHA}:#{POLICY_PATH}@#{'C' * 40}",
+      "git:#{BASE_SHA}:#{POLICY_PATH}(absent; portable-defaults);extra",
+      "git:#{BASE_SHA}:other-policy.yml",
+      "git:#{BASE_SHA}:#{POLICY_PATH}@#{POLICY_BLOB_SHA}:extra",
+      "git:#{BASE_SHA}"
+    ]
+
+    malformed.each do |provenance|
+      stdout, stderr, status = render_streams(
+        evaluator_result(gates: ["security-auth-privacy"], policy_provenance: provenance)
+      )
+
+      assert_equal 64, status.exitstatus, provenance
+      assert_empty stdout, provenance
+      assert_includes stderr, "policy_provenance is not an evaluator-produced form for human-approval-required"
+      refute_includes stderr, "Next action:"
+    end
   end
 
   def test_invalid_non_unknown_rollback_fails_closed
@@ -240,6 +305,10 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     Open3.capture2e("ruby", SCRIPT, "--format", format, stdin_data: JSON.generate(result))
   end
 
+  def render_streams(result, format: "markdown")
+    Open3.capture3("ruby", SCRIPT, "--format", format, stdin_data: JSON.generate(result))
+  end
+
   def assert_fail_closed(result, error)
     output, status = render(result)
 
@@ -256,7 +325,7 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     path_matches: [],
     rollback_assessment: "code-only-rollback-established",
     evidence_failures: [],
-    policy_provenance: "git:#{'b' * 40}"
+    policy_provenance: "git:#{BASE_SHA}:#{POLICY_PATH}@#{POLICY_BLOB_SHA}"
   )
     {
       "verdict" => verdict,

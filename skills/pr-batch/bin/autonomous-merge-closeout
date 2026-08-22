@@ -9,7 +9,15 @@ module AutonomousMergeCloseout
   CONTRACT = "autonomous-merge-closeout"
   VERSION = 1
   SHA_PATTERN = /\A[0-9a-f]{40}\z/i
-  POLICY_PROVENANCE_PATTERN = /\Agit:[0-9a-f]{40}\z/i
+  POLICY_PATH = ".agents/agent-workflow.yml"
+  BASE_OID_PATTERN = "[0-9a-f]{40}"
+  POLICY_BLOB_OID_PATTERN = "[0-9a-f]{40,64}"
+  POLICY_PROVENANCE_PATTERNS = {
+    configured: /\Agit:#{BASE_OID_PATTERN}:#{Regexp.escape(POLICY_PATH)}@#{POLICY_BLOB_OID_PATTERN}\z/,
+    portable_defaults: /\Agit:#{BASE_OID_PATTERN}:#{Regexp.escape(POLICY_PATH)}\(absent; portable-defaults\)\z/,
+    path_only: /\Agit:#{BASE_OID_PATTERN}:#{Regexp.escape(POLICY_PATH)}\z/,
+    base_only: /\Agit:#{BASE_OID_PATTERN}\z/
+  }.freeze
   SUPPORTED_VERDICTS = %w[human-approval-required UNKNOWN].freeze
   ROLLBACK_ASSESSMENTS = %w[
     code-only-rollback-established
@@ -98,9 +106,8 @@ module AutonomousMergeCloseout
       errors << "evidence_failures must be a list of nonempty strings"
     end
     policy_provenance = result["policy_provenance"]
-    unless policy_provenance == "UNKNOWN" ||
-           (policy_provenance.is_a?(String) && policy_provenance.match?(POLICY_PROVENANCE_PATTERN))
-      errors << "policy_provenance must be git:<full hexadecimal SHA> or exact UNKNOWN"
+    unless valid_policy_provenance?(policy_provenance, verdict:)
+      errors << "policy_provenance is not an evaluator-produced form for #{verdict}"
     end
     rollback = result["rollback_assessment"]
     unless ROLLBACK_ASSESSMENTS.include?(rollback) || (verdict == "UNKNOWN" && rollback == "UNKNOWN")
@@ -122,8 +129,6 @@ module AutonomousMergeCloseout
     if verdict == "human-approval-required"
       errors << "human-approval-required needs at least one triggered gate" if gates.is_a?(Array) && gates.empty?
       errors << "human-approval-required cannot carry evidence failures" if failures.is_a?(Array) && !failures.empty?
-      errors << "human-approval-required needs trusted-base policy provenance" unless
-        policy_provenance.is_a?(String) && policy_provenance.match?(POLICY_PROVENANCE_PATTERN)
     elsif verdict == "UNKNOWN"
       errors << "UNKNOWN needs at least one evidence failure" if failures.is_a?(Array) && failures.empty?
     end
@@ -146,6 +151,19 @@ module AutonomousMergeCloseout
 
   def nonempty_string?(value)
     value.is_a?(String) && !value.strip.empty?
+  end
+
+  def valid_policy_provenance?(value, verdict:)
+    return false unless value.is_a?(String)
+
+    configured = value.match?(POLICY_PROVENANCE_PATTERNS.fetch(:configured))
+    portable_defaults = value.match?(POLICY_PROVENANCE_PATTERNS.fetch(:portable_defaults))
+    return configured || portable_defaults if verdict == "human-approval-required"
+    return false unless verdict == "UNKNOWN"
+
+    value == "UNKNOWN" || configured || portable_defaults ||
+      value.match?(POLICY_PROVENANCE_PATTERNS.fetch(:path_only)) ||
+      value.match?(POLICY_PROVENANCE_PATTERNS.fetch(:base_only))
   end
 
   def human_approval_closeout(result)
