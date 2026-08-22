@@ -1,0 +1,268 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require_relative "../lib/autonomous_merge_decision"
+
+module AutonomousMergeCloseout
+  CONTRACT = "autonomous-merge-closeout"
+  VERSION = 1
+  SHA_PATTERN = /\A[0-9a-f]{40}\z/i
+  SUPPORTED_VERDICTS = %w[human-approval-required UNKNOWN].freeze
+  SUMMARY_GROUPS = [
+    ["autonomous-merge-policy-change", "changes rules that govern autonomous merge"],
+    ["architectural-product-judgment", "requires architectural or product judgment"],
+    ["security-auth-privacy", "changes security, authentication, privacy, or a trust boundary"]
+  ].freeze
+  GATE_EXPLANATIONS = {
+    "architectural-product-judgment" =>
+      "The trusted semantic assessment says this PR requires architectural or product judgment that automation cannot supply.",
+    "autonomous-merge-policy-change" =>
+      "This PR changes a protected autonomous-merge policy, instruction, workflow, or evaluator source.",
+    "changed-files-limit" =>
+      "The PR changes more files than the trusted-base autonomous-merge policy permits.",
+    "changed-lines-limit" =>
+      "The PR changes more lines than the trusted-base autonomous-merge policy permits.",
+    "commit-count-limit" =>
+      "The PR contains more commits than the trusted-base autonomous-merge policy permits.",
+    "infrastructure-delivery" =>
+      "The trusted semantic assessment says this PR changes infrastructure or delivery behavior.",
+    "irreversible-external-effect" =>
+      "The trusted semantic assessment says this PR can cause an irreversible external effect.",
+    "persistent-data-storage" =>
+      "The trusted semantic assessment says this PR changes persistent data or storage behavior.",
+    "public-compatibility" =>
+      "The trusted semantic assessment says this PR changes a public compatibility contract.",
+    "reviewed-heads-limit" =>
+      "The PR has crossed the trusted-base limit for distinct submitted-review head revisions.",
+    "security-auth-privacy" =>
+      "The trusted semantic assessment says this PR changes security, authentication, privacy, or a trust boundary."
+  }.freeze
+  PATH_REASON_EXPLANATIONS = {
+    "migration" => "migration-sensitive path",
+    "infrastructure" => "infrastructure-sensitive path",
+    "release" => "release-sensitive path",
+    "security" => "security or trust-boundary path",
+    "hot-path" => "high-impact runtime path",
+    "policy" => "policy source",
+    "other" => "repository-defined human-review path"
+  }.freeze
+
+  module_function
+
+  def build(result)
+    errors = validation_errors(result)
+    raise ArgumentError, errors.join("; ") unless errors.empty?
+
+    verdict = result.fetch("verdict")
+    verdict == "human-approval-required" ? human_approval_closeout(result) : evidence_unknown_closeout(result)
+  end
+
+  def validation_errors(result)
+    return ["evaluator result must be a JSON object"] unless result.is_a?(Hash)
+
+    errors = []
+    verdict = result["verdict"]
+    errors << "verdict must be human-approval-required or UNKNOWN" unless SUPPORTED_VERDICTS.include?(verdict)
+    head_sha = result["head_sha"]
+    unless head_sha.is_a?(String) && (head_sha.match?(SHA_PATTERN) || (verdict == "UNKNOWN" && head_sha == "UNKNOWN"))
+      errors << "head_sha must be a full hexadecimal SHA, or exact UNKNOWN for an UNKNOWN verdict"
+    end
+    gates = result["triggered_gates"]
+    unless gates.is_a?(Array) && gates.all? { |gate| AutonomousMergeDecision.canonical_gate?(gate) } &&
+           gates == gates.uniq.sort
+      errors << "triggered_gates must be a sorted duplicate-free list of canonical gate IDs"
+    end
+    path_matches = result["path_matches"]
+    unless path_matches.is_a?(Array) && path_matches.all? { |match| valid_path_match?(match) }
+      errors << "path_matches must contain valid path evidence"
+    end
+    failures = result["evidence_failures"]
+    unless failures.is_a?(Array) && failures.all? { |failure| nonempty_string?(failure) }
+      errors << "evidence_failures must be a list of nonempty strings"
+    end
+
+    if verdict == "human-approval-required"
+      errors << "human-approval-required needs at least one triggered gate" if gates.is_a?(Array) && gates.empty?
+      errors << "human-approval-required cannot carry evidence failures" if failures.is_a?(Array) && !failures.empty?
+      rollback = result["rollback_assessment"]
+      errors << "human-approval-required needs a known rollback assessment" unless
+        nonempty_string?(rollback) && rollback != "UNKNOWN"
+    elsif verdict == "UNKNOWN"
+      errors << "UNKNOWN needs at least one evidence failure" if failures.is_a?(Array) && failures.empty?
+      errors << "UNKNOWN needs policy provenance" unless nonempty_string?(result["policy_provenance"])
+    end
+    errors
+  end
+
+  def valid_path_match?(match)
+    return false unless match.is_a?(Hash) && nonempty_string?(match["path"])
+    return true unless match.key?("gate")
+
+    AutonomousMergeDecision.canonical_gate?(match["gate"]) && nonempty_string?(match["reason"])
+  end
+
+  def nonempty_string?(value)
+    value.is_a?(String) && !value.strip.empty?
+  end
+
+  def human_approval_closeout(result)
+    gates = result.fetch("triggered_gates")
+    head_sha = result.fetch("head_sha").downcase
+    gate_explanations = gates.map { |gate| explain_gate(gate, result) }
+    summary_reasons = SUMMARY_GROUPS.filter_map { |gate, text| text if gates.include?(gate) }
+    summary_reasons << "crosses repository limits reserved for human review" if summary_reasons.empty?
+    summary = "Auto-merge is paused because this PR #{sentence_list(summary_reasons)}. " \
+              "A verified human with merge authority must approve these risks for the current commit."
+    distinction = "This is a policy and authority gate. It does not report a code defect, failed CI, or a review finding; " \
+                  "ordinary readiness remains a separate requirement."
+    next_action = "The active-task user or a repository maintainer may act only after their human identity and merge " \
+                  "authority are verified. They must review every listed gate and the rollback or forward-recovery plan, " \
+                  "then post a complete autonomous-merge-risk-decision:v1 comment on this PR for head #{head_sha}, " \
+                  "the exact sorted gate set, and an explicit approve decision."
+    durable_definition = "Durable means the complete decision is recorded in a PR comment that remains available for review. " \
+                         "Current-head means the decision applies only to the exact commit named above."
+    invalidation = "Any new head invalidates this decision. Re-run ordinary readiness and the autonomous evaluator, then " \
+                   "obtain a new durable decision for the new exact head and gate set."
+
+    closeout(
+      summary:,
+      distinction:,
+      state: "ready-human-review-required",
+      result:,
+      gate_explanations:,
+      next_action:,
+      durable_definition:,
+      invalidation:
+    )
+  end
+
+  def evidence_unknown_closeout(result)
+    head_sha = result.fetch("head_sha").downcase
+    summary = "Auto-merge is blocked because required exact-head eligibility evidence is missing, invalid, or contradictory."
+    distinction = "This is an evidence and authority failure, not a human-approvable policy-risk verdict. It does not by " \
+                  "itself report a code defect, failed CI, or a review finding, and risk approval cannot clear it."
+    next_action = "The coordinator or evaluator operator must repair every listed evidence failure from trusted-base and " \
+                  "current-head sources, re-run autonomous-merge-eligibility, save the regenerated evaluator JSON in the " \
+                  "coordinator-owned AUTONOMOUS_RESULT_PATH artifact used by merge-assurance, and cite that result in the PR closeout."
+    durable_definition = "Do not request or accept autonomous-merge risk approval while the verdict is UNKNOWN. " \
+                         "Only a complete rerun can replace this fail-closed result."
+    invalidation = if head_sha == "unknown"
+                     "The exact head is unknown, so collect and bind the current full head SHA before reevaluation. Any later " \
+                     "head change invalidates the repaired evidence and requires another complete rerun."
+                   else
+                     "Any new head invalidates repaired evidence for #{head_sha}. Re-run ordinary readiness and the autonomous " \
+                     "evaluator for the new exact head."
+                   end
+
+    closeout(
+      summary:,
+      distinction:,
+      state: "autonomous-merge-evidence-unknown",
+      result:,
+      gate_explanations: [],
+      next_action:,
+      durable_definition:,
+      invalidation:
+    )
+  end
+
+  def explain_gate(gate, result)
+    paths = result.fetch("path_matches").select { |match| match["gate"] == gate }
+    explanation = if gate.start_with?("repo-path:")
+                    reasons = paths.map { |match| PATH_REASON_EXPLANATIONS.fetch(match.fetch("reason"), match.fetch("reason")) }.uniq
+                    "Trusted-base repository policy reserves this PR's matching #{sentence_list(reasons)} for human review."
+                  else
+                    GATE_EXPLANATIONS.fetch(gate)
+                  end
+    {
+      "gate" => gate,
+      "explanation" => explanation,
+      "path_evidence" => paths.map { |match| match.slice("path", "reason") }
+    }
+  end
+
+  def sentence_list(items)
+    return items.fetch(0) if items.length == 1
+    return "#{items.fetch(0)} and #{items.fetch(1)}" if items.length == 2
+
+    "#{items[0...-1].join(', ')}, and #{items.fetch(-1)}"
+  end
+
+  def closeout(summary:, distinction:, state:, result:, gate_explanations:, next_action:, durable_definition:, invalidation:)
+    durable_location = if state == "ready-human-review-required"
+                         "a complete autonomous-merge-risk-decision:v1 PR comment"
+                       else
+                         "the coordinator-owned AUTONOMOUS_RESULT_PATH artifact used by merge-assurance, cited in the PR closeout"
+                       end
+    {
+      "contract" => CONTRACT,
+      "version" => VERSION,
+      "summary" => summary,
+      "distinction" => distinction,
+      "state" => state,
+      "verdict" => result.fetch("verdict"),
+      "head_sha" => result.fetch("head_sha"),
+      "gate_explanations" => gate_explanations,
+      "triggered_gates" => result.fetch("triggered_gates"),
+      "rollback_assessment" => result["rollback_assessment"],
+      "policy_provenance" => result["policy_provenance"],
+      "evidence_failures" => result.fetch("evidence_failures"),
+      "next_action" => next_action,
+      "durable_location" => durable_location,
+      "definitions" => durable_definition,
+      "new_head_invalidation" => invalidation
+    }
+  end
+
+  def render_markdown(closeout)
+    lines = [closeout.fetch("summary"), "", closeout.fetch("distinction"), ""]
+    lines << "Closeout state: `#{closeout.fetch('state')}`"
+    lines << "Evaluator verdict: `#{closeout.fetch('verdict')}`"
+    lines << "Exact head: `#{closeout.fetch('head_sha')}`"
+    lines << "Rollback assessment: `#{closeout.fetch('rollback_assessment')}`" if closeout["rollback_assessment"]
+    lines << "Policy provenance: `#{closeout.fetch('policy_provenance')}`" if closeout["policy_provenance"]
+    unless closeout.fetch("gate_explanations").empty?
+      lines.concat(["", "Why this PR triggered each technical gate:"])
+      closeout.fetch("gate_explanations").each do |entry|
+        lines << "- `#{entry.fetch('gate')}` — #{entry.fetch('explanation')}"
+        entry.fetch("path_evidence").each do |path|
+          lines << "  Path evidence: #{JSON.generate(path.fetch('path'))} (#{path.fetch('reason')})"
+        end
+      end
+    end
+    unless closeout.fetch("evidence_failures").empty?
+      lines.concat(["", "Evidence failures that must be repaired:"])
+      closeout.fetch("evidence_failures").each { |failure| lines << "- #{JSON.generate(failure)}" }
+    end
+    lines << ""
+    lines << "Next action: #{closeout.fetch('next_action')}"
+    lines << ""
+    lines << closeout.fetch("definitions")
+    lines << ""
+    lines << closeout.fetch("new_head_invalidation")
+    "#{lines.join("\n")}\n"
+  end
+
+  def run(arguments = ARGV, input: $stdin, output: $stdout, error: $stderr)
+    options = { input: "-", format: "markdown" }
+    OptionParser.new do |parser|
+      parser.banner = "Usage: autonomous-merge-closeout [--input PATH|-] [--format markdown|json]"
+      parser.on("--input PATH") { |value| options[:input] = value }
+      parser.on("--format FORMAT") { |value| options[:format] = value }
+    end.parse!(arguments)
+    raise ArgumentError, "format must be markdown or json" unless %w[markdown json].include?(options[:format])
+
+    source = options[:input] == "-" ? input.read : File.read(options[:input], encoding: "UTF-8")
+    result = JSON.parse(source)
+    rendered = build(result)
+    output.write(options[:format] == "json" ? "#{JSON.generate(rendered)}\n" : render_markdown(rendered))
+    0
+  rescue JSON::ParserError, SystemCallError, OptionParser::ParseError, ArgumentError => e
+    error.puts "autonomous-merge-closeout: #{e.message}"
+    64
+  end
+end
+
+exit AutonomousMergeCloseout.run if $PROGRAM_NAME == __FILE__

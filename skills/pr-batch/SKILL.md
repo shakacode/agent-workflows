@@ -506,6 +506,23 @@ evidence failure, trusted-base policy provenance, and repair action.
 approval. Safe and generated classifications never subtract common hard,
 repository path, size, churn, rollback, or maintainer-concern gates.
 
+Render either blocking verdict for the human closeout with the resolved
+`autonomous-merge-closeout` helper before presenting technical gate IDs:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout" \
+  --input "${AUTONOMOUS_RESULT_PATH}"
+```
+
+Use its plain-English summary, PR-specific gate explanations, authorized actor,
+durable location, repair or approval action, and exact-head invalidation text
+without substituting a generic blocker sentence. Keep the original evaluator
+JSON unchanged as the automation input to merge assurance; the renderer is a
+deterministic presentation layer and its optional `--format json` output repeats
+the exact verdict, head, sorted gates, rollback, policy provenance, and evidence
+failure facts. Malformed renderer input fails closed. An `UNKNOWN` closeout must
+direct evidence repair and reevaluation and must never be worded as approvable.
+
 ## Merge Assurance Gate
 
 After ordinary readiness and any required walkthrough or human decision, capture

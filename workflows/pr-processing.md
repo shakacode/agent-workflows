@@ -3586,6 +3586,26 @@ merge-authority attestation is missing or uncertain yields `UNKNOWN`. Re-run
 the evaluator immediately before `pr-merge-submit`; any head or base movement
 restarts ordinary readiness and eligibility evaluation.
 
+For either blocking verdict, render the user-facing closeout before displaying
+technical identifiers:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout" \
+  --input "${AUTONOMOUS_RESULT_PATH}"
+```
+
+The renderer's concise summary must lead. Then retain its individual
+PR-specific gate or evidence explanations, exact action, authorized actor,
+durable recording location, exact head, and new-head invalidation behavior.
+This human layer explicitly distinguishes policy/authority or evidence gates
+from code defects, failed CI, and review findings. Do not claim ordinary checks
+passed unless their separate current-head evidence proves that fact. Keep the
+original evaluator JSON unchanged for merge assurance and automation; the
+renderer is read-only, deterministic, fails closed on malformed input, and can
+repeat the stable facts as `autonomous-merge-closeout` v1 JSON with
+`--format json`. `UNKNOWN` output directs the coordinator to repair and rerun
+the evidence pipeline and cannot be converted into an approval request.
+
 ### Merge Assurance Gate
 
 After ordinary readiness, autonomous eligibility, and any required walkthrough
