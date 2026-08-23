@@ -68,8 +68,9 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    `.agents/workflows/pr-processing.md`; otherwise resolve `../../workflows/pr-processing.md` relative to
    the loaded skill pack. For a shareable visual of terminal results you may render the captured output with the
    visualize tool, but the render must reproduce real output verbatim — never stage numbers.
-7. **Clean up.** Kill spawned processes, remove scratch dirs/worktrees, and confirm nothing leaked
-   (`pgrep -fl <marker>` should report none).
+7. **Clean up.** Kill spawned processes and remove scratch dirs/worktrees, but preserve or move locally
+   prepared `human_attachment_pending` evidence to a non-scratch location until a human attaches it.
+   Confirm nothing leaked (`pgrep -fl <marker>` should report none).
 8. **Report to the PR.** Post a comment with the structured format below. Before posting to GitHub (an
    outward-facing action), confirm with the user unless they already told you to post. Write the body to a
    temp file and use `gh pr comment <n> --body-file` (avoids inline-formatting issues; see global Git

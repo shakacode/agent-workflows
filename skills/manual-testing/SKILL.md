@@ -82,11 +82,6 @@ blocker. Do not fake a manual pass from static inspection.
      authenticated browser/file-upload capability is available, use GitHub's UI
      upload flow and retain its stable `github.com/user-attachments/assets/...`
      URL; no comment submission is required merely to obtain the URL. A
-     recording uses the same attachment flow as a screenshot: upload a
-     GitHub-supported video file (`.mp4`, `.mov`, or `.webm`; prefer H.264 MP4
-     for browser compatibility), respect the repository's current upload-size
-     limit, and retain the generated URL in the PR evidence so GitHub can render
-     the clip for reviewers. A
      configured linked tracker or artifact store is also valid when every
      intended reviewer has access; link that evidence from the PR.
    - GitHub documents no public REST or GraphQL attachment-upload route. Do not
@@ -114,9 +109,6 @@ blocker. Do not fake a manual pass from static inspection.
      use exact labeled evidence such as `measured_substitute:
      before_value=52px; after_value=0px; tolerance=1px`; every value and
      tolerance needs a unit. Incidental URL IDs do not count.
-     Keep generated proof in a repository-defined ignored artifact directory or
-     task-owned temporary directory; do not commit screenshots or recordings as
-     PR evidence.
    - For a visual fix, rerun an intentionally unfixed negative control and
      record the observed failing assertion or mismatch. A reasoned `not
      applicable` is required when no visual fix is in scope.
