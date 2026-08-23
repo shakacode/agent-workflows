@@ -332,10 +332,12 @@ builtin_policy_patterns = [
   ".agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb",
   "skills/pr-batch/bin/autonomous-merge-eligibility",
   "skills/pr-batch/bin/autonomous-merge-calibrate",
+  "skills/pr-batch/bin/autonomous-merge-closeout",
   "skills/pr-batch/lib/autonomous_merge_*.rb",
   "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json",
   ".agents/skills/pr-batch/bin/autonomous-merge-eligibility",
   ".agents/skills/pr-batch/bin/autonomous-merge-calibrate",
+  ".agents/skills/pr-batch/bin/autonomous-merge-closeout",
   ".agents/skills/pr-batch/lib/autonomous_merge_*.rb",
   ".agents/skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json",
   "skills/pr-batch/bin/*contract-test.rb",
@@ -412,6 +414,7 @@ safe_class = "UNKNOWN" unless safe_class_errors.empty?
 rollback_assessment = semantic["rollback_assessment"]
 unless %w[code-only-rollback-established forward-recovery-established not-applicable].include?(rollback_assessment)
   semantic_errors << "rollback assessment is missing or unknown"
+  rollback_assessment = "UNKNOWN"
 end
 if rollback_assessment == "not-applicable" && safe_class == "none"
   semantic_errors << "rollback assessment not-applicable requires a verified safe class"

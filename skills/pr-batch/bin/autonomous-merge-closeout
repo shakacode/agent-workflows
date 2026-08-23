@@ -8,7 +8,7 @@ require_relative "../lib/autonomous_merge_decision"
 module AutonomousMergeCloseout
   CONTRACT = "autonomous-merge-closeout"
   VERSION = 1
-  SHA_PATTERN = /\A[0-9a-f]{40}\z/i
+  SHA_PATTERN = /\A[0-9a-f]{40}\z/
   POLICY_PATH = ".agents/agent-workflow.yml"
   BASE_OID_PATTERN = "[0-9a-f]{40}"
   POLICY_BLOB_OID_PATTERN = "(?:[0-9a-f]{40}|[0-9a-f]{64})"
@@ -90,7 +90,7 @@ module AutonomousMergeCloseout
     errors << "verdict must be human-approval-required or UNKNOWN" unless SUPPORTED_VERDICTS.include?(verdict)
     head_sha = result["head_sha"]
     unless head_sha.is_a?(String) && (head_sha.match?(SHA_PATTERN) || (verdict == "UNKNOWN" && head_sha == "UNKNOWN"))
-      errors << "head_sha must be a full hexadecimal SHA, or exact UNKNOWN for an UNKNOWN verdict"
+      errors << "head_sha must be a full lowercase hexadecimal SHA, or exact UNKNOWN for an UNKNOWN verdict"
     end
     gates = result["triggered_gates"]
     unless gates.is_a?(Array) && gates.all? { |gate| AutonomousMergeDecision.canonical_gate?(gate) } &&
@@ -221,7 +221,7 @@ module AutonomousMergeCloseout
       distinction:,
       state: "autonomous-merge-evidence-unknown",
       result:,
-      gate_explanations: [],
+      gate_explanations: result.fetch("triggered_gates").map { |gate| explain_gate(gate, result) },
       next_action:,
       durable_definition:,
       invalidation:

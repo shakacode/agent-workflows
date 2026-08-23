@@ -10,6 +10,7 @@ require_relative "../lib/autonomous_merge_decision"
 require_relative "../lib/autonomous_merge_runtime_trust"
 
 SCRIPT = File.expand_path("autonomous-merge-eligibility", __dir__)
+CLOSEOUT_SCRIPT = File.expand_path("autonomous-merge-closeout", __dir__)
 FIXTURE_DIR = File.expand_path("../fixtures", __dir__)
 
 class AutonomousMergeEligibilityTest < Minitest::Test
@@ -386,6 +387,26 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
   end
 
+  def test_closeout_renderers_are_builtin_policy_sources_in_source_and_installed_layouts
+    paths = [
+      "skills/pr-batch/bin/autonomous-merge-closeout",
+      ".agents/skills/pr-batch/bin/autonomous-merge-closeout"
+    ]
+    result = evaluate do |base_sha|
+      evidence(base_sha:, files: paths.map { |path| file(path) })
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_equal ["autonomous-merge-policy-change"], result.fetch("triggered_gates")
+    paths.each do |path|
+      assert_includes result.fetch("path_matches"), {
+        "path" => path,
+        "gate" => "autonomous-merge-policy-change",
+        "reason" => "policy"
+      }
+    end
+  end
+
   def test_invalid_repo_glob_fails_closed
     result = evaluate(policy_yaml: <<~YAML) do |base_sha|
       autonomous_merge:
@@ -701,6 +722,29 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal [], incomplete_reviews_shadow.fetch("shadow_evidence_unknown")
     assert_equal "autonomous-merge-eligible", incomplete_reviews_enforced.fetch("verdict")
     assert_equal "UNKNOWN", rollback_unknown.fetch("verdict")
+  end
+
+  def test_invalid_rollback_is_normalized_to_unknown_and_remains_renderable
+    ["probably-reversible", nil].each do |rollback|
+      result = evaluate do |base_sha|
+        evidence(
+          base_sha:,
+          files: files(1),
+          semantic: semantic_assessment.merge("rollback_assessment" => rollback)
+        )
+      end
+
+      assert_equal "UNKNOWN", result.fetch("verdict"), rollback.inspect
+      assert_equal "UNKNOWN", result.fetch("rollback_assessment"), rollback.inspect
+      assert_includes result.fetch("evidence_failures"), "rollback assessment is missing or unknown"
+
+      stdout, stderr, status = Open3.capture3("ruby", CLOSEOUT_SCRIPT, stdin_data: JSON.generate(result))
+
+      assert status.success?, "#{rollback.inspect}: #{stderr}"
+      assert_empty stderr, rollback.inspect
+      assert_includes stdout, "Rollback assessment: `UNKNOWN`"
+      assert_includes stdout, '"rollback assessment is missing or unknown"'
+    end
   end
 
   def test_live_deleted_comment_author_returns_structured_unknown

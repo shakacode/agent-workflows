@@ -152,6 +152,40 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     assert_includes output, "collect and bind the current full head SHA"
   end
 
+  def test_unknown_explains_triggered_gates_and_retains_repo_path_evidence
+    source = evaluator_result(
+      verdict: "UNKNOWN",
+      gates: ["repo-path:checkout"],
+      path_matches: [
+        {
+          "path" => "app/services/checkout/charge.rb",
+          "gate" => "repo-path:checkout",
+          "reason" => "hot-path"
+        }
+      ],
+      rollback_assessment: "UNKNOWN",
+      evidence_failures: ["rollback assessment is missing or unknown"]
+    )
+
+    markdown, markdown_status = render(source)
+    json, json_status = render(source, format: "json")
+    result = JSON.parse(json)
+
+    assert markdown_status.success?, markdown
+    assert_includes markdown, "- `repo-path:checkout`"
+    assert_includes markdown, "high-impact runtime path"
+    assert_includes markdown, 'Path evidence: "app/services/checkout/charge.rb" (hot-path)'
+    assert json_status.success?, json
+    assert_equal [
+      {
+        "gate" => "repo-path:checkout",
+        "explanation" =>
+          "Trusted-base repository policy reserves this PR's matching high-impact runtime path for human review.",
+        "path_evidence" => [{ "path" => "app/services/checkout/charge.rb", "reason" => "hot-path" }]
+      }
+    ], result.fetch("gate_explanations")
+  end
+
   def test_json_format_preserves_exact_machine_facts
     source = evaluator_result(
       gates: ["security-auth-privacy"],
@@ -180,6 +214,28 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     refute status.success?
     assert_includes output, "human-approval-required cannot carry evidence failures"
     refute_includes output, "Next action:"
+  end
+
+  def test_uppercase_head_sha_fails_closed_for_both_verdicts
+    results = [
+      evaluator_result(gates: ["security-auth-privacy"], head_sha: "A" * 40),
+      evaluator_result(
+        verdict: "UNKNOWN",
+        gates: [],
+        head_sha: "A" * 40,
+        rollback_assessment: "UNKNOWN",
+        evidence_failures: ["evaluator evidence is incomplete"]
+      )
+    ]
+
+    results.each do |result|
+      stdout, stderr, status = render_streams(result)
+
+      assert_equal 64, status.exitstatus, result.fetch("verdict")
+      assert_empty stdout, result.fetch("verdict")
+      assert_includes stderr, "head_sha must be a full lowercase hexadecimal SHA"
+      refute_includes stderr, "Next action:"
+    end
   end
 
   def test_path_match_gate_absent_from_triggered_gates_fails_closed
