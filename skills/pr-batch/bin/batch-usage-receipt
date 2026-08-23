@@ -43,6 +43,10 @@ module BatchUsageReceipt
     TOKEN_FIELDS.all? { |field| usage[field].is_a?(Integer) }
   end
 
+  def known_priced_usage?(usage)
+    usage.values_at("input_tokens", "output_tokens").all? { |value| value.is_a?(Integer) }
+  end
+
   def add_usage(left, right)
     TOKEN_FIELDS.to_h do |field|
       values = [left[field], right[field]]
@@ -809,7 +813,7 @@ module BatchUsageReceipt
         end
 
         usage = routes.reduce(blank_usage) { |sum, route| add_usage(sum, route.fetch("usage")) }
-        unless known_usage?(usage)
+        unless known_priced_usage?(usage)
           next({ "host" => host, "model" => model, "status" => UNKNOWN, "code" => "usage_unknown" })
         end
 
@@ -823,7 +827,7 @@ module BatchUsageReceipt
         }
       end
       {
-        "status" => if !known_usage?(batch_usage) || values.any? { |value| value["status"] == UNKNOWN }
+        "status" => if !known_priced_usage?(batch_usage) || values.any? { |value| value["status"] == UNKNOWN }
                       UNKNOWN
                     else
                       "available"
@@ -839,7 +843,12 @@ module BatchUsageReceipt
       raise InputError, "rate-card schema must be #{RATE_CARD_SCHEMA}" unless @rate_card["schema"] == RATE_CARD_SCHEMA
 
       require_string!(@rate_card["source"], "rate-card.source")
-      Date.iso8601(@rate_card.fetch("effective_date"))
+      effective_date = @rate_card["effective_date"]
+      unless effective_date.is_a?(String) && effective_date.match?(/\A\d{4}-\d{2}-\d{2}\z/) &&
+             Date.iso8601(effective_date).iso8601 == effective_date
+        raise InputError, "rate-card.effective_date must be an ISO 8601 date"
+      end
+
       mappings = @rate_card["model_mappings"]
       raise InputError, "rate-card.model_mappings must be an array" unless mappings.is_a?(Array)
 

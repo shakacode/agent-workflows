@@ -375,6 +375,39 @@ class BatchUsageReceiptTest < Minitest::Test
     refute_empty JSONSchemer.schema(schema).validate(missing_unknown_code).to_a
   end
 
+  def test_credit_equivalents_only_require_the_priced_input_and_output_counters
+    fixture = fixture_copy("partial-counter-unknown")
+    fixture["rate_card"] = {
+      "schema" => "batch-usage-rate-card-v1",
+      "source" => "https://example.invalid/rate-card/2026-08-04",
+      "effective_date" => "2026-08-04",
+      "model_mappings" => [{
+        "host" => "codex", "model" => "gpt-test",
+        "input_credits_per_million" => 1, "output_credits_per_million" => 2
+      }]
+    }
+
+    receipt, = run_fixture(fixture: fixture, with_rate_card: true)
+
+    assert_equal "available", receipt.dig("credit_equivalents", "status")
+    assert_equal "available", receipt.dig("credit_equivalents", "model_values", 0, "status")
+    assert_equal 0.000012, receipt.dig("credit_equivalents", "model_values", 0, "credits")
+  end
+
+  def test_rate_card_effective_date_must_be_a_canonical_full_date
+    fixture = fixture_copy("descendants")
+    reporter = BatchUsageReceipt::Reporter.new(
+      manifest: fixture.fetch("manifest"),
+      database_path: "/unused/state_5.sqlite",
+      from_time: Time.iso8601(fixture.dig("window", "from")),
+      to_time: Time.iso8601(fixture.dig("window", "to")),
+      rate_card: fixture.fetch("rate_card").merge("effective_date" => "20260804")
+    )
+
+    error = assert_raises(BatchUsageReceipt::InputError) { reporter.send(:validate_rate_card!) }
+    assert_equal "rate-card.effective_date must be an ISO 8601 date", error.message
+  end
+
   def test_unknown_observed_model_cannot_be_priced_by_an_unknown_rate_mapping
     fixture = fixture_copy("replay")
     fixture.fetch("threads").each { |thread| thread["model"] = nil }
