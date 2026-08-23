@@ -63,14 +63,10 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    Confirm `git status` is clean so the "after" really ran against post-fix code.
 6. **Capture evidence.** Save real terminal output. For a static UI/browser change, capture paired
    before/after screenshots. For interaction, transition, loading, timing, or other temporal behavior,
-   capture paired short clips through the repository's browser harness. If the repository names no
-   recorder and Playwright is available, create the browser context with `recordVideo: { dir, size }` and
-   an explicit matching viewport. Drive both clips with the same script, viewport, and test data; wait on
-   asserted UI states rather than sleeps, use brief post-assertion pauses only for readability, close the
-   context before resolving or copying the video, and watch every clip before accepting it. Follow the
-   Durable Visual Evidence Gate in `workflows/pr-processing.md`: publish reviewer-visible evidence, keep
-   the result blocked while it is local-only, and do not commit generated screenshots or recordings as PR
-   evidence. For a shareable visual of terminal results you may render the captured output with the
+   capture paired short clips through the repository's browser harness. Follow the Durable Visual Evidence
+   Gate for portable recorder setup, reviewer-visible evidence, and artifact handling: prefer
+   `.agents/workflows/pr-processing.md`; otherwise resolve `../../workflows/pr-processing.md` relative to
+   the loaded skill pack. For a shareable visual of terminal results you may render the captured output with the
    visualize tool, but the render must reproduce real output verbatim — never stage numbers.
 7. **Clean up.** Kill spawned processes, remove scratch dirs/worktrees, and confirm nothing leaked
    (`pgrep -fl <marker>` should report none).

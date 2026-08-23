@@ -969,11 +969,12 @@ For each user-visible UI change:
    (or the deterministic `baseline_value` / `candidate_value` aliases). Every
    value and the tolerance require units. Stills or incidental numbers in URLs
    do not satisfy an interaction claim. Use the repository's browser harness
-   when it names one. Otherwise, when Playwright is available, create the
-   browser context with `recordVideo: { dir, size }` and an explicit matching
-   viewport; drive baseline and candidate with the same script, viewport, and
-   test data; wait on asserted UI states rather than sleeps; close the context
-   before resolving or copying the video; and inspect every clip. Brief
+   when it names one. Otherwise, when Playwright is available, enable
+   browser-context video recording with the binding's documented options and an
+   explicit matching viewport (in JS/TS, `recordVideo: { dir, size }`); drive
+   baseline and candidate with the same script, viewport, and test data; wait
+   on asserted UI states rather than sleeps; close the context before resolving
+   or copying the video; and inspect every clip. Brief
    post-assertion pauses may make the recording readable. Keep generated proof
    in a repository-defined ignored artifact directory or task-owned temporary
    directory, never committed as PR evidence.
