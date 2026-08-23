@@ -222,6 +222,7 @@ module BatchUsageReceipt
             flush_replay_prefix_reasons(replay_prefix_deferred_reasons)
             @copy_boundary_seen = true
             replay_prefix = false
+            compaction_since_usage = false
           end
         when "compacted"
           @accounting["compactions"] += 1

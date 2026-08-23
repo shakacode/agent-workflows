@@ -282,6 +282,67 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal 2, receipt.dig("accounting", "replay_records_omitted")
   end
 
+  def test_copied_prefix_compaction_does_not_corroborate_the_first_child_counter_decrease
+    fixture = fixture_copy("replay")
+    child_records = fixture.fetch("rollouts").fetch("child.jsonl")
+    boundary_index = child_records.index { |record| record["type"] == "inter_agent_communication_metadata" }
+    child_records.insert(
+      boundary_index,
+      { "timestamp" => "2026-08-01T01:00:00.500Z", "type" => "compacted", "payload" => {} }
+    )
+    first_child_usage = child_records.find { |record| record["timestamp"] == "2026-08-01T01:00:03Z" }
+    decreased_usage = {
+      "input_tokens" => 12,
+      "cached_input_tokens" => 5,
+      "output_tokens" => 3,
+      "reasoning_output_tokens" => 1,
+      "total_tokens" => 15
+    }
+    first_child_usage.dig("payload", "info")["total_token_usage"] = decreased_usage
+    first_child_usage.dig("payload", "info")["last_token_usage"] = decreased_usage.dup
+    child_records.replace(child_records.take(child_records.index(first_child_usage) + 1))
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 0, receipt.dig("accounting", "counter_resets")
+    assert_equal 1, receipt.dig("accounting", "compactions")
+    assert_equal "UNKNOWN", receipt.dig("evidence", "status")
+    reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "ambiguous_counter_decrease" }
+    assert_equal 9, reason.fetch("line")
+    assert_equal(
+      %w[input_tokens output_tokens reasoning_output_tokens cache_read_tokens total_tokens],
+      reason.fetch("fields")
+    )
+  end
+
+  def test_post_boundary_compaction_still_corroborates_a_child_counter_reset
+    fixture = fixture_copy("replay")
+    child_records = fixture.fetch("rollouts").fetch("child.jsonl")
+    first_child_usage = child_records.find { |record| record["timestamp"] == "2026-08-01T01:00:03Z" }
+    child_records.insert(
+      child_records.index(first_child_usage),
+      { "timestamp" => "2026-08-01T01:00:02.500Z", "type" => "compacted", "payload" => {} }
+    )
+    decreased_usage = {
+      "input_tokens" => 12,
+      "cached_input_tokens" => 5,
+      "output_tokens" => 3,
+      "reasoning_output_tokens" => 1,
+      "total_tokens" => 15
+    }
+    first_child_usage.dig("payload", "info")["total_token_usage"] = decreased_usage
+    first_child_usage.dig("payload", "info")["last_token_usage"] = decreased_usage.dup
+    child_records.replace(child_records.take(child_records.index(first_child_usage) + 1))
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 35, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 15, receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 1, receipt.dig("accounting", "counter_resets")
+    assert_equal 1, receipt.dig("accounting", "compactions")
+    assert_equal "complete", receipt.dig("evidence", "status")
+  end
+
   def test_invalid_utf8_rollout_bytes_emit_structured_unknown_without_a_backtrace
     fixture = fixture_copy("replay")
     raw_session_meta = JSON.generate(fixture.dig("rollouts", "root.jsonl", 0)).b

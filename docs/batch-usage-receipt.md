@@ -144,9 +144,10 @@ Supported Codex `event_msg/token_count` records carry cumulative
 4. omits copied fork history, repeated cumulative samples, and detected replay
    samples while recording separate counts;
 5. records a counter reset and starts a new cumulative epoch for the entire
-   counter vector when any counter decrease follows a compaction boundary; a
-   copied fork boundary corroborates replay, while an uncorroborated decrease
-   becomes structured `UNKNOWN`;
+   counter vector when any counter decrease follows a compaction marker from
+   the same execution epoch; copied-prefix compaction state is discarded at the
+   fork boundary, while an uncorroborated child decrease becomes structured
+   `UNKNOWN`;
 6. only then applies the half-open time window to each computed delta.
 
 `last_token_usage` is never summed. Compaction markers are counted but do not by
