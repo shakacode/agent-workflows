@@ -375,6 +375,10 @@ end
 reviewed_heads_triggered = metrics.fetch("reviewed_heads") > effective_reviewed_heads_limit
 if reviewed_heads_mode == "enforced"
   triggered_gates << "reviewed-heads-limit" if reviewed_heads_triggered
+  if missing_review_head
+    objective_errors <<
+      "submitted review commit_id is missing; recollect complete submitted-review evidence with full head SHAs"
+  end
   objective_errors << "review pagination is incomplete" unless objective["reviews_complete"] == true
 elsif reviewed_heads_mode == "shadow"
   shadow_triggered_gates << "reviewed-heads-limit" if reviewed_heads_triggered

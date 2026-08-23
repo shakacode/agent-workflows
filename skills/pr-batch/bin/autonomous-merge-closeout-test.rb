@@ -262,6 +262,35 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     assert_fail_closed(result, "path_matches must contain valid path evidence")
   end
 
+  def test_gated_path_matches_are_limited_to_evaluator_emitted_pairings
+    malformed_pairings = [
+      evaluator_result(
+        gates: ["security-auth-privacy"],
+        path_matches: [
+          { "path" => "lib/auth.rb", "gate" => "security-auth-privacy", "reason" => "security" }
+        ]
+      ),
+      evaluator_result(
+        gates: ["autonomous-merge-policy-change"],
+        path_matches: [
+          {
+            "path" => "workflows/pr-processing.md",
+            "gate" => "autonomous-merge-policy-change",
+            "reason" => "infrastructure"
+          }
+        ]
+      )
+    ]
+
+    malformed_pairings.each do |result|
+      assert_fail_closed(result, "path_matches must contain valid path evidence")
+    end
+    assert_fail_closed(
+      evaluator_result(gates: ["autonomous-merge-policy-change"]),
+      "autonomous-merge-policy-change requires matching path evidence"
+    )
+  end
+
   def test_other_path_reason_requires_and_explains_its_policy_detail
     source = evaluator_result(
       gates: ["repo-path:checkout"],
@@ -427,6 +456,18 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     _output, status = render(result)
 
     assert status.success?
+  end
+
+  def test_positional_arguments_fail_closed_without_rendering_output
+    stdout, stderr, status = Open3.capture3(
+      "ruby", SCRIPT, "unexpected-positional-argument",
+      stdin_data: JSON.generate(evaluator_result(gates: ["security-auth-privacy"]))
+    )
+
+    assert_equal 64, status.exitstatus
+    assert_empty stdout
+    assert_includes stderr, "positional arguments are not supported"
+    refute_includes stderr, "Next action:"
   end
 
   private

@@ -134,6 +134,14 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal "autonomous-merge-eligible", shadow.fetch("verdict")
     assert_equal ["submitted-review-head-missing"], shadow.fetch("shadow_evidence_unknown")
     assert_equal "UNKNOWN", enforced.fetch("verdict")
+    assert_includes enforced.fetch("evidence_failures"),
+                    "submitted review commit_id is missing; recollect complete submitted-review evidence with full head SHAs"
+
+    stdout, stderr, status = Open3.capture3("ruby", CLOSEOUT_SCRIPT, stdin_data: JSON.generate(enforced))
+
+    assert status.success?, stderr
+    assert_empty stderr
+    assert_includes stdout, "recollect complete submitted-review evidence with full head SHAs"
   end
 
   def test_unknown_review_state_is_rejected_by_direct_evidence_validation

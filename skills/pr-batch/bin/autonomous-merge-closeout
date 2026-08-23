@@ -124,6 +124,9 @@ module AutonomousMergeCloseout
       unless missing_repo_path_evidence.empty?
         errors << "repo-path gates require matching path evidence: #{missing_repo_path_evidence.join(', ')}"
       end
+      if gates.include?("autonomous-merge-policy-change") && !matched_gates.include?("autonomous-merge-policy-change")
+        errors << "autonomous-merge-policy-change requires matching path evidence"
+      end
     end
 
     if verdict == "human-approval-required"
@@ -142,7 +145,11 @@ module AutonomousMergeCloseout
       reason = match["reason"]
       expected_keys = reason == "other" ? %w[detail gate path reason] : %w[gate path reason]
       return false unless match.keys.sort == expected_keys
-      return false unless AutonomousMergeDecision.canonical_gate?(match["gate"]) && PATH_REASONS.include?(reason)
+
+      gate = match["gate"]
+      return false unless AutonomousMergeDecision.canonical_gate?(gate) && PATH_REASONS.include?(reason)
+      return false unless gate.start_with?("repo-path:") || gate == "autonomous-merge-policy-change"
+      return false if gate == "autonomous-merge-policy-change" && reason != "policy"
 
       return reason != "other" || nonempty_string?(match["detail"])
     end
@@ -320,6 +327,7 @@ module AutonomousMergeCloseout
       parser.on("--input PATH") { |value| options[:input] = value }
       parser.on("--format FORMAT") { |value| options[:format] = value }
     end.parse!(arguments)
+    raise ArgumentError, "positional arguments are not supported" unless arguments.empty?
     raise ArgumentError, "format must be markdown or json" unless %w[markdown json].include?(options[:format])
 
     source = options[:input] == "-" ? input.read : File.read(options[:input], encoding: "UTF-8")
