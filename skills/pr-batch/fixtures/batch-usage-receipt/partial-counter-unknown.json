@@ -14,7 +14,7 @@
   "rollouts": {
     "root.jsonl":[
       {"timestamp":"2026-08-09T00:00:00Z","type":"session_meta","payload":{"id":"root","session_id":"root"}},
-      {"timestamp":"2026-08-09T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10},"last_token_usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}}
+      {"timestamp":"2026-08-09T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":10},"last_token_usage":{"input_tokens":8,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":10}}}}
     ]
   }
 }

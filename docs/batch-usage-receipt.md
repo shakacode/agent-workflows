@@ -140,6 +140,15 @@ themselves add usage or change identity. Fork, resume, copied history, and
 compaction therefore remain replay-safe, while boundary-straddling windows do
 not import pre-window cumulative history.
 
+A known token vector is structurally invalid when its reported `total_tokens`
+is less than `input_tokens + output_tokens`. Either an invalid
+`total_token_usage` or `last_token_usage` emits
+`invalid_token_usage_vector` and makes the entire affected rollout's counter
+vector `UNKNOWN`; contradictory evidence is never emitted as a known total.
+Likewise, a syntactically valid JSONL value that is not an object emits the
+line-numbered `non_object_rollout_record` code and conservatively invalidates
+that rollout instead of being skipped.
+
 The `accounting` object reports `usage_samples`,
 `duplicate_samples_omitted`, `replay_records_omitted`, `counter_resets`,
 `inherited_seeds_omitted`, `compactions`, and
@@ -149,11 +158,13 @@ they are not restricted to the requested `[from, to)` window.
 
 ## Usage Counters And UNKNOWN
 
-The four stable fields intentionally reuse the review-receipt semantics from
+The five stable fields intentionally reuse the review-receipt semantics from
 the [Review Finding Schema](review-finding-schema.md) where compatible:
 
 - `input_tokens` maps the host's `input_tokens` without cache normalization;
 - `output_tokens` maps `output_tokens`;
+- `reasoning_output_tokens` maps the host's `reasoning_output_tokens` as its
+  own counter; it is never inferred from `output_tokens` or another field;
 - `cache_read_tokens` maps Codex `cached_input_tokens`;
 - `total_tokens` maps the host's reported `total_tokens` and does not add cache
   reads again.
@@ -166,7 +177,8 @@ Unsupported or missing evidence produces literal `UNKNOWN` counter values plus
 structured entries in
 `evidence.unknown`, each with `status: "UNKNOWN"` and a stable `code`. Examples
 include `state_database_unsupported`, `thread_missing`, `rollout_missing`,
-`malformed_jsonl`, `missing_total_token_usage`, and
+`malformed_jsonl`, `non_object_rollout_record`, `missing_total_token_usage`,
+`invalid_token_usage_vector`, and
 `state_thread_first_session_mismatch`. Known sibling scopes remain present;
 missing evidence is never silently treated as zero.
 

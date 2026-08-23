@@ -7,7 +7,7 @@
   "properties": {
     "schema": {"const": "batch-usage-receipt-v1"},
     "batch": {"$ref": "#/$defs/batchScope"},
-    "coordinator": {"$ref": "#/$defs/executionScope"},
+    "coordinator": {"$ref": "#/$defs/coordinatorScope"},
     "lanes": {"type": "array", "items": {"$ref": "#/$defs/laneScope"}},
     "window": {
       "type": "object",
@@ -51,10 +51,11 @@
     "counter": {"oneOf": [{"type": "integer", "minimum": 0}, {"const": "UNKNOWN"}]},
     "usage": {
       "type": "object",
-      "required": ["input_tokens", "output_tokens", "cache_read_tokens", "total_tokens"],
+      "required": ["input_tokens", "output_tokens", "reasoning_output_tokens", "cache_read_tokens", "total_tokens"],
       "properties": {
         "input_tokens": {"$ref": "#/$defs/counter"},
         "output_tokens": {"$ref": "#/$defs/counter"},
+        "reasoning_output_tokens": {"$ref": "#/$defs/counter"},
         "cache_read_tokens": {"$ref": "#/$defs/counter"},
         "total_tokens": {"$ref": "#/$defs/counter"}
       },
@@ -115,6 +116,18 @@
       },
       "additionalProperties": false
     },
+    "coordinatorScope": {
+      "allOf": [
+        {"$ref": "#/$defs/executionScope"},
+        {"properties": {"scope": {"const": "coordinator"}}}
+      ]
+    },
+    "workerScope": {
+      "allOf": [
+        {"$ref": "#/$defs/executionScope"},
+        {"properties": {"scope": {"const": "worker"}}}
+      ]
+    },
     "laneScope": {
       "type": "object",
       "required": ["scope", "id", "root_thread_id", "requested_route", "observed_routes", "usage", "evidence", "workers", "reconciliation"],
@@ -135,7 +148,7 @@
           "additionalProperties": false
         },
         "evidence": {"$ref": "#/$defs/scopeEvidence"},
-        "workers": {"type": "array", "items": {"$ref": "#/$defs/executionScope"}},
+        "workers": {"type": "array", "items": {"$ref": "#/$defs/workerScope"}},
         "reconciliation": {
           "type": "object",
           "required": ["status", "equation"],

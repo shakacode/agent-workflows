@@ -104,7 +104,7 @@ class BatchUsageReceiptTest < Minitest::Test
     receipt, = run_fixture("reset-seed-compaction-window")
 
     assert_equal 19, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
-    assert_equal 115, receipt.dig("batch", "usage", "descendant_inclusive", "input_tokens")
+    assert_equal 15, receipt.dig("batch", "usage", "descendant_inclusive", "input_tokens")
     assert_equal 4, receipt.dig("batch", "usage", "descendant_inclusive", "output_tokens")
     assert_equal 1, receipt.dig("accounting", "inherited_seeds_omitted")
     assert_equal 1, receipt.dig("accounting", "counter_resets")
@@ -150,12 +150,90 @@ class BatchUsageReceiptTest < Minitest::Test
     end
   end
 
+  def test_contradictory_known_token_vectors_make_the_affected_rollout_structurally_unknown
+    %w[total_token_usage last_token_usage].each do |counter_source|
+      fixture = fixture_copy("replay")
+      first_sample = fixture.fetch("rollouts").fetch("root.jsonl").find do |record|
+        record["type"] == "event_msg" && record.dig("payload", "type") == "token_count"
+      end
+      first_sample.dig("payload", "info", counter_source)["total_tokens"] = 9
+
+      receipt, = run_fixture(fixture: fixture)
+
+      assert_equal "UNKNOWN", receipt.dig("coordinator", "usage", "self_only", "total_tokens")
+      assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+      reason = receipt.dig("evidence", "unknown").find do |item|
+        item["code"] == "invalid_token_usage_vector" && item["counter_source"] == counter_source
+      end
+      refute_nil reason
+      assert_equal 3, reason.fetch("line")
+    end
+  end
+
+  def test_reasoning_output_tokens_are_preserved_and_never_inferred
+    fixture = fixture_copy("replay")
+    reasoning_totals = {
+      "root.jsonl" => [[1, 1], [2, 1]],
+      "child.jsonl" => [[1, 1], [2, 1], [3, 1], [3, 99], [4, 1]]
+    }
+    fixture.fetch("rollouts").each do |rollout, records|
+      token_records = records.select do |record|
+        record["type"] == "event_msg" && record.dig("payload", "type") == "token_count"
+      end
+      token_records.zip(reasoning_totals.fetch(rollout)).each do |record, (total, last)|
+        info = record.dig("payload", "info")
+        info.fetch("total_token_usage")["reasoning_output_tokens"] = total
+        info.fetch("last_token_usage")["reasoning_output_tokens"] = last
+      end
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 4, receipt.dig("batch", "usage", "descendant_inclusive", "reasoning_output_tokens")
+    assert_empty JSONSchemer.schema(receipt_schema).validate(receipt).to_a
+
+    fixture.fetch("rollouts").each_value do |records|
+      records.each do |record|
+        info = record.dig("payload", "info")
+        next unless info.is_a?(Hash)
+
+        %w[total_token_usage last_token_usage].each do |counter_source|
+          info[counter_source]&.delete("reasoning_output_tokens")
+        end
+      end
+    end
+
+    receipt_without_reasoning, = run_fixture(fixture: fixture)
+
+    assert_equal 30, receipt_without_reasoning.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal "UNKNOWN",
+                 receipt_without_reasoning.dig("batch", "usage", "descendant_inclusive", "reasoning_output_tokens")
+  end
+
+  def test_parsed_non_object_rollout_records_are_line_numbered_structural_unknowns
+    [[], nil, "unexpected"].each do |record|
+      fixture = fixture_copy("replay")
+      fixture.fetch("rollouts").fetch("root.jsonl").insert(2, record)
+
+      receipt, = run_fixture(fixture: fixture)
+
+      assert_equal "UNKNOWN", receipt.dig("coordinator", "usage", "self_only", "total_tokens")
+      assert_equal 10, receipt.dig("lanes", 0, "usage", "descendant_inclusive", "total_tokens")
+      reason = receipt.dig("evidence", "unknown").find do |item|
+        item["code"] == "non_object_rollout_record"
+      end
+      refute_nil reason
+      assert_equal 3, reason.fetch("line")
+    end
+  end
+
   def test_first_sample_without_last_usage_is_unknown_instead_of_importing_cumulative_history
     receipt, = run_fixture("missing-first-last")
 
     expected = {
       "input_tokens" => "UNKNOWN",
       "output_tokens" => "UNKNOWN",
+      "reasoning_output_tokens" => "UNKNOWN",
       "cache_read_tokens" => "UNKNOWN",
       "total_tokens" => "UNKNOWN"
     }
@@ -182,6 +260,7 @@ class BatchUsageReceiptTest < Minitest::Test
       {
         "input_tokens" => 20,
         "output_tokens" => 6,
+        "reasoning_output_tokens" => 3,
         "cache_read_tokens" => "UNKNOWN",
         "total_tokens" => 26
       },
@@ -214,6 +293,7 @@ class BatchUsageReceiptTest < Minitest::Test
       {
         "input_tokens" => 8,
         "output_tokens" => 2,
+        "reasoning_output_tokens" => 1,
         "cache_read_tokens" => "UNKNOWN",
         "total_tokens" => 10
       },
@@ -468,6 +548,18 @@ class BatchUsageReceiptTest < Minitest::Test
     end
   end
 
+  def test_non_object_rate_cards_return_normal_input_error
+    [[], nil, "unexpected", 7].each do |rate_card|
+      fixture = fixture_copy("descendants")
+      fixture["rate_card"] = rate_card
+
+      stderr, status = run_fixture(fixture: fixture, with_rate_card: true, expect_success: false)
+
+      assert_equal 64, status.exitstatus
+      assert_equal "ERROR: rate-card must be an object\n", stderr
+    end
+  end
+
   def test_rate_card_rejects_nonfinite_rates_and_finite_rate_overflow
     fixture = fixture_copy("descendants")
     nonfinite = fixture.fetch("rate_card").merge(
@@ -520,9 +612,19 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "batch-usage-receipt-v1", schema.dig("properties", "schema", "const")
     assert schema.dig("$defs", "batchScope")
     assert schema.dig("$defs", "executionScope")
+    assert schema.dig("$defs", "coordinatorScope")
+    assert schema.dig("$defs", "workerScope")
     assert schema.dig("$defs", "laneScope")
     schema_errors = JSONSchemer.schema(schema).validate(first_receipt).to_a
     assert_empty schema_errors, schema_errors.map { |error| error.fetch("error") }.join("\n")
+
+    role_swapped_coordinator = JSON.parse(JSON.generate(first_receipt))
+    role_swapped_coordinator.fetch("coordinator")["scope"] = "worker"
+    refute_empty JSONSchemer.schema(schema).validate(role_swapped_coordinator).to_a
+
+    role_swapped_worker = JSON.parse(JSON.generate(first_receipt))
+    role_swapped_worker.dig("lanes", 0, "workers", 0)["scope"] = "coordinator"
+    refute_empty JSONSchemer.schema(schema).validate(role_swapped_worker).to_a
 
     docs = File.read(File.join(root, "docs/batch-usage-receipt.md"), encoding: "UTF-8")
     assert_includes docs, "`last_token_usage` is never summed."
@@ -533,6 +635,9 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_includes docs, "worker_outside_lane_scope"
     assert_includes docs, "entire affected rollout's counter vector"
     assert_includes docs, "do not normalize `cache_read_tokens`"
+    assert_includes docs, "`reasoning_output_tokens`"
+    assert_includes docs, "invalid_token_usage_vector"
+    assert_includes docs, "non_object_rollout_record"
 
     workflow = File.read(File.join(root, "workflows/pr-processing.md"), encoding: "UTF-8")
     skill = File.read(File.join(root, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
@@ -553,6 +658,7 @@ class BatchUsageReceiptTest < Minitest::Test
     {
       "input_tokens" => 0,
       "output_tokens" => 0,
+      "reasoning_output_tokens" => 0,
       "cache_read_tokens" => 0,
       "total_tokens" => 0
     }
