@@ -124,22 +124,7 @@ ruby skills/pr-batch/bin/agent-claimed-mirror-contract-test.rb
 ruby skills/pr-batch/bin/coordination-declaration-contract-test.rb
 echo "== json_schemer =="
 JSON_SCHEMER_VERSION=$(tr -d '[:space:]' < .json-schemer-version)
-JSON_SCHEMER_VERSION="${JSON_SCHEMER_VERSION}" ruby - <<'RUBY'
-version = ENV.fetch("JSON_SCHEMER_VERSION")
-
-begin
-  gem "json_schemer", version
-  require "json_schemer"
-rescue Gem::LoadError => e
-  warn "Install json_schemer #{version}: gem install json_schemer -v #{version} --no-document"
-  warn e.message
-  exit 1
-end
-
-actual = JSONSchemer::VERSION
-abort "Expected json_schemer #{version}, got #{actual}" unless actual == version
-RUBY
-ruby skills/pr-batch/bin/batch-usage-receipt-test.rb
+JSON_SCHEMER_VERSION="${JSON_SCHEMER_VERSION}" ruby skills/pr-batch/bin/batch-usage-receipt-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/pr-batch/bin/model-routing-contract-test.rb
 ruby skills/pr-batch/bin/dispatcher-capability-preflight-test.rb
 ruby skills/pr-batch/bin/single_target_entrypoint_test.rb

@@ -160,6 +160,7 @@ module BatchUsageReceipt
       first_usage = true
       compaction_since_usage = false
       current_route = state_route
+      replay_prefix_missing_total_lines = []
 
       File.foreach(@path, encoding: "UTF-8").with_index(1) do |line, line_number|
         begin
@@ -205,6 +206,10 @@ module BatchUsageReceipt
           # A nested fork's copied prefix can contain older ancestor boundaries.
           # Only a marker from this physical session can end its replay prefix.
           if replay_prefix && @fork_started_at && boundary_at && boundary_at >= @fork_started_at
+            replay_prefix_missing_total_lines.each do |missing_line|
+              unknown("missing_total_token_usage", line: missing_line)
+            end
+            replay_prefix_missing_total_lines.clear
             @copy_boundary_seen = true
             replay_prefix = false
           end
@@ -223,7 +228,12 @@ module BatchUsageReceipt
           total = canonical_usage(info.is_a?(Hash) ? info["total_token_usage"] : nil)
           last = canonical_usage(info.is_a?(Hash) ? info["last_token_usage"] : nil)
           unless total
-            unknown("missing_total_token_usage", line: line_number)
+            if replay_prefix
+              @accounting["replay_records_omitted"] += 1
+              replay_prefix_missing_total_lines << line_number
+            else
+              unknown("missing_total_token_usage", line: line_number)
+            end
             next
           end
 
@@ -240,6 +250,7 @@ module BatchUsageReceipt
 
           if replay_prefix
             @accounting["replay_records_omitted"] += 1
+            replay_prefix_missing_total_lines.clear
             previous = total
             first_usage = false
             compaction_since_usage = false
@@ -298,7 +309,12 @@ module BatchUsageReceipt
         end
       end
 
-      unknown("copied_history_boundary_missing") if replay_prefix
+      if replay_prefix
+        replay_prefix_missing_total_lines.each do |missing_line|
+          unknown("missing_total_token_usage", line: missing_line)
+        end
+        unknown("copied_history_boundary_missing")
+      end
       unknown("missing_first_session_meta") unless @first_session_id
       unknown("missing_usage_evidence") if @accounting["usage_samples"].zero?
       finalize_identity
@@ -318,6 +334,12 @@ module BatchUsageReceipt
         route = JSON.parse(key)
         route.merge("usage" => apply_global_unknowns(@route_usage.fetch(key)))
       end
+    end
+
+    def validate_state_thread_id(state_thread_id)
+      return if @first_session_id.nil? || @first_session_id == state_thread_id
+
+      unknown("state_thread_first_session_mismatch")
     end
 
     private
@@ -371,6 +393,7 @@ module BatchUsageReceipt
       reason = { "status" => UNKNOWN, "code" => code }.merge(extra.transform_keys(&:to_s))
       @unknown_reasons << reason if @unknown_reason_keys.add?(reason)
       @global_unknown_usage_fields |= TOKEN_FIELDS if affects_usage
+      reason
     end
 
     def finalize_identity
@@ -402,9 +425,10 @@ module BatchUsageReceipt
       validate_manifest!
       load_state
       roots = manifest_roots
-      relevant_threads = roots.flat_map { |root| closure(root) }.uniq.sort
+      batch_thread_ids = roots.flat_map { |root| closure(root) }.uniq.sort
+      identity_validation_thread_ids = manifest_thread_ids.flat_map { |thread_id| closure(thread_id) }.uniq.sort
       record_scope_topology_unknowns
-      relevant_threads.each { |thread_id| reader_for(thread_id) }
+      identity_validation_thread_ids.each { |thread_id| reader_for(thread_id) }
 
       coordinator = scope_receipt(
         "coordinator", @manifest.fetch("coordinator").fetch("id"),
@@ -412,7 +436,6 @@ module BatchUsageReceipt
         @manifest.fetch("coordinator").fetch("requested_route")
       )
       lanes = @manifest.fetch("lanes").map { |lane| lane_receipt(lane) }
-      batch_thread_ids = relevant_threads
       batch_usage = aggregate(batch_thread_ids)
       attributed_ids = [@manifest.dig("coordinator", "root_thread_id")]
       lanes.each { |lane| attributed_ids.concat(lane.fetch("_thread_ids")) }
@@ -439,7 +462,7 @@ module BatchUsageReceipt
           "to_exclusive" => @to_time.utc.iso8601(9),
           "differencing" => "full_history_before_window_filter"
         },
-        "accounting" => aggregate_accounting(relevant_threads),
+        "accounting" => aggregate_accounting(batch_thread_ids),
         "evidence" => {
           "status" => @unknown.empty? ? "complete" : UNKNOWN,
           "sources" => ["codex_rollout_jsonl", "state_5.sqlite"],
@@ -700,7 +723,13 @@ module BatchUsageReceipt
 
       rollout_key = canonical_rollout_key(rollout_path)
       existing = @readers_by_rollout[rollout_key]
-      return @readers_by_thread[thread_id] = existing if existing
+      if existing
+        reason = existing.validate_state_thread_id(thread_id)
+        if reason
+          @unknown << reason.merge("thread_id" => thread_id, "physical_rollout_id" => existing.physical_id)
+        end
+        return @readers_by_thread[thread_id] = existing
+      end
 
       reader = RolloutReader.new(
         path: rollout_path,
@@ -863,7 +892,8 @@ module BatchUsageReceipt
         }
       end
       {
-        "status" => if !known_priced_usage?(batch_usage) || values.any? { |value| value["status"] == UNKNOWN }
+        "status" => if @topology_unknown_lane_ids.any? || !known_priced_usage?(batch_usage) ||
+                       values.any? { |value| value["status"] == UNKNOWN }
                       UNKNOWN
                     else
                       "available"

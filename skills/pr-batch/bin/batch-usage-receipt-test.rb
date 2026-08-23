@@ -5,7 +5,19 @@ require "json"
 require "minitest/autorun"
 require "open3"
 require "tmpdir"
-require "json_schemer"
+
+PINNED_JSON_SCHEMER_VERSION = ENV["JSON_SCHEMER_VERSION"]
+begin
+  gem "json_schemer", PINNED_JSON_SCHEMER_VERSION if PINNED_JSON_SCHEMER_VERSION
+  require "json_schemer"
+rescue Gem::LoadError => e
+  if PINNED_JSON_SCHEMER_VERSION
+    warn "Install json_schemer #{PINNED_JSON_SCHEMER_VERSION}: " \
+         "gem install json_schemer -v #{PINNED_JSON_SCHEMER_VERSION} --no-document"
+  end
+  warn e.message
+  exit 1
+end
 
 HELPER = File.expand_path("batch-usage-receipt", __dir__)
 FIXTURES = File.expand_path("../fixtures/batch-usage-receipt", __dir__)
@@ -98,6 +110,74 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "gpt-requested-worker", receipt.dig("lanes", 0, "workers", 0, "requested_route", "model")
     assert_equal "gpt-test-worker", receipt.dig("lanes", 0, "workers", 0, "observed_routes", 0, "model")
     assert_equal 2, receipt.dig("accounting", "session_rebind_attempts_ignored")
+  end
+
+  def test_reused_rollout_path_is_validated_against_every_state_thread
+    fixture = fixture_copy("descendants")
+    worker_thread = fixture.fetch("threads").find { |thread| thread.fetch("id") == "worker-a" }
+    worker_thread["rollout"] = "lane-a.jsonl"
+
+    receipt, = run_fixture(fixture: fixture)
+
+    worker = receipt.dig("lanes", 0, "workers", 0)
+    assert_equal "UNKNOWN", worker.dig("usage", "descendant_inclusive", "total_tokens")
+    assert_equal "UNKNOWN", worker.dig("evidence", "status")
+    reason = receipt.dig("evidence", "unknown").find do |item|
+      item["code"] == "state_thread_first_session_mismatch" && item["thread_id"] == "worker-a"
+    end
+    refute_nil reason
+  end
+
+  def test_out_of_lane_rollout_alias_is_validated_before_any_scope_materializes
+    fixture = fixture_copy("descendants")
+    fixture.dig("manifest", "lanes", 0, "workers", 0)["thread_id"] = "orphan"
+    fixture.fetch("threads") << {
+      "id" => "orphan",
+      "rollout" => "root.jsonl",
+      "model_provider" => "openai",
+      "model" => "root-model",
+      "reasoning_effort" => "high"
+    }
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "usage", "self_only", "total_tokens")
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "evidence", "status")
+    assert_equal "UNKNOWN", receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    reason = receipt.dig("evidence", "unknown").find do |item|
+      item["code"] == "state_thread_first_session_mismatch" && item["thread_id"] == "orphan"
+    end
+    refute_nil reason
+  end
+
+  def test_recoverable_missing_total_in_replay_prefix_is_superseded_by_a_later_baseline
+    fixture = fixture_copy("replay")
+    child_records = fixture.fetch("rollouts").fetch("child.jsonl")
+    missing_total = JSON.parse(JSON.generate(child_records.fetch(3)))
+    missing_total.dig("payload", "info").delete("total_token_usage")
+    child_records.insert(3, missing_total)
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 30, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 10, receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    assert_equal "complete", receipt.dig("evidence", "status")
+    assert_equal 3, receipt.dig("accounting", "replay_records_omitted")
+    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    refute_includes unknown_codes, "missing_total_token_usage"
+  end
+
+  def test_unrecovered_missing_total_at_replay_boundary_remains_structurally_unknown
+    fixture = fixture_copy("replay")
+    last_copied_sample = fixture.fetch("rollouts").fetch("child.jsonl").fetch(4)
+    last_copied_sample.dig("payload", "info").delete("total_token_usage")
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "missing_total_token_usage" }
+    assert_equal 5, reason.fetch("line")
   end
 
   def test_cumulative_differencing_precedes_window_filter_and_accounts_for_seed_reset_and_compaction
@@ -276,6 +356,16 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal ["cache_read_tokens"], ambiguous["fields"]
   end
 
+  def test_invalid_usage_timestamp_conservatively_invalidates_the_physical_rollout
+    receipt, = run_fixture("invalid-usage-timestamp")
+
+    assert_equal blank_usage_for_test.transform_values { "UNKNOWN" },
+                 receipt.dig("batch", "usage", "descendant_inclusive")
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "evidence", "status")
+    reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "invalid_usage_timestamp" }
+    assert_equal 3, reason.fetch("line")
+  end
+
   def test_nested_fork_matches_its_own_copy_boundary_without_recounting_parent_usage
     receipt, = run_fixture("nested-replay")
 
@@ -347,9 +437,10 @@ class BatchUsageReceiptTest < Minitest::Test
     token_info = fixture.dig("rollouts", "lane-b.jsonl", 1, "payload", "info")
     token_info.each_value { |usage| usage.transform_values! { 0 } }
 
-    receipt, = run_fixture(fixture: fixture)
+    receipt, = run_fixture(fixture: fixture, with_rate_card: true)
 
     assert_equal "UNKNOWN", receipt.dig("lanes", 0, "reconciliation", "status")
+    assert_equal "UNKNOWN", receipt.dig("credit_equivalents", "status")
     reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "worker_outside_lane_scope" }
     assert_equal "lane-a", reason.fetch("lane_id")
   end
@@ -638,6 +729,7 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_includes docs, "`reasoning_output_tokens`"
     assert_includes docs, "invalid_token_usage_vector"
     assert_includes docs, "non_object_rollout_record"
+    assert_includes docs, "invalid_usage_timestamp"
 
     workflow = File.read(File.join(root, "workflows/pr-processing.md"), encoding: "UTF-8")
     skill = File.read(File.join(root, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
@@ -646,6 +738,17 @@ class BatchUsageReceiptTest < Minitest::Test
       assert_includes surface, "durable artifact reference"
       assert_includes surface, "informational"
     end
+  end
+
+  def test_repo_validation_pins_json_schemer_in_the_receipt_test_process
+    root = File.expand_path("../../..", __dir__)
+    validate = File.read(File.join(root, "bin/validate"), encoding: "UTF-8")
+    invocation = validate.lines.find { |line| line.include?("batch-usage-receipt-test.rb") }
+    test_source = File.read(__FILE__, encoding: "UTF-8")
+
+    refute_nil invocation
+    assert_includes invocation, 'JSON_SCHEMER_VERSION="${JSON_SCHEMER_VERSION}"'
+    assert_includes test_source, 'gem "json_schemer", PINNED_JSON_SCHEMER_VERSION'
   end
 
   private

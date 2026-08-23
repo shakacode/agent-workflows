@@ -110,13 +110,18 @@ reconciliation and top-level `evidence.status` as `UNKNOWN`, and records a
 `worker_scope_overlap`. These codes mean the manifest's logical attribution is
 incomplete; a numeric root-tree total must not be read as a complete
 worker-inclusive batch total while top-level evidence is `UNKNOWN`.
+`credit_equivalents.status` is also `UNKNOWN` for any of these topology
+failures, even when the observed route counters and rate mappings permit
+individual model arithmetic.
 
 ## Streaming And Replay Accounting
 
 The helper streams one JSONL line at a time and immediately discards all fields
 except whitelisted session identity, timestamp, route, compaction, and token
 metadata. A physical rollout is bound to its database thread and the first
-`session_meta.id`; later embedded `session_meta` records cannot rebind it.
+`session_meta.id`; later embedded `session_meta` records cannot rebind it. If
+multiple state rows reuse one rollout path, that identity is validated against
+every row before the cached physical reader is reused.
 
 Supported Codex `event_msg/token_count` records carry cumulative
 `info.total_token_usage` and per-event `info.last_token_usage`. The algorithm:
@@ -139,6 +144,12 @@ Supported Codex `event_msg/token_count` records carry cumulative
 themselves add usage or change identity. Fork, resume, copied history, and
 compaction therefore remain replay-safe, while boundary-straddling windows do
 not import pre-window cumulative history.
+
+A copied replay-prefix record without `total_token_usage` is deferred rather
+than immediately invalidating the child. A later valid copied cumulative
+snapshot before the fork boundary supersedes that defect and provides the
+needed child baseline. If no such snapshot arrives before the boundary, the
+line-numbered `missing_total_token_usage` reason remains structural `UNKNOWN`.
 
 A known token vector is structurally invalid when its reported `total_tokens`
 is less than `input_tokens + output_tokens`. Either an invalid
@@ -181,6 +192,12 @@ include `state_database_unsupported`, `thread_missing`, `rollout_missing`,
 `invalid_token_usage_vector`, and
 `state_thread_first_session_mismatch`. Known sibling scopes remain present;
 missing evidence is never silently treated as zero.
+
+`invalid_usage_timestamp` deliberately makes the entire physical rollout's
+counter vector `UNKNOWN`. The cumulative baseline must advance even when that
+sample cannot be placed before, inside, or after the requested window; assigning
+or dropping only its delta could therefore undercount or overcount every scope
+that reuses the rollout.
 
 Top-level `evidence.sources` lists supported and attempted metadata source
 types; it does not claim that each source was available. Source failures and
