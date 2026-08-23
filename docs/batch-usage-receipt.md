@@ -92,7 +92,11 @@ The reporter walks `thread_spawn_edges`; prompt mentions, parent IDs replayed in
 JSONL, and name similarity cannot create ancestry. Each physical rollout is
 deduplicated by its canonical file before a scope total is computed. A repeated
 session ID in a distinct file is not treated as proof that the files are the
-same rollout. The batch reconciliation is:
+same rollout. Its opaque `physical_rollout_id` combines the first session ID
+with a deterministic logical database-thread identity for that canonical
+reader; it is never derived from an absolute rollout path. Canonical-file
+aliases therefore share one ID, while distinct files retain distinct IDs. The
+batch reconciliation is:
 
 ```text
 batch descendant-inclusive

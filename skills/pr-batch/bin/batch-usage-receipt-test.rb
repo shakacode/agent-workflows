@@ -141,6 +141,8 @@ class BatchUsageReceiptTest < Minitest::Test
 
     assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
     assert_equal 6, receipt.dig("accounting", "usage_samples")
+    physical_ids = receipt.dig("coordinator", "evidence", "physical_rollout_ids")
+    assert_equal physical_ids.length, physical_ids.uniq.length
     reason = receipt.dig("evidence", "unknown").find do |item|
       item["code"] == "state_thread_first_session_mismatch" && item["thread_id"] == "unattributed-root"
     end
@@ -155,7 +157,11 @@ class BatchUsageReceiptTest < Minitest::Test
     receipt, = run_fixture(fixture: fixture)
 
     assert_equal 5, receipt.dig("accounting", "usage_samples")
-    assert_equal 2, receipt.dig("lanes", 0, "evidence", "physical_rollout_ids").length
+    lane_physical_ids = receipt.dig("lanes", 0, "evidence", "physical_rollout_ids")
+    worker_physical_ids = receipt.dig("lanes", 0, "workers", 0, "evidence", "physical_rollout_ids")
+    assert_equal 2, lane_physical_ids.length
+    assert_equal 1, worker_physical_ids.length
+    assert_includes lane_physical_ids, worker_physical_ids.fetch(0)
   end
 
   def test_out_of_lane_rollout_alias_is_validated_before_any_scope_materializes
@@ -919,6 +925,11 @@ class BatchUsageReceiptTest < Minitest::Test
     role_swapped_worker = JSON.parse(JSON.generate(first_receipt))
     role_swapped_worker.dig("lanes", 0, "workers", 0)["scope"] = "coordinator"
     refute_empty JSONSchemer.schema(schema).validate(role_swapped_worker).to_a
+
+    duplicate_physical_id = JSON.parse(JSON.generate(first_receipt))
+    physical_ids = duplicate_physical_id.dig("coordinator", "evidence", "physical_rollout_ids")
+    physical_ids << physical_ids.fetch(0)
+    refute_empty JSONSchemer.schema(schema).validate(duplicate_physical_id).to_a
 
     docs = File.read(File.join(root, "docs/batch-usage-receipt.md"), encoding: "UTF-8")
     assert_includes docs, "`last_token_usage` is never summed."

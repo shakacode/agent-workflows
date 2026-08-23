@@ -132,9 +132,10 @@ module BatchUsageReceipt
 
     attr_reader :accounting, :first_session_id, :physical_id, :unknown_reasons, :route_usage
 
-    def initialize(path:, state_thread:, from_time:, to_time:)
+    def initialize(path:, state_thread:, identity_thread_ids:, from_time:, to_time:)
       @path = path
       @state_thread = state_thread
+      @identity_thread_ids = identity_thread_ids
       @from_time = from_time
       @to_time = to_time
       @accounting = ACCOUNTING_FIELDS.to_h { |field| [field, 0] }
@@ -418,7 +419,12 @@ module BatchUsageReceipt
     end
 
     def finalize_identity
-      seed = ["codex-rollout-v1", @first_session_id || @state_thread.fetch("id")].join("\0")
+      identity_thread_id = if @first_session_id && @identity_thread_ids.include?(@first_session_id)
+                             @first_session_id
+                           else
+                             @identity_thread_ids.fetch(0)
+                           end
+      seed = ["codex-rollout-v2", @first_session_id || identity_thread_id, identity_thread_id].join("\0")
       @physical_id = "sha256:#{Digest::SHA256.hexdigest(seed)}"
     end
   end
@@ -756,6 +762,7 @@ module BatchUsageReceipt
       reader = RolloutReader.new(
         path: rollout_path,
         state_thread: state_thread,
+        identity_thread_ids: identity_thread_ids_for(rollout_key),
         from_time: @from_time,
         to_time: @to_time
       ).read
@@ -770,6 +777,20 @@ module BatchUsageReceipt
       File.realpath(path)
     rescue SystemCallError
       File.expand_path(path)
+    end
+
+    def identity_thread_ids_for(rollout_key)
+      @identity_thread_ids_by_rollout ||= begin
+        ids_by_rollout = @threads.values.each_with_object(Hash.new { |hash, key| hash[key] = [] }) do |thread, ids|
+          rollout_path = thread["rollout_path"]
+          next unless rollout_path.is_a?(String) && !rollout_path.strip.empty?
+
+          ids[canonical_rollout_key(rollout_path)] << thread.fetch("id")
+        end
+        ids_by_rollout.each_value(&:sort!)
+        ids_by_rollout
+      end
+      @identity_thread_ids_by_rollout.fetch(rollout_key)
     end
 
     def readers(thread_ids)

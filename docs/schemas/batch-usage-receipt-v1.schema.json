@@ -88,7 +88,7 @@
       "required": ["status", "physical_rollout_ids", "first_session_ids"],
       "properties": {
         "status": {"enum": ["complete", "UNKNOWN"]},
-        "physical_rollout_ids": {"type": "array", "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+        "physical_rollout_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
         "first_session_ids": {"type": "array", "items": {"type": "string"}},
         "first_session_id": {"type": "string"}
       },
