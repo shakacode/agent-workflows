@@ -216,6 +216,9 @@ if policy_entry.lines.map(&:strip).include?(policy_path)
   policy_provenance = if blob_status.success?
                         "git:#{base_sha.strip}:#{policy_path}@#{policy_blob.strip}"
                       else
+                        objective_errors <<
+                          "trusted-base policy blob SHA is unavailable; repair trusted-base Git object access " \
+                          "and rerun autonomous-merge-eligibility"
                         "UNKNOWN"
                       end
 else
@@ -437,8 +440,6 @@ if human_decision_evidence["status"] == "uncertain"
   evidence_failures << "exact current-head human decision provenance is uncertain"
 end
 verdict = if !evidence_failures.empty? || policy_provenance == "UNKNOWN"
-            "UNKNOWN"
-          elsif reviewed_heads_mode == "enforced" && missing_review_head
             "UNKNOWN"
           elsif triggered_gates.empty?
             "autonomous-merge-eligible"

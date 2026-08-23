@@ -144,6 +144,35 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_includes stdout, "recollect complete submitted-review evidence with full head SHAs"
   end
 
+  def test_unavailable_policy_blob_sha_emits_a_renderable_unknown_with_repair_evidence
+    Dir.mktmpdir("autonomous-merge-policy-blob-test") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: "{}\n", include_runtime: true)
+      Dir.mktmpdir("autonomous-merge-policy-blob-patch") do |patch_root|
+        open3_patch = File.join(patch_root, "fail-policy-blob-lookup.rb")
+        write_failed_policy_blob_lookup_patch(open3_patch)
+        result = invoke(
+          root:,
+          calibration_path:,
+          evaluation: evidence(base_sha:, files: files(1)),
+          environment: { "RUBYOPT" => "-r#{open3_patch}" }
+        )
+
+        assert_equal "UNKNOWN", result.fetch("verdict")
+        assert_equal "UNKNOWN", result.fetch("policy_provenance")
+        assert_includes result.fetch("evidence_failures"),
+                        "trusted-base policy blob SHA is unavailable; repair trusted-base Git object access " \
+                        "and rerun autonomous-merge-eligibility"
+
+        stdout, stderr, status = Open3.capture3("ruby", CLOSEOUT_SCRIPT, stdin_data: JSON.generate(result))
+
+        assert status.success?, stderr
+        assert_empty stderr
+        assert_includes stdout, "repair trusted-base Git object access and rerun autonomous-merge-eligibility"
+      end
+    end
+  end
+
   def test_unknown_review_state_is_rejected_by_direct_evidence_validation
     helper = File.read(SCRIPT, encoding: "UTF-8")
 
@@ -1223,7 +1252,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   private
 
   def invoke(root:, calibration_path:, stdin_data: "", evaluation: nil, semantic_path: nil,
-             helper_provenance: :trusted_base)
+             helper_provenance: :trusted_base, environment: {})
     command = [
       "ruby",
       SCRIPT,
@@ -1253,7 +1282,10 @@ class AutonomousMergeEligibilityTest < Minitest::Test
           ["--repo", "example/repo", "--pr", "1", "--semantic-assessment", resolved_semantic_path]
         )
         stdout, stderr, status = Open3.capture3(
-          { "AUTONOMOUS_MERGE_GH" => fake_gh, "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path },
+          {
+            "AUTONOMOUS_MERGE_GH" => fake_gh,
+            "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path
+          }.merge(environment),
           *command,
           stdin_data:
         )
@@ -1387,6 +1419,24 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       puts JSON.generate(response)
     RUBY
     File.chmod(0o755, path)
+  end
+
+  def write_failed_policy_blob_lookup_patch(path)
+    File.write(path, <<~'RUBY')
+      require "open3"
+
+      original_capture2 = Open3.method(:capture2)
+      failed_status = Object.new
+      failed_status.define_singleton_method(:success?) { false }
+      Open3.define_singleton_method(:capture2) do |*command, **options|
+        if command.first == "git" && command.include?("rev-parse") &&
+           command.last.match?(%r{:\.agents/agent-workflow\.yml\z})
+          ["", failed_status]
+        else
+          original_capture2.call(*command, **options)
+        end
+      end
+    RUBY
   end
 
   def evidence_override(files: files(1), commits: [{ "sha" => "c" * 40 }])
