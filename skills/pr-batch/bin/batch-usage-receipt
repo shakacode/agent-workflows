@@ -20,6 +20,7 @@ module BatchUsageReceipt
   SCHEMA = "batch-usage-receipt-v1"
   MANIFEST_SCHEMA = "batch-usage-manifest-v1"
   RATE_CARD_SCHEMA = "batch-usage-rate-card-v1"
+  EXPLICIT_UTC_OFFSET = /(?:Z|[+-]\d{2}(?::?\d{2})?)\z/i
   TOKEN_FIELDS = %w[input_tokens output_tokens reasoning_output_tokens cache_read_tokens total_tokens].freeze
   ACCOUNTING_FIELDS = %w[
     usage_samples duplicate_samples_omitted replay_records_omitted counter_resets
@@ -160,13 +161,18 @@ module BatchUsageReceipt
       first_usage = true
       compaction_since_usage = false
       current_route = state_route
+      replay_prefix_malformed_lines = []
       replay_prefix_missing_total_lines = []
 
       File.foreach(@path, encoding: "UTF-8").with_index(1) do |line, line_number|
         begin
           record = JSON.parse(line)
         rescue JSON::ParserError
-          unknown("malformed_jsonl", line: line_number)
+          if replay_prefix
+            replay_prefix_malformed_lines << line_number
+          else
+            unknown("malformed_jsonl", line: line_number)
+          end
           next
         end
         unless record.is_a?(Hash)
@@ -206,6 +212,10 @@ module BatchUsageReceipt
           # A nested fork's copied prefix can contain older ancestor boundaries.
           # Only a marker from this physical session can end its replay prefix.
           if replay_prefix && @fork_started_at && boundary_at && boundary_at >= @fork_started_at
+            replay_prefix_malformed_lines.each do |malformed_line|
+              unknown("malformed_jsonl", line: malformed_line)
+            end
+            replay_prefix_malformed_lines.clear
             replay_prefix_missing_total_lines.each do |missing_line|
               unknown("missing_total_token_usage", line: missing_line)
             end
@@ -224,6 +234,8 @@ module BatchUsageReceipt
           next unless payload.is_a?(Hash) && payload["type"] == "token_count"
 
           @accounting["usage_samples"] += 1
+          usage_timestamp_valid = !parsed_timestamp(record["timestamp"]).nil?
+          unknown("invalid_usage_timestamp", line: line_number) unless usage_timestamp_valid
           info = payload["info"]
           total = canonical_usage(info.is_a?(Hash) ? info["total_token_usage"] : nil)
           last = canonical_usage(info.is_a?(Hash) ? info["last_token_usage"] : nil)
@@ -250,6 +262,7 @@ module BatchUsageReceipt
 
           if replay_prefix
             @accounting["replay_records_omitted"] += 1
+            replay_prefix_malformed_lines.clear
             replay_prefix_missing_total_lines.clear
             previous = total
             first_usage = false
@@ -297,10 +310,7 @@ module BatchUsageReceipt
           previous = total
           first_usage = false
           compaction_since_usage = false
-          unless parsed_timestamp(record["timestamp"])
-            unknown("invalid_usage_timestamp", line: line_number)
-            next
-          end
+          next unless usage_timestamp_valid
           next unless in_window?(record["timestamp"], @from_time, @to_time)
 
           add_route_usage(
@@ -310,6 +320,9 @@ module BatchUsageReceipt
       end
 
       if replay_prefix
+        replay_prefix_malformed_lines.each do |malformed_line|
+          unknown("malformed_jsonl", line: malformed_line)
+        end
         replay_prefix_missing_total_lines.each do |missing_line|
           unknown("missing_total_token_usage", line: missing_line)
         end
@@ -384,7 +397,8 @@ module BatchUsageReceipt
     end
 
     def parsed_timestamp(value)
-      Time.iso8601(value)
+      parsed = Time.iso8601(value)
+      parsed if value.match?(EXPLICIT_UTC_OFFSET)
     rescue ArgumentError, TypeError
       nil
     end
@@ -752,7 +766,7 @@ module BatchUsageReceipt
     end
 
     def readers(thread_ids)
-      thread_ids.filter_map { |thread_id| reader_for(thread_id) }.uniq(&:physical_id)
+      thread_ids.filter_map { |thread_id| reader_for(thread_id) }.uniq
     end
 
     def aggregate(thread_ids)
@@ -943,7 +957,7 @@ module BatchUsageReceipt
 
   def parse_time(value, label)
     parsed = Time.iso8601(value)
-    unless value.match?(/(?:Z|[+-]\d{2}(?::?\d{2})?)\z/i)
+    unless value.match?(EXPLICIT_UTC_OFFSET)
       raise InputError, "#{label} must include an explicit UTC offset or Z"
     end
 

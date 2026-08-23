@@ -90,7 +90,9 @@ Every scope has an explicit `scope` discriminator and stable logical `id`:
 
 The reporter walks `thread_spawn_edges`; prompt mentions, parent IDs replayed in
 JSONL, and name similarity cannot create ancestry. Each physical rollout is
-deduplicated before a scope total is computed. The batch reconciliation is:
+deduplicated by its canonical file before a scope total is computed. A repeated
+session ID in a distinct file is not treated as proof that the files are the
+same rollout. The batch reconciliation is:
 
 ```text
 batch descendant-inclusive
@@ -148,11 +150,12 @@ themselves add usage or change identity. Fork, resume, copied history, and
 compaction therefore remain replay-safe, while boundary-straddling windows do
 not import pre-window cumulative history.
 
-A copied replay-prefix record without `total_token_usage` is deferred rather
-than immediately invalidating the child. A later valid copied cumulative
-snapshot before the fork boundary supersedes that defect and provides the
-needed child baseline. If no such snapshot arrives before the boundary, the
-line-numbered `missing_total_token_usage` reason remains structural `UNKNOWN`.
+A malformed copied replay-prefix record or one without `total_token_usage` is
+deferred rather than immediately invalidating the child. A later valid copied
+cumulative snapshot before the fork boundary supersedes that defect and
+provides the needed child baseline. If no such snapshot arrives before the
+boundary, the line-numbered `malformed_jsonl` or
+`missing_total_token_usage` reason remains structural `UNKNOWN`.
 
 A known token vector is structurally invalid when its reported `total_tokens`
 is less than `input_tokens + output_tokens`. Either an invalid
@@ -196,11 +199,12 @@ include `state_database_unsupported`, `thread_missing`, `rollout_missing`,
 `state_thread_first_session_mismatch`. Known sibling scopes remain present;
 missing evidence is never silently treated as zero.
 
-`invalid_usage_timestamp` deliberately makes the entire physical rollout's
-counter vector `UNKNOWN`. The cumulative baseline must advance even when that
-sample cannot be placed before, inside, or after the requested window; assigning
-or dropping only its delta could therefore undercount or overcount every scope
-that reuses the rollout.
+Every usage timestamp must include `Z` or an explicit numeric UTC offset.
+Zone-less or otherwise invalid values emit `invalid_usage_timestamp` and
+deliberately make the entire physical rollout's counter vector `UNKNOWN`. The
+cumulative baseline must advance even when that sample cannot be placed before,
+inside, or after the requested window; assigning or dropping only its delta
+could therefore undercount or overcount every scope that reuses the rollout.
 
 Top-level `evidence.sources` lists supported and attempted metadata source
 types; it does not claim that each source was available. Source failures and

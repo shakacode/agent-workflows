@@ -21,6 +21,7 @@ end
 
 HELPER = File.expand_path("batch-usage-receipt", __dir__)
 FIXTURES = File.expand_path("../fixtures/batch-usage-receipt", __dir__)
+RawRolloutLine = Struct.new(:content, keyword_init: true)
 load HELPER
 
 class BatchUsageReceiptTest < Minitest::Test
@@ -37,7 +38,9 @@ class BatchUsageReceiptTest < Minitest::Test
 
     Dir.mktmpdir("batch-usage-receipt-test") do |directory|
       fixture.fetch("rollouts").each do |basename, records|
-        jsonl = records.map { |record| JSON.generate(record) }.join("\n")
+        jsonl = records.map do |record|
+          record.is_a?(RawRolloutLine) ? record.content : JSON.generate(record)
+        end.join("\n")
         File.write(File.join(directory, basename), "#{jsonl}\n")
       end
 
@@ -130,6 +133,31 @@ class BatchUsageReceiptTest < Minitest::Test
     refute_nil reason
   end
 
+  def test_distinct_rollout_files_with_the_same_session_id_are_not_collapsed
+    fixture = fixture_copy("descendants")
+    fixture.dig("rollouts", "unattributed-root.jsonl", 0, "payload")["id"] = "root"
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 6, receipt.dig("accounting", "usage_samples")
+    reason = receipt.dig("evidence", "unknown").find do |item|
+      item["code"] == "state_thread_first_session_mismatch" && item["thread_id"] == "unattributed-root"
+    end
+    refute_nil reason
+  end
+
+  def test_state_threads_aliasing_the_same_canonical_rollout_are_processed_once
+    fixture = fixture_copy("descendants")
+    worker_thread = fixture.fetch("threads").find { |thread| thread.fetch("id") == "worker-a" }
+    worker_thread["rollout"] = "lane-a.jsonl"
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 5, receipt.dig("accounting", "usage_samples")
+    assert_equal 2, receipt.dig("lanes", 0, "evidence", "physical_rollout_ids").length
+  end
+
   def test_out_of_lane_rollout_alias_is_validated_before_any_scope_materializes
     fixture = fixture_copy("descendants")
     fixture.dig("manifest", "lanes", 0, "workers", 0)["thread_id"] = "orphan"
@@ -180,6 +208,35 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "UNKNOWN", receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
     reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "missing_total_token_usage" }
     assert_equal 5, reason.fetch("line")
+  end
+
+  def test_malformed_copied_record_is_superseded_by_a_later_replay_baseline
+    fixture = fixture_copy("replay")
+    fixture.fetch("rollouts").fetch("child.jsonl").insert(
+      4, RawRolloutLine.new(content: "{malformed copied record")
+    )
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 30, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 10, receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    assert_equal "complete", receipt.dig("evidence", "status")
+    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    refute_includes unknown_codes, "malformed_jsonl"
+  end
+
+  def test_malformed_copied_record_without_a_later_replay_baseline_remains_unknown
+    fixture = fixture_copy("replay")
+    fixture.fetch("rollouts").fetch("child.jsonl").insert(
+      5, RawRolloutLine.new(content: "{malformed copied record")
+    )
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal "UNKNOWN", receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "malformed_jsonl" }
+    assert_equal 6, reason.fetch("line")
   end
 
   def test_cumulative_differencing_precedes_window_filter_and_accounts_for_seed_reset_and_compaction
@@ -424,6 +481,39 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "UNKNOWN", receipt.dig("coordinator", "evidence", "status")
     reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "invalid_usage_timestamp" }
     assert_equal 3, reason.fetch("line")
+  end
+
+  def test_zone_less_usage_timestamp_is_unknown_in_every_local_timezone
+    fixture = fixture_copy("replay")
+    fixture.dig("rollouts", "root.jsonl", 3)["timestamp"] = "2026-08-01T23:30:00"
+
+    %w[UTC America/New_York].each do |timezone|
+      receipt, = run_fixture(fixture: fixture, environment: { "TZ" => timezone })
+
+      assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens"), timezone
+      assert_equal "UNKNOWN", receipt.dig("coordinator", "evidence", "status"), timezone
+      reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "invalid_usage_timestamp" }
+      assert_equal 4, reason.fetch("line"), timezone
+    end
+  end
+
+  def test_zone_less_copied_replay_timestamp_is_unknown_in_every_local_timezone
+    fixture = fixture_copy("replay")
+    fixture.dig("rollouts", "child.jsonl", 4)["timestamp"] = "2026-08-01T01:00:00.003"
+    receipts = %w[UTC Pacific/Honolulu].map do |timezone|
+      receipt, = run_fixture(fixture: fixture, environment: { "TZ" => timezone })
+
+      assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens"), timezone
+      assert_equal "UNKNOWN",
+                   receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens"),
+                   timezone
+      assert_equal "UNKNOWN", receipt.dig("lanes", 0, "workers", 0, "evidence", "status"), timezone
+      reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "invalid_usage_timestamp" }
+      assert_equal 5, reason.fetch("line"), timezone
+      receipt
+    end
+
+    assert_equal receipts.first, receipts.last
   end
 
   def test_nested_fork_matches_its_own_copy_boundary_without_recounting_parent_usage
