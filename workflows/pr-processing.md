@@ -1152,7 +1152,7 @@ installation state before helper launch. Bind its outside-repository pr-batch
 directory to `TRUSTED_PR_BATCH_SKILL_DIR` and pass the independently established
 `verified-installed-pack:<64-lowercase-sha256>` claim as
 `HOSTED_HELPER_PROVENANCE`. The helper recomputes the same length-framed
-nine-file manifest; the claim cannot create trust and a missing, mismatched,
+eight-file manifest; the claim cannot create trust and a missing, mismatched,
 inside-repository, or incomplete runtime returns `UNKNOWN`.
 Also bind `TRUSTED_HELPER_CWD` to that verified pack's outside-repository root
 and `TRUSTED_HELPER_HOME` to a fresh coordinator-owned empty `0700` directory
