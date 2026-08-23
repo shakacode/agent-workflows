@@ -110,6 +110,19 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "full_history_before_window_filter", receipt.dig("window", "differencing")
   end
 
+  def test_emitted_window_preserves_fractional_second_precision
+    fixture = fixture_copy("replay")
+    fixture["window"] = {
+      "from" => "2026-08-01T00:00:00.500000000Z",
+      "to" => "2026-08-02T00:00:00.800000000Z"
+    }
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "2026-08-01T00:00:00.500000000Z", receipt.dig("window", "from_inclusive")
+    assert_equal "2026-08-02T00:00:00.800000000Z", receipt.dig("window", "to_exclusive")
+  end
+
   def test_first_sample_without_last_usage_is_unknown_instead_of_importing_cumulative_history
     receipt, = run_fixture("missing-first-last")
 

@@ -411,8 +411,8 @@ module BatchUsageReceipt
         "coordinator" => strip_internal(coordinator),
         "lanes" => lanes.map { |lane| strip_internal(lane) },
         "window" => {
-          "from_inclusive" => @from_time.utc.iso8601,
-          "to_exclusive" => @to_time.utc.iso8601,
+          "from_inclusive" => @from_time.utc.iso8601(9),
+          "to_exclusive" => @to_time.utc.iso8601(9),
           "differencing" => "full_history_before_window_filter"
         },
         "accounting" => aggregate_accounting(relevant_threads),
