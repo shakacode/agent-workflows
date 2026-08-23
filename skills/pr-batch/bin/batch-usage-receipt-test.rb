@@ -128,6 +128,28 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "2026-08-02T00:00:00.800000000Z", receipt.dig("window", "to_exclusive")
   end
 
+  def test_window_rejects_fractional_seconds_beyond_nanosecond_precision
+    fixture = fixture_copy("replay")
+    fixture["window"]["from"] = "2026-08-01T00:00:00.1234567899Z"
+
+    stderr, status = run_fixture(fixture: fixture, expect_success: false)
+
+    assert_equal 64, status.exitstatus
+    assert_equal "ERROR: --from must use no more than 9 fractional-second digits\n", stderr
+  end
+
+  def test_non_object_manifests_return_normal_input_error
+    [[], nil].each do |manifest|
+      fixture = fixture_copy("replay")
+      fixture["manifest"] = manifest
+
+      stderr, status = run_fixture(fixture: fixture, expect_success: false)
+
+      assert_equal 64, status.exitstatus
+      assert_equal "ERROR: manifest must be an object\n", stderr
+    end
+  end
+
   def test_first_sample_without_last_usage_is_unknown_instead_of_importing_cumulative_history
     receipt, = run_fixture("missing-first-last")
 
@@ -346,6 +368,25 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_includes query, "JOIN reachable"
     %w[root-thread child-thread].each do |thread_id|
       assert_includes query, thread_id.unpack1("H*")
+    end
+  end
+
+  def test_unexpected_state_loader_no_method_error_is_not_swallowed
+    fixture = fixture_copy("replay")
+    Dir.mktmpdir("batch-usage-receipt-state") do |directory|
+      database_path = File.join(directory, "state_5.sqlite")
+      File.write(database_path, "")
+      reporter = BatchUsageReceipt::Reporter.new(
+        manifest: fixture.fetch("manifest"),
+        database_path: database_path,
+        from_time: Time.iso8601(fixture.dig("window", "from")),
+        to_time: Time.iso8601(fixture.dig("window", "to"))
+      )
+      reporter.define_singleton_method(:state_query) { nil.unexpected_state_query_bug }
+
+      error = assert_raises(NoMethodError) { reporter.send(:load_state) }
+
+      assert_includes error.message, "unexpected_state_query_bug"
     end
   end
 

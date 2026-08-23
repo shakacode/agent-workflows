@@ -438,6 +438,7 @@ module BatchUsageReceipt
     private
 
     def validate_manifest!
+      raise InputError, "manifest must be an object" unless @manifest.is_a?(Hash)
       raise InputError, "manifest schema must be #{MANIFEST_SCHEMA}" unless @manifest["schema"] == MANIFEST_SCHEMA
 
       require_string!(@manifest["batch_id"], "batch_id")
@@ -515,7 +516,7 @@ module BatchUsageReceipt
       @state_loaded = true
     rescue Errno::ENOENT
       @unknown << { "status" => UNKNOWN, "code" => "sqlite3_cli_unavailable" }
-    rescue JSON::ParserError, KeyError, NoMethodError
+    rescue JSON::ParserError, KeyError
       @unknown << { "status" => UNKNOWN, "code" => "state_database_unsupported" }
     ensure
       @children.each_value(&:sort!)
@@ -888,7 +889,13 @@ module BatchUsageReceipt
   end
 
   def parse_time(value, label)
-    Time.iso8601(value)
+    parsed = Time.iso8601(value)
+    fractional_digits = value[/[.,](\d+)/, 1]
+    if fractional_digits && fractional_digits.length > 9
+      raise InputError, "#{label} must use no more than 9 fractional-second digits"
+    end
+
+    parsed
   rescue ArgumentError, TypeError
     raise InputError, "#{label} must be an ISO 8601 timestamp"
   end
