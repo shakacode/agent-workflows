@@ -18,7 +18,7 @@ class BatchUsageReceiptTest < Minitest::Test
     "'#{value.to_s.gsub("'", "''")}'"
   end
 
-  def run_fixture(name = nil, with_rate_card: false, fixture: nil, database_available: true)
+  def run_fixture(name = nil, with_rate_card: false, fixture: nil, database_available: true, expect_success: true)
     fixture ||= JSON.parse(File.read(File.join(FIXTURES, "#{name}.json"), encoding: "UTF-8"))
 
     Dir.mktmpdir("batch-usage-receipt-test") do |directory|
@@ -74,8 +74,13 @@ class BatchUsageReceiptTest < Minitest::Test
         command.concat(["--rate-card", rate_card_path])
       end
       stdout, stderr, status = Open3.capture3(*command)
-      assert status.success?, stderr
-      return [JSON.parse(stdout), stdout]
+      if expect_success
+        assert status.success?, stderr
+        return [JSON.parse(stdout), stdout]
+      end
+
+      refute status.success?
+      return [stderr, status]
     end
   end
 
@@ -261,6 +266,24 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal %w[lane-a lane-b], reason.fetch("lane_ids")
   end
 
+  def test_lane_containing_coordinator_root_forces_batch_reconciliation_unknown
+    fixture = fixture_copy("descendants")
+    root_to_lane_a = fixture.fetch("edges").find { |edge| edge[1] == "lane-a" }
+    root_to_lane_a[0] = "lane-a"
+    root_to_lane_a[1] = "root"
+    %w[root.jsonl lane-b.jsonl unattributed-root.jsonl].each do |rollout|
+      token_info = fixture.dig("rollouts", rollout, 1, "payload", "info")
+      token_info.each_value { |usage| usage.transform_values! { 0 } }
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("batch", "reconciliation", "status")
+    reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "coordinator_root_in_lane_scope" }
+    assert_equal "lane-a", reason.fetch("lane_id")
+    assert_equal "root", reason.fetch("thread_id")
+  end
+
   def test_unavailable_state_does_not_claim_manifest_worker_topology_is_invalid
     receipt, = run_fixture(fixture: fixture_copy("descendants"), database_available: false)
 
@@ -396,16 +419,29 @@ class BatchUsageReceiptTest < Minitest::Test
 
   def test_rate_card_effective_date_must_be_a_canonical_full_date
     fixture = fixture_copy("descendants")
-    reporter = BatchUsageReceipt::Reporter.new(
-      manifest: fixture.fetch("manifest"),
-      database_path: "/unused/state_5.sqlite",
-      from_time: Time.iso8601(fixture.dig("window", "from")),
-      to_time: Time.iso8601(fixture.dig("window", "to")),
-      rate_card: fixture.fetch("rate_card").merge("effective_date" => "20260804")
+    %w[20260804 2026-02-30].each do |effective_date|
+      reporter = reporter_for_rate_card(fixture, fixture.fetch("rate_card").merge("effective_date" => effective_date))
+
+      error = assert_raises(BatchUsageReceipt::InputError) { reporter.send(:validate_rate_card!) }
+      assert_equal "rate-card.effective_date must be an ISO 8601 date", error.message
+    end
+  end
+
+  def test_rate_card_rejects_nonfinite_rates_and_finite_rate_overflow
+    fixture = fixture_copy("descendants")
+    nonfinite = fixture.fetch("rate_card").merge(
+      "model_mappings" => fixture.dig("rate_card", "model_mappings").map(&:dup)
     )
+    nonfinite.dig("model_mappings", 0)["input_credits_per_million"] = Float::INFINITY
+    reporter = reporter_for_rate_card(fixture, nonfinite)
 
     error = assert_raises(BatchUsageReceipt::InputError) { reporter.send(:validate_rate_card!) }
-    assert_equal "rate-card.effective_date must be an ISO 8601 date", error.message
+    assert_includes error.message, "must be finite and nonnegative"
+
+    overflow = fixture_copy("descendants")
+    overflow.dig("rate_card", "model_mappings", 0)["input_credits_per_million"] = Float::MAX
+    stderr, = run_fixture(fixture: overflow, with_rate_card: true, expect_success: false)
+    assert_includes stderr, "rate-card credit calculation must be finite"
   end
 
   def test_unknown_observed_model_cannot_be_priced_by_an_unknown_rate_mapping
@@ -479,6 +515,16 @@ class BatchUsageReceiptTest < Minitest::Test
       "cache_read_tokens" => 0,
       "total_tokens" => 0
     }
+  end
+
+  def reporter_for_rate_card(fixture, rate_card)
+    BatchUsageReceipt::Reporter.new(
+      manifest: fixture.fetch("manifest"),
+      database_path: "/unused/state_5.sqlite",
+      from_time: Time.iso8601(fixture.dig("window", "from")),
+      to_time: Time.iso8601(fixture.dig("window", "to")),
+      rate_card: rate_card
+    )
   end
 
   def receipt_schema

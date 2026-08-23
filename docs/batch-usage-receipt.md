@@ -106,9 +106,10 @@ contradicts that hierarchy, the reporter leaves evidence-derived numeric values
 for the declared coordinator and lane root trees intact, marks the affected
 reconciliation and top-level `evidence.status` as `UNKNOWN`, and records a
 `worker_outside_lane_scope` reason. Other topology reasons are
-`lane_scope_overlap` and `worker_scope_overlap`. These codes mean the manifest's
-logical attribution is incomplete; a numeric root-tree total must not be read as
-a complete worker-inclusive batch total while top-level evidence is `UNKNOWN`.
+`coordinator_root_in_lane_scope`, `lane_scope_overlap`, and
+`worker_scope_overlap`. These codes mean the manifest's logical attribution is
+incomplete; a numeric root-tree total must not be read as a complete
+worker-inclusive batch total while top-level evidence is `UNKNOWN`.
 
 ## Streaming And Replay Accounting
 

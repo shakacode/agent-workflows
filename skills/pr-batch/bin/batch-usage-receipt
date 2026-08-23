@@ -590,6 +590,19 @@ module BatchUsageReceipt
       lane_closures = @manifest.fetch("lanes").to_h do |lane|
         [lane.fetch("id"), closure(lane.fetch("root_thread_id"))]
       end
+      coordinator_root = @manifest.dig("coordinator", "root_thread_id")
+      lane_closures.each do |lane_id, lane_threads|
+        next unless lane_threads.include?(coordinator_root)
+
+        @unknown << {
+          "status" => UNKNOWN,
+          "code" => "coordinator_root_in_lane_scope",
+          "lane_id" => lane_id,
+          "thread_id" => coordinator_root
+        }
+        @topology_unknown_lane_ids << lane_id
+        @batch_reconciliation_topology_unknown = true
+      end
       lane_closures.to_a.combination(2) do |(left_id, left_threads), (right_id, right_threads)|
         overlap = left_threads & right_threads
         next if overlap.empty?
@@ -819,6 +832,8 @@ module BatchUsageReceipt
 
         credits = (usage["input_tokens"] * mapping.fetch("input_credits_per_million") +
                    usage["output_tokens"] * mapping.fetch("output_credits_per_million")) / 1_000_000.0
+        raise InputError, "rate-card credit calculation must be finite" unless credits.finite?
+
         {
           "host" => host,
           "model" => model,
@@ -860,12 +875,14 @@ module BatchUsageReceipt
         %w[host model].each { |key| require_string!(mapping[key], "rate-card.model_mappings[#{index}].#{key}") }
         %w[input_credits_per_million output_credits_per_million].each do |key|
           value = mapping[key]
-          raise InputError, "rate-card.model_mappings[#{index}].#{key} must be nonnegative" unless value.is_a?(Numeric) && value >= 0
+          unless value.is_a?(Numeric) && value.finite? && value >= 0
+            raise InputError, "rate-card.model_mappings[#{index}].#{key} must be finite and nonnegative"
+          end
         end
       end
       identities = mappings.map { |mapping| [mapping["host"], mapping["model"]] }
       raise InputError, "rate-card host/model mappings must be unique" unless identities.uniq.length == identities.length
-    rescue Date::Error, KeyError
+    rescue ArgumentError, KeyError
       raise InputError, "rate-card.effective_date must be an ISO 8601 date"
     end
   end
