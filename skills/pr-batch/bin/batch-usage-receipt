@@ -694,11 +694,12 @@ module BatchUsageReceipt
     def closure(root)
       return [root] unless @threads.key?(root)
 
+      seen = Set.new
       result = []
       stack = [root]
       until stack.empty?
         thread_id = stack.pop
-        next if result.include?(thread_id)
+        next unless seen.add?(thread_id)
 
         result << thread_id
         stack.concat(@children[thread_id].reverse)
@@ -942,7 +943,11 @@ module BatchUsageReceipt
 
   def parse_time(value, label)
     parsed = Time.iso8601(value)
-    fractional_digits = value[/[.,](\d+)/, 1]
+    unless value.match?(/(?:Z|[+-]\d{2}(?::?\d{2})?)\z/i)
+      raise InputError, "#{label} must include an explicit UTC offset or Z"
+    end
+
+    fractional_digits = value[/\.(\d+)/, 1]
     if fractional_digits && fractional_digits.length > 9
       raise InputError, "#{label} must use no more than 9 fractional-second digits"
     end
@@ -950,6 +955,12 @@ module BatchUsageReceipt
     parsed
   rescue ArgumentError, TypeError
     raise InputError, "#{label} must be an ISO 8601 timestamp"
+  end
+
+  def read_json_input(path, label)
+    JSON.parse(File.read(path, encoding: "UTF-8"))
+  rescue SystemCallError
+    raise InputError, "#{label} could not be read"
   end
 
   def run(argv)
@@ -965,8 +976,8 @@ module BatchUsageReceipt
     parser.parse!(argv)
     raise InputError, parser.banner unless argv.empty? && %i[database manifest from to].all? { |key| options[key] }
 
-    manifest = JSON.parse(File.read(options.fetch(:manifest), encoding: "UTF-8"))
-    rate_card = options[:rate_card] && JSON.parse(File.read(options[:rate_card], encoding: "UTF-8"))
+    manifest = read_json_input(options.fetch(:manifest), "manifest")
+    rate_card = options[:rate_card] && read_json_input(options[:rate_card], "rate-card")
     if options[:rate_card] && !rate_card.is_a?(Hash)
       raise InputError, "rate-card must be an object"
     end
@@ -984,7 +995,7 @@ module BatchUsageReceipt
     ).build
     puts JSON.pretty_generate(receipt)
     0
-  rescue OptionParser::ParseError, JSON::ParserError, Errno::ENOENT, InputError => e
+  rescue OptionParser::ParseError, JSON::ParserError, InputError => e
     warn "ERROR: #{e.message}"
     64
   end

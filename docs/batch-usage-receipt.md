@@ -23,7 +23,10 @@ Run the helper from the loaded `pr-batch` pack:
   > batch-usage-receipt.json
 ```
 
-The half-open window is `from <= timestamp < to`. `state_5.sqlite` supplies
+The half-open window is `from <= timestamp < to`. Both window timestamps must
+include `Z` or an explicit numeric UTC offset; zone-less timestamps are rejected
+so local process timezone settings cannot change the selected evidence.
+`state_5.sqlite` supplies
 physical thread rows, rollout paths, observed host metadata, and
 `thread_spawn_edges`. The helper invokes the `sqlite3` CLI read-only and selects
 only those metadata columns. The JSON manifest supplies only logical batch

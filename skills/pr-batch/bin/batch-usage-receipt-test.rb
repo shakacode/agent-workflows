@@ -30,7 +30,9 @@ class BatchUsageReceiptTest < Minitest::Test
     "'#{value.to_s.gsub("'", "''")}'"
   end
 
-  def run_fixture(name = nil, with_rate_card: false, fixture: nil, database_available: true, expect_success: true)
+  def run_fixture(
+    name = nil, with_rate_card: false, fixture: nil, database_available: true, expect_success: true, environment: {}
+  )
     fixture ||= JSON.parse(File.read(File.join(FIXTURES, "#{name}.json"), encoding: "UTF-8"))
 
     Dir.mktmpdir("batch-usage-receipt-test") do |directory|
@@ -85,7 +87,7 @@ class BatchUsageReceiptTest < Minitest::Test
         File.write(rate_card_path, "#{JSON.pretty_generate(fixture.fetch('rate_card'))}\n")
         command.concat(["--rate-card", rate_card_path])
       end
-      stdout, stderr, status = Open3.capture3(*command)
+      stdout, stderr, status = Open3.capture3(environment, *command)
       if expect_success
         assert status.success?, stderr
         return [JSON.parse(stdout), stdout]
@@ -208,6 +210,24 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "2026-08-02T00:00:00.800000000Z", receipt.dig("window", "to_exclusive")
   end
 
+  def test_window_requires_an_explicit_offset_in_every_local_timezone
+    %w[UTC America/New_York].each do |timezone|
+      { "--from" => "from", "--to" => "to" }.each do |label, key|
+        fixture = fixture_copy("replay")
+        fixture.fetch("window")[key] = "2026-08-01T00:00:00"
+
+        stderr, status = run_fixture(
+          fixture: fixture,
+          expect_success: false,
+          environment: { "TZ" => timezone }
+        )
+
+        assert_equal 64, status.exitstatus, timezone
+        assert_equal "ERROR: #{label} must include an explicit UTC offset or Z\n", stderr
+      end
+    end
+  end
+
   def test_window_rejects_fractional_seconds_beyond_nanosecond_precision
     fixture = fixture_copy("replay")
     fixture["window"]["from"] = "2026-08-01T00:00:00.1234567899Z"
@@ -216,6 +236,16 @@ class BatchUsageReceiptTest < Minitest::Test
 
     assert_equal 64, status.exitstatus
     assert_equal "ERROR: --from must use no more than 9 fractional-second digits\n", stderr
+  end
+
+  def test_window_rejects_comma_fraction_with_the_generic_iso8601_error
+    fixture = fixture_copy("replay")
+    fixture["window"]["from"] = "2026-08-01T00:00:00,123Z"
+
+    stderr, status = run_fixture(fixture: fixture, expect_success: false)
+
+    assert_equal 64, status.exitstatus
+    assert_equal "ERROR: --from must be an ISO 8601 timestamp\n", stderr
   end
 
   def test_non_object_manifests_return_normal_input_error
@@ -227,6 +257,36 @@ class BatchUsageReceiptTest < Minitest::Test
 
       assert_equal 64, status.exitstatus
       assert_equal "ERROR: manifest must be an object\n", stderr
+    end
+  end
+
+  def test_manifest_and_rate_card_read_failures_are_privacy_safe_input_errors
+    fixture = fixture_copy("replay")
+    Dir.mktmpdir("batch-usage-receipt-input") do |directory|
+      manifest_path = File.join(directory, "manifest.json")
+      File.write(manifest_path, JSON.generate(fixture.fetch("manifest")))
+      input_directory = File.join(directory, "input-directory")
+      Dir.mkdir(input_directory)
+      missing_path = File.join(directory, "missing.json")
+
+      %w[manifest rate-card].product([input_directory, missing_path]).each do |label, invalid_path|
+        command = [
+          "ruby", HELPER,
+          "--state-db", File.join(directory, "unused.sqlite"),
+          "--manifest", label == "manifest" ? invalid_path : manifest_path,
+          "--from", fixture.dig("window", "from"),
+          "--to", fixture.dig("window", "to")
+        ]
+        command.concat(["--rate-card", invalid_path]) if label == "rate-card"
+
+        stdout, stderr, status = Open3.capture3(*command)
+
+        assert_empty stdout
+        assert_equal 64, status.exitstatus
+        assert_equal "ERROR: #{label} could not be read\n", stderr
+        refute_includes stderr, invalid_path
+        refute_includes stderr, "Errno::"
+      end
     end
   end
 
