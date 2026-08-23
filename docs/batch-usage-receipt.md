@@ -101,6 +101,15 @@ trees. Thus a lane root can also be its named worker without double counting.
 Coordinator `descendant_inclusive` is informative and is not added again in the
 batch equation.
 
+Declared worker roots must be descendants of their lane root. If state metadata
+contradicts that hierarchy, the reporter leaves evidence-derived numeric values
+for the declared coordinator and lane root trees intact, marks the affected
+reconciliation and top-level `evidence.status` as `UNKNOWN`, and records a
+`worker_outside_lane_scope` reason. Other topology reasons are
+`lane_scope_overlap` and `worker_scope_overlap`. These codes mean the manifest's
+logical attribution is incomplete; a numeric root-tree total must not be read as
+a complete worker-inclusive batch total while top-level evidence is `UNKNOWN`.
+
 ## Streaming And Replay Accounting
 
 The helper streams one JSONL line at a time and immediately discards all fields
@@ -132,7 +141,9 @@ not import pre-window cumulative history.
 The `accounting` object reports `usage_samples`,
 `duplicate_samples_omitted`, `replay_records_omitted`, `counter_resets`,
 `inherited_seeds_omitted`, `compactions`, and
-`session_rebind_attempts_ignored` explicitly.
+`session_rebind_attempts_ignored` explicitly. These diagnostic counts cover the
+complete physical rollouts used for differencing; unlike emitted usage deltas,
+they are not restricted to the requested `[from, to)` window.
 
 ## Usage Counters And UNKNOWN
 
@@ -154,6 +165,11 @@ include `state_database_unsupported`, `thread_missing`, `rollout_missing`,
 `malformed_jsonl`, `missing_total_token_usage`, and
 `state_thread_first_session_mismatch`. Known sibling scopes remain present;
 missing evidence is never silently treated as zero.
+
+Top-level `evidence.sources` lists supported and attempted metadata source
+types; it does not claim that each source was available. Source failures and
+partial availability are represented by top-level `evidence.status: "UNKNOWN"`
+and the corresponding structured entries in `evidence.unknown`.
 
 ## Optional Credit Equivalents
 

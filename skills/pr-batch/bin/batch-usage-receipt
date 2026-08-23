@@ -202,11 +202,13 @@ module BatchUsageReceipt
             next
           end
 
+          specific_unknown_recorded = false
           delta = if first_usage
                     value, inherited_seed, missing_fields = vector_for_first_sample(total, last)
                     @accounting["inherited_seeds_omitted"] += 1 if inherited_seed
                     unless missing_fields.empty?
                       unknown("missing_first_last_token_usage", fields: missing_fields, affects_usage: false)
+                      specific_unknown_recorded = true
                     end
                     value
                   elsif vector_decreased?(total, previous)
@@ -215,6 +217,7 @@ module BatchUsageReceipt
                       total
                     else
                       unknown("ambiguous_counter_decrease", line: line_number, affects_usage: false)
+                      specific_unknown_recorded = true
                       unknown_usage
                     end
                   else
@@ -233,7 +236,7 @@ module BatchUsageReceipt
           end
           next unless in_window?(record["timestamp"], @from_time, @to_time)
 
-          add_route_usage(current_route, delta)
+          add_route_usage(current_route, delta, record_missing_evidence: !specific_unknown_recorded)
         end
       end
 
@@ -281,11 +284,11 @@ module BatchUsageReceipt
       value if value.is_a?(String) && !value.strip.empty?
     end
 
-    def add_route_usage(route, usage)
+    def add_route_usage(route, usage, record_missing_evidence: true)
       key = JSON.generate(route.sort.to_h)
       @route_usage[key] = add_usage(@route_usage.fetch(key, blank_usage), usage)
       missing_fields = TOKEN_FIELDS.reject { |field| usage[field].is_a?(Integer) }
-      return if missing_fields.empty?
+      return if missing_fields.empty? || !record_missing_evidence
 
       unknown("usage_counter_missing", fields: missing_fields, affects_usage: false)
     end
@@ -401,6 +404,7 @@ module BatchUsageReceipt
       raise InputError, "lanes must be an array" unless lanes.is_a?(Array)
 
       lane_ids = {}
+      worker_ids = {}
       root_ids = { coordinator.fetch("root_thread_id") => true }
       lanes.each_with_index do |lane, index|
         raise InputError, "lanes[#{index}] must be an object" unless lane.is_a?(Hash)
@@ -423,6 +427,9 @@ module BatchUsageReceipt
           %w[id thread_id].each do |key|
             require_string!(worker[key], "lanes[#{index}].workers[#{worker_index}].#{key}")
           end
+          raise InputError, "duplicate worker id #{worker['id']}" if worker_ids[worker["id"]]
+
+          worker_ids[worker["id"]] = true
           validate_route!(worker["requested_route"], "lanes[#{index}].workers[#{worker_index}].requested_route")
         end
       end

@@ -146,6 +146,7 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "UNKNOWN", receipt.dig("evidence", "status")
     unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
     assert_includes unknown_codes, "ambiguous_counter_decrease"
+    refute_includes unknown_codes, "usage_counter_missing"
   end
 
   def test_unknown_cache_counter_does_not_erase_known_primary_counters
@@ -237,6 +238,23 @@ class BatchUsageReceiptTest < Minitest::Test
     end
   end
 
+  def test_worker_ids_must_be_unique_across_lanes
+    fixture = JSON.parse(File.read(File.join(FIXTURES, "descendants.json"), encoding: "UTF-8"))
+    manifest = fixture.fetch("manifest")
+    duplicate = JSON.parse(JSON.generate(manifest.dig("lanes", 0, "workers", 0)))
+    duplicate["thread_id"] = "lane-b"
+    manifest.dig("lanes", 1, "workers") << duplicate
+    reporter = BatchUsageReceipt::Reporter.new(
+      manifest: manifest,
+      database_path: "/unused/state_5.sqlite",
+      from_time: Time.iso8601(fixture.dig("window", "from")),
+      to_time: Time.iso8601(fixture.dig("window", "to"))
+    )
+
+    error = assert_raises(BatchUsageReceipt::InputError) { reporter.send(:validate_manifest!) }
+    assert_equal "duplicate worker id worker-a", error.message
+  end
+
   def test_optional_credit_equivalents_require_explicit_dated_model_mapping_and_disclaim_billing
     receipt, = run_fixture("descendants", with_rate_card: true)
     credits = receipt.fetch("credit_equivalents")
@@ -294,6 +312,9 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_includes docs, "`last_token_usage` is never summed."
     assert_includes docs, "complete physical rollout"
     assert_includes docs, "not an invoice"
+    assert_includes docs, "supported and attempted metadata source"
+    assert_includes docs, "complete physical rollouts used for differencing"
+    assert_includes docs, "worker_outside_lane_scope"
 
     workflow = File.read(File.join(root, "workflows/pr-processing.md"), encoding: "UTF-8")
     skill = File.read(File.join(root, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
