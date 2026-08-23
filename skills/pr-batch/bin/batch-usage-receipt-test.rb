@@ -23,8 +23,8 @@ class BatchUsageReceiptTest < Minitest::Test
     "'#{value.to_s.gsub("'", "''")}'"
   end
 
-  def run_fixture(name, with_rate_card: false)
-    fixture = JSON.parse(File.read(File.join(FIXTURES, "#{name}.json"), encoding: "UTF-8"))
+  def run_fixture(name = nil, with_rate_card: false, fixture: nil, database_available: true)
+    fixture ||= JSON.parse(File.read(File.join(FIXTURES, "#{name}.json"), encoding: "UTF-8"))
 
     Dir.mktmpdir("batch-usage-receipt-test") do |directory|
       fixture.fetch("rollouts").each do |basename, records|
@@ -59,8 +59,10 @@ class BatchUsageReceiptTest < Minitest::Test
         values = edge.map { |value| sql_quote(value) }
         statements << "INSERT INTO thread_spawn_edges VALUES (#{values.join(', ')});\n"
       end
-      _, database_stderr, database_status = Open3.capture3("sqlite3", database_path, stdin_data: statements)
-      assert database_status.success?, database_stderr
+      if database_available
+        _, database_stderr, database_status = Open3.capture3("sqlite3", database_path, stdin_data: statements)
+        assert database_status.success?, database_stderr
+      end
 
       manifest_path = File.join(directory, "manifest.json")
       File.write(manifest_path, "#{JSON.pretty_generate(fixture.fetch('manifest'))}\n")
@@ -102,7 +104,7 @@ class BatchUsageReceiptTest < Minitest::Test
     receipt, = run_fixture("reset-seed-compaction-window")
 
     assert_equal 19, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
-    assert_equal 15, receipt.dig("batch", "usage", "descendant_inclusive", "input_tokens")
+    assert_equal 115, receipt.dig("batch", "usage", "descendant_inclusive", "input_tokens")
     assert_equal 4, receipt.dig("batch", "usage", "descendant_inclusive", "output_tokens")
     assert_equal 1, receipt.dig("accounting", "inherited_seeds_omitted")
     assert_equal 1, receipt.dig("accounting", "counter_resets")
@@ -187,6 +189,27 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "UNKNOWN", receipt.dig("evidence", "status")
   end
 
+  def test_missing_observed_route_metadata_is_structured_unknown_without_erasing_usage
+    fixture = fixture_copy("replay")
+    fixture.fetch("threads").each do |thread|
+      thread["model_provider"] = ""
+      thread["model"] = nil
+      thread["reasoning_effort"] = nil
+    end
+    fixture.fetch("rollouts").each_value do |records|
+      records.reject! { |record| record["type"] == "turn_context" }
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 30, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal "UNKNOWN", receipt.dig("evidence", "status")
+    reasons = receipt.dig("evidence", "unknown").select { |item| item["code"] == "route_metadata_missing" }
+    refute_empty reasons
+    assert_equal %w[effort model provider], reasons.first.fetch("fields").sort
+    assert_equal %w[effort host model provider usage], receipt.dig("coordinator", "observed_routes", 0).keys.sort
+  end
+
   def test_spawn_edges_roll_up_descendants_once_and_reconcile_unattributed_usage
     receipt, = run_fixture("descendants")
 
@@ -201,6 +224,29 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal 7, receipt.dig("lanes", 1, "usage", "descendant_inclusive", "total_tokens")
     assert_equal 5, receipt.dig("batch", "usage", "unattributed", "total_tokens")
     assert_equal "balanced", receipt.dig("batch", "reconciliation", "status")
+  end
+
+  def test_topology_invalid_lane_reconciliation_is_unknown_even_when_zero_usage_balances
+    fixture = fixture_copy("descendants")
+    fixture.dig("manifest", "lanes", 0, "workers", 0)["thread_id"] = "lane-b"
+    token_info = fixture.dig("rollouts", "lane-b.jsonl", 1, "payload", "info")
+    token_info.each_value { |usage| usage.transform_values! { 0 } }
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("lanes", 0, "reconciliation", "status")
+    reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "worker_outside_lane_scope" }
+    assert_equal "lane-a", reason.fetch("lane_id")
+  end
+
+  def test_unavailable_state_does_not_claim_manifest_worker_topology_is_invalid
+    receipt, = run_fixture(fixture: fixture_copy("descendants"), database_available: false)
+
+    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    assert_includes unknown_codes, "state_database_missing"
+    refute_includes unknown_codes, "worker_outside_lane_scope"
+    refute_includes unknown_codes, "worker_scope_overlap"
+    refute_includes unknown_codes, "lane_scope_overlap"
   end
 
   def test_unsupported_or_missing_evidence_is_structured_unknown_and_content_never_leaks
@@ -336,6 +382,8 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_includes docs, "supported and attempted metadata source"
     assert_includes docs, "complete physical rollouts used for differencing"
     assert_includes docs, "worker_outside_lane_scope"
+    assert_includes docs, "entire affected rollout's counter vector"
+    assert_includes docs, "do not normalize `cache_read_tokens`"
 
     workflow = File.read(File.join(root, "workflows/pr-processing.md"), encoding: "UTF-8")
     skill = File.read(File.join(root, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
@@ -347,6 +395,10 @@ class BatchUsageReceiptTest < Minitest::Test
   end
 
   private
+
+  def fixture_copy(name)
+    JSON.parse(File.read(File.join(FIXTURES, "#{name}.json"), encoding: "UTF-8"))
+  end
 
   def blank_usage_for_test
     {

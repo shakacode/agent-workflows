@@ -80,8 +80,10 @@ module BatchUsageReceipt
       values = [current[field], previous[field]]
       value = if !values.all? { |item| item.is_a?(Integer) }
                 UNKNOWN
+              elsif reset
+                current[field]
               elsif current[field] < previous[field]
-                reset ? current[field] : UNKNOWN
+                UNKNOWN
               else
                 current[field] - previous[field]
               end
@@ -127,6 +129,7 @@ module BatchUsageReceipt
         "session_rebind_attempts_ignored" => 0
       }
       @unknown_reasons = []
+      @unknown_reason_keys = Set.new
       @global_unknown_usage_fields = []
       @route_usage = {}
       @first_session_id = nil
@@ -230,7 +233,12 @@ module BatchUsageReceipt
                     value, inherited_seed, missing_fields = vector_for_first_sample(total, last)
                     @accounting["inherited_seeds_omitted"] += 1 if inherited_seed
                     unless missing_fields.empty?
-                      unknown("missing_first_last_token_usage", fields: missing_fields, affects_usage: false)
+                      unknown(
+                        "missing_first_last_token_usage",
+                        line: line_number,
+                        fields: missing_fields,
+                        affects_usage: false
+                      )
                       explained_unknown_fields = missing_fields
                     end
                     value
@@ -261,7 +269,9 @@ module BatchUsageReceipt
           end
           next unless in_window?(record["timestamp"], @from_time, @to_time)
 
-          add_route_usage(current_route, delta, explained_unknown_fields: explained_unknown_fields)
+          add_route_usage(
+            current_route, delta, line: line_number, explained_unknown_fields: explained_unknown_fields
+          )
         end
       end
 
@@ -309,13 +319,19 @@ module BatchUsageReceipt
       value if value.is_a?(String) && !value.strip.empty?
     end
 
-    def add_route_usage(route, usage, explained_unknown_fields: [])
+    def add_route_usage(route, usage, line:, explained_unknown_fields: [])
+      missing_route_fields = %w[provider model effort].select { |field| route[field] == UNKNOWN }
+      unless missing_route_fields.empty?
+        unknown(
+          "route_metadata_missing", line: line, fields: missing_route_fields, affects_usage: false
+        )
+      end
       key = JSON.generate(route.sort.to_h)
       @route_usage[key] = add_usage(@route_usage.fetch(key, blank_usage), usage)
       missing_fields = TOKEN_FIELDS.reject { |field| usage[field].is_a?(Integer) } - explained_unknown_fields
       return if missing_fields.empty?
 
-      unknown("usage_counter_missing", fields: missing_fields, affects_usage: false)
+      unknown("usage_counter_missing", line: line, fields: missing_fields, affects_usage: false)
     end
 
     def apply_global_unknowns(usage)
@@ -330,7 +346,7 @@ module BatchUsageReceipt
 
     def unknown(code, affects_usage: true, **extra)
       reason = { "status" => UNKNOWN, "code" => code }.merge(extra.transform_keys(&:to_s))
-      @unknown_reasons << reason unless @unknown_reasons.include?(reason)
+      @unknown_reasons << reason if @unknown_reason_keys.add?(reason)
       @global_unknown_usage_fields |= TOKEN_FIELDS if affects_usage
     end
 
@@ -354,6 +370,8 @@ module BatchUsageReceipt
       @children = Hash.new { |hash, key| hash[key] = [] }
       @readers_by_thread = {}
       @readers_by_rollout = {}
+      @state_loaded = false
+      @topology_unknown_lane_ids = Set.new
     end
 
     def build
@@ -490,6 +508,7 @@ module BatchUsageReceipt
       snapshot.fetch("edges").each do |row|
         @children[row.fetch("parent_thread_id")] << row.fetch("child_thread_id")
       end
+      @state_loaded = true
     rescue Errno::ENOENT
       @unknown << { "status" => UNKNOWN, "code" => "sqlite3_cli_unavailable" }
     rescue JSON::ParserError, KeyError, NoMethodError
@@ -562,6 +581,8 @@ module BatchUsageReceipt
     end
 
     def record_scope_topology_unknowns
+      return unless @state_loaded
+
       lane_closures = @manifest.fetch("lanes").to_h do |lane|
         [lane.fetch("id"), closure(lane.fetch("root_thread_id"))]
       end
@@ -575,6 +596,7 @@ module BatchUsageReceipt
           "lane_ids" => [left_id, right_id].sort,
           "thread_ids" => overlap.sort
         }
+        @topology_unknown_lane_ids.merge([left_id, right_id])
       end
 
       @manifest.fetch("lanes").each do |lane|
@@ -591,6 +613,7 @@ module BatchUsageReceipt
             "lane_id" => lane.fetch("id"),
             "worker_id" => worker_id
           }
+          @topology_unknown_lane_ids << lane.fetch("id")
         end
         worker_closures.to_a.combination(2) do |(left_id, left_threads), (right_id, right_threads)|
           next if (left_threads & right_threads).empty?
@@ -601,6 +624,7 @@ module BatchUsageReceipt
             "lane_id" => lane.fetch("id"),
             "worker_ids" => [left_id, right_id].sort
           }
+          @topology_unknown_lane_ids << lane.fetch("id")
         end
       end
     end
@@ -700,7 +724,8 @@ module BatchUsageReceipt
       end
       reconciled = add_usage(worker_sum, receipt.dig("usage", "unattributed"))
       receipt["reconciliation"] = {
-        "status" => if known_usage?(reconciled) && reconciled == receipt.dig("usage", "descendant_inclusive")
+        "status" => if !@topology_unknown_lane_ids.include?(lane.fetch("id")) &&
+                       known_usage?(reconciled) && reconciled == receipt.dig("usage", "descendant_inclusive")
                       "balanced"
                     else
                       UNKNOWN

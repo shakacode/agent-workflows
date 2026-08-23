@@ -128,9 +128,10 @@ Supported Codex `event_msg/token_count` records carry cumulative
    than importing cumulative history;
 4. omits copied fork history, repeated cumulative samples, and detected replay
    samples while recording separate counts;
-5. records a counter reset and starts a new cumulative epoch when a counter
-   decrease follows a compaction boundary; a copied fork boundary corroborates
-   replay, while an uncorroborated decrease becomes structured `UNKNOWN`;
+5. records a counter reset and starts a new cumulative epoch for the entire
+   counter vector when any counter decrease follows a compaction boundary; a
+   copied fork boundary corroborates replay, while an uncorroborated decrease
+   becomes structured `UNKNOWN`;
 6. only then applies the half-open time window to each computed delta.
 
 `last_token_usage` is never summed. Compaction markers are counted but do not by
@@ -156,10 +157,12 @@ the [Review Finding Schema](review-finding-schema.md) where compatible:
 - `total_tokens` maps the host's reported `total_tokens` and does not add cache
   reads again.
 
-The helper does not infer absent counters. Uncertainty propagates independently
-per counter, so known input/output/total values remain known when only the cache
-counter is missing. Unsupported or missing evidence produces literal `UNKNOWN`
-counter values plus structured entries in
+The helper does not infer absent counters. Per-sample field gaps propagate
+independently per counter, so known input/output/total values remain known when
+only the cache counter is missing. Structural or session-level evidence problems
+conservatively make the entire affected rollout's counter vector `UNKNOWN`.
+Unsupported or missing evidence produces literal `UNKNOWN` counter values plus
+structured entries in
 `evidence.unknown`, each with `status: "UNKNOWN"` and a stable `code`. Examples
 include `state_database_unsupported`, `thread_missing`, `rollout_missing`,
 `malformed_jsonl`, `missing_total_token_usage`, and
@@ -195,7 +198,9 @@ and exact host/model mappings:
 
 An unmapped observed model stays structured `UNKNOWN`. Every emitted
 `credit_equivalents` object repeats the source/date and the non-billing
-disclaimer.
+disclaimer. Credit equivalents rate `input_tokens` and `output_tokens` only;
+they do not normalize `cache_read_tokens` or model provider-specific cache
+pricing tiers.
 
 ## Privacy Boundary
 
