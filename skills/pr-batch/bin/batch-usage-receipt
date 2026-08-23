@@ -21,6 +21,15 @@ module BatchUsageReceipt
   MANIFEST_SCHEMA = "batch-usage-manifest-v1"
   RATE_CARD_SCHEMA = "batch-usage-rate-card-v1"
   EXPLICIT_UTC_OFFSET = /(?:Z|[+-]\d{2}(?::?\d{2})?)\z/i
+  FOUR_DIGIT_YEAR = /\A\d{4}-/
+  RFC3339_DATE_TIME = /
+    \A
+    (?<year>\d{4})-(?<month>0[1-9]|1[0-2])-(?<day>0[1-9]|[12]\d|3[01])
+    T(?:[01]\d|2[0-3]):[0-5]\d:(?<second>[0-5]\d|60)
+    (?:\.\d{1,9})?
+    (?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)
+    \z
+  /ix
   TOKEN_FIELDS = %w[input_tokens output_tokens reasoning_output_tokens cache_read_tokens total_tokens].freeze
   ACCOUNTING_FIELDS = %w[
     usage_samples duplicate_samples_omitted replay_records_omitted counter_resets
@@ -216,6 +225,7 @@ module BatchUsageReceipt
           end
         when "inter_agent_communication_metadata"
           boundary_at = parsed_timestamp(record["timestamp"])
+          unknown("invalid_boundary_timestamp", line: line_number) if replay_prefix && !boundary_at
           # A nested fork's copied prefix can contain older ancestor boundaries.
           # Only a marker from this physical session can end its replay prefix.
           if replay_prefix && @fork_started_at && boundary_at && boundary_at >= @fork_started_at
@@ -985,7 +995,10 @@ module BatchUsageReceipt
   end
 
   def parse_time(value, label)
-    parsed = Time.iso8601(value)
+    unless value.is_a?(String) && value.match?(FOUR_DIGIT_YEAR)
+      raise InputError, "#{label} must use a four-digit year representable after UTC normalization"
+    end
+
     unless value.match?(EXPLICIT_UTC_OFFSET)
       raise InputError, "#{label} must include an explicit UTC offset or Z"
     end
@@ -993,6 +1006,21 @@ module BatchUsageReceipt
     fractional_digits = value[/\.(\d+)/, 1]
     if fractional_digits && fractional_digits.length > 9
       raise InputError, "#{label} must use no more than 9 fractional-second digits"
+    end
+
+    timestamp_match = RFC3339_DATE_TIME.match(value)
+    unless timestamp_match && Date.valid_date?(*timestamp_match.values_at(:year, :month, :day).map(&:to_i))
+      raise InputError, "#{label} must be an ISO 8601 timestamp"
+    end
+
+    parsed = Time.iso8601(value)
+    utc_time = parsed.getutc
+    if timestamp_match[:second] == "60" && [utc_time.hour, utc_time.min, utc_time.sec] != [0, 0, 0]
+      raise InputError, "#{label} must be an ISO 8601 timestamp"
+    end
+
+    unless utc_time.iso8601(9).match?(FOUR_DIGIT_YEAR)
+      raise InputError, "#{label} must use a four-digit year representable after UTC normalization"
     end
 
     parsed

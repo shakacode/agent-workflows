@@ -385,6 +385,131 @@ class BatchUsageReceiptTest < Minitest::Test
 
     assert_equal "2026-08-01T00:00:00.500000000Z", receipt.dig("window", "from_inclusive")
     assert_equal "2026-08-02T00:00:00.800000000Z", receipt.dig("window", "to_exclusive")
+    schema_errors = JSONSchemer.schema(receipt_schema).validate(receipt).to_a
+    assert_empty schema_errors, schema_errors.map { |error| error.fetch("error") }.join("\n")
+  end
+
+  def test_window_rejects_years_that_cannot_remain_four_digits_after_utc_normalization
+    cases = [
+      ["from", "10000-08-01T00:00:00Z", "--from"],
+      ["to", "-000001-08-02T00:00:00Z", "--to"],
+      ["from", "0000-01-01T00:00:00+14:00", "--from"],
+      ["to", "9999-12-31T23:59:59-14:00", "--to"]
+    ]
+
+    cases.each do |key, timestamp, label|
+      fixture = fixture_copy("replay")
+      fixture.fetch("window")[key] = timestamp
+
+      stderr, status = run_fixture(fixture: fixture, expect_success: false)
+
+      assert_equal 64, status.exitstatus, timestamp
+      assert_equal "ERROR: #{label} must use a four-digit year representable after UTC normalization\n", stderr
+    end
+  end
+
+  def test_window_rejects_non_rfc3339_time_and_offset_shapes
+    cases = [
+      ["from", "2026-08-01T00:00:00+10", "--from"],
+      ["from", "2026-08-01T00:00:00+1000", "--from"],
+      ["to", "2026-08-01T24:00:00Z", "--to"],
+      ["from", "2026-08-01T00:00:00+10:60", "--from"]
+    ]
+
+    cases.each do |key, timestamp, label|
+      fixture = fixture_copy("replay")
+      fixture.fetch("window")[key] = timestamp
+
+      stderr, status = run_fixture(fixture: fixture, expect_success: false)
+
+      assert_equal 64, status.exitstatus, timestamp
+      assert_equal "ERROR: #{label} must be an ISO 8601 timestamp\n", stderr
+    end
+  end
+
+  def test_window_rejects_calendar_dates_that_do_not_exist
+    timestamps = %w[
+      2026-02-30T00:00:00Z
+      2026-02-29T00:00:00Z
+      2026-04-31T00:00:00Z
+      2026-00-01T00:00:00Z
+      2026-13-01T00:00:00Z
+      2026-01-00T00:00:00Z
+      2026-01-32T00:00:00Z
+    ]
+
+    timestamps.each do |timestamp|
+      fixture = fixture_copy("replay")
+      fixture.fetch("window")["from"] = timestamp
+
+      stderr, status = run_fixture(fixture: fixture, expect_success: false)
+
+      assert_equal 64, status.exitstatus, timestamp
+      assert_equal "ERROR: --from must be an ISO 8601 timestamp\n", stderr
+    end
+  end
+
+  def test_window_rejects_schema_invalid_leap_seconds
+    timestamps = %w[
+      2026-08-01T00:00:60Z
+      2026-08-01T23:58:60Z
+      2026-08-01T01:00:60+01:00
+      2026-08-01T18:30:60-05:30
+      2026-08-01T23:59:61Z
+    ]
+
+    timestamps.each do |timestamp|
+      fixture = fixture_copy("replay")
+      fixture.fetch("window")["from"] = timestamp
+
+      stderr, status = run_fixture(fixture: fixture, expect_success: false)
+
+      assert_equal 64, status.exitstatus, timestamp
+      assert_equal "ERROR: --from must be an ISO 8601 timestamp\n", stderr
+    end
+  end
+
+  def test_window_parser_matches_schema_across_time_component_and_offset_boundaries
+    date_time_schema = receipt_schema.dig("properties", "window", "properties", "from_inclusive")
+    schema_validator = JSONSchemer.schema(date_time_schema)
+    offsets = %w[Z +01:00 -01:00 +05:30 -05:30 +23:00 -23:00]
+
+    offsets.product((0..23).to_a, (0..59).to_a, [0, 59, 60, 61]).each do |offset, hour, minute, second|
+      timestamp = format(
+        "2026-08-01T%<hour>02d:%<minute>02d:%<second>02d%<offset>s",
+        hour: hour, minute: minute, second: second, offset: offset
+      )
+      schema_valid = schema_validator.valid?(timestamp)
+      parser_valid = begin
+        BatchUsageReceipt.parse_time(timestamp, "--from")
+        true
+      rescue BatchUsageReceipt::InputError
+        false
+      end
+
+      assert_equal schema_valid, parser_valid, timestamp
+    end
+  end
+
+  def test_window_accepts_rfc3339_lowercase_leap_and_colon_offset_controls
+    cases = [
+      ["2026-08-01T05:30:00.123456789+05:30", "2026-08-01T00:00:00.123456789Z"],
+      ["2016-12-31T23:59:60Z", "2017-01-01T00:00:00.000000000Z"],
+      ["2017-01-01T00:59:60+01:00", "2017-01-01T00:00:00.000000000Z"],
+      ["2016-12-31T18:29:60-05:30", "2017-01-01T00:00:00.000000000Z"],
+      ["2024-02-29t00:00:00z", "2024-02-29T00:00:00.000000000Z"]
+    ]
+
+    cases.each do |timestamp, expected|
+      fixture = fixture_copy("replay")
+      fixture.fetch("window")["from"] = timestamp
+
+      receipt, = run_fixture(fixture: fixture)
+
+      assert_equal expected, receipt.dig("window", "from_inclusive"), timestamp
+      schema_errors = JSONSchemer.schema(receipt_schema).validate(receipt).to_a
+      assert_empty schema_errors, schema_errors.map { |error| error.fetch("error") }.join("\n")
+    end
   end
 
   def test_window_requires_an_explicit_offset_in_every_local_timezone
@@ -634,6 +759,28 @@ class BatchUsageReceiptTest < Minitest::Test
     end
 
     assert_equal receipts.first, receipts.last
+  end
+
+  def test_invalid_replay_boundary_timestamps_are_line_numbered_private_and_fail_safe
+    [nil, "not-a-timestamp-/private/secret-rollout.jsonl"].each do |timestamp|
+      fixture = fixture_copy("replay")
+      boundary = fixture.fetch("rollouts").fetch("child.jsonl").find do |record|
+        record["type"] == "inter_agent_communication_metadata"
+      end
+      timestamp ? boundary["timestamp"] = timestamp : boundary.delete("timestamp")
+
+      receipt, output = run_fixture(fixture: fixture)
+
+      assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+      unknown = receipt.dig("evidence", "unknown")
+      codes = unknown.map { |item| item.fetch("code") }
+      assert_includes codes, "invalid_boundary_timestamp"
+      assert_includes codes, "copied_history_boundary_missing"
+      reason = unknown.find { |item| item["code"] == "invalid_boundary_timestamp" }
+      assert_equal 6, reason.fetch("line")
+      assert_equal %w[code line physical_rollout_id status thread_id], reason.keys.sort
+      refute_includes output, timestamp if timestamp
+    end
   end
 
   def test_nested_fork_matches_its_own_copy_boundary_without_recounting_parent_usage

@@ -163,6 +163,12 @@ baseline. If no such snapshot arrives before the boundary, the line-numbered
 `malformed_jsonl`, `missing_total_token_usage`, or
 `invalid_token_usage_vector` reason remains structural `UNKNOWN`.
 
+An IACM record encountered while the copied replay prefix is active must carry
+a valid explicit-offset timestamp before it can end that prefix. A missing or
+malformed value emits line-numbered `invalid_boundary_timestamp` evidence and
+does not end replay mode. If no later valid boundary arrives, the receipt also
+retains `copied_history_boundary_missing` and remains fail-safe `UNKNOWN`.
+
 Invalid UTF-8 rollout bytes emit a line-numbered `rollout_read_error` and make
 the affected rollout structural `UNKNOWN`; they never escape as a raw parser or
 JSON generator backtrace. This byte-level defect is not replay-deferrable
@@ -216,6 +222,16 @@ deliberately make the entire physical rollout's counter vector `UNKNOWN`. The
 cumulative baseline must advance even when that sample cannot be placed before,
 inside, or after the requested window; assigning or dropping only its delta
 could therefore undercount or overcount every scope that reuses the rollout.
+
+The requested `--from` and `--to` window bounds must use RFC 3339 syntax: a
+four-digit calendar date, `T` or `t`, an hour from `00` through `23`, valid
+minute fields, seconds from `00` through `59`, an optional one-to-nine-digit
+fraction, and `Z`/`z` or a valid `±HH:MM` offset. Second `60` is accepted only
+for an offset-adjusted instant at UTC `23:59:60`, matching the receipt schema's
+RFC 3339 leap-second rule. Calendar validity is checked after that syntax gate,
+and the year must remain four digits after UTC normalization. Fractional
+seconds are preserved through nanosecond precision, and every emitted window
+value conforms to the receipt schema's RFC 3339 `date-time` format.
 
 Top-level `evidence.sources` lists supported and attempted metadata source
 types; it does not claim that each source was available. Source failures and
