@@ -371,6 +371,7 @@ module BatchUsageReceipt
       @readers_by_rollout = {}
       @state_loaded = false
       @topology_unknown_lane_ids = Set.new
+      @batch_reconciliation_topology_unknown = false
     end
 
     def build
@@ -596,6 +597,7 @@ module BatchUsageReceipt
           "thread_ids" => overlap.sort
         }
         @topology_unknown_lane_ids.merge([left_id, right_id])
+        @batch_reconciliation_topology_unknown = true
       end
 
       @manifest.fetch("lanes").each do |lane|
@@ -783,6 +785,8 @@ module BatchUsageReceipt
     end
 
     def reconciliation_status(batch_usage, coordinator, lanes, unattributed_ids)
+      return UNKNOWN if @batch_reconciliation_topology_unknown
+
       parts = coordinator.dig("usage", "self_only")
       lanes.each { |lane| parts = add_usage(parts, lane.dig("usage", "descendant_inclusive")) }
       parts = add_usage(parts, aggregate(unattributed_ids))
@@ -795,6 +799,10 @@ module BatchUsageReceipt
       route_totals = readers(manifest_roots.flat_map { |root| closure(root) }).flat_map(&:observed_routes)
       grouped = route_totals.group_by { |route| [route["host"], route["model"]] }
       values = grouped.sort_by { |key, _| key }.map do |(host, model), routes|
+        if [host, model].include?(UNKNOWN)
+          next({ "host" => host, "model" => model, "status" => UNKNOWN, "code" => "route_identity_unknown" })
+        end
+
         mapping = mappings.find { |entry| entry["host"] == host && entry["model"] == model }
         unless mapping
           next({ "host" => host, "model" => model, "status" => UNKNOWN, "code" => "rate_mapping_missing" })

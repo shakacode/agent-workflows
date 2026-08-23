@@ -234,6 +234,20 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "lane-a", reason.fetch("lane_id")
   end
 
+  def test_overlapping_lane_topology_forces_batch_reconciliation_unknown_when_zero_usage_balances
+    fixture = fixture_copy("descendants")
+    root_to_lane_b = fixture.fetch("edges").find { |edge| edge[1] == "lane-b" }
+    root_to_lane_b[0] = "lane-a"
+    token_info = fixture.dig("rollouts", "lane-b.jsonl", 1, "payload", "info")
+    token_info.each_value { |usage| usage.transform_values! { 0 } }
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("batch", "reconciliation", "status")
+    reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "lane_scope_overlap" }
+    assert_equal %w[lane-a lane-b], reason.fetch("lane_ids")
+  end
+
   def test_unavailable_state_does_not_claim_manifest_worker_topology_is_invalid
     receipt, = run_fixture(fixture: fixture_copy("descendants"), database_available: false)
 
@@ -346,6 +360,28 @@ class BatchUsageReceiptTest < Minitest::Test
     missing_unknown_code = JSON.parse(JSON.generate(unknown_value))
     missing_unknown_code.dig("credit_equivalents", "model_values", 0).delete("code")
     refute_empty JSONSchemer.schema(schema).validate(missing_unknown_code).to_a
+  end
+
+  def test_unknown_observed_model_cannot_be_priced_by_an_unknown_rate_mapping
+    fixture = fixture_copy("replay")
+    fixture.fetch("threads").each { |thread| thread["model"] = nil }
+    fixture.fetch("rollouts").each_value do |records|
+      records.reject! { |record| record["type"] == "turn_context" }
+    end
+    fixture["rate_card"] = {
+      "schema" => "batch-usage-rate-card-v1",
+      "source" => "https://example.invalid/rate-card/2026-08-04",
+      "effective_date" => "2026-08-04",
+      "model_mappings" => [{
+        "host" => "codex", "model" => "UNKNOWN",
+        "input_credits_per_million" => 1, "output_credits_per_million" => 2
+      }]
+    }
+
+    receipt, = run_fixture(fixture: fixture, with_rate_card: true)
+
+    assert_equal "UNKNOWN", receipt.dig("credit_equivalents", "status")
+    assert_equal "route_identity_unknown", receipt.dig("credit_equivalents", "model_values", 0, "code")
   end
 
   def test_output_is_deterministic_across_replays_and_public_contract_is_versioned
