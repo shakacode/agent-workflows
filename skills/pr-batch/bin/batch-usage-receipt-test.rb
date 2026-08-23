@@ -141,12 +141,33 @@ class BatchUsageReceiptTest < Minitest::Test
   def test_counter_decrease_without_boundary_evidence_is_structured_unknown
     receipt, = run_fixture("ambiguous-decrease")
 
-    assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal(
+      {
+        "input_tokens" => 20,
+        "output_tokens" => 6,
+        "cache_read_tokens" => "UNKNOWN",
+        "total_tokens" => 26
+      },
+      receipt.dig("batch", "usage", "descendant_inclusive")
+    )
     assert_equal 0, receipt.dig("accounting", "counter_resets")
     assert_equal "UNKNOWN", receipt.dig("evidence", "status")
-    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    reasons = receipt.dig("evidence", "unknown")
+    unknown_codes = reasons.map { |item| item.fetch("code") }
     assert_includes unknown_codes, "ambiguous_counter_decrease"
     refute_includes unknown_codes, "usage_counter_missing"
+    ambiguous = reasons.find { |item| item["code"] == "ambiguous_counter_decrease" }
+    assert_equal ["cache_read_tokens"], ambiguous["fields"]
+  end
+
+  def test_nested_fork_matches_its_own_copy_boundary_without_recounting_parent_usage
+    receipt, = run_fixture("nested-replay")
+
+    assert_equal 20, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 10, receipt.dig("lanes", 0, "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 5, receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 3, receipt.dig("accounting", "replay_records_omitted")
+    assert_equal "complete", receipt.dig("evidence", "status")
   end
 
   def test_unknown_cache_counter_does_not_erase_known_primary_counters

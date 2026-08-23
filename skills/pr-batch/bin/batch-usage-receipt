@@ -62,8 +62,8 @@ module BatchUsageReceipt
     left && right && TOKEN_FIELDS.all? { |field| left[field] == right[field] }
   end
 
-  def vector_decreased?(current, previous)
-    TOKEN_FIELDS.any? do |field|
+  def decreased_fields(current, previous)
+    TOKEN_FIELDS.select do |field|
       current[field].is_a?(Integer) && previous[field].is_a?(Integer) && current[field] < previous[field]
     end
   end
@@ -72,6 +72,20 @@ module BatchUsageReceipt
     TOKEN_FIELDS.to_h do |field|
       values = [current[field], previous[field]]
       [field, values.all? { |value| value.is_a?(Integer) } ? current[field] - previous[field] : UNKNOWN]
+    end
+  end
+
+  def vector_after_decrease(current, previous, reset:)
+    TOKEN_FIELDS.to_h do |field|
+      values = [current[field], previous[field]]
+      value = if !values.all? { |item| item.is_a?(Integer) }
+                UNKNOWN
+              elsif current[field] < previous[field]
+                reset ? current[field] : UNKNOWN
+              else
+                current[field] - previous[field]
+              end
+      [field, value]
     end
   end
 
@@ -118,6 +132,7 @@ module BatchUsageReceipt
       @first_session_id = nil
       @first_session_seen = false
       @forked_physical_session = false
+      @fork_started_at = nil
       @copy_boundary_seen = false
     end
 
@@ -153,7 +168,6 @@ module BatchUsageReceipt
             next unless candidate.is_a?(String) && candidate != @first_session_id
 
             @accounting["session_rebind_attempts_ignored"] += 1
-            replay_prefix = true if @forked_physical_session && !@copy_boundary_seen
           else
             @first_session_seen = true
             @first_session_id = candidate if candidate.is_a?(String) && !candidate.empty?
@@ -163,13 +177,22 @@ module BatchUsageReceipt
                                        payload["session_id"] != @first_session_id &&
                                        payload["parent_thread_id"].is_a?(String) &&
                                        !payload["parent_thread_id"].empty?
+            if @forked_physical_session
+              @fork_started_at = parsed_timestamp(record["timestamp"])
+              replay_prefix = true
+            end
             if @first_session_id && @first_session_id != @state_thread.fetch("id")
               unknown("state_thread_first_session_mismatch")
             end
           end
         when "inter_agent_communication_metadata"
-          @copy_boundary_seen = true if replay_prefix
-          replay_prefix = false
+          boundary_at = parsed_timestamp(record["timestamp"])
+          # A nested fork's copied prefix can contain older ancestor boundaries.
+          # Only a marker from this physical session can end its replay prefix.
+          if replay_prefix && @fork_started_at && boundary_at && boundary_at >= @fork_started_at
+            @copy_boundary_seen = true
+            replay_prefix = false
+          end
         when "compacted"
           @accounting["compactions"] += 1
           compaction_since_usage = true
@@ -202,23 +225,25 @@ module BatchUsageReceipt
             next
           end
 
-          specific_unknown_recorded = false
+          explained_unknown_fields = []
           delta = if first_usage
                     value, inherited_seed, missing_fields = vector_for_first_sample(total, last)
                     @accounting["inherited_seeds_omitted"] += 1 if inherited_seed
                     unless missing_fields.empty?
                       unknown("missing_first_last_token_usage", fields: missing_fields, affects_usage: false)
-                      specific_unknown_recorded = true
+                      explained_unknown_fields = missing_fields
                     end
                     value
-                  elsif vector_decreased?(total, previous)
+                  elsif (decreased = decreased_fields(total, previous)).any?
                     if compaction_since_usage
                       @accounting["counter_resets"] += 1
-                      total
+                      vector_after_decrease(total, previous, reset: true)
                     else
-                      unknown("ambiguous_counter_decrease", line: line_number, affects_usage: false)
-                      specific_unknown_recorded = true
-                      unknown_usage
+                      unknown(
+                        "ambiguous_counter_decrease", line: line_number, fields: decreased, affects_usage: false
+                      )
+                      explained_unknown_fields = decreased
+                      vector_after_decrease(total, previous, reset: false)
                     end
                   else
                     vector_difference(total, previous)
@@ -230,13 +255,13 @@ module BatchUsageReceipt
           previous = total
           first_usage = false
           compaction_since_usage = false
-          unless valid_timestamp?(record["timestamp"])
+          unless parsed_timestamp(record["timestamp"])
             unknown("invalid_usage_timestamp", line: line_number)
             next
           end
           next unless in_window?(record["timestamp"], @from_time, @to_time)
 
-          add_route_usage(current_route, delta, record_missing_evidence: !specific_unknown_recorded)
+          add_route_usage(current_route, delta, explained_unknown_fields: explained_unknown_fields)
         end
       end
 
@@ -284,11 +309,11 @@ module BatchUsageReceipt
       value if value.is_a?(String) && !value.strip.empty?
     end
 
-    def add_route_usage(route, usage, record_missing_evidence: true)
+    def add_route_usage(route, usage, explained_unknown_fields: [])
       key = JSON.generate(route.sort.to_h)
       @route_usage[key] = add_usage(@route_usage.fetch(key, blank_usage), usage)
-      missing_fields = TOKEN_FIELDS.reject { |field| usage[field].is_a?(Integer) }
-      return if missing_fields.empty? || !record_missing_evidence
+      missing_fields = TOKEN_FIELDS.reject { |field| usage[field].is_a?(Integer) } - explained_unknown_fields
+      return if missing_fields.empty?
 
       unknown("usage_counter_missing", fields: missing_fields, affects_usage: false)
     end
@@ -297,11 +322,10 @@ module BatchUsageReceipt
       usage.merge(@global_unknown_usage_fields.to_h { |field| [field, UNKNOWN] })
     end
 
-    def valid_timestamp?(value)
+    def parsed_timestamp(value)
       Time.iso8601(value)
-      true
     rescue ArgumentError, TypeError
-      false
+      nil
     end
 
     def unknown(code, affects_usage: true, **extra)
