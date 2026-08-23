@@ -507,10 +507,12 @@ approval. Safe and generated classifications never subtract common hard,
 repository path, size, churn, rollback, or maintainer-concern gates.
 
 Render either blocking verdict for the human closeout with the resolved
-`autonomous-merge-closeout` helper before presenting technical gate IDs:
+`autonomous-merge-closeout` helper from the same authenticated evaluator
+runtime before presenting technical gate IDs; never resolve it from the PR
+checkout:
 
 ```bash
-"${PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout" \
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout" \
   --input "${AUTONOMOUS_RESULT_PATH}"
 ```
 

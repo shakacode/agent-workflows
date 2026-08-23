@@ -323,6 +323,35 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     }
   end
 
+  def test_other_repo_path_detail_survives_evaluation_and_human_closeout
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        human_review_paths:
+          - id: checkout-boundary
+            pattern: app/services/checkout/**
+            reason: other
+            detail: payment orchestration boundary
+    YAML
+    result = evaluate(policy_yaml:) do |base_sha|
+      evidence(base_sha:, files: [file("app/services/checkout/charge.rb")])
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_includes result.fetch("path_matches"), {
+      "path" => "app/services/checkout/charge.rb",
+      "gate" => "repo-path:checkout-boundary",
+      "reason" => "other",
+      "detail" => "payment orchestration boundary"
+    }
+
+    stdout, stderr, status = Open3.capture3("ruby", CLOSEOUT_SCRIPT, stdin_data: JSON.generate(result))
+
+    assert status.success?, stderr
+    assert_empty stderr
+    assert_includes stdout, "matching payment orchestration boundary"
+    assert_includes stdout, "(other: payment orchestration boundary)"
+  end
+
   def test_renamed_protected_source_path_adds_human_gates_without_double_counting_metrics
     policy_yaml = <<~YAML
       autonomous_merge:
@@ -656,6 +685,41 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_includes unproven.fetch("evidence_failures"), "exact current-head human decision provenance is uncertain"
   end
 
+  def test_uppercase_objective_head_is_canonicalized_before_decision_matching_and_closeout
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    valid_comment = decision_comment(
+      id: "1",
+      url:,
+      body: decision_body(head_sha: HEAD_SHA, gates: ["changed-files-limit"], evidence: url)
+    )
+    approved = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: [valid_comment],
+        semantic: semantic_assessment.merge(
+          "decision_provenance" => [decision_provenance("1")]
+        )
+      ).tap { |input| input.fetch("objective")["head_sha"] = HEAD_SHA.upcase }
+    end
+    blocking = evaluate do |base_sha|
+      evidence(base_sha:, files: files(30)).tap do |input|
+        input.fetch("objective")["head_sha"] = HEAD_SHA.upcase
+      end
+    end
+
+    assert_equal "human-approved-for-current-head", approved.fetch("verdict")
+    assert_equal HEAD_SHA, approved.fetch("head_sha")
+    assert_equal "human-approval-required", blocking.fetch("verdict")
+    assert_equal HEAD_SHA, blocking.fetch("head_sha")
+
+    stdout, stderr, status = Open3.capture3("ruby", CLOSEOUT_SCRIPT, stdin_data: JSON.generate(blocking))
+
+    assert status.success?, stderr
+    assert_empty stderr
+    assert_includes stdout, "Exact head: `#{HEAD_SHA}`"
+  end
+
   def test_newer_malformed_decision_does_not_erase_older_valid_exact_head_decision
     older_url = "https://github.com/example/repo/pull/1#issuecomment-1"
     comments = [
@@ -827,6 +891,40 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       assert_includes missing.fetch("evidence_failures").first, "helper provenance"
       assert_includes malformed.fetch("evidence_failures").first, "helper provenance"
     end
+  end
+
+  def test_runtime_trust_authenticates_closeout_renderer_for_base_and_installed_pack
+    trusted_base = evaluate { |base_sha| evidence(base_sha:, files: files(1)) }
+
+    assert_equal "skills/pr-batch/bin/autonomous-merge-closeout",
+                 trusted_base.dig("helper_trust", "manifest", "closeout-helper")
+
+    Dir.mktmpdir("autonomous-merge-installed-closeout-trust-test") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil)
+      installed = invoke(
+        root:,
+        calibration_path:,
+        evaluation: evidence(base_sha:, files: files(1)),
+        helper_provenance: installed_pack_provenance(calibration_path)
+      )
+
+      assert_equal "autonomous-merge-eligible", installed.fetch("verdict")
+      assert_equal CLOSEOUT_SCRIPT, installed.dig("helper_trust", "manifest", "closeout-helper")
+    end
+  end
+
+  def test_closeout_workflow_uses_the_authenticated_runtime_directory
+    workflow = File.read(File.expand_path("../../../workflows/pr-processing.md", __dir__), encoding: "UTF-8")
+    skill = File.read(File.expand_path("../SKILL.md", __dir__), encoding: "UTF-8")
+
+    [workflow, skill].each do |document|
+      assert_includes document, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout"'
+    end
+    assert_includes workflow,
+                    'git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-closeout"'
+    assert_includes workflow,
+                    'git cat-file -e "${TRUSTED_BASE_SHA}:.agents/skills/pr-batch/bin/autonomous-merge-closeout"'
   end
 
   def test_unverified_stdin_objective_cannot_establish_a_passing_verdict

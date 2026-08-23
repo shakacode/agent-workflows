@@ -262,6 +262,54 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     assert_fail_closed(result, "path_matches must contain valid path evidence")
   end
 
+  def test_other_path_reason_requires_and_explains_its_policy_detail
+    source = evaluator_result(
+      gates: ["repo-path:checkout"],
+      path_matches: [
+        {
+          "path" => "app/services/checkout/charge.rb",
+          "gate" => "repo-path:checkout",
+          "reason" => "other",
+          "detail" => "payment orchestration boundary"
+        }
+      ]
+    )
+
+    markdown, markdown_status = render(source)
+    json, json_status = render(source, format: "json")
+
+    assert markdown_status.success?, markdown
+    assert_includes markdown, "matching payment orchestration boundary"
+    assert_includes markdown, "(other: payment orchestration boundary)"
+    assert json_status.success?, json
+    assert_equal "payment orchestration boundary",
+                 JSON.parse(json).dig("gate_explanations", 0, "path_evidence", 0, "detail")
+
+    assert_fail_closed(
+      evaluator_result(
+        gates: ["repo-path:checkout"],
+        path_matches: [
+          { "path" => "app/services/checkout/charge.rb", "gate" => "repo-path:checkout", "reason" => "other" }
+        ]
+      ),
+      "path_matches must contain valid path evidence"
+    )
+    assert_fail_closed(
+      evaluator_result(
+        gates: ["repo-path:checkout"],
+        path_matches: [
+          {
+            "path" => "app/services/checkout/charge.rb",
+            "gate" => "repo-path:checkout",
+            "reason" => "hot-path",
+            "detail" => "unexpected detail"
+          }
+        ]
+      ),
+      "path_matches must contain valid path evidence"
+    )
+  end
+
   def test_missing_policy_provenance_fails_closed
     assert_fail_closed(
       evaluator_result(gates: ["security-auth-privacy"], policy_provenance: nil),

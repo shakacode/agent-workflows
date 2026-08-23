@@ -139,9 +139,12 @@ module AutonomousMergeCloseout
     return false unless match.is_a?(Hash) && nonempty_string?(match["path"])
 
     if match.key?("gate")
-      return false unless match.keys.sort == %w[gate path reason]
+      reason = match["reason"]
+      expected_keys = reason == "other" ? %w[detail gate path reason] : %w[gate path reason]
+      return false unless match.keys.sort == expected_keys
+      return false unless AutonomousMergeDecision.canonical_gate?(match["gate"]) && PATH_REASONS.include?(reason)
 
-      return AutonomousMergeDecision.canonical_gate?(match["gate"]) && PATH_REASONS.include?(match["reason"])
+      return reason != "other" || nonempty_string?(match["detail"])
     end
 
     return false unless match.keys.sort == %w[classification path]
@@ -231,7 +234,10 @@ module AutonomousMergeCloseout
   def explain_gate(gate, result)
     paths = result.fetch("path_matches").select { |match| match["gate"] == gate }
     explanation = if gate.start_with?("repo-path:")
-                    reasons = paths.map { |match| PATH_REASON_EXPLANATIONS.fetch(match.fetch("reason"), match.fetch("reason")) }.uniq
+                    reasons = paths.map do |match|
+                      reason = match.fetch("reason")
+                      reason == "other" ? match.fetch("detail") : PATH_REASON_EXPLANATIONS.fetch(reason)
+                    end.uniq
                     "Trusted-base repository policy reserves this PR's matching #{sentence_list(reasons)} for human review."
                   else
                     GATE_EXPLANATIONS.fetch(gate)
@@ -239,7 +245,7 @@ module AutonomousMergeCloseout
     {
       "gate" => gate,
       "explanation" => explanation,
-      "path_evidence" => paths.map { |match| match.slice("path", "reason") }
+      "path_evidence" => paths.map { |match| match.slice("path", "reason", "detail") }
     }
   end
 
@@ -288,7 +294,9 @@ module AutonomousMergeCloseout
       closeout.fetch("gate_explanations").each do |entry|
         lines << "- `#{entry.fetch('gate')}` — #{entry.fetch('explanation')}"
         entry.fetch("path_evidence").each do |path|
-          lines << "  Path evidence: #{JSON.generate(path.fetch('path'))} (#{path.fetch('reason')})"
+          reason = path.fetch("reason")
+          reason = "#{reason}: #{path.fetch('detail')}" if path.key?("detail")
+          lines << "  Path evidence: #{JSON.generate(path.fetch('path'))} (#{reason})"
         end
       end
     end
