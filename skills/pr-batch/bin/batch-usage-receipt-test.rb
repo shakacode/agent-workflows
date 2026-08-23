@@ -5,12 +5,7 @@ require "json"
 require "minitest/autorun"
 require "open3"
 require "tmpdir"
-
-begin
-  require "json_schemer"
-rescue LoadError
-  # Optional locally: structural contract assertions below remain portable.
-end
+require "json_schemer"
 
 HELPER = File.expand_path("batch-usage-receipt", __dir__)
 FIXTURES = File.expand_path("../fixtures/batch-usage-receipt", __dir__)
@@ -268,8 +263,6 @@ class BatchUsageReceiptTest < Minitest::Test
     ].each do |sentinel|
       refute_includes output, sentinel
     end
-    return unless defined?(JSONSchemer)
-
     schema = receipt_schema
     assert_empty JSONSchemer.schema(schema).validate(receipt).to_a
 
@@ -285,6 +278,7 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
     reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "rollout_path_missing" }
     assert_equal "root-thread", reason.fetch("thread_id")
+    assert_empty JSONSchemer.schema(receipt_schema).validate(receipt).to_a
   end
 
   def test_state_query_is_scoped_to_manifest_roots_and_declared_workers
@@ -331,8 +325,6 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "2026-08-04", credits.fetch("effective_date")
     assert_includes credits.fetch("disclaimer"), "not a bill"
     assert_equal 4, credits.fetch("model_values").length
-    return unless defined?(JSONSchemer)
-
     schema = receipt_schema
     assert_empty JSONSchemer.schema(schema).validate(receipt).to_a
 
@@ -370,10 +362,8 @@ class BatchUsageReceiptTest < Minitest::Test
     assert schema.dig("$defs", "batchScope")
     assert schema.dig("$defs", "executionScope")
     assert schema.dig("$defs", "laneScope")
-    if defined?(JSONSchemer)
-      schema_errors = JSONSchemer.schema(schema).validate(first_receipt).to_a
-      assert_empty schema_errors, schema_errors.map { |error| error.fetch("error") }.join("\n")
-    end
+    schema_errors = JSONSchemer.schema(schema).validate(first_receipt).to_a
+    assert_empty schema_errors, schema_errors.map { |error| error.fetch("error") }.join("\n")
 
     docs = File.read(File.join(root, "docs/batch-usage-receipt.md"), encoding: "UTF-8")
     assert_includes docs, "`last_token_usage` is never summed."

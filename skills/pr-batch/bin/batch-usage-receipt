@@ -11,6 +11,9 @@ require "digest"
 require "json"
 require "open3"
 require "optparse"
+# rubocop:disable Lint/RedundantRequireStatement -- required on Ruby 3.1 and earlier
+require "set"
+# rubocop:enable Lint/RedundantRequireStatement
 require "time"
 
 module BatchUsageReceipt
@@ -18,6 +21,10 @@ module BatchUsageReceipt
   MANIFEST_SCHEMA = "batch-usage-manifest-v1"
   RATE_CARD_SCHEMA = "batch-usage-rate-card-v1"
   TOKEN_FIELDS = %w[input_tokens output_tokens cache_read_tokens total_tokens].freeze
+  ACCOUNTING_FIELDS = %w[
+    usage_samples duplicate_samples_omitted replay_records_omitted counter_resets
+    inherited_seeds_omitted compactions session_rebind_attempts_ignored
+  ].freeze
   UNKNOWN = "UNKNOWN"
 
   InputError = Class.new(StandardError)
@@ -119,15 +126,7 @@ module BatchUsageReceipt
       @state_thread = state_thread
       @from_time = from_time
       @to_time = to_time
-      @accounting = {
-        "usage_samples" => 0,
-        "duplicate_samples_omitted" => 0,
-        "replay_records_omitted" => 0,
-        "counter_resets" => 0,
-        "inherited_seeds_omitted" => 0,
-        "compactions" => 0,
-        "session_rebind_attempts_ignored" => 0
-      }
+      @accounting = ACCOUNTING_FIELDS.to_h { |field| [field, 0] }
       @unknown_reasons = []
       @unknown_reason_keys = Set.new
       @global_unknown_usage_fields = []
@@ -777,7 +776,8 @@ module BatchUsageReceipt
     end
 
     def aggregate_accounting(thread_ids)
-      readers(thread_ids).each_with_object(Hash.new(0)) do |reader, totals|
+      seed = ACCOUNTING_FIELDS.to_h { |field| [field, 0] }
+      readers(thread_ids).each_with_object(seed) do |reader, totals|
         reader.accounting.each { |key, value| totals[key] += value }
       end.sort.to_h
     end
