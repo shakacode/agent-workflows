@@ -161,15 +161,21 @@ module BatchUsageReceipt
       first_usage = true
       compaction_since_usage = false
       current_route = state_route
-      replay_prefix_malformed_lines = []
-      replay_prefix_missing_total_lines = []
+      replay_prefix_deferred_reasons = []
 
       File.foreach(@path, encoding: "UTF-8").with_index(1) do |line, line_number|
+        unless line.valid_encoding?
+          unknown(
+            "rollout_read_error", line: line_number, detail: Encoding::InvalidByteSequenceError.name
+          )
+          next
+        end
+
         begin
           record = JSON.parse(line)
         rescue JSON::ParserError
           if replay_prefix
-            replay_prefix_malformed_lines << line_number
+            replay_prefix_deferred_reasons << ["malformed_jsonl", { line: line_number }]
           else
             unknown("malformed_jsonl", line: line_number)
           end
@@ -212,14 +218,7 @@ module BatchUsageReceipt
           # A nested fork's copied prefix can contain older ancestor boundaries.
           # Only a marker from this physical session can end its replay prefix.
           if replay_prefix && @fork_started_at && boundary_at && boundary_at >= @fork_started_at
-            replay_prefix_malformed_lines.each do |malformed_line|
-              unknown("malformed_jsonl", line: malformed_line)
-            end
-            replay_prefix_malformed_lines.clear
-            replay_prefix_missing_total_lines.each do |missing_line|
-              unknown("missing_total_token_usage", line: missing_line)
-            end
-            replay_prefix_missing_total_lines.clear
+            flush_replay_prefix_reasons(replay_prefix_deferred_reasons)
             @copy_boundary_seen = true
             replay_prefix = false
           end
@@ -242,7 +241,7 @@ module BatchUsageReceipt
           unless total
             if replay_prefix
               @accounting["replay_records_omitted"] += 1
-              replay_prefix_missing_total_lines << line_number
+              replay_prefix_deferred_reasons << ["missing_total_token_usage", { line: line_number }]
             else
               unknown("missing_total_token_usage", line: line_number)
             end
@@ -254,16 +253,24 @@ module BatchUsageReceipt
             "last_token_usage" => last
           }.select { |_counter_source, usage| usage && invalid_known_usage_vector?(usage) }
           unless invalid_sources.empty?
-            invalid_sources.each_key do |counter_source|
-              unknown("invalid_token_usage_vector", line: line_number, counter_source: counter_source)
+            if replay_prefix
+              @accounting["replay_records_omitted"] += 1
+              invalid_sources.each_key do |counter_source|
+                replay_prefix_deferred_reasons << [
+                  "invalid_token_usage_vector", { line: line_number, counter_source: counter_source }
+                ]
+              end
+            else
+              invalid_sources.each_key do |counter_source|
+                unknown("invalid_token_usage_vector", line: line_number, counter_source: counter_source)
+              end
             end
             next
           end
 
           if replay_prefix
             @accounting["replay_records_omitted"] += 1
-            replay_prefix_malformed_lines.clear
-            replay_prefix_missing_total_lines.clear
+            replay_prefix_deferred_reasons.clear
             previous = total
             first_usage = false
             compaction_since_usage = false
@@ -320,12 +327,7 @@ module BatchUsageReceipt
       end
 
       if replay_prefix
-        replay_prefix_malformed_lines.each do |malformed_line|
-          unknown("malformed_jsonl", line: malformed_line)
-        end
-        replay_prefix_missing_total_lines.each do |missing_line|
-          unknown("missing_total_token_usage", line: missing_line)
-        end
+        flush_replay_prefix_reasons(replay_prefix_deferred_reasons)
         unknown("copied_history_boundary_missing")
       end
       unknown("missing_first_session_meta") unless @first_session_id
@@ -408,6 +410,11 @@ module BatchUsageReceipt
       @unknown_reasons << reason if @unknown_reason_keys.add?(reason)
       @global_unknown_usage_fields |= TOKEN_FIELDS if affects_usage
       reason
+    end
+
+    def flush_replay_prefix_reasons(reasons)
+      reasons.each { |code, details| unknown(code, **details) }
+      reasons.clear
     end
 
     def finalize_identity

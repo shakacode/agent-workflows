@@ -150,12 +150,18 @@ themselves add usage or change identity. Fork, resume, copied history, and
 compaction therefore remain replay-safe, while boundary-straddling windows do
 not import pre-window cumulative history.
 
-A malformed copied replay-prefix record or one without `total_token_usage` is
-deferred rather than immediately invalidating the child. A later valid copied
-cumulative snapshot before the fork boundary supersedes that defect and
-provides the needed child baseline. If no such snapshot arrives before the
-boundary, the line-numbered `malformed_jsonl` or
-`missing_total_token_usage` reason remains structural `UNKNOWN`.
+A malformed copied replay-prefix record, one without `total_token_usage`, or
+one with a structurally invalid known token vector is deferred rather than
+immediately invalidating the child. A later valid copied cumulative snapshot
+before the fork boundary supersedes that defect and provides the needed child
+baseline. If no such snapshot arrives before the boundary, the line-numbered
+`malformed_jsonl`, `missing_total_token_usage`, or
+`invalid_token_usage_vector` reason remains structural `UNKNOWN`.
+
+Invalid UTF-8 rollout bytes emit a line-numbered `rollout_read_error` and make
+the affected rollout structural `UNKNOWN`; they never escape as a raw parser or
+JSON generator backtrace. This byte-level defect is not replay-deferrable
+because it can obscure identity, boundary, or timestamp evidence.
 
 A known token vector is structurally invalid when its reported `total_tokens`
 is less than `input_tokens + output_tokens`. Either an invalid

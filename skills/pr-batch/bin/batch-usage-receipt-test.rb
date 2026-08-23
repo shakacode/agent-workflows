@@ -239,6 +239,59 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal 6, reason.fetch("line")
   end
 
+  def test_invalid_copied_usage_vectors_are_superseded_by_a_later_replay_baseline
+    fixture = fixture_copy("replay")
+    invalid_info = fixture.dig("rollouts", "child.jsonl", 3, "payload", "info")
+    %w[total_token_usage last_token_usage].each do |counter_source|
+      usage = invalid_info.fetch(counter_source)
+      usage["total_tokens"] = usage.fetch("input_tokens") + usage.fetch("output_tokens") - 1
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 30, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 10, receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    assert_equal "complete", receipt.dig("evidence", "status")
+    assert_equal 2, receipt.dig("accounting", "replay_records_omitted")
+    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    refute_includes unknown_codes, "invalid_token_usage_vector"
+  end
+
+  def test_invalid_copied_usage_vectors_without_a_later_replay_baseline_remain_unknown
+    fixture = fixture_copy("replay")
+    invalid_info = fixture.dig("rollouts", "child.jsonl", 4, "payload", "info")
+    %w[total_token_usage last_token_usage].each do |counter_source|
+      usage = invalid_info.fetch(counter_source)
+      usage["total_tokens"] = usage.fetch("input_tokens") + usage.fetch("output_tokens") - 1
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal "UNKNOWN",
+                 receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    reasons = receipt.dig("evidence", "unknown").select { |item| item["code"] == "invalid_token_usage_vector" }
+    assert_equal %w[last_token_usage total_token_usage], reasons.map { |item| item.fetch("counter_source") }.sort
+    assert_equal [5], reasons.map { |item| item.fetch("line") }.uniq
+    assert_equal 2, receipt.dig("accounting", "replay_records_omitted")
+  end
+
+  def test_invalid_utf8_rollout_bytes_emit_structured_unknown_without_a_backtrace
+    fixture = fixture_copy("replay")
+    raw_session_meta = JSON.generate(fixture.dig("rollouts", "root.jsonl", 0)).b
+    raw_session_meta.setbyte(raw_session_meta.index('"root-thread"') + 1, 0xFF)
+    fixture.dig("rollouts", "root.jsonl")[0] = RawRolloutLine.new(
+      content: raw_session_meta.force_encoding(Encoding::UTF_8)
+    )
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "usage", "self_only", "total_tokens")
+    reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "rollout_read_error" }
+    assert_equal 1, reason.fetch("line")
+    assert_equal "Encoding::InvalidByteSequenceError", reason.fetch("detail")
+  end
+
   def test_cumulative_differencing_precedes_window_filter_and_accounts_for_seed_reset_and_compaction
     receipt, = run_fixture("reset-seed-compaction-window")
 
