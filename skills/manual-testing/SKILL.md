@@ -86,6 +86,11 @@ blocker. Do not fake a manual pass from static inspection.
      authenticated browser/file-upload capability is available, use GitHub's UI
      upload flow and retain its stable `github.com/user-attachments/assets/...`
      URL; no comment submission is required merely to obtain the URL. A
+     recording uses the same attachment flow as a screenshot: upload a
+     GitHub-supported video file (`.mp4`, `.mov`, or `.webm`; prefer H.264 MP4
+     for browser compatibility), respect the repository's current upload-size
+     limit, and retain the generated URL in the PR evidence so GitHub can render
+     the clip for reviewers. A
      configured linked tracker or artifact store is also valid when every
      intended reviewer has access; link that evidence from the PR.
    - GitHub documents no public REST or GraphQL attachment-upload route. Do not

@@ -935,7 +935,12 @@ For each user-visible UI change:
    retain the stable `github.com/user-attachments/assets/...` URL; obtaining the
    URL does not require submitting a comment. A configured linked tracker or
    repo artifact destination is also valid when every intended reviewer has
-   access; link that evidence from the PR.
+   access; link that evidence from the PR. Upload a recording through the same
+   PR attachment flow as a screenshot, using a GitHub-supported video file
+   (`.mp4`, `.mov`, or `.webm`; prefer H.264 MP4 for browser compatibility) and
+   respecting the repository's current upload-size limit. Retain the generated
+   attachment URL in the evidence record so GitHub can render the clip for
+   reviewers.
    A `github_pr` destination must contain a reviewer-visible `github.com` URL.
    A `linked_tracker` or `repo_artifact_store` destination must name that
    destination and contain its reviewer-visible HTTPS URL.
