@@ -129,6 +129,8 @@ module AgentWorkflowSeamDoctor
   ].freeze
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
   REPO_PREFIX_PATTERN = /\A[A-Z0-9]{1,6}\z/
+  COORDINATION_BACKEND_CONTRACT_POLICY_KEY = "coordination_backend_contract"
+  COORDINATION_BACKEND_CONTRACT_KEYS = %w[version allowed_identifiers].freeze
   MERGE_SUBMISSION_POLICY_KEY = "merge_submission"
   MERGE_SUBMISSION_MODES = %w[direct merge_queue_only merge_queue_or_guarded_direct].freeze
   MERGE_SUBMISSION_KEYS = %w[mode guarded_direct].freeze
@@ -1746,11 +1748,13 @@ module AgentWorkflowSeamDoctor
                 "(expected 1-6 uppercase ASCII letters or digits)"
     end
 
+    yaml = File.read(path, encoding: "UTF-8")
+    issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
-    issues.concat(hosted_qa_policy_issues(root, File.read(path, encoding: "UTF-8")))
+    issues.concat(hosted_qa_policy_issues(root, yaml))
     if config.key?("autonomous_merge")
-      autonomous_policy = AutonomousMergePolicy.parse(File.read(path, encoding: "UTF-8"))
+      autonomous_policy = AutonomousMergePolicy.parse(yaml)
       autonomous_policy.errors.each do |error|
         issues << "invalid autonomous_merge policy: #{error}"
       end
@@ -1759,6 +1763,46 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def coordination_backend_contract_policy_issues(config, yaml)
+    key = COORDINATION_BACKEND_CONTRACT_POLICY_KEY
+    return [] unless config.key?(key)
+
+    errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
+      error.include?("$.#{key}") || error.include?("duplicate key #{key.inspect}")
+    end
+    contract = config[key]
+    unless contract.is_a?(Hash)
+      errors << "must be a closed version 1 mapping"
+      return errors.map { |error| "invalid #{key} policy: #{error}" }.uniq
+    end
+
+    unknown_keys = contract.keys.reject { |contract_key| COORDINATION_BACKEND_CONTRACT_KEYS.include?(contract_key) }
+    unknown_keys.each { |contract_key| errors << "contains unknown key #{contract_key.inspect}" }
+    missing_keys = COORDINATION_BACKEND_CONTRACT_KEYS.reject { |contract_key| contract.key?(contract_key) }
+    missing_keys.each { |contract_key| errors << "is missing key #{contract_key.inspect}" }
+    errors << "keys must be strings" unless contract.keys.all?(String)
+    errors << "version must be 1" unless contract["version"] == 1
+
+    identifiers = contract["allowed_identifiers"]
+    unless identifiers.is_a?(Array) && !identifiers.empty?
+      errors << "allowed_identifiers must be a nonempty list"
+      identifiers = []
+    end
+    identifiers.each_with_index do |identifier, index|
+      unless identifier.is_a?(String) && !identifier.strip.empty? && !identifier.strip.casecmp?("UNKNOWN")
+        errors << "allowed_identifiers[#{index}] must be a known nonblank string"
+      end
+    end
+    if identifiers.uniq.length != identifiers.length
+      errors << "allowed_identifiers contains duplicate identifiers"
+    end
+    unless identifiers.include?(config["coordination_backend"])
+      errors << "coordination_backend must exactly match an allowed identifier"
+    end
+
+    errors.map { |error| "invalid #{key} policy: #{error}" }.uniq
   end
 
   def hosted_qa_policy_issues(root, yaml)

@@ -4,6 +4,29 @@ Shared workflow skills do not require one specific coordination backend. Each
 consumer repo declares its backend in `.agents/agent-workflow.yml` under
 `coordination_backend`.
 
+A repository may also add an optional closed `coordination_backend_contract`
+mapping to constrain that value to identifiers it has reviewed:
+
+```yaml
+coordination_backend: "agent-coord private backend"
+coordination_backend_contract:
+  version: 1
+  allowed_identifiers:
+    - "agent-coord private backend"
+```
+
+The seam doctor accepts only the two version 1 contract keys shown above, a
+nonempty list of unique known string identifiers, and an exact match between
+the selected backend and one allowed identifier. Unknown keys, malformed or
+duplicate values, duplicate YAML keys, and a selection outside the allowlist
+fail closed. Repositories that omit this optional mapping retain the portable
+free-form backend seam.
+
+This source repository uses the exact `agent-coord private backend` identifier,
+which is the reviewed identifier used by its private-backend contracts. The
+identifier is portable policy vocabulary; backend URLs, credentials, claims,
+batches, capacity, inboxes, and other operational state remain outside Git.
+
 Use this page as the canonical vocabulary for private coordination, public
 claim-comment fallback, no-backend mode, and `UNKNOWN` coordination state.
 Individual skills should refer here instead of duplicating backend-specific

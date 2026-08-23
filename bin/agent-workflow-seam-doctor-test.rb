@@ -10,6 +10,8 @@ require "open3"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflow-seam-doctor", __dir__)
+SOURCE_REPO_ROOT = File.expand_path("..", __dir__)
+PRIVATE_COORDINATION_BACKEND = "agent-coord private backend"
 load SCRIPT
 
 module AgentWorkflowSeamDoctorTestHelpers
@@ -153,6 +155,13 @@ module AgentWorkflowSeamDoctorTestHelpers
       "deployment_verifier" => ".agents/bin/verify-hosted-deployment",
       "acceptance_criteria" => %w[sign-in checkout],
       "waiver_mode" => "forbidden"
+    }
+  end
+
+  def coordination_backend_contract(*allowed_identifiers)
+    {
+      "version" => 1,
+      "allowed_identifiers" => allowed_identifiers
     }
   end
 end
@@ -570,6 +579,110 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       refute status.success?
       assert_includes out, "invalid hosted_qa_gate policy: $.hosted_qa_gate contains duplicate key \"target\""
     end
+  end
+
+  def test_coordination_backend_contract_accepts_an_exact_selected_identifier
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+          "coordination_backend_contract" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND)
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_a_selected_identifier_outside_the_allowlist
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+          "coordination_backend_contract" => coordination_backend_contract("another private backend")
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend_contract policy"
+      assert_includes out, "coordination_backend must exactly match an allowed identifier"
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_malformed_closed_values
+    fixtures = {
+      "not a mapping" => PRIVATE_COORDINATION_BACKEND,
+      "unsupported version" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND).merge("version" => 2),
+      "unknown key" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND).merge("endpoint" => "private"),
+      "empty allowlist" => coordination_backend_contract,
+      "duplicate identifier" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND, PRIVATE_COORDINATION_BACKEND),
+      "blank identifier" => coordination_backend_contract(" "),
+      "unknown identifier" => coordination_backend_contract("UNKNOWN")
+    }
+
+    fixtures.each do |label, contract|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(
+          root,
+          POLICY.merge(
+            "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+            "coordination_backend_contract" => contract
+          )
+        )
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, "#{label}: #{out}"
+        assert_includes out, "invalid coordination_backend_contract policy", label
+      end
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_duplicate_yaml_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.merge(
+        "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+        "coordination_backend_contract" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND)
+      ).to_yaml.sub(
+        "  version: 1\n",
+        "  version: 1\n  version: 2\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend_contract policy: " \
+                           "$.coordination_backend_contract contains duplicate key \"version\""
+    end
+  end
+
+  def test_source_repository_selects_the_reviewed_private_backend_under_a_fail_closed_contract
+    out, status = run_doctor(SOURCE_REPO_ROOT, "--shared", SOURCE_REPO_ROOT)
+    config = YAML.safe_load(
+      File.read(File.join(SOURCE_REPO_ROOT, ".agents/agent-workflow.yml"), encoding: "UTF-8"),
+      aliases: false
+    )
+
+    assert status.success?, out
+    assert_equal PRIVATE_COORDINATION_BACKEND, config.fetch("coordination_backend")
+    assert_equal coordination_backend_contract(PRIVATE_COORDINATION_BACKEND),
+                 config.fetch("coordination_backend_contract")
   end
 
   def test_incomplete_untrusted_contributor_intake_policy_fails
