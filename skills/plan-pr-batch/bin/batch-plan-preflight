@@ -716,15 +716,28 @@ module BatchPlanPreflight
     false
   end
 
+  def canonical_artifact_path(path)
+    candidate = Pathname.new(File.expand_path(path))
+    suffix = []
+    until candidate.exist? || candidate.symlink?
+      suffix.unshift(candidate.basename.to_s)
+      candidate = candidate.parent
+    end
+
+    File.join(File.realpath(candidate), *suffix)
+  end
+
   def artifact_path_collision?(left, right)
     expanded_left = File.expand_path(left)
     expanded_right = File.expand_path(right)
-    return true if expanded_left == expanded_right
-    return true if expanded_left.start_with?("#{expanded_right}#{File::SEPARATOR}") ||
-                   expanded_right.start_with?("#{expanded_left}#{File::SEPARATOR}")
+    canonical_left = canonical_artifact_path(expanded_left)
+    canonical_right = canonical_artifact_path(expanded_right)
+    return true if canonical_left == canonical_right
+    return true if canonical_left.start_with?("#{canonical_right}#{File::SEPARATOR}") ||
+                   canonical_right.start_with?("#{canonical_left}#{File::SEPARATOR}")
     return false unless File.exist?(expanded_left) && File.exist?(expanded_right)
 
-    File.identical?(expanded_left, expanded_right) || File.realpath(expanded_left) == File.realpath(expanded_right)
+    File.identical?(expanded_left, expanded_right)
   rescue SystemCallError
     true
   end

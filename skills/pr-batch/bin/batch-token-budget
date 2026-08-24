@@ -2162,9 +2162,8 @@ module BatchTokenBudget
       raise InvalidInput, "charge-back-already-accounted" if existing_charge_back
     end
 
-    evaluated_at = DateTime.iso8601(command.fetch("evaluated_at"))
     to_exclusive = DateTime.iso8601(projection.fetch("to_exclusive"))
-    age_seconds = ((evaluated_at - to_exclusive) * 86_400).to_i
+    age_seconds = seconds_between(command.fetch("evaluated_at"), projection.fetch("to_exclusive"))
     unless age_seconds.between?(0, original_state.dig("budget", "telemetry", "max_age_seconds"))
       return blocked_usage_result(original_state, age_seconds.negative? ? "usage-window-future" : "usage-telemetry-stale")
     end
