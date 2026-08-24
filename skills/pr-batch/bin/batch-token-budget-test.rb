@@ -644,6 +644,32 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "trusted-plan-state-path-collision", JSON.parse(alias_stderr).fetch("reason")
       assert_equal plan_before, File.read(plan_path)
       refute File.exist?("#{alias_state_path}.lock")
+
+      actual_directory = File.join(directory, "actual")
+      aliased_directory = File.join(directory, "aliased-parent")
+      Dir.mkdir(actual_directory)
+      File.symlink(actual_directory, aliased_directory)
+      nested_plan_path = File.join(actual_directory, "nested-plan.json")
+      nested_state_path = File.join(aliased_directory, "nested-plan.json", "state.json")
+      nested_budget = budget(state_path: nested_state_path)
+      File.write(nested_plan_path, JSON.generate(canonicalize(nested_budget)))
+      nested_anchor = {
+        "path" => nested_plan_path,
+        "id" => nested_budget.fetch("batch_id"),
+        "digest" => "sha256:#{object_digest(nested_budget)}"
+      }
+      nested_plan_before = File.read(nested_plan_path)
+
+      output, nested_stderr, nested_status = run_helper_raw(
+        nested_state_path,
+        JSON.generate(command("initialize", "budget" => nested_budget)),
+        anchor: nested_anchor
+      )
+      refute nested_status.success?
+      assert_nil output
+      assert_equal "trusted-plan-state-path-collision", JSON.parse(nested_stderr).fetch("reason")
+      assert_equal nested_plan_before, File.read(nested_plan_path)
+      refute File.exist?("#{nested_state_path}.lock")
     end
   end
 
@@ -3226,6 +3252,14 @@ class BatchTokenBudgetTest < Minitest::Test
       refute backdated_status.success?
       assert_nil backdated
       assert_equal "command-time-rollback", JSON.parse(backdated_stderr).fetch("reason")
+
+      fractional_backdated, fractional_stderr, fractional_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T13:59:59.999999Z")
+      )
+      refute fractional_status.success?
+      assert_nil fractional_backdated
+      assert_equal "command-time-rollback", JSON.parse(fractional_stderr).fetch("reason")
     end
   end
 end
