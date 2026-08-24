@@ -385,8 +385,8 @@ class AutonomousMergeEligibilityTest < Minitest::Test
 
     assert status.success?, stderr
     assert_empty stderr
-    assert_includes stdout, "matching payment orchestration boundary"
-    assert_includes stdout, "(other: payment orchestration boundary)"
+    assert_includes stdout, 'matching ` "payment orchestration boundary" `'
+    assert_includes stdout, '(other: ` "payment orchestration boundary" `)'
   end
 
   def test_renamed_protected_source_path_adds_human_gates_without_double_counting_metrics

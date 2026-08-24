@@ -334,7 +334,7 @@ module AutonomousMergeCloseout
     explanation = if gate.start_with?("repo-path:")
                     reasons = paths.map do |match|
                       reason = match.fetch("reason")
-                      reason == "other" ? match.fetch("detail") : PATH_REASON_EXPLANATIONS.fetch(reason)
+                      reason == "other" ? markdown_code_literal(match.fetch("detail")) : PATH_REASON_EXPLANATIONS.fetch(reason)
                     end.uniq
                     "Trusted-base repository policy reserves this PR's matching #{sentence_list(reasons)} for human review."
                   else
@@ -399,7 +399,7 @@ module AutonomousMergeCloseout
         lines << "- `#{entry.fetch('gate')}` — #{entry.fetch('explanation')}"
         entry.fetch("path_evidence").each do |path|
           reason = path.fetch("reason")
-          reason = "#{reason}: #{path.fetch('detail')}" if path.key?("detail")
+          reason = "#{reason}: #{markdown_code_literal(path.fetch('detail'))}" if path.key?("detail")
           lines << "  Path evidence: #{markdown_code_literal(path.fetch('path'))} (#{reason})"
         end
       end

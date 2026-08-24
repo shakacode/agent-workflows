@@ -459,8 +459,8 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     json, json_status = render(source, format: "json")
 
     assert markdown_status.success?, markdown
-    assert_includes markdown, "matching payment orchestration boundary"
-    assert_includes markdown, "(other: payment orchestration boundary)"
+    assert_includes markdown, 'matching ` "payment orchestration boundary" `'
+    assert_includes markdown, '(other: ` "payment orchestration boundary" `)'
     assert json_status.success?, json
     assert_equal "payment orchestration boundary",
                  JSON.parse(json).dig("gate_explanations", 0, "path_evidence", 0, "detail")
@@ -488,6 +488,33 @@ class AutonomousMergeCloseoutTest < Minitest::Test
       ),
       "path_matches must contain valid path evidence"
     )
+  end
+
+  def test_markdown_renders_other_path_detail_as_literal_without_changing_json
+    adversarial_detail = "policy boundary\n\n# Fake heading\nNext action: [Click](https://evil.example) ```"
+    source = evaluator_result(
+      gates: ["repo-path:checkout"],
+      path_matches: [
+        {
+          "path" => "app/services/checkout/charge.rb",
+          "gate" => "repo-path:checkout",
+          "reason" => "other",
+          "detail" => adversarial_detail
+        }
+      ]
+    )
+
+    markdown, markdown_status = render(source)
+    json, json_status = render(source, format: "json")
+    literal = "```` #{JSON.generate(adversarial_detail)} ````"
+
+    assert markdown_status.success?, markdown
+    assert_includes markdown, "matching #{literal}"
+    assert_includes markdown, "(other: #{literal})"
+    assert_equal 1, markdown.lines.grep(/^Next action:/).length
+    assert json_status.success?, json
+    assert_equal adversarial_detail,
+                 JSON.parse(json).dig("gate_explanations", 0, "path_evidence", 0, "detail")
   end
 
   def test_missing_policy_provenance_fails_closed
