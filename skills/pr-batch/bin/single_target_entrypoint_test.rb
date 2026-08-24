@@ -101,7 +101,10 @@ assert(workflow.include?("`coordination_backend: n/a`"), "canonical coordination
 assert(workflow.include?("single-operator assumption in the Lane Card and final handoff"), "no-backend mode must preserve its assumption in evidence")
 assert(workflow.include?("a derived `adhoc:<yyyymmdd>-<short-slug>` target"), "canonical intake must accept direct-prompt task targets")
 assert(workflow.include?("Do not pass `adhoc:` targets to `pr-security-preflight`"), "ad-hoc targets must not be sent to the GitHub preflight helper")
-assert(workflow.include?("Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`; a Linear issue uses `Linear issue <ID>: <verified Linear URL>`."), "canonical file-touch map must represent ad-hoc and Linear issue lanes without a duplicate ad-hoc suffix")
+target_ids_line = "> Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`; a Linear issue uses `Linear issue <ID>: <verified Linear URL>`."
+duplicated_target_ids_line = "#{target_ids_line} Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`."
+assert(workflow.lines.count { |line| line.chomp == target_ids_line } == 1, "canonical file-touch map must contain the exact ad-hoc and Linear issue target line once")
+assert(!workflow.include?(duplicated_target_ids_line), "canonical file-touch map must reject the duplicate ad-hoc suffix")
 assert(workflow.include?("For an ad-hoc target, record the evidence and rationale directly in the final handoff"), "canonical final handoff must support ad-hoc no-PR evidence")
 assert(workflow.include?("For an ad-hoc task, the final handoff is the evidence surface"), "canonical outcome classification must support ad-hoc no-PR evidence")
 assert(workflow.include?("public claim fallback is unavailable because there is no issue or PR comment surface"), "canonical coordination must handle ad-hoc lanes without a public claim surface")
