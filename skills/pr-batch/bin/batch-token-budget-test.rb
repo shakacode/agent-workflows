@@ -11,6 +11,8 @@ require "tmpdir"
 
 HELPER = File.expand_path("batch-token-budget", __dir__)
 FIXTURE = File.expand_path("../fixtures/batch-token-budget-v1.json", __dir__)
+USAGE_HELPER = File.expand_path("batch-usage-receipt", __dir__)
+USAGE_FIXTURE = File.expand_path("../fixtures/batch-usage-receipt/descendants.json", __dir__)
 
 class BatchTokenBudgetTest < Minitest::Test
   TEST_VERIFIER_KEY = OpenSSL::PKey::RSA.generate(2048)
@@ -83,9 +85,12 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def initialize_budget(state_path)
+  def initialize_budget(state_path, evaluated_at: "2026-08-12T11:00:00Z")
     install_trusted_plan(state_path)
-    run_helper(state_path, command("initialize", "budget" => budget(state_path: state_path)))
+    run_helper(
+      state_path,
+      command("initialize", "evaluated_at" => evaluated_at, "budget" => budget(state_path: state_path))
+    )
   end
 
   def reservation(id:, lane_id: "lane-a", tokens: 100, target_id: nil, kind: "model-turn", overrides: {})
@@ -140,6 +145,137 @@ class BatchTokenBudgetTest < Minitest::Test
       "producer" => { "kind" => "host-reported", "evidence_ref" => "host-usage://task-lane-a/42" },
       "segments" => segments
     }
+  end
+
+  def real_descendants_usage_receipt(state_path, remove_turn_context_for: nil)
+    fixture = JSON.parse(File.read(USAGE_FIXTURE, encoding: "UTF-8"))
+    fixture.fetch("manifest")["batch_id"] = "batch-399"
+    fixture.fetch("window").merge!(
+      "from" => "2026-08-12T11:00:00Z",
+      "to" => "2026-08-12T12:00:00Z"
+    )
+    fixture.fetch("rollouts").each_value do |records|
+      records.each_with_index do |record, index|
+        record["timestamp"] = index.zero? ? "2026-08-12T11:58:00Z" : "2026-08-12T11:59:00Z"
+      end
+    end
+    if remove_turn_context_for
+      fixture.dig("rollouts", remove_turn_context_for).reject! { |record| record["type"] == "turn_context" }
+    end
+
+    directory = File.dirname(state_path)
+    fixture.fetch("rollouts").each do |basename, records|
+      File.write(File.join(directory, basename), "#{records.map { |record| JSON.generate(record) }.join("\n")}\n")
+    end
+    database_path = File.join(directory, "state_5.sqlite")
+    sql = +<<~SQL
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        rollout_path TEXT,
+        model_provider TEXT NOT NULL,
+        model TEXT,
+        reasoning_effort TEXT
+      );
+      CREATE TABLE thread_spawn_edges (
+        parent_thread_id TEXT NOT NULL,
+        child_thread_id TEXT NOT NULL PRIMARY KEY,
+        status TEXT NOT NULL
+      );
+    SQL
+    quote = ->(value) { value.nil? ? "NULL" : "'#{value.to_s.gsub("'", "''")}'" }
+    fixture.fetch("threads").each do |thread|
+      rollout_path = thread["rollout"] && File.join(directory, thread.fetch("rollout"))
+      values = [
+        thread.fetch("id"), rollout_path, thread.fetch("model_provider"), thread["model"], thread["reasoning_effort"]
+      ].map { |value| quote.call(value) }
+      sql << "INSERT INTO threads VALUES (#{values.join(', ')});\n"
+    end
+    fixture.fetch("edges").each do |edge|
+      sql << "INSERT INTO thread_spawn_edges VALUES (#{edge.map { |value| quote.call(value) }.join(', ')});\n"
+    end
+    _stdout, database_stderr, database_status = Open3.capture3("sqlite3", database_path, stdin_data: sql)
+    assert database_status.success?, database_stderr
+
+    manifest_path = File.join(directory, "batch-usage-manifest.json")
+    File.write(manifest_path, JSON.generate(fixture.fetch("manifest")))
+    stdout, stderr, status = Open3.capture3(
+      "ruby", USAGE_HELPER,
+      "--state-db", database_path,
+      "--manifest", manifest_path,
+      "--from", fixture.dig("window", "from"),
+      "--to", fixture.dig("window", "to")
+    )
+    assert status.success?, stderr
+
+    receipt = JSON.parse(stdout)
+    receipt_artifact(state_path, receipt, "descendants")
+  end
+
+  def receipt_artifact(state_path, receipt, name)
+    artifact_path = File.join(File.dirname(state_path), "batch-usage-receipt-#{name}.json")
+    File.write(artifact_path, JSON.generate(canonicalize(receipt)))
+    [receipt, "file://#{artifact_path}", "sha256:#{object_digest(receipt)}"]
+  end
+
+  def usage_window(
+    receipt, from:, to:, coordinator_tokens:, lane_tokens:, batch_unattributed_tokens: 0,
+    coordinator_turns: nil, lane_turns: nil, batch_unattributed_turns: nil
+  )
+    projected = JSON.parse(JSON.generate(receipt))
+    projected.fetch("window").merge!("from_inclusive" => from, "to_exclusive" => to)
+    coordinator_turns ||= coordinator_tokens.positive? ? 1 : 0
+    batch_unattributed_turns ||= batch_unattributed_tokens.positive? ? 1 : 0
+    lane_turns ||= lane_tokens.to_h { |lane_id, tokens| [lane_id, tokens.positive? ? 1 : 0] }
+    set_usage_total(projected.dig("coordinator", "usage", "self_only"), coordinator_tokens)
+    batch_tokens = coordinator_tokens + batch_unattributed_tokens + lane_tokens.values.sum
+    batch_turns = coordinator_turns + batch_unattributed_turns + lane_turns.values.sum
+    set_usage_total(projected.dig("coordinator", "usage", "descendant_inclusive"), batch_tokens)
+    projected.dig("coordinator", "turns").merge!(
+      "self_only" => coordinator_turns,
+      "descendant_inclusive" => batch_turns
+    )
+    projected.fetch("lanes").each do |lane|
+      tokens = lane_tokens.fetch(lane.fetch("id"))
+      turns = lane_turns.fetch(lane.fetch("id"))
+      set_usage_total(lane.dig("usage", "self_only"), tokens)
+      set_usage_total(lane.dig("usage", "descendant_inclusive"), tokens)
+      set_usage_total(lane.dig("usage", "unattributed"), tokens)
+      lane.fetch("turns").merge!("self_only" => turns, "descendant_inclusive" => turns, "unattributed" => turns)
+      lane.fetch("workers").each do |worker|
+        set_usage_total(worker.dig("usage", "self_only"), 0)
+        set_usage_total(worker.dig("usage", "descendant_inclusive"), 0)
+        worker.fetch("turns").merge!("self_only" => 0, "descendant_inclusive" => 0)
+      end
+    end
+    set_usage_total(projected.dig("batch", "usage", "descendant_inclusive"), batch_tokens)
+    set_usage_total(projected.dig("batch", "usage", "unattributed"), batch_unattributed_tokens)
+    projected.fetch("batch").fetch("turns").merge!(
+      "descendant_inclusive" => batch_turns,
+      "unattributed" => batch_unattributed_turns
+    )
+    projected
+  end
+
+  def set_usage_total(usage, tokens)
+    usage.merge!(
+      "input_tokens" => tokens,
+      "output_tokens" => 0,
+      "reasoning_output_tokens" => 0,
+      "cache_read_tokens" => 0,
+      "total_tokens" => tokens
+    )
+  end
+
+  def set_usage_counter(value, counter, replacement)
+    case value
+    when Hash
+      value[counter] = replacement if value.keys.sort == %w[
+        cache_read_tokens input_tokens output_tokens reasoning_output_tokens total_tokens
+      ]
+      value.each_value { |child| set_usage_counter(child, counter, replacement) }
+    when Array
+      value.each { |child| set_usage_counter(child, counter, replacement) }
+    end
   end
 
   def task_identity(task_id:, lane_id: "lane-a")
@@ -273,6 +409,9 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal 300, first.dig("totals", "coordinator", "limit_tokens")
       assert_equal 600, first.dig("totals", "lanes", "lane-a", "limit_tokens")
       assert File.file?(state_path)
+      state = JSON.parse(File.read(state_path))
+      assert_equal "2026-08-12T11:00:00Z", state.fetch("usage_initial_cutoff")
+      assert_equal state.fetch("usage_initial_cutoff"), state.dig("receipts", 0, "usage_initial_cutoff")
 
       replay, replay_stderr, replay_status = initialize_budget(state_path)
 
@@ -615,94 +754,647 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def test_nested_authoritative_usage_is_counted_exactly_once_and_charge_back_is_nonphysical
+  def test_active_reservations_are_unique_per_scope_while_different_lanes_remain_concurrent
     with_state do |state_path|
-      cross_budget = budget(state_path: state_path)
-      cross_budget["delegation"]["approval_threshold_tokens"] = 400
-      run_helper(state_path, command("initialize", "budget" => cross_budget))
+      initialize_budget(state_path)
+      first, first_stderr, first_status = reserve(
+        state_path,
+        id: "lane-a-envelope",
+        lane_id: "lane-a",
+        target_id: "lane-a-root"
+      )
+      assert first_status.success?, first_stderr
+      assert_equal "admitted", first.fetch("status")
+
+      nested, nested_stderr, nested_status = reserve(
+        state_path,
+        id: "lane-a-nested",
+        lane_id: "lane-a",
+        target_id: "lane-a-child"
+      )
+      assert nested_status.success?, nested_stderr
+      assert_equal "coalesced", nested.fetch("status")
+      assert_equal "lane-a-envelope", nested.fetch("coalesced_reservation_id")
+      assert_equal 100, nested.dig("totals", "aggregate", "reserved_tokens")
+
+      other_lane, other_stderr, other_status = reserve(
+        state_path,
+        id: "lane-b-envelope",
+        lane_id: "lane-b",
+        target_id: "lane-b-root"
+      )
+      assert other_status.success?, other_stderr
+      assert_equal "admitted", other_lane.fetch("status")
+      assert_equal 200, other_lane.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal %w[lane-a-envelope lane-b-envelope], JSON.parse(File.read(state_path)).fetch("reservations").keys.sort
+    end
+  end
+
+  def test_real_batch_usage_receipt_reconciles_every_hierarchical_scope_atomically
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "coordinator-window", lane_id: "coordinator", tokens: 20)
+      reserve(state_path, id: "lane-a-window", lane_id: "lane-a", tokens: 100)
+      reserve(state_path, id: "lane-b-window", lane_id: "lane-b", tokens: 10)
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
+
+      reconciled, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => %w[coordinator-window lane-a-window lane-b-window]
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      assert_equal 112, reconciled.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 15, reconciled.dig("totals", "coordinator", "consumed_tokens")
+      assert_equal 90, reconciled.dig("totals", "lanes", "lane-a", "consumed_tokens")
+      assert_equal 7, reconciled.dig("totals", "lanes", "lane-b", "consumed_tokens")
+      assert_equal 0, reconciled.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal 18, reconciled.dig("totals", "aggregate", "released_tokens")
+
+      state = JSON.parse(File.read(state_path))
+      assert_equal "root", state.dig("usage_binding", "coordinator", "root_thread_id")
+      assert_equal({ "lane-a" => "lane-a", "lane-b" => "lane-b" }, state.dig("usage_binding", "lanes"))
+      assert_equal(
+        { "coordinator" => 2, "lane-a" => 3, "lane-b" => 1 },
+        state.fetch("usage_receipts").values.first.fetch("scope_turns")
+      )
+    end
+  end
+
+  def test_legacy_per_target_usage_wrapper_is_not_an_alternate_reconciliation_contract
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "legacy-wrapper", lane_id: "lane-a", tokens: 100)
+      state_before = File.read(state_path)
+
+      output, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "reservation_id" => "legacy-wrapper",
+          "usage_receipt" => usage_receipt(
+            id: "legacy-usage",
+            segments: [{
+              "id" => "legacy-self",
+              "kind" => "self",
+              "scope_id" => "lane-a",
+              "target_id" => "task-lane-a",
+              "tokens" => 80
+            }]
+          )
+        )
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "unsupported-command-contract", JSON.parse(stderr).fetch("reason")
+      assert_equal state_before, File.read(state_path)
+    end
+  end
+
+  def test_same_window_with_a_different_receipt_digest_is_rejected_as_mutation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
+      original_command = command(
+        "reconcile",
+        "usage_receipt" => receipt,
+        "usage_receipt_ref" => receipt_ref,
+        "usage_receipt_digest" => receipt_digest,
+        "completed_reservation_ids" => []
+      )
+      first, first_stderr, first_status = run_helper(state_path, original_command)
+      assert first_status.success?, first_stderr
+      assert_equal "reconciled", first.fetch("status")
+      state_before_mutation = File.read(state_path)
+
+      mutated_receipt = JSON.parse(JSON.generate(receipt))
+      mutated_receipt.fetch("accounting")["usage_samples"] += 1
+      mutated_receipt, mutated_ref, mutated_digest = receipt_artifact(state_path, mutated_receipt, "mutated")
+      rejected, rejected_stderr, rejected_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => mutated_receipt,
+          "usage_receipt_ref" => mutated_ref,
+          "usage_receipt_digest" => mutated_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert rejected_status.success?, rejected_stderr
+      assert_equal "blocked", rejected.fetch("status")
+      assert_equal "usage-window-mutation", rejected.fetch("reason")
+      assert_equal state_before_mutation, File.read(state_path)
+    end
+  end
+
+  def test_exact_usage_receipt_replay_at_a_later_command_time_does_not_recount
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
+      reconcile = command(
+        "reconcile",
+        "usage_receipt" => receipt,
+        "usage_receipt_ref" => receipt_ref,
+        "usage_receipt_digest" => receipt_digest,
+        "completed_reservation_ids" => []
+      )
+      first, first_stderr, first_status = run_helper(state_path, reconcile)
+      assert first_status.success?, first_stderr
+      assert_equal 112, first.dig("totals", "aggregate", "consumed_tokens")
+
+      replay, replay_stderr, replay_status = run_helper(
+        state_path,
+        reconcile.merge("evaluated_at" => "2026-08-12T12:01:00Z")
+      )
+
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replay.fetch("status")
+      assert_equal 112, replay.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 112, JSON.parse(File.read(state_path)).dig("scopes", "aggregate", "consumed_tokens")
+    end
+  end
+
+  def test_first_usage_window_must_start_at_the_persisted_initialization_cutoff
+    with_state do |state_path|
+      initialize_budget(state_path, evaluated_at: "2026-08-12T12:00:00Z")
+      reserve(state_path, id: "first-window-gap", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      omitted_prefix = usage_window(
+        base_receipt,
+        from: "2026-08-12T12:10:00Z",
+        to: "2026-08-12T12:20:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 10, "lane-b" => 0 }
+      )
+      omitted_prefix, receipt_ref, receipt_digest = receipt_artifact(state_path, omitted_prefix, "first-window-gap")
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:20:00Z",
+          "usage_receipt" => omitted_prefix,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-window-gap", blocked.fetch("reason")
+      assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens")
+      state = JSON.parse(File.read(state_path))
+      assert_equal "2026-08-12T12:00:00Z", state.fetch("usage_initial_cutoff")
+      assert_empty state.fetch("usage_receipts")
+    end
+  end
+
+  def test_restart_rejects_a_rebound_initial_usage_cutoff_even_after_tail_rehash
+    with_state do |state_path|
+      initialize_budget(state_path)
+      state = JSON.parse(File.read(state_path))
+      state["usage_initial_cutoff"] = "2026-08-12T10:00:00Z"
+      state.dig("receipts", 0)["usage_initial_cutoff"] = "2026-08-12T10:00:00Z"
+      rehash_control_tail(state)
+      File.write(state_path, JSON.generate(state))
+
+      output, stderr, status = run_helper(state_path, command("closeout"))
+
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+    end
+  end
+
+  def test_release_after_a_partial_usage_window_frees_only_remaining_headroom
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "partial-window", lane_id: "lane-a", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 60, "lane-b" => 0 }
+      )
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "partial")
+      observed, observed_stderr, observed_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+      assert observed_status.success?, observed_stderr
+      assert_equal 60, observed.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 40, observed.dig("totals", "aggregate", "reserved_tokens")
+
+      released, released_stderr, released_status = run_helper(
+        state_path,
+        command(
+          "release",
+          "release" => {
+            "type" => "batch-token-release",
+            "version" => 1,
+            "id" => "partial-release",
+            "reservation_id" => "partial-window",
+            "reason" => "Observed boundary ended early."
+          }
+        )
+      )
+
+      assert released_status.success?, released_stderr
+      assert_equal "released", released.fetch("status")
+      assert_equal 0, released.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal 40, released.dig("totals", "aggregate", "released_tokens")
+      assert_equal 60, released.dig("totals", "aggregate", "consumed_tokens")
+    end
+  end
+
+  def test_multiple_usage_windows_measure_cumulative_tokens_and_each_overshoot_boundary
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "multi-window", lane_id: "lane-a", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      first_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 110, "lane-b" => 0 }
+      )
+      first_receipt, first_ref, first_digest = receipt_artifact(state_path, first_receipt, "overshoot-first")
+      first, first_stderr, first_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => first_receipt,
+          "usage_receipt_ref" => first_ref,
+          "usage_receipt_digest" => first_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+      assert first_status.success?, first_stderr
+      assert_equal 110, first.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 0, first.dig("totals", "aggregate", "reserved_tokens")
+
+      second_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T12:00:00Z",
+        to: "2026-08-12T12:01:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 20, "lane-b" => 0 }
+      )
+      second_receipt, second_ref, second_digest = receipt_artifact(state_path, second_receipt, "overshoot-second")
+      second, second_stderr, second_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:01:00Z",
+          "usage_receipt" => second_receipt,
+          "usage_receipt_ref" => second_ref,
+          "usage_receipt_digest" => second_digest,
+          "completed_reservation_ids" => ["multi-window"]
+        )
+      )
+      assert second_status.success?, second_stderr
+      assert_equal 130, second.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 0, second.dig("totals", "aggregate", "reserved_tokens")
+
+      closeout, closeout_stderr, closeout_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T12:02:00Z")
+      )
+      assert closeout_status.success?, closeout_stderr
+      assert_equal "complete", closeout.fetch("status")
+      assert_equal 30, closeout.dig("overshoot", "tokens")
+      assert_equal 2, closeout.dig("overshoot", "turn_count")
+      assert_equal({ "lane-a" => 30 }, closeout.dig("overshoot", "by_scope"))
+    end
+  end
+
+  def test_overshooting_window_requires_authoritative_per_scope_turn_evidence
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "unproved-overshoot", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      unproved_overshoot = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 500, "lane-b" => 0 },
+        lane_turns: { "lane-a" => 2, "lane-b" => 0 }
+      )
+      unproved_overshoot.fetch("accounting")["usage_samples"] = 25
+      unproved_overshoot, receipt_ref, receipt_digest = receipt_artifact(
+        state_path, unproved_overshoot, "unproved-overshoot"
+      )
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => unproved_overshoot,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => ["unproved-overshoot"]
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "overshoot-evidence-unsupported", blocked.fetch("reason")
+      assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens")
+      assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts")
+    end
+  end
+
+  def test_overshooting_window_with_zero_contributing_turns_fails_closed
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "zero-turn-overshoot", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 500, "lane-b" => 0 },
+        lane_turns: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "zero-turn-overshoot")
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => ["zero-turn-overshoot"]
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens")
+    end
+  end
+
+  def test_unknown_turn_context_evidence_from_the_real_usage_helper_fails_closed
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "unknown-turn-evidence", tokens: 100)
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(
+        state_path, remove_turn_context_for: "lane-a.jsonl"
+      )
+      assert_equal "UNKNOWN", receipt.dig("lanes", 0, "turns", "descendant_inclusive")
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => ["unknown-turn-evidence"]
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens")
+      assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts")
+    end
+  end
+
+  def test_batch_usage_window_preserves_cross_task_charge_back_without_double_counting
+    with_state do |state_path|
+      initialize_budget(state_path)
       source = task_identity(task_id: "source-task")
       source["batch_id"] = "source-batch"
       target = task_identity(task_id: "task-lane-a")
-      admitted, stderr, status = run_helper(
+      admitted, admitted_stderr, admitted_status = run_helper(
         state_path,
         command(
           "reserve",
           "reservation" => reservation(
-            id: "reserve-nested",
-            tokens: 300,
+            id: "window-delegation",
+            tokens: 100,
             kind: "cross-task-delegation",
-            overrides: {
-              "source" => source,
-              "target" => target,
-              "telemetry" => reservation(id: "nested-envelope", tokens: 300).fetch("telemetry").merge(
-                "self_estimate_tokens" => 200,
-                "descendant_estimate_tokens" => 100,
-                "descendant_target_ids" => %w[child-a grandchild-a]
-              )
-            }
+            overrides: { "source" => source, "target" => target }
           )
         )
       )
-      assert status.success?, stderr
-      assert_includes %w[admitted admitted-with-warning], admitted.fetch("status")
+      assert admitted_status.success?, admitted_stderr
+      assert_equal "admitted", admitted.fetch("status")
 
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 80, "lane-b" => 0 }
+      )
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "charge-back")
       charge_back = {
         "type" => "batch-token-charge-back",
         "version" => 1,
-        "id" => "cause-1",
+        "id" => "window-cause",
         "source" => source,
         "target" => target
       }
       reconcile = command(
         "reconcile",
-        "reservation_id" => "reserve-nested",
-        "usage_receipt" => usage_receipt,
-        "charge_back" => charge_back
+        "usage_receipt" => receipt,
+        "usage_receipt_ref" => receipt_ref,
+        "usage_receipt_digest" => receipt_digest,
+        "completed_reservation_ids" => ["window-delegation"],
+        "charge_backs" => [{ "reservation_id" => "window-delegation", "charge_back" => charge_back }]
       )
-      first, first_stderr, first_status = run_helper(state_path, reconcile)
+      reconciled, stderr, status = run_helper(state_path, reconcile)
 
-      assert first_status.success?, first_stderr
-      assert_equal "reconciled", first.fetch("status")
-      assert_equal 250, first.dig("totals", "aggregate", "consumed_tokens")
-      assert_equal 250, first.dig("totals", "lanes", "lane-a", "consumed_tokens")
-      assert_equal 50, first.dig("totals", "aggregate", "released_tokens")
-      assert_equal 0, first.dig("totals", "aggregate", "reserved_tokens")
-      assert_equal 250, first.dig("charge_back", "tokens")
-      assert_equal false, first.dig("charge_back", "physical_total_incremented")
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      assert_equal 80, reconciled.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 80, reconciled.dig("totals", "lanes", "lane-a", "consumed_tokens")
+      assert_equal 80, reconciled.dig("charge_backs", 0, "tokens")
+      assert_equal false, reconciled.dig("charge_backs", 0, "physical_total_incremented")
+      assert_equal 80, JSON.parse(File.read(state_path)).dig("charge_backs", "window-cause", "summary", "tokens")
 
-      replay, replay_stderr, replay_status = run_helper(state_path, reconcile)
-
+      replayed, replay_stderr, replay_status = run_helper(
+        state_path,
+        reconcile.merge("evaluated_at" => "2026-08-12T12:01:00Z")
+      )
       assert replay_status.success?, replay_stderr
-      assert_equal "replayed", replay.fetch("status")
-      assert_equal 250, replay.dig("totals", "aggregate", "consumed_tokens")
-      assert_equal 250, replay.dig("totals", "lanes", "lane-a", "consumed_tokens")
-      assert_equal 50, replay.dig("totals", "aggregate", "released_tokens")
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal 80, replayed.dig("totals", "aggregate", "consumed_tokens")
+    end
+  end
 
-      reserve_again = reservation(
-        id: "reserve-nested-again",
-        tokens: 100,
-        kind: "cross-task-delegation",
-        overrides: { "source" => source, "target" => target }
-      )
-      run_helper(state_path, command("reserve", "reservation" => reserve_again))
-      second_usage = usage_receipt(
-        id: "usage-second-delegation",
-        segments: [
-          { "id" => "physical-second-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "task-lane-a", "tokens" => 100 }
-        ]
-      )
-      duplicate_charge_back, duplicate_stderr, duplicate_status = run_helper(
+  def test_topology_unknown_cannot_be_hidden_behind_numeric_totals_and_balanced_flags
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, = real_descendants_usage_receipt(state_path)
+      receipt.fetch("evidence")["status"] = "UNKNOWN"
+      receipt.fetch("evidence")["unknown"] = [{
+        "status" => "UNKNOWN",
+        "code" => "lane_scope_overlap",
+        "lane_ids" => %w[lane-a lane-b]
+      }]
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "topology-unknown")
+      state_before = File.read(state_path)
+
+      blocked, stderr, status = run_helper(
         state_path,
         command(
           "reconcile",
-          "reservation_id" => "reserve-nested-again",
-          "usage_receipt" => second_usage,
-          "charge_back" => charge_back
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
         )
       )
-      refute duplicate_status.success?
-      assert_nil duplicate_charge_back
-      assert_equal "charge-back-already-accounted", JSON.parse(duplicate_stderr).fetch("reason")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      state = JSON.parse(File.read(state_path))
+      assert_equal JSON.parse(state_before).fetch("scopes"), state.fetch("scopes")
+      assert_empty state.fetch("usage_receipts")
+    end
+  end
+
+  def test_lane_reconciliation_equation_is_recomputed_instead_of_trusting_balanced_status
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "forged-lane-equation", tokens: 200)
+      receipt, = real_descendants_usage_receipt(state_path)
+      worker_usage = receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive")
+      worker_usage["total_tokens"] += 1
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "forged-lane-equation")
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal 200, blocked.dig("totals", "aggregate", "reserved_tokens")
+      assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts")
+    end
+  end
+
+  def test_irrelevant_cache_counter_unknown_does_not_hide_known_total_tokens
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, = real_descendants_usage_receipt(state_path)
+      set_usage_counter(receipt, "cache_read_tokens", "UNKNOWN")
+      receipt.fetch("evidence")["status"] = "UNKNOWN"
+      receipt.fetch("evidence")["unknown"] = [{
+        "status" => "UNKNOWN",
+        "code" => "usage_counter_missing",
+        "line" => 2,
+        "fields" => ["cache_read_tokens"],
+        "affects_usage" => false
+      }]
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "cache-unknown")
+
+      reconciled, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      assert_equal 112, reconciled.dig("totals", "aggregate", "consumed_tokens")
+    end
+  end
+
+  def test_restart_rejects_a_mutated_durable_usage_receipt_artifact
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
+      reconciled, reconciled_stderr, reconciled_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+      assert reconciled_status.success?, reconciled_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      artifact_path = receipt_ref.delete_prefix("file://")
+      File.write(artifact_path, JSON.generate("schema" => "tampered"))
+      output, stderr, status = run_helper(state_path, command("closeout"))
+
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+    end
+  end
+
+  def test_unreserved_observed_scope_usage_is_consumed_unattributed_and_blocks_closeout
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
+      reconciled, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+      assert status.success?, stderr
+      assert_equal 112, reconciled.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 112, reconciled.dig("totals", "aggregate", "unattributed_tokens")
+      assert_equal 15, reconciled.dig("totals", "coordinator", "unattributed_tokens")
+      assert_equal 90, reconciled.dig("totals", "lanes", "lane-a", "unattributed_tokens")
+      assert_equal 7, reconciled.dig("totals", "lanes", "lane-b", "unattributed_tokens")
+
+      closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
+      assert closeout_status.success?, closeout_stderr
+      assert_equal "not-complete", closeout.fetch("status")
+      assert_equal "NOT COMPLETE", closeout.fetch("completion")
+      assert_equal 112, closeout.fetch("unattributed_tokens")
     end
   end
 
@@ -1151,7 +1843,10 @@ class BatchTokenBudgetTest < Minitest::Test
       assert override_status.success?, override_stderr
       assert_equal "overridden", overridden.fetch("status")
 
-      replayed, replay_stderr, replay_status = initialize_budget(state_path)
+      replayed, replay_stderr, replay_status = initialize_budget(
+        state_path,
+        evaluated_at: "2026-08-12T12:00:00Z"
+      )
       assert replay_status.success?, replay_stderr
       assert_equal "replayed", replayed.fetch("status")
       assert_equal plan_digest, JSON.parse(File.read(state_path)).fetch("budget_digest")
@@ -1550,74 +2245,49 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def test_bounded_overshoot_is_measured_per_admitted_target_and_multiple_turns_fail_closed
+  def test_batch_usage_identity_drift_is_rejected_without_consuming_the_window
     with_state do |state_path|
       initialize_budget(state_path)
-      reserve(state_path, id: "overshoot", tokens: 200)
-      receipt = usage_receipt(
-        id: "usage-overshoot",
-        segments: [
-          { "id" => "overshoot-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "task-lane-a", "tokens" => 225 }
-        ]
-      )
-      receipt["overshoot"] = [{ "target_id" => "task-lane-a", "tokens" => 25, "turns" => 2 }]
-
-      denied, stderr, status = run_helper(
+      reserve(state_path, id: "identity-bound", tokens: 200)
+      first_receipt, first_ref, first_digest = real_descendants_usage_receipt(state_path)
+      first, first_stderr, first_status = run_helper(
         state_path,
-        command("reconcile", "reservation_id" => "overshoot", "usage_receipt" => receipt)
+        command(
+          "reconcile",
+          "usage_receipt" => first_receipt,
+          "usage_receipt_ref" => first_ref,
+          "usage_receipt_digest" => first_digest,
+          "completed_reservation_ids" => []
+        )
       )
+      assert first_status.success?, first_stderr
+      assert_equal 112, first.dig("totals", "aggregate", "consumed_tokens")
 
-      assert status.success?, stderr
-      assert_equal "blocked", denied.fetch("status")
-      assert_equal "overshoot-envelope-invalid", denied.fetch("reason")
-      assert_equal 0, denied.dig("totals", "aggregate", "consumed_tokens")
-      assert_equal 200, denied.dig("totals", "aggregate", "reserved_tokens")
-
-      receipt["overshoot"] = [{ "target_id" => "task-lane-a", "tokens" => 25, "turns" => 1 }]
-      reconciled, reconcile_stderr, reconcile_status = run_helper(
-        state_path,
-        command("reconcile", "reservation_id" => "overshoot", "usage_receipt" => receipt)
+      drifted_receipt = usage_window(
+        first_receipt,
+        from: "2026-08-12T12:00:00Z",
+        to: "2026-08-12T12:01:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 10, "lane-b" => 0 }
       )
-
-      assert reconcile_status.success?, reconcile_stderr
-      assert_equal "reconciled", reconciled.fetch("status")
-      assert_equal 25, reconciled.dig("receipt", "overshoot_tokens")
-      assert_equal 1, reconciled.dig("receipt", "overshoot_turn_count")
-      assert_equal 225, reconciled.dig("totals", "aggregate", "consumed_tokens")
-    end
-  end
-
-  def test_authoritative_usage_targets_must_match_the_reservation_envelope
-    with_state do |state_path|
-      initialize_budget(state_path)
-      reserve(state_path, id: "target-bound", tokens: 200, target_id: "reserved-task")
-      wrong_target = usage_receipt(
-        id: "wrong-target-usage",
-        segments: [
-          { "id" => "wrong-target-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "another-task", "tokens" => 100 }
-        ]
-      )
-
+      drifted_receipt.fetch("lanes").find { |lane| lane["id"] == "lane-a" }["root_thread_id"] = "drifted-root"
+      drifted_receipt, drifted_ref, drifted_digest = receipt_artifact(state_path, drifted_receipt, "identity-drift")
       blocked, stderr, status = run_helper(
         state_path,
-        command("reconcile", "reservation_id" => "target-bound", "usage_receipt" => wrong_target)
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:01:00Z",
+          "usage_receipt" => drifted_receipt,
+          "usage_receipt_ref" => drifted_ref,
+          "usage_receipt_digest" => drifted_digest,
+          "completed_reservation_ids" => []
+        )
       )
       assert status.success?, stderr
       assert_equal "blocked", blocked.fetch("status")
-      assert_equal "usage-target-reservation-mismatch", blocked.fetch("reason")
-      assert_equal 200, blocked.dig("totals", "aggregate", "reserved_tokens")
-
-      corrected = usage_receipt(
-        id: "correct-target-usage",
-        segments: [
-          { "id" => "correct-target-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "reserved-task", "tokens" => 100 }
-        ]
-      )
-      reconciled, = run_helper(
-        state_path,
-        command("reconcile", "reservation_id" => "target-bound", "usage_receipt" => corrected)
-      )
-      assert_equal "reconciled", reconciled.fetch("status")
+      assert_equal "usage-identity-drift", blocked.fetch("reason")
+      assert_equal 112, blocked.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 110, blocked.dig("totals", "aggregate", "reserved_tokens")
     end
   end
 
@@ -1629,19 +2299,31 @@ class BatchTokenBudgetTest < Minitest::Test
         "approval_percent" => 95,
         "hard_percent" => 100
       }
-      run_helper(state_path, command("initialize", "budget" => overshoot_budget))
-      reserve(state_path, id: "lane-hard-overshoot", tokens: 500)
-      receipt = usage_receipt(
-        id: "lane-hard-usage",
-        segments: [
-          { "id" => "lane-hard-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "task-lane-a", "tokens" => 650 }
-        ]
-      )
-      receipt["overshoot"] = [{ "target_id" => "task-lane-a", "tokens" => 150, "turns" => 1 }]
-      reconciled, = run_helper(
+      run_helper(
         state_path,
-        command("reconcile", "reservation_id" => "lane-hard-overshoot", "usage_receipt" => receipt)
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => overshoot_budget)
       )
+      reserve(state_path, id: "lane-hard-overshoot", tokens: 500)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 650, "lane-b" => 0 }
+      )
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "lane-hard")
+      reconciled, reconciled_stderr, reconciled_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => ["lane-hard-overshoot"]
+        )
+      )
+      assert reconciled_status.success?, reconciled_stderr
       assert_equal "reconciled", reconciled.fetch("status")
 
       closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
@@ -1741,64 +2423,118 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def test_stale_malformed_unknown_and_duplicate_authoritative_receipts_fail_closed
+  def test_stale_relevant_unknown_overlap_and_gap_usage_windows_fail_closed
     with_state do |state_path|
       receipt_budget = budget(state_path: state_path)
       receipt_budget["scopes"]["lanes"]["lane-a"]["limit_tokens"] = 1_000
-      run_helper(state_path, command("initialize", "budget" => receipt_budget))
-      receipt_envelope = reservation(id: "receipt-envelope", tokens: 300).fetch("telemetry").merge(
-        "self_estimate_tokens" => 200,
-        "descendant_estimate_tokens" => 100,
-        "descendant_target_ids" => %w[child-a grandchild-a]
-      )
-      reserve(
+      run_helper(
         state_path,
-        id: "receipt-gate-1",
-        tokens: 300,
-        overrides: { "telemetry" => receipt_envelope }
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => receipt_budget)
       )
-      stale_receipt = usage_receipt(id: "stale-usage")
-      stale_receipt["observed_at"] = "2026-08-12T11:00:00Z"
-      stale, = run_helper(
+      reserve(state_path, id: "receipt-gate", tokens: 300)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+
+      stale_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T10:00:00Z",
+        to: "2026-08-12T11:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 10, "lane-b" => 0 }
+      )
+      stale_receipt, stale_ref, stale_digest = receipt_artifact(state_path, stale_receipt, "stale")
+      stale, stale_stderr, stale_status = run_helper(
         state_path,
-        command("reconcile", "reservation_id" => "receipt-gate-1", "usage_receipt" => stale_receipt)
+        command(
+          "reconcile",
+          "usage_receipt" => stale_receipt,
+          "usage_receipt_ref" => stale_ref,
+          "usage_receipt_digest" => stale_digest,
+          "completed_reservation_ids" => []
+        )
       )
+      assert stale_status.success?, stale_stderr
       assert_equal "blocked", stale.fetch("status")
       assert_equal "usage-telemetry-stale", stale.fetch("reason")
       assert_equal 300, stale.dig("totals", "aggregate", "reserved_tokens")
 
-      unknown_receipt = usage_receipt(id: "unknown-usage")
-      unknown_receipt["producer"]["kind"] = "UNKNOWN"
-      unknown, = run_helper(
+      unknown_receipt = JSON.parse(JSON.generate(base_receipt))
+      unknown_receipt.dig("lanes", 0, "usage", "descendant_inclusive")["total_tokens"] = "UNKNOWN"
+      unknown_receipt.dig("lanes", 0, "reconciliation")["status"] = "UNKNOWN"
+      unknown_receipt, unknown_ref, unknown_digest = receipt_artifact(state_path, unknown_receipt, "unknown-total")
+      unknown, unknown_stderr, unknown_status = run_helper(
         state_path,
-        command("reconcile", "reservation_id" => "receipt-gate-1", "usage_receipt" => unknown_receipt)
+        command(
+          "reconcile",
+          "usage_receipt" => unknown_receipt,
+          "usage_receipt_ref" => unknown_ref,
+          "usage_receipt_digest" => unknown_digest,
+          "completed_reservation_ids" => []
+        )
       )
+      assert unknown_status.success?, unknown_stderr
       assert_equal "blocked", unknown.fetch("status")
       assert_equal "usage-telemetry-malformed-or-unknown", unknown.fetch("reason")
 
-      reconcile = command(
-        "reconcile",
-        "reservation_id" => "receipt-gate-1",
-        "usage_receipt" => usage_receipt(id: "counted-usage")
+      base_receipt, base_ref, base_digest = receipt_artifact(state_path, base_receipt, "continuity-base")
+      counted, counted_stderr, counted_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => base_receipt,
+          "usage_receipt_ref" => base_ref,
+          "usage_receipt_digest" => base_digest,
+          "completed_reservation_ids" => []
+        )
       )
-      counted, = run_helper(state_path, reconcile)
+      assert counted_status.success?, counted_stderr
       assert_equal "reconciled", counted.fetch("status")
-      assert_equal 250, counted.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 112, counted.dig("totals", "aggregate", "consumed_tokens")
 
-      reserve(
-        state_path,
-        id: "receipt-gate-2",
-        tokens: 300,
-        overrides: { "telemetry" => receipt_envelope }
+      overlap_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:59:30Z",
+        to: "2026-08-12T12:00:30Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 1, "lane-b" => 0 }
       )
-      duplicate = usage_receipt(id: "duplicate-wrapper")
-      denied, = run_helper(
+      overlap_receipt, overlap_ref, overlap_digest = receipt_artifact(state_path, overlap_receipt, "overlap")
+      overlap, overlap_stderr, overlap_status = run_helper(
         state_path,
-        command("reconcile", "reservation_id" => "receipt-gate-2", "usage_receipt" => duplicate)
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:01:00Z",
+          "usage_receipt" => overlap_receipt,
+          "usage_receipt_ref" => overlap_ref,
+          "usage_receipt_digest" => overlap_digest,
+          "completed_reservation_ids" => []
+        )
       )
-      assert_equal "blocked", denied.fetch("status")
-      assert_equal "usage-segment-already-accounted", denied.fetch("reason")
-      assert_equal 250, denied.dig("totals", "aggregate", "consumed_tokens")
+      assert overlap_status.success?, overlap_stderr
+      assert_equal "usage-window-overlap", overlap.fetch("reason")
+
+      gap_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T12:01:00Z",
+        to: "2026-08-12T12:02:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 1, "lane-b" => 0 }
+      )
+      gap_receipt, gap_ref, gap_digest = receipt_artifact(state_path, gap_receipt, "gap")
+      gap, gap_stderr, gap_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:02:00Z",
+          "usage_receipt" => gap_receipt,
+          "usage_receipt_ref" => gap_ref,
+          "usage_receipt_digest" => gap_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+      assert gap_status.success?, gap_stderr
+      assert_equal "usage-window-gap", gap.fetch("reason")
+      assert_equal 112, gap.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal 210, gap.dig("totals", "aggregate", "reserved_tokens")
     end
   end
 
@@ -1908,46 +2644,34 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def test_usage_producer_requires_supported_kind_exact_fields_and_durable_non_self_attested_reference
-    Dir.mktmpdir("batch-token-budget-producer-evidence") do |directory|
-      variants = {
-        "self-attested-uri" => proc { |producer| producer["evidence_ref"] = "self-attested://worker/usage" },
-        "worker-self-attested-uri" => proc do |producer|
-          producer["evidence_ref"] = "worker-self-attested://worker/usage"
-        end,
-        "plain-reference" => proc { |producer| producer["evidence_ref"] = "worker says 100 tokens" },
-        "unknown-reference" => proc { |producer| producer["evidence_ref"] = "UNKNOWN" },
-        "unsupported-kind" => proc { |producer| producer["kind"] = "worker-reported" },
-        "extra-field" => proc { |producer| producer["self_attested"] = false }
-      }
-      variants.each do |name, mutate|
-        state_path = File.join(directory, "#{name}.json")
+  def test_batch_usage_receipt_requires_a_durable_non_self_attested_matching_reference
+    variants = {
+      "self-attested-uri" => ["self-attested://worker/usage", "usage-receipt-reference-invalid"],
+      "worker-self-attested-uri" => ["worker-self-attested://worker/usage", "usage-receipt-reference-invalid"],
+      "plain-reference" => ["worker says 100 tokens", "usage-receipt-reference-invalid"],
+      "unknown-reference" => %w[UNKNOWN usage-receipt-reference-invalid],
+      "missing-file" => ["file:///definitely/missing/batch-usage-receipt.json", "usage-receipt-artifact-mismatch"]
+    }
+    variants.each do |name, (invalid_ref, reason)|
+      with_state do |state_path|
         initialize_budget(state_path)
         reserve(state_path, id: "#{name}-reservation", tokens: 100, target_id: "#{name}-target")
-        receipt = usage_receipt(
-          id: "#{name}-usage",
-          segments: [{
-            "id" => "#{name}-self",
-            "kind" => "self",
-            "scope_id" => "lane-a",
-            "target_id" => "#{name}-target",
-            "tokens" => 100
-          }]
-        )
-        mutate.call(receipt.fetch("producer"))
+        receipt, _receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
 
         blocked, stderr, status = run_helper(
           state_path,
           command(
             "reconcile",
-            "reservation_id" => "#{name}-reservation",
-            "usage_receipt" => receipt
+            "usage_receipt" => receipt,
+            "usage_receipt_ref" => invalid_ref,
+            "usage_receipt_digest" => receipt_digest,
+            "completed_reservation_ids" => []
           )
         )
 
         assert status.success?, stderr
         assert_equal "blocked", blocked.fetch("status"), name
-        assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason"), name
+        assert_equal reason, blocked.fetch("reason"), name
         assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens"), name
         state = JSON.parse(File.read(state_path))
         assert_equal "active", state.dig("reservations", "#{name}-reservation", "status"), name
@@ -1956,91 +2680,55 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def test_unknown_segment_ownership_fails_closed_without_releasing_the_reservation
+  def test_caller_digest_and_unverified_https_reference_cannot_authorize_fabricated_usage
     with_state do |state_path|
       initialize_budget(state_path)
-      unattributed_envelope = reservation(id: "ignored", tokens: 200).fetch("telemetry").merge(
-        "self_estimate_tokens" => 150,
-        "descendant_estimate_tokens" => 50,
-        "descendant_target_ids" => ["unknown-child"]
+      reserve(state_path, id: "fabricated-https", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      fabricated = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 500, "lane-b" => 0 }
       )
-      reserve(state_path, id: "unattributed", tokens: 200, overrides: { "telemetry" => unattributed_envelope })
-      receipt = usage_receipt(
-        id: "usage-unattributed",
-        segments: [
-          { "id" => "known-self", "kind" => "self", "scope_id" => "lane-a", "target_id" => "task-lane-a", "tokens" => 100 },
-          { "id" => "unknown-owner", "kind" => "descendant", "scope_id" => "UNKNOWN", "target_id" => "unknown-child", "tokens" => 50 }
-        ]
-      )
-      blocked, stderr, status = run_helper_raw(
-        state_path,
-        JSON.generate(command("reconcile", "reservation_id" => "unattributed", "usage_receipt" => receipt))
-      )
-
-      assert status.success?, stderr
-      assert_equal "blocked", blocked.fetch("status")
-      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
-      assert_equal %w[read-only-discovery checkpoint], blocked.fetch("allowed_actions")
-      assert_equal 0, blocked.dig("totals", "aggregate", "consumed_tokens")
-      assert_equal 200, blocked.dig("totals", "aggregate", "reserved_tokens")
-      persisted = JSON.parse(File.read(state_path))
-      assert_equal "active", persisted.dig("reservations", "unattributed", "status")
-      assert_empty persisted.fetch("usage_receipts")
-      assert_empty persisted.fetch("usage_segments")
-    end
-  end
-
-  def test_unknown_scope_usage_still_must_match_the_admitted_target_envelope
-    with_state do |state_path|
-      initialize_budget(state_path)
-      reserve(state_path, id: "unknown-target-envelope", tokens: 200)
-      receipt = usage_receipt(
-        id: "usage-unknown-target-mismatch",
-        segments: [
-          {
-            "id" => "unknown-target-segment",
-            "kind" => "descendant",
-            "scope_id" => "UNKNOWN",
-            "target_id" => "not-admitted",
-            "tokens" => 50
-          }
-        ]
-      )
+      state_before = File.read(state_path)
 
       blocked, stderr, status = run_helper(
         state_path,
-        command("reconcile", "reservation_id" => "unknown-target-envelope", "usage_receipt" => receipt)
+        command(
+          "reconcile",
+          "usage_receipt" => fabricated,
+          "usage_receipt_ref" => "https://example.invalid/fabricated.json",
+          "usage_receipt_digest" => "sha256:#{object_digest(fabricated)}",
+          "completed_reservation_ids" => ["fabricated-https"]
+        )
       )
 
       assert status.success?, stderr
       assert_equal "blocked", blocked.fetch("status")
-      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
-      assert_equal 0, blocked.dig("totals", "aggregate", "consumed_tokens")
-      assert_equal 200, blocked.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal "usage-receipt-reference-invalid", blocked.fetch("reason")
+      assert_equal state_before, File.read(state_path)
     end
   end
 
-  def test_authoritative_usage_receipt_rejects_unlisted_fields_without_mutation
+  def test_batch_usage_receipt_rejects_unlisted_fields_without_mutation
     with_state do |state_path|
       initialize_budget(state_path)
       reserve(state_path, id: "extra-receipt-field", tokens: 200)
-      receipt = usage_receipt(
-        id: "extra-field-usage",
-        segments: [
-          {
-            "id" => "extra-field-self",
-            "kind" => "self",
-            "scope_id" => "lane-a",
-            "target_id" => "task-lane-a",
-            "tokens" => 100
-          }
-        ]
-      )
+      receipt, = real_descendants_usage_receipt(state_path)
       receipt["self_attested_total"] = 100
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "extra-field")
 
-      blocked, stderr, status = run_helper_raw(
+      blocked, stderr, status = run_helper(
         state_path,
-        JSON.generate(command("reconcile", "reservation_id" => "extra-receipt-field", "usage_receipt" => receipt))
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
       )
 
       assert status.success?, stderr
@@ -2130,37 +2818,42 @@ class BatchTokenBudgetTest < Minitest::Test
   end
 
   def test_restart_rejects_deleted_reservations_and_mismatched_accounting_ledgers
-    Dir.mktmpdir("batch-token-budget-ledger-integrity") do |directory|
-      corruptions = {
-        "deleted-reservation" => proc do |state|
-          state.fetch("reservations").delete("ledger-reservation")
-        end,
-        "usage-ledger-total" => proc do |state|
-          state.dig("usage_receipts", "ledger-usage")["tokens_counted"] += 1
-        end,
-        "reservation-reconciliation" => proc do |state|
-          state.dig("reservations", "ledger-reservation", "reconciliation_receipt")["actual_tokens"] += 1
-        end
-      }
-      corruptions.each do |name, corrupt|
-        state_path = File.join(directory, "#{name}.json")
+    corruptions = {
+      "deleted-reservation" => proc do |state|
+        state.fetch("reservations").delete("ledger-reservation")
+      end,
+      "usage-ledger-total" => proc do |state|
+        state.fetch("usage_receipts").values.first.fetch("scope_tokens")["lane-a"] += 1
+      end,
+      "usage-ledger-turn-total" => proc do |state|
+        state.fetch("usage_receipts").values.first.fetch("scope_turns")["lane-a"] += 1
+      end,
+      "reservation-reconciliation" => proc do |state|
+        state.dig("reservations", "ledger-reservation", "reconciliation_receipt")["actual_tokens"] += 1
+      end
+    }
+    corruptions.each do |name, corrupt|
+      with_state do |state_path|
         initialize_budget(state_path)
         reserve(state_path, id: "ledger-reservation", tokens: 200)
-        receipt = usage_receipt(
-          id: "ledger-usage",
-          segments: [
-            {
-              "id" => "ledger-self",
-              "kind" => "self",
-              "scope_id" => "lane-a",
-              "target_id" => "task-lane-a",
-              "tokens" => 120
-            }
-          ]
+        base_receipt, = real_descendants_usage_receipt(state_path)
+        receipt = usage_window(
+          base_receipt,
+          from: "2026-08-12T11:00:00Z",
+          to: "2026-08-12T12:00:00Z",
+          coordinator_tokens: 0,
+          lane_tokens: { "lane-a" => 120, "lane-b" => 0 }
         )
+        receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "ledger")
         reconciled, stderr, status = run_helper(
           state_path,
-          command("reconcile", "reservation_id" => "ledger-reservation", "usage_receipt" => receipt)
+          command(
+            "reconcile",
+            "usage_receipt" => receipt,
+            "usage_receipt_ref" => receipt_ref,
+            "usage_receipt_digest" => receipt_digest,
+            "completed_reservation_ids" => ["ledger-reservation"]
+          )
         )
         assert status.success?, stderr
         assert_equal "reconciled", reconciled.fetch("status")
@@ -2174,6 +2867,28 @@ class BatchTokenBudgetTest < Minitest::Test
         assert_nil output, name
         assert_equal "corrupt-persisted-state", JSON.parse(corrupt_stderr).fetch("reason"), name
       end
+    end
+  end
+
+  def test_restart_rejects_a_widened_reservation_overshoot_envelope
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "widened-envelope", tokens: 100)
+      state = JSON.parse(File.read(state_path))
+      state.dig("reservations", "widened-envelope", "receipt", "overshoot_envelope")["max_in_flight_turns"] = 2
+      receipt = state.fetch("receipts").find do |candidate|
+        candidate["type"] == "batch-token-budget-reservation-receipt" &&
+          candidate["reservation_id"] == "widened-envelope"
+      end
+      receipt.fetch("overshoot_envelope")["max_in_flight_turns"] = 2
+      rehash_control_tail(state)
+      File.write(state_path, JSON.generate(state))
+
+      output, stderr, status = run_helper(state_path, command("closeout"))
+
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
     end
   end
 
@@ -2374,7 +3089,10 @@ class BatchTokenBudgetTest < Minitest::Test
     with_state do |state_path|
       cross_budget = budget(state_path: state_path)
       cross_budget["delegation"]["approval_threshold_tokens"] = 400
-      run_helper(state_path, command("initialize", "budget" => cross_budget))
+      run_helper(
+        state_path,
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => cross_budget)
+      )
       source = task_identity(task_id: "charge-source")
       source["batch_id"] = "source-batch"
       target = task_identity(task_id: "task-lane-a")
@@ -2385,29 +3103,31 @@ class BatchTokenBudgetTest < Minitest::Test
         overrides: { "source" => source, "target" => target }
       )
       run_helper(state_path, command("reserve", "reservation" => cross_task))
-      usage = usage_receipt(
-        id: "charge-usage",
-        segments: [{
-          "id" => "charge-self",
-          "kind" => "self",
-          "scope_id" => "lane-a",
-          "target_id" => "task-lane-a",
-          "tokens" => 100
-        }]
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      usage = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 100, "lane-b" => 0 }
       )
+      usage, usage_ref, usage_digest = receipt_artifact(state_path, usage, "restart-charge-back")
+      charge_back = {
+        "type" => "batch-token-charge-back",
+        "version" => 1,
+        "id" => "charge-cause",
+        "source" => source,
+        "target" => target
+      }
       reconciled, stderr, status = run_helper(
         state_path,
         command(
           "reconcile",
-          "reservation_id" => "charge-reservation",
           "usage_receipt" => usage,
-          "charge_back" => {
-            "type" => "batch-token-charge-back",
-            "version" => 1,
-            "id" => "charge-cause",
-            "source" => source,
-            "target" => target
-          }
+          "usage_receipt_ref" => usage_ref,
+          "usage_receipt_digest" => usage_digest,
+          "completed_reservation_ids" => ["charge-reservation"],
+          "charge_backs" => [{ "reservation_id" => "charge-reservation", "charge_back" => charge_back }]
         )
       )
       assert status.success?, stderr

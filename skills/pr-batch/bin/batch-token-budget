@@ -118,6 +118,24 @@ module BatchTokenBudget
       !%w[self-attested worker-self-attested].include?(value.split(":", 2).first.downcase)
   end
 
+  def verifiable_usage_receipt_reference?(value)
+    durable_reference?(value) && value.start_with?("file://")
+  end
+
+  def usage_receipt_artifact_matches?(reference, receipt_digest, inline_receipt = nil)
+    return false unless verifiable_usage_receipt_reference?(reference)
+
+    path = reference.delete_prefix("file://")
+    return false unless Pathname.new(path).absolute?
+
+    artifact = parse_json_strict(File.read(path, encoding: "UTF-8"))
+    return false unless "sha256:#{digest(artifact)}" == receipt_digest
+
+    inline_receipt.nil? || canonicalize(artifact) == canonicalize(inline_receipt)
+  rescue Errno::ENOENT, Errno::EACCES, Errno::EISDIR, JSON::ParserError, ArgumentError
+    false
+  end
+
   def timestamp?(value)
     return false unless nonempty_string?(value)
 
@@ -266,8 +284,10 @@ module BatchTokenBudget
         end
       },
       "reservations" => {},
+      "usage_binding" => nil,
+      "usage_initial_cutoff" => evaluated_at,
+      "usage_cursor" => nil,
       "usage_receipts" => {},
-      "usage_segments" => {},
       "approvals" => {},
       "overrides" => {},
       "charge_backs" => {},
@@ -285,33 +305,10 @@ module BatchTokenBudget
       candidate["batch_id"] == state["batch_id"] && state.fetch("receipts").include?(candidate)
   end
 
-  def valid_usage_ledgers?(state, reconciled_receipt_ids)
-    referenced_segment_ids = []
-    state.fetch("usage_receipts").each do |receipt_id, usage|
-      return false unless nonempty_string?(receipt_id) && usage.is_a?(Hash) &&
-                          usage.keys.sort == %w[cutoff digest segment_ids tokens_counted] &&
-                          nonempty_string?(usage["digest"]) && nonempty_string?(usage["cutoff"]) &&
-                          usage["segment_ids"].is_a?(Array) && !usage["segment_ids"].empty? &&
-                          usage["segment_ids"].uniq.length == usage["segment_ids"].length &&
-                          nonnegative_integer?(usage["tokens_counted"])
-      return false unless reconciled_receipt_ids.count(receipt_id) == 1
-
-      segment_records = usage["segment_ids"].map { |segment_id| state.dig("usage_segments", segment_id) }
-      return false if segment_records.any?(&:nil?)
-      return false unless segment_records.all? do |segment|
-        segment.is_a?(Hash) && segment.keys.sort == %w[digest receipt_id tokens] &&
-        nonempty_string?(segment["digest"]) && segment["receipt_id"] == receipt_id &&
-        positive_integer?(segment["tokens"])
-      end
-      return false unless segment_records.sum { |segment| segment.fetch("tokens") } == usage["tokens_counted"]
-
-      referenced_segment_ids.concat(usage["segment_ids"])
-    end
-    referenced_segment_ids.uniq.length == referenced_segment_ids.length &&
-      referenced_segment_ids.sort == state.fetch("usage_segments").keys.sort
-  end
-
   def valid_accounting_ledgers?(state)
+    return valid_window_accounting_ledgers?(state) if state["usage_binding"]
+    return false unless state.fetch("usage_receipts").empty? && state["usage_cursor"].nil?
+
     expected = Hash.new do |records, scope_id|
       records[scope_id] = {
         "allocated_tokens" => 0,
@@ -321,7 +318,6 @@ module BatchTokenBudget
         "unattributed_tokens" => 0
       }
     end
-    reconciled_receipt_ids = []
     state.fetch("reservations").each do |reservation_id, record|
       return false unless nonempty_string?(reservation_id) && record.is_a?(Hash)
 
@@ -333,11 +329,6 @@ module BatchTokenBudget
                                %w[receipt request request_digest reserved_tokens status]
                              when "released"
                                %w[receipt release_digest release_id release_receipt request request_digest reserved_tokens status]
-                             when "reconciled"
-                               %w[
-                                 charge_back_id receipt reconciliation_receipt request request_digest reserved_tokens status
-                                 usage_receipt_id
-                               ]
                              else
                                []
                              end
@@ -362,34 +353,185 @@ module BatchTokenBudget
                             release["reservation_id"] == reservation_id && release["tokens"] == tokens
 
         [scope_id, "aggregate"].each { |id| expected[id]["released_tokens"] += tokens }
-      when "reconciled"
-        reconciliation = record["reconciliation_receipt"]
-        usage_receipt_id = record["usage_receipt_id"]
-        usage = state.dig("usage_receipts", usage_receipt_id)
-        return false unless nonempty_string?(usage_receipt_id) && usage &&
-                            ledger_receipt?(state, reconciliation, "batch-token-budget-reconciliation-receipt") &&
-                            reconciliation["reservation_id"] == reservation_id &&
-                            reconciliation["usage_receipt_id"] == usage_receipt_id &&
-                            reconciliation["predicted_tokens"] == tokens &&
-                            reconciliation["actual_tokens"] == usage["tokens_counted"] &&
-                            reconciliation["self_tokens"].is_a?(Integer) &&
-                            reconciliation["descendant_tokens"].is_a?(Integer) &&
-                            reconciliation["self_tokens"] + reconciliation["descendant_tokens"] ==
-                            reconciliation["actual_tokens"] &&
-                            reconciliation["unattributed_tokens"].zero? &&
-                            reconciliation["released_tokens"] == [tokens - reconciliation["actual_tokens"], 0].max &&
-                            reconciliation["overshoot_tokens"] == [reconciliation["actual_tokens"] - tokens, 0].max
+      else
+        return false
+      end
+    end
 
-        reconciled_receipt_ids << usage_receipt_id
+    records = { "aggregate" => state.dig("scopes", "aggregate"),
+                "coordinator" => state.dig("scopes", "coordinator") }
+    state.dig("scopes", "lanes").each { |scope_id, record| records[scope_id] = record }
+    records.all? do |scope_id, record|
+      SCOPE_COUNTERS.all? { |counter| record[counter] == expected[scope_id][counter] }
+    end
+  end
+
+  def valid_usage_binding?(state)
+    binding = state["usage_binding"]
+    return false unless binding.is_a?(Hash) && binding.keys.sort == %w[batch_id coordinator lanes]
+    return false unless binding["batch_id"] == state["batch_id"]
+
+    coordinator = binding["coordinator"]
+    lanes = binding["lanes"]
+    coordinator.is_a?(Hash) && coordinator.keys.sort == %w[id root_thread_id] &&
+      nonempty_string?(coordinator["id"]) && nonempty_string?(coordinator["root_thread_id"]) &&
+      lanes.is_a?(Hash) && lanes.keys.sort == state.dig("scopes", "lanes").keys.sort &&
+      lanes.all? { |lane_id, root_thread_id| nonempty_string?(lane_id) && nonempty_string?(root_thread_id) }
+  end
+
+  def valid_window_usage_ledgers?(state)
+    return false unless valid_usage_binding?(state)
+    return false unless timestamp?(state["usage_cursor"])
+
+    entries = state.fetch("usage_receipts").values.sort_by { |entry| entry["sequence"] || 0 }
+    return false if entries.empty?
+
+    prior_to = state.fetch("usage_initial_cutoff")
+    entries.each_with_index do |entry, index|
+      return false unless entry.is_a?(Hash) && entry.keys.sort == %w[
+        command_digest completed_reservation_ids from_inclusive receipt_digest reference reservation_tokens
+        scope_tokens scope_turns sequence to_exclusive unattributed_scope_tokens
+      ]
+      return false unless entry["sequence"] == index + 1 &&
+                          entry["receipt_digest"].match?(/\Asha256:[0-9a-f]{64}\z/) &&
+                          state.dig("usage_receipts", entry["receipt_digest"]) == entry &&
+                          entry["command_digest"].match?(/\A[0-9a-f]{64}\z/) &&
+                          verifiable_usage_receipt_reference?(entry["reference"]) &&
+                          usage_receipt_artifact_matches?(entry["reference"], entry["receipt_digest"]) &&
+                          timestamp?(entry["from_inclusive"]) && timestamp?(entry["to_exclusive"]) &&
+                          DateTime.iso8601(entry["to_exclusive"]) > DateTime.iso8601(entry["from_inclusive"])
+      return false unless DateTime.iso8601(entry["from_inclusive"]) == DateTime.iso8601(prior_to)
+
+      scope_ids = ["coordinator"] + state.dig("scopes", "lanes").keys
+      return false unless entry["scope_tokens"].is_a?(Hash) && entry["scope_tokens"].keys.sort == scope_ids.sort &&
+                          entry["scope_tokens"].values.all? { |tokens| nonnegative_integer?(tokens) }
+      return false unless entry["scope_turns"].is_a?(Hash) && entry["scope_turns"].keys.sort == scope_ids.sort &&
+                          entry["scope_turns"].values.all? { |turns| nonnegative_integer?(turns) }
+      return false unless entry["unattributed_scope_tokens"].is_a?(Hash) &&
+                          (entry["unattributed_scope_tokens"].keys - scope_ids).empty? &&
+                          entry["unattributed_scope_tokens"].values.all? { |tokens| nonnegative_integer?(tokens) }
+      return false unless entry["reservation_tokens"].is_a?(Hash) &&
+                          entry["reservation_tokens"].values.all? { |tokens| nonnegative_integer?(tokens) }
+      return false unless entry["completed_reservation_ids"].is_a?(Array) &&
+                          entry["completed_reservation_ids"].uniq.length == entry["completed_reservation_ids"].length &&
+                          entry["completed_reservation_ids"].all? { |reservation_id| nonempty_string?(reservation_id) }
+
+      attributed_by_scope = Hash.new(0)
+      entry["reservation_tokens"].each do |reservation_id, tokens|
+        reservation = state.dig("reservations", reservation_id)
+        return false unless reservation
+
+        attributed_by_scope[reservation.dig("request", "scope_id")] += tokens
+      end
+      return false unless scope_ids.all? do |scope_id|
+        expected_tokens = attributed_by_scope[scope_id] + entry.dig("unattributed_scope_tokens", scope_id).to_i
+        expected_tokens == entry.dig("scope_tokens", scope_id)
+      end
+
+      prior_to = entry["to_exclusive"]
+    end
+    DateTime.iso8601(state["usage_cursor"]) == DateTime.iso8601(prior_to)
+  rescue Date::Error, NoMethodError
+    false
+  end
+
+  def valid_window_accounting_ledgers?(state)
+    return false unless valid_window_usage_ledgers?(state)
+
+    expected = Hash.new do |records, scope_id|
+      records[scope_id] = SCOPE_COUNTERS.to_h { |counter| [counter, 0] }
+    end
+    state.fetch("usage_receipts").each_value do |entry|
+      entry.fetch("scope_tokens").each do |scope_id, tokens|
+        expected[scope_id]["consumed_tokens"] += tokens
+        expected["aggregate"]["consumed_tokens"] += tokens
+      end
+      entry.fetch("unattributed_scope_tokens").each do |scope_id, tokens|
+        expected[scope_id]["unattributed_tokens"] += tokens
+        expected["aggregate"]["unattributed_tokens"] += tokens
+      end
+    end
+
+    state.fetch("reservations").each do |reservation_id, record|
+      request = record.is_a?(Hash) && record["request"]
+      scope_id = request.is_a?(Hash) && request["scope_id"]
+      tokens = record["reserved_tokens"]
+      return false unless nonempty_string?(reservation_id) && request.is_a?(Hash) && request["id"] == reservation_id &&
+                          record["request_digest"] == digest(request) && scope_id != "aggregate" &&
+                          scope(state, scope_id) && positive_integer?(tokens) &&
+                          ledger_receipt?(state, record["receipt"], "batch-token-budget-reservation-receipt")
+
+      [scope_id, "aggregate"].each { |id| expected[id]["allocated_tokens"] += tokens }
+      observed = state.fetch("usage_receipts").values.sum do |entry|
+        entry.dig("reservation_tokens", reservation_id).to_i
+      end
+      case record["status"]
+      when "active"
+        if observed.zero?
+          return false unless record.keys.sort == %w[receipt request request_digest reserved_tokens status]
+
+          remaining = tokens
+        else
+          return false unless record.keys.sort == %w[
+            observed_tokens receipt reconciliation_receipts remaining_tokens request request_digest reserved_tokens
+            status usage_receipt_digests
+          ]
+          return false unless record["observed_tokens"] == observed &&
+                              record["remaining_tokens"] == [tokens - observed, 0].max &&
+                              record["usage_receipt_digests"].is_a?(Array) &&
+                              record["reconciliation_receipts"].is_a?(Array)
+
+          remaining = record["remaining_tokens"]
+        end
+        [scope_id, "aggregate"].each { |id| expected[id]["reserved_tokens"] += remaining }
+      when "released"
+        if observed.zero?
+          return false unless record.keys.sort == %w[
+            receipt release_digest release_id release_receipt request request_digest reserved_tokens status
+          ] && ledger_receipt?(state, record["release_receipt"], "batch-token-budget-release-receipt") &&
+                              record.dig("release_receipt", "tokens") == tokens
+
+          released_tokens = tokens
+        else
+          return false unless record.keys.sort == %w[
+            observed_tokens overshoot_tokens receipt reconciliation_receipt reconciliation_receipts release_digest
+            release_id release_receipt released_tokens request request_digest reserved_tokens status
+            usage_receipt_digests
+          ] && record["observed_tokens"] == observed &&
+                              record["released_tokens"] == [tokens - observed, 0].max &&
+                              record["overshoot_tokens"] == [observed - tokens, 0].max &&
+                              record["reconciliation_receipt"] == record.fetch("reconciliation_receipts").last &&
+                              ledger_receipt?(state, record["release_receipt"], "batch-token-budget-release-receipt") &&
+                              record.dig("release_receipt", "tokens") == record["released_tokens"]
+
+          released_tokens = record["released_tokens"]
+        end
+        [scope_id, "aggregate"].each { |id| expected[id]["released_tokens"] += released_tokens }
+      when "reconciled"
+        return false unless record.keys.sort == %w[
+          charge_back_id observed_tokens overshoot_tokens receipt reconciliation_receipt reconciliation_receipts
+          released_tokens request request_digest reserved_tokens status usage_receipt_digests
+        ]
+        return false unless record["observed_tokens"] == observed &&
+                            record["released_tokens"] == [tokens - observed, 0].max &&
+                            record["overshoot_tokens"] == [observed - tokens, 0].max &&
+                            record["usage_receipt_digests"].is_a?(Array) &&
+                            record["reconciliation_receipts"].is_a?(Array) &&
+                            record["reconciliation_receipts"].last == record["reconciliation_receipt"] &&
+                            record["reconciliation_receipts"].all? do |receipt|
+                              valid_ledger_receipt = ledger_receipt?(
+                                state, receipt, "batch-token-budget-reconciliation-receipt"
+                              )
+                              valid_ledger_receipt && receipt["reservation_id"] == reservation_id
+                            end
+
         [scope_id, "aggregate"].each do |id|
-          expected[id]["consumed_tokens"] += reconciliation["actual_tokens"]
-          expected[id]["released_tokens"] += reconciliation["released_tokens"]
+          expected[id]["released_tokens"] += record["released_tokens"]
         end
       else
         return false
       end
     end
-    return false unless valid_usage_ledgers?(state, reconciled_receipt_ids)
 
     records = { "aggregate" => state.dig("scopes", "aggregate"),
                 "coordinator" => state.dig("scopes", "coordinator") }
@@ -441,7 +583,8 @@ module BatchTokenBudget
     return false unless initialization_receipts.first["budget_digest"] == digest(trusted_budget) &&
                         initialization_receipts.first["trusted_plan_id"] == trusted_budget["batch_id"] &&
                         initialization_receipts.first["trusted_plan_digest"] == trusted_plan_digest(trusted_budget) &&
-                        initialization_receipts.first["trusted_plan_path"] == trusted_plan_binding["path"]
+                        initialization_receipts.first["trusted_plan_path"] == trusted_plan_binding["path"] &&
+                        initialization_receipts.first["usage_initial_cutoff"] == state["usage_initial_cutoff"]
 
     receipts.each_with_index.all? do |receipt, index|
       receipt.is_a?(Hash) && RECEIPT_TYPES.include?(receipt["type"]) && receipt["version"] == 1 &&
@@ -653,8 +796,12 @@ module BatchTokenBudget
                     when "approve" then %w[approval]
                     when "override" then %w[override]
                     when "reconcile"
-                      fields = %w[reservation_id usage_receipt]
-                      fields << "charge_back" if command.key?("charge_back")
+                      return false unless command.dig("usage_receipt", "schema") == "batch-usage-receipt-v1"
+
+                      fields = %w[
+                        completed_reservation_ids usage_receipt usage_receipt_digest usage_receipt_ref
+                      ]
+                      fields << "charge_backs" if command.key?("charge_backs")
                       fields
                     when "release" then %w[release]
                     when "checkpoint" then %w[checkpoint]
@@ -736,7 +883,8 @@ module BatchTokenBudget
             state.keys.sort == %w[
               admission_decisions approvals base_budget batch_id budget budget_digest charge_backs checkpoint_resolutions
               checkpoints contract control_events effective_budget_digest last_evaluated_at overrides receipts
-              reservation_decisions reservations revision scopes trusted_plan_binding usage_receipts usage_segments version
+              reservation_decisions reservations revision scopes trusted_plan_binding usage_binding usage_cursor
+              usage_initial_cutoff usage_receipts version
             ] &&
             valid_budget?(trusted_budget) && state["base_budget"] == canonicalize(trusted_budget) &&
             state["trusted_plan_binding"] == canonicalize(trusted_plan_binding) &&
@@ -747,11 +895,14 @@ module BatchTokenBudget
             state["effective_budget_digest"] == digest(state["budget"]) &&
             nonnegative_integer?(state["revision"]) &&
             timestamp?(state["last_evaluated_at"]) &&
+            timestamp?(state["usage_initial_cutoff"]) &&
             state["scopes"].is_a?(Hash) && state["reservations"].is_a?(Hash) &&
-            state["usage_receipts"].is_a?(Hash) && state["usage_segments"].is_a?(Hash) &&
+            state["usage_receipts"].is_a?(Hash) &&
             state["approvals"].is_a?(Hash) && state["overrides"].is_a?(Hash) &&
             state["charge_backs"].is_a?(Hash) && state["admission_decisions"].is_a?(Hash) &&
             state["reservation_decisions"].is_a?(Hash) &&
+            (state["usage_binding"].nil? || state["usage_binding"].is_a?(Hash)) &&
+            (state["usage_cursor"].nil? || timestamp?(state["usage_cursor"])) &&
             state["checkpoint_resolutions"].is_a?(Hash) &&
             state["checkpoints"].is_a?(Array) && state["receipts"].is_a?(Array)
     return false unless valid
@@ -772,13 +923,15 @@ module BatchTokenBudget
 
     aggregate = state.dig("scopes", "aggregate")
     descendants = [state.dig("scopes", "coordinator")] + state.dig("scopes", "lanes").values
-    return false unless descendants.all? { |record| record["unattributed_tokens"].zero? }
     return false unless %w[allocated_tokens reserved_tokens released_tokens].all? do |counter|
       aggregate[counter] == descendants.sum { |record| record[counter] }
     end
 
     return false unless aggregate["consumed_tokens"] == descendants.sum { |record| record["consumed_tokens"] } +
-                                                        aggregate["unattributed_tokens"]
+                                                        (state["usage_binding"] ? 0 : aggregate["unattributed_tokens"])
+    return false if state["usage_binding"] &&
+                    aggregate["unattributed_tokens"] != descendants.sum { |record| record["unattributed_tokens"] }
+    return false if !state["usage_binding"] && descendants.any? { |record| !record["unattributed_tokens"].zero? }
 
     valid_accounting_ledgers?(state) && valid_reservation_decision_ledgers?(state) &&
       valid_receipt_ledger?(state, trusted_budget, trusted_plan_binding) &&
@@ -1094,7 +1247,8 @@ module BatchTokenBudget
       "budget_digest" => state.fetch("budget_digest"),
       "trusted_plan_path" => trusted_plan_binding.fetch("path"),
       "trusted_plan_id" => trusted_budget.fetch("batch_id"),
-      "trusted_plan_digest" => trusted_plan_digest(trusted_budget)
+      "trusted_plan_digest" => trusted_plan_digest(trusted_budget),
+      "usage_initial_cutoff" => state.fetch("usage_initial_cutoff")
     )
     state["receipts"] << init_receipt
     [state, {
@@ -1172,18 +1326,8 @@ module BatchTokenBudget
       end
     end
 
-    same_target = original_state.fetch("reservations").values.find do |record|
-      record["status"] == "active" && record.dig("request", "target") == reservation["target"]
-    end
-    if reservation["target_state"] == "active" || same_target
-      return persist_reservation_decision(
-        original_state,
-        reservation,
-        command.fetch("evaluated_at"),
-        "coalesced",
-        "reason" => "target-already-active",
-        "coalesced_reservation_id" => same_target&.dig("request", "id")
-      )
+    active_scope_reservation = original_state.fetch("reservations").values.find do |record|
+      record["status"] == "active" && record.dig("request", "scope_id") == reservation["scope_id"]
     end
     if reservation["target_state"] == "paused" && reservation["admission_kind"] != "resume"
       return persist_reservation_decision(
@@ -1193,6 +1337,17 @@ module BatchTokenBudget
         "blocked",
         "reason" => "paused-target-requires-resume-approval",
         "allowed_actions" => %w[read-only-discovery checkpoint approve]
+      )
+    end
+    if reservation["target_state"] == "active" || active_scope_reservation
+      same_target = active_scope_reservation&.dig("request", "target") == reservation["target"]
+      return persist_reservation_decision(
+        original_state,
+        reservation,
+        command.fetch("evaluated_at"),
+        "coalesced",
+        "reason" => active_scope_reservation && !same_target ? "scope-already-active" : "target-already-active",
+        "coalesced_reservation_id" => active_scope_reservation&.dig("request", "id")
       )
     end
     approval_id = reservation["approval_id"]
@@ -1616,13 +1771,16 @@ module BatchTokenBudget
       decision["status"] == "approval-required" && decision["resolved_by_reservation_id"].nil?
     end
     reconciliations = state.fetch("reservations").values.filter_map { |record| record["reconciliation_receipt"] }
+    overshoot_boundaries = state.fetch("reservations").values.flat_map do |record|
+      record["reconciliation_receipts"] || [record["reconciliation_receipt"]].compact
+    end
     overshoot_by_scope = reconciliations.each_with_object(Hash.new(0)) do |reconciliation, totals_by_scope|
       reservation = state.dig("reservations", reconciliation.fetch("reservation_id"))
       totals_by_scope[reservation.dig("request", "scope_id")] += reconciliation.fetch("overshoot_tokens")
     end
     overshoot = {
       "tokens" => reconciliations.sum { |reconciliation| reconciliation.fetch("overshoot_tokens") },
-      "turn_count" => reconciliations.sum { |reconciliation| reconciliation.fetch("overshoot_turn_count") },
+      "turn_count" => overshoot_boundaries.sum { |reconciliation| reconciliation.fetch("overshoot_turn_count") },
       "by_scope" => overshoot_by_scope.sort.to_h
     }
     exhausted_scope = ([state.dig("scopes", "aggregate"), state.dig("scopes", "coordinator")] +
@@ -1721,7 +1879,7 @@ module BatchTokenBudget
     state = deep_copy(original_state)
     selected_scope = scope_totals(state, reservation.dig("request", "scope_id"))
     aggregate = state.dig("scopes", "aggregate")
-    tokens = reservation.fetch("reserved_tokens")
+    tokens = reservation.fetch("remaining_tokens", reservation.fetch("reserved_tokens"))
     [selected_scope, aggregate].each do |record|
       record["reserved_tokens"] -= tokens
       record["released_tokens"] += tokens
@@ -1734,45 +1892,435 @@ module BatchTokenBudget
       "tokens" => tokens,
       "reason" => release.fetch("reason")
     )
-    state["reservations"][release.fetch("reservation_id")].merge!(
+    persisted_reservation = state["reservations"][release.fetch("reservation_id")]
+    persisted_reservation.merge!(
       "status" => "released",
       "release_id" => release.fetch("id"),
       "release_digest" => digest(release),
       "release_receipt" => release_receipt
     )
+    if persisted_reservation.key?("observed_tokens")
+      persisted_reservation.merge!(
+        "released_tokens" => tokens,
+        "overshoot_tokens" => [persisted_reservation.fetch("observed_tokens") -
+                                persisted_reservation.fetch("reserved_tokens"), 0].max,
+        "reconciliation_receipt" => persisted_reservation.fetch("reconciliation_receipts").last
+      )
+      persisted_reservation.delete("remaining_tokens")
+    end
     [state, result(state, "released", "receipt" => release_receipt)]
   end
 
-  def valid_usage_segment?(segment, state)
-    segment.is_a?(Hash) && segment.keys.sort == %w[id kind scope_id target_id tokens] &&
-      nonempty_string?(segment["id"]) && %w[self descendant].include?(segment["kind"]) &&
-      !scope(state, segment["scope_id"]).nil? &&
-      nonempty_string?(segment["target_id"]) && positive_integer?(segment["tokens"])
+  def lane_usage_projection(lane)
+    return unless lane.is_a?(Hash) && lane["scope"] == "lane" &&
+                  nonempty_string?(lane["id"]) && nonempty_string?(lane["root_thread_id"]) &&
+                  lane.dig("reconciliation", "status") == "balanced"
+
+    lane_tokens = lane.dig("usage", "descendant_inclusive", "total_tokens")
+    unattributed_tokens = lane.dig("usage", "unattributed", "total_tokens")
+    lane_turns = lane.dig("turns", "descendant_inclusive")
+    lane_self_turns = lane.dig("turns", "self_only")
+    unattributed_turns = lane.dig("turns", "unattributed")
+    return unless [lane_tokens, unattributed_tokens, lane_turns, lane_self_turns, unattributed_turns].all? do |value|
+      nonnegative_integer?(value)
+    end
+
+    workers = lane["workers"]
+    return unless workers.is_a?(Array)
+
+    worker_ids = workers.map { |worker| worker["id"] if worker.is_a?(Hash) }
+    return unless worker_ids.all? { |worker_id| nonempty_string?(worker_id) } && worker_ids.uniq.length == workers.length
+
+    worker_projections = workers.map do |worker|
+      tokens = worker.dig("usage", "descendant_inclusive", "total_tokens")
+      turns = worker.dig("turns", "descendant_inclusive")
+      self_turns = worker.dig("turns", "self_only")
+      next unless worker["scope"] == "worker" && nonempty_string?(worker["root_thread_id"]) &&
+                  [tokens, turns, self_turns].all? { |value| nonnegative_integer?(value) } &&
+                  (tokens.zero? || turns.between?(1, tokens))
+
+      { "tokens" => tokens, "turns" => turns }
+    end
+    return if worker_projections.any?(&:nil?)
+    return unless lane_tokens == unattributed_tokens + worker_projections.sum { |worker| worker.fetch("tokens") }
+    return unless lane_turns == unattributed_turns + worker_projections.sum { |worker| worker.fetch("turns") }
+    return unless lane_tokens.zero? || lane_turns.between?(1, lane_tokens)
+
+    {
+      "id" => lane.fetch("id"),
+      "root_thread_id" => lane.fetch("root_thread_id"),
+      "tokens" => lane_tokens,
+      "turns" => lane_turns
+    }
   end
 
-  def valid_usage_receipt?(usage_receipt, state, evaluated_at)
-    return false unless usage_receipt.is_a?(Hash) && usage_receipt["type"] == "authoritative-token-usage-receipt" &&
-                        usage_receipt["version"] == 1 && nonempty_string?(usage_receipt["id"]) &&
-                        usage_receipt["batch_id"] == state["batch_id"] && nonempty_string?(usage_receipt["cutoff"]) &&
-                        timestamp?(usage_receipt["observed_at"])
+  def batch_usage_projection(usage_receipt, state)
+    return unless usage_receipt.is_a?(Hash) && usage_receipt["schema"] == "batch-usage-receipt-v1"
 
-    allowed_keys = %w[batch_id cutoff id observed_at producer segments type version]
-    allowed_keys << "overshoot" if usage_receipt.key?("overshoot")
-    return false unless usage_receipt.keys.sort == allowed_keys.sort
+    allowed_top_keys = %w[accounting batch coordinator evidence lanes privacy schema window]
+    allowed_top_keys << "credit_equivalents" if usage_receipt.key?("credit_equivalents")
+    return unless usage_receipt.keys.sort == allowed_top_keys.sort
 
-    producer = usage_receipt["producer"]
-    return false unless producer.is_a?(Hash) && producer.keys.sort == %w[evidence_ref kind] &&
-                        %w[host-reported coordination-backend authoritative-runtime].include?(producer["kind"]) &&
-                        durable_reference?(producer["evidence_ref"])
+    window = usage_receipt["window"]
+    return unless window.is_a?(Hash) && window.keys.sort == %w[differencing from_inclusive to_exclusive] &&
+                  window["differencing"] == "full_history_before_window_filter" &&
+                  timestamp?(window["from_inclusive"]) && timestamp?(window["to_exclusive"]) &&
+                  DateTime.iso8601(window["to_exclusive"]) > DateTime.iso8601(window["from_inclusive"])
 
-    segments = usage_receipt["segments"]
-    segments.is_a?(Array) && !segments.empty? && segments.all? { |segment| valid_usage_segment?(segment, state) } &&
-      segments.map { |segment| segment["id"] }.uniq.length == segments.length &&
-      seconds_between(evaluated_at, usage_receipt["observed_at"]).between?(
-        0, state.dig("budget", "telemetry", "max_age_seconds")
+    accounting = usage_receipt["accounting"]
+    return unless accounting.is_a?(Hash) && accounting.keys.sort == %w[
+      compactions counter_resets duplicate_samples_omitted inherited_seeds_omitted replay_records_omitted
+      session_rebind_attempts_ignored usage_samples
+    ] && accounting.values.all? { |value| nonnegative_integer?(value) }
+
+    evidence = usage_receipt["evidence"]
+    return unless evidence.is_a?(Hash) && evidence.keys.sort == %w[sources status unknown] &&
+                  %w[complete UNKNOWN].include?(evidence["status"]) &&
+                  evidence["sources"] == ["codex_rollout_jsonl", "state_5.sqlite"] &&
+                  evidence["unknown"].is_a?(Array) && evidence["unknown"].all? do |reason|
+                    reason.is_a?(Hash) && reason["status"] == "UNKNOWN" && nonempty_string?(reason["code"])
+                  end
+
+    if evidence["status"] == "complete"
+      return unless evidence["unknown"].empty?
+    else
+      irrelevant_unknowns = evidence["unknown"].all? do |reason|
+        reason["code"] == "route_metadata_missing" ||
+          (reason["code"] == "usage_counter_missing" && reason["fields"].is_a?(Array) &&
+            !reason["fields"].include?("total_tokens"))
+      end
+      return unless irrelevant_unknowns
+    end
+
+    privacy = usage_receipt["privacy"]
+    return unless privacy.is_a?(Hash) && privacy.keys.sort == %w[emitted_or_persisted_content excluded mode] &&
+                  privacy["mode"] == "metadata_only" && privacy["emitted_or_persisted_content"] == false &&
+                  privacy["excluded"].is_a?(Array) && privacy["excluded"].all? { |item| nonempty_string?(item) }
+
+    batch = usage_receipt["batch"]
+    coordinator = usage_receipt["coordinator"]
+    lanes = usage_receipt["lanes"]
+    return unless batch.is_a?(Hash) && batch.keys.sort == %w[id reconciliation scope turns usage] &&
+                  batch["scope"] == "batch" && batch["id"] == state["batch_id"] &&
+                  batch.dig("reconciliation", "status") == "balanced"
+    return unless coordinator.is_a?(Hash) && coordinator["scope"] == "coordinator" &&
+                  nonempty_string?(coordinator["id"]) && nonempty_string?(coordinator["root_thread_id"])
+    return unless lanes.is_a?(Array) && lanes.map { |lane| lane["id"] if lane.is_a?(Hash) }.uniq.length == lanes.length
+
+    lane_projections = lanes.map { |lane| lane_usage_projection(lane) }
+    return if lane_projections.any?(&:nil?)
+
+    expected_lane_ids = state.dig("scopes", "lanes").keys
+    return unless lane_projections.map { |lane| lane.fetch("id") }.sort == expected_lane_ids.sort
+
+    batch_tokens = batch.dig("usage", "descendant_inclusive", "total_tokens")
+    batch_unattributed = batch.dig("usage", "unattributed", "total_tokens")
+    coordinator_self = coordinator.dig("usage", "self_only", "total_tokens")
+    batch_turns = batch.dig("turns", "descendant_inclusive")
+    batch_unattributed_turns = batch.dig("turns", "unattributed")
+    coordinator_self_turns = coordinator.dig("turns", "self_only")
+    coordinator_inclusive_turns = coordinator.dig("turns", "descendant_inclusive")
+    return unless [
+      batch_tokens, batch_unattributed, coordinator_self, batch_turns, batch_unattributed_turns,
+      coordinator_self_turns, coordinator_inclusive_turns
+    ].all? { |value| nonnegative_integer?(value) }
+
+    lane_tokens = lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("tokens")] }
+    lane_turns = lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("turns")] }
+    return unless batch_tokens == coordinator_self + batch_unattributed + lane_tokens.values.sum
+    return unless batch_turns == coordinator_self_turns + batch_unattributed_turns + lane_turns.values.sum
+
+    scope_tokens = { "coordinator" => coordinator_self + batch_unattributed }.merge(lane_tokens)
+    scope_turns = { "coordinator" => coordinator_self_turns + batch_unattributed_turns }.merge(lane_turns)
+    return unless scope_tokens.all? do |scope_id, tokens|
+      turns = scope_turns.fetch(scope_id)
+      tokens.zero? ? turns.zero? : turns.between?(1, tokens)
+    end
+
+    {
+      "binding" => {
+        "batch_id" => batch.fetch("id"),
+        "coordinator" => {
+          "id" => coordinator.fetch("id"),
+          "root_thread_id" => coordinator.fetch("root_thread_id")
+        },
+        "lanes" => lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("root_thread_id")] }
+      },
+      "from_inclusive" => window.fetch("from_inclusive"),
+      "to_exclusive" => window.fetch("to_exclusive"),
+      "scope_tokens" => scope_tokens,
+      "scope_turns" => scope_turns,
+      "batch_tokens" => batch_tokens
+    }
+  rescue Date::Error, KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def blocked_usage_result(state, reason)
+    [state, result(
+      state,
+      "blocked",
+      "reason" => reason,
+      "allowed_actions" => %w[read-only-discovery checkpoint]
+    )]
+  end
+
+  def usage_replay_digest(command)
+    digest(command.reject { |key, _value| key == "evaluated_at" })
+  end
+
+  def reconcile_batch_usage_command(original_state, command)
+    usage_receipt = command["usage_receipt"]
+    projection = batch_usage_projection(usage_receipt, original_state)
+    return blocked_usage_result(original_state, "usage-telemetry-malformed-or-unknown") unless projection
+
+    receipt_ref = command["usage_receipt_ref"]
+    receipt_digest = command["usage_receipt_digest"]
+    unless verifiable_usage_receipt_reference?(receipt_ref)
+      return blocked_usage_result(original_state, "usage-receipt-reference-invalid")
+    end
+    unless receipt_digest.is_a?(String) && receipt_digest.match?(/\Asha256:[0-9a-f]{64}\z/) &&
+           receipt_digest == "sha256:#{digest(usage_receipt)}"
+      return blocked_usage_result(original_state, "usage-receipt-digest-mismatch")
+    end
+    unless usage_receipt_artifact_matches?(receipt_ref, receipt_digest, usage_receipt)
+      return blocked_usage_result(original_state, "usage-receipt-artifact-mismatch")
+    end
+
+    completed_ids = command["completed_reservation_ids"]
+    unless completed_ids.is_a?(Array) && completed_ids.uniq.length == completed_ids.length &&
+           completed_ids.all? { |reservation_id| nonempty_string?(reservation_id) }
+      raise InvalidInput, "invalid-completed-reservation-ids"
+    end
+
+    charge_back_requests = command.fetch("charge_backs", [])
+    unless charge_back_requests.is_a?(Array) && charge_back_requests.all? do |request|
+      next false unless request.is_a?(Hash)
+
+      [
+        request.keys.sort == %w[charge_back reservation_id],
+        nonempty_string?(request["reservation_id"]),
+        valid_charge_back?(request["charge_back"])
+      ].all?
+    end
+      raise InvalidInput, "invalid-charge-backs"
+    end
+
+    charge_back_reservation_ids = charge_back_requests.map { |request| request.fetch("reservation_id") }
+    charge_back_ids = charge_back_requests.map { |request| request.dig("charge_back", "id") }
+    unless charge_back_reservation_ids.uniq.length == charge_back_reservation_ids.length &&
+           charge_back_ids.uniq.length == charge_back_ids.length &&
+           (charge_back_reservation_ids - completed_ids).empty?
+      raise InvalidInput, "invalid-charge-backs"
+    end
+
+    existing = original_state.dig("usage_receipts", receipt_digest)
+    if existing
+      matching_replay = [
+        existing["command_digest"] == usage_replay_digest(command),
+        existing["reference"] == receipt_ref
+      ].all?
+      raise InvalidInput, "usage-receipt-replay-mismatch" unless matching_replay
+
+      return [original_state, result(
+        original_state,
+        "replayed",
+        "usage_receipt_digest" => receipt_digest,
+        "receipt_ref" => receipt_ref
+      )]
+    end
+
+    charge_back_requests.each do |request|
+      reservation = original_state.dig("reservations", request.fetch("reservation_id"))
+      charge_back = request.fetch("charge_back")
+      unless reservation && reservation.dig("request", "admission_kind") == "cross-task-delegation" &&
+             charge_back["source"] == reservation.dig("request", "source") &&
+             charge_back["target"] == reservation.dig("request", "target")
+        raise InvalidInput, "charge-back-reservation-mismatch"
+      end
+
+      existing_charge_back = original_state.dig("charge_backs", charge_back.fetch("id"))
+      raise InvalidInput, "charge-back-already-accounted" if existing_charge_back
+    end
+
+    evaluated_at = DateTime.iso8601(command.fetch("evaluated_at"))
+    to_exclusive = DateTime.iso8601(projection.fetch("to_exclusive"))
+    age_seconds = ((evaluated_at - to_exclusive) * 86_400).to_i
+    unless age_seconds.between?(0, original_state.dig("budget", "telemetry", "max_age_seconds"))
+      return blocked_usage_result(original_state, age_seconds.negative? ? "usage-window-future" : "usage-telemetry-stale")
+    end
+
+    if original_state["usage_binding"] && original_state["usage_binding"] != projection["binding"]
+      return blocked_usage_result(original_state, "usage-identity-drift")
+    end
+
+    mutated_window = original_state.fetch("usage_receipts").values.any? do |entry|
+      DateTime.iso8601(entry.fetch("from_inclusive")) == DateTime.iso8601(projection.fetch("from_inclusive")) &&
+        DateTime.iso8601(entry.fetch("to_exclusive")) == DateTime.iso8601(projection.fetch("to_exclusive"))
+    end
+    return blocked_usage_result(original_state, "usage-window-mutation") if mutated_window
+
+    cursor = DateTime.iso8601(original_state["usage_cursor"] || original_state.fetch("usage_initial_cutoff"))
+    from_inclusive = DateTime.iso8601(projection.fetch("from_inclusive"))
+    if from_inclusive > cursor
+      return blocked_usage_result(original_state, "usage-window-gap")
+    elsif from_inclusive < cursor
+      reason = to_exclusive <= cursor ? "usage-window-rollback" : "usage-window-overlap"
+      return blocked_usage_result(original_state, reason)
+    end
+
+    active_reservations = original_state.fetch("reservations").values.select do |reservation|
+      reservation["status"] == "active"
+    end
+    active_by_scope = active_reservations.group_by { |reservation| reservation.dig("request", "scope_id") }
+    if active_by_scope.values.any? { |reservations| reservations.length > 1 }
+      return blocked_usage_result(original_state, "ambiguous-active-reservations")
+    end
+
+    completed_ids.each do |reservation_id|
+      reservation = original_state.dig("reservations", reservation_id)
+      raise InvalidInput, "unknown-reservation" unless reservation
+      raise InvalidInput, "reservation-already-terminal" unless reservation["status"] == "active"
+    end
+
+    unsupported_overshoot = projection.fetch("scope_tokens").any? do |scope_id, interval_tokens|
+      active = active_by_scope.fetch(scope_id, []).first
+      next false unless active
+
+      prior_remaining = active.fetch("remaining_tokens", active.fetch("reserved_tokens"))
+      next false unless interval_tokens > prior_remaining
+
+      active.dig("receipt", "overshoot_envelope", "max_in_flight_turns") != 1 ||
+        projection.dig("scope_turns", scope_id) != 1
+    end
+    return blocked_usage_result(original_state, "overshoot-evidence-unsupported") if unsupported_overshoot
+
+    state = deep_copy(original_state)
+    state["usage_binding"] ||= projection.fetch("binding")
+    state["usage_cursor"] = projection.fetch("to_exclusive")
+    reservation_tokens = {}
+    unattributed_scope_tokens = {}
+    reconciliation_receipts = []
+
+    projection.fetch("scope_tokens").each do |scope_id, interval_tokens|
+      selected_scope = scope_totals(state, scope_id)
+      aggregate = state.dig("scopes", "aggregate")
+      selected_scope["consumed_tokens"] += interval_tokens
+      aggregate["consumed_tokens"] += interval_tokens
+      active = active_by_scope.fetch(scope_id, []).first
+      unless active
+        selected_scope["unattributed_tokens"] += interval_tokens
+        aggregate["unattributed_tokens"] += interval_tokens
+        unattributed_scope_tokens[scope_id] = interval_tokens
+        next
+      end
+
+      reservation_id = active.dig("request", "id")
+      reservation_tokens[reservation_id] = interval_tokens
+      record = state.dig("reservations", reservation_id)
+      prior_observed = record.fetch("observed_tokens", 0)
+      prior_remaining = record.fetch("remaining_tokens", record.fetch("reserved_tokens"))
+      shifted_tokens = [interval_tokens, prior_remaining].min
+      [selected_scope, aggregate].each { |scope_record| scope_record["reserved_tokens"] -= shifted_tokens }
+      observed_tokens = prior_observed + interval_tokens
+      remaining_tokens = [record.fetch("reserved_tokens") - observed_tokens, 0].max
+      usage_receipt_digests = Array(record["usage_receipt_digests"]) + [receipt_digest]
+
+      completed = completed_ids.include?(reservation_id)
+      released_tokens = completed ? remaining_tokens : 0
+      if completed
+        [selected_scope, aggregate].each do |scope_record|
+          scope_record["reserved_tokens"] -= remaining_tokens
+          scope_record["released_tokens"] += released_tokens
+        end
+      end
+      reconciliation_receipt = append_receipt(
+        state,
+        "batch-token-budget-reconciliation-receipt",
+        "reservation_id" => reservation_id,
+        "usage_receipt_digest" => receipt_digest,
+        "receipt_ref" => receipt_ref,
+        "from_inclusive" => projection.fetch("from_inclusive"),
+        "to_exclusive" => projection.fetch("to_exclusive"),
+        "predicted_tokens" => record.fetch("reserved_tokens"),
+        "interval_tokens" => interval_tokens,
+        "actual_tokens" => observed_tokens,
+        "released_tokens" => released_tokens,
+        "overshoot_tokens" => [observed_tokens - record.fetch("reserved_tokens"), 0].max,
+        "overshoot_turn_count" => interval_tokens > prior_remaining ? projection.dig("scope_turns", scope_id) : 0,
+        "completed" => completed
       )
+      reconciliation_receipts << reconciliation_receipt
+      all_reconciliation_receipts = Array(record["reconciliation_receipts"]) + [reconciliation_receipt]
+      state["reservations"][reservation_id] = record.merge(
+        "status" => completed ? "reconciled" : "active",
+        "observed_tokens" => observed_tokens,
+        "usage_receipt_digests" => usage_receipt_digests,
+        "reconciliation_receipts" => all_reconciliation_receipts
+      )
+      if completed
+        state["reservations"][reservation_id].merge!(
+          "released_tokens" => released_tokens,
+          "overshoot_tokens" => [observed_tokens - record.fetch("reserved_tokens"), 0].max,
+          "reconciliation_receipt" => reconciliation_receipt,
+          "charge_back_id" => nil
+        )
+        state["reservations"][reservation_id].delete("remaining_tokens")
+      else
+        state["reservations"][reservation_id]["remaining_tokens"] = remaining_tokens
+      end
+    end
+
+    completed_scope_ids = completed_ids.map do |reservation_id|
+      state.dig("reservations", reservation_id, "request", "scope_id")
+    end
+    unless completed_scope_ids.all? { |scope_id| projection.fetch("scope_tokens").key?(scope_id) }
+      raise InvalidInput, "completed-reservation-scope-missing"
+    end
+
+    charge_back_summaries = charge_back_requests.map do |request|
+      reservation_id = request.fetch("reservation_id")
+      charge_back = request.fetch("charge_back")
+      reservation = state.dig("reservations", reservation_id)
+      summary = {
+        "id" => charge_back.fetch("id"),
+        "source" => charge_back.fetch("source"),
+        "target" => charge_back.fetch("target"),
+        "tokens" => reservation.fetch("observed_tokens"),
+        "physical_total_incremented" => false
+      }
+      state["charge_backs"][charge_back.fetch("id")] = {
+        "digest" => digest(charge_back),
+        "reservation_id" => reservation_id,
+        "summary" => summary
+      }
+      reservation["charge_back_id"] = charge_back.fetch("id")
+      summary
+    end
+
+    state["usage_receipts"][receipt_digest] = {
+      "sequence" => state.fetch("usage_receipts").length + 1,
+      "receipt_digest" => receipt_digest,
+      "reference" => receipt_ref,
+      "command_digest" => usage_replay_digest(command),
+      "from_inclusive" => projection.fetch("from_inclusive"),
+      "to_exclusive" => projection.fetch("to_exclusive"),
+      "scope_tokens" => projection.fetch("scope_tokens"),
+      "scope_turns" => projection.fetch("scope_turns"),
+      "reservation_tokens" => reservation_tokens,
+      "unattributed_scope_tokens" => unattributed_scope_tokens,
+      "completed_reservation_ids" => completed_ids
+    }
+    [state, result(
+      state,
+      "reconciled",
+      "usage_receipt_digest" => receipt_digest,
+      "receipt_ref" => receipt_ref,
+      "receipts" => reconciliation_receipts,
+      "charge_backs" => charge_back_summaries
+    )]
   rescue Date::Error
-    false
+    blocked_usage_result(original_state, "usage-telemetry-malformed-or-unknown")
   end
 
   def valid_charge_back?(charge_back)
@@ -1782,201 +2330,7 @@ module BatchTokenBudget
   end
 
   def reconcile_command(original_state, command)
-    reservation_id = command["reservation_id"]
-    raise InvalidInput, "invalid-reservation-id" unless nonempty_string?(reservation_id)
-
-    usage_receipt = command["usage_receipt"]
-    unless valid_usage_receipt?(usage_receipt, original_state, command["evaluated_at"])
-      stale = usage_receipt.is_a?(Hash) && timestamp?(usage_receipt["observed_at"]) &&
-              seconds_between(command["evaluated_at"], usage_receipt["observed_at"]) >
-              original_state.dig("budget", "telemetry", "max_age_seconds")
-      return [original_state, result(
-        original_state,
-        "blocked",
-        "reason" => stale ? "usage-telemetry-stale" : "usage-telemetry-malformed-or-unknown",
-        "allowed_actions" => %w[read-only-discovery checkpoint]
-      )]
-    end
-    receipt_id = usage_receipt.fetch("id")
-    existing_receipt = original_state.dig("usage_receipts", receipt_id)
-    if existing_receipt
-      raise InvalidInput, "usage-receipt-replay-mismatch" unless existing_receipt["digest"] == digest(usage_receipt)
-
-      reservation = original_state.dig("reservations", reservation_id)
-      raise InvalidInput, "usage-receipt-reservation-mismatch" unless reservation && reservation["usage_receipt_id"] == receipt_id
-
-      charge_back = reservation["charge_back_id"] && original_state.dig("charge_backs", reservation["charge_back_id"])
-      return [original_state, result(
-        original_state,
-        "replayed",
-        "receipt" => reservation.fetch("reconciliation_receipt"),
-        "charge_back" => charge_back&.fetch("summary")
-      )]
-    end
-
-    reservation = original_state.dig("reservations", reservation_id)
-    raise InvalidInput, "unknown-reservation" unless reservation
-    raise InvalidInput, "reservation-already-terminal" unless reservation["status"] == "active"
-
-    target_id = reservation.dig("request", "target", "task_id")
-    descendant_target_ids = reservation.dig("request", "telemetry", "descendant_target_ids")
-    targets_match = usage_receipt.fetch("segments").all? do |segment|
-      (segment["kind"] == "self" && segment["target_id"] == target_id) ||
-        (segment["kind"] == "descendant" && descendant_target_ids.include?(segment["target_id"]))
-    end
-    unless targets_match
-      return [original_state, result(
-        original_state,
-        "blocked",
-        "reason" => "usage-target-reservation-mismatch",
-        "allowed_actions" => %w[read-only-discovery checkpoint]
-      )]
-    end
-
-    actual_tokens_for_envelope = usage_receipt.fetch("segments").sum { |segment| segment.fetch("tokens") }
-    reserved_tokens_for_envelope = reservation.fetch("reserved_tokens")
-    if actual_tokens_for_envelope > reserved_tokens_for_envelope
-      overshoot = usage_receipt["overshoot"]
-      admitted_targets = [reservation.dig("request", "target", "task_id")] +
-                         reservation.dig("request", "telemetry", "descendant_target_ids")
-      valid_overshoot = overshoot.is_a?(Array) && !overshoot.empty? &&
-                        overshoot.sum { |entry| entry.is_a?(Hash) && entry["tokens"].is_a?(Integer) ? entry["tokens"] : 0 } ==
-                        actual_tokens_for_envelope - reserved_tokens_for_envelope &&
-                        overshoot.map { |entry| entry["target_id"] if entry.is_a?(Hash) }.uniq.length == overshoot.length &&
-                        overshoot.all? do |entry|
-                          entry.is_a?(Hash) && entry.keys.sort == %w[target_id tokens turns] &&
-                            admitted_targets.include?(entry["target_id"]) && positive_integer?(entry["tokens"]) &&
-                            entry["turns"] == 1
-                        end
-      unless valid_overshoot
-        return [original_state, result(
-          original_state,
-          "blocked",
-          "reason" => "overshoot-envelope-invalid",
-          "allowed_actions" => %w[read-only-discovery checkpoint]
-        )]
-      end
-    elsif usage_receipt.key?("overshoot")
-      return [original_state, result(original_state, "blocked", "reason" => "unexpected-overshoot-evidence")]
-    end
-
-    duplicate_segment = usage_receipt.fetch("segments").find do |segment|
-      original_state.dig("usage_segments", segment.fetch("id"))
-    end
-    if duplicate_segment
-      return [original_state, result(
-        original_state,
-        "blocked",
-        "reason" => "usage-segment-already-accounted",
-        "duplicate_segment_id" => duplicate_segment.fetch("id"),
-        "allowed_actions" => %w[read-only-discovery checkpoint]
-      )]
-    end
-
-    usage_receipt.fetch("segments").each do |segment|
-      existing_segment = original_state.dig("usage_segments", segment.fetch("id"))
-      next unless existing_segment
-      raise InvalidInput, "usage-segment-collision" unless existing_segment["digest"] == digest(segment)
-    end
-
-    attributed_scope_ids = usage_receipt.fetch("segments").map { |segment| segment.fetch("scope_id") }.uniq - ["UNKNOWN"]
-    unless attributed_scope_ids.all? { |scope_id| scope_id == reservation.dig("request", "scope_id") }
-      raise InvalidInput, "usage-scope-reservation-mismatch"
-    end
-
-    charge_back_input = command["charge_back"]
-    raise InvalidInput, "invalid-charge-back" if charge_back_input && !valid_charge_back?(charge_back_input)
-
-    if charge_back_input
-      unless reservation.dig("request", "admission_kind") == "cross-task-delegation" &&
-             charge_back_input["source"] == reservation.dig("request", "source") &&
-             charge_back_input["target"] == reservation.dig("request", "target")
-        raise InvalidInput, "charge-back-reservation-mismatch"
-      end
-
-      existing_charge_back = original_state.dig("charge_backs", charge_back_input.fetch("id"))
-      if existing_charge_back
-        raise InvalidInput, "charge-back-replay-mismatch" if existing_charge_back["digest"] != digest(charge_back_input)
-
-        raise InvalidInput, "charge-back-already-accounted"
-      end
-    end
-
-    state = deep_copy(original_state)
-    new_segments = usage_receipt.fetch("segments").reject do |segment|
-      state.fetch("usage_segments").key?(segment.fetch("id"))
-    end
-    actual_tokens = new_segments.sum { |segment| segment.fetch("tokens") }
-    unattributed_tokens = new_segments.select { |segment| segment["scope_id"] == "UNKNOWN" }
-                                      .sum { |segment| segment.fetch("tokens") }
-    attributed_tokens = actual_tokens - unattributed_tokens
-    selected_scope = scope_totals(state, reservation.dig("request", "scope_id"))
-    aggregate = state.dig("scopes", "aggregate")
-    reserved_tokens = reservation.fetch("reserved_tokens")
-    [selected_scope, aggregate].each { |record| record["reserved_tokens"] -= reserved_tokens }
-    selected_scope["consumed_tokens"] += attributed_tokens
-    aggregate["consumed_tokens"] += actual_tokens
-    aggregate["unattributed_tokens"] += unattributed_tokens
-    released_tokens = [reserved_tokens - actual_tokens, 0].max
-    [selected_scope, aggregate].each { |record| record["released_tokens"] += released_tokens }
-    overshoot_tokens = [actual_tokens - reserved_tokens, 0].max
-    new_segments.each do |segment|
-      state["usage_segments"][segment.fetch("id")] = {
-        "digest" => digest(segment),
-        "receipt_id" => receipt_id,
-        "tokens" => segment.fetch("tokens")
-      }
-    end
-    state["usage_receipts"][receipt_id] = {
-      "digest" => digest(usage_receipt),
-      "cutoff" => usage_receipt.fetch("cutoff"),
-      "segment_ids" => usage_receipt.fetch("segments").map { |segment| segment.fetch("id") },
-      "tokens_counted" => actual_tokens
-    }
-
-    charge_back_summary = nil
-    if charge_back_input
-      charge_back_summary = {
-        "id" => charge_back_input.fetch("id"),
-        "source" => charge_back_input.fetch("source"),
-        "target" => charge_back_input.fetch("target"),
-        "tokens" => actual_tokens,
-        "physical_total_incremented" => false
-      }
-      state["charge_backs"][charge_back_input.fetch("id")] = {
-        "digest" => digest(charge_back_input),
-        "reservation_id" => reservation_id,
-        "summary" => charge_back_summary
-      }
-    end
-
-    reconciliation_receipt = append_receipt(
-      state,
-      "batch-token-budget-reconciliation-receipt",
-      "reservation_id" => reservation_id,
-      "usage_receipt_id" => receipt_id,
-      "receipt_cutoff" => usage_receipt.fetch("cutoff"),
-      "predicted_tokens" => reserved_tokens,
-      "actual_tokens" => actual_tokens,
-      "self_tokens" => new_segments.select { |segment| segment["kind"] == "self" }.sum { |segment| segment["tokens"] },
-      "descendant_tokens" => new_segments.select { |segment| segment["kind"] == "descendant" }.sum { |segment| segment["tokens"] },
-      "released_tokens" => released_tokens,
-      "overshoot_tokens" => overshoot_tokens,
-      "unattributed_tokens" => unattributed_tokens,
-      "overshoot_turn_count" => Array(usage_receipt["overshoot"]).sum { |entry| entry.fetch("turns") }
-    )
-    state["reservations"][reservation_id].merge!(
-      "status" => "reconciled",
-      "usage_receipt_id" => receipt_id,
-      "reconciliation_receipt" => reconciliation_receipt,
-      "charge_back_id" => charge_back_input&.fetch("id", nil)
-    )
-    [state, result(
-      state,
-      "reconciled",
-      "receipt" => reconciliation_receipt,
-      "charge_back" => charge_back_summary
-    )]
+    reconcile_batch_usage_command(original_state, command)
   end
 
   def apply_command(state, command, trusted_budget, trusted_plan_binding)

@@ -70,8 +70,13 @@ consumer's `AGENTS.md` seams.
 The aggregate scope counts coordinator plus every physical lane/descendant
 token. The coordinator scope counts root self-use and directly owned
 orchestration. Each lane counts worker self-use plus every descendant it owns.
-A physical segment is identified by its authoritative segment id and is counted
-at most once in the lane and aggregate views.
+The accounting boundary is an atomic half-open `batch-usage-receipt-v1`
+window. The receipt's batch descendant-inclusive total is counted once in the
+aggregate view; coordinator self-only plus batch unattributed tokens form the
+coordinator view, and each lane's descendant-inclusive total forms that lane's
+view. The receipt's parallel `turns` counters map through the same scopes. Both
+token and contributing-turn views must recompute to the batch totals exactly;
+`UNKNOWN`, missing, or contradictory turn evidence fails closed.
 
 ## Durable Runtime
 
@@ -191,29 +196,42 @@ to block their affected scope until an applicable human approval or sufficient
 scoped headroom is followed by admission of the stopped target; an unrelated
 smaller action or sibling override cannot clear them.
 
-After the admitted boundary completes, `reconcile` consumes an
-`authoritative-token-usage-receipt v1`. The producer must be identified as a
-host-reported, coordination-backend, or authoritative-runtime source with a
-durable URI evidence reference. Plain, `UNKNOWN`, `self-attested://`, and
-`worker-self-attested://` references have no authority. Producer objects use an
-exact field allowlist. Each unique physical segment names `self` or
-`descendant`, its owning scope and an admitted target, and raw tokens. The
-helper reconciles
-predicted versus actual usage, releases unused reservation, and rejects stale,
-malformed, `UNKNOWN`, duplicate, or conflicting segments. This receipt schema
-is the stable integration boundary for an authoritative producer; no producer
-from another unmerged change is assumed.
-Receipt, producer, segment, and overshoot objects use exact field allowlists.
-A segment whose owning `scope_id` is `UNKNOWN` never reconciles or releases
-headroom: the active reservation remains held and only read-only discovery or
-checkpointing may proceed until authoritative ownership is known.
+After each admitted boundary, generate a `batch-usage-receipt-v1` with the
+resolved pr-batch `bin/batch-usage-receipt` helper and submit the complete
+half-open window to `reconcile`. The command binds the inline receipt to its
+canonical `sha256:` digest, an absolute local `file://` artifact, and the
+reservation ids that completed during the window. Version 1 reads and matches
+that artifact at reconcile time and revalidates it on restart; other URI
+schemes are unverifiable and have no authority. Plain, `UNKNOWN`,
+`self-attested://`, and `worker-self-attested://` references likewise have no
+authority.
 
-If actual use exceeds the reservation because a previously admitted turn was
-already in flight, the authoritative receipt also names each affected admitted
-target, overshoot tokens, and exactly one turn. More than one turn for the same
-admitted target, a target outside the reservation envelope, or a mismatched sum
-fails closed. Closeout reports the measured overshoot; it never promises zero
-overshoot inside a running turn.
+Initialization persists its command `evaluated_at` as the authoritative initial
+usage cutoff in the initialization receipt and control-event root. The first
+accepted window must begin exactly there; it then binds the batch id,
+coordinator identity/root, and every planned lane root. Later windows must
+preserve those identities and begin at the prior exclusive cutoff. Exact replay
+does not recount; a changed receipt
+for the same window, gap, overlap, rollback, identity drift, stale/future
+cutoff, digest/reference mismatch, or malformed relevant accounting fails
+closed. Relevant `UNKNOWN` totals or topology also fail closed. The receipt
+helper's structured `UNKNOWN` for route metadata, or a missing non-total usage
+counter, may pass only when all raw total-token accounting and reconciliation
+equations remain known and balanced. The helper's global
+`accounting.usage_samples` is not per-scope turn evidence and never authorizes
+overshoot.
+
+Each accounting scope has at most one active reservation. Same-scope nested
+work coalesces into that reservation while different lanes may run
+concurrently. Every accepted window atomically shifts the scope's observed
+tokens from reserved to consumed; a completed reservation releases its unused
+remainder. Version 1 admits an overshooting window only when the persisted
+reservation envelope is exactly `max_in_flight_turns: 1` and that scope's
+verified receipt count is exactly one contributing turn. A zero, `UNKNOWN`, or
+multiple-turn count, or any wider envelope, blocks without mutation; the helper
+never synthesizes one from token samples. Observed use in a scope with no active
+reservation is still counted, marked unattributed, and blocks clean closeout
+rather than being assigned to a target without evidence.
 
 Cross-task reconciliation can include a `batch-token-charge-back v1` source and
 target identity. The resulting causal attribution reports actual self plus
@@ -250,7 +268,7 @@ scope produces `NOT COMPLETE`. Recording an approval alone does not resolve its
 stop; an explicit approved admission transition must bind the decision's
 resolution before closeout can become complete.
 Every state load recomputes accounting from reservation, release,
-reconciliation, usage-receipt, and segment ledgers. Missing ledger entries or
+reconciliation, and accepted usage-window ledgers. Missing ledger entries or
 counter mismatches are corrupt state, and `COMPLETE` additionally requires zero
 reserved tokens in every scope.
 The state also carries an append-only `batch-token-budget-control-event v1`
@@ -268,5 +286,5 @@ final state, or orphan references fail before any command can mutate state.
 
 Scheduled monitors and same-thread heartbeats use the same reservation command
 before loading model context. They do not auto-continue at approval or hard
-state. Unchanged active targets coalesce, and terminal monitor cleanup releases
-unused reservations before final closeout.
+state. Same-scope work coalesces, and terminal monitor cleanup releases unused
+reservations before final closeout.
