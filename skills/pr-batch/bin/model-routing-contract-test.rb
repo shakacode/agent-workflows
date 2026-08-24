@@ -283,18 +283,21 @@ end
 
 def strip_html_comments(text)
   fence_marker = nil
+  fence_container_indent = 0
   in_html_comment = false
   inline_code_delimiter_length = nil
 
   text.lines.map do |line|
     if fence_marker
-      if markdown_fence_closing_line?(line, fence_marker)
+      if markdown_fence_closing_line?(line, fence_marker, fence_container_indent)
         fence_marker = nil
+        fence_container_indent = 0
       end
       next line
     end
 
     if (fence_marker = markdown_fence_opening_marker(line))
+      fence_container_indent = markdown_fence_list_content_indent(line)
       next line
     end
 
@@ -345,15 +348,20 @@ end
 
 def normalize_visible_inline_emphasis(text)
   fence_marker = nil
+  fence_container_indent = 0
   inline_code_delimiter_length = nil
 
   text.lines.map do |line|
     if fence_marker
-      fence_marker = nil if markdown_fence_closing_line?(line, fence_marker)
+      if markdown_fence_closing_line?(line, fence_marker, fence_container_indent)
+        fence_marker = nil
+        fence_container_indent = 0
+      end
       next line
     end
 
     if (fence_marker = markdown_fence_opening_marker(line))
+      fence_container_indent = markdown_fence_list_content_indent(line)
       next line
     end
 
@@ -534,15 +542,30 @@ def markdown_fence_opening_marker(line)
   markdown_fence_container_content(line)[/^\s{0,3}(`{3,}|~{3,})/, 1]
 end
 
-def markdown_fence_closing_line?(line, opening_marker)
+def markdown_fence_closing_line?(line, opening_marker, container_indent = 0)
   marker = Regexp.escape(opening_marker[0])
-  markdown_fence_container_content(line).match?(/^\s{0,3}#{marker}{#{opening_marker.length},}\s*$/)
+  container_content = markdown_fence_container_content(line)
+  container_content = container_content.sub(/^ {#{container_indent}}/, "") if container_indent.positive?
+  container_content.match?(/^\s{0,3}#{marker}{#{opening_marker.length},}\s*$/)
 end
 
 def markdown_fence_container_content(line)
-  line
-    .sub(/^\s{0,3}(?:>\s?)+/, "")
-    .sub(/^\s{0,3}(?:[-*+]|\d+[.)])\s+/, "")
+  container_content = line
+
+  loop do
+    nested_content = container_content
+                     .sub(/^\s{0,3}(?:>\s?)+/, "")
+                     .sub(/^\s{0,3}(?:[-*+]|\d+[.)])\s+/, "")
+    return container_content if nested_content == container_content
+
+    container_content = nested_content
+  end
+end
+
+def markdown_fence_list_content_indent(line)
+  blockquote_content = line.sub(/^\s{0,3}(?:>\s?)+/, "")
+  list_prefix = blockquote_content[/^\s{0,3}(?:[-*+]|\d+[.)])[ \t]+/]
+  list_prefix ? list_prefix.length : 0
 end
 
 def markdown_thematic_break_line?(line)
@@ -575,6 +598,7 @@ def markdown_structural_segments(block)
   segments = []
   current_segment = +""
   fence_marker = nil
+  fence_container_indent = 0
   in_blockquote = false
   lines = block.lines
   table_line_indexes = markdown_table_line_indexes(lines)
@@ -583,8 +607,9 @@ def markdown_structural_segments(block)
   lines.each_with_index do |line, index|
     if fence_marker
       current_segment << line
-      if markdown_fence_closing_line?(line, fence_marker)
+      if markdown_fence_closing_line?(line, fence_marker, fence_container_indent)
         fence_marker = nil
+        fence_container_indent = 0
         segments << current_segment
         current_segment = +""
       end
@@ -626,6 +651,7 @@ def markdown_structural_segments(block)
       segments << line
       current_segment = +""
     elsif (fence_marker = markdown_fence_opening_marker(line))
+      fence_container_indent = markdown_fence_list_content_indent(line)
       segments << current_segment unless current_segment.empty?
       current_segment = line.dup
     elsif setext_heading_line_indexes.include?(index)
@@ -1621,6 +1647,7 @@ class ModelRoutingContractTest < Minitest::Test
       "> ~~~text\n> <!-- A route mismatch blocks launch. -->\n> ~~~",
       "- ~~~text\n  <!-- A route mismatch blocks launch. -->\n  ~~~",
       "1. ~~~text\n   <!-- A route mismatch blocks launch. -->\n   ~~~",
+      "- > ~~~text\n  > <!-- A route mismatch blocks launch. -->\n  > ~~~",
       "    <!-- A route mismatch blocks launch. -->",
       "The forbidden example is `<!-- A route mismatch blocks launch. -->`.",
       "The forbidden example is `<!-- A route mismatch\nblocks launch. -->`.",
@@ -1633,7 +1660,9 @@ class ModelRoutingContractTest < Minitest::Test
     [
       "<!-- A route mismatch blocks launch. -->",
       "<!-- A route mismatch\nblocks launch. -->",
-      "> <!-- A route mismatch blocks launch. -->"
+      "> <!-- A route mismatch blocks launch. -->",
+      "10. ~~~text\n    visible fenced code\n    ~~~\n<!-- A route mismatch blocks launch. -->",
+      "-   ~~~text\n    visible fenced code\n     ~~~\n<!-- A route mismatch blocks launch. -->"
     ].each do |hidden_comment|
       refute forbidden_route_only_contradiction?(hidden_comment),
              "actual HTML comments must remain ignored: #{hidden_comment}"
