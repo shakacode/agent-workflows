@@ -3403,6 +3403,7 @@ set -o pipefail
 TRUSTED_RUNTIME_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TRUSTED_RUNTIME_ROOT"' EXIT
 if git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-eligibility" &&
+   git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-closeout" &&
    git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy.rb" &&
    git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy_globs.rb" &&
    git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy_yaml.rb"; then
@@ -3413,6 +3414,7 @@ if git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-eli
     tar -x -C "${TRUSTED_RUNTIME_ROOT}"
   TRUSTED_PR_BATCH_SKILL_DIR="${TRUSTED_RUNTIME_ROOT}/skills/pr-batch"
 elif git cat-file -e "${TRUSTED_BASE_SHA}:.agents/skills/pr-batch/bin/autonomous-merge-eligibility" &&
+     git cat-file -e "${TRUSTED_BASE_SHA}:.agents/skills/pr-batch/bin/autonomous-merge-closeout" &&
      git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy.rb" &&
      git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy_globs.rb" &&
      git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb"; then
@@ -3441,12 +3443,12 @@ Then pass the corresponding provenance claim:
 ```
 
 For an independently verified installed pack, use
-`verified-installed-pack:<64-lowercase-sha256>` instead, after resolving
-`PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
-repo-pinned chain. The expected digest is trusted coordinator or installation
+`verified-installed-pack:<64-lowercase-sha256>` instead, after binding
+`TRUSTED_PR_BATCH_SKILL_DIR` to the independently verified pack directory.
+The expected digest is trusted coordinator or installation
 state, not output learned from the helper being evaluated. The evaluator
-mechanically recomputes a length-framed manifest over the executing helper,
-decision/evidence/policy/trust libraries (including
+mechanically recomputes a length-framed manifest over the executing evaluator
+and closeout helpers, decision/evidence/policy/trust libraries (including
 `autonomous_merge_runtime_trust.rb`), and selected calibration decision.
 For `trusted-base:<SHA>`, it instead compares every one of those runtime bytes
 with the claimed commit tree. A missing source or byte mismatch yields
@@ -3585,6 +3587,28 @@ gate. Absence of an exact current-head marker remains
 merge-authority attestation is missing or uncertain yields `UNKNOWN`. Re-run
 the evaluator immediately before `pr-merge-submit`; any head or base movement
 restarts ordinary readiness and eligibility evaluation.
+
+For either blocking verdict, render the user-facing closeout before displaying
+technical identifiers:
+
+```bash
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout" \
+  --input "${AUTONOMOUS_RESULT_PATH}"
+```
+
+Use the same authenticated runtime directory that executed the evaluator;
+never resolve or execute the renderer from the PR checkout. The renderer's
+concise summary must lead. Then retain its individual
+PR-specific gate or evidence explanations, exact action, authorized actor,
+durable recording location, exact head, and new-head invalidation behavior.
+This human layer explicitly distinguishes policy/authority or evidence gates
+from code defects, failed CI, and review findings. Do not claim ordinary checks
+passed unless their separate current-head evidence proves that fact. Keep the
+original evaluator JSON unchanged for merge assurance and automation; the
+renderer is read-only, deterministic, fails closed on malformed input, and can
+repeat the stable facts as `autonomous-merge-closeout` v1 JSON with
+`--format json`. `UNKNOWN` output directs the coordinator to repair and rerun
+the evidence pipeline and cannot be converted into an approval request.
 
 ### Merge Assurance Gate
 

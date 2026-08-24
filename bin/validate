@@ -114,6 +114,7 @@ ruby skills/batch-status/bin/batch-status-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
+ruby skills/pr-batch/bin/autonomous-merge-closeout-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-eligibility-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-evidence-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-calibrate-test.rb

@@ -54,6 +54,7 @@ module MergeAssurance
   ].freeze
   AUTONOMOUS_RUNTIME_MANIFEST_KEYS = %w[
     helper
+    closeout-helper
     decision-library
     evidence-library
     policy-library
@@ -87,6 +88,9 @@ module MergeAssurance
   ].freeze
   AUTONOMOUS_SAFE_CLASSES = %w[
     none documentation tests formatting-comments
+  ].freeze
+  AUTONOMOUS_PATH_REASONS = %w[
+    migration infrastructure release security hot-path policy other
   ].freeze
   AUTONOMOUS_ROLLBACK_ASSESSMENTS = %w[
     code-only-rollback-established forward-recovery-established not-applicable
@@ -437,12 +441,17 @@ module MergeAssurance
     path = match["path"]
     return false unless path.is_a?(String) && !path.strip.empty?
 
-    if exact_keys?(match, %w[gate path reason])
+    if match.key?("gate")
       gate = match["gate"]
       reason = match["reason"]
-      (gate == "autonomous-merge-policy-change" ||
-       gate.to_s.match?(/\Arepo-path:[a-z0-9]+(?:-[a-z0-9]+)*\z/)) &&
-        reason.is_a?(String) && !reason.strip.empty?
+      expected_keys = reason == "other" ? %w[detail gate path reason] : %w[gate path reason]
+      return false unless exact_keys?(match, expected_keys)
+      return false unless AUTONOMOUS_PATH_REASONS.include?(reason)
+      return false if gate == "autonomous-merge-policy-change" && reason != "policy"
+      return false unless gate == "autonomous-merge-policy-change" ||
+                          gate.to_s.match?(/\Arepo-path:[a-z0-9]+(?:-[a-z0-9]+)*\z/)
+
+      reason != "other" || (match["detail"].is_a?(String) && !match["detail"].strip.empty?)
     elsif exact_keys?(match, %w[classification path])
       match["classification"] == "generated"
     else
