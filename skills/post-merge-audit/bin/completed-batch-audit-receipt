@@ -6,6 +6,7 @@ require "digest"
 require "base64"
 require "optparse"
 require "timeout"
+require "time"
 require "uri"
 
 load File.expand_path("completed-batch-publication-preflight", __dir__) unless defined?(CompletedBatchPublicationPreflight)
@@ -17,6 +18,8 @@ module CompletedBatchAuditReceipt
   REPLAY_GITHUB_API_BLOCKER = "completed-batch-audit replay GitHub API request failed"
   POST_OUTCOME_BLOCKER = "completed-batch-audit comment POST outcome unknown"
   POST_READBACK_BLOCKER = "completed-batch-audit comment readback verification failed"
+  UPDATE_OUTCOME_BLOCKER = "completed-batch-audit comment update outcome unknown"
+  UPDATE_READBACK_BLOCKER = "completed-batch-audit comment update readback verification failed"
   PUBLICATION_PREFLIGHT_BLOCKER = "completed-batch-audit publication preflight failed"
   PUBLICATION_REFRESH_BLOCKER = "completed-batch-audit publication snapshot refresh required"
   PUBLICATION_MISMATCH_BLOCKER = "completed-batch-audit publication snapshot mismatch or stale"
@@ -33,7 +36,8 @@ module CompletedBatchAuditReceipt
     batch_id audit_status verdict scope_evidence checker_evidence findings followups_dispositions
   ].freeze
   PUBLICATION_FIELDS = (LEGACY_FIELDS + ["publication_snapshot"]).freeze
-  FIELDS = PUBLICATION_FIELDS
+  UPDATED_PUBLICATION_FIELDS = (PUBLICATION_FIELDS + ["prior_receipt_sha256"]).freeze
+  FIELDS = UPDATED_PUBLICATION_FIELDS
   CURRENT_STATUSES = %w[open unresolved pending UNKNOWN terminal].freeze
   TERMINAL_DISPOSITIONS = %w[resolved accepted-waiver accepted-deferral not-applicable].freeze
   NONTERMINAL_ACTIONS = %w[investigate fix await-input retry replay track].freeze
@@ -80,6 +84,7 @@ module CompletedBatchAuditReceipt
   class ReplayGitHubApiError < Error; end
   class SuccessfulApiResponseError < Error; end
   class PostOutcomeUnknownError < Error; end
+  class UpdateOutcomeUnknownError < Error; end
   class PublicationPreflightError < Error; end
 
   class PostReadbackError < Error
@@ -92,6 +97,8 @@ module CompletedBatchAuditReceipt
       super(message)
     end
   end
+
+  class UpdateReadbackError < PostReadbackError; end
 
   def replay_marker(
     marker,
@@ -229,6 +236,130 @@ module CompletedBatchAuditReceipt
     )
   end
 
+  def update(
+    expected_batch_id:,
+    targets:,
+    reference:,
+    receipt:,
+    other_blockers: [],
+    publication_preflight: nil,
+    coordination_backend: nil
+  )
+    parsed = parse_reference(reference)
+    deterministic = deterministic_targets(targets)
+    target, actor = select_verified_anchor(deterministic)
+    parsed_target = parsed.fetch("target")
+    same_target = target.fetch("host") == parsed_target.fetch("host") &&
+                  target.fetch("repo").casecmp?(parsed_target.fetch("repo")) &&
+                  target.fetch("type") == parsed_target.fetch("type") &&
+                  target.fetch("number") == parsed_target.fetch("number")
+    raise Error, "receipt target is not the deterministic batch anchor" unless same_target
+    raise Error, "authenticated GitHub actor is not the receipt author" unless actor.casecmp?(parsed.fetch("author"))
+
+    comment = gh_api(
+      target.fetch("host"),
+      "repos/#{target.fetch('repo')}/issues/comments/#{parsed.fetch('comment_id')}"
+    )
+    current = verify_comment(
+      comment,
+      target:,
+      expected_comment_id: parsed.fetch("comment_id"),
+      expected_author: parsed.fetch("author"),
+      expected_batch_id:
+    )
+    raise Error, "receipt comment timestamp binding mismatch" unless
+      current.fetch("created_at") == parsed.fetch("created_at") &&
+      current.fetch("updated_at") == parsed.fetch("updated_at")
+    raise Error, "receipt comment SHA-256 mismatch" unless current.fetch("sha256") == parsed.fetch("sha256")
+
+    current_state = marker_state(current.fetch("marker"))
+    raise Error, "only an original blocked receipt can be terminalized" unless
+      current_state&.fields&.fetch("audit_status") == "blocked" &&
+      !current_state.fields.key?("prior_receipt_sha256")
+
+    verify_compact_reference!(reference, parsed:, verified: current, fields: current_state.fields)
+    unless state_blockers(current_state).one?
+      raise Error, "only a blocked receipt with exactly one follow-up can be terminalized"
+    end
+
+    comment_body = canonical_comment_body(receipt)
+    raise Error, "local completed-batch audit receipt is invalid" unless comment_body
+
+    marker = comment_marker(comment_body)
+    state = marker_state(marker)
+    raise Error, "updated completed-batch receipt must be complete and clean" unless state_ready?(state)
+
+    validate_publication_preflight!(
+      publication_preflight,
+      expected_batch_id:,
+      targets: deterministic,
+      coordination_backend:
+    )
+    marker = bind_publication_snapshot(marker, publication_preflight)
+    marker = bind_prior_receipt_sha256(marker, current.fetch("sha256"))
+    comment_body = "#{COMMENT_HEADER}\n\n#{marker}"
+    local = replay_marker(
+      marker,
+      expected_batch_id:,
+      other_blockers:,
+      publication_preflight:,
+      expected_targets: deterministic,
+      coordination_backend:
+    )
+    raise Error, "updated completed-batch receipt is not archive-ready" unless local.fetch("ready")
+
+    endpoint = "repos/#{target.fetch('repo')}/issues/comments/#{parsed.fetch('comment_id')}"
+    begin
+      gh_api(target.fetch("host"), endpoint, method: "PATCH", input: JSON.generate("body" => comment_body))
+    rescue Error, KeyError => e
+      raise UpdateOutcomeUnknownError, "comment update outcome is unknown: #{e.message}"
+    end
+
+    begin
+      readback = gh_api(target.fetch("host"), endpoint)
+      verified = verify_comment(
+        readback,
+        target:,
+        expected_comment_id: parsed.fetch("comment_id"),
+        expected_author: actor,
+        expected_batch_id:,
+        expected_body: comment_body
+      )
+      prior = marker_state(verified.fetch("marker")).fields.fetch("prior_receipt_sha256")
+      raise Error, "updated receipt prior hash mismatch" unless prior == "sha256:#{current.fetch('sha256')}"
+    rescue Error, KeyError => e
+      raise UpdateReadbackError.new(
+        "comment was updated but readback verification failed: #{e.message}",
+        comment_id: parsed.fetch("comment_id")
+      )
+    end
+    remote = replay_marker(
+      verified.fetch("marker"),
+      expected_batch_id:,
+      other_blockers:,
+      publication_preflight:,
+      expected_targets: deterministic,
+      coordination_backend:
+    )
+    raise Error, "readback updated completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
+
+    remote.merge(
+      "publication_snapshot_digest" => publication_snapshot_digest(remote.fetch("fields")),
+      "final_status" => final_status(remote),
+      "receipt" => verified.reject { |key, _value| key == "marker" },
+      "pr_description_summary" => pr_description_summary(
+        target:,
+        result: remote,
+        receipt_url: verified.fetch("url")
+      ),
+      "chat_reference" => compact_reference(remote.fetch("fields").fetch("verdict"), verified),
+      "mutation_state" => "updated",
+      "errors" => []
+    )
+  rescue ArgumentError => e
+    raise Error, e.message
+  end
+
   def replay_reference(
     expected_batch_id:,
     targets:,
@@ -278,11 +409,8 @@ module CompletedBatchAuditReceipt
       coordination_backend:
     )
     raise Error, "readback completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
-    raise Error, "compact reference result does not match receipt verdict" unless
-      remote.fetch("fields").fetch("verdict") == parsed.fetch("verdict")
 
-    canonical = compact_reference(remote.fetch("fields").fetch("verdict"), verified)
-    raise Error, "compact receipt reference is noncanonical" unless reference.chomp == canonical
+    canonical = verify_compact_reference!(reference, parsed:, verified:, fields: remote.fetch("fields"))
 
     remote.merge(
       "publication_snapshot_digest" => publication_snapshot_digest(remote.fetch("fields")),
@@ -298,6 +426,16 @@ module CompletedBatchAuditReceipt
     )
   rescue ArgumentError => e
     raise Error, e.message
+  end
+
+  def verify_compact_reference!(reference, parsed:, verified:, fields:)
+    verdict = fields.fetch("verdict")
+    raise Error, "compact reference result does not match receipt verdict" unless verdict == parsed.fetch("verdict")
+
+    canonical = compact_reference(verdict, verified)
+    raise Error, "compact receipt reference is noncanonical" unless reference.chomp == canonical
+
+    canonical
   end
 
   def parse_reference(reference)
@@ -427,7 +565,6 @@ module CompletedBatchAuditReceipt
     created_at = comment.fetch("created_at", "").to_s
     updated_at = comment.fetch("updated_at", "").to_s
     raise Error, "comment timestamps are missing" if created_at.empty? || updated_at.empty?
-    raise Error, "comment was edited before verification" unless created_at == updated_at
 
     body = comment.fetch("body", "").to_s
     raise Error, "comment body changed after POST" if expected_body && body != expected_body
@@ -437,6 +574,13 @@ module CompletedBatchAuditReceipt
 
     local = replay_marker(marker, expected_batch_id:)
     raise Error, "comment receipt batch or grammar mismatch" unless local.fetch("well_formed")
+
+    prior_receipt_sha256 = local.dig("fields", "prior_receipt_sha256")
+    if prior_receipt_sha256
+      raise Error, "updated receipt timestamp is before creation" unless Time.iso8601(updated_at) >= Time.iso8601(created_at)
+    else
+      raise Error, "comment was edited before verification" unless created_at == updated_at
+    end
 
     {
       "host" => target.fetch("host"),
@@ -542,6 +686,22 @@ module CompletedBatchAuditReceipt
     bound
   end
 
+  def bind_prior_receipt_sha256(marker, prior_sha256)
+    raise Error, "prior receipt SHA-256 is invalid" unless prior_sha256.to_s.match?(/\A[0-9a-f]{64}\z/)
+
+    body = marker.delete_prefix("<!-- completed-batch-audit v1\n").delete_suffix("-->\n").delete_suffix("-->")
+    raise Error, "completed-batch receipt was already terminalized" if body.match?(/^prior_receipt_sha256:/)
+
+    line = "prior_receipt_sha256: sha256:#{prior_sha256}\n"
+    raise Error, "completed-batch audit publication snapshot is missing" unless body.match?(/^publication_snapshot:.*\n/)
+
+    body = body.sub(/^(publication_snapshot:.*\n)/, "\\1#{line}")
+    bound = "<!-- completed-batch-audit v1\n#{body.chomp}\n-->\n"
+    raise Error, "updated completed-batch receipt is invalid" unless marker_state(bound)
+
+    bound
+  end
+
   def publication_snapshot_value(preflight)
     snapshot = CompletedBatchPublicationPreflight.canonicalize(preflight.fetch("snapshot"))
     encoded = Base64.urlsafe_encode64(JSON.generate(snapshot), padding: false)
@@ -619,7 +779,8 @@ module CompletedBatchAuditReceipt
       coordination_backend: trusted_backend,
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
-      coordination_verifier: method(:authenticated_publication_coordination_status)
+      coordination_verifier: method(:authenticated_publication_coordination_status),
+      target_projection_verifier: method(:authenticated_publication_target_projection)
     )
   end
 
@@ -647,6 +808,10 @@ module CompletedBatchAuditReceipt
 
   def authenticated_publication_coordination_status(backend:, batch_id:)
     CompletedBatchPublicationPreflight.authenticated_coordination_status(backend:, batch_id:)
+  end
+
+  def authenticated_publication_target_projection(source:, target:)
+    CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
   end
 
   def trusted_coordination_backend(workflow_config)
@@ -771,7 +936,7 @@ module CompletedBatchAuditReceipt
 
     fields = envelope[:body].each_line.each_with_object({}) do |line, parsed|
       raw_line = line.delete_suffix("\n")
-      match = raw_line.match(/\A([a-z_]+):[ \t]*(.*)\z/)
+      match = raw_line.match(/\A([a-z0-9_]+):[ \t]*(.*)\z/)
       break unless match
 
       key = match[1]
@@ -783,7 +948,7 @@ module CompletedBatchAuditReceipt
       parsed[key] = match[2].strip
     end
 
-    accepted = [LEGACY_FIELDS.sort, PUBLICATION_FIELDS.sort]
+    accepted = [LEGACY_FIELDS.sort, PUBLICATION_FIELDS.sort, UPDATED_PUBLICATION_FIELDS.sort]
     fields if fields && accepted.include?(fields.keys.sort)
   end
 
@@ -799,13 +964,16 @@ module CompletedBatchAuditReceipt
   end
 
   def state_ready?(state)
-    fields = state.fields
+    ready_fields_and_records?(state.fields, state.records)
+  end
+
+  def ready_fields_and_records?(fields, records)
     return false unless fields["audit_status"] == "complete" && fields["verdict"] == "clean"
     return false unless fields["findings"] == "none"
     return false unless evidenced_scalar?(fields["batch_id"])
     return false unless evidenced_scalar?(fields["scope_evidence"]) && evidenced_scalar?(fields["checker_evidence"])
 
-    state.records.all?(&:fully_evidenced_terminal?)
+    records.all?(&:fully_evidenced_terminal?)
   end
 
   def state_blockers(state)
@@ -842,6 +1010,7 @@ module CompletedBatchAuditReceipt
       structurally_valid_scalar?(fields["scope_evidence"]) &&
       structurally_valid_scalar?(fields["checker_evidence"]) &&
       (!fields.key?("publication_snapshot") || structurally_valid_scalar?(fields["publication_snapshot"])) &&
+      (!fields.key?("prior_receipt_sha256") || fields["prior_receipt_sha256"].match?(/\Asha256:[0-9a-f]{64}\z/)) &&
       structurally_valid_dispositions?(fields["followups_dispositions"]) &&
       well_formed_findings?(fields["findings"], records:)
   end
@@ -878,6 +1047,8 @@ module CompletedBatchAuditReceipt
     outstanding = findings.start_with?("OUTSTANDING ")
     unknown_marker = fields.fetch("audit_status") == "UNKNOWN" && verdict == "UNKNOWN" && findings == "UNKNOWN"
     clean_marker = fields.fetch("audit_status") == "complete" && verdict == "clean" && findings == "none"
+    return false if fields.key?("prior_receipt_sha256") &&
+                    (!fields.key?("publication_snapshot") || !ready_fields_and_records?(fields, records))
 
     return true if clean_marker && non_ready_records.empty?
     return true if unknown_marker
@@ -1006,6 +1177,10 @@ module CompletedBatchAuditReceipt
 
   def failure_blocker(error)
     case error
+    when UpdateOutcomeUnknownError
+      UPDATE_OUTCOME_BLOCKER
+    when UpdateReadbackError
+      UPDATE_READBACK_BLOCKER
     when PostOutcomeUnknownError
       POST_OUTCOME_BLOCKER
     when PostReadbackError
@@ -1081,7 +1256,7 @@ module CompletedBatchAuditReceipt
 
   def run(argv)
     command = argv.shift
-    unless %w[publish replay].include?(command)
+    unless %w[publish replay update].include?(command)
       warn usage
       return 64
     end
@@ -1111,13 +1286,16 @@ module CompletedBatchAuditReceipt
     if command == "publish"
       raise OptionParser::MissingArgument, "--receipt" if options["receipt"].to_s.empty?
       unless options["reference_file"].to_s.empty?
-        raise OptionParser::InvalidArgument, "--reference-file is valid only with replay"
+        raise OptionParser::InvalidArgument, "--reference-file is valid only with replay or update"
+      end
+    elsif command == "replay"
+      raise OptionParser::MissingArgument, "--reference-file" if options["reference_file"].to_s.empty?
+      unless options["receipt"].to_s.empty?
+        raise OptionParser::InvalidArgument, "--receipt is valid only with publish or update"
       end
     else
       raise OptionParser::MissingArgument, "--reference-file" if options["reference_file"].to_s.empty?
-      unless options["receipt"].to_s.empty?
-        raise OptionParser::InvalidArgument, "--receipt is valid only with publish"
-      end
+      raise OptionParser::MissingArgument, "--receipt" if options["receipt"].to_s.empty?
     end
 
     coordination_backend = trusted_coordination_backend(options.fetch("workflow_config"))
@@ -1139,13 +1317,25 @@ module CompletedBatchAuditReceipt
                  publication_preflight:,
                  coordination_backend:
                )
-             else
+             elsif command == "replay"
                reference_path = options.fetch("reference_file")
                reference = reference_path == "-" ? $stdin.read : File.read(reference_path, encoding: "UTF-8")
                replay_reference(
                  expected_batch_id: options.fetch("expected_batch_id"),
                  targets:,
                  reference:,
+                 other_blockers: options.fetch("other_blockers"),
+                 publication_preflight:,
+                 coordination_backend:
+               )
+             else
+               reference_path = options.fetch("reference_file")
+               reference = reference_path == "-" ? $stdin.read : File.read(reference_path, encoding: "UTF-8")
+               update(
+                 expected_batch_id: options.fetch("expected_batch_id"),
+                 targets:,
+                 reference:,
+                 receipt: File.read(options.fetch("receipt"), encoding: "UTF-8"),
                  other_blockers: options.fetch("other_blockers"),
                  publication_preflight:,
                  coordination_backend:
@@ -1168,6 +1358,11 @@ module CompletedBatchAuditReceipt
       "errors" => [e.message]
     }
     case e
+    when UpdateOutcomeUnknownError
+      result["mutation_state"] = "comment-update-outcome-unknown"
+    when UpdateReadbackError
+      result["mutation_state"] = "comment-updated-readback-unknown"
+      result["comment_id"] = e.comment_id
     when PostOutcomeUnknownError
       result["mutation_state"] = "comment-post-outcome-unknown"
     when PostReadbackError
@@ -1179,8 +1374,8 @@ module CompletedBatchAuditReceipt
   end
 
   def usage
-    "Usage: completed-batch-audit-receipt <publish|replay> --expected-batch-id ID " \
-      "--targets-json PATH --workflow-config PATH (--receipt PATH | --reference-file PATH|-) " \
+    "Usage: completed-batch-audit-receipt <publish|replay|update> --expected-batch-id ID " \
+      "--targets-json PATH --workflow-config PATH (--receipt PATH | --reference-file PATH|- | both for update) " \
       "[--publication-preflight PATH] [--other-blocker TEXT ...]"
   end
 end

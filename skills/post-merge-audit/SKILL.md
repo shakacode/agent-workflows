@@ -437,16 +437,35 @@ preserves the original coordination terminal and records the later-target
 completion mode. Active/nonterminal lanes, open targets, unauthenticated target
 facts, and malformed terminal timestamps remain blocked.
 
-Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
+A raw issue target may project to a different final PR only when the lane's
+exact PR URL is in the trusted final manifest and authenticated GitHub GraphQL
+proves both closing-reference directions for the same host/repository, a closed
+issue, a merged PR, the full head SHA, and merge/close timestamps in order. Bind
+that typed projection proof into every contributing lane snapshot, retain and
+validate every maker/checker/QA lane independently, and compare the manifest to
+the unique projected final-target set; never infer a role from the lane name,
+trust `pr_url` alone, rewrite coordination history, or discard a repeated lane.
+
+Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish`, `update`, or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
+
+When that one durable comment is an original blocked receipt and its sole
+follow-up later clears, `update` may terminalize that exact comment once without
+a second POST. It replays the old compact reference, requires the authenticated
+writer to be the original author with current write permission, requires a fresh
+eligible publication preflight and a complete clean replacement marker, PATCHes
+the exact comment ID, injects `prior_receipt_sha256` plus the publication
+snapshot, reads the edit back, and emits a new compact reference. Refuse an
+already-updated receipt, an author or target mismatch, or an unready replacement;
+never edit a clean receipt or use `update` to retry PR-description sync.
 
 For `audit_status: complete`, that parse/bind step additionally requires the
 eligible publication preflight and exact manifest match. Pass the same refreshed
-preflight receipt to `publish` and `replay`
+preflight receipt to `publish`, `update`, and `replay`
 with `--publication-preflight` and explicit `--workflow-config <trusted repo
 workflow config>`; replay reports a snapshot mismatch/staleness blocker if
 coordination, target/head, or QA state no longer matches the published binding.
 
-Use `completed-batch-audit-receipt` for both `publish` and `replay`;
+Use `completed-batch-audit-receipt` for `publish`, `update`, and `replay`;
 `--targets-json` is a JSON array of exact `host`, `repo`, `type`
 (`pull_request` or `issue`), and positive `number` objects. The preflight input
 contract is `completed-batch-publication-preflight-input` v1 with `batch_id`,
@@ -464,13 +483,13 @@ v2-contradictory classification blocks.
 
 The preflight receipt embeds the canonical raw v1 input as `source_input` with
 `source_input_digest`; digests prove integrity only and never authenticate
-terminal facts. Before publish or replay accepts a complete receipt, it
+terminal facts. Before publish, update, or replay accepts a complete receipt, it
 re-assesses that bound source input, re-fetches each exact target through
 authenticated `gh api`, reruns bounded exact-batch coordination status when a
 backend applies, and re-authenticates any waiver; missing, altered, stale, or
-mismatched terminal facts block before POST or ready replay.
+mismatched terminal facts block before POST, PATCH, or ready replay.
 
-Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay.
+Completed-batch receipt `publish`, `update`, and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication, update, or ready replay.
 
 Configured `public claim-comment fallback` is advisory ownership state only; it
 must not invoke private `agent-coord`, and without a separate authenticated
@@ -497,7 +516,7 @@ exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`,
 replay independently re-fetch and compare the bound waiver; a self-consistent
 preflight digest is not authentication.
 
-Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
+Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, reference-bound timestamps/body, SHA-256, batch ID, wrapper version, and result. An edited timestamp is accepted only for the one helper-terminalized form carrying a valid `prior_receipt_sha256` field.
 
 A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. New complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. New complete receipts also have exactly one helper-managed `publication_snapshot`; unrefreshed or snapshot-mismatched data fails closed. A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
 
@@ -534,7 +553,7 @@ followups_dispositions: <none|one or more ` | `-separated records with ref, owne
 -->
 ```
 
-For a PR anchor, `publish` and `replay` emit this small managed section after
+For a PR anchor, `publish`, `update`, and `replay` emit this small managed section after
 comment readback; neither mutates the PR description. The coordinator applies it
 inside `### Audit receipts` in the canonical `Agent details` disclosure through
 a separate freshly-read update, preserves all surrounding text, never duplicates

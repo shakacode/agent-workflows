@@ -32,6 +32,57 @@ module CompletedBatchPublicationPreflight
   WRITE_PERMISSIONS = %w[write maintain admin].freeze
   QA_WAIVER_MARKER = "qa-maintainer-waiver v1"
   HOSTED_QA_WAIVER_MARKER = "hosted-qa-maintainer-waiver v1"
+  TARGET_PROJECTION_CONTRACT = "github-issue-result-pr-projection"
+  TARGET_PROJECTION_VERSION = 1
+  TARGET_PROJECTION_VERIFICATION_SOURCE = "authenticated github graphql symmetric closing references"
+  TARGET_PROJECTION_MAX_PAGES = 100
+  TARGET_PROJECTION_QUERY = <<~GRAPHQL
+    query(
+      $owner: String!
+      $name: String!
+      $resultNumber: Int!
+      $sourceNumber: Int!
+      $resultCursor: String
+      $sourceCursor: String
+    ) {
+      repository(owner: $owner, name: $name) {
+        result: pullRequest(number: $resultNumber) {
+          number
+          url
+          state
+          mergedAt
+          headRefOid
+          closingIssuesReferences(first: 100, after: $resultCursor) {
+            nodes {
+              number
+              url
+              state
+              closedAt
+              repository { nameWithOwner }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+        source: issue(number: $sourceNumber) {
+          number
+          url
+          state
+          closedAt
+          closedByPullRequestsReferences(first: 100, after: $sourceCursor) {
+            nodes {
+              number
+              url
+              state
+              mergedAt
+              headRefOid
+              repository { nameWithOwner }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }
+    }
+  GRAPHQL
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
   RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned superseded].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
@@ -57,7 +108,8 @@ module CompletedBatchPublicationPreflight
     coordination_backend:,
     waiver_verifier: nil,
     target_verifier: nil,
-    coordination_verifier: nil
+    coordination_verifier: nil,
+    target_projection_verifier: nil
   )
     blockers = []
     input = {} unless input.is_a?(Hash)
@@ -86,14 +138,19 @@ module CompletedBatchPublicationPreflight
         blockers << "coordination status is not authenticated or fresh"
       end
       batch = resolved_batch(input["coordination_status"], batch_id, blockers)
-      lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
+      lane_entries, resolved_targets = resolved_lanes(
+        batch,
+        expected_targets,
+        blockers,
+        target_projection_verifier:
+      )
     end
     compare_resolved_scope(expected_targets, resolved_targets, blockers)
     snapshots = indexed_target_snapshots(input["target_snapshots"], expected_targets, blockers)
     qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
 
     validate_batch_terminal(batch, blockers) unless no_backend
-    canonical_targets, authenticated_later_target_keys = canonical_target_snapshots(
+    canonical_targets, authenticated_later_lane_keys = canonical_target_snapshots(
       expected_targets,
       snapshots,
       lane_entries,
@@ -102,7 +159,7 @@ module CompletedBatchPublicationPreflight
     )
     canonical_lanes = canonical_lane_snapshots(
       lane_entries,
-      authenticated_later_target_keys,
+      authenticated_later_lane_keys,
       blockers
     )
     canonical_qa = canonical_qa_snapshots(
@@ -205,7 +262,11 @@ module CompletedBatchPublicationPreflight
       return false unless coordination.fetch("lanes") == []
       return false unless coordination.dig("not_applicable", "targets") == targets
     else
-      return false unless targets == coordination.fetch("lanes").map { |entry| entry.fetch("target") }
+      lane_targets = coordination.fetch("lanes")
+                                 .map { |entry| entry.fetch("target") }
+                                 .uniq { |target| target_key(target) }
+                                 .sort_by { |target| target_sort_key(target) }
+      return false unless targets == lane_targets
     end
     return false unless targets == receipt.dig("snapshot", "qa").map { |entry| entry.fetch("target") }
 
@@ -274,7 +335,8 @@ module CompletedBatchPublicationPreflight
     coordination_backend:,
     waiver_verifier:,
     target_verifier:,
-    coordination_verifier:
+    coordination_verifier:,
+    target_projection_verifier: nil
   )
     return false unless valid_receipt?(receipt)
 
@@ -288,7 +350,8 @@ module CompletedBatchPublicationPreflight
       coordination_backend: trusted_backend,
       waiver_verifier:,
       target_verifier:,
-      coordination_verifier:
+      coordination_verifier:,
+      target_projection_verifier:
     )
     canonicalize(refreshed) == canonicalize(receipt)
   rescue KeyError, NoMethodError, TypeError
@@ -377,7 +440,7 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def resolved_lanes(batch, expected_targets, blockers)
+  def resolved_lanes(batch, expected_targets, blockers, target_projection_verifier: nil)
     return [[], []] unless batch
 
     lanes = batch["lanes"]
@@ -387,7 +450,6 @@ module CompletedBatchPublicationPreflight
     end
     batch_repo = batch["repo"].to_s
     seen_names = {}
-    seen_targets = {}
     entries = []
     lanes.each do |lane|
       name = normalized_known_string(lane["name"])
@@ -396,25 +458,29 @@ module CompletedBatchPublicationPreflight
       else
         seen_names[name.downcase] = true
       end
-      targets = targets_for_lane(lane, batch_repo, expected_targets)
-      if targets.empty?
+      resolved_targets = targets_for_lane(
+        lane,
+        batch_repo,
+        expected_targets,
+        target_projection_verifier:
+      )
+      if resolved_targets.empty?
         blockers << "coordination lane #{name || 'UNKNOWN'} target is absent or ambiguous"
       end
-      targets.each do |target|
-        key = target_key(target)
-        if seen_targets[key]
-          blockers << "#{target_label(target)} appears in multiple coordination lanes"
-        else
-          seen_targets[key] = true
-        end
-        entries << { "name" => name, "target" => target, "lane" => lane }
+      resolved_targets.each do |resolved|
+        entries << {
+          "name" => name,
+          "target" => resolved.fetch("target"),
+          "target_projection" => resolved["target_projection"],
+          "lane" => lane
+        }
       end
     end
     entries.sort_by! { |entry| target_sort_key(entry.fetch("target")) + [entry.fetch("name").to_s] }
     [entries, entries.map { |entry| entry.fetch("target") }]
   end
 
-  def targets_for_lane(lane, batch_repo, expected_targets)
+  def targets_for_lane(lane, batch_repo, expected_targets, target_projection_verifier: nil)
     url_targets = %w[pr_url issue_url target_url].filter_map do |field|
       value = lane[field]
       next if value.nil?
@@ -430,13 +496,18 @@ module CompletedBatchPublicationPreflight
     url_targets.uniq! { |target| target_key(target) }
     return [] if url_targets.length > 1
 
-    raw_targets = lane["targets"]
-    target_rows = []
-    if lane.key?("targets")
-      return [] unless raw_targets.is_a?(Array) && !raw_targets.empty?
+    unless lane.key?("targets")
+      return url_targets.map { |target| { "target" => target, "target_projection" => nil } }
+    end
 
-      target_rows = raw_targets.map do |raw|
-        number = Integer(raw.to_s.sub(/\A#/, ""), exception: false)
+    raw_targets = lane["targets"]
+    return [] unless raw_targets.is_a?(Array) && !raw_targets.empty?
+
+    raw_numbers = raw_targets.map { |raw| Integer(raw.to_s.sub(/\A#/, ""), exception: false) }
+    return [] if raw_numbers.any?(&:nil?) || raw_numbers.uniq.length != raw_numbers.length
+
+    if url_targets.empty?
+      target_rows = raw_numbers.map do |number|
         candidates = expected_targets.select do |target|
           target["repo"].casecmp?(batch_repo) && target["number"] == number
         end
@@ -444,19 +515,57 @@ module CompletedBatchPublicationPreflight
 
         candidates.first
       end
-      target_rows.uniq! { |target| target_key(target) }
+      return target_rows.map { |target| { "target" => target, "target_projection" => nil } }
     end
 
-    if url_targets.any? && target_rows.any?
-      return [] unless url_targets.map { |target| target_key(target) } ==
-                       target_rows.map { |target| target_key(target) }
+    return [] unless url_targets.one? && raw_numbers.one?
 
-      url_targets
-    elsif url_targets.any?
-      url_targets
-    else
-      target_rows
+    target = url_targets.first
+    direct_target = expected_targets.find do |candidate|
+      target_key(candidate) == target_key(target) && candidate["number"] == raw_numbers.first
     end
+    return [{ "target" => target, "target_projection" => nil }] if direct_target
+
+    source = validated_target(
+      "host" => target["host"],
+      "repo" => batch_repo,
+      "type" => "issue",
+      "number" => raw_numbers.first
+    )
+    projection = verified_target_projection(
+      source,
+      target,
+      expected_targets,
+      verifier: target_projection_verifier
+    )
+    projection ? [{ "target" => target, "target_projection" => projection }] : []
+  end
+
+  def verified_target_projection(source, target, expected_targets, verifier:)
+    return unless source && target["type"] == "pull_request"
+    return unless source["host"] == target["host"] && source["repo"].casecmp?(target["repo"])
+    return unless expected_targets.any? { |candidate| target_key(candidate) == target_key(target) }
+    return unless verifier.respond_to?(:call)
+
+    verified = verifier.call(source:, target:)
+    return unless verified.is_a?(Hash) && verified.keys.sort == %w[
+      contract relationship result_head_sha result_merged_at result_target source_closed_at source_target
+      verification_source version
+    ].sort
+    return unless verified["contract"] == TARGET_PROJECTION_CONTRACT
+    return unless verified["version"] == TARGET_PROJECTION_VERSION
+    return unless validated_target(verified["source_target"]) == source
+    return unless validated_target(verified["result_target"]) == target
+    return unless verified["relationship"] == "closes_issue"
+    return unless verified["result_head_sha"].to_s.match?(SHA_PATTERN)
+    return unless valid_timestamp?(verified["result_merged_at"])
+    return unless valid_timestamp?(verified["source_closed_at"])
+    return unless Time.iso8601(verified["result_merged_at"]) <= Time.iso8601(verified["source_closed_at"])
+    return unless verified["verification_source"] == TARGET_PROJECTION_VERIFICATION_SOURCE
+
+    canonicalize(verified)
+  rescue KeyError, NoMethodError, TypeError
+    nil
   end
 
   def compare_resolved_scope(expected, resolved, blockers)
@@ -478,7 +587,7 @@ module CompletedBatchPublicationPreflight
     blockers << "coordination batch completion timestamp is absent or invalid" unless valid_timestamp?(batch["completed_at"])
   end
 
-  def canonical_lane_snapshots(entries, authenticated_later_target_keys, blockers)
+  def canonical_lane_snapshots(entries, authenticated_later_lane_keys, blockers)
     entries.map do |entry|
       lane = entry.fetch("lane")
       target = entry.fetch("target")
@@ -488,7 +597,7 @@ module CompletedBatchPublicationPreflight
       expected_state = target["type"] == "pull_request" ? "merged" : "closed"
       evidence = normalized_known_string(lane["evidence_url"])
       coordination_completion = terminal_state == "done" && lane["pr_state"] == expected_state && evidence
-      later_target_completion = authenticated_later_target_keys[target_key(target)] == true
+      later_target_completion = authenticated_later_lane_keys[lane_entry_key(entry)] == true
       unless coordination_completion || later_target_completion
         if terminal && RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state)
           blockers << "#{target_label(target)} target completion is not authenticated after coordination closeout"
@@ -509,8 +618,14 @@ module CompletedBatchPublicationPreflight
       if terminal && later_target_completion
         snapshot["completion_mode"] = "authenticated_target_after_coordination_closeout"
       end
+      projection = entry["target_projection"]
+      snapshot["target_projection"] = projection if projection
       snapshot
     end
+  end
+
+  def lane_entry_key(entry)
+    [target_key(entry.fetch("target")), entry.fetch("name").to_s].join("|")
   end
 
   def indexed_target_snapshots(rows, expected_targets, blockers)
@@ -541,8 +656,8 @@ module CompletedBatchPublicationPreflight
   end
 
   def canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers, target_verifier:)
-    lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
-    authenticated_later_target_keys = {}
+    lanes_by_target = lane_entries.group_by { |entry| target_key(entry.fetch("target")) }
+    authenticated_later_lane_keys = {}
     canonical_targets = expected_targets.map do |target|
       key = target_key(target)
       row = snapshots[key]
@@ -587,17 +702,27 @@ module CompletedBatchPublicationPreflight
       unless verified_shape
         blockers << "#{target_label(target)} target state/head is not authenticated or fresh"
       end
-      lane = lanes_by_target.dig(key, "lane")
-      lane_state = lane&.fetch("pr_state", nil)
       verified_target_facts = {
         "target" => target,
         "state" => state,
         "completed_at" => verified_shape ? verified.fetch("completed_at") : nil,
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
       }
-      authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
-      if lane_state && state && lane_state != state && !authenticated_later_completion
-        blockers << "#{target_label(target)} coordination and target state disagree"
+      target_lane_entries = lanes_by_target.fetch(key, [])
+      target_lane_entries.each do |entry|
+        lane = entry.fetch("lane")
+        lane_state = lane.fetch("pr_state", nil)
+        projection = entry["target_projection"]
+        if projection && verified_shape &&
+           !(projection["result_head_sha"].casecmp?(head_sha) &&
+             projection["result_merged_at"] == verified.fetch("completed_at"))
+          blockers << "#{target_label(target)} projected result facts disagree with authenticated target"
+        end
+        authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
+        authenticated_later_lane_keys[lane_entry_key(entry)] = true if authenticated_later_completion
+        if lane_state && state && lane_state != state && !authenticated_later_completion
+          blockers << "#{target_label(target)} coordination and target state disagree"
+        end
       end
       snapshot = {
         "target" => target,
@@ -607,11 +732,12 @@ module CompletedBatchPublicationPreflight
         "source" => source,
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
       }
-      snapshot["completed_at"] = verified_target_facts.fetch("completed_at") if authenticated_later_completion
-      authenticated_later_target_keys[key] = true if authenticated_later_completion
+      if target_lane_entries.any? { |entry| authenticated_later_lane_keys[lane_entry_key(entry)] }
+        snapshot["completed_at"] = verified_target_facts.fetch("completed_at")
+      end
       snapshot
     end
-    [canonical_targets, authenticated_later_target_keys]
+    [canonical_targets, authenticated_later_lane_keys]
   end
 
   def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, waiver_verifier:)
@@ -962,6 +1088,147 @@ module CompletedBatchPublicationPreflight
       timestamp_after?(target_snapshot["completed_at"], lane["closed_at"])
   end
 
+  def authenticated_target_projection(source:, target:, repository_root: Dir.pwd)
+    return unless source["type"] == "issue" && target["type"] == "pull_request"
+    return unless source["host"] == target["host"] && source["repo"].casecmp?(target["repo"])
+
+    owner, name = target.fetch("repo").split("/", 2)
+    return unless owner && name
+
+    result_cursor = nil
+    source_cursor = nil
+    result_contains_source = false
+    source_contains_result = false
+    result_facts = nil
+    source_facts = nil
+    seen_result_cursors = {}
+    seen_source_cursors = {}
+
+    TARGET_PROJECTION_MAX_PAGES.times do
+      variables = {
+        "owner" => owner,
+        "name" => name,
+        "resultNumber" => target.fetch("number"),
+        "sourceNumber" => source.fetch("number")
+      }
+      variables["resultCursor"] = result_cursor if result_cursor
+      variables["sourceCursor"] = source_cursor if source_cursor
+      payload = authenticated_gh_graphql(
+        target.fetch("host"),
+        query: TARGET_PROJECTION_QUERY,
+        variables:,
+        repository_root:
+      )
+      repository = payload&.dig("data", "repository")
+      return unless repository.is_a?(Hash)
+
+      result = repository["result"]
+      source_row = repository["source"]
+      current_result_facts = verified_projection_result_facts(result, target)
+      current_source_facts = verified_projection_source_facts(source_row, source)
+      return unless current_result_facts && current_source_facts
+      return if result_facts && result_facts != current_result_facts
+      return if source_facts && source_facts != current_source_facts
+
+      result_facts ||= current_result_facts
+      source_facts ||= current_source_facts
+      result_connection = result["closingIssuesReferences"]
+      source_connection = source_row["closedByPullRequestsReferences"]
+      return unless valid_projection_connection?(result_connection) && valid_projection_connection?(source_connection)
+
+      result_contains_source ||= result_connection.fetch("nodes").any? do |node|
+        projection_issue_node_matches?(node, source, source_facts)
+      end
+      source_contains_result ||= source_connection.fetch("nodes").any? do |node|
+        projection_pr_node_matches?(node, target, result_facts)
+      end
+      break if result_contains_source && source_contains_result
+
+      unless result_contains_source
+        result_cursor = next_projection_cursor(result_connection.fetch("pageInfo"), seen_result_cursors)
+        return unless result_cursor
+      end
+      unless source_contains_result
+        source_cursor = next_projection_cursor(source_connection.fetch("pageInfo"), seen_source_cursors)
+        return unless source_cursor
+      end
+    end
+    return unless result_contains_source && source_contains_result
+    return unless Time.iso8601(result_facts.fetch("merged_at")) <= Time.iso8601(source_facts.fetch("closed_at"))
+
+    canonicalize(
+      "contract" => TARGET_PROJECTION_CONTRACT,
+      "version" => TARGET_PROJECTION_VERSION,
+      "source_target" => source,
+      "result_target" => target,
+      "relationship" => "closes_issue",
+      "result_head_sha" => result_facts.fetch("head_sha"),
+      "result_merged_at" => result_facts.fetch("merged_at"),
+      "source_closed_at" => source_facts.fetch("closed_at"),
+      "verification_source" => TARGET_PROJECTION_VERIFICATION_SOURCE
+    )
+  rescue KeyError, NoMethodError, TypeError, ArgumentError
+    nil
+  end
+
+  def verified_projection_result_facts(row, target)
+    return unless row.is_a?(Hash)
+    return unless Integer(row["number"], exception: false) == target.fetch("number")
+    return unless row["url"] == target_base_url(target) && row["state"] == "MERGED"
+    return unless valid_timestamp?(row["mergedAt"])
+
+    head_sha = row["headRefOid"].to_s.downcase
+    return unless head_sha.match?(SHA_PATTERN)
+
+    { "head_sha" => head_sha, "merged_at" => row.fetch("mergedAt") }
+  rescue KeyError, TypeError
+    nil
+  end
+
+  def verified_projection_source_facts(row, source)
+    return unless row.is_a?(Hash)
+    return unless Integer(row["number"], exception: false) == source.fetch("number")
+    return unless row["url"] == target_base_url(source) && row["state"] == "CLOSED"
+    return unless valid_timestamp?(row["closedAt"])
+
+    { "closed_at" => row.fetch("closedAt") }
+  rescue KeyError, TypeError
+    nil
+  end
+
+  def valid_projection_connection?(connection)
+    connection.is_a?(Hash) && connection["nodes"].is_a?(Array) && connection["pageInfo"].is_a?(Hash)
+  end
+
+  def projection_issue_node_matches?(node, source, source_facts)
+    node.is_a?(Hash) && Integer(node["number"], exception: false) == source.fetch("number") &&
+      node["url"] == target_base_url(source) && node["state"] == "CLOSED" &&
+      node["closedAt"] == source_facts.fetch("closed_at") &&
+      node.dig("repository", "nameWithOwner").to_s.casecmp?(source.fetch("repo"))
+  rescue KeyError, TypeError
+    false
+  end
+
+  def projection_pr_node_matches?(node, target, result_facts)
+    node.is_a?(Hash) && Integer(node["number"], exception: false) == target.fetch("number") &&
+      node["url"] == target_base_url(target) && node["state"] == "MERGED" &&
+      node["mergedAt"] == result_facts.fetch("merged_at") &&
+      node["headRefOid"].to_s.downcase == result_facts.fetch("head_sha") &&
+      node.dig("repository", "nameWithOwner").to_s.casecmp?(target.fetch("repo"))
+  rescue KeyError, TypeError
+    false
+  end
+
+  def next_projection_cursor(page_info, seen)
+    return unless page_info.is_a?(Hash) && page_info["hasNextPage"] == true
+
+    cursor = normalized_known_string(page_info["endCursor"])
+    return unless cursor && !seen[cursor]
+
+    seen[cursor] = true
+    cursor
+  end
+
   def valid_terminal_lane?(lane)
     return false unless lane.is_a?(Hash)
 
@@ -1130,6 +1397,56 @@ module CompletedBatchPublicationPreflight
 
     payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
     payload if payload.is_a?(Hash)
+  rescue JSON::ParserError, SystemCallError, Timeout::Error
+    nil
+  end
+
+  def authenticated_gh_graphql(host, query:, variables:, repository_root: Dir.pwd)
+    executable = trusted_system_tool("gh", outside_root: repository_root)
+    account = trusted_local_account(repository_root)
+    return unless executable && account
+    return unless query.is_a?(String) && !query.empty? && variables.is_a?(Hash)
+
+    environment = {
+      "GH_HOST" => host,
+      "HOME" => account.dir,
+      "USER" => account.name,
+      "LOGNAME" => account.name,
+      "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+      "GH_PROMPT_DISABLED" => "1",
+      "GIT_TERMINAL_PROMPT" => "0"
+    }
+    GH_CREDENTIAL_ENV_KEYS.each do |name|
+      value = ENV[name]
+      environment[name] = value if value && !value.empty?
+    end
+    valid_variables = variables.all? do |key, value|
+      key.to_s.match?(/\A[A-Za-z][A-Za-z0-9_]*\z/) && (value.is_a?(String) || value.is_a?(Integer))
+    end
+    return unless valid_variables
+
+    command = [executable, "api", "--hostname", host, "graphql", "-f", "query=#{query}"]
+    variables.keys.sort.each do |key|
+      value = variables.fetch(key)
+      command.concat(["-F", "#{key}=#{value}"])
+    end
+    result = with_safe_gh_directory(repository_root) do |directory|
+      capture_process(
+        command,
+        input: "",
+        timeout: gh_timeout_seconds,
+        environment:,
+        chdir: directory,
+        unsetenv_others: true
+      )
+    end
+    return unless result
+
+    stdout, _stderr, status = result
+    return unless status.success?
+
+    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
+    payload if payload.is_a?(Hash) && !payload.key?("errors")
   rescue JSON::ParserError, SystemCallError, Timeout::Error
     nil
   end
@@ -1506,7 +1823,8 @@ module CompletedBatchPublicationPreflight
       coordination_backend: config["coordination_backend"],
       waiver_verifier: method(:authenticated_waiver_comment),
       target_verifier: method(:authenticated_target_snapshot),
-      coordination_verifier: method(:authenticated_coordination_status)
+      coordination_verifier: method(:authenticated_coordination_status),
+      target_projection_verifier: method(:authenticated_target_projection)
     )
     puts JSON.pretty_generate(result)
     result.fetch("eligible") ? 0 : 1

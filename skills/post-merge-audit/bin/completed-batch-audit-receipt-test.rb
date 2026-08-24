@@ -44,6 +44,18 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     BODY
   end
 
+  def unknown_marker
+    marker(<<~BODY)
+      batch_id: batch-184
+      audit_status: UNKNOWN
+      verdict: UNKNOWN
+      scope_evidence: UNKNOWN
+      checker_evidence: UNKNOWN
+      findings: UNKNOWN
+      followups_dispositions: none
+    BODY
+  end
+
   def process_alive?(pid)
     Process.kill(0, pid)
     true
@@ -184,6 +196,28 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     refute result.fetch("ready")
     assert_equal ["completed-batch-audit publication snapshot refresh required"], result.fetch("blockers")
     assert_equal "clean", result.dig("fields", "verdict")
+  end
+
+  def test_prior_receipt_hash_is_valid_only_on_a_clean_publication_bound_terminalization
+    preflight = publication_preflight
+    prior_hash = "a" * 64
+
+    { "blocked" => followup_marker, "UNKNOWN" => unknown_marker }.each do |label, original|
+      bound = CompletedBatchAuditReceipt.bind_publication_snapshot(original, preflight)
+      forged = bound.sub(/^publication_snapshot:.*\n/) do |line|
+        "#{line}prior_receipt_sha256: sha256:#{prior_hash}\n"
+      end
+      result = CompletedBatchAuditReceipt.replay_marker(
+        forged,
+        expected_batch_id: "batch-184",
+        publication_preflight: preflight,
+        expected_targets: preflight.fetch("targets"),
+        coordination_backend: "n/a"
+      )
+
+      refute result.fetch("well_formed"), label
+      assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers"), label
+    end
   end
 
   def test_real_premature_hichee_marker_replays_invalid_and_nonready
@@ -1637,6 +1671,186 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_update_terminalizes_the_existing_blocked_receipt_without_a_second_post
+    with_fake_gh do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      blocked_path = File.join(directory, "blocked-receipt.txt")
+      File.write(blocked_path, followup_marker)
+      publish_out, publish_err, publish_status = capture_receipt_cli(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        blocked_path
+      )
+      assert publish_status.success?, publish_err
+      blocked = JSON.parse(publish_out)
+      refute blocked.fetch("ready")
+
+      reference_path = File.join(directory, "reference.txt")
+      File.write(reference_path, blocked.fetch("chat_reference"))
+      complete_path = File.join(directory, "complete-receipt.txt")
+      File.write(complete_path, ready_marker)
+
+      tampered_reference_path = File.join(directory, "tampered-reference.txt")
+      File.write(
+        tampered_reference_path,
+        blocked.fetch("chat_reference").sub("Completed-batch audit: follow-ups-remain", "Completed-batch audit: clean")
+      )
+      tampered_out, _tampered_err, tampered_status = capture_receipt_cli(
+        env,
+        "ruby",
+        SCRIPT,
+        "update",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--reference-file",
+        tampered_reference_path,
+        "--receipt",
+        complete_path
+      )
+      refute tampered_status.success?
+      assert_includes JSON.parse(tampered_out).fetch("errors"),
+                      "compact reference result does not match receipt verdict"
+
+      update_out, update_err, update_status = capture_receipt_cli(
+        env,
+        "ruby",
+        SCRIPT,
+        "update",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--reference-file",
+        reference_path,
+        "--receipt",
+        complete_path
+      )
+
+      assert update_status.success?, "#{update_err}\n#{update_out}"
+      updated = JSON.parse(update_out)
+      assert updated.fetch("ready")
+      assert_equal "updated", updated.fetch("mutation_state")
+      assert_equal blocked.dig("receipt", "url"), updated.dig("receipt", "url")
+      refute_equal blocked.fetch("chat_reference"), updated.fetch("chat_reference")
+      body = File.read(env.fetch("FAKE_GH_BODY"))
+      assert_includes body, "prior_receipt_sha256: sha256:#{blocked.dig('receipt', 'sha256')}"
+
+      updated_reference_path = File.join(directory, "updated-reference.txt")
+      File.write(updated_reference_path, updated.fetch("chat_reference"))
+      replay_out, replay_err, replay_status = capture_receipt_cli(
+        env,
+        "ruby",
+        SCRIPT,
+        "replay",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--reference-file",
+        updated_reference_path
+      )
+      assert replay_status.success?, "#{replay_err}\n#{replay_out}"
+      assert JSON.parse(replay_out).fetch("ready")
+
+      second_out, _second_err, second_status = capture_receipt_cli(
+        env,
+        "ruby",
+        SCRIPT,
+        "update",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--reference-file",
+        updated_reference_path,
+        "--receipt",
+        complete_path
+      )
+      refute second_status.success?
+      assert_includes JSON.parse(second_out).fetch("errors"), "only an original blocked receipt can be terminalized"
+
+      calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+      assert_equal(1, calls.count { |call| call.include?("--method POST") })
+      assert_equal(1, calls.count { |call| call.include?("--method PATCH") })
+    end
+  end
+
+  def test_update_refuses_a_blocked_receipt_with_more_than_one_followup
+    multiple_records = followup_marker.sub(
+      "evidence: issue #184\n",
+      "evidence: issue #184 | ref: #185; owner: maintainer; current status: pending; " \
+      "disposition: fix; evidence: issue #185\n"
+    )
+    findings_only_extra = followup_marker.sub(
+      "findings: OUTSTANDING #184",
+      "findings: OUTSTANDING #184, #185"
+    )
+
+    { "multiple records" => multiple_records, "findings-only extra" => findings_only_extra }.each do |label, original|
+      with_fake_gh do |env, directory|
+        targets_path = write_json(
+          directory,
+          "targets.json",
+          [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+        )
+        blocked_path = File.join(directory, "blocked-receipt.txt")
+        File.write(blocked_path, original)
+        publish_out, publish_err, publish_status = capture_receipt_cli(
+          env,
+          "ruby",
+          SCRIPT,
+          "publish",
+          "--expected-batch-id",
+          "batch-184",
+          "--targets-json",
+          targets_path,
+          "--receipt",
+          blocked_path
+        )
+        assert publish_status.success?, "#{label}: #{publish_err}"
+
+        reference_path = File.join(directory, "reference.txt")
+        File.write(reference_path, JSON.parse(publish_out).fetch("chat_reference"))
+        complete_path = File.join(directory, "complete-receipt.txt")
+        File.write(complete_path, ready_marker)
+        update_out, _update_err, update_status = capture_receipt_cli(
+          env,
+          "ruby",
+          SCRIPT,
+          "update",
+          "--expected-batch-id",
+          "batch-184",
+          "--targets-json",
+          targets_path,
+          "--reference-file",
+          reference_path,
+          "--receipt",
+          complete_path
+        )
+
+        refute update_status.success?, label
+        assert_includes JSON.parse(update_out).fetch("errors"),
+                        "only a blocked receipt with exactly one follow-up can be terminalized",
+                        label
+        calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+        assert_equal(0, calls.count { |call| call.include?("--method PATCH") }, label)
+      end
+    end
+  end
+
   def test_invalid_remote_reference_fails_closed_and_preserves_sanitized_external_blockers
     with_fake_gh do |env, directory|
       targets_path = write_json(
@@ -2614,7 +2828,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     command = arguments.dup
     script_index = command.index(SCRIPT)
     if script_index &&
-       %w[publish replay].include?(command[script_index + 1]) &&
+       %w[publish replay update].include?(command[script_index + 1]) &&
        !command.include?("--workflow-config")
       environment = command.first.is_a?(Hash) ? command.first : {}
       workflow_config = environment.fetch("FAKE_WORKFLOW_CONFIG", WORKFLOW_CONFIG)
@@ -2819,7 +3033,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           result["user"]["login"] = "other-maintainer" if ENV["FAKE_GH_MODE"] == "wrong-author"
           result["user"] = "not-an-object" if ENV["FAKE_GH_MODE"] == "invalid-user"
           result["author_association"] = "NONE" if ENV["FAKE_GH_MODE"] == "association-none"
-          result["updated_at"] = "2026-07-18T18:00:01Z" if ENV["FAKE_GH_MODE"] == "edited"
+          if ENV["FAKE_GH_MODE"] == "edited" || body.include?("prior_receipt_sha256:")
+            result["updated_at"] = "2026-07-18T18:00:01Z"
+          end
           result["html_url"] = result["html_url"].sub("issuecomment-9001", "issuecomment-9002") if ENV["FAKE_GH_MODE"] == "wrong-url"
           result["issue_url"] = result["issue_url"].sub("/issues/184", "/issues/185") if ENV["FAKE_GH_MODE"] == "wrong-issue-url"
           result
@@ -2874,6 +3090,10 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             puts "{}"
             exit
           end
+          puts JSON.generate(comment.call(payload.fetch("body")))
+        when ["PATCH", "repos/#{canonical_repo}/issues/comments/9001"]
+          payload = JSON.parse($stdin.read)
+          File.write(ENV.fetch("FAKE_GH_BODY"), payload.fetch("body"))
           puts JSON.generate(comment.call(payload.fetch("body")))
         when ["GET", "repos/#{canonical_repo}/issues/comments/9001"]
           exit 1 if ENV["FAKE_GH_MODE"] == "readback-failure"
