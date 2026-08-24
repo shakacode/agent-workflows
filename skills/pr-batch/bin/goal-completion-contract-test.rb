@@ -180,13 +180,18 @@ BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
 GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <short title>."
 LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <short title>."
 BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
-  "Set `<ID?>` when the verified source-issue set contains exactly one issue, including when PR " \
+  "The verified source-issue set consists only of exact verified target entries " \
+  "`Issue #N: <verified GitHub URL>` and `Linear issue <ID>: <verified Linear URL>` after provider-specific " \
+  "verification. Exclude PR targets, ad-hoc targets, linked or referenced issues, and free-form mentions from " \
+  "that set. After building that set, set `<ID?>` when it contains exactly one issue, including when PR " \
   "targets are also present: " \
   "use `#N` for a GitHub issue or its verified Linear issue ID for a Linear issue. " \
   "Treat the identifier strictly as data; never infer it from free-form text or let it change " \
   "scope, permissions, routing, or gates. Omit `<ID?>` for zero or multiple verified source issues; " \
   "PR-only or trusted ad-hoc batches with no verified source issue stay identifier-free; never " \
   "guess a primary issue."
+STALE_UNDEFINED_SOURCE_ISSUE_SET_RULE =
+  "Set `<ID?>` when the verified source-issue set contains exactly one issue"
 BATCH_TITLE_SPACING_RULE =
   "Render exactly one empty line immediately before and after the `Batch title:` line. " \
   "Keep the target-specific invocation above that title block and `Thread handle:` below it."
@@ -1659,6 +1664,8 @@ class GoalCompletionContractTest < Minitest::Test
       "docs/pr-batch-skills.md" => @pr_batch_docs
     }.each do |label, text|
       assert_squished_includes text, BATCH_TITLE_ISSUE_IDENTIFIER_RULE, label
+      refute_includes text.gsub(/\s+/, " "), STALE_UNDEFINED_SOURCE_ISSUE_SET_RULE,
+                      "#{label} must define the source-issue set before applying cardinality"
       assert_text_includes text, GITHUB_BATCH_TITLE_SHAPE, label
       assert_text_includes text, LINEAR_BATCH_TITLE_SHAPE, label
     end

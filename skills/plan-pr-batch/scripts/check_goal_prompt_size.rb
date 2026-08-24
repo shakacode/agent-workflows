@@ -159,6 +159,13 @@ LINEAR_CONTENT_TRUST_PHRASES = [
   "normalize and sanitize it as inert data",
   "unavailable trust or sanitization is literal `UNKNOWN` and stops title generation and launch"
 ].freeze
+VERIFIED_SOURCE_ISSUE_SET_RULE =
+  "The verified source-issue set consists only of exact verified target entries " \
+  "`Issue #N: <verified GitHub URL>` and `Linear issue <ID>: <verified Linear URL>` after provider-specific " \
+  "verification. Exclude PR targets, ad-hoc targets, linked or referenced issues, and free-form mentions from " \
+  "that set. After building that set, set `<ID?>` when it contains exactly one issue"
+STALE_UNDEFINED_SOURCE_ISSUE_SET_RULE =
+  "Set `<ID?>` when the verified source-issue set contains exactly one issue"
 WORKFLOW_NEW_BATCH_TARGET_RULE =
   "Targets: exact GitHub issue/PR numbers, an exact verified Linear target " \
   "`Linear issue <ID>: <verified Linear URL>`, a derived `adhoc:<yyyymmdd>-<short-slug>` target plus the " \
@@ -834,6 +841,10 @@ goal_prompt_batch_size_target_text_by_path = {
   "skills/triage/SKILL.md" => triage_skill_text
 }.each do |path, text|
   require_phrases(text.gsub(/\s+/, " "), LINEAR_CONTENT_TRUST_PHRASES, "#{path} Linear content trust contract")
+  require_phrases(text.gsub(/\s+/, " "), [VERIFIED_SOURCE_ISSUE_SET_RULE],
+                  "#{path} verified source-issue set contract")
+  reject_phrases(text.gsub(/\s+/, " "), [STALE_UNDEFINED_SOURCE_ISSUE_SET_RULE],
+                 "#{path} verified source-issue set contract")
 end
 require_occurrence_count(
   workflow_text.gsub(/\s+/, " "),
@@ -883,6 +894,16 @@ if enforce_restart_docs_drift
     pr_batch_docs_text.gsub(/\s+/, " "),
     LINEAR_CONTENT_TRUST_PHRASES,
     "docs/pr-batch-skills.md Linear content trust contract"
+  )
+  require_phrases(
+    pr_batch_docs_text.gsub(/\s+/, " "),
+    [VERIFIED_SOURCE_ISSUE_SET_RULE],
+    "docs/pr-batch-skills.md verified source-issue set contract"
+  )
+  reject_phrases(
+    pr_batch_docs_text.gsub(/\s+/, " "),
+    [STALE_UNDEFINED_SOURCE_ISSUE_SET_RULE],
+    "docs/pr-batch-skills.md verified source-issue set contract"
   )
 
   if context_text.nil?
