@@ -23,6 +23,10 @@ test intentionally loads the production receipt parser from the sibling
 `post-merge-audit` skill; an isolated pinned copy must include that companion
 or stop with a precise missing-companion blocker.
 
+Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
+contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract here.
+
 Memorable invocation:
 
 ```text
@@ -82,15 +86,15 @@ facts remain fail-closed and stop before mutation.
   - Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
   - Independent adversarial QA: Sol/xhigh
   - Routine deterministic QA: Sol/high
-- **Provisional Claude profile** (`claude-profile v0`): apply only after
+- **Provisional Claude profile** (`claude-profile v1`): apply only after
   verifying the exact routes on the actual host; portable classes remain the
   fallback elsewhere.
-  - Multi-lane coordinator: Opus 4.8/xhigh
+  - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
   - Simple, positively classified worker: Sonnet 5/high
-  - Unknown or uncertain worker: Opus 4.8/xhigh
-  - High-risk or escalated work: Opus 4.8/xhigh
-  - Independent adversarial QA: Opus 4.8/xhigh
-  - Routine deterministic QA: Opus 4.8/high
+  - Unknown or uncertain worker: Opus 5/high
+  - Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+  - Independent adversarial QA: Opus 5/xhigh
+  - Routine deterministic QA: Opus 5/high
 - **Batch plan preflight**: before dispatcher selection or worker launch, run
   the resolved plan skill's `bin/batch-plan-preflight` with a v1 envelope. It
   owns schema and launch scheduling, including the required active wave and
@@ -502,6 +506,25 @@ evidence failure, trusted-base policy provenance, and repair action.
 approval. Safe and generated classifications never subtract common hard,
 repository path, size, churn, rollback, or maintainer-concern gates.
 
+Render either blocking verdict for the human closeout with the resolved
+`autonomous-merge-closeout` helper from the same authenticated evaluator
+runtime before presenting technical gate IDs; never resolve it from the PR
+checkout:
+
+```bash
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout" \
+  --input "${AUTONOMOUS_RESULT_PATH}"
+```
+
+Use its plain-English summary, PR-specific gate explanations, authorized actor,
+durable location, repair or approval action, and exact-head invalidation text
+without substituting a generic blocker sentence. Keep the original evaluator
+JSON unchanged as the automation input to merge assurance; the renderer is a
+deterministic presentation layer and its optional `--format json` output repeats
+the exact verdict, head, sorted gates, rollback, policy provenance, and evidence
+failure facts. Malformed renderer input fails closed. An `UNKNOWN` closeout must
+direct evidence repair and reevaluation and must never be worded as approvable.
+
 ## Merge Assurance Gate
 
 After ordinary readiness and any required walkthrough or human decision, capture
@@ -532,7 +555,7 @@ Keep this template aligned with the matching plan-to-goal prompt in the
 resolved `pr-processing.md`, including the review/audit gate
 paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
-`GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
 Use this template when creating Codex goal text:
 
@@ -552,7 +575,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
@@ -650,6 +673,16 @@ Use the canonical Batch Handoff Format in
 requests already handled, no-PR rationales, autonomous nit outcomes,
 confidence notes, decision-point counts per PR, QA Evidence blocks, and per-PR
 merge-ledger summaries.
+
+At terminal closeout, use the resolved sibling
+`bin/batch-usage-receipt` helper for supported Codex rollout JSONL plus
+`state_5.sqlite` evidence, following
+[Batch Usage Receipt v1](../../docs/batch-usage-receipt.md). Put the compact
+batch total or a durable artifact reference in FYI / decisions made. Preserve
+structured `UNKNOWN` for unavailable evidence, keep requested and observed
+routes separate, and never attach raw rollout/database data or emit prompt,
+response, tool-result, auth, secret, or environment content. Usage telemetry is
+informational and never replaces a closeout gate.
 
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
@@ -1006,10 +1039,43 @@ terminal state; keep polling, triaging, and fixing, or report NOT COMPLETE /
 blocked with exact resume instructions only after a watch window or real
 external blocker.
 
+For autonomously clearable blockers, prefer a deterministic state-change
+watcher that can run without a model continuation. Bind one stable monitor
+identity and persisted state, reduce sanitized observations through
+the `goal-state-change-monitor` helper in this skill's `bin` directory, and do not wake this parent task for
+`baseline-recorded`, `suppress-unchanged`, `suppress-stale-probe`,
+`suppress-replayed-probe`, or `suppress-acknowledgement-retry`. Treat
+`wake_parent: true` as authoritative and resume on `wake-state-change`,
+`fallback-model-poll`, `stop-dependency-terminal`, or `redeliver-pending-wake` with its compact delta
+when present, durably enqueue that resume, and then acknowledge its `wake_id`;
+acknowledgement retries are idempotent. Redeliver an unacknowledged pending
+wake after restart; its returned `acknowledgement_payload` is the exact bounded
+payload to submit after durable enqueue, not a payload rebuilt from a newer live
+observation. Then rerun every
+security, origin, coordination, overlap, review, readiness, and exact-head gate.
+Keep acknowledgement state bounded: a delayed retry replays its original
+canonical observation and probe sequence so the reducer can derive and verify
+the exact waking identity without retaining an ever-growing membership ledger.
+If only model-mediated same-thread polling is available, use the bounded
+15-minute fast window, exponential backoff, and finite unchanged-run/call/token
+ceilings from the canonical contract; conservatively count every fallback
+continuation as at least one model call. Use the least-expensive safe configured
+route for each unavoidable probe; reserve the coordinator route for an actual
+transition or recovery decision. Stop or pause on terminal, non-resumable,
+user-input, or budget outcomes; for user input, preserve the exact question and
+manual-resume instruction in the restart-safe handoff. Rollback
+to that bounded fallback, never an indefinite 15-minute wake loop. This trades
+some detection latency for avoiding repeated full-context model work while the
+authoritative state is unchanged.
+
 When that external blocker publishes an exact future retry time and the host can
 re-enter this same thread on schedule, schedule one same-thread heartbeat for
-that time before handing off, because the 15-minute watch expires first and
-leaves resumable work stranded. Update the existing heartbeat instead of
+that time before handing off, because neither the deterministic watcher nor the
+bounded fallback cadence guarantees a probe at that exact published time.
+Use it as the single scheduled mechanism for that blocker and gate; do not start
+or retain either watcher mode for the same gate, and create or update its durable
+record before stopping or replacing any existing watcher so no wake is lost.
+Update the existing heartbeat instead of
 duplicating it, stop it once the target is terminal, and report in the handoff
 whether one was created, its exact scheduled time, and its durable identifier,
 or else the exact scheduling blocker. An `UNKNOWN` or absent retry time, a

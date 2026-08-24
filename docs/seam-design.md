@@ -101,6 +101,45 @@ script means that capability is n/a in that repo.
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
 
+`hosted_qa_gate` is an optional closed mapping during first-phase adoption.
+Omission or the exact string `n/a` means that no hosted runtime gate is
+configured. A mapping has exactly these fields:
+
+```yaml
+hosted_qa_gate:
+  version: 1
+  change_paths:
+    - "app/**"
+    - "config/runtime/**"
+  target: "production"
+  deployment_verifier: ".agents/bin/verify-hosted-deployment"
+  acceptance_criteria:
+    - "sign-in"
+    - "checkout"
+  waiver_mode: "forbidden" # or maintainer
+```
+
+`change_paths` uses the same validated repository-relative glob grammar as the
+autonomous-merge policy. The target and criterion IDs are closed scalar IDs;
+criterion IDs and path patterns are unique. `deployment_verifier` names one
+tracked executable under `.agents/bin`. Unknown keys, wrong types, unsafe
+paths or globs, duplicates, unsupported versions, and any waiver mode other
+than `forbidden` or `maintainer` fail closed. The verifier and policy used for
+runtime readiness always come from the trusted base. The two-phase bootstrap
+and exact verifier receipt contracts are canonical in
+[`workflows/pr-processing.md`](../workflows/pr-processing.md).
+The readiness runtime itself must be an outside-repository trusted-base
+materialization or an externally digest-verified installed pack; repository-head
+fallback, missing provenance, and an incomplete eight-file runtime stay
+`UNKNOWN`. The trusted verifier receives ordered policy criterion IDs and must
+return exact ordered closed criterion rows identical to the hosted marker.
+Version 1 exposes no ambient environment or file credential channel and
+supports public or otherwise credential-free immutable deployment verification;
+private-provider credentials require a separately designed and approved seam
+and currently block. Repository-excluded
+interpreters and system tools are trusted host OS/toolchain state; arbitrary
+same-user replacement outside the repository is out of scope for this helper.
+
 `autonomous_merge` is an optional closed mapping. When absent, the shared
 workflow uses its portable thresholds and common hard-risk categories. When
 present, it may tighten or explicitly justify relaxing the four thresholds,

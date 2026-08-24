@@ -24,6 +24,10 @@ PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
 TRIAGE_SKILL_PATH = File.join(ROOT, "skills/triage/SKILL.md")
 ADVERSARIAL_REVIEW_WORKFLOW_PATH = File.join(ROOT, "workflows/adversarial-pr-review.md")
 PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
+CONTINUE_SKILL_PATH = File.join(ROOT, "skills/continue/SKILL.md")
+STATE_CHANGE_MONITOR_PATH = File.join(ROOT, "skills/pr-batch/bin/goal-state-change-monitor")
+STATE_CHANGE_MONITOR_TEST_PATH = File.join(ROOT, "skills/pr-batch/bin/goal-state-change-monitor-test.rb")
+HOST_ADAPTER_CONTRACT_PATH = File.join(ROOT, "docs/host-adapter/contract.md")
 PR_BATCH_DOCS_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 BATCH_STATUS_SKILL_PATH = File.join(ROOT, "skills/batch-status/SKILL.md")
 CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
@@ -34,14 +38,15 @@ CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-forma
 # docs/ is one level below the repo root; skills/*/SKILL.md are two.
 DOCS_CANONICAL_READINESS_LINK = "../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
-COMPACT_CONTRACT_LINE = "GMCC-v3: current-head CI/configured-reviewers " \
+COMPACT_CONTRACT_LINE = "GMCC-v4:CI@head/configured-reviewers " \
                         "pending|missing|untriaged or threads unresolved|UNKNOWN=>" \
-                        "waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m " \
-                        "same-thread-watch else exact manual resume; stop clear/done; " \
-                        "no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; " \
+                        "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
+                        "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
+                        "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;" \
+                        "auto=>exact verdict/head/sorted-gates/rollback; " \
                         "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
-                        "durable-decision(proven-human+merge-authority); else ready-human-review-required|" \
-                        "autonomous-merge-evidence-unknown; merge+close PR/target/issue."
+                        "durable-decision(proven-human+merge-authority);else ready-human-review-required|" \
+                        "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
 CANONICAL_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus " \
                                  "`autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact " \
                                  "live verdict/head, exact sorted gate set, rollback disposition, and durable " \
@@ -54,26 +59,27 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
                           "CI or configured review agents, unresolved current-head review threads, failures, " \
                           "or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE " \
-                          "with resume instructions. When the overall Goal is genuinely blocked by a condition " \
-                          "that can clear without user input, treat the host's recurring automation/wakeup " \
-                          "capability as available only if it can re-enter this same thread on schedule and be inspected, " \
-                          "updated, and stopped; create or update one active 15-minute " \
-                          "current-thread monitor before the blocked handoff; do not create a duplicate. On each " \
-                          "wake, refresh live blocker evidence and resume work if a blocker clears. Stop the monitor " \
-                          "when the goal is unblocked or before completing it. `blocked-user-input` does not start " \
-                          "a monitor; preserve its exact question and manual resume instructions. If recurring " \
-                          "current-thread wake-ups " \
-                          "are unavailable, preserve exact manual resume instructions. A batch with 5 PRs, 3 " \
+                          "with resume instructions. For an autonomously clearable blocker, prefer one deduplicated " \
+                          "deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint " \
+                          "persists without loading parent context, while a material change resumes once with only " \
+                          "`state_delta` and reruns security, origin, coordination, overlap, review, readiness, and " \
+                          "exact-head gates. If deterministic watching is unavailable, use one bounded model-mediated " \
+                          "fallback: the default fast window is four 15-minute polls, then the interval doubles to a " \
+                          "four-hour cap, with finite unchanged-run, model-call, and token ceilings. Stop or pause on " \
+                          "clear, done, terminal, non-resumable, `blocked-user-input`, or budget state and preserve an " \
+                          "exact restart-safe manual-resume handoff; do not create a duplicate. If neither watcher is " \
+                          "available, preserve exact manual resume instructions. A batch with 5 PRs, 3 " \
                           "pending hosted checks, and clean " \
                           "review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when " \
                           "`merge_authority` does not allow merging. #{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
 COMPACT_CONTRACT_INVARIANTS = [
-  "current-head CI/configured-reviewers pending|missing|untriaged",
+  "CI@head/configured-reviewers pending|missing|untriaged",
   "threads unresolved",
   "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE",
   "poll/fix",
-  "auto-clear=>1 15m same-thread-watch else exact manual resume",
-  "stop clear/done",
+  "auto-clear=>watch(same:0wake,delta:gates)",
+  "fallback:4x15m+exp/4h|manual",
+  "stop clear/done/term/budget/user",
   "no auth=>ready-no-merge-authority",
   "auto=>exact verdict/head/sorted-gates/rollback",
   "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
@@ -81,7 +87,7 @@ COMPACT_CONTRACT_INVARIANTS = [
   "else ready-human-review-required|autonomous-merge-evidence-unknown",
   "merge+close PR/target/issue"
 ].freeze
-GMCC_ALIGNMENT_SENTENCE = "`GMCC-v3` is a version key that pins drift, not an external-only pointer; " \
+GMCC_ALIGNMENT_SENTENCE = "`GMCC-v4` is a version key that pins drift, not an external-only pointer; " \
                           "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
 OBJECTIVE_PROMPT_LINE = "Objective:..."
@@ -165,15 +171,22 @@ ARCHIVE_READINESS_HANDOFF_RULE = "End the final user-visible message carrying th
 ARCHIVE_READINESS_UNQUALIFIED_SENTENCE = "A final handoff without one of those two exact lines is incomplete"
 ARCHIVE_READINESS_WORKER_SCOPE_RULE = "A lane-level worker handoff never carries an archive-readiness status line"
 
-# #277: the 15-minute watch is a short poll, so a blocker with a known future
-# reset time strands resumable work -- the watch expires, the same condition
-# repeats, and the goal is marked blocked with nothing scheduled to resume it.
+# #277: neither the deterministic watcher nor the bounded fallback cadence
+# guarantees a probe at a blocker's exact published retry time, so a dedicated
+# heartbeat is still required for that precise wakeup.
 # Each clause below is one acceptance path from the issue, pinned so a future
 # edit cannot quietly drop a path while leaving the rule looking present.
 SCHEDULED_RETRY_HEARTBEAT_PATHS = {
   "names the rule" => "Scheduled Retry Heartbeat:",
-  "schedules at the exact retry time rather than the expiring watch" =>
-    "schedule the same-thread heartbeat for that time instead of relying on the watch window",
+  "schedules at the exact retry time despite watcher cadence" =>
+    "neither the no-fixed-expiry deterministic watcher nor the bounded four-poll/backoff fallback " \
+    "guarantees a probe at a blocker's exact published retry time",
+  "uses one exclusive scheduled mechanism for the blocker and gate" =>
+    "single scheduled mechanism for that blocker and gate",
+  "does not retain a redundant watcher" =>
+    "do not start or retain either watcher mode for the same gate",
+  "replaces the watcher without losing a wake" =>
+    "before stopping or replacing any existing watcher so no wake is lost",
   "creates exactly one heartbeat before the blocked handoff" =>
     "create or update exactly one heartbeat",
   "requires an exact future retry time" =>
@@ -250,6 +263,11 @@ LAUNCH_MODE_WORKFLOW_CLAUSES = {
 # points at the canonical contract, so the two cannot drift into rival rules.
 PR_BATCH_HEARTBEAT_SUMMARY_CLAUSES = [
   "schedule one same-thread heartbeat for that time before handing off",
+  "neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that " \
+  "exact published time",
+  "single scheduled mechanism for that blocker and gate",
+  "do not start or retain either watcher mode for the same gate",
+  "before stopping or replacing any existing watcher so no wake is lost",
   "Update the existing heartbeat instead of duplicating it",
   "never becomes an unbounded polling loop",
   "The canonical rule is the Scheduled Retry Heartbeat paragraph in that contract"
@@ -317,7 +335,7 @@ def contract_line(text)
 end
 
 def compact_contract_line(text)
-  text.lines.grep(/^\s*GMCC-v3:/).first&.strip
+  text.lines.grep(/^\s*GMCC-v4:/).first&.strip
 end
 
 def assert_text_includes(text, phrase, label)
@@ -433,6 +451,21 @@ def followups_disposition_records(value)
   CompletedBatchAuditReceipt.disposition_records(value)
 end
 
+def validated_minitest_summary(output)
+  summary_pattern = /\A(?<runs>\d+) runs, (?<assertions>\d+) assertions, (?<failures>\d+) failures, (?<errors>\d+) errors, (?<skips>\d+) skips\z/
+  summaries = output.lines.filter_map do |line|
+    match = summary_pattern.match(line.strip)
+    match&.named_captures&.transform_values(&:to_i)
+  end
+  return unless summaries.one?
+
+  summary = summaries.first
+  return unless summary.fetch("runs").positive? && summary.fetch("assertions").positive?
+  return unless %w[failures errors skips].all? { |key| summary.fetch(key).zero? }
+
+  summary
+end
+
 class GoalCompletionContractTest < Minitest::Test
   def setup
     @workflow = read_repo_file(WORKFLOW_PATH)
@@ -442,6 +475,8 @@ class GoalCompletionContractTest < Minitest::Test
     @triage_skill = read_repo_file(TRIAGE_SKILL_PATH)
     @adversarial_review_workflow = read_repo_file(ADVERSARIAL_REVIEW_WORKFLOW_PATH)
     @pr_monitoring_skill = read_repo_file(PR_MONITORING_SKILL_PATH)
+    @continue_skill = read_repo_file(CONTINUE_SKILL_PATH)
+    @host_adapter_contract = read_repo_file(HOST_ADAPTER_CONTRACT_PATH)
     @pr_batch_docs = read_repo_file(PR_BATCH_DOCS_PATH)
     @batch_status_skill = read_repo_file(BATCH_STATUS_SKILL_PATH)
     @changelog = read_repo_file(CHANGELOG_PATH)
@@ -449,6 +484,11 @@ class GoalCompletionContractTest < Minitest::Test
     @workflow_goal_prompt = extract_goal_prompt_template(
       @workflow,
       "### Plan To Goal Handoff",
+      end_heading: /^###\s+/
+    )
+    @workflow_resume_prompt = extract_goal_prompt_template(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
       end_heading: /^###\s+/
     )
     @pr_batch_goal_prompt = extract_goal_prompt_template(@pr_batch_skill, "## Goal Prompt Template")
@@ -495,30 +535,134 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_blocked_goal_defaults_to_a_deduped_fifteen_minute_current_thread_monitor
-    assert_text_includes @workflow_contract_section, "15-minute", "canonical completion contract"
-    assert_text_includes @workflow_contract_section, "current-thread monitor", "canonical completion contract"
-    assert_text_includes @workflow_contract_section, "do not create a duplicate", "canonical completion contract"
-    assert_text_includes @workflow_contract_section, "Stop the monitor", "canonical completion contract"
-    assert_text_includes @workflow_contract_section, "manual resume instructions", "canonical completion contract"
-    assert_text_includes @workflow_contract_section, "`blocked-user-input` does not start a monitor",
+  def test_blocked_goal_prefers_a_deduped_state_change_watcher_with_bounded_fallback
+    normalized_contract = @workflow_contract_section.gsub(/\s+/, " ")
+    assert_text_includes normalized_contract, "deterministic state-change watcher", "canonical completion contract"
+    assert_text_includes normalized_contract, "without loading parent context", "canonical completion contract"
+    assert_text_includes normalized_contract, "state_delta", "canonical completion contract"
+    assert_text_includes normalized_contract, "acknowledges its `wake_id`", "canonical completion contract"
+    assert_text_includes normalized_contract, "Acknowledgement retries are idempotent",
+                         "canonical completion contract"
+    assert_text_includes normalized_contract, "`stop-dependency-terminal`", "canonical completion contract"
+    assert_text_includes normalized_contract, "`fallback-model-poll`", "canonical completion contract"
+    assert_text_includes normalized_contract, "redeliver-pending-wake", "canonical completion contract"
+    assert_text_includes normalized_contract,
+                         "returned `acknowledgement_payload` is the exact bounded payload to submit after durable enqueue",
+                         "canonical redelivery acknowledgement contract"
+    assert_text_includes normalized_contract, "`suppress-replayed-probe`", "canonical completion contract"
+    assert_text_includes normalized_contract, "`suppress-acknowledgement-retry`", "canonical completion contract"
+    assert_text_includes normalized_contract, "arrays in `blocker_state` as set-valued collections",
+                         "canonical completion contract"
+    assert_text_includes normalized_contract, "default fast window is four 15-minute polls", "canonical completion contract"
+    assert_text_includes normalized_contract, "interval doubles to a four-hour cap", "canonical completion contract"
+    assert_text_includes normalized_contract, "do not create a duplicate", "canonical completion contract"
+    assert_text_includes normalized_contract, "exact restart-safe manual-resume handoff", "canonical completion contract"
+    assert_text_includes normalized_contract, "manual resume instructions", "canonical completion contract"
+    assert_text_includes normalized_contract, "`blocked-user-input` does not start a watcher",
                          "canonical completion contract"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
       line = compact_contract_line(text)
-      assert_text_includes line, "auto-clear=>1 15m same-thread-watch else exact manual resume",
+      assert_text_includes line, "auto-clear=>watch(same:0wake,delta:gates)",
                            "compact completion contract"
       refute_includes line, "`blocked`=>", "compact completion contract"
       refute_includes line, "non-user block=>", "compact completion contract"
-      assert_text_includes line, "else exact manual resume", "compact completion contract"
-      assert_text_includes line, "stop clear/done", "compact completion contract"
+      assert_text_includes line, "fallback:4x15m+exp/4h|manual", "compact completion contract"
+      assert_text_includes line, "stop clear/done/term/budget/user", "compact completion contract"
     end
 
-    assert_text_includes @workflow_contract_section, "recurring automation/wakeup capability",
-                         "canonical completion contract"
-    assert_text_includes @workflow_contract_section,
-                         "re-enter this same thread on schedule and be inspected, updated, and stopped",
-                         "canonical completion contract"
+    assert File.executable?(STATE_CHANGE_MONITOR_PATH), "state-change reducer must be executable"
+    normalized_host_adapter = @host_adapter_contract.gsub(/\s+/, " ")
+    assert_text_includes normalized_host_adapter, "outside parent task context", "host-adapter contract"
+    assert_text_includes normalized_host_adapter,
+                         "Current-thread scheduling alone is not deterministic-watcher capability",
+                         "host-adapter contract"
+    assert_text_includes normalized_host_adapter, "model-polling-only", "host-adapter contract"
+    assert_text_includes normalized_host_adapter, "acknowledging its `wake_id`", "host-adapter contract"
+    assert_text_includes normalized_host_adapter, "Acknowledgement is idempotent", "host-adapter contract"
+    assert_text_includes normalized_host_adapter,
+                         "does not persist an acknowledgement-membership ledger",
+                         "host-adapter bounded acknowledgement state"
+    assert_text_includes normalized_host_adapter,
+                         "Delayed acknowledgement retries replay the original canonical observation and `probe_sequence`",
+                         "host-adapter delayed acknowledgement identity"
+    assert_text_includes normalized_host_adapter,
+                         "legacy `acknowledged_wake_ids` is dropped on the next state persistence",
+                         "host-adapter acknowledgement migration"
+    assert_text_includes normalized_host_adapter,
+                         "same `probe_sequence` must replay a canonical-equivalent observation payload",
+                         "host-adapter replay identity contract"
+    assert_text_includes normalized_host_adapter,
+                         "Legacy state without `observation_digest_version` must first replay the exact prior `observed_at`",
+                         "host-adapter legacy replay migration"
+    assert_text_includes normalized_host_adapter,
+                         "unsupported handoff also preserves `budget_reason`, `usage`, and `limits`",
+                         "host-adapter combined unsupported budget handoff"
+    assert_text_includes normalized_host_adapter, "`stop-dependency-terminal`", "host-adapter contract"
+    assert_text_includes normalized_host_adapter, "`fallback-model-poll`", "host-adapter contract"
+    assert_text_includes normalized_host_adapter, "`wake_parent: true` is authoritative", "host-adapter contract"
+    assert_text_includes normalized_host_adapter, "`redeliver-pending-wake`", "host-adapter contract"
+    assert_text_includes normalized_host_adapter,
+                         "returned `acknowledgement_payload` is the exact bounded payload to submit after durable enqueue",
+                         "host-adapter redelivery acknowledgement contract"
+    assert_text_includes normalized_host_adapter,
+                         '"${PR_BATCH_SKILL_DIR}/bin/goal-state-change-monitor"',
+                         "host-adapter contract"
+    [@pr_batch_skill, @continue_skill, @pr_monitoring_skill].each do |text|
+      assert_text_includes text, "unchanged", "state-change consumer guidance"
+      assert_text_includes text, "state-change", "state-change consumer guidance"
+    end
+    assert_text_includes @pr_batch_skill, "`suppress-replayed-probe`", "pr-batch no-continuation guidance"
+    assert_text_includes @pr_batch_skill, "`fallback-model-poll`", "pr-batch fallback wake guidance"
+    assert_text_includes @pr_batch_skill, "`suppress-acknowledgement-retry`",
+                         "pr-batch acknowledgement retry guidance"
+    assert_text_includes @pr_batch_skill.gsub(/\s+/, " "),
+                         "returned `acknowledgement_payload` is the exact bounded payload to submit after durable enqueue",
+                         "pr-batch redelivery acknowledgement guidance"
+    assert_text_includes @continue_skill, "typed terminal action",
+                         "terminal continuation without a fingerprint delta"
+    assert_text_includes @continue_skill.gsub(/\s+/, " "),
+                         "A `model-polling-only` fallback wake refreshes the minimal live blocker evidence",
+                         "model-polling continuation refresh"
+    assert_text_includes @continue_skill.gsub(/\s+/, " "),
+                         "acknowledge its `wake_id` before submitting the next observation",
+                         "model-polling continuation acknowledgement"
+    normalized_pr_monitoring = @pr_monitoring_skill.gsub(/\s+/, " ")
+    assert_text_includes normalized_pr_monitoring,
+                         "persist the reducer's exact restart-safe handoff",
+                         "standalone monitor handoff persistence"
+    assert_text_includes normalized_pr_monitoring,
+                         "exact blocked-user-input question",
+                         "standalone monitor user-input persistence"
+    assert_text_includes normalized_pr_monitoring,
+                         "`stop-dependency-terminal` is a waking outcome and does not require a manual handoff",
+                         "standalone dependency-terminal delivery"
+  end
+
+  def test_state_change_monitor_regressions_are_part_of_the_canonical_goal_contract_gate
+    stdout, stderr, status = Open3.capture3("ruby", STATE_CHANGE_MONITOR_TEST_PATH, chdir: ROOT)
+
+    assert status.success?, "state-change monitor regressions failed:\n#{stdout}\n#{stderr}"
+    refute_nil validated_minitest_summary(stdout),
+               "state-change monitor regressions returned an invalid or empty summary:\n#{stdout}\n#{stderr}"
+  end
+
+  def test_state_change_monitor_contract_gate_rejects_an_empty_child_suite
+    assert_nil validated_minitest_summary("0 runs, 0 assertions, 0 failures, 0 errors, 0 skips\n")
+  end
+
+  def test_state_change_monitor_contract_gate_requires_one_complete_clean_summary
+    valid_summary = "2 runs, 3 assertions, 0 failures, 0 errors, 0 skips\n"
+    assert_equal 2, validated_minitest_summary(valid_summary).fetch("runs")
+
+    [
+      "1 runs, 0 assertions, 0 failures, 0 errors, 0 skips\n",
+      "1 runs, 1 assertions, 0 failures, 0 errors, 1 skips\n",
+      "1 runs, 1 assertions, 0 failures, 0 errors\n",
+      valid_summary * 2
+    ].each do |invalid_summary|
+      assert_nil validated_minitest_summary(invalid_summary)
+    end
   end
 
   def test_continuation_prompt_preserves_blocked_goal_monitor_semantics
@@ -530,16 +674,17 @@ class GoalCompletionContractTest < Minitest::Test
 
     assert_text_includes continuation, "overall goal is genuinely blocked", "continuation prompt"
     assert_text_includes continuation, "can clear without user input", "continuation prompt"
-    assert_text_includes continuation, "recurring automation/wakeup capability", "continuation prompt"
-    assert_text_includes continuation,
-                         "re-enter this same thread on schedule and be inspected, updated, and stopped",
-                         "continuation prompt"
-    assert_text_includes continuation, "reuse or create one 15-minute current-thread monitor", "continuation prompt"
+    assert_text_includes continuation, "deterministic state-change watcher", "continuation prompt"
+    assert_text_includes continuation, "without a model continuation", "continuation prompt"
+    assert_text_includes continuation, "bounded fallback", "continuation prompt"
+    assert_text_includes continuation, "15-minute fast-window", "continuation prompt"
+    assert_text_includes continuation, "exponential backoff", "continuation prompt"
     assert_text_includes continuation, "do not create a duplicate", "continuation prompt"
-    assert_text_includes continuation, "On each wake", "continuation prompt"
-    assert_text_includes continuation, "Stop the monitor", "continuation prompt"
+    assert_text_includes continuation, "compact state delta", "continuation prompt"
+    assert_text_includes continuation, "typed dependency-terminal action", "continuation prompt"
+    assert_text_includes continuation, "restart-safe manual-resume handoff", "continuation prompt"
     assert_text_includes continuation, "manual resume instructions", "continuation prompt"
-    assert_text_includes continuation, "`blocked-user-input` does not start a monitor", "continuation prompt"
+    assert_text_includes continuation, "`blocked-user-input` does not start a watcher", "continuation prompt"
     assert_text_includes continuation, CANONICAL_AUTO_MERGE_EXPANSION, "continuation prompt"
     refute_includes continuation, LEGACY_AUTO_MERGE_EXPANSION, "continuation prompt"
   end
@@ -554,7 +699,7 @@ class GoalCompletionContractTest < Minitest::Test
     actual_counts = surfaces.transform_values { |text| text.scan(GMCC_ALIGNMENT_SENTENCE).length }
     expected_counts = surfaces.transform_values { 1 }
     assert_equal expected_counts, actual_counts,
-                 "all generation surfaces must carry the exact GMCC-v3 alignment sentence once"
+                 "all generation surfaces must carry the exact GMCC-v4 alignment sentence once"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       refute_includes prompt, GMCC_ALIGNMENT_SENTENCE,
@@ -579,7 +724,7 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "current-head CI/configured-reviewers pending|missing|untriaged or " \
+                           "CI@head/configured-reviewers pending|missing|untriaged or " \
                            "threads unresolved",
                            "compact completion contract"
       refute_includes line, "CI/reviews/review agents",
@@ -590,13 +735,13 @@ class GoalCompletionContractTest < Minitest::Test
   def test_compact_contract_rejects_configured_reviewer_omission
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
-      assert_includes line, "CI/configured-reviewers",
+      assert_includes line, "CI@head/configured-reviewers",
                       "standalone completion must retain the configured-reviewer gate"
 
       omission_mutation = line.sub("configured-reviewers", "reviewers")
-      refute_includes omission_mutation, "CI/configured-reviewers",
+      refute_includes omission_mutation, "CI@head/configured-reviewers",
                       "configured-reviewer omission mutation must lose the required invariant"
-      assert_includes omission_mutation, "CI/reviewers",
+      assert_includes omission_mutation, "CI@head/reviewers",
                       "mutation fixture must exercise the exact reviewer qualifier omission"
     end
   end
@@ -792,7 +937,7 @@ class GoalCompletionContractTest < Minitest::Test
     }
 
     contracts.each do |label, line|
-      refute_nil line, "#{label} is missing the GMCC-v3 line"
+      refute_nil line, "#{label} is missing the GMCC-v4 line"
       assert_equal COMPACT_CONTRACT_LINE, line, "#{label} drifted"
     end
   end
@@ -924,7 +1069,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert_text_includes text, "current-head CI/configured-reviewers pending|missing|untriaged", label
+      assert_text_includes text, "CI@head/configured-reviewers pending|missing|untriaged", label
       assert_text_includes text, "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE", label
     end
   end
@@ -1036,8 +1181,27 @@ class GoalCompletionContractTest < Minitest::Test
   def test_scheduled_retry_heartbeat_has_a_pressure_check
     assert_squished_includes @workflow_contract_section,
                              "A blocker that publishes an exact future reset time gets one same-thread " \
-                             "heartbeat scheduled for that time, because the 15-minute watch expires first",
+                             "heartbeat scheduled for that time, because neither the deterministic watcher " \
+                             "nor the bounded fallback cadence guarantees a probe at that exact published time",
                              "workflows/pr-processing.md Goal Mode Completion Contract pressure checks"
+    assert_squished_includes @workflow_contract_section,
+                             "single scheduled mechanism for that blocker and gate; do not start or retain " \
+                             "either watcher mode for the same gate, and create or update its durable record " \
+                             "before stopping or replacing any existing watcher so no wake is lost",
+                             "workflows/pr-processing.md heartbeat exclusivity pressure check"
+  end
+
+  def test_goal_resume_prompt_preserves_the_scheduled_retry_heartbeat
+    assert_squished_includes @workflow_resume_prompt,
+                             "schedule the same-thread heartbeat for that time because neither the " \
+                             "deterministic watcher nor the bounded fallback cadence guarantees a probe at " \
+                             "that exact published time",
+                             "workflows/pr-processing.md goal resume prompt heartbeat summary"
+    assert_squished_includes @workflow_resume_prompt,
+                             "single scheduled mechanism for that blocker and gate; do not start or retain " \
+                             "either watcher mode for the same gate, and create or update its durable record " \
+                             "before stopping or replacing any existing watcher so no wake is lost",
+                             "workflows/pr-processing.md goal resume prompt heartbeat exclusivity"
   end
 
   def test_pr_batch_skill_carries_the_concise_heartbeat_requirement

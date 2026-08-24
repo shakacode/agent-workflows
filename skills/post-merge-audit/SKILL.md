@@ -36,14 +36,14 @@ this recommended advisory route profile:
 - Routine deterministic QA: Sol/high
 
 For a verified Claude batch, record the originating preferences and use this
-provisional recommended advisory route profile (`claude-profile v0`):
+provisional recommended advisory route profile (`claude-profile v1`):
 
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
 
 When emitting a structured `review-findings` block, set `review_receipt.source`
 to `post-merge-audit` and follow `docs/review-finding-schema.md`.
@@ -63,9 +63,9 @@ Checker independence and evidence quality remain mandatory; a preferred checker 
 Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
 A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
 Under the conservative GPT-5.6 profile, prefer Sol/xhigh for independent
-adversarial QA and Sol/high for routine deterministic QA. Under the provisional
-Claude profile (`claude-profile v0`), prefer Opus 4.8/xhigh for independent
-adversarial QA and Opus 4.8/high for routine deterministic QA. Terra and Sonnet
+adversarial QA and Sol/high for routine deterministic QA. Under the provisional Claude
+profile (`claude-profile v1`), prefer Opus 5/xhigh for independent adversarial
+QA and Opus 5/high for routine deterministic QA. Terra and Sonnet
 may collect mechanical evidence or serve as the qualifying checker when the
 role, independence, scope, current-head evidence, and evidence quality qualify.
 If checker independence is unavailable or `UNKNOWN`, the audit cannot be clean.

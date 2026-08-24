@@ -119,12 +119,33 @@ CODEX_RECOMMENDATIONS = [
 ].freeze
 
 CLAUDE_RECOMMENDATIONS = [
-  "Multi-lane coordinator: Opus 4.8/xhigh",
+  "Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)",
   "Simple, positively classified worker: Sonnet 5/high",
-  "Unknown or uncertain worker: Opus 4.8/xhigh",
-  "High-risk or escalated work: Opus 4.8/xhigh",
-  "Independent adversarial QA: Opus 4.8/xhigh",
-  "Routine deterministic QA: Opus 4.8/high"
+  "Unknown or uncertain worker: Opus 5/high",
+  "Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`",
+  "Independent adversarial QA: Opus 5/xhigh",
+  "Routine deterministic QA: Opus 5/high"
+].freeze
+
+LIVE_CLAUDE_PROFILE_SURFACES = %w[
+  docs/agent-workflows-model-routing.md
+  docs/pr-batch-skills.md
+  skills/adversarial-pr-review/SKILL.md
+  skills/plan-pr-batch/SKILL.md
+  skills/post-merge-audit/SKILL.md
+  skills/pr-batch/SKILL.md
+  skills/triage/SKILL.md
+  workflows/adversarial-pr-review.md
+  workflows/continuous-evaluation-loop.md
+  workflows/post-merge-audit.md
+  workflows/pr-processing.md
+].freeze
+
+SINGLE_TARGET_PLANNER_SURFACES = %w[
+  docs/agent-workflows-model-routing.md
+  docs/pr-batch-skills.md
+  skills/plan-pr-batch/SKILL.md
+  workflows/pr-processing.md
 ].freeze
 
 MODEL_ROUTING_GUIDE_PATH = "docs/agent-workflows-model-routing.md"
@@ -162,7 +183,7 @@ EXPECTED_ROUTE_DISPOSITIONS = {
   "authorized-fallback" => "proceed-as-fallback"
 }.freeze
 ROUTINE_COORDINATOR_ROUTE_RULE =
-  "Routine bounded planning, dispatch bookkeeping, status reconciliation, evidence collation, and routine coordination use the `balanced`/high class. Name the exact `Terra/high` pair only when the active host has verified that pair; otherwise preserve the requested preference and record host-observed values as `UNKNOWN` when unavailable."
+  "For multiple targets, routine bounded planning and coordination use the `balanced`/high class. Mechanical dispatch bookkeeping, status reconciliation, and evidence collation may also use that worker class, but do not change a single-target coordinator's Sol/high default. Name the exact `Terra/high` pair only when the active host has verified that pair; otherwise preserve the requested preference and record host-observed values as `UNKNOWN` when unavailable."
 ROUTINE_MULTI_LANE_COORDINATOR_ROUTE_RULE =
   "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)"
 SOL_XHIGH_EXCEPTION_ROUTE_RULE =
@@ -1117,6 +1138,26 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
+  def test_live_claude_routing_surfaces_reject_legacy_profile
+    LIVE_CLAUDE_PROFILE_SURFACES.each do |path|
+      text = read_repo_file(path)
+      refute_match(/claude-profile v0|Opus 4\.8/, text, "#{path} contains legacy Claude routing guidance")
+    end
+  end
+
+  def test_single_target_planner_surfaces_pin_default_and_simple_routes
+    SINGLE_TARGET_PLANNER_SURFACES.each do |path|
+      text = read_repo_file(path)
+      assert_includes text, "Default single-target planner: Sol/high", path
+      assert_includes text, "Affirmatively simple single-target planner: Terra/high", path
+      assert_includes text, "Default single-target planner: Opus 5/high", path
+      assert_includes text, "Affirmatively simple single-target planner: Sonnet 5/high", path
+      assert_includes text, "claude-profile v1", path
+    end
+
+    assert_includes read_repo_file(MODEL_ROUTING_GUIDE_PATH), "claude-opus-5"
+  end
+
   def test_profile_surfaces_reject_the_former_sol_xhigh_coordinator_default
     paths = %w[
       docs/agent-workflows-model-routing.md
@@ -1789,8 +1830,8 @@ class ModelRoutingContractTest < Minitest::Test
 
     mutants = {
       "routine coordination defaults to strongest" => text.sub(
-        "routine coordination use the `balanced`/high class",
-        "routine coordination use Sol/xhigh by default"
+        %r{For multiple targets, routine bounded planning and coordination use\s+the `balanced`/high class},
+        "For multiple targets, routine bounded planning and coordination use Sol/xhigh by default"
       ),
       "routine multi-lane coordinator defaults to Sol/xhigh" => text.sub(
         "Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)",
@@ -1798,8 +1839,8 @@ class ModelRoutingContractTest < Minitest::Test
       ),
       "routine coordination defaults to strongest only in an HTML comment" =>
         text.sub(
-          "routine coordination use the `balanced`/high class",
-          "routine coordination use Sol/xhigh by default"
+          %r{For multiple targets, routine bounded planning and coordination use\s+the `balanced`/high class},
+          "For multiple targets, routine bounded planning and coordination use Sol/xhigh by default"
         ) + "\n<!-- #{ROUTINE_COORDINATOR_ROUTE_RULE} -->\n",
       "unverified Terra pair named as exact" => text.sub(
         "only when the active host has verified that pair",

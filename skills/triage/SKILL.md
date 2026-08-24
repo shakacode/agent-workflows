@@ -22,15 +22,15 @@ the verified target is Codex GPT-5.6, use this informative recommended binding:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
-When the verified target is Claude, use this informative provisional
-recommended binding (`claude-profile v0`):
+When the verified target is Claude, use this informative provisional recommended binding
+(`claude-profile v1`):
 
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
 
 Use `docs/coordination-backend.md` as the canonical vocabulary for private
 backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
@@ -265,8 +265,8 @@ precise blocker.
    ``- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.``
    Each prompt must include this exact `ask` authority line:
    ``- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
-   GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
-   `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+   GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+   `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
    Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
    `ready-human-review-required` carries the exact current head SHA, every triggered gate, rollback status, and the exact durable human decision needed.
    `autonomous-merge-evidence-unknown` carries the exact current head SHA, evidence failure, trusted-base policy provenance, and repair action.

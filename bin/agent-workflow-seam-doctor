@@ -11,6 +11,7 @@ require "optparse"
 require "shellwords"
 require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
+require_relative "agent_doctor/hosted_qa_policy"
 
 module AgentWorkflowSeamDoctor
   SECTION = "Agent Workflow Configuration"
@@ -128,6 +129,8 @@ module AgentWorkflowSeamDoctor
   ].freeze
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
   REPO_PREFIX_PATTERN = /\A[A-Z0-9]{1,6}\z/
+  COORDINATION_BACKEND_CONTRACT_POLICY_KEY = "coordination_backend_contract"
+  COORDINATION_BACKEND_CONTRACT_KEYS = %w[version allowed_identifiers].freeze
   MERGE_SUBMISSION_POLICY_KEY = "merge_submission"
   MERGE_SUBMISSION_MODES = %w[direct merge_queue_only merge_queue_or_guarded_direct].freeze
   MERGE_SUBMISSION_KEYS = %w[mode guarded_direct].freeze
@@ -154,6 +157,7 @@ module AgentWorkflowSeamDoctor
     (?:
       follow-up\ prefix |
       hosted[-\ ]CI |
+      hosted[-\ ]QA |
       benchmark\ labels? |
       (?:secret\ )?redaction\ patterns? |
       changelog\ path |
@@ -1559,6 +1563,7 @@ module AgentWorkflowSeamDoctor
     issues.concat(binstub_issues(root))
     issues.concat(policy_issues(root))
     issues.concat(trust_issues(root))
+    issues.concat(workflow_security_issues(root, shared_roots))
 
     issues.concat(shared_root_issues(shared_roots))
 
@@ -1567,6 +1572,45 @@ module AgentWorkflowSeamDoctor
     end
 
     issues
+  end
+
+  def workflow_security_issues(root, shared_roots)
+    unless load_secure_github_actions_scanner(shared_roots)
+      return ["workflow security scan failed closed: trusted secure-github-actions scanner is unavailable"]
+    end
+
+    SecureGitHubActions::Scanner.new(root).scan.findings.map do |finding|
+      location = finding.fetch("location")
+      "workflow security finding: #{location.fetch('file')}:#{location.fetch('line')} " \
+        "[#{finding.fetch('rule_id')}] #{finding.fetch('title')}"
+    end
+  rescue ArgumentError, SystemCallError => e
+    ["workflow security scan failed closed: #{e.message}"]
+  end
+
+  def load_secure_github_actions_scanner(shared_roots)
+    return true if defined?(SecureGitHubActions::Scanner)
+
+    candidates = shared_roots.flat_map do |shared_root|
+      expanded = File.expand_path(shared_root)
+      [
+        File.join(expanded, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb"),
+        File.join(expanded, "secure-github-actions/lib/secure_github_actions_scanner.rb"),
+        File.join(expanded, "lib/secure_github_actions_scanner.rb")
+      ]
+    end
+    fallbacks = [
+      File.expand_path("../skills/secure-github-actions/lib/secure_github_actions_scanner.rb", __dir__),
+      File.expand_path("../lib/agent-workflows/secure_github_actions_scanner.rb", __dir__)
+    ]
+    candidates.concat(fallbacks)
+    scanner = candidates.find { |path| File.file?(path) && !File.symlink?(path) }
+    return false unless scanner
+
+    require scanner
+    defined?(SecureGitHubActions::Scanner)
+  rescue LoadError
+    false
   end
 
   def pointer_section_issues(text)
@@ -1670,7 +1714,8 @@ module AgentWorkflowSeamDoctor
     path = File.join(root, POLICY_CONFIG)
     return ["missing policy config: #{POLICY_CONFIG}"] unless File.file?(path)
 
-    config = load_policy_config(path)
+    yaml = File.read(path, encoding: "UTF-8")
+    config = parse_policy_config(yaml)
     return ["invalid policy config: #{POLICY_CONFIG}"] unless config.is_a?(Hash)
 
     issues = []
@@ -1684,6 +1729,7 @@ module AgentWorkflowSeamDoctor
 
     config.each do |key, value|
       next if REQUIRED_POLICY_KEYS.include?(key)
+      next if key == "trusted_actions" && value == []
 
       autonomous_merge = key == "autonomous_merge"
       next unless unresolved_policy_value?(
@@ -1703,10 +1749,13 @@ module AgentWorkflowSeamDoctor
                 "(expected 1-6 uppercase ASCII letters or digits)"
     end
 
+    issues.concat(coordination_backend_policy_issues(yaml))
+    issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
+    issues.concat(hosted_qa_policy_issues(root, yaml))
     if config.key?("autonomous_merge")
-      autonomous_policy = AutonomousMergePolicy.parse(File.read(path, encoding: "UTF-8"))
+      autonomous_policy = AutonomousMergePolicy.parse(yaml)
       autonomous_policy.errors.each do |error|
         issues << "invalid autonomous_merge policy: #{error}"
       end
@@ -1715,6 +1764,84 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def coordination_backend_policy_issues(yaml)
+    duplicate_errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
+      error == '$ contains duplicate key "coordination_backend"'
+    end
+    duplicate_errors.map { |error| "invalid coordination_backend policy: #{error}" }
+  end
+
+  def coordination_backend_contract_policy_issues(config, yaml)
+    key = COORDINATION_BACKEND_CONTRACT_POLICY_KEY
+    return [] unless config.key?(key)
+
+    contract_path = "$.#{key}"
+    errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
+      error.start_with?("#{contract_path}.") ||
+        error.start_with?("#{contract_path} ") ||
+        error == "$ contains duplicate key #{key.inspect}"
+    end
+    contract = config[key]
+    unless contract.is_a?(Hash)
+      errors << "must be a closed version 1 mapping"
+      return errors.map { |error| "invalid #{key} policy: #{error}" }.uniq
+    end
+
+    unknown_keys = contract.keys.reject { |contract_key| COORDINATION_BACKEND_CONTRACT_KEYS.include?(contract_key) }
+    unknown_keys.each { |contract_key| errors << "contains unknown key #{contract_key.inspect}" }
+    missing_keys = COORDINATION_BACKEND_CONTRACT_KEYS.reject { |contract_key| contract.key?(contract_key) }
+    missing_keys.each { |contract_key| errors << "is missing key #{contract_key.inspect}" }
+    errors << "keys must be strings" unless contract.keys.all?(String)
+    errors << "version must be 1" unless contract["version"] == 1
+
+    identifiers = contract["allowed_identifiers"]
+    unless identifiers.is_a?(Array) && !identifiers.empty?
+      errors << "allowed_identifiers must be a nonempty list"
+      identifiers = []
+    end
+    identifiers.each_with_index do |identifier, index|
+      unless identifier.is_a?(String)
+        errors << "allowed_identifiers[#{index}] must be a known nonblank string"
+      end
+      if identifier.is_a?(String)
+        if identifier.encoding != Encoding::UTF_8 || !identifier.valid_encoding?
+          errors << "allowed_identifiers[#{index}] must be valid UTF-8"
+        else
+          normalized_identifier = identifier.unicode_normalize(:nfkc).gsub(/[[:space:]]+/, " ").strip
+          if normalized_identifier.empty?
+            errors << "allowed_identifiers[#{index}] must be a known nonblank string"
+          elsif normalized_identifier.match?(/UNKNOWN/i)
+            errors << "allowed_identifiers[#{index}] must not contain an UNKNOWN marker"
+          elsif normalized_identifier.include?("<!--") || normalized_identifier.include?("-->")
+            errors << "allowed_identifiers[#{index}] must not contain an HTML comment marker"
+          end
+        end
+      end
+    end
+    if identifiers.uniq.length != identifiers.length
+      errors << "allowed_identifiers contains duplicate identifiers"
+    end
+    unless identifiers.include?(config["coordination_backend"])
+      errors << "coordination_backend must exactly match an allowed identifier"
+    end
+
+    errors.map { |error| "invalid #{key} policy: #{error}" }.uniq
+  end
+
+  def hosted_qa_policy_issues(root, yaml)
+    result = HostedQaPolicy.parse(yaml)
+    issues = result.errors.map { |error| "invalid hosted_qa_gate policy: #{error}" }
+    return issues unless result.state == :configured
+
+    verifier = result.policy.fetch("deployment_verifier")
+    verifier_issues = guarded_direct_file_issues(root, verifier).map do |issue|
+      issue
+        .sub("invalid merge_submission policy: guarded_direct.executable", "invalid hosted_qa_gate policy: deployment_verifier")
+        .sub("guarded_direct.executable", "deployment_verifier")
+    end
+    issues.concat(verifier_issues)
   end
 
   def untrusted_contributor_intake_policy_issues(config)
@@ -1902,7 +2029,11 @@ module AgentWorkflowSeamDoctor
   end
 
   def load_policy_config(path)
-    YAML.safe_load(File.read(path, encoding: "UTF-8"), aliases: false) || {}
+    parse_policy_config(File.read(path, encoding: "UTF-8"))
+  end
+
+  def parse_policy_config(yaml)
+    YAML.safe_load(yaml, aliases: false) || {}
   end
 
   def unresolved_policy_value?(value, placeholder_mode:, empty_collections_unresolved: true)
@@ -1959,14 +2090,13 @@ module AgentWorkflowSeamDoctor
 
   def shared_markdown_paths(root, shared_roots: [])
     repo_patterns = [
-      File.join(root, ".agents/skills/**/*.md"),
-      File.join(root, ".agents/workflows/**/*.md")
+      ".agents/skills/**/*.md",
+      ".agents/workflows/**/*.md"
     ]
-    shared_patterns = shared_roots.flat_map { |shared_root| shared_markdown_patterns(shared_root) }
+    repo_paths = markdown_paths(root, repo_patterns)
+    shared_paths = shared_roots.flat_map { |shared_root| shared_markdown_paths_for_root(shared_root) }
 
-    (repo_patterns + shared_patterns).flat_map { |pattern| Dir.glob(pattern) }.map do |path|
-      File.expand_path(path)
-    end.uniq.sort
+    (repo_paths + shared_paths).uniq.sort
   end
 
   def shared_root_issues(shared_roots)
@@ -1981,17 +2111,23 @@ module AgentWorkflowSeamDoctor
   end
 
   def shared_markdown_paths_for_root(shared_root)
-    shared_markdown_patterns(shared_root).flat_map { |pattern| Dir.glob(pattern) }.uniq.sort
+    markdown_paths(shared_root, shared_markdown_patterns)
   end
 
-  def shared_markdown_patterns(shared_root)
-    expanded = File.expand_path(shared_root)
+  def shared_markdown_patterns
     [
-      File.join(expanded, "skills/**/*.md"),
-      File.join(expanded, "workflows/**/*.md"),
+      "skills/**/*.md",
+      "workflows/**/*.md",
       # Also support passing an installed skill root directly, without a parent skills/ directory.
-      File.join(expanded, "**/SKILL.md")
+      "**/SKILL.md"
     ]
+  end
+
+  def markdown_paths(root, patterns)
+    expanded = File.expand_path(root)
+    patterns.flat_map do |pattern|
+      Dir.glob(pattern, base: expanded).map { |relative| File.join(expanded, relative) }
+    end.uniq.sort
   end
 
   def executable_placeholder_issues(root, path)
