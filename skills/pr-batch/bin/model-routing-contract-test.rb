@@ -423,7 +423,10 @@ def normalize_prose_line_inline_emphasis(line, inline_code_delimiter_length)
 end
 
 def normalize_emphasis_delimiters(text)
-  text.gsub(/\*\*([^*\n]+)\*\*/, "\\1").gsub(/(?<!\w)_([^_\n]+)_(?!\w)/, "\\1")
+  text
+    .gsub(/\*\*([^*\n]+)\*\*/, "\\1")
+    .gsub(/(?<!\w)\*([^*\n]+)\*(?!\w)/, "\\1")
+    .gsub(/(?<!\w)_([^_\n]+)_(?!\w)/, "\\1")
 end
 
 def strip_allowed_route_only_outcome_clauses(text)
@@ -1329,6 +1332,7 @@ class ModelRoutingContractTest < Minitest::Test
       "preferred route is unavailable" => "A preferred route is unavailable and stops the lane before editing.",
       "route mismatch blocks launch" => "A route mismatch blocks launch.",
       "route mismatch emphasized blocks launch" => "A route mismatch **blocks** launch.",
+      "route mismatch single-star emphasized blocks launch" => "A route mismatch *blocks* launch.",
       "route mismatch underscored blocks launch" => "A route mismatch _blocks_ launch.",
       "route mismatch blocks the launch" => "A route mismatch blocks the launch.",
       "route mismatch blocks replay" => "A route mismatch blocks replay.",
@@ -1519,6 +1523,7 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not prevent launch.",
       "A route mismatch **does not** block launch.",
+      "A route mismatch *does not* block launch.",
       "A route mismatch _does not_ block launch.",
       "A route mismatch does not block the launch.",
       "A route mismatch does not prevent the review.",
