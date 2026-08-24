@@ -120,20 +120,20 @@ OVERSIZED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
   Dispatch docs: preferred remote@fastest-low-cost/low; fallback dispatchers remote@balanced/medium; auth dispatch y; ordinary pending/active lifecycle.
   Dispatch release: preferred remote@balanced/medium; fallback dispatchers none; auth dispatch n; ordinary pending/active lifecycle.
 TEXT
-GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;" \
+GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: GitHub issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;" \
                              "block=>stop;no raw GitHub/override"
 TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE =
-  "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
+  "Preflight: GitHub issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
   "block=>stop; no raw GitHub/override"
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
-  - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-    Original:trusted ad-hoc prompt|n/a
-    Goal:one-line outcome
-    Notes:scope/branch/dependency
-    Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
+  - Target:<PR #N: URL|Issue #N: URL|Linear issue <ID>: <verified Linear URL>|adhoc:<yyyymmdd>-<short-slug>>
+    Original:trusted adhoc|n/a
+    Goal:outcome
+    Notes:scope/branch/deps
+    Done when:`merge_authority` final state+PR/no-PR evidence|no-fix rationale
 TEXT
 TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
-  - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
+  - Target:<PR #N: URL|Issue #N: URL|Linear issue <ID>: <verified Linear URL>|adhoc:<yyyymmdd>-<short-slug>>
     Original: trusted ad-hoc prompt; else n/a.
     Goal: one-line outcome.
     Notes: scope/branch/dependency.
@@ -146,7 +146,7 @@ TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
 GOAL_PROMPT_FALLBACK_LINE =
   "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
-  "persist output before resume/launch; preflight issue/PR only."
+  "persist output before resume/launch; GitHub preflight only."
 ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
                               "chg=>redo/stop;gate fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
@@ -155,7 +155,7 @@ READY_ITEM_DONE_WHEN_LINE =
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
-CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
@@ -560,7 +560,7 @@ required_all_prompt_phrases = [
   "Thread handle: <batch-short>-<lane>-<word>",
   "Lane Card:",
   "preferred model/effort;observed host/model/effort/UNKNOWN",
-  "Preflight: issue/PR=>pr-security-preflight;",
+  "Preflight: GitHub issue/PR=>pr-security-preflight;",
   "trusted-direct adhoc:=>skip",
   "no raw GitHub/override",
   GOAL_MODE_COMPACT_CONTRACT,
