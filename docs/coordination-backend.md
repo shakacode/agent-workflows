@@ -16,8 +16,8 @@ coordination_backend_contract:
 ```
 
 The seam doctor accepts only the two version 1 contract keys shown above, a
-nonempty list of unique nonblank string identifiers without `UNKNOWN` markers,
-and an exact match between the selected backend and one allowed identifier.
+nonempty list of unique, nonblank UTF-8 string identifiers without `UNKNOWN`
+markers, and an exact match between the selected backend and one allowed identifier.
 Unknown keys, malformed or duplicate values, duplicate YAML keys, and a
 selection outside the allowlist fail closed. Repositories that omit this
 optional mapping retain the portable free-form backend seam.

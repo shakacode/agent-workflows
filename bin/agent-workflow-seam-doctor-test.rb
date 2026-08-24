@@ -641,6 +641,28 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_coordination_backend_contract_rejects_a_binary_identifier_with_json_output
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      binary_identifier = "\xFF".b
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => binary_identifier,
+          "coordination_backend_contract" => coordination_backend_contract(binary_identifier)
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root, "--json")
+
+      refute status.success?
+      result = JSON.parse(out)
+      assert_equal "FAIL", result.fetch("status")
+      assert result.fetch("issues").any? { |issue| issue.include?("must be valid UTF-8") }
+    end
+  end
+
   def test_coordination_backend_contract_rejects_malformed_closed_values
     fixtures = {
       "not a mapping" => PRIVATE_COORDINATION_BACKEND,
