@@ -134,7 +134,11 @@ module AutonomousMergeCloseout
     unless valid_helper_trust?(result, verdict:, policy_provenance:)
       errors << "helper provenance and trust are invalid for #{verdict}"
     end
-    errors << "metrics shape is invalid" unless valid_metrics?(result["metrics"], verdict:)
+    metrics = result["metrics"]
+    errors << "metrics shape is invalid" unless valid_metrics?(metrics, verdict:)
+    if verdict == "UNKNOWN" && metrics == {} && !canonical_early_unknown_evidence_shape?(result)
+      errors << "empty metrics require the canonical early UNKNOWN evidence shape"
+    end
     safe_classes = verdict == "UNKNOWN" ? SAFE_CLASSES + ["UNKNOWN"] : SAFE_CLASSES
     errors << "safe_class is invalid" unless safe_classes.include?(result["safe_class"])
     unless SHADOW_GATE_SHAPES.include?(result["shadow_triggered_gates"])
@@ -243,6 +247,16 @@ module AutonomousMergeCloseout
 
     exact_keys?(metrics, METRIC_KEYS) &&
       metrics.values.all? { |value| value.is_a?(Integer) && value >= 0 }
+  end
+
+  def canonical_early_unknown_evidence_shape?(result)
+    result["path_matches"] == [] &&
+      result["safe_class"] == "UNKNOWN" &&
+      result["triggered_gates"] == [] &&
+      result["shadow_triggered_gates"] == [] &&
+      result["shadow_evidence_unknown"] == [] &&
+      result["rollback_assessment"] == "UNKNOWN" &&
+      result["human_decision_evidence"] == { "status" => "none" }
   end
 
   def valid_human_decision_evidence?(decision, verdict:)

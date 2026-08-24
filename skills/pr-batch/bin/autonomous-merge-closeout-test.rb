@@ -173,6 +173,37 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     assert_includes unknown_output, "required exact-head eligibility evidence is missing"
   end
 
+  def test_empty_metrics_require_the_complete_early_unknown_evidence_shape
+    unknown_stdout, unknown_stderr, unknown_status = Open3.capture3("ruby", ELIGIBILITY_SCRIPT)
+    early_unknown = JSON.parse(unknown_stdout)
+    mutations = {
+      "triggered gate" => ["triggered_gates", ["security-auth-privacy"]],
+      "path evidence" => ["path_matches", [{ "path" => "dist/generated.js", "classification" => "generated" }]],
+      "safe class" => %w[safe_class none],
+      "shadow gate" => ["shadow_triggered_gates", ["reviewed-heads-limit"]],
+      "shadow evidence" => ["shadow_evidence_unknown", ["submitted-review-head-missing"]],
+      "rollback assessment" => %w[rollback_assessment code-only-rollback-established],
+      "human decision" => [
+        "human_decision_evidence",
+        {
+          "status" => "uncertain",
+          "source" => "human-pr-comment",
+          "approved_by" => "maintainer",
+          "comment_id" => "42",
+          "reason" => "provenance incomplete",
+          "url" => "https://github.com/owner/repo/pull/42#issuecomment-42"
+        }
+      ]
+    }
+
+    assert unknown_status.success?, unknown_stderr
+    mutations.each_value do |field, value|
+      artifact = Marshal.load(Marshal.dump(early_unknown))
+      artifact[field] = value
+      assert_fail_closed(artifact, "empty metrics require the canonical early UNKNOWN evidence shape")
+    end
+  end
+
   def test_unknown_explains_triggered_gates_and_retains_repo_path_evidence
     source = evaluator_result(
       verdict: "UNKNOWN",
