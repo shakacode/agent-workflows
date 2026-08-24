@@ -273,9 +273,9 @@ NEGATED_ROUTE_ONLY_COORDINATED_OUTCOME_CLAUSE_PATTERN =
     (?:or|nor|and)\s+(?:#{ROUTE_ONLY_OUTCOME_SOURCE}|#{ROUTE_ONLY_PROHIBITION_SOURCE})\b
   /imx
 DIRECT_INDEPENDENT_BLOCKER_SOURCE =
-  "(?:an?\\s+)?(?:independent\\s+(?:risk|scope|evidence|authority)(?:\\s+gate)?|(?:risk|scope|evidence|authority)\\s+gate|credential\\s+check|exact-head\\s+CI\\s+gate|(?:destructive\\s+)?scope\\s+expansion)"
+  "(?:an?\\s+)?(?:independent\\s+(?:risk|scope|evidence|authority)(?:\\s+gate)?|(?:risk|scope|evidence|authority)\\s+gate|(?:credential|security)\\s+(?:check|gate)|exact-head\\s+CI\\s+gate|(?:destructive\\s+)?scope\\s+expansion)"
 INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN =
-  /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+if\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+(?:blocks(?:\s+execution)?|fails)\b/i
+  /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+(?:if|when)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+(?:blocks(?:\s+execution)?|fails)\b/i
 DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN =
   /(?:\b(?:but|and|yet|because|since)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks\s+execution\b/i
 DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN =
@@ -1524,6 +1524,8 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not necessarily stop the lane before edits.",
       "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not prevent launch.",
+      "A route mismatch blocks launch only if a security check fails.",
+      "A route mismatch blocks launch only when a credential check fails.",
       "A route mismatch does not block launch because a credential check blocks execution.",
       "A route mismatch does not block launch since an independent risk gate blocks execution.",
       "A route mismatch **does not** block launch.",
