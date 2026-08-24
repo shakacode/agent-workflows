@@ -4,8 +4,11 @@
 require "json"
 require "minitest/autorun"
 require "open3"
+require "tmpdir"
+require_relative "../lib/autonomous_merge_runtime_trust"
 
 SCRIPT = File.expand_path("autonomous-merge-closeout", __dir__)
+ELIGIBILITY_SCRIPT = File.expand_path("autonomous-merge-eligibility", __dir__)
 
 class AutonomousMergeCloseoutTest < Minitest::Test
   HEAD_SHA = "a" * 40
@@ -59,7 +62,7 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     assert_operator output.index("Auto-merge is paused"), :<, output.index("autonomous-merge-policy-change")
     assert_includes output, "This is a policy and authority gate."
     assert_includes output, "It does not report a code defect, failed CI, or a review finding"
-    assert_includes output, 'Path evidence: "workflows/pr-processing.md" (policy)'
+    assert_includes output, 'Path evidence: ` "workflows/pr-processing.md" ` (policy)'
   end
 
   def test_architectural_judgment_is_explained_as_judgment_not_a_defect
@@ -152,6 +155,24 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     assert_includes output, "collect and bind the current full head SHA"
   end
 
+  def test_real_evaluator_human_and_early_unknown_artifacts_remain_renderable
+    human = real_human_approval_artifact
+    unknown_stdout, unknown_stderr, unknown_status = Open3.capture3("ruby", ELIGIBILITY_SCRIPT)
+    unknown = JSON.parse(unknown_stdout)
+
+    human_output, human_status = render(human)
+    unknown_output, rendered_unknown_status = render(unknown)
+
+    assert_equal "human-approval-required", human.fetch("verdict")
+    assert human_status.success?, human_output
+    assert_includes human_output, "changed-files-limit"
+    assert unknown_status.success?, unknown_stderr
+    assert_equal "UNKNOWN", unknown.fetch("verdict")
+    assert_equal "unverified", unknown.dig("helper_trust", "status")
+    assert rendered_unknown_status.success?, unknown_output
+    assert_includes unknown_output, "required exact-head eligibility evidence is missing"
+  end
+
   def test_unknown_explains_triggered_gates_and_retains_repo_path_evidence
     source = evaluator_result(
       verdict: "UNKNOWN",
@@ -174,7 +195,7 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     assert markdown_status.success?, markdown
     assert_includes markdown, "- `repo-path:checkout`"
     assert_includes markdown, "high-impact runtime path"
-    assert_includes markdown, 'Path evidence: "app/services/checkout/charge.rb" (hot-path)'
+    assert_includes markdown, 'Path evidence: ` "app/services/checkout/charge.rb" ` (hot-path)'
     assert json_status.success?, json
     assert_equal [
       {
@@ -184,6 +205,32 @@ class AutonomousMergeCloseoutTest < Minitest::Test
         "path_evidence" => [{ "path" => "app/services/checkout/charge.rb", "reason" => "hot-path" }]
       }
     ], result.fetch("gate_explanations")
+  end
+
+  def test_markdown_renders_pr_controlled_paths_as_literal_code_without_changing_json
+    adversarial_path =
+      "app/services/checkout/](evil)[Click *here*](https://evil.example/x)<script>|#_ ` `` ```\nnext.rb"
+    source = evaluator_result(
+      gates: ["repo-path:checkout"],
+      path_matches: [
+        {
+          "path" => adversarial_path,
+          "gate" => "repo-path:checkout",
+          "reason" => "hot-path"
+        }
+      ]
+    )
+
+    markdown, markdown_status = render(source)
+    json, json_status = render(source, format: "json")
+
+    assert markdown_status.success?, markdown
+    assert_includes markdown,
+                    "Path evidence: ```` #{JSON.generate(adversarial_path)} ```` (hot-path)"
+    assert_equal 1, markdown.lines.grep(/Path evidence:/).length
+    assert json_status.success?, json
+    assert_equal adversarial_path,
+                 JSON.parse(json).dig("gate_explanations", 0, "path_evidence", 0, "path")
   end
 
   def test_json_format_preserves_exact_machine_facts
@@ -214,6 +261,78 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     refute status.success?
     assert_includes output, "human-approval-required cannot carry evidence failures"
     refute_includes output, "Next action:"
+  end
+
+  def test_fabricated_presentation_only_result_fails_closed
+    fabricated = {
+      "verdict" => "human-approval-required",
+      "head_sha" => HEAD_SHA,
+      "policy_provenance" => "git:#{BASE_SHA}:#{POLICY_PATH}@#{POLICY_BLOB_SHA}",
+      "path_matches" => [],
+      "triggered_gates" => ["security-auth-privacy"],
+      "rollback_assessment" => "code-only-rollback-established",
+      "evidence_failures" => []
+    }
+
+    assert_fail_closed(fabricated, "evaluator result has unknown or missing fields")
+  end
+
+  def test_human_approval_requires_mechanically_verified_helper_trust
+    malformed = {
+      "unverified" => evaluator_result(gates: ["security-auth-privacy"]).tap do |result|
+        result["helper_provenance"] = "UNKNOWN"
+        result["helper_trust"] = { "status" => "unverified", "manifest" => {} }
+      end,
+      "base-mismatch" => evaluator_result(gates: ["security-auth-privacy"]).tap do |result|
+        result["helper_provenance"] = "trusted-base:#{'e' * 40}"
+      end,
+      "missing-role" => evaluator_result(gates: ["security-auth-privacy"]).tap do |result|
+        result.dig("helper_trust", "manifest").delete("closeout-helper")
+      end
+    }
+
+    malformed.each do |label, result|
+      assert_fail_closed(
+        result,
+        "helper provenance and trust are invalid for human-approval-required"
+      )
+    rescue Minitest::Assertion => e
+      raise Minitest::Assertion, "#{label}: #{e.message}"
+    end
+  end
+
+  def test_full_evaluator_facts_are_validated_not_just_present
+    mutations = {
+      "metrics" => [
+        ->(result) { result["metrics"]["changed_files"] = -1 },
+        "metrics shape is invalid"
+      ],
+      "safe-class" => [
+        ->(result) { result["safe_class"] = "probably-safe" },
+        "safe_class is invalid"
+      ],
+      "shadow-gates" => [
+        ->(result) { result["shadow_triggered_gates"] = ["changed-files-limit"] },
+        "shadow_triggered_gates shape is invalid"
+      ],
+      "shadow-evidence" => [
+        ->(result) { result["shadow_evidence_unknown"] = ["future-evidence"] },
+        "shadow_evidence_unknown shape is invalid"
+      ],
+      "human-decision" => [
+        ->(result) { result["human_decision_evidence"] = { "status" => "accepted" } },
+        "human_decision_evidence is invalid for human-approval-required"
+      ]
+    }
+
+    mutations.each do |label, (mutation, error)|
+      result = evaluator_result(gates: ["security-auth-privacy"])
+      mutation.call(result)
+
+      assert_fail_closed(result, error)
+    rescue Minitest::Assertion => e
+      raise Minitest::Assertion, "#{label}: #{e.message}"
+    end
   end
 
   def test_uppercase_head_sha_fails_closed_for_both_verdicts
@@ -472,6 +591,117 @@ class AutonomousMergeCloseoutTest < Minitest::Test
 
   private
 
+  def real_human_approval_artifact
+    repo_root = File.expand_path("../../..", __dir__)
+    base_sha, base_status = Open3.capture2("git", "-C", repo_root, "rev-parse", "HEAD")
+    raise "git rev-parse failed" unless base_status.success?
+
+    base_sha = base_sha.strip
+    files = Array.new(30) do |index|
+      { "path" => format("lib/file_%02d.rb", index), "additions" => 1, "deletions" => 0 }
+    end
+    objective = {
+      "head_sha" => HEAD_SHA,
+      "base_sha" => base_sha,
+      "files" => files,
+      "commits" => [{ "sha" => "c" * 40 }],
+      "reviews" => [],
+      "decision_comments" => []
+    }
+    calibration = File.join(
+      repo_root,
+      "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
+    )
+    digest = AutonomousMergeRuntimeTrust.installed_pack_digest(
+      AutonomousMergeRuntimeTrust.runtime_sources(calibration)
+    )
+
+    Dir.mktmpdir("autonomous-merge-closeout-integration") do |root|
+      objective_path = File.join(root, "objective.json")
+      semantic_path = File.join(root, "semantic.json")
+      gh_path = File.join(root, "gh")
+      File.write(objective_path, JSON.generate(objective))
+      File.write(semantic_path, JSON.generate(real_semantic_assessment))
+      write_real_evaluator_fake_gh(gh_path)
+      stdout, stderr, status = Open3.capture3(
+        {
+          "AUTONOMOUS_MERGE_GH" => gh_path,
+          "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path
+        },
+        "ruby", ELIGIBILITY_SCRIPT,
+        "--repo-root", repo_root,
+        "--trusted-base", base_sha,
+        "--trusted-helper-provenance", "verified-installed-pack:#{digest}",
+        "--repo", "owner/repo",
+        "--pr", "42",
+        "--semantic-assessment", semantic_path
+      )
+      raise stderr unless status.success?
+
+      JSON.parse(stdout)
+    end
+  end
+
+  def real_semantic_assessment
+    {
+      "provenance" => "trusted-coordinator",
+      "persistent_data_storage" => false,
+      "infrastructure_delivery" => false,
+      "irreversible_external_effect" => false,
+      "public_compatibility" => false,
+      "security_auth_privacy" => false,
+      "architectural_product_judgment" => false,
+      "unresolved_maintainer_concern" => false,
+      "rollback_assessment" => "code-only-rollback-established",
+      "safe_class" => "none",
+      "safe_classification_complete" => true,
+      "test_change" => "not-applicable",
+      "decision_provenance" => []
+    }
+  end
+
+  def write_real_evaluator_fake_gh(path)
+    File.write(path, <<~'RUBY')
+      #!/usr/bin/env ruby
+      require "json"
+
+      objective = JSON.parse(File.read(ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")))
+      request = ARGV.fetch(-1)
+      response = case request
+                 when "repos/owner/repo/pulls/42"
+                   {
+                     "head" => { "sha" => objective.fetch("head_sha") },
+                     "base" => { "sha" => objective.fetch("base_sha") },
+                     "updated_at" => "2026-08-22T12:00:00Z",
+                     "changed_files" => objective.fetch("files").length,
+                     "commits" => objective.fetch("commits").length
+                   }
+                 when "repos/owner/repo/issues/42/timeline?per_page=100&page=1"
+                   []
+                 when "repos/owner/repo/pulls/42/files?per_page=100&page=1"
+                   objective.fetch("files").map do |file|
+                     {
+                       "filename" => file.fetch("path"),
+                       "status" => "modified",
+                       "additions" => file.fetch("additions"),
+                       "deletions" => file.fetch("deletions")
+                     }
+                   end
+                 when "repos/owner/repo/pulls/42/commits?per_page=100&page=1"
+                   objective.fetch("commits")
+                 when "repos/owner/repo/pulls/42/reviews?per_page=100&page=1"
+                   objective.fetch("reviews")
+                 when "repos/owner/repo/issues/42/comments?per_page=100&page=1"
+                   objective.fetch("decision_comments")
+                 else
+                   warn "unexpected GitHub API path: #{request}"
+                   exit 1
+                 end
+      puts JSON.generate(response)
+    RUBY
+    File.chmod(0o755, path)
+  end
+
   def render(result, format: "markdown")
     Open3.capture2e("ruby", SCRIPT, "--format", format, stdin_data: JSON.generate(result))
   end
@@ -502,10 +732,40 @@ class AutonomousMergeCloseoutTest < Minitest::Test
       "verdict" => verdict,
       "head_sha" => head_sha,
       "policy_provenance" => policy_provenance,
+      "helper_provenance" => "trusted-base:#{BASE_SHA}",
+      "helper_trust" => {
+        "status" => "mechanically-verified",
+        "manifest" => autonomous_runtime_manifest
+      },
+      "metrics" => {
+        "changed_files" => 1,
+        "changed_lines" => 2,
+        "commits" => 1,
+        "reviewed_heads" => 0
+      },
       "path_matches" => path_matches,
+      "safe_class" => "none",
       "triggered_gates" => gates,
+      "shadow_triggered_gates" => [],
+      "shadow_evidence_unknown" => [],
       "rollback_assessment" => rollback_assessment,
+      "human_decision_evidence" => { "status" => "none" },
       "evidence_failures" => evidence_failures
+    }
+  end
+
+  def autonomous_runtime_manifest
+    {
+      "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
+      "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
+      "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
+      "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+      "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
+      "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
+      "policy-yaml-library" => "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
+      "runtime-trust-library" => "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb",
+      "calibration-decision" =>
+        "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
     }
   end
 end

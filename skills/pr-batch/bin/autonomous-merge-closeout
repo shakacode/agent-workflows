@@ -4,6 +4,7 @@
 require "json"
 require "optparse"
 require_relative "../lib/autonomous_merge_decision"
+require_relative "../lib/autonomous_merge_runtime_trust"
 
 module AutonomousMergeCloseout
   CONTRACT = "autonomous-merge-closeout"
@@ -19,6 +20,26 @@ module AutonomousMergeCloseout
     base_only: /\Agit:#{BASE_OID_PATTERN}\z/
   }.freeze
   SUPPORTED_VERDICTS = %w[human-approval-required UNKNOWN].freeze
+  RESULT_KEYS = %w[
+    verdict head_sha policy_provenance helper_provenance helper_trust metrics
+    path_matches safe_class triggered_gates shadow_triggered_gates
+    shadow_evidence_unknown rollback_assessment human_decision_evidence
+    evidence_failures
+  ].freeze
+  RUNTIME_MANIFEST_KEYS = (
+    AutonomousMergeRuntimeTrust::RUNTIME_SOURCES.keys + ["calibration-decision"]
+  ).freeze
+  TRUSTED_BASE_PROVENANCE_PATTERN = /\Atrusted-base:([0-9a-f]{40})\z/
+  INSTALLED_PACK_PROVENANCE_PATTERN = /\Averified-installed-pack:[0-9a-f]{64}\z/
+  METRIC_KEYS = %w[changed_files changed_lines commits reviewed_heads].freeze
+  SAFE_CLASSES = %w[none documentation tests formatting-comments].freeze
+  SHADOW_GATE_SHAPES = [[], ["reviewed-heads-limit"]].freeze
+  SHADOW_EVIDENCE_SHAPES = [
+    [],
+    ["submitted-review-head-missing"],
+    ["review-pagination-incomplete"],
+    %w[submitted-review-head-missing review-pagination-incomplete]
+  ].freeze
   ROLLBACK_ASSESSMENTS = %w[
     code-only-rollback-established
     forward-recovery-established
@@ -86,6 +107,7 @@ module AutonomousMergeCloseout
     return ["evaluator result must be a JSON object"] unless result.is_a?(Hash)
 
     errors = []
+    errors << "evaluator result has unknown or missing fields" unless exact_keys?(result, RESULT_KEYS)
     verdict = result["verdict"]
     errors << "verdict must be human-approval-required or UNKNOWN" unless SUPPORTED_VERDICTS.include?(verdict)
     head_sha = result["head_sha"]
@@ -108,6 +130,21 @@ module AutonomousMergeCloseout
     policy_provenance = result["policy_provenance"]
     unless valid_policy_provenance?(policy_provenance, verdict:)
       errors << "policy_provenance is not an evaluator-produced form for #{verdict}"
+    end
+    unless valid_helper_trust?(result, verdict:, policy_provenance:)
+      errors << "helper provenance and trust are invalid for #{verdict}"
+    end
+    errors << "metrics shape is invalid" unless valid_metrics?(result["metrics"], verdict:)
+    safe_classes = verdict == "UNKNOWN" ? SAFE_CLASSES + ["UNKNOWN"] : SAFE_CLASSES
+    errors << "safe_class is invalid" unless safe_classes.include?(result["safe_class"])
+    unless SHADOW_GATE_SHAPES.include?(result["shadow_triggered_gates"])
+      errors << "shadow_triggered_gates shape is invalid"
+    end
+    unless SHADOW_EVIDENCE_SHAPES.include?(result["shadow_evidence_unknown"])
+      errors << "shadow_evidence_unknown shape is invalid"
+    end
+    unless valid_human_decision_evidence?(result["human_decision_evidence"], verdict:)
+      errors << "human_decision_evidence is invalid for #{verdict}"
     end
     rollback = result["rollback_assessment"]
     unless ROLLBACK_ASSESSMENTS.include?(rollback) || (verdict == "UNKNOWN" && rollback == "UNKNOWN")
@@ -163,6 +200,11 @@ module AutonomousMergeCloseout
     value.is_a?(String) && !value.strip.empty?
   end
 
+  def exact_keys?(value, expected_keys)
+    value.is_a?(Hash) && value.keys.length == expected_keys.length &&
+      (value.keys - expected_keys).empty?
+  end
+
   def valid_policy_provenance?(value, verdict:)
     return false unless value.is_a?(String)
 
@@ -174,6 +216,52 @@ module AutonomousMergeCloseout
     value == "UNKNOWN" || configured || portable_defaults ||
       value.match?(POLICY_PROVENANCE_PATTERNS.fetch(:path_only)) ||
       value.match?(POLICY_PROVENANCE_PATTERNS.fetch(:base_only))
+  end
+
+  def valid_helper_trust?(result, verdict:, policy_provenance:)
+    provenance = result["helper_provenance"]
+    trust = result["helper_trust"]
+    return false unless exact_keys?(trust, %w[manifest status])
+
+    if trust["status"] == "mechanically-verified"
+      return false unless trusted_helper_provenance?(provenance, policy_provenance:)
+
+      manifest = trust["manifest"]
+      exact_keys?(manifest, RUNTIME_MANIFEST_KEYS) &&
+        manifest.values.all? { |path| nonempty_string?(path) }
+    else
+      verdict == "UNKNOWN" && provenance == "UNKNOWN" &&
+        trust == { "status" => "unverified", "manifest" => {} }
+    end
+  end
+
+  def valid_metrics?(metrics, verdict:)
+    return true if verdict == "UNKNOWN" && metrics == {}
+
+    exact_keys?(metrics, METRIC_KEYS) &&
+      metrics.values.all? { |value| value.is_a?(Integer) && value >= 0 }
+  end
+
+  def valid_human_decision_evidence?(decision, verdict:)
+    return false unless decision.is_a?(Hash)
+    return true if decision == { "status" => "none" }
+    return false unless verdict == "UNKNOWN"
+    return false unless exact_keys?(decision, %w[approved_by comment_id reason source status url])
+    return false unless decision["status"] == "uncertain"
+    return false unless AutonomousMergeDecision::SOURCES.include?(decision["source"])
+
+    %w[approved_by comment_id reason url].all? { |key| nonempty_string?(decision[key]) }
+  end
+
+  def trusted_helper_provenance?(provenance, policy_provenance:)
+    return false unless provenance.is_a?(String)
+    return true if provenance.match?(INSTALLED_PACK_PROVENANCE_PATTERN)
+
+    match = provenance.match(TRUSTED_BASE_PROVENANCE_PATTERN)
+    return false unless match
+
+    policy_base = policy_provenance.to_s.match(/\Agit:([0-9a-f]{40})(?::|\z)/)&.captures&.first
+    policy_base.nil? || match.captures.first == policy_base
   end
 
   def human_approval_closeout(result)
@@ -263,6 +351,12 @@ module AutonomousMergeCloseout
     "#{items[0...-1].join(', ')}, and #{items.fetch(-1)}"
   end
 
+  def markdown_code_literal(value)
+    literal = JSON.generate(value)
+    fence = "`" * ((literal.scan(/`+/).map(&:length).max || 0) + 1)
+    "#{fence} #{literal} #{fence}"
+  end
+
   def closeout(summary:, distinction:, state:, result:, gate_explanations:, next_action:, durable_definition:, invalidation:)
     durable_location = if state == "ready-human-review-required"
                          "a complete autonomous-merge-risk-decision:v1 PR comment"
@@ -303,7 +397,7 @@ module AutonomousMergeCloseout
         entry.fetch("path_evidence").each do |path|
           reason = path.fetch("reason")
           reason = "#{reason}: #{path.fetch('detail')}" if path.key?("detail")
-          lines << "  Path evidence: #{JSON.generate(path.fetch('path'))} (#{reason})"
+          lines << "  Path evidence: #{markdown_code_literal(path.fetch('path'))} (#{reason})"
         end
       end
     end
