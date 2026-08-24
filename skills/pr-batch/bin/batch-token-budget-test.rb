@@ -874,7 +874,6 @@ class BatchTokenBudgetTest < Minitest::Test
       legacy = legacy_v1_receipt(current_receipt)
       legacy, receipt_ref, receipt_digest = receipt_artifact(state_path, legacy, "legacy-v1")
       state_before = File.read(state_path)
-
       blocked, stderr, status = run_helper(
         state_path,
         command(
@@ -2600,6 +2599,40 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "usage-window-gap", gap.fetch("reason")
       assert_equal 112, gap.dig("totals", "aggregate", "consumed_tokens")
       assert_equal 210, gap.dig("totals", "aggregate", "reserved_tokens")
+    end
+  end
+
+  def test_fractionally_future_usage_window_fails_closed
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      future_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00.500000Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      future_receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, future_receipt, "fractional-future")
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => future_receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-window-future", blocked.fetch("reason")
+      assert_equal 0, blocked.dig("totals", "aggregate", "consumed_tokens")
+      saved = JSON.parse(File.read(state_path))
+      assert_empty saved.fetch("usage_receipts")
+      assert_nil saved.fetch("usage_cursor")
     end
   end
 

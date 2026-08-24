@@ -390,6 +390,22 @@ class BatchPlanPreflightTest < Minitest::Test
       refute ancestor_status.success?
       assert_includes ancestor_result.fetch("violations").map { |violation| violation.fetch("code") },
                       "token-budget-artifact-collision"
+
+      actual_parent = File.join(directory, "actual")
+      aliased_parent = File.join(directory, "aliased")
+      Dir.mkdir(actual_parent)
+      File.symlink(actual_parent, aliased_parent)
+      parent_alias_budget = token_budget
+      parent_alias_budget["state_path"] = File.join(aliased_parent, "trusted-plan.json", "state.json")
+      parent_alias_input = input_for
+      enable_token_budget(parent_alias_input, parent_alias_budget)
+      parent_alias_input.dig("plan", "token_budget_anchor")["trusted_plan_path"] =
+        File.join(actual_parent, "trusted-plan.json")
+
+      parent_alias_result, _parent_alias_stderr, parent_alias_status = evaluate(parent_alias_input)
+      refute parent_alias_status.success?
+      assert_includes parent_alias_result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-artifact-collision"
     end
   end
 
