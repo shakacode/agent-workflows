@@ -406,7 +406,7 @@ module AutonomousMergeCloseout
     end
     unless closeout.fetch("evidence_failures").empty?
       lines.concat(["", "Evidence failures that must be repaired:"])
-      closeout.fetch("evidence_failures").each { |failure| lines << "- #{JSON.generate(failure)}" }
+      closeout.fetch("evidence_failures").each { |failure| lines << "- #{markdown_code_literal(failure)}" }
     end
     lines << ""
     lines << "Next action: #{closeout.fetch('next_action')}"

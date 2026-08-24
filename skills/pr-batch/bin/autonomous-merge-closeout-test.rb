@@ -233,6 +233,26 @@ class AutonomousMergeCloseoutTest < Minitest::Test
                  JSON.parse(json).dig("gate_explanations", 0, "path_evidence", 0, "path")
   end
 
+  def test_markdown_renders_evidence_failures_as_literal_code_without_changing_json
+    adversarial_failure =
+      "malformed evidence near [Review](https://evil.example/x)<script>|#_ ` `` ```\nnext"
+    source = evaluator_result(
+      verdict: "UNKNOWN",
+      gates: [],
+      rollback_assessment: "UNKNOWN",
+      evidence_failures: [adversarial_failure]
+    )
+
+    markdown, markdown_status = render(source)
+    json, json_status = render(source, format: "json")
+
+    assert markdown_status.success?, markdown
+    assert_includes markdown, "- ```` #{JSON.generate(adversarial_failure)} ````"
+    assert_equal 1, markdown.lines.grep(/Evidence failures that must be repaired:/).length
+    assert json_status.success?, json
+    assert_equal [adversarial_failure], JSON.parse(json).fetch("evidence_failures")
+  end
+
   def test_json_format_preserves_exact_machine_facts
     source = evaluator_result(
       gates: ["security-auth-privacy"],
