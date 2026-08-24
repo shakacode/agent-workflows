@@ -75,6 +75,11 @@ assert(batch.include?("fastest or balanced worker route"), "single-target mode m
 assert(batch.include?("verified head branch cannot be pushed"), "single-target PR mode must preserve the unpushable-head fallback")
 assert(batch.include?("replacement branch/PR"), "single-target PR mode must explain the replacement path")
 assert(batch.include?("for one direct-prompt task, the derived `adhoc:<yyyymmdd>-<short-slug>`"), "the required interview must accept ad-hoc targets")
+assert(batch.include?("**Linear issue**: use the verified Linear issue ID as the coordination target"), "single-target mode must accept a verified Linear issue")
+assert(batch.include?("Missing, mismatched, unavailable, or untrusted verification is"), "single-target Linear verification must classify failures")
+assert(batch.include?("`UNKNOWN` and stops before launch"), "single-target Linear verification must fail closed")
+assert(batch.include?("GitHub `pr-security-preflight` does not"), "single-target mode must keep the GitHub preflight distinct")
+assert(batch.include?("verify Linear"), "single-target mode must name separate Linear verification")
 assert(batch.include?("direct user instruction, a maintainer-approved exact list"), "the required interview must classify direct-prompt trust")
 assert(batch.include?("when present, otherwise from the `AGENTS.md`"), "canonical base-branch resolution must support inline AGENTS configuration")
 
