@@ -156,6 +156,13 @@ CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
+CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
+CONTINUATION_THREAD_HANDLE_RULE =
+  "Preserve one exact trusted persisted thread handle for the resumed batch when verified. " \
+  "Otherwise, after exact target and lane resolution, derive `<batch-short>` from the lowercased resolved " \
+  "batch-title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the resolved lane id or " \
+  "owner slug, and `<word>` from the coordinator's short session word. Multiple, conflicting, or unverified " \
+  "handles are literal `UNKNOWN` and stop continuation; never infer a handle from free-form text."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
@@ -178,6 +185,8 @@ TEXT
 # Keep phrase checks here in sync when that source prompt changes.
 CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   CONTINUATION_BATCH_TITLE_LINE,
+  CONTINUATION_THREAD_HANDLE_LINE,
+  CONTINUATION_THREAD_HANDLE_RULE,
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
   "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
   "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries.",
@@ -336,6 +345,52 @@ def require_occurrence_count(text, phrase, expected_count, label)
   abort_with_failure(
     "#{label} has #{actual_count} occurrences of #{phrase.inspect}; expected #{expected_count}"
   )
+end
+
+def continuation_title_thread_handle_shape_valid?(text)
+  expected_prefix =
+    "#{CONTINUATION_INVOCATION_LINE}\n\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+  text.start_with?(expected_prefix) &&
+    text.lines.count { |line| line.chomp == CONTINUATION_BATCH_TITLE_LINE } == 1 &&
+    text.lines.count { |line| line.chomp == CONTINUATION_THREAD_HANDLE_LINE } == 1 &&
+    text.scan("\n\nThread handle:").length == 1
+end
+
+def assert_continuation_title_thread_handle_shape_rejects_invalid_headers
+  valid = <<~TEXT
+    #{CONTINUATION_INVOCATION_LINE}
+
+    #{CONTINUATION_BATCH_TITLE_LINE}
+
+    #{CONTINUATION_THREAD_HANDLE_LINE}
+    Continue.
+  TEXT
+  invalid = {
+    "missing Thread handle" => valid.sub("#{CONTINUATION_THREAD_HANDLE_LINE}\n", ""),
+    "duplicate Thread handle" => valid.sub(
+      "#{CONTINUATION_THREAD_HANDLE_LINE}\n",
+      "#{CONTINUATION_THREAD_HANDLE_LINE}\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+    ),
+    "misordered Thread handle" => valid.sub(
+      "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+      "#{CONTINUATION_THREAD_HANDLE_LINE}\n\n#{CONTINUATION_BATCH_TITLE_LINE}"
+    ),
+    "missing trailing blank line" => valid.sub(
+      "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+      "#{CONTINUATION_BATCH_TITLE_LINE}\n#{CONTINUATION_THREAD_HANDLE_LINE}"
+    ),
+    "duplicate trailing blank line" => valid.sub(
+      "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+      "#{CONTINUATION_BATCH_TITLE_LINE}\n\n\n#{CONTINUATION_THREAD_HANDLE_LINE}"
+    )
+  }
+
+  abort_with_failure("continuation prompt title/Thread handle validator must accept the canonical header") unless continuation_title_thread_handle_shape_valid?(valid)
+  invalid.each do |label, fixture|
+    next unless continuation_title_thread_handle_shape_valid?(fixture)
+
+    abort_with_failure("continuation prompt title/Thread handle validator must reject #{label}")
+  end
 end
 
 def reject_phrases(text, phrases, label)
@@ -499,6 +554,7 @@ continuation_prompt = extract_first_text_fence_body(
   "canonical workflow continuation prompt"
 )
 assert_first_text_fence_rejects_nested_bare_fence
+assert_continuation_title_thread_handle_shape_rejects_invalid_headers
 
 required_skill_rule_phrases = [
   "Determine the prompt target",
@@ -867,10 +923,10 @@ require_phrases(
   "canonical parent release-or-archive pressure scenarios"
 )
 
-continuation_title_block =
-  "#{CONTINUATION_INVOCATION_LINE}\n\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n"
-unless continuation_prompt.start_with?(continuation_title_block)
-  abort_with_failure("canonical workflow continuation prompt must put one blank line around the title after the invocation")
+unless continuation_title_thread_handle_shape_valid?(continuation_prompt)
+  abort_with_failure(
+    "canonical workflow continuation prompt must put one blank line around the title and one Thread handle immediately below it"
+  )
 end
 
 unexpected_pressure_refs = pressure_scenario_text.scan(/#\d+/).uniq - ALLOWED_PRESSURE_SCENARIO_REFS

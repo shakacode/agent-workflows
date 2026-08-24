@@ -143,6 +143,13 @@ PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.\n"
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
+CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
+CONTINUATION_THREAD_HANDLE_RULE =
+  "Preserve one exact trusted persisted thread handle for the resumed batch when verified. " \
+  "Otherwise, after exact target and lane resolution, derive `<batch-short>` from the lowercased resolved " \
+  "batch-title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the resolved lane id or " \
+  "owner slug, and `<word>` from the coordinator's short session word. Multiple, conflicting, or unverified " \
+  "handles are literal `UNKNOWN` and stop continuation; never infer a handle from free-form text."
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
 GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <short title>."
 LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <short title>."
@@ -380,6 +387,15 @@ end
 
 def assert_squished_includes(text, phrase, label)
   assert_text_includes(squish(text), squish(phrase), label)
+end
+
+def continuation_title_thread_handle_shape_valid?(text)
+  expected_prefix =
+    "#{CONTINUATION_INVOCATION_LINE}\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+  text.start_with?(expected_prefix) &&
+    text.lines.count { |line| line.chomp == CONTINUATION_BATCH_TITLE_LINE } == 1 &&
+    text.lines.count { |line| line.chomp == CONTINUATION_THREAD_HANDLE_LINE } == 1 &&
+    text.scan("\n\nThread handle:").length == 1
 end
 
 # The canonical rule is the only place `<PROJECT>` may be tied to the repository
@@ -1146,11 +1162,41 @@ class GoalCompletionContractTest < Minitest::Test
     end
 
     expected_continuation_prefix =
-      "#{CONTINUATION_INVOCATION_LINE}\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n"
+      "#{CONTINUATION_INVOCATION_LINE}\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
     assert @workflow_resume_prompt.start_with?(expected_continuation_prefix),
-           "workflow continuation prompt must keep its invocation above a one-blank-line title block"
+           "workflow continuation prompt must put Thread handle immediately below its one-blank-line title block"
     assert_equal 1, @workflow_resume_prompt.lines.count { |line| line.start_with?("Batch title:") },
                  "workflow continuation prompt must contain one Batch title line"
+    assert_equal 1, @workflow_resume_prompt.lines.count { |line| line.start_with?("Thread handle:") },
+                 "workflow continuation prompt must contain one Thread handle line"
+    assert_equal 1, @workflow_resume_prompt.scan("\n\nThread handle:").length,
+                 "workflow continuation prompt must contain one correctly spaced Thread handle"
+    assert continuation_title_thread_handle_shape_valid?(@workflow_resume_prompt),
+           "workflow continuation prompt must have one ordered title/Thread handle header"
+
+    invalid_headers = {
+      "missing Thread handle" => @workflow_resume_prompt.sub("#{CONTINUATION_THREAD_HANDLE_LINE}\n", ""),
+      "duplicate Thread handle" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_THREAD_HANDLE_LINE}\n",
+        "#{CONTINUATION_THREAD_HANDLE_LINE}\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+      ),
+      "misordered Thread handle" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+        "#{CONTINUATION_THREAD_HANDLE_LINE}\n\n#{CONTINUATION_BATCH_TITLE_LINE}"
+      ),
+      "missing trailing blank line" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n#{CONTINUATION_THREAD_HANDLE_LINE}"
+      ),
+      "duplicate trailing blank line" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n\n#{CONTINUATION_THREAD_HANDLE_LINE}"
+      )
+    }
+    invalid_headers.each do |label, text|
+      refute continuation_title_thread_handle_shape_valid?(text),
+             "workflow continuation prompt guard must reject #{label}"
+    end
   end
 
   def test_batch_title_spacing_rule_is_synchronized_across_planning_surfaces
@@ -1169,8 +1215,13 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes @workflow_resume_prompt, CONTINUATION_TITLE_IDENTIFIER_RULE,
                          "workflow continuation prompt"
     assert @workflow_resume_prompt.start_with?(
-      "#{CONTINUATION_INVOCATION_LINE}\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n"
+      "#{CONTINUATION_INVOCATION_LINE}\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
     ), "workflow continuation prompt must expose the optional verified source issue ID in its title"
+  end
+
+  def test_continuation_thread_handle_is_preserved_or_derived_fail_closed
+    assert_text_includes @workflow_resume_prompt, CONTINUATION_THREAD_HANDLE_RULE,
+                         "workflow continuation prompt Thread handle rule"
   end
 
   def test_linear_target_grammar_and_verification_are_fail_closed

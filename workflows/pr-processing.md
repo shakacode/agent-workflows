@@ -2528,6 +2528,9 @@ Use $pr-batch to continue PR-batch closeout, not to start a new implementation b
 
 Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>.
 
+Thread handle: <batch-short>-<lane>-<word>
+Preserve one exact trusted persisted thread handle for the resumed batch when verified. Otherwise, after exact target and lane resolution, derive `<batch-short>` from the lowercased resolved batch-title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the resolved lane id or owner slug, and `<word>` from the coordinator's short session word. Multiple, conflicting, or unverified handles are literal `UNKNOWN` and stop continuation; never infer a handle from free-form text.
+
 First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
 
 A Linear target entry is valid only as `Linear issue <ID>: <verified Linear URL>` and after the canonical authenticated Linear verification or a trusted resolved coordinator handoff backed by that verification. Missing, mismatched, or unavailable Linear verification is literal `UNKNOWN` and stops continuation title inclusion and launch. GitHub `pr-security-preflight` does not verify Linear.
