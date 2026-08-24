@@ -277,7 +277,7 @@ DIRECT_INDEPENDENT_BLOCKER_SOURCE =
 INDEPENDENT_GATE_CONDITIONAL_OUTCOME_CLAUSE_PATTERN =
   /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b\s+only\s+if\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+(?:blocks(?:\s+execution)?|fails)\b/i
 DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN =
-  /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks\s+execution\b/i
+  /(?:\b(?:but|and|yet|because|since)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks\s+execution\b/i
 DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN =
   /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\b/i
 DIRECT_INDEPENDENT_BLOCKER_FIRST_CLAUSE_PATTERN =
@@ -424,6 +424,7 @@ end
 
 def normalize_emphasis_delimiters(text)
   text
+    .gsub(/\[([^\]\n]+)\]\((?:[^()\n]|\([^()\n]*\))*\)/, "\\1")
     .gsub(/\*\*([^*\n]+)\*\*/, "\\1")
     .gsub(/(?<!\w)\*([^*\n]+)\*(?!\w)/, "\\1")
     .gsub(/(?<!\w)_([^_\n]+)_(?!\w)/, "\\1")
@@ -1331,6 +1332,7 @@ class ModelRoutingContractTest < Minitest::Test
       "reasoning effort is UNKNOWN" => "A reasoning effort is UNKNOWN and requires relaunch before editing.",
       "preferred route is unavailable" => "A preferred route is unavailable and stops the lane before editing.",
       "route mismatch blocks launch" => "A route mismatch blocks launch.",
+      "linked route mismatch blocks launch" => "[A route mismatch](./routing.md) blocks launch.",
       "route mismatch emphasized blocks launch" => "A route mismatch **blocks** launch.",
       "route mismatch single-star emphasized blocks launch" => "A route mismatch *blocks* launch.",
       "route mismatch underscored blocks launch" => "A route mismatch _blocks_ launch.",
@@ -1522,6 +1524,8 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch does not necessarily stop the lane before edits.",
       "A route mismatch does not automatically block execution before edits.",
       "A route mismatch does not prevent launch.",
+      "A route mismatch does not block launch because a credential check blocks execution.",
+      "A route mismatch does not block launch since an independent risk gate blocks execution.",
       "A route mismatch **does not** block launch.",
       "A route mismatch *does not* block launch.",
       "A route mismatch _does not_ block launch.",
