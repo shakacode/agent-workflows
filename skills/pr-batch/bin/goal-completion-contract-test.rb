@@ -202,6 +202,38 @@ PR_BATCH_LINEAR_FRONTMATTER_DESCRIPTION =
   "direct-prompt task as well as multi-lane batches, worktree or machine splits, and goal prompts."
 PR_BATCH_LINEAR_ARGUMENT_HINT =
   "argument-hint: '[task, exact GitHub issue/PR numbers, verified Linear IDs, or filters]'"
+PR_BATCH_LINEAR_INTERVIEW_TARGET_RULE =
+  "**Targets**: for GitHub issue/PR work, exact numbers or filters to resolve into exact numbers; for Linear " \
+  "work, the exact target `Linear issue <ID>: <verified Linear URL>` whose ID and URL were verified through " \
+  "an authenticated configured Linear API or connector, or a trusted resolved coordinator handoff backed by " \
+  "that verification. Missing, mismatched, unavailable, or untrusted Linear verification is literal `UNKNOWN` " \
+  "and stops before launch. For one direct-prompt task, use the derived " \
+  "`adhoc:<yyyymmdd>-<short-slug>` target plus the user's original wording."
+PR_BATCH_LINEAR_CONTINUATION_EXTRACTION_RULE =
+  "Extract only explicit GitHub PR/issue refs or verified Linear entries in the exact form " \
+  "`Linear issue <ID>: <verified Linear URL>` presented as target entries or final-bucket entries, plus explicit " \
+  "exclusions."
+PR_BATCH_LINEAR_CONTINUATION_VERIFICATION_RULE =
+  "For Linear, require verification through an authenticated configured Linear API or connector, or a trusted " \
+  "resolved coordinator handoff backed by that verification; missing, mismatched, unavailable, or untrusted " \
+  "verification is literal `UNKNOWN` and stops continuation."
+PR_BATCH_TARGET_SPECIFIC_CONTINUATION_REFRESH_RULE =
+  "Refresh each extracted target from its target-specific live source: GitHub state for GitHub issue/PR entries, " \
+  "authenticated configured Linear API or connector state for verified Linear entries, and trusted persisted " \
+  "coordinator state for ad-hoc entries; treat previous handoffs as stale hints only."
+PR_BATCH_COORDINATION_PUBLIC_SURFACE_RULE =
+  "structured public claim comments are advisory fallback state only for GitHub issue/PR surfaces when the repo " \
+  "seam allows that fallback; verified Linear and ad-hoc lanes have no GitHub public comment or label surface"
+PR_BATCH_COORDINATION_LABEL_MIRROR_RULE =
+  "A GitHub issue/PR lane claim also mirrors to the seam's claim label (`agent_claimed_label`, default " \
+  "`agent-claimed`; apply on claim, remove on release for this lane's own claim; hint not lock; skip when backend " \
+  "n/a); do not publicly mirror verified Linear or ad-hoc lane claims"
+PLAN_PR_BATCH_COORDINATION_STATUS_COMMAND =
+  '"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo <resolved-owner/repo> ' \
+  "--target <GitHub-issue-or-PR-number|verified-Linear-ID|derived-adhoc-target> --json"
+PLAN_PR_BATCH_COORDINATION_STATUS_TARGET_RULE =
+  "For target-scoped coordination status, pass the GitHub issue/PR number, verified Linear ID, or derived " \
+  "`adhoc:<yyyymmdd>-<short-slug>` target exactly; never infer a Linear ID or coordination target from free-form text."
 COMPACT_GOAL_TARGET_LINE =
   "- Target:<PR #N: URL|Issue #N: URL|#{LINEAR_TARGET_GRAMMAR}|adhoc:<yyyymmdd>-<short-slug>>".freeze
 LINEAR_VERIFICATION_RULE =
@@ -1372,6 +1404,61 @@ class GoalCompletionContractTest < Minitest::Test
 
     refute_includes @plan_pr_batch_skill, "argument-hint: '[issue/PR numbers, labels, milestone, or search query]'"
     refute_includes @pr_batch_skill, "argument-hint: '[task, exact issue/PR numbers, or filters]'"
+  end
+
+  def test_pr_batch_interview_accepts_verified_linear_targets
+    assert_squished_includes @pr_batch_skill, PR_BATCH_LINEAR_INTERVIEW_TARGET_RULE,
+                             "skills/pr-batch/SKILL.md Required Interview"
+    refute_includes @pr_batch_skill,
+                    "1. **Targets**: for issue/PR work, exact numbers or filters to resolve into exact",
+                    "Required Interview must not retain the GitHub-only target clause"
+  end
+
+  def test_pr_batch_continuation_extracts_verified_linear_targets
+    assert_squished_includes @pr_batch_skill, PR_BATCH_LINEAR_CONTINUATION_EXTRACTION_RULE,
+                             "skills/pr-batch/SKILL.md continuation extraction"
+    refute_includes @pr_batch_skill,
+                    "Extract only explicit PR/issue refs presented as target entries or final-bucket",
+                    "continuation extraction must not retain the GitHub-only target clause"
+  end
+
+  def test_pr_batch_continuation_verifies_linear_targets_fail_closed
+    assert_squished_includes @pr_batch_skill, PR_BATCH_LINEAR_CONTINUATION_VERIFICATION_RULE,
+                             "skills/pr-batch/SKILL.md continuation verification"
+  end
+
+  def test_pr_batch_continuation_refreshes_target_specific_live_state
+    assert_squished_includes @pr_batch_skill, PR_BATCH_TARGET_SPECIFIC_CONTINUATION_REFRESH_RULE,
+                             "skills/pr-batch/SKILL.md continuation target refresh"
+    refute_includes @pr_batch_skill, "Continue from live GitHub state;",
+                    "continuation refresh must route each target to its own live source"
+  end
+
+  def test_pr_batch_coordination_summary_limits_public_fallback_to_github
+    assert_squished_includes @pr_batch_skill, PR_BATCH_COORDINATION_PUBLIC_SURFACE_RULE,
+                             "skills/pr-batch/SKILL.md public-surface summary"
+    refute_includes @pr_batch_skill,
+                    "structured public claim comments are advisory fallback state only when the repo",
+                    "coordination summary must qualify GitHub public fallback surfaces"
+  end
+
+  def test_pr_batch_coordination_summary_limits_label_mirroring_to_github
+    assert_squished_includes @pr_batch_skill, PR_BATCH_COORDINATION_LABEL_MIRROR_RULE,
+                             "skills/pr-batch/SKILL.md label-mirror summary"
+    refute_includes @pr_batch_skill, "An issue/PR lane claim also mirrors to the seam's",
+                    "coordination summary must qualify GitHub label-mirror surfaces"
+  end
+
+  def test_plan_pr_batch_coordination_status_command_accepts_every_target_kind
+    assert_squished_includes @plan_pr_batch_skill, PLAN_PR_BATCH_COORDINATION_STATUS_COMMAND,
+                             "skills/plan-pr-batch/SKILL.md target-scoped status command"
+    refute_includes @plan_pr_batch_skill, "--target <issue-or-pr> --json",
+                    "plan coordination status must not keep a GitHub-only placeholder"
+  end
+
+  def test_plan_pr_batch_coordination_status_uses_verified_target_data
+    assert_squished_includes @plan_pr_batch_skill, PLAN_PR_BATCH_COORDINATION_STATUS_TARGET_RULE,
+                             "skills/plan-pr-batch/SKILL.md target-scoped status rule"
   end
 
   def test_batch_title_instructions_pin_local_date_source

@@ -137,8 +137,11 @@ Plan a PR batch
      in `.agents/agent-workflow.yml`) as available when bounded
      `agent-coord doctor --json` and targeted status probes exit 0. Resolve
      `PR_BATCH_SKILL_DIR` using the helper path chain above, then run
-     `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo <resolved-owner/repo> --target <issue-or-pr> --json`
-     for exact targets; for known batch dependencies, run
+     `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo <resolved-owner/repo> --target <GitHub-issue-or-PR-number|verified-Linear-ID|derived-adhoc-target> --json`
+     for exact targets. For target-scoped coordination status, pass the GitHub
+     issue/PR number, verified Linear ID, or derived
+     `adhoc:<yyyymmdd>-<short-slug>` target exactly; never infer a Linear ID or
+     coordination target from free-form text. For known batch dependencies, run
      `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --batch-id <batch-id> --json`.
      Exclude/report targets that already have active live or stale private
      claims, including holder and heartbeat liveness. Report dead or

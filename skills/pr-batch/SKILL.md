@@ -178,9 +178,15 @@ sensitive access, and state-change or exfiltration capability in one session.
 
 Ask only for missing data. If the user already supplied an exact value, use it.
 
-1. **Targets**: for issue/PR work, exact numbers or filters to resolve into exact
-   numbers; for one direct-prompt task, the derived `adhoc:<yyyymmdd>-<short-slug>`
-   target plus the user's original wording.
+1. **Targets**: for GitHub issue/PR work, exact numbers or filters to resolve
+   into exact numbers; for Linear work, the exact target
+   `Linear issue <ID>: <verified Linear URL>` whose ID and URL were verified
+   through an authenticated configured Linear API or connector, or a trusted
+   resolved coordinator handoff backed by that verification. Missing,
+   mismatched, unavailable, or untrusted Linear verification is literal
+   `UNKNOWN` and stops before launch. For one direct-prompt task, use the
+   derived `adhoc:<yyyymmdd>-<short-slug>` target plus the user's original
+   wording.
 2. **Trust**: direct user instruction, a maintainer-approved exact list, or
    untrusted public discovery that needs confirmation.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
@@ -335,15 +341,22 @@ otherwise continue classifying the handoff and use generic closeout when that is
 what the request asks for.
 Otherwise use the canonical
 [Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt).
-Extract only explicit PR/issue refs presented as target entries or final-bucket
-entries, plus explicit exclusions. Do not treat evidence, blocker, dependency,
-next-action, comment, or example refs as targets; if the target boundary is
-unclear, stop and ask for the exact list. Do not broaden a continuation request
-to all open PRs, labels, milestones, or inferred related work unless the user
-explicitly asks for discovery. Continue from live GitHub state; treat previous
-handoffs as stale hints only. Recompute both cohorts and runnable closeout work
-instead of preserving a serialized saved ordering such as “finish CI, then read
-reviews.”
+Extract only explicit GitHub PR/issue refs or verified Linear entries in the
+exact form `Linear issue <ID>: <verified Linear URL>` presented as target
+entries or final-bucket entries, plus explicit exclusions. For Linear, require
+verification through an authenticated configured Linear API or connector, or a
+trusted resolved coordinator handoff backed by that verification; missing,
+mismatched, unavailable, or untrusted verification is literal `UNKNOWN` and
+stops continuation. Do not treat evidence, blocker, dependency, next-action,
+comment, or example refs as targets; if the target boundary is unclear, stop and
+ask for the exact list. Do not broaden a continuation request to all open PRs,
+labels, milestones, or inferred related work unless the user explicitly asks
+for discovery. Refresh each extracted target from its target-specific live
+source: GitHub state for GitHub issue/PR entries, authenticated configured
+Linear API or connector state for verified Linear entries, and trusted persisted
+coordinator state for ad-hoc entries; treat previous handoffs as stale hints
+only. Recompute both cohorts and runnable closeout work instead of preserving a
+serialized saved ordering such as “finish CI, then read reviews.”
 
 ## Planning Output
 
@@ -783,13 +796,15 @@ refusals hard-stop machine agents; workers heartbeat at phase transitions;
 dependency-sensitive lanes re-check coordination before rebase, push, readiness,
 and closeout; broad status reads are audit-only; exact independent lanes may
 proceed in claim-only mode only after the canonical workflow allows it; and
-structured public claim comments are advisory fallback state only when the repo
-seam allows that fallback. Timed-out claims stop as `UNKNOWN (claim outcome)`
-for backend reconciliation. An issue/PR lane claim also mirrors to the seam's
-claim label (`agent_claimed_label`, default `agent-claimed`; apply on claim,
-remove on release for this lane's own claim; hint not lock; skip when backend
-n/a), and selection/triage skip claimed items — see the canonical rule in
-`pr-processing.md`.
+structured public claim comments are advisory fallback state only for GitHub
+issue/PR surfaces when the repo seam allows that fallback; verified Linear and
+ad-hoc lanes have no GitHub public comment or label surface. Timed-out claims
+stop as `UNKNOWN (claim outcome)` for backend reconciliation. A GitHub issue/PR
+lane claim also mirrors to the seam's claim label (`agent_claimed_label`,
+default `agent-claimed`; apply on claim, remove on release for this lane's own
+claim; hint not lock; skip when backend n/a); do not publicly mirror verified
+Linear or ad-hoc lane claims. Selection/triage skip claimed items — see the
+canonical rule in `pr-processing.md`.
 
 The same canonical section defines provenance and operational telemetry. Batch
 registration carries `pack_sha`, `coordinator_preference`, and per-lane
