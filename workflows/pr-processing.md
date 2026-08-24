@@ -2624,9 +2624,12 @@ hatch**, not a single kill switch:
   bound holds only for workers that successfully check targeted status at each
   phase transition: `agent-coord status --batch-id <batch-id> --json` for batch
   workers or
-  `agent-coord status --repo <owner/repo> --target <issue-or-pr> --json` for
-  single-lane workers. A worker deep inside one target may not stop until its
-  next checkpoint, and a wedged worker requires the hard escape hatch.
+  `agent-coord status --repo <owner/repo> --target
+  <GitHub-issue-or-PR-number|verified-Linear-ID|derived-adhoc-target> --json` for
+  single-lane workers. For target-scoped cancellation polling, the worker passes
+  the exact canonical target identity and never infers it from free-form text. A
+  worker deep inside one target may not stop until its next checkpoint, and a
+  wedged worker requires the hard escape hatch.
   When a worker first observes cancellation at its cooperative drain checkpoint,
   that worker emits one lane-scoped typed `human_intervention` event with
   `kind: drain` when the active private coordination backend advertises

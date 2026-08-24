@@ -234,6 +234,12 @@ PLAN_PR_BATCH_COORDINATION_STATUS_COMMAND =
 PLAN_PR_BATCH_COORDINATION_STATUS_TARGET_RULE =
   "For target-scoped coordination status, pass the GitHub issue/PR number, verified Linear ID, or derived " \
   "`adhoc:<yyyymmdd>-<short-slug>` target exactly; never infer a Linear ID or coordination target from free-form text."
+CANCELLATION_TARGET_STATUS_COMMAND =
+  "`agent-coord status --repo <owner/repo> --target " \
+  "<GitHub-issue-or-PR-number|verified-Linear-ID|derived-adhoc-target> --json`"
+CANCELLATION_CANONICAL_TARGET_RULE =
+  "For target-scoped cancellation polling, the worker passes the exact canonical target identity and never infers " \
+  "it from free-form text."
 COMPACT_GOAL_TARGET_LINE =
   "- Target:<PR #N: URL|Issue #N: URL|#{LINEAR_TARGET_GRAMMAR}|adhoc:<yyyymmdd>-<short-slug>>".freeze
 LINEAR_VERIFICATION_RULE =
@@ -3059,5 +3065,17 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes @pr_batch_skill, "Preserve claims and worktrees", "skills/pr-batch/SKILL.md"
     assert_text_includes @pr_batch_skill, "updated skills", "skills/pr-batch/SKILL.md"
     assert_text_includes @pr_batch_skill, "launching fresh workers", "skills/pr-batch/SKILL.md"
+  end
+
+  def test_cancellation_poll_uses_each_lane_kind_canonical_target
+    cancellation = extract_markdown_section(@workflow, "### Cancelling Or Stopping A Batch", end_heading: /^###\s+/)
+
+    assert_squished_includes cancellation, CANCELLATION_TARGET_STATUS_COMMAND,
+                             "workflows/pr-processing.md cancellation target status command"
+    assert_squished_includes cancellation, CANCELLATION_CANONICAL_TARGET_RULE,
+                             "workflows/pr-processing.md cancellation target identity rule"
+    refute_includes cancellation,
+                    "`agent-coord status --repo <owner/repo> --target <issue-or-pr> --json`",
+                    "cancellation polling must reject the stale GitHub-only target placeholder"
   end
 end
