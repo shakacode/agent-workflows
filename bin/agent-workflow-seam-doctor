@@ -1795,14 +1795,19 @@ module AgentWorkflowSeamDoctor
       identifiers = []
     end
     identifiers.each_with_index do |identifier, index|
-      unless identifier.is_a?(String) && !identifier.strip.empty?
+      unless identifier.is_a?(String)
         errors << "allowed_identifiers[#{index}] must be a known nonblank string"
       end
       if identifier.is_a?(String)
         if identifier.encoding != Encoding::UTF_8 || !identifier.valid_encoding?
           errors << "allowed_identifiers[#{index}] must be valid UTF-8"
-        elsif identifier.unicode_normalize(:nfkc).match?(/UNKNOWN/i)
-          errors << "allowed_identifiers[#{index}] must not contain an UNKNOWN marker"
+        else
+          normalized_identifier = identifier.unicode_normalize(:nfkc).gsub(/[[:space:]]+/, " ").strip
+          if normalized_identifier.empty?
+            errors << "allowed_identifiers[#{index}] must be a known nonblank string"
+          elsif normalized_identifier.match?(/UNKNOWN/i)
+            errors << "allowed_identifiers[#{index}] must not contain an UNKNOWN marker"
+          end
         end
       end
     end

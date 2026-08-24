@@ -663,6 +663,27 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_coordination_backend_contract_rejects_a_unicode_whitespace_only_identifier
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      whitespace_identifier = "\u00A0"
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => whitespace_identifier,
+          "coordination_backend_contract" => coordination_backend_contract(whitespace_identifier)
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend_contract policy"
+      assert_includes out, "must be a known nonblank string"
+    end
+  end
+
   def test_coordination_backend_contract_rejects_malformed_closed_values
     fixtures = {
       "not a mapping" => PRIVATE_COORDINATION_BACKEND,
