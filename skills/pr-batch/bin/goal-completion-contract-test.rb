@@ -232,14 +232,25 @@ PR_BATCH_LINEAR_INTERVIEW_TARGET_RULE =
   "that verification. Missing, mismatched, unavailable, or untrusted Linear verification is literal `UNKNOWN` " \
   "and stops before launch. For one direct-prompt task, use the derived " \
   "`adhoc:<yyyymmdd>-<short-slug>` target plus the user's original wording."
-PR_BATCH_LINEAR_CONTINUATION_EXTRACTION_RULE =
-  "Extract only explicit GitHub PR/issue refs or verified Linear entries in the exact form " \
-  "`Linear issue <ID>: <verified Linear URL>` presented as target entries or final-bucket entries, plus explicit " \
-  "exclusions."
+PR_BATCH_CONTINUATION_EXTRACTION_RULE =
+  "Extract only explicit GitHub PR/issue refs, verified Linear entries in the exact form " \
+  "`Linear issue <ID>: <verified Linear URL>`, or trusted persisted canonical ad-hoc entries in the exact form " \
+  "`adhoc:<yyyymmdd>-<short-slug>` presented as target entries or final-bucket entries, plus explicit exclusions."
 PR_BATCH_LINEAR_CONTINUATION_VERIFICATION_RULE =
   "For Linear, require verification through an authenticated configured Linear API or connector, or a trusted " \
   "resolved coordinator handoff backed by that verification; missing, mismatched, unavailable, or untrusted " \
   "verification is literal `UNKNOWN` and stops continuation."
+ADHOC_CONTINUATION_VERIFICATION_RULE =
+  "A canonical ad-hoc target entry is valid only as `adhoc:<yyyymmdd>-<short-slug>` when it is present in trusted " \
+  "persisted coordinator state. Missing, mismatched, or untrusted persisted state is literal `UNKNOWN` and stops " \
+  "continuation; never infer an ad-hoc target from free-form text."
+WORKFLOW_CONTINUATION_EXTRACTION_RULE =
+  "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, GitHub URLs, verified Linear " \
+  "entries in the exact form `Linear issue <ID>: <verified Linear URL>`, or trusted persisted canonical ad-hoc " \
+  "entries in the exact form `adhoc:<yyyymmdd>-<short-slug>` when they are presented as batch targets or " \
+  "final-bucket entries."
+CONTINUATION_EXACT_TARGET_LIST_REQUEST =
+  "If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact target list."
 PR_BATCH_TARGET_SPECIFIC_CONTINUATION_REFRESH_RULE =
   "Refresh each extracted target from its target-specific live source: GitHub state for GitHub issue/PR entries, " \
   "authenticated configured Linear API or connector state for verified Linear entries, and trusted persisted " \
@@ -1371,7 +1382,7 @@ class GoalCompletionContractTest < Minitest::Test
       refute_includes text, "GitHub preflight only", "#{label} must route preflight by target"
     end
     assert_text_includes @workflow_resume_prompt,
-                         "GitHub URLs, or Linear entries in the exact form `#{LINEAR_TARGET_GRAMMAR}` when they are presented as batch targets or final-bucket entries.",
+                         "GitHub URLs, verified Linear entries in the exact form `#{LINEAR_TARGET_GRAMMAR}`, or trusted persisted canonical ad-hoc entries",
                          "workflow continuation prompt Linear target extraction grammar"
     refute_includes @workflow_resume_prompt,
                     "issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries.",
@@ -1460,12 +1471,34 @@ class GoalCompletionContractTest < Minitest::Test
                     "Required Interview must not retain the GitHub-only target clause"
   end
 
-  def test_pr_batch_continuation_extracts_verified_linear_targets
-    assert_squished_includes @pr_batch_skill, PR_BATCH_LINEAR_CONTINUATION_EXTRACTION_RULE,
+  def test_pr_batch_continuation_extracts_verified_linear_and_adhoc_targets
+    assert_squished_includes @pr_batch_skill, PR_BATCH_CONTINUATION_EXTRACTION_RULE,
                              "skills/pr-batch/SKILL.md continuation extraction"
     refute_includes @pr_batch_skill,
                     "Extract only explicit PR/issue refs presented as target entries or final-bucket",
                     "continuation extraction must not retain the GitHub-only target clause"
+  end
+
+  def test_continuation_accepts_trusted_persisted_adhoc_only_targets_fail_closed
+    assert_text_includes @workflow_resume_prompt, WORKFLOW_CONTINUATION_EXTRACTION_RULE,
+                         "workflow continuation ad-hoc extraction"
+    assert_text_includes @workflow_resume_prompt, ADHOC_CONTINUATION_VERIFICATION_RULE,
+                         "workflow continuation ad-hoc verification"
+    assert_squished_includes @pr_batch_skill, ADHOC_CONTINUATION_VERIFICATION_RULE,
+                             "skills/pr-batch/SKILL.md ad-hoc verification"
+    assert_text_includes @workflow_resume_prompt, CONTINUATION_EXACT_TARGET_LIST_REQUEST,
+                         "workflow continuation exact target request"
+    assert_text_includes @pr_batch_skill, "ask for the exact target list",
+                         "skills/pr-batch/SKILL.md exact target request"
+    assert_text_includes @workflow_resume_prompt, CONTINUATION_ADHOC_REFRESH_RULE,
+                         "workflow continuation ad-hoc-only positive path"
+
+    refute_includes @workflow_resume_prompt,
+                    "If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact PR/issue list.",
+                    "workflow continuation must not request a PR/issue-only target list"
+    refute_includes @pr_batch_skill,
+                    "Extract only explicit GitHub PR/issue refs or verified Linear entries in the exact form",
+                    "skills/pr-batch/SKILL.md must not omit canonical ad-hoc targets"
   end
 
   def test_pr_batch_continuation_verifies_linear_targets_fail_closed

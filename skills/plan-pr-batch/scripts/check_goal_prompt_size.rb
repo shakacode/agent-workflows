@@ -190,12 +190,35 @@ CONTINUATION_PR_ONLY_REFRESH_RULE =
   "current-head review threads, configured review-agent state, and current-head checks only to PR targets; " \
   "re-fetch those fields from live GitHub state and do not require or fabricate them for GitHub issue, " \
   "verified Linear, or ad-hoc targets."
+WORKFLOW_CONTINUATION_EXTRACTION_RULE =
+  "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, GitHub URLs, verified Linear " \
+  "entries in the exact form `Linear issue <ID>: <verified Linear URL>`, or trusted persisted canonical ad-hoc " \
+  "entries in the exact form `adhoc:<yyyymmdd>-<short-slug>` when they are presented as batch targets or " \
+  "final-bucket entries."
+PR_BATCH_CONTINUATION_EXTRACTION_RULE =
+  "Extract only explicit GitHub PR/issue refs, verified Linear entries in the exact form " \
+  "`Linear issue <ID>: <verified Linear URL>`, or trusted persisted canonical ad-hoc entries in the exact form " \
+  "`adhoc:<yyyymmdd>-<short-slug>` presented as target entries or final-bucket entries, plus explicit exclusions."
+ADHOC_CONTINUATION_VERIFICATION_RULE =
+  "A canonical ad-hoc target entry is valid only as `adhoc:<yyyymmdd>-<short-slug>` when it is present in trusted " \
+  "persisted coordinator state. Missing, mismatched, or untrusted persisted state is literal `UNKNOWN` and stops " \
+  "continuation; never infer an ad-hoc target from free-form text."
+CONTINUATION_EXACT_TARGET_LIST_REQUEST =
+  "If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact target list."
 STALE_CONTINUATION_RULES = [
   "Mode: continue from live GitHub state; previous handoffs are stale hints only.",
   "Run exact-target security preflight.",
   "Re-fetch every target's current head SHA, branch, draft status, merge state, conflicts/behind state, review " \
-  "decision, unresolved current-head review threads, configured review-agent state, and current-head checks."
+  "decision, unresolved current-head review threads, configured review-agent state, and current-head checks.",
+  "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, GitHub URLs, or Linear " \
+  "entries in the exact form `Linear issue <ID>: <verified Linear URL>` when they are presented as batch targets " \
+  "or final-bucket entries.",
+  "If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact PR/issue list."
 ].freeze
+STALE_PR_BATCH_CONTINUATION_RULE =
+  "Extract only explicit GitHub PR/issue refs or verified Linear entries in the exact form " \
+  "`Linear issue <ID>: <verified Linear URL>` presented as target entries or final-bucket entries, plus explicit " \
+  "exclusions."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
@@ -222,7 +245,9 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   CONTINUATION_THREAD_HANDLE_RULE,
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
   "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
-  "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, GitHub URLs, or Linear entries in the exact form `Linear issue <ID>: <verified Linear URL>` when they are presented as batch targets or final-bucket entries.",
+  WORKFLOW_CONTINUATION_EXTRACTION_RULE,
+  ADHOC_CONTINUATION_VERIFICATION_RULE,
+  CONTINUATION_EXACT_TARGET_LIST_REQUEST,
   "If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear.",
   "Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.",
   "Do not broaden to all open PRs, labels, milestones, or inferred related work unless I explicitly ask for discovery.",
@@ -264,6 +289,7 @@ PRESSURE_SCENARIOS = [
   "A handoff containing final buckets for placeholder PRs #101, #102, #103, #104, and #105 extracts exactly those five targets and excludes explicitly deferred/excluded PRs.",
   "A mixed-state handoff containing placeholder PRs #201, #202, #203, #204, and #205 splits checks/review polling from draft/product-decision blockers and conflict recovery.",
   "A pasted handoff with no exact PR/issue refs stops and asks for targets instead of broadening to all open PRs.",
+  "A saved handoff whose only target is trusted persisted canonical `adhoc:20260824-doc-refresh` extracts that ad-hoc target and refreshes trusted coordinator state; it never infers an ad-hoc target from free-form text.",
   "A normal resume prompt routes to bounded status recovery, not cancellation/relaunch."
 ].freeze
 PARENT_RELEASE_OR_ARCHIVE_RECONCILIATION_SOURCE_PIN = "After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive."
@@ -967,6 +993,16 @@ end
 
 require_phrases(workflow_text, CANONICAL_CONTINUATION_SNIPPET_PHRASES, "canonical workflow continuation snippet")
 reject_phrases(continuation_prompt, STALE_CONTINUATION_RULES, "canonical workflow continuation snippet")
+require_phrases(
+  pr_batch_skill_text.gsub(/\s+/, " "),
+  [PR_BATCH_CONTINUATION_EXTRACTION_RULE, ADHOC_CONTINUATION_VERIFICATION_RULE, "ask for the exact target list"],
+  "pr-batch continuation target extraction"
+)
+reject_phrases(
+  pr_batch_skill_text.gsub(/\s+/, " "),
+  [STALE_PR_BATCH_CONTINUATION_RULE],
+  "pr-batch continuation target extraction"
+)
 require_phrases(workflow_text, PRESSURE_SCENARIOS, "canonical workflow pressure scenarios")
 
 if enforce_restart_docs_drift

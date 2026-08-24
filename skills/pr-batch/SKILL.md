@@ -341,15 +341,20 @@ otherwise continue classifying the handoff and use generic closeout when that is
 what the request asks for.
 Otherwise use the canonical
 [Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt).
-Extract only explicit GitHub PR/issue refs or verified Linear entries in the
-exact form `Linear issue <ID>: <verified Linear URL>` presented as target
-entries or final-bucket entries, plus explicit exclusions. For Linear, require
+Extract only explicit GitHub PR/issue refs, verified Linear entries in the
+exact form `Linear issue <ID>: <verified Linear URL>`, or trusted persisted
+canonical ad-hoc entries in the exact form `adhoc:<yyyymmdd>-<short-slug>`
+presented as target entries or final-bucket entries, plus explicit exclusions. For Linear, require
 verification through an authenticated configured Linear API or connector, or a
 trusted resolved coordinator handoff backed by that verification; missing,
 mismatched, unavailable, or untrusted verification is literal `UNKNOWN` and
-stops continuation. Do not treat evidence, blocker, dependency, next-action,
+stops continuation. A canonical ad-hoc target entry is valid only as
+`adhoc:<yyyymmdd>-<short-slug>` when it is present in trusted persisted
+coordinator state. Missing, mismatched, or untrusted persisted state is literal
+`UNKNOWN` and stops continuation; never infer an ad-hoc target from free-form
+text. Do not treat evidence, blocker, dependency, next-action,
 comment, or example refs as targets; if the target boundary is unclear, stop and
-ask for the exact list. Do not broaden a continuation request to all open PRs,
+ask for the exact target list. Do not broaden a continuation request to all open PRs,
 labels, milestones, or inferred related work unless the user explicitly asks
 for discovery. Refresh each extracted target from its target-specific live
 source: GitHub state for GitHub issue/PR entries, authenticated configured
