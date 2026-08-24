@@ -67,6 +67,9 @@ address_review_workflow = read_repo_file("workflows/address-review.md")
 address_review_actions = read_repo_file("skills/address-review/references/actions.md")
 address_review_templates = read_repo_file("skills/address-review/references/templates.md")
 
+supported_target_enumeration =
+  "Use this mode for one direct-prompt task, GitHub issue, Linear issue, or pull request."
+assert(batch.include?(supported_target_enumeration), "single-target mode must enumerate every supported target type")
 assert(batch.include?("A single target is\na batch of one"), "pr-batch must own single-target mode")
 assert(batch.include?("dispatch one\n  worker subagent"), "single-target mode must default to a worker subagent")
 assert(batch.include?("Do not silently default it"), "single-target mode must require explicit merge authority")

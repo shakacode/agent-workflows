@@ -39,7 +39,7 @@ Run a Claude batch
 
 ## Single-Target Mode
 
-Use this mode for one direct-prompt task, GitHub issue, or pull request. It keeps
+Use this mode for one direct-prompt task, GitHub issue, Linear issue, or pull request. It keeps
 the same security, coordination, validation, review, QA, readiness, handoff, and
 closeout gates as a multi-target batch; only batch packing and collision analysis
 collapse to one lane.
