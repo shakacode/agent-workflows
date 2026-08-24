@@ -134,8 +134,10 @@ target_ids_line = "> Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-
 duplicated_target_ids_line = "#{target_ids_line} Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`."
 assert(workflow.lines.count { |line| line.chomp == target_ids_line } == 1, "canonical file-touch map must contain the exact ad-hoc and Linear issue target line once")
 assert(!workflow.include?(duplicated_target_ids_line), "canonical file-touch map must reject the duplicate ad-hoc suffix")
-provider_neutral_no_pr_evidence = "For a Linear or ad-hoc target, record the evidence and rationale in private coordination plus the durable Lane Card and final handoff"
+provider_neutral_no_pr_evidence = "For a Linear or ad-hoc target, record the evidence and rationale in the durable Lane Card and final handoff in every mode"
 assert(workflow.gsub(/\s+/, " ").include?(provider_neutral_no_pr_evidence), "canonical final handoff must support provider-neutral no-PR evidence")
+assert(workflow.include?("When `coordination_backend: n/a`, proceed only under\n  the existing explicit no-backend single-operator approval."), "canonical no-PR evidence must preserve no-backend single-operator mode")
+assert(workflow.gsub(/\s+/, " ").include?("may substitute only for private coordination; it never replaces the Lane Card or final handoff"), "provider-native evidence must not replace durable handoff evidence")
 assert(!workflow.include?("For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target comment exists."), "canonical final handoff must not omit Linear/private coordination")
 assert(workflow.include?("For an ad-hoc task, the final handoff is the evidence surface"), "canonical outcome classification must support ad-hoc no-PR evidence")
 assert(workflow.include?("A verified Linear lane is external to GitHub, so it has no GitHub public"), "canonical coordination must classify Linear with lanes that lack a GitHub public surface")

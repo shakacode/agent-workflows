@@ -1629,7 +1629,7 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
 
 Classify every unresolved question before continuing:
 
-- **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For GitHub issue/PR targets, a blocking question may use a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. For Linear and ad-hoc targets, record the question in private coordination plus the durable Lane Card and final handoff unless an explicitly configured authenticated provider-native surface exists. A native Linear comment is optional, never required; never invent or mirror a Linear question onto GitHub. A worker handoff should include the question, any comment URL, and that target's blocked final state.
+- **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For GitHub issue/PR targets, a blocking question may use a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. For Linear and ad-hoc targets, record the question in the durable Lane Card and final handoff in every mode, and also in private coordination when it is configured and active. When `coordination_backend: n/a`, proceed only under the existing explicit no-backend single-operator approval. An explicitly configured authenticated provider-native Linear surface is optional and additional, or may substitute only for private coordination; it never replaces the Lane Card or final handoff. Never invent or mirror a Linear question onto GitHub. A worker handoff should include the question, any comment URL, and that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note inside the PR description's `Agent details` disclosure so later review across merged PRs can surface these items quickly.
 
 Before a private-backend lane pauses for required user input, emit
@@ -1795,10 +1795,14 @@ Every target must use one explicit final state:
   not bound to the exact current head.
 - `no-pr-evidence`: no PR was created. For a GitHub issue/PR target, link the
   evidence-backed GitHub issue/PR comment and disposition. For a Linear or
-  ad-hoc target, record the evidence and rationale in private coordination plus
-  the durable Lane Card and final handoff unless an explicitly configured
-  authenticated provider-native surface exists. A native Linear comment is
-  optional, never required; never invent or mirror Linear evidence onto GitHub.
+  ad-hoc target, record the evidence and rationale in the durable Lane Card and
+  final handoff in every mode, and also in private coordination when it is
+  configured and active. When `coordination_backend: n/a`, proceed only under
+  the existing explicit no-backend single-operator approval. An explicitly
+  configured authenticated provider-native Linear surface is optional and
+  additional, or may substitute only for private coordination; it never
+  replaces the Lane Card or final handoff. Never invent or mirror Linear
+  evidence onto GitHub.
 
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use

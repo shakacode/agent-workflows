@@ -24,19 +24,27 @@ PROVIDER_NEUTRAL_LANE_CARD_TARGET =
 BLOCKING_QUESTION_PROVIDER_RULE =
   "For GitHub issue/PR targets, a blocking question may use a structured issue or PR comment and, if the repo " \
   "defines a pending-question marker in `AGENTS.md`, apply that marker. For Linear and ad-hoc targets, record the " \
-  "question in private coordination plus the durable Lane Card and final handoff unless an explicitly configured " \
-  "authenticated provider-native surface exists. A native Linear comment is optional, never required; never " \
-  "invent or mirror a Linear question onto GitHub."
+  "question in the durable Lane Card and final handoff in every mode, and also in private coordination when it is " \
+  "configured and active. When `coordination_backend: n/a`, proceed only under the existing explicit no-backend " \
+  "single-operator approval. An explicitly configured authenticated provider-native Linear surface is optional and " \
+  "additional, or may substitute only for private coordination; it never replaces the Lane Card or final handoff. " \
+  "Never invent or mirror a Linear question onto GitHub."
 NO_PR_EVIDENCE_PROVIDER_RULE =
   "For a GitHub issue/PR target, link the evidence-backed GitHub issue/PR comment and disposition. For a Linear or " \
-  "ad-hoc target, record the evidence and rationale in private coordination plus the durable Lane Card and final " \
-  "handoff unless an explicitly configured authenticated provider-native surface exists. A native Linear comment " \
-  "is optional, never required; never invent or mirror Linear evidence onto GitHub."
+  "ad-hoc target, record the evidence and rationale in the durable Lane Card and final handoff in every mode, and " \
+  "also in private coordination when it is configured and active. When `coordination_backend: n/a`, proceed only " \
+  "under the existing explicit no-backend single-operator approval. An explicitly configured authenticated " \
+  "provider-native Linear surface is optional and additional, or may substitute only for private coordination; it " \
+  "never replaces the Lane Card or final handoff. Never invent or mirror Linear evidence onto GitHub."
 STALE_PROVIDER_LIFECYCLE_RULES = [
   "`Target:` `<GitHub issue/PR link>`",
   "For an ad-hoc target, record the question in the lane handoff because no target comment exists.",
   "For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target " \
-  "comment exists."
+  "comment exists.",
+  "record the question in private coordination plus the durable Lane Card and final handoff unless an explicitly " \
+  "configured authenticated provider-native surface exists",
+  "record the evidence and rationale in private coordination plus the durable Lane Card and final handoff unless " \
+  "an explicitly configured authenticated provider-native surface exists"
 ].freeze
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_preference=<model>/<effort>;" \

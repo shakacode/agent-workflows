@@ -97,14 +97,24 @@ PROVIDER_NEUTRAL_LANE_CARD_TARGET =
 BLOCKING_QUESTION_PROVIDER_RULE =
   "For GitHub issue/PR targets, a blocking question may use a structured issue or PR comment and, if the repo " \
   "defines a pending-question marker in `AGENTS.md`, apply that marker. For Linear and ad-hoc targets, record the " \
-  "question in private coordination plus the durable Lane Card and final handoff unless an explicitly configured " \
-  "authenticated provider-native surface exists. A native Linear comment is optional, never required; never " \
-  "invent or mirror a Linear question onto GitHub."
+  "question in the durable Lane Card and final handoff in every mode, and also in private coordination when it is " \
+  "configured and active. When `coordination_backend: n/a`, proceed only under the existing explicit no-backend " \
+  "single-operator approval. An explicitly configured authenticated provider-native Linear surface is optional and " \
+  "additional, or may substitute only for private coordination; it never replaces the Lane Card or final handoff. " \
+  "Never invent or mirror a Linear question onto GitHub."
 NO_PR_EVIDENCE_PROVIDER_RULE =
   "For a GitHub issue/PR target, link the evidence-backed GitHub issue/PR comment and disposition. For a Linear or " \
-  "ad-hoc target, record the evidence and rationale in private coordination plus the durable Lane Card and final " \
-  "handoff unless an explicitly configured authenticated provider-native surface exists. A native Linear comment " \
-  "is optional, never required; never invent or mirror Linear evidence onto GitHub."
+  "ad-hoc target, record the evidence and rationale in the durable Lane Card and final handoff in every mode, and " \
+  "also in private coordination when it is configured and active. When `coordination_backend: n/a`, proceed only " \
+  "under the existing explicit no-backend single-operator approval. An explicitly configured authenticated " \
+  "provider-native Linear surface is optional and additional, or may substitute only for private coordination; it " \
+  "never replaces the Lane Card or final handoff. Never invent or mirror Linear evidence onto GitHub."
+STALE_PROVIDER_SURFACE_REPLACEMENT_RULES = [
+  "record the question in private coordination plus the durable Lane Card and final handoff unless an explicitly " \
+  "configured authenticated provider-native surface exists",
+  "record the evidence and rationale in private coordination plus the durable Lane Card and final handoff unless " \
+  "an explicitly configured authenticated provider-native surface exists"
+].freeze
 CANONICAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
 BATCH_COORDINATOR_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
@@ -1069,6 +1079,10 @@ class GoalCompletionContractTest < Minitest::Test
     refute_includes @workflow,
                     "For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target comment exists.",
                     "no-PR evidence routing must not omit Linear/private coordination"
+    STALE_PROVIDER_SURFACE_REPLACEMENT_RULES.each do |rule|
+      refute_includes @workflow.gsub(/\s+/, " "), rule,
+                      "provider-native/private surfaces must not replace durable Lane Card/final handoff"
+    end
   end
 
   def test_workflow_defines_canonical_readiness_vocabulary
