@@ -7,6 +7,7 @@ require "minitest/autorun"
 require "open3"
 require "rbconfig"
 require "tmpdir"
+require_relative "../lib/autonomous_merge_runtime_trust"
 
 SCRIPT = File.expand_path("merge-assurance", __dir__)
 load SCRIPT
@@ -1499,13 +1500,7 @@ class MergeAssuranceTest < Minitest::Test
   private
 
   def eligibility_artifact
-    repo_root = File.expand_path("../../..", __dir__)
-    base_sha, base_status = Open3.capture2(
-      { "PATH" => @original_path },
-      "git", "-C", repo_root, "rev-parse", "HEAD"
-    )
-    assert base_status.success?
-    base_sha = base_sha.strip
+    repo_root, base_sha = initialize_eligibility_runtime_repo
     objective = {
       "head_sha" => HEAD_SHA,
       "base_sha" => base_sha,
@@ -1539,6 +1534,47 @@ class MergeAssuranceTest < Minitest::Test
     assert status.success?, stderr
 
     [JSON.parse(stdout), base_sha]
+  end
+
+  def initialize_eligibility_runtime_repo
+    source_root = File.expand_path("../../..", __dir__)
+    repo_root = File.join(@fake_gh_dir, "trusted-runtime")
+    FileUtils.mkdir_p(repo_root)
+    system({ "PATH" => @original_path }, "git", "init", "--quiet", repo_root, exception: true)
+    system(
+      { "PATH" => @original_path },
+      "git", "-C", repo_root, "config", "user.email", "test@example.com",
+      exception: true
+    )
+    system(
+      { "PATH" => @original_path },
+      "git", "-C", repo_root, "config", "user.name", "Test",
+      exception: true
+    )
+    AutonomousMergeRuntimeTrust::RUNTIME_SOURCES.each_value do |source|
+      destination = File.join(repo_root, source.fetch(:tree_paths).first)
+      FileUtils.mkdir_p(File.dirname(destination))
+      FileUtils.cp(source.fetch(:path), destination)
+    end
+    calibration_path = AutonomousMergeRuntimeTrust::CALIBRATION_TREE_PATHS.first
+    FileUtils.mkdir_p(File.dirname(File.join(repo_root, calibration_path)))
+    FileUtils.cp(File.join(source_root, calibration_path), File.join(repo_root, calibration_path))
+    system({ "PATH" => @original_path }, "git", "-C", repo_root, "add", ".", exception: true)
+    system(
+      {
+        "PATH" => @original_path,
+        "GIT_AUTHOR_DATE" => "2000-01-01T00:00:00Z",
+        "GIT_COMMITTER_DATE" => "2000-01-01T00:00:00Z"
+      },
+      "git", "-C", repo_root, "commit", "--quiet", "-m", "trusted runtime",
+      exception: true
+    )
+    base_sha, status = Open3.capture2(
+      { "PATH" => @original_path },
+      "git", "-C", repo_root, "rev-parse", "HEAD"
+    )
+    assert status.success?
+    [repo_root, base_sha.strip]
   end
 
   def autonomous_semantic_assessment

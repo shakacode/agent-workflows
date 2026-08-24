@@ -150,6 +150,9 @@ module AutonomousMergeCloseout
     unless ROLLBACK_ASSESSMENTS.include?(rollback) || (verdict == "UNKNOWN" && rollback == "UNKNOWN")
       errors << "rollback_assessment is invalid for the evaluator verdict"
     end
+    if verdict == "human-approval-required" && rollback == "not-applicable" && result["safe_class"] == "none"
+      errors << "rollback_assessment not-applicable requires a safe classification"
+    end
 
     if gates.is_a?(Array) && path_matches.is_a?(Array)
       matched_gates = path_matches.filter_map { |match| match["gate"] if match.is_a?(Hash) }

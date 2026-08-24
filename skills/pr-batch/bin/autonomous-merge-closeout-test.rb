@@ -335,6 +335,18 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     end
   end
 
+  def test_not_applicable_rollback_requires_a_safe_classification
+    result = evaluator_result(
+      gates: ["security-auth-privacy"],
+      rollback_assessment: "not-applicable"
+    )
+
+    assert_fail_closed(
+      result,
+      "rollback_assessment not-applicable requires a safe classification"
+    )
+  end
+
   def test_uppercase_head_sha_fails_closed_for_both_verdicts
     results = [
       evaluator_result(gates: ["security-auth-privacy"], head_sha: "A" * 40),
