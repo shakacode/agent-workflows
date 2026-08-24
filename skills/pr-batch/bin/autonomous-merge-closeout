@@ -139,6 +139,11 @@ module AutonomousMergeCloseout
     if verdict == "UNKNOWN" && metrics == {} && !canonical_early_unknown_evidence_shape?(result)
       errors << "empty metrics require the canonical early UNKNOWN evidence shape"
     end
+    helper_trust = result["helper_trust"]
+    if helper_trust.is_a?(Hash) && helper_trust["status"] == "unverified" &&
+       !(verdict == "UNKNOWN" && metrics == {} && canonical_early_unknown_evidence_shape?(result))
+      errors << "unverified helper trust requires the canonical early UNKNOWN evidence shape"
+    end
     safe_classes = verdict == "UNKNOWN" ? SAFE_CLASSES + ["UNKNOWN"] : SAFE_CLASSES
     errors << "safe_class is invalid" unless safe_classes.include?(result["safe_class"])
     unless SHADOW_GATE_SHAPES.include?(result["shadow_triggered_gates"])

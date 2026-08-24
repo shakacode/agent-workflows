@@ -352,6 +352,22 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     end
   end
 
+  def test_unverified_helper_trust_requires_the_canonical_early_unknown_shape
+    result = evaluator_result(
+      verdict: "UNKNOWN",
+      gates: ["security-auth-privacy"],
+      rollback_assessment: "UNKNOWN",
+      evidence_failures: ["rollback assessment is missing or unknown"]
+    )
+    result["helper_provenance"] = "UNKNOWN"
+    result["helper_trust"] = { "status" => "unverified", "manifest" => {} }
+
+    assert_fail_closed(
+      result,
+      "unverified helper trust requires the canonical early UNKNOWN evidence shape"
+    )
+  end
+
   def test_full_evaluator_facts_are_validated_not_just_present
     mutations = {
       "metrics" => [
