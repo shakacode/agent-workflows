@@ -74,7 +74,9 @@ The accounting boundary is an atomic half-open `batch-usage-receipt-v1`
 window. The receipt's batch descendant-inclusive total is counted once in the
 aggregate view; coordinator self-only plus batch unattributed tokens form the
 coordinator view, and each lane's descendant-inclusive total forms that lane's
-view. Those views must recompute to the batch total exactly.
+view. The receipt's parallel `turns` counters map through the same scopes. Both
+token and contributing-turn views must recompute to the batch totals exactly;
+`UNKNOWN`, missing, or contradictory turn evidence fails closed.
 
 ## Durable Runtime
 
@@ -197,29 +199,39 @@ smaller action or sibling override cannot clear them.
 After each admitted boundary, generate a `batch-usage-receipt-v1` with the
 resolved pr-batch `bin/batch-usage-receipt` helper and submit the complete
 half-open window to `reconcile`. The command binds the inline receipt to its
-canonical `sha256:` digest, a durable non-self-attested URI reference, and the
-reservation ids that completed during the window. `file://` artifacts are read
-and matched at reconcile time and revalidated on restart. Plain, `UNKNOWN`,
-`self-attested://`, and `worker-self-attested://` references have no authority.
+canonical `sha256:` digest, an absolute local `file://` artifact, and the
+reservation ids that completed during the window. Version 1 reads and matches
+that artifact at reconcile time and revalidates it on restart; other URI
+schemes are unverifiable and have no authority. Plain, `UNKNOWN`,
+`self-attested://`, and `worker-self-attested://` references likewise have no
+authority.
 
-The first accepted window binds the batch id, coordinator identity/root, and
-every planned lane root. Later windows must preserve those identities and begin
-at the prior exclusive cutoff. Exact replay does not recount; a changed receipt
+Initialization persists its command `evaluated_at` as the authoritative initial
+usage cutoff in the initialization receipt and control-event root. The first
+accepted window must begin exactly there; it then binds the batch id,
+coordinator identity/root, and every planned lane root. Later windows must
+preserve those identities and begin at the prior exclusive cutoff. Exact replay
+does not recount; a changed receipt
 for the same window, gap, overlap, rollback, identity drift, stale/future
 cutoff, digest/reference mismatch, or malformed relevant accounting fails
 closed. Relevant `UNKNOWN` totals or topology also fail closed. The receipt
 helper's structured `UNKNOWN` for route metadata, or a missing non-total usage
 counter, may pass only when all raw total-token accounting and reconciliation
-equations remain known and balanced.
+equations remain known and balanced. The helper's global
+`accounting.usage_samples` is not per-scope turn evidence and never authorizes
+overshoot.
 
 Each accounting scope has at most one active reservation. Same-scope nested
 work coalesces into that reservation while different lanes may run
 concurrently. Every accepted window atomically shifts the scope's observed
 tokens from reserved to consumed; a completed reservation releases its unused
-remainder. Use beyond the reservation is measured as one already-admitted
-in-flight overshoot boundary for that interval. Observed use in a scope with no
-active reservation is still counted, marked unattributed, and blocks clean
-closeout rather than being assigned to a target without evidence.
+remainder. Version 1 admits an overshooting window only when the persisted
+reservation envelope is exactly `max_in_flight_turns: 1` and that scope's
+verified receipt count is exactly one contributing turn. A zero, `UNKNOWN`, or
+multiple-turn count, or any wider envelope, blocks without mutation; the helper
+never synthesizes one from token samples. Observed use in a scope with no active
+reservation is still counted, marked unattributed, and blocks clean closeout
+rather than being assigned to a target without evidence.
 
 Cross-task reconciliation can include a `batch-token-charge-back v1` source and
 target identity. The resulting causal attribution reports actual self plus

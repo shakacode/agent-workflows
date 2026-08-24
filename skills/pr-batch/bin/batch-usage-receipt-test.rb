@@ -117,6 +117,91 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal 2, receipt.dig("accounting", "session_rebind_attempts_ignored")
   end
 
+  def test_window_contributing_turn_counts_roll_up_through_nested_scopes
+    fixture = fixture_copy("descendants")
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 6, receipt.dig("batch", "turns", "descendant_inclusive")
+    assert_equal 1, receipt.dig("batch", "turns", "unattributed")
+    assert_equal 1, receipt.dig("coordinator", "turns", "self_only")
+    assert_equal 6, receipt.dig("coordinator", "turns", "descendant_inclusive")
+    assert_equal 3, receipt.dig("lanes", 0, "turns", "descendant_inclusive")
+    assert_equal 1, receipt.dig("lanes", 0, "turns", "self_only")
+    assert_equal 2, receipt.dig("lanes", 0, "turns", "unattributed")
+    assert_equal 1, receipt.dig("lanes", 0, "workers", 0, "turns", "descendant_inclusive")
+    assert_equal 1, receipt.dig("lanes", 1, "turns", "descendant_inclusive")
+  end
+
+  def test_turn_segment_spanning_window_counts_once_until_the_next_turn_context
+    fixture = fixture_copy("descendants")
+    fixture["window"]["from"] = "2026-08-04T00:00:01Z"
+    root_records = fixture.dig("rollouts", "root.jsonl")
+    root_records.fetch(1)["timestamp"] = "2026-08-04T00:00:00.500Z"
+    root_records << token_count_record("2026-08-04T00:00:02Z", total: 15, last: 5)
+    root_records << token_count_record("2026-08-04T00:00:02.500Z", total: 15, last: 5)
+    root_records << turn_context_record("2026-08-04T00:00:03Z")
+    root_records << token_count_record("2026-08-04T00:00:04Z", total: 20, last: 5)
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 2, receipt.dig("coordinator", "turns", "self_only")
+    assert_equal 20, receipt.dig("coordinator", "usage", "self_only", "total_tokens")
+    assert_equal 1, receipt.dig("accounting", "duplicate_samples_omitted")
+  end
+
+  def test_positive_usage_without_a_turn_context_has_unknown_turn_evidence
+    fixture = fixture_copy("descendants")
+    fixture.dig("rollouts", "root.jsonl").reject! { |record| record["type"] == "turn_context" }
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "turns", "self_only")
+    assert_equal "UNKNOWN", receipt.dig("batch", "turns", "descendant_inclusive")
+    assert_equal "UNKNOWN", receipt.dig("batch", "reconciliation", "status")
+    assert receipt.dig("evidence", "unknown").any? do |reason|
+      reason["code"] == "turn_context_missing_for_usage" && reason["thread_id"] == "root"
+    end
+  end
+
+  def test_positive_usage_after_an_invalid_turn_context_has_unknown_turn_evidence
+    fixture = fixture_copy("descendants")
+    fixture.dig("rollouts", "root.jsonl", 1)["timestamp"] = "not-a-time"
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "turns", "self_only")
+    assert_equal "UNKNOWN", receipt.dig("evidence", "status")
+    assert(receipt.dig("evidence", "unknown").any? { |reason| reason["code"] == "invalid_turn_timestamp" })
+  end
+
+  def test_malformed_turn_context_cannot_leave_the_prior_turn_segment_authoritative
+    fixture = fixture_copy("descendants")
+    root_records = fixture.dig("rollouts", "root.jsonl")
+    usage_index = root_records.index { |record| record.dig("payload", "type") == "token_count" }
+    root_records.insert(
+      usage_index,
+      { "timestamp" => "2026-08-04T00:00:00.750Z", "type" => "turn_context", "payload" => [] }
+    )
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "turns", "self_only")
+    assert(receipt.dig("evidence", "unknown").any? { |reason| reason["code"] == "invalid_turn_context" })
+  end
+
+  def test_usage_timestamp_before_its_turn_context_is_ambiguous
+    fixture = fixture_copy("descendants")
+    fixture.dig("rollouts", "root.jsonl").each do |record|
+      record["timestamp"] = "2026-08-04T00:00:02Z" if record["type"] == "turn_context"
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "turns", "self_only")
+    assert(receipt.dig("evidence", "unknown").any? { |reason| reason["code"] == "ambiguous_turn_timestamp" })
+  end
+
   def test_reused_rollout_path_is_validated_against_every_state_thread
     fixture = fixture_copy("descendants")
     worker_thread = fixture.fetch("threads").find { |thread| thread.fetch("id") == "worker-a" }
@@ -723,6 +808,7 @@ class BatchUsageReceiptTest < Minitest::Test
 
     assert_equal blank_usage_for_test.transform_values { "UNKNOWN" },
                  receipt.dig("batch", "usage", "descendant_inclusive")
+    assert_equal "UNKNOWN", receipt.dig("batch", "turns", "descendant_inclusive")
     assert_equal "UNKNOWN", receipt.dig("coordinator", "evidence", "status")
     reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "invalid_usage_timestamp" }
     assert_equal 3, reason.fetch("line")
@@ -851,7 +937,7 @@ class BatchUsageReceiptTest < Minitest::Test
   def test_topology_invalid_lane_reconciliation_is_unknown_even_when_zero_usage_balances
     fixture = fixture_copy("descendants")
     fixture.dig("manifest", "lanes", 0, "workers", 0)["thread_id"] = "lane-b"
-    token_info = fixture.dig("rollouts", "lane-b.jsonl", 1, "payload", "info")
+    token_info = first_token_info(fixture, "lane-b.jsonl")
     token_info.each_value { |usage| usage.transform_values! { 0 } }
 
     receipt, = run_fixture(fixture: fixture, with_rate_card: true)
@@ -866,7 +952,7 @@ class BatchUsageReceiptTest < Minitest::Test
     fixture = fixture_copy("descendants")
     root_to_lane_b = fixture.fetch("edges").find { |edge| edge[1] == "lane-b" }
     root_to_lane_b[0] = "lane-a"
-    token_info = fixture.dig("rollouts", "lane-b.jsonl", 1, "payload", "info")
+    token_info = first_token_info(fixture, "lane-b.jsonl")
     token_info.each_value { |usage| usage.transform_values! { 0 } }
 
     receipt, = run_fixture(fixture: fixture)
@@ -882,7 +968,7 @@ class BatchUsageReceiptTest < Minitest::Test
     root_to_lane_a[0] = "lane-a"
     root_to_lane_a[1] = "root"
     %w[root.jsonl lane-b.jsonl unattributed-root.jsonl].each do |rollout|
-      token_info = fixture.dig("rollouts", rollout, 1, "payload", "info")
+      token_info = first_token_info(fixture, rollout)
       token_info.each_value { |usage| usage.transform_values! { 0 } }
     end
 
@@ -1126,6 +1212,18 @@ class BatchUsageReceiptTest < Minitest::Test
     schema_errors = JSONSchemer.schema(schema).validate(first_receipt).to_a
     assert_empty schema_errors, schema_errors.map { |error| error.fetch("error") }.join("\n")
 
+    missing_turns = JSON.parse(JSON.generate(first_receipt))
+    missing_turns.fetch("coordinator").delete("turns")
+    refute_empty JSONSchemer.schema(schema).validate(missing_turns).to_a
+
+    invalid_turn_count = JSON.parse(JSON.generate(first_receipt))
+    invalid_turn_count.dig("batch", "turns")["descendant_inclusive"] = -1
+    refute_empty JSONSchemer.schema(schema).validate(invalid_turn_count).to_a
+
+    unknown_turn_count = JSON.parse(JSON.generate(first_receipt))
+    unknown_turn_count.dig("batch", "turns")["descendant_inclusive"] = "UNKNOWN"
+    assert_empty JSONSchemer.schema(schema).validate(unknown_turn_count).to_a
+
     role_swapped_coordinator = JSON.parse(JSON.generate(first_receipt))
     role_swapped_coordinator.fetch("coordinator")["scope"] = "worker"
     refute_empty JSONSchemer.schema(schema).validate(role_swapped_coordinator).to_a
@@ -1152,6 +1250,9 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_includes docs, "invalid_token_usage_vector"
     assert_includes docs, "non_object_rollout_record"
     assert_includes docs, "invalid_usage_timestamp"
+    assert_includes docs, "distinct rollout `turn_context` segments"
+    assert_includes docs, "`usage_samples` is diagnostic only"
+    assert_includes docs, "ambiguous_turn_timestamp"
 
     workflow = File.read(File.join(root, "workflows/pr-processing.md"), encoding: "UTF-8")
     skill = File.read(File.join(root, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
@@ -1159,6 +1260,7 @@ class BatchUsageReceiptTest < Minitest::Test
       assert_includes surface, "`bin/batch-usage-receipt` helper"
       assert_includes surface, "durable artifact reference"
       assert_includes surface, "informational"
+      assert_match(/contributing-turn\s+counts/, surface)
     end
   end
 
@@ -1174,6 +1276,40 @@ class BatchUsageReceiptTest < Minitest::Test
   end
 
   private
+
+  def first_token_info(fixture, rollout)
+    record = fixture.dig("rollouts", rollout).find do |candidate|
+      candidate.dig("payload", "type") == "token_count"
+    end
+    record.dig("payload", "info")
+  end
+
+  def turn_context_record(timestamp)
+    {
+      "timestamp" => timestamp,
+      "type" => "turn_context",
+      "payload" => { "model" => "turn-model", "effort" => "high" }
+    }
+  end
+
+  def token_count_record(timestamp, total:, last:)
+    usage = {
+      "input_tokens" => total,
+      "cached_input_tokens" => 0,
+      "output_tokens" => 0,
+      "reasoning_output_tokens" => 0,
+      "total_tokens" => total
+    }
+    last_usage = usage.merge("input_tokens" => last, "total_tokens" => last)
+    {
+      "timestamp" => timestamp,
+      "type" => "event_msg",
+      "payload" => {
+        "type" => "token_count",
+        "info" => { "total_token_usage" => usage, "last_token_usage" => last_usage }
+      }
+    }
+  end
 
   def fixture_copy(name)
     JSON.parse(File.read(File.join(FIXTURES, "#{name}.json"), encoding: "UTF-8"))

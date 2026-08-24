@@ -85,9 +85,12 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def initialize_budget(state_path)
+  def initialize_budget(state_path, evaluated_at: "2026-08-12T11:00:00Z")
     install_trusted_plan(state_path)
-    run_helper(state_path, command("initialize", "budget" => budget(state_path: state_path)))
+    run_helper(
+      state_path,
+      command("initialize", "evaluated_at" => evaluated_at, "budget" => budget(state_path: state_path))
+    )
   end
 
   def reservation(id:, lane_id: "lane-a", tokens: 100, target_id: nil, kind: "model-turn", overrides: {})
@@ -144,7 +147,7 @@ class BatchTokenBudgetTest < Minitest::Test
     }
   end
 
-  def real_descendants_usage_receipt(state_path)
+  def real_descendants_usage_receipt(state_path, remove_turn_context_for: nil)
     fixture = JSON.parse(File.read(USAGE_FIXTURE, encoding: "UTF-8"))
     fixture.fetch("manifest")["batch_id"] = "batch-399"
     fixture.fetch("window").merge!(
@@ -155,6 +158,9 @@ class BatchTokenBudgetTest < Minitest::Test
       records.each_with_index do |record, index|
         record["timestamp"] = index.zero? ? "2026-08-12T11:58:00Z" : "2026-08-12T11:59:00Z"
       end
+    end
+    if remove_turn_context_for
+      fixture.dig("rollouts", remove_turn_context_for).reject! { |record| record["type"] == "turn_context" }
     end
 
     directory = File.dirname(state_path)
@@ -211,24 +217,42 @@ class BatchTokenBudgetTest < Minitest::Test
     [receipt, "file://#{artifact_path}", "sha256:#{object_digest(receipt)}"]
   end
 
-  def usage_window(receipt, from:, to:, coordinator_tokens:, lane_tokens:, batch_unattributed_tokens: 0)
+  def usage_window(
+    receipt, from:, to:, coordinator_tokens:, lane_tokens:, batch_unattributed_tokens: 0,
+    coordinator_turns: nil, lane_turns: nil, batch_unattributed_turns: nil
+  )
     projected = JSON.parse(JSON.generate(receipt))
     projected.fetch("window").merge!("from_inclusive" => from, "to_exclusive" => to)
+    coordinator_turns ||= coordinator_tokens.positive? ? 1 : 0
+    batch_unattributed_turns ||= batch_unattributed_tokens.positive? ? 1 : 0
+    lane_turns ||= lane_tokens.to_h { |lane_id, tokens| [lane_id, tokens.positive? ? 1 : 0] }
     set_usage_total(projected.dig("coordinator", "usage", "self_only"), coordinator_tokens)
     batch_tokens = coordinator_tokens + batch_unattributed_tokens + lane_tokens.values.sum
+    batch_turns = coordinator_turns + batch_unattributed_turns + lane_turns.values.sum
     set_usage_total(projected.dig("coordinator", "usage", "descendant_inclusive"), batch_tokens)
+    projected.dig("coordinator", "turns").merge!(
+      "self_only" => coordinator_turns,
+      "descendant_inclusive" => batch_turns
+    )
     projected.fetch("lanes").each do |lane|
       tokens = lane_tokens.fetch(lane.fetch("id"))
+      turns = lane_turns.fetch(lane.fetch("id"))
       set_usage_total(lane.dig("usage", "self_only"), tokens)
       set_usage_total(lane.dig("usage", "descendant_inclusive"), tokens)
       set_usage_total(lane.dig("usage", "unattributed"), tokens)
+      lane.fetch("turns").merge!("self_only" => turns, "descendant_inclusive" => turns, "unattributed" => turns)
       lane.fetch("workers").each do |worker|
         set_usage_total(worker.dig("usage", "self_only"), 0)
         set_usage_total(worker.dig("usage", "descendant_inclusive"), 0)
+        worker.fetch("turns").merge!("self_only" => 0, "descendant_inclusive" => 0)
       end
     end
     set_usage_total(projected.dig("batch", "usage", "descendant_inclusive"), batch_tokens)
     set_usage_total(projected.dig("batch", "usage", "unattributed"), batch_unattributed_tokens)
+    projected.fetch("batch").fetch("turns").merge!(
+      "descendant_inclusive" => batch_turns,
+      "unattributed" => batch_unattributed_turns
+    )
     projected
   end
 
@@ -385,6 +409,9 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal 300, first.dig("totals", "coordinator", "limit_tokens")
       assert_equal 600, first.dig("totals", "lanes", "lane-a", "limit_tokens")
       assert File.file?(state_path)
+      state = JSON.parse(File.read(state_path))
+      assert_equal "2026-08-12T11:00:00Z", state.fetch("usage_initial_cutoff")
+      assert_equal state.fetch("usage_initial_cutoff"), state.dig("receipts", 0, "usage_initial_cutoff")
 
       replay, replay_stderr, replay_status = initialize_budget(state_path)
 
@@ -794,6 +821,10 @@ class BatchTokenBudgetTest < Minitest::Test
       state = JSON.parse(File.read(state_path))
       assert_equal "root", state.dig("usage_binding", "coordinator", "root_thread_id")
       assert_equal({ "lane-a" => "lane-a", "lane-b" => "lane-b" }, state.dig("usage_binding", "lanes"))
+      assert_equal(
+        { "coordinator" => 2, "lane-a" => 3, "lane-b" => 1 },
+        state.fetch("usage_receipts").values.first.fetch("scope_turns")
+      )
     end
   end
 
@@ -889,6 +920,58 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "replayed", replay.fetch("status")
       assert_equal 112, replay.dig("totals", "aggregate", "consumed_tokens")
       assert_equal 112, JSON.parse(File.read(state_path)).dig("scopes", "aggregate", "consumed_tokens")
+    end
+  end
+
+  def test_first_usage_window_must_start_at_the_persisted_initialization_cutoff
+    with_state do |state_path|
+      initialize_budget(state_path, evaluated_at: "2026-08-12T12:00:00Z")
+      reserve(state_path, id: "first-window-gap", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      omitted_prefix = usage_window(
+        base_receipt,
+        from: "2026-08-12T12:10:00Z",
+        to: "2026-08-12T12:20:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 10, "lane-b" => 0 }
+      )
+      omitted_prefix, receipt_ref, receipt_digest = receipt_artifact(state_path, omitted_prefix, "first-window-gap")
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:20:00Z",
+          "usage_receipt" => omitted_prefix,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-window-gap", blocked.fetch("reason")
+      assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens")
+      state = JSON.parse(File.read(state_path))
+      assert_equal "2026-08-12T12:00:00Z", state.fetch("usage_initial_cutoff")
+      assert_empty state.fetch("usage_receipts")
+    end
+  end
+
+  def test_restart_rejects_a_rebound_initial_usage_cutoff_even_after_tail_rehash
+    with_state do |state_path|
+      initialize_budget(state_path)
+      state = JSON.parse(File.read(state_path))
+      state["usage_initial_cutoff"] = "2026-08-12T10:00:00Z"
+      state.dig("receipts", 0)["usage_initial_cutoff"] = "2026-08-12T10:00:00Z"
+      rehash_control_tail(state)
+      File.write(state_path, JSON.generate(state))
+
+      output, stderr, status = run_helper(state_path, command("closeout"))
+
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
     end
   end
 
@@ -1003,6 +1086,104 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_overshooting_window_requires_authoritative_per_scope_turn_evidence
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "unproved-overshoot", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      unproved_overshoot = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 500, "lane-b" => 0 },
+        lane_turns: { "lane-a" => 2, "lane-b" => 0 }
+      )
+      unproved_overshoot.fetch("accounting")["usage_samples"] = 25
+      unproved_overshoot, receipt_ref, receipt_digest = receipt_artifact(
+        state_path, unproved_overshoot, "unproved-overshoot"
+      )
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => unproved_overshoot,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => ["unproved-overshoot"]
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "overshoot-evidence-unsupported", blocked.fetch("reason")
+      assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens")
+      assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts")
+    end
+  end
+
+  def test_overshooting_window_with_zero_contributing_turns_fails_closed
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "zero-turn-overshoot", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 500, "lane-b" => 0 },
+        lane_turns: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "zero-turn-overshoot")
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => ["zero-turn-overshoot"]
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens")
+    end
+  end
+
+  def test_unknown_turn_context_evidence_from_the_real_usage_helper_fails_closed
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "unknown-turn-evidence", tokens: 100)
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(
+        state_path, remove_turn_context_for: "lane-a.jsonl"
+      )
+      assert_equal "UNKNOWN", receipt.dig("lanes", 0, "turns", "descendant_inclusive")
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => ["unknown-turn-evidence"]
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens")
+      assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts")
+    end
+  end
+
   def test_batch_usage_window_preserves_cross_task_charge_back_without_double_counting
     with_state do |state_path|
       initialize_budget(state_path)
@@ -1095,7 +1276,9 @@ class BatchTokenBudgetTest < Minitest::Test
       assert status.success?, stderr
       assert_equal "blocked", blocked.fetch("status")
       assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
-      assert_equal state_before, File.read(state_path)
+      state = JSON.parse(File.read(state_path))
+      assert_equal JSON.parse(state_before).fetch("scopes"), state.fetch("scopes")
+      assert_empty state.fetch("usage_receipts")
     end
   end
 
@@ -1660,7 +1843,10 @@ class BatchTokenBudgetTest < Minitest::Test
       assert override_status.success?, override_stderr
       assert_equal "overridden", overridden.fetch("status")
 
-      replayed, replay_stderr, replay_status = initialize_budget(state_path)
+      replayed, replay_stderr, replay_status = initialize_budget(
+        state_path,
+        evaluated_at: "2026-08-12T12:00:00Z"
+      )
       assert replay_status.success?, replay_stderr
       assert_equal "replayed", replayed.fetch("status")
       assert_equal plan_digest, JSON.parse(File.read(state_path)).fetch("budget_digest")
@@ -2113,7 +2299,10 @@ class BatchTokenBudgetTest < Minitest::Test
         "approval_percent" => 95,
         "hard_percent" => 100
       }
-      run_helper(state_path, command("initialize", "budget" => overshoot_budget))
+      run_helper(
+        state_path,
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => overshoot_budget)
+      )
       reserve(state_path, id: "lane-hard-overshoot", tokens: 500)
       base_receipt, = real_descendants_usage_receipt(state_path)
       receipt = usage_window(
@@ -2238,7 +2427,10 @@ class BatchTokenBudgetTest < Minitest::Test
     with_state do |state_path|
       receipt_budget = budget(state_path: state_path)
       receipt_budget["scopes"]["lanes"]["lane-a"]["limit_tokens"] = 1_000
-      run_helper(state_path, command("initialize", "budget" => receipt_budget))
+      run_helper(
+        state_path,
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => receipt_budget)
+      )
       reserve(state_path, id: "receipt-gate", tokens: 300)
       base_receipt, = real_descendants_usage_receipt(state_path)
 
@@ -2488,6 +2680,38 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_caller_digest_and_unverified_https_reference_cannot_authorize_fabricated_usage
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "fabricated-https", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      fabricated = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 500, "lane-b" => 0 }
+      )
+      state_before = File.read(state_path)
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => fabricated,
+          "usage_receipt_ref" => "https://example.invalid/fabricated.json",
+          "usage_receipt_digest" => "sha256:#{object_digest(fabricated)}",
+          "completed_reservation_ids" => ["fabricated-https"]
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-receipt-reference-invalid", blocked.fetch("reason")
+      assert_equal state_before, File.read(state_path)
+    end
+  end
+
   def test_batch_usage_receipt_rejects_unlisted_fields_without_mutation
     with_state do |state_path|
       initialize_budget(state_path)
@@ -2601,6 +2825,9 @@ class BatchTokenBudgetTest < Minitest::Test
       "usage-ledger-total" => proc do |state|
         state.fetch("usage_receipts").values.first.fetch("scope_tokens")["lane-a"] += 1
       end,
+      "usage-ledger-turn-total" => proc do |state|
+        state.fetch("usage_receipts").values.first.fetch("scope_turns")["lane-a"] += 1
+      end,
       "reservation-reconciliation" => proc do |state|
         state.dig("reservations", "ledger-reservation", "reconciliation_receipt")["actual_tokens"] += 1
       end
@@ -2640,6 +2867,28 @@ class BatchTokenBudgetTest < Minitest::Test
         assert_nil output, name
         assert_equal "corrupt-persisted-state", JSON.parse(corrupt_stderr).fetch("reason"), name
       end
+    end
+  end
+
+  def test_restart_rejects_a_widened_reservation_overshoot_envelope
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "widened-envelope", tokens: 100)
+      state = JSON.parse(File.read(state_path))
+      state.dig("reservations", "widened-envelope", "receipt", "overshoot_envelope")["max_in_flight_turns"] = 2
+      receipt = state.fetch("receipts").find do |candidate|
+        candidate["type"] == "batch-token-budget-reservation-receipt" &&
+          candidate["reservation_id"] == "widened-envelope"
+      end
+      receipt.fetch("overshoot_envelope")["max_in_flight_turns"] = 2
+      rehash_control_tail(state)
+      File.write(state_path, JSON.generate(state))
+
+      output, stderr, status = run_helper(state_path, command("closeout"))
+
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
     end
   end
 
@@ -2840,7 +3089,10 @@ class BatchTokenBudgetTest < Minitest::Test
     with_state do |state_path|
       cross_budget = budget(state_path: state_path)
       cross_budget["delegation"]["approval_threshold_tokens"] = 400
-      run_helper(state_path, command("initialize", "budget" => cross_budget))
+      run_helper(
+        state_path,
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => cross_budget)
+      )
       source = task_identity(task_id: "charge-source")
       source["batch_id"] = "source-batch"
       target = task_identity(task_id: "task-lane-a")

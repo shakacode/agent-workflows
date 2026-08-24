@@ -118,8 +118,12 @@ module BatchTokenBudget
       !%w[self-attested worker-self-attested].include?(value.split(":", 2).first.downcase)
   end
 
+  def verifiable_usage_receipt_reference?(value)
+    durable_reference?(value) && value.start_with?("file://")
+  end
+
   def usage_receipt_artifact_matches?(reference, receipt_digest, inline_receipt = nil)
-    return true unless reference.start_with?("file://")
+    return false unless verifiable_usage_receipt_reference?(reference)
 
     path = reference.delete_prefix("file://")
     return false unless Pathname.new(path).absolute?
@@ -281,6 +285,7 @@ module BatchTokenBudget
       },
       "reservations" => {},
       "usage_binding" => nil,
+      "usage_initial_cutoff" => evaluated_at,
       "usage_cursor" => nil,
       "usage_receipts" => {},
       "approvals" => {},
@@ -381,25 +386,27 @@ module BatchTokenBudget
     entries = state.fetch("usage_receipts").values.sort_by { |entry| entry["sequence"] || 0 }
     return false if entries.empty?
 
-    prior_to = nil
+    prior_to = state.fetch("usage_initial_cutoff")
     entries.each_with_index do |entry, index|
       return false unless entry.is_a?(Hash) && entry.keys.sort == %w[
         command_digest completed_reservation_ids from_inclusive receipt_digest reference reservation_tokens
-        scope_tokens sequence to_exclusive unattributed_scope_tokens
+        scope_tokens scope_turns sequence to_exclusive unattributed_scope_tokens
       ]
       return false unless entry["sequence"] == index + 1 &&
                           entry["receipt_digest"].match?(/\Asha256:[0-9a-f]{64}\z/) &&
                           state.dig("usage_receipts", entry["receipt_digest"]) == entry &&
                           entry["command_digest"].match?(/\A[0-9a-f]{64}\z/) &&
-                          durable_reference?(entry["reference"]) &&
+                          verifiable_usage_receipt_reference?(entry["reference"]) &&
                           usage_receipt_artifact_matches?(entry["reference"], entry["receipt_digest"]) &&
                           timestamp?(entry["from_inclusive"]) && timestamp?(entry["to_exclusive"]) &&
                           DateTime.iso8601(entry["to_exclusive"]) > DateTime.iso8601(entry["from_inclusive"])
-      return false if prior_to && DateTime.iso8601(entry["from_inclusive"]) != DateTime.iso8601(prior_to)
+      return false unless DateTime.iso8601(entry["from_inclusive"]) == DateTime.iso8601(prior_to)
 
       scope_ids = ["coordinator"] + state.dig("scopes", "lanes").keys
       return false unless entry["scope_tokens"].is_a?(Hash) && entry["scope_tokens"].keys.sort == scope_ids.sort &&
                           entry["scope_tokens"].values.all? { |tokens| nonnegative_integer?(tokens) }
+      return false unless entry["scope_turns"].is_a?(Hash) && entry["scope_turns"].keys.sort == scope_ids.sort &&
+                          entry["scope_turns"].values.all? { |turns| nonnegative_integer?(turns) }
       return false unless entry["unattributed_scope_tokens"].is_a?(Hash) &&
                           (entry["unattributed_scope_tokens"].keys - scope_ids).empty? &&
                           entry["unattributed_scope_tokens"].values.all? { |tokens| nonnegative_integer?(tokens) }
@@ -576,7 +583,8 @@ module BatchTokenBudget
     return false unless initialization_receipts.first["budget_digest"] == digest(trusted_budget) &&
                         initialization_receipts.first["trusted_plan_id"] == trusted_budget["batch_id"] &&
                         initialization_receipts.first["trusted_plan_digest"] == trusted_plan_digest(trusted_budget) &&
-                        initialization_receipts.first["trusted_plan_path"] == trusted_plan_binding["path"]
+                        initialization_receipts.first["trusted_plan_path"] == trusted_plan_binding["path"] &&
+                        initialization_receipts.first["usage_initial_cutoff"] == state["usage_initial_cutoff"]
 
     receipts.each_with_index.all? do |receipt, index|
       receipt.is_a?(Hash) && RECEIPT_TYPES.include?(receipt["type"]) && receipt["version"] == 1 &&
@@ -876,7 +884,7 @@ module BatchTokenBudget
               admission_decisions approvals base_budget batch_id budget budget_digest charge_backs checkpoint_resolutions
               checkpoints contract control_events effective_budget_digest last_evaluated_at overrides receipts
               reservation_decisions reservations revision scopes trusted_plan_binding usage_binding usage_cursor
-              usage_receipts version
+              usage_initial_cutoff usage_receipts version
             ] &&
             valid_budget?(trusted_budget) && state["base_budget"] == canonicalize(trusted_budget) &&
             state["trusted_plan_binding"] == canonicalize(trusted_plan_binding) &&
@@ -887,6 +895,7 @@ module BatchTokenBudget
             state["effective_budget_digest"] == digest(state["budget"]) &&
             nonnegative_integer?(state["revision"]) &&
             timestamp?(state["last_evaluated_at"]) &&
+            timestamp?(state["usage_initial_cutoff"]) &&
             state["scopes"].is_a?(Hash) && state["reservations"].is_a?(Hash) &&
             state["usage_receipts"].is_a?(Hash) &&
             state["approvals"].is_a?(Hash) && state["overrides"].is_a?(Hash) &&
@@ -1238,7 +1247,8 @@ module BatchTokenBudget
       "budget_digest" => state.fetch("budget_digest"),
       "trusted_plan_path" => trusted_plan_binding.fetch("path"),
       "trusted_plan_id" => trusted_budget.fetch("batch_id"),
-      "trusted_plan_digest" => trusted_plan_digest(trusted_budget)
+      "trusted_plan_digest" => trusted_plan_digest(trusted_budget),
+      "usage_initial_cutoff" => state.fetch("usage_initial_cutoff")
     )
     state["receipts"] << init_receipt
     [state, {
@@ -1908,7 +1918,12 @@ module BatchTokenBudget
 
     lane_tokens = lane.dig("usage", "descendant_inclusive", "total_tokens")
     unattributed_tokens = lane.dig("usage", "unattributed", "total_tokens")
-    return unless nonnegative_integer?(lane_tokens) && nonnegative_integer?(unattributed_tokens)
+    lane_turns = lane.dig("turns", "descendant_inclusive")
+    lane_self_turns = lane.dig("turns", "self_only")
+    unattributed_turns = lane.dig("turns", "unattributed")
+    return unless [lane_tokens, unattributed_tokens, lane_turns, lane_self_turns, unattributed_turns].all? do |value|
+      nonnegative_integer?(value)
+    end
 
     workers = lane["workers"]
     return unless workers.is_a?(Array)
@@ -1916,20 +1931,26 @@ module BatchTokenBudget
     worker_ids = workers.map { |worker| worker["id"] if worker.is_a?(Hash) }
     return unless worker_ids.all? { |worker_id| nonempty_string?(worker_id) } && worker_ids.uniq.length == workers.length
 
-    worker_tokens = workers.map do |worker|
+    worker_projections = workers.map do |worker|
       tokens = worker.dig("usage", "descendant_inclusive", "total_tokens")
+      turns = worker.dig("turns", "descendant_inclusive")
+      self_turns = worker.dig("turns", "self_only")
       next unless worker["scope"] == "worker" && nonempty_string?(worker["root_thread_id"]) &&
-                  nonnegative_integer?(tokens)
+                  [tokens, turns, self_turns].all? { |value| nonnegative_integer?(value) } &&
+                  (tokens.zero? || turns.between?(1, tokens))
 
-      tokens
+      { "tokens" => tokens, "turns" => turns }
     end
-    return if worker_tokens.any?(&:nil?)
-    return unless lane_tokens == unattributed_tokens + worker_tokens.sum
+    return if worker_projections.any?(&:nil?)
+    return unless lane_tokens == unattributed_tokens + worker_projections.sum { |worker| worker.fetch("tokens") }
+    return unless lane_turns == unattributed_turns + worker_projections.sum { |worker| worker.fetch("turns") }
+    return unless lane_tokens.zero? || lane_turns.between?(1, lane_tokens)
 
     {
       "id" => lane.fetch("id"),
       "root_thread_id" => lane.fetch("root_thread_id"),
-      "tokens" => lane_tokens
+      "tokens" => lane_tokens,
+      "turns" => lane_turns
     }
   end
 
@@ -1979,7 +2000,7 @@ module BatchTokenBudget
     batch = usage_receipt["batch"]
     coordinator = usage_receipt["coordinator"]
     lanes = usage_receipt["lanes"]
-    return unless batch.is_a?(Hash) && batch.keys.sort == %w[id reconciliation scope usage] &&
+    return unless batch.is_a?(Hash) && batch.keys.sort == %w[id reconciliation scope turns usage] &&
                   batch["scope"] == "batch" && batch["id"] == state["batch_id"] &&
                   batch.dig("reconciliation", "status") == "balanced"
     return unless coordinator.is_a?(Hash) && coordinator["scope"] == "coordinator" &&
@@ -1995,10 +2016,26 @@ module BatchTokenBudget
     batch_tokens = batch.dig("usage", "descendant_inclusive", "total_tokens")
     batch_unattributed = batch.dig("usage", "unattributed", "total_tokens")
     coordinator_self = coordinator.dig("usage", "self_only", "total_tokens")
-    return unless [batch_tokens, batch_unattributed, coordinator_self].all? { |tokens| nonnegative_integer?(tokens) }
+    batch_turns = batch.dig("turns", "descendant_inclusive")
+    batch_unattributed_turns = batch.dig("turns", "unattributed")
+    coordinator_self_turns = coordinator.dig("turns", "self_only")
+    coordinator_inclusive_turns = coordinator.dig("turns", "descendant_inclusive")
+    return unless [
+      batch_tokens, batch_unattributed, coordinator_self, batch_turns, batch_unattributed_turns,
+      coordinator_self_turns, coordinator_inclusive_turns
+    ].all? { |value| nonnegative_integer?(value) }
 
     lane_tokens = lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("tokens")] }
+    lane_turns = lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("turns")] }
     return unless batch_tokens == coordinator_self + batch_unattributed + lane_tokens.values.sum
+    return unless batch_turns == coordinator_self_turns + batch_unattributed_turns + lane_turns.values.sum
+
+    scope_tokens = { "coordinator" => coordinator_self + batch_unattributed }.merge(lane_tokens)
+    scope_turns = { "coordinator" => coordinator_self_turns + batch_unattributed_turns }.merge(lane_turns)
+    return unless scope_tokens.all? do |scope_id, tokens|
+      turns = scope_turns.fetch(scope_id)
+      tokens.zero? ? turns.zero? : turns.between?(1, tokens)
+    end
 
     {
       "binding" => {
@@ -2011,7 +2048,8 @@ module BatchTokenBudget
       },
       "from_inclusive" => window.fetch("from_inclusive"),
       "to_exclusive" => window.fetch("to_exclusive"),
-      "scope_tokens" => { "coordinator" => coordinator_self + batch_unattributed }.merge(lane_tokens),
+      "scope_tokens" => scope_tokens,
+      "scope_turns" => scope_turns,
       "batch_tokens" => batch_tokens
     }
   rescue Date::Error, KeyError, NoMethodError, TypeError
@@ -2038,7 +2076,9 @@ module BatchTokenBudget
 
     receipt_ref = command["usage_receipt_ref"]
     receipt_digest = command["usage_receipt_digest"]
-    return blocked_usage_result(original_state, "usage-receipt-reference-invalid") unless durable_reference?(receipt_ref)
+    unless verifiable_usage_receipt_reference?(receipt_ref)
+      return blocked_usage_result(original_state, "usage-receipt-reference-invalid")
+    end
     unless receipt_digest.is_a?(String) && receipt_digest.match?(/\Asha256:[0-9a-f]{64}\z/) &&
            receipt_digest == "sha256:#{digest(usage_receipt)}"
       return blocked_usage_result(original_state, "usage-receipt-digest-mismatch")
@@ -2120,15 +2160,13 @@ module BatchTokenBudget
     end
     return blocked_usage_result(original_state, "usage-window-mutation") if mutated_window
 
-    if original_state["usage_cursor"]
-      cursor = DateTime.iso8601(original_state.fetch("usage_cursor"))
-      from_inclusive = DateTime.iso8601(projection.fetch("from_inclusive"))
-      if from_inclusive > cursor
-        return blocked_usage_result(original_state, "usage-window-gap")
-      elsif from_inclusive < cursor
-        reason = to_exclusive <= cursor ? "usage-window-rollback" : "usage-window-overlap"
-        return blocked_usage_result(original_state, reason)
-      end
+    cursor = DateTime.iso8601(original_state["usage_cursor"] || original_state.fetch("usage_initial_cutoff"))
+    from_inclusive = DateTime.iso8601(projection.fetch("from_inclusive"))
+    if from_inclusive > cursor
+      return blocked_usage_result(original_state, "usage-window-gap")
+    elsif from_inclusive < cursor
+      reason = to_exclusive <= cursor ? "usage-window-rollback" : "usage-window-overlap"
+      return blocked_usage_result(original_state, reason)
     end
 
     active_reservations = original_state.fetch("reservations").values.select do |reservation|
@@ -2144,6 +2182,18 @@ module BatchTokenBudget
       raise InvalidInput, "unknown-reservation" unless reservation
       raise InvalidInput, "reservation-already-terminal" unless reservation["status"] == "active"
     end
+
+    unsupported_overshoot = projection.fetch("scope_tokens").any? do |scope_id, interval_tokens|
+      active = active_by_scope.fetch(scope_id, []).first
+      next false unless active
+
+      prior_remaining = active.fetch("remaining_tokens", active.fetch("reserved_tokens"))
+      next false unless interval_tokens > prior_remaining
+
+      active.dig("receipt", "overshoot_envelope", "max_in_flight_turns") != 1 ||
+        projection.dig("scope_turns", scope_id) != 1
+    end
+    return blocked_usage_result(original_state, "overshoot-evidence-unsupported") if unsupported_overshoot
 
     state = deep_copy(original_state)
     state["usage_binding"] ||= projection.fetch("binding")
@@ -2197,7 +2247,7 @@ module BatchTokenBudget
         "actual_tokens" => observed_tokens,
         "released_tokens" => released_tokens,
         "overshoot_tokens" => [observed_tokens - record.fetch("reserved_tokens"), 0].max,
-        "overshoot_turn_count" => interval_tokens > prior_remaining ? 1 : 0,
+        "overshoot_turn_count" => interval_tokens > prior_remaining ? projection.dig("scope_turns", scope_id) : 0,
         "completed" => completed
       )
       reconciliation_receipts << reconciliation_receipt
@@ -2256,6 +2306,7 @@ module BatchTokenBudget
       "from_inclusive" => projection.fetch("from_inclusive"),
       "to_exclusive" => projection.fetch("to_exclusive"),
       "scope_tokens" => projection.fetch("scope_tokens"),
+      "scope_turns" => projection.fetch("scope_turns"),
       "reservation_tokens" => reservation_tokens,
       "unattributed_scope_tokens" => unattributed_scope_tokens,
       "completed_reservation_ids" => completed_ids
