@@ -278,6 +278,18 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def legacy_v1_receipt(receipt)
+    legacy = JSON.parse(JSON.generate(receipt))
+    legacy["schema"] = "batch-usage-receipt-v1"
+    legacy.fetch("batch").delete("turns")
+    legacy.fetch("coordinator").delete("turns")
+    legacy.fetch("lanes").each do |lane|
+      lane.delete("turns")
+      lane.fetch("workers").each { |worker| worker.delete("turns") }
+    end
+    legacy
+  end
+
   def task_identity(task_id:, lane_id: "lane-a")
     {
       "task_id" => task_id,
@@ -825,6 +837,33 @@ class BatchTokenBudgetTest < Minitest::Test
         { "coordinator" => 2, "lane-a" => 3, "lane-b" => 1 },
         state.fetch("usage_receipts").values.first.fetch("scope_turns")
       )
+    end
+  end
+
+  def test_legacy_v1_usage_receipt_is_rejected_as_unsupported_not_malformed
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "legacy-v1-window", tokens: 100)
+      current_receipt, = real_descendants_usage_receipt(state_path)
+      legacy = legacy_v1_receipt(current_receipt)
+      legacy, receipt_ref, receipt_digest = receipt_artifact(state_path, legacy, "legacy-v1")
+      state_before = File.read(state_path)
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => legacy,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => ["legacy-v1-window"]
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-receipt-version-unsupported", blocked.fetch("reason")
+      assert_equal state_before, File.read(state_path)
     end
   end
 

@@ -70,7 +70,7 @@ consumer's `AGENTS.md` seams.
 The aggregate scope counts coordinator plus every physical lane/descendant
 token. The coordinator scope counts root self-use and directly owned
 orchestration. Each lane counts worker self-use plus every descendant it owns.
-The accounting boundary is an atomic half-open `batch-usage-receipt-v1`
+The accounting boundary is an atomic half-open `batch-usage-receipt-v2`
 window. The receipt's batch descendant-inclusive total is counted once in the
 aggregate view; coordinator self-only plus batch unattributed tokens form the
 coordinator view, and each lane's descendant-inclusive total forms that lane's
@@ -196,15 +196,21 @@ to block their affected scope until an applicable human approval or sufficient
 scoped headroom is followed by admission of the stopped target; an unrelated
 smaller action or sibling override cannot clear them.
 
-After each admitted boundary, generate a `batch-usage-receipt-v1` with the
+After each admitted boundary, generate a `batch-usage-receipt-v2` with the
 resolved pr-batch `bin/batch-usage-receipt` helper and submit the complete
 half-open window to `reconcile`. The command binds the inline receipt to its
 canonical `sha256:` digest, an absolute local `file://` artifact, and the
-reservation ids that completed during the window. Version 1 reads and matches
+reservation ids that completed during the window. Token-budget version 1 reads and matches
 that artifact at reconcile time and revalidates it on restart; other URI
 schemes are unverifiable and have no authority. Plain, `UNKNOWN`,
 `self-attested://`, and `worker-self-attested://` references likewise have no
 authority.
+
+Published `batch-usage-receipt-v1` artifacts remain valid under their frozen
+schema, but they do not contain authoritative contributing-turn evidence.
+Token-budget reconciliation reports them as
+`usage-receipt-version-unsupported` and makes no state change; it does not
+misclassify a valid legacy receipt as malformed.
 
 Initialization persists its command `evaluated_at` as the authoritative initial
 usage cutoff in the initialization receipt and control-event root. The first
@@ -225,7 +231,7 @@ Each accounting scope has at most one active reservation. Same-scope nested
 work coalesces into that reservation while different lanes may run
 concurrently. Every accepted window atomically shifts the scope's observed
 tokens from reserved to consumed; a completed reservation releases its unused
-remainder. Version 1 admits an overshooting window only when the persisted
+remainder. Token-budget version 1 admits an overshooting window only when the persisted
 reservation envelope is exactly `max_in_flight_turns: 1` and that scope's
 verified receipt count is exactly one contributing turn. A zero, `UNKNOWN`, or
 multiple-turn count, or any wider envelope, blocks without mutation; the helper

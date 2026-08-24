@@ -17,7 +17,7 @@ require "set"
 require "time"
 
 module BatchUsageReceipt
-  SCHEMA = "batch-usage-receipt-v1"
+  SCHEMA = "batch-usage-receipt-v2"
   MANIFEST_SCHEMA = "batch-usage-manifest-v1"
   RATE_CARD_SCHEMA = "batch-usage-rate-card-v1"
   EXPLICIT_UTC_OFFSET = /(?:Z|[+-]\d{2}(?::?\d{2})?)\z/i
