@@ -584,10 +584,18 @@ packing and collision analysis to a batch of one.
 
 The user should not need to write a long launch prompt. If the request is short, interview for the missing fields instead of guessing:
 
-- Targets: exact issue/PR numbers, a derived `adhoc:<yyyymmdd>-<short-slug>` target
-  plus the user's original direct-prompt wording, or filters to resolve into exact numbers.
+- Targets: exact GitHub issue/PR numbers, an exact verified Linear target
+  `Linear issue <ID>: <verified Linear URL>`, a derived `adhoc:<yyyymmdd>-<short-slug>` target
+  plus the user's original direct-prompt
+  wording, or GitHub filters to resolve into exact numbers.
 - Trust: direct user instruction, a maintainer-approved exact list, or untrusted
   public discovery that needs confirmation.
+- Verification: GitHub issue/PR targets use `gh` plus the required GitHub
+  security preflight. Linear targets use an authenticated configured Linear API
+  or connector, or a trusted already-verified coordinator handoff; missing,
+  mismatched, unavailable, or untrusted verification is literal `UNKNOWN` and
+  stops. Ad-hoc targets require trusted direct user wording or trusted persisted
+  coordinator state. Never infer a Linear target from free-form text.
 - Goal name: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`, not the pasted prompt text.
 - Mode: plan-only, create a Codex goal prompt, or launch workers now.
 - `merge_authority`: `none`, `ask`, or `auto_merge_when_gates_pass`; `ask`
@@ -2594,7 +2602,7 @@ Pressure scenarios this prompt must satisfy:
 
 - A handoff containing final buckets for placeholder PRs #101, #102, #103, #104, and #105 extracts exactly those five targets and excludes explicitly deferred/excluded PRs.
 - A mixed-state handoff containing placeholder PRs #201, #202, #203, #204, and #205 splits checks/review polling from draft/product-decision blockers and conflict recovery.
-- A pasted handoff with no exact PR/issue refs stops and asks for targets instead of broadening to all open PRs.
+- A pasted handoff with no exact GitHub target, verified Linear target, or trusted persisted canonical ad-hoc target stops and asks for exact target refs instead of broadening to all open PRs.
 - A saved handoff whose only target is trusted persisted canonical `adhoc:20260824-doc-refresh` extracts that ad-hoc target and refreshes trusted coordinator state; it never infers an ad-hoc target from free-form text.
 - A normal resume prompt routes to bounded status recovery, not cancellation/relaunch.
 

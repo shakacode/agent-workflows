@@ -232,6 +232,30 @@ PR_BATCH_LINEAR_INTERVIEW_TARGET_RULE =
   "that verification. Missing, mismatched, unavailable, or untrusted Linear verification is literal `UNKNOWN` " \
   "and stops before launch. For one direct-prompt task, use the derived " \
   "`adhoc:<yyyymmdd>-<short-slug>` target plus the user's original wording."
+WORKFLOW_NEW_BATCH_TARGET_RULE =
+  "Targets: exact GitHub issue/PR numbers, an exact verified Linear target " \
+  "`Linear issue <ID>: <verified Linear URL>`, a derived `adhoc:<yyyymmdd>-<short-slug>` target plus the " \
+  "user's original direct-prompt wording, or GitHub filters to resolve into exact numbers."
+WORKFLOW_NEW_BATCH_VERIFICATION_RULE =
+  "Verification: GitHub issue/PR targets use `gh` plus the required GitHub security preflight. Linear targets " \
+  "use an authenticated configured Linear API or connector, or a trusted already-verified coordinator handoff; " \
+  "missing, mismatched, unavailable, or untrusted verification is literal `UNKNOWN` and stops. Ad-hoc targets " \
+  "require trusted direct user wording or trusted persisted coordinator state. Never infer a Linear target from " \
+  "free-form text."
+PLAN_PR_BATCH_INTAKE_TARGET_RULE =
+  "Accept GitHub refs like `#123`, PR/issue URLs, label/milestone/search filters, exact verified Linear targets " \
+  "in the form `Linear issue <ID>: <verified Linear URL>`, trusted direct-prompt or persisted canonical ad-hoc " \
+  "targets, or a pasted list. Never infer a Linear target from free-form text."
+PLAN_PR_BATCH_GITHUB_VERIFICATION_RULE =
+  "For GitHub issue/PR targets, use the `gh` resolution above and run the required GitHub security preflight " \
+  "before launch."
+PLAN_PR_BATCH_LINEAR_VERIFICATION_RULE =
+  "For Linear targets, verify the exact ID and URL through an authenticated configured Linear API or connector, " \
+  "or a trusted already-verified coordinator handoff; missing, mismatched, unavailable, or untrusted verification " \
+  "is literal `UNKNOWN` and stops. Never infer a Linear target from free-form text."
+PLAN_PR_BATCH_ADHOC_VERIFICATION_RULE =
+  "For ad-hoc targets, require trusted direct-prompt wording or trusted persisted coordinator state and its " \
+  "canonical derived `adhoc:<yyyymmdd>-<short-slug>` identity."
 PR_BATCH_CONTINUATION_EXTRACTION_RULE =
   "Extract only explicit GitHub PR/issue refs, verified Linear entries in the exact form " \
   "`Linear issue <ID>: <verified Linear URL>`, or trusted persisted canonical ad-hoc entries in the exact form " \
@@ -251,6 +275,9 @@ WORKFLOW_CONTINUATION_EXTRACTION_RULE =
   "final-bucket entries."
 CONTINUATION_EXACT_TARGET_LIST_REQUEST =
   "If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact target list."
+CONTINUATION_NO_TARGET_PRESSURE_SCENARIO =
+  "A pasted handoff with no exact GitHub target, verified Linear target, or trusted persisted canonical ad-hoc " \
+  "target stops and asks for exact target refs instead of broadening to all open PRs."
 PR_BATCH_TARGET_SPECIFIC_CONTINUATION_REFRESH_RULE =
   "Refresh each extracted target from its target-specific live source: GitHub state for GitHub issue/PR entries, " \
   "authenticated configured Linear API or connector state for verified Linear entries, and trusted persisted " \
@@ -1424,6 +1451,28 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
+  def test_new_batch_intake_enumerates_and_verifies_github_linear_and_adhoc_targets
+    short_invocation = extract_markdown_section(@workflow, "### Short Invocation", end_heading: /^###\s+/)
+    [WORKFLOW_NEW_BATCH_TARGET_RULE, WORKFLOW_NEW_BATCH_VERIFICATION_RULE].each do |rule|
+      assert_squished_includes short_invocation, rule, "workflows/pr-processing.md new-batch intake"
+    end
+    [
+      PLAN_PR_BATCH_INTAKE_TARGET_RULE,
+      PLAN_PR_BATCH_GITHUB_VERIFICATION_RULE,
+      PLAN_PR_BATCH_LINEAR_VERIFICATION_RULE,
+      PLAN_PR_BATCH_ADHOC_VERIFICATION_RULE
+    ].each do |rule|
+      assert_squished_includes @plan_pr_batch_skill, rule, "skills/plan-pr-batch/SKILL.md intake and verification"
+    end
+
+    refute_includes short_invocation,
+                    "Targets: exact issue/PR numbers, a derived `adhoc:<yyyymmdd>-<short-slug>` target",
+                    "canonical new-batch intake must not retain the GitHub/ad-hoc-only target enumeration"
+    refute_includes @plan_pr_batch_skill,
+                    "Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list.",
+                    "plan-pr-batch intake must not retain the GitHub-only accepted-ref enumeration"
+  end
+
   def test_linear_lanes_use_private_claims_without_inventing_github_public_surfaces
     assert_squished_includes @workflow, LINEAR_PRIVATE_CLAIM_OVERVIEW_RULE,
                              "canonical workflow overview Linear private claim rule"
@@ -1492,10 +1541,15 @@ class GoalCompletionContractTest < Minitest::Test
                          "skills/pr-batch/SKILL.md exact target request"
     assert_text_includes @workflow_resume_prompt, CONTINUATION_ADHOC_REFRESH_RULE,
                          "workflow continuation ad-hoc-only positive path"
+    assert_text_includes @workflow, CONTINUATION_NO_TARGET_PRESSURE_SCENARIO,
+                         "workflow continuation no-target pressure scenario"
 
     refute_includes @workflow_resume_prompt,
                     "If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact PR/issue list.",
                     "workflow continuation must not request a PR/issue-only target list"
+    refute_includes @workflow,
+                    "A pasted handoff with no exact PR/issue refs stops and asks for targets instead of broadening to all open PRs.",
+                    "workflow pressure scenario must not reject valid Linear-only or ad-hoc-only handoffs"
     refute_includes @pr_batch_skill,
                     "Extract only explicit GitHub PR/issue refs or verified Linear entries in the exact form",
                     "skills/pr-batch/SKILL.md must not omit canonical ad-hoc targets"

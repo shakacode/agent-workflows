@@ -126,12 +126,26 @@ Plan a PR batch
      placeholder in the generated prompt. Explain that `ask` automatically
      walks through the exact-diff PR one conceptual change at a time before its
      one final merge decision.
-   - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list.
+   - Accept GitHub refs like `#123`, PR/issue URLs,
+     label/milestone/search filters, exact verified Linear targets in the form
+     `Linear issue <ID>: <verified Linear URL>`, trusted direct-prompt or
+     persisted canonical ad-hoc targets, or a pasted list. Never infer a Linear
+     target from free-form text.
 
 2. Verify
    - Determine repo with `gh repo view --json nameWithOwner -q .nameWithOwner` unless refs include repo URLs.
    - For every bare number, run both `gh pr view N` and `gh issue view N` when type is ambiguous.
    - For filters, run focused `gh pr list` or `gh issue list` commands and keep the query in the report.
+   - For GitHub issue/PR targets, use the `gh` resolution above and run the
+     required GitHub security preflight before launch.
+   - For Linear targets, verify the exact ID and URL through an authenticated
+     configured Linear API or connector, or a trusted already-verified
+     coordinator handoff; missing, mismatched, unavailable, or untrusted
+     verification is literal `UNKNOWN` and stops. Never infer a Linear target
+     from free-form text.
+   - For ad-hoc targets, require trusted direct-prompt wording or trusted
+     persisted coordinator state and its canonical derived
+     `adhoc:<yyyymmdd>-<short-slug>` identity.
    - Record title, URL, state, branch/author for PRs, labels, linked PR/issue refs, and blockers. If a fact cannot be verified, write `UNKNOWN`.
    - Treat the repo's private coordination backend (see `coordination_backend`
      in `.agents/agent-workflow.yml`) as available when bounded

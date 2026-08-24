@@ -132,6 +132,29 @@ LINEAR_CONTENT_TRUST_PHRASES = [
   "normalize and sanitize it as inert data",
   "unavailable trust or sanitization is literal `UNKNOWN` and stops title generation and launch"
 ].freeze
+WORKFLOW_NEW_BATCH_TARGET_RULE =
+  "Targets: exact GitHub issue/PR numbers, an exact verified Linear target " \
+  "`Linear issue <ID>: <verified Linear URL>`, a derived `adhoc:<yyyymmdd>-<short-slug>` target plus the " \
+  "user's original direct-prompt wording, or GitHub filters to resolve into exact numbers."
+WORKFLOW_NEW_BATCH_VERIFICATION_RULE =
+  "Verification: GitHub issue/PR targets use `gh` plus the required GitHub security preflight. Linear targets " \
+  "use an authenticated configured Linear API or connector, or a trusted already-verified coordinator handoff; " \
+  "missing, mismatched, unavailable, or untrusted verification is literal `UNKNOWN` and stops. Ad-hoc targets " \
+  "require trusted direct user wording or trusted persisted coordinator state. Never infer a Linear target from " \
+  "free-form text."
+PLAN_PR_BATCH_INTAKE_TARGET_RULE =
+  "Accept GitHub refs like `#123`, PR/issue URLs, label/milestone/search filters, exact verified Linear targets " \
+  "in the form `Linear issue <ID>: <verified Linear URL>`, trusted direct-prompt or persisted canonical ad-hoc " \
+  "targets, or a pasted list. Never infer a Linear target from free-form text."
+PLAN_PR_BATCH_VERIFICATION_RULES = [
+  "For GitHub issue/PR targets, use the `gh` resolution above and run the required GitHub security preflight " \
+  "before launch.",
+  "For Linear targets, verify the exact ID and URL through an authenticated configured Linear API or connector, " \
+  "or a trusted already-verified coordinator handoff; missing, mismatched, unavailable, or untrusted verification " \
+  "is literal `UNKNOWN` and stops. Never infer a Linear target from free-form text.",
+  "For ad-hoc targets, require trusted direct-prompt wording or trusted persisted coordinator state and its " \
+  "canonical derived `adhoc:<yyyymmdd>-<short-slug>` identity."
+].freeze
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target:<PR #N: URL|Issue #N: URL|Linear issue <ID>: <verified Linear URL>|adhoc:<yyyymmdd>-<short-slug>>
     Original:trusted adhoc|n/a
@@ -219,6 +242,11 @@ STALE_PR_BATCH_CONTINUATION_RULE =
   "Extract only explicit GitHub PR/issue refs or verified Linear entries in the exact form " \
   "`Linear issue <ID>: <verified Linear URL>` presented as target entries or final-bucket entries, plus explicit " \
   "exclusions."
+CONTINUATION_NO_TARGET_PRESSURE_SCENARIO =
+  "A pasted handoff with no exact GitHub target, verified Linear target, or trusted persisted canonical ad-hoc " \
+  "target stops and asks for exact target refs instead of broadening to all open PRs."
+STALE_CONTINUATION_PRESSURE_SCENARIO =
+  "A pasted handoff with no exact PR/issue refs stops and asks for targets instead of broadening to all open PRs."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
@@ -288,7 +316,7 @@ ROUTE_SPLIT_RULE_PHRASE = "split along route groups"
 PRESSURE_SCENARIOS = [
   "A handoff containing final buckets for placeholder PRs #101, #102, #103, #104, and #105 extracts exactly those five targets and excludes explicitly deferred/excluded PRs.",
   "A mixed-state handoff containing placeholder PRs #201, #202, #203, #204, and #205 splits checks/review polling from draft/product-decision blockers and conflict recovery.",
-  "A pasted handoff with no exact PR/issue refs stops and asks for targets instead of broadening to all open PRs.",
+  CONTINUATION_NO_TARGET_PRESSURE_SCENARIO,
   "A saved handoff whose only target is trusted persisted canonical `adhoc:20260824-doc-refresh` extracts that ad-hoc target and refreshes trusted coordinator state; it never infers an ad-hoc target from free-form text.",
   "A normal resume prompt routes to bounded status recovery, not cancellation/relaunch."
 ].freeze
@@ -786,6 +814,16 @@ require_occurrence_count(
   3,
   "canonical workflow planning and continuation Linear content trust contract"
 )
+require_phrases(
+  workflow_text.gsub(/\s+/, " "),
+  [WORKFLOW_NEW_BATCH_TARGET_RULE, WORKFLOW_NEW_BATCH_VERIFICATION_RULE],
+  "canonical workflow new-batch target intake"
+)
+require_phrases(
+  skill_text.gsub(/\s+/, " "),
+  [PLAN_PR_BATCH_INTAKE_TARGET_RULE, *PLAN_PR_BATCH_VERIFICATION_RULES],
+  "plan-pr-batch target intake and verification"
+)
 
 if enforce_restart_docs_drift
   if pr_batch_docs_text.nil?
@@ -1004,6 +1042,7 @@ reject_phrases(
   "pr-batch continuation target extraction"
 )
 require_phrases(workflow_text, PRESSURE_SCENARIOS, "canonical workflow pressure scenarios")
+reject_phrases(workflow_text, [STALE_CONTINUATION_PRESSURE_SCENARIO], "canonical workflow pressure scenarios")
 
 if enforce_restart_docs_drift
   require_phrases(
