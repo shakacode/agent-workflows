@@ -659,7 +659,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       refute status.success?
       result = JSON.parse(out)
       assert_equal "FAIL", result.fetch("status")
-      assert result.fetch("issues").any? { |issue| issue.include?("must be valid UTF-8") }
+      assert(result.fetch("issues").any? { |issue| issue.include?("must be valid UTF-8") })
     end
   end
 
