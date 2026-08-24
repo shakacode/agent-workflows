@@ -794,7 +794,7 @@ repo-local pinned-copy chain. Initialize and operate the durable state through:
 
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/batch-token-budget" \
-  --state <plan.state_path> \
+  --state <plan.token_budget.state_path> \
   --trusted-plan <plan.token_budget_anchor.trusted_plan_path> \
   --trusted-plan-id <plan.token_budget_anchor.trusted_plan_id> \
   --trusted-plan-digest <plan.token_budget_anchor.trusted_plan_digest> \
@@ -1890,7 +1890,7 @@ Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
-Budget:<none|v1 A/R/L,W/P/H,age,del,state>;stop
+Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop
 Worker model/effort preferences:<initial>/<effort>-><lanes>;escalate <route> after MODEL_ESCALATION_REQUEST;max=N.
 Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;pending/active lifecycle.
 - Deps:v1 edit|validation_open|merge_order;missing/UNKNOWN/stale=>closed;combined-tip@seam

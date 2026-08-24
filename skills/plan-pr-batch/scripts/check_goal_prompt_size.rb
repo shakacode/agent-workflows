@@ -99,7 +99,7 @@ MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_preference=<model>/<effort>;" \
                                   "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
                                   "UNKNOWN=field;no guesses"
-TOKEN_BUDGET_PROMPT_LINE = "Budget:<none|v1 A/R/L,W/P/H,age,del,state>;stop"
+TOKEN_BUDGET_PROMPT_LINE = "Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop"
 MANIFEST_WHOLE_COORDINATOR_PREFERENCE_UNKNOWN_FRAGMENT =
   "coordinator_preference=<model/effort|UNKNOWN>"
 BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
