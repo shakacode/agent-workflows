@@ -1519,7 +1519,7 @@ Keep the expanded Batch Plan file-touch key as shown here; the compact goal
 `Scope` line carries the corresponding refs, paths, collision state, and
 owner/serial decision without repeating the expanded map:
 
-> Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`; a Linear issue uses `Linear issue <ID>: <verified Linear URL>`. Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`.
+> Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`; a Linear issue uses `Linear issue <ID>: <verified Linear URL>`.
 
 Use this goal prompt shape:
 Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
