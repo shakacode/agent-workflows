@@ -1629,7 +1629,7 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
 
 Classify every unresolved question before continuing:
 
-- **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine GitHub targets, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. For an ad-hoc target, record the question in the lane handoff because no target comment exists. A worker handoff should include the question, any comment URL, and that target's blocked final state.
+- **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For GitHub issue/PR targets, a blocking question may use a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. For Linear and ad-hoc targets, record the question in private coordination plus the durable Lane Card and final handoff unless an explicitly configured authenticated provider-native surface exists. A native Linear comment is optional, never required; never invent or mirror a Linear question onto GitHub. A worker handoff should include the question, any comment URL, and that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note inside the PR description's `Agent details` disclosure so later review across merged PRs can surface these items quickly.
 
 Before a private-backend lane pauses for required user input, emit
@@ -1793,8 +1793,12 @@ Every target must use one explicit final state:
 - `autonomous-merge-evidence-unknown`: ordinary readiness may be clean, but
   autonomous eligibility evidence is missing, malformed, ambiguous, stale, or
   not bound to the exact current head.
-- `no-pr-evidence`: no PR was created; link the evidence-backed issue/PR
-  comment and disposition. For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target comment exists.
+- `no-pr-evidence`: no PR was created. For a GitHub issue/PR target, link the
+  evidence-backed GitHub issue/PR comment and disposition. For a Linear or
+  ad-hoc target, record the evidence and rationale in private coordination plus
+  the durable Lane Card and final handoff unless an explicitly configured
+  authenticated provider-native surface exists. A native Linear comment is
+  optional, never required; never invent or mirror Linear evidence onto GitHub.
 
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
@@ -2188,7 +2192,7 @@ When worker subagents are explicitly authorized:
     `<host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>`; `envelope:`
     `<coordinator-approved|UNKNOWN>`
   - `Batch/lane:` `<batch-id>` / `<lane>`; `dashboard_url`: `<url|UNKNOWN>`
-  - `Target:` `<GitHub issue/PR link>`
+  - `Target:` `<GitHub issue/PR link|Linear issue <ID>: <verified Linear URL>|adhoc:<yyyymmdd>-<short-slug>>`
   - `Branch:` `<branch>`; `pr_url`: `<verified GitHub PR url|backend url|UNKNOWN>`
   - `Phase:` `<phase>`; `claim:` `<holder|UNKNOWN>/<generation|UNKNOWN>/<instance|UNKNOWN>`;
     `coordinator:` `<coordinator-id|UNKNOWN>`

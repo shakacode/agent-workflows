@@ -19,6 +19,25 @@ GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
 OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
 OBJECTIVE_PROMPT_LINE = "Objective:..."
+PROVIDER_NEUTRAL_LANE_CARD_TARGET =
+  "`Target:` `<GitHub issue/PR link|Linear issue <ID>: <verified Linear URL>|adhoc:<yyyymmdd>-<short-slug>>`"
+BLOCKING_QUESTION_PROVIDER_RULE =
+  "For GitHub issue/PR targets, a blocking question may use a structured issue or PR comment and, if the repo " \
+  "defines a pending-question marker in `AGENTS.md`, apply that marker. For Linear and ad-hoc targets, record the " \
+  "question in private coordination plus the durable Lane Card and final handoff unless an explicitly configured " \
+  "authenticated provider-native surface exists. A native Linear comment is optional, never required; never " \
+  "invent or mirror a Linear question onto GitHub."
+NO_PR_EVIDENCE_PROVIDER_RULE =
+  "For a GitHub issue/PR target, link the evidence-backed GitHub issue/PR comment and disposition. For a Linear or " \
+  "ad-hoc target, record the evidence and rationale in private coordination plus the durable Lane Card and final " \
+  "handoff unless an explicitly configured authenticated provider-native surface exists. A native Linear comment " \
+  "is optional, never required; never invent or mirror Linear evidence onto GitHub."
+STALE_PROVIDER_LIFECYCLE_RULES = [
+  "`Target:` `<GitHub issue/PR link>`",
+  "For an ad-hoc target, record the question in the lane handoff because no target comment exists.",
+  "For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target " \
+  "comment exists."
+].freeze
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_preference=<model>/<effort>;" \
                                   "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
@@ -823,6 +842,16 @@ require_phrases(
   skill_text.gsub(/\s+/, " "),
   [PLAN_PR_BATCH_INTAKE_TARGET_RULE, *PLAN_PR_BATCH_VERIFICATION_RULES],
   "plan-pr-batch target intake and verification"
+)
+require_phrases(
+  workflow_text.gsub(/\s+/, " "),
+  [PROVIDER_NEUTRAL_LANE_CARD_TARGET, BLOCKING_QUESTION_PROVIDER_RULE, NO_PR_EVIDENCE_PROVIDER_RULE],
+  "canonical provider-neutral lane lifecycle"
+)
+reject_phrases(
+  workflow_text.gsub(/\s+/, " "),
+  STALE_PROVIDER_LIFECYCLE_RULES,
+  "canonical provider-neutral lane lifecycle"
 )
 
 if enforce_restart_docs_drift

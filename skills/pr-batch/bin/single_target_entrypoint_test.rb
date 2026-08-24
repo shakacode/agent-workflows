@@ -134,7 +134,9 @@ target_ids_line = "> Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-
 duplicated_target_ids_line = "#{target_ids_line} Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`."
 assert(workflow.lines.count { |line| line.chomp == target_ids_line } == 1, "canonical file-touch map must contain the exact ad-hoc and Linear issue target line once")
 assert(!workflow.include?(duplicated_target_ids_line), "canonical file-touch map must reject the duplicate ad-hoc suffix")
-assert(workflow.include?("For an ad-hoc target, record the evidence and rationale directly in the final handoff"), "canonical final handoff must support ad-hoc no-PR evidence")
+provider_neutral_no_pr_evidence = "For a Linear or ad-hoc target, record the evidence and rationale in private coordination plus the durable Lane Card and final handoff"
+assert(workflow.gsub(/\s+/, " ").include?(provider_neutral_no_pr_evidence), "canonical final handoff must support provider-neutral no-PR evidence")
+assert(!workflow.include?("For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target comment exists."), "canonical final handoff must not omit Linear/private coordination")
 assert(workflow.include?("For an ad-hoc task, the final handoff is the evidence surface"), "canonical outcome classification must support ad-hoc no-PR evidence")
 assert(workflow.include?("A verified Linear lane is external to GitHub, so it has no GitHub public"), "canonical coordination must classify Linear with lanes that lack a GitHub public surface")
 assert(workflow.include?("If a verified Linear or ad-hoc lane cannot establish"), "Linear/ad-hoc degraded coordination must stop for a safe ownership decision")

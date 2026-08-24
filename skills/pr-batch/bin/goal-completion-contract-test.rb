@@ -92,6 +92,19 @@ GMCC_ALIGNMENT_SENTENCE = "`GMCC-v4` is a version key that pins drift, not an ex
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 LANE_CARD_URLS_GRAMMAR = "holder/branch/PR/phase/URLs/UNKNOWN"
+PROVIDER_NEUTRAL_LANE_CARD_TARGET =
+  "`Target:` `<GitHub issue/PR link|Linear issue <ID>: <verified Linear URL>|adhoc:<yyyymmdd>-<short-slug>>`"
+BLOCKING_QUESTION_PROVIDER_RULE =
+  "For GitHub issue/PR targets, a blocking question may use a structured issue or PR comment and, if the repo " \
+  "defines a pending-question marker in `AGENTS.md`, apply that marker. For Linear and ad-hoc targets, record the " \
+  "question in private coordination plus the durable Lane Card and final handoff unless an explicitly configured " \
+  "authenticated provider-native surface exists. A native Linear comment is optional, never required; never " \
+  "invent or mirror a Linear question onto GitHub."
+NO_PR_EVIDENCE_PROVIDER_RULE =
+  "For a GitHub issue/PR target, link the evidence-backed GitHub issue/PR comment and disposition. For a Linear or " \
+  "ad-hoc target, record the evidence and rationale in private coordination plus the durable Lane Card and final " \
+  "handoff unless an explicitly configured authenticated provider-native surface exists. A native Linear comment " \
+  "is optional, never required; never invent or mirror Linear evidence onto GitHub."
 CANONICAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
 BATCH_COORDINATOR_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
@@ -1003,6 +1016,10 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes workflow_worker_rules, "instance|UNKNOWN", "workflows/pr-processing.md Worker Rules"
     assert_text_includes workflow_worker_rules, "dashboard_url", "workflows/pr-processing.md Worker Rules"
     assert_text_includes workflow_worker_rules, "pr_url", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, PROVIDER_NEUTRAL_LANE_CARD_TARGET,
+                         "workflows/pr-processing.md provider-neutral Lane Card target"
+    refute_includes workflow_worker_rules, "`Target:` `<GitHub issue/PR link>`",
+                    "Lane Card target must not remain GitHub-only"
 
     {
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
@@ -1038,6 +1055,20 @@ class GoalCompletionContractTest < Minitest::Test
       refute_includes text, "holder/branch/PR/phase/URL/UNKNOWN",
                       "#{label} must not collapse the URL collection to a singular field"
     end
+  end
+
+  def test_questions_and_no_pr_evidence_route_by_target_provider
+    assert_squished_includes @workflow, BLOCKING_QUESTION_PROVIDER_RULE,
+                             "workflows/pr-processing.md blocking-question provider routing"
+    assert_squished_includes @workflow, NO_PR_EVIDENCE_PROVIDER_RULE,
+                             "workflows/pr-processing.md no-PR evidence provider routing"
+
+    refute_includes @workflow,
+                    "For an ad-hoc target, record the question in the lane handoff because no target comment exists.",
+                    "blocking-question routing must not omit Linear/private coordination"
+    refute_includes @workflow,
+                    "For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target comment exists.",
+                    "no-PR evidence routing must not omit Linear/private coordination"
   end
 
   def test_workflow_defines_canonical_readiness_vocabulary
