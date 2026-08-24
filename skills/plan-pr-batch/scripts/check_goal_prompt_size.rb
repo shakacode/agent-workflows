@@ -113,11 +113,11 @@ CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
   "#{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
   "shared=>in-lane;serial/UNKNOWN apart".freeze
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences:<initial>/<effort>-><lanes>;escalate <route> after MODEL_ESCALATION_REQUEST;max=N."
-MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker routes:balanced/medium->implementation;escalate strongest/high after MODEL_ESCALATION_REQUEST;max=1 | strongest/high->qa-review;escalate strongest/high;max=0."
+MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker routes:implementation=balanced/medium->strongest/high after MODEL_ESCALATION_REQUEST,max=1;qa-review=strongest/high,max=0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
 MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory."
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
-DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle"
+DISPATCH_PLAN_PROMPT_LINE = "Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;pending/active lifecycle."
 COORDINATION_DEPENDENCY_PROMPT_LINE =
   "- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; " \
   "register before launch when supported; claim refusal=>stop; push holder/generation check; " \
@@ -211,13 +211,13 @@ HUMAN_STATUS_CONTRACT_PHRASES = [
   "merge gates"
 ].freeze
 MIXED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
-  Dispatch implementation:preferred remote@balanced/medium;fallback remote@strongest/high;auth y;pending/active
-  Dispatch qa-review:preferred remote@strongest/high;fallback none;auth n;pending/active
+  Dispatch implementation:remote@balanced/medium->remote@strongest/high;auth=y;pending/active
+  Dispatch qa-review:remote@strongest/high;fallback=none;auth=n;pending/active
 TEXT
-SPLIT_ROUTE_GROUP_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
-SPLIT_DISPATCH_POLICY_LINE = "Dispatch implementation:preferred remote@balanced/medium;fallback remote@strongest/high;auth y;pending/active"
-SECOND_SPLIT_ROUTE_GROUP_LINE = "Worker model/effort preferences: strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
-SECOND_SPLIT_DISPATCH_POLICY_LINE = "Dispatch qa-review:preferred remote@strongest/high;fallback none;auth n;pending/active"
+SPLIT_ROUTE_GROUP_LINE = "Worker route:implementation=balanced/medium->strongest/high after MODEL_ESCALATION_REQUEST,max=1."
+SPLIT_DISPATCH_POLICY_LINE = "Dispatch implementation:remote@balanced/medium->remote@strongest/high;auth=y;pending/active"
+SECOND_SPLIT_ROUTE_GROUP_LINE = "Worker route:qa-review=strongest/high;max=0."
+SECOND_SPLIT_DISPATCH_POLICY_LINE = "Dispatch qa-review:remote@strongest/high;fallback=none;auth=n;pending/active"
 OVERSIZED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
   Dispatch implementation:preferred remote@balanced/medium;fallback remote@strongest/high;auth y;pending/active
   Dispatch qa-review:preferred remote@strongest/high;fallback none;auth n;pending/active
@@ -839,10 +839,11 @@ host_aware_batch_sizing_phrase_checks = {
     ["`codex`: up to 10 independent file-disjoint items, or 8", 1],
     ["`claude` or `generic`: up to 5 independent file-disjoint items, or 3", 1],
     ["current-wave item cap applies across all generated groups in aggregate", 1],
-    ["Each generated prompt must include `Batch size target: <codex|claude|generic>; wave:", 1],
+    ["`#{BATCH_SIZE_TARGET_PROMPT_PHRASE} <cap/items>`", 1],
     ["`Coordinator model/effort preference: <model/class>/<effort>.`", 1],
-    ["`Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.`", 1],
-    ["`Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`", 1],
+    ["`#{OBSERVED_HOST_PROMPT_LINE}`", 1],
+    ["`#{TOKEN_BUDGET_PROMPT_LINE}`", 1],
+    ["`#{WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE}`", 1],
     ["`#{DISPATCH_PLAN_PROMPT_LINE}`", 1],
     ["classify every lane by the canonical staged model/effort routing", 1],
     ["known host with an unavailable roster may use a dispatch-resolved model class", 1],

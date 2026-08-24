@@ -867,12 +867,12 @@ Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort:<host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>.
+Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Budget:<none|v1 A/R/L,W/P/H,age,del,state>;stop
-Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
-- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
+Worker model/effort preferences:<initial>/<effort>-><lanes>;escalate <route> after MODEL_ESCALATION_REQUEST;max=N.
+Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;pending/active lifecycle.
+- Deps:v1 edit|validation_open|merge_order;missing/UNKNOWN/stale=>closed;combined-tip@seam
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
 Batch QA Lane:<owner/scope+evidence|none+rationale>
