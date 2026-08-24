@@ -620,6 +620,27 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_coordination_backend_contract_rejects_an_embedded_unknown_marker
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      unknown_identifier = "backend UNKNOWN state"
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => unknown_identifier,
+          "coordination_backend_contract" => coordination_backend_contract(unknown_identifier)
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend_contract policy"
+      assert_includes out, "must not contain an UNKNOWN marker"
+    end
+  end
+
   def test_coordination_backend_contract_rejects_malformed_closed_values
     fixtures = {
       "not a mapping" => PRIVATE_COORDINATION_BACKEND,
@@ -669,6 +690,63 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       refute status.success?
       assert_includes out, "invalid coordination_backend_contract policy: " \
                            "$.coordination_backend_contract contains duplicate key \"version\""
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_duplicate_selected_backend_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.merge(
+        "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+        "coordination_backend_contract" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND)
+      ).to_yaml.sub(
+        "coordination_backend: #{PRIVATE_COORDINATION_BACKEND}\n",
+        "coordination_backend: another private backend\n" \
+        "coordination_backend: #{PRIVATE_COORDINATION_BACKEND}\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend_contract policy: " \
+                           "$ contains duplicate key \"coordination_backend\""
+    end
+  end
+
+  def test_policy_is_read_once_so_all_validators_share_one_snapshot
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+          "coordination_backend_contract" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND)
+        )
+      )
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      first_snapshot = File.read(policy_path, encoding: "UTF-8")
+      later_snapshot = first_snapshot.sub(PRIVATE_COORDINATION_BACKEND, "unreviewed backend")
+      original_file_read = File.method(:read)
+      policy_reads = 0
+      File.singleton_class.define_method(:read) do |path, *arguments, **keywords|
+        if File.expand_path(path) == File.expand_path(policy_path)
+          policy_reads += 1
+          policy_reads == 1 ? first_snapshot : later_snapshot
+        else
+          original_file_read.call(path, *arguments, **keywords)
+        end
+      end
+
+      begin
+        issues = AgentWorkflowSeamDoctor.policy_issues(root)
+      ensure
+        File.singleton_class.define_method(:read, original_file_read)
+      end
+
+      assert_empty issues
+      assert_equal 1, policy_reads
     end
   end
 

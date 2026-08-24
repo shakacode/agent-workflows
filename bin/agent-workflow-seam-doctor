@@ -1714,7 +1714,8 @@ module AgentWorkflowSeamDoctor
     path = File.join(root, POLICY_CONFIG)
     return ["missing policy config: #{POLICY_CONFIG}"] unless File.file?(path)
 
-    config = load_policy_config(path)
+    yaml = File.read(path, encoding: "UTF-8")
+    config = parse_policy_config(yaml)
     return ["invalid policy config: #{POLICY_CONFIG}"] unless config.is_a?(Hash)
 
     issues = []
@@ -1748,7 +1749,6 @@ module AgentWorkflowSeamDoctor
                 "(expected 1-6 uppercase ASCII letters or digits)"
     end
 
-    yaml = File.read(path, encoding: "UTF-8")
     issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
@@ -1769,8 +1769,12 @@ module AgentWorkflowSeamDoctor
     key = COORDINATION_BACKEND_CONTRACT_POLICY_KEY
     return [] unless config.key?(key)
 
+    contract_path = "$.#{key}"
     errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
-      error.include?("$.#{key}") || error.include?("duplicate key #{key.inspect}")
+      error.start_with?("#{contract_path}.") ||
+        error.start_with?("#{contract_path} ") ||
+        error == "$ contains duplicate key #{key.inspect}" ||
+        error == '$ contains duplicate key "coordination_backend"'
     end
     contract = config[key]
     unless contract.is_a?(Hash)
@@ -1791,8 +1795,11 @@ module AgentWorkflowSeamDoctor
       identifiers = []
     end
     identifiers.each_with_index do |identifier, index|
-      unless identifier.is_a?(String) && !identifier.strip.empty? && !identifier.strip.casecmp?("UNKNOWN")
+      unless identifier.is_a?(String) && !identifier.strip.empty?
         errors << "allowed_identifiers[#{index}] must be a known nonblank string"
+      end
+      if identifier.is_a?(String) && identifier.unicode_normalize(:nfkc).match?(/UNKNOWN/i)
+        errors << "allowed_identifiers[#{index}] must not contain an UNKNOWN marker"
       end
     end
     if identifiers.uniq.length != identifiers.length
@@ -2004,7 +2011,11 @@ module AgentWorkflowSeamDoctor
   end
 
   def load_policy_config(path)
-    YAML.safe_load(File.read(path, encoding: "UTF-8"), aliases: false) || {}
+    parse_policy_config(File.read(path, encoding: "UTF-8"))
+  end
+
+  def parse_policy_config(yaml)
+    YAML.safe_load(yaml, aliases: false) || {}
   end
 
   def unresolved_policy_value?(value, placeholder_mode:, empty_collections_unresolved: true)
