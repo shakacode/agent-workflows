@@ -11,6 +11,9 @@ SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
+BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>."
+CONTINUATION_INVOCATION_LINE =
+  "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch."
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
@@ -507,7 +510,7 @@ required_skill_rule_phrases = [
   "Claude prompt/chat",
   "After the target-specific invocation line",
   "Batch title:",
-  "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
+  "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
   "optional `repo_prefix`",
   "`origin` remote after stripping",
   "repository root basename",
@@ -552,7 +555,7 @@ required_codex_prompt_phrases = [
 
 required_all_prompt_phrases = [
   "Batch title:",
-  "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
+  "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
   OBJECTIVE_PROMPT_LINE,
   "Thread handle: <batch-short>-<lane>-<word>",
   "Lane Card:",
@@ -864,8 +867,10 @@ require_phrases(
   "canonical parent release-or-archive pressure scenarios"
 )
 
-unless continuation_prompt.start_with?("#{CONTINUATION_BATCH_TITLE_LINE}\n")
-  abort_with_failure("canonical workflow continuation prompt must start with the batch title line")
+continuation_title_block =
+  "#{CONTINUATION_INVOCATION_LINE}\n\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n"
+unless continuation_prompt.start_with?(continuation_title_block)
+  abort_with_failure("canonical workflow continuation prompt must put one blank line around the title after the invocation")
 end
 
 unexpected_pressure_refs = pressure_scenario_text.scan(/#\d+/).uniq - ALLOWED_PRESSURE_SCENARIO_REFS
@@ -926,6 +931,20 @@ end
 
 unless generic_prompt_template.start_with?(SHARED_PROMPT_START)
   abort_with_failure("Generic goal prompt template must omit /goal and start with the $pr-batch invocation")
+end
+
+title_block = "#{INVOCATION_LINE}\n\n#{BATCH_TITLE_LINE}\n\nThread handle:"
+{
+  "plan-pr-batch" => prompt_template,
+  "pr-batch" => pr_batch_prompt_template,
+  "workflow" => workflow_prompt_template
+}.each do |label, template|
+  unless template.start_with?(title_block)
+    abort_with_failure("#{label} goal prompt must put exactly one blank line around the batch title")
+  end
+
+  title_count = template.lines.count { |line| line.start_with?("Batch title:") }
+  abort_with_failure("#{label} goal prompt must contain exactly one batch title line") unless title_count == 1
 end
 
 if claude_prompt_template.include?(GOAL_LINE) || generic_prompt_template.include?(GOAL_LINE)

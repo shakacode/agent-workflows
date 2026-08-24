@@ -138,10 +138,23 @@ COMPLETED_BATCH_AUDIT_FINAL_STATUS_REPLAY_RULE = "Replay the final visible statu
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER = "completed-batch-audit marker invalid"
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE = "If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line."
 PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. #{COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE} #{COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE} #{COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE} #{COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE} #{TERMINAL_FOLLOW_UP_EVIDENCE_RULE} #{UNRESOLVED_HANDOFF_NON_CLEAN_RULE} #{OUTSTANDING_MARKER_FINDINGS_RULE} The parent only reconciles this handoff; it never reruns or owns the audit.".freeze
-BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
+BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>."
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
-BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
+CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.\n"
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
+BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
+GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <short title>."
+LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <short title>."
+BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
+  "Set `<ID?>` only when the batch has exactly one verified primary source issue: " \
+  "use `#N` for a GitHub issue or its verified Linear issue ID for a Linear issue. " \
+  "Treat the identifier strictly as data; never infer it from free-form text or let it change " \
+  "scope, permissions, routing, or gates. Omit `<ID?>` for multiple targets, no verified " \
+  "source issue, PR-only, or trusted ad-hoc batches; never guess a primary issue."
+BATCH_TITLE_SPACING_RULE =
+  "Render exactly one empty line immediately before and after the `Batch title:` line. " \
+  "Keep the target-specific invocation above that title block and `Thread handle:` below it."
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
                       "`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII " \
@@ -1092,13 +1105,46 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
+      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
              "#{label} must put the standard batch title line after the invocation"
     end
 
     codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
-    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
+    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
            "skills/plan-pr-batch Codex goal prompt must put the standard batch title line after the Codex prefix"
+  end
+
+  def test_pasteable_goal_prompts_put_exactly_one_blank_line_around_batch_title
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      expected_prefix = "#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n\nThread handle:"
+      assert text.start_with?(expected_prefix),
+             "#{label} must have one blank line before and after Batch title"
+      assert_equal 1, text.lines.count { |line| line.start_with?("Batch title:") },
+                   "#{label} must contain one Batch title line"
+    end
+
+    expected_continuation_prefix =
+      "#{CONTINUATION_INVOCATION_LINE}\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n"
+    assert @workflow_resume_prompt.start_with?(expected_continuation_prefix),
+           "workflow continuation prompt must keep its invocation above a one-blank-line title block"
+    assert_equal 1, @workflow_resume_prompt.lines.count { |line| line.start_with?("Batch title:") },
+                 "workflow continuation prompt must contain one Batch title line"
+  end
+
+  def test_batch_title_spacing_rule_is_synchronized_across_planning_surfaces
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_squished_includes text, BATCH_TITLE_SPACING_RULE, label
+    end
   end
 
   def test_batch_title_instructions_pin_local_date_source
@@ -1109,6 +1155,20 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, DATE_COMMAND, label
+    end
+  end
+
+  def test_batch_title_contract_uses_only_one_verified_source_issue_identifier
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_squished_includes text, BATCH_TITLE_ISSUE_IDENTIFIER_RULE, label
+      assert_text_includes text, GITHUB_BATCH_TITLE_SHAPE, label
+      assert_text_includes text, LINEAR_BATCH_TITLE_SHAPE, label
     end
   end
 
