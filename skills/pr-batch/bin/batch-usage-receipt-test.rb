@@ -104,7 +104,7 @@ class BatchUsageReceiptTest < Minitest::Test
   def test_forked_copied_history_is_not_rebound_or_double_counted
     receipt, = run_fixture("replay")
 
-    assert_equal "batch-usage-receipt-v1", receipt.fetch("schema")
+    assert_equal "batch-usage-receipt-v2", receipt.fetch("schema")
     assert_equal 30, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
     assert_equal 20, receipt.dig("coordinator", "usage", "self_only", "total_tokens")
     assert_equal 10, receipt.dig("lanes", 0, "usage", "descendant_inclusive", "total_tokens")
@@ -1193,6 +1193,38 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "route_identity_unknown", receipt.dig("credit_equivalents", "model_values", 0, "code")
   end
 
+  def test_published_v1_schema_remains_compatible_and_rejects_v2_turns
+    receipt_with_turns, = run_fixture("replay")
+    v1_with_turns = JSON.parse(JSON.generate(receipt_with_turns))
+    v1_with_turns["schema"] = "batch-usage-receipt-v1"
+    main_era_v1 = JSON.parse(JSON.generate(v1_with_turns))
+    main_era_v1.fetch("batch").delete("turns")
+    main_era_v1.fetch("coordinator").delete("turns")
+    main_era_v1.fetch("lanes").each do |lane|
+      lane.delete("turns")
+      lane.fetch("workers").each { |worker| worker.delete("turns") }
+    end
+    schema = receipt_schema(1)
+
+    assert_equal "batch-usage-receipt-v1", main_era_v1.fetch("schema")
+    assert_empty JSONSchemer.schema(schema).validate(main_era_v1).to_a
+    refute_empty JSONSchemer.schema(schema).validate(v1_with_turns).to_a
+  end
+
+  def test_v2_schema_requires_turns_and_validates_current_producer_output
+    receipt, = run_fixture("replay")
+    schema = receipt_schema(2)
+
+    assert_equal "batch-usage-receipt-v2", receipt.fetch("schema")
+    assert_equal "Batch Usage Receipt v2", schema.fetch("title")
+    assert_equal "batch-usage-receipt-v2", schema.dig("properties", "schema", "const")
+    assert_empty JSONSchemer.schema(schema).validate(receipt).to_a
+
+    missing_turns = JSON.parse(JSON.generate(receipt))
+    missing_turns.fetch("coordinator").delete("turns")
+    refute_empty JSONSchemer.schema(schema).validate(missing_turns).to_a
+  end
+
   def test_output_is_deterministic_across_replays_and_public_contract_is_versioned
     first_receipt, first_output = run_fixture("replay")
     second_receipt, second_output = run_fixture("replay")
@@ -1201,9 +1233,9 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal first_output, second_output
 
     root = File.expand_path("../../..", __dir__)
-    schema = JSON.parse(File.read(File.join(root, "docs/schemas/batch-usage-receipt-v1.schema.json")))
-    assert_equal "Batch Usage Receipt v1", schema.fetch("title")
-    assert_equal "batch-usage-receipt-v1", schema.dig("properties", "schema", "const")
+    schema = receipt_schema(2)
+    assert_equal "Batch Usage Receipt v2", schema.fetch("title")
+    assert_equal "batch-usage-receipt-v2", schema.dig("properties", "schema", "const")
     assert schema.dig("$defs", "batchScope")
     assert schema.dig("$defs", "executionScope")
     assert schema.dig("$defs", "coordinatorScope")
@@ -1335,8 +1367,8 @@ class BatchUsageReceiptTest < Minitest::Test
     )
   end
 
-  def receipt_schema
+  def receipt_schema(version = 2)
     root = File.expand_path("../../..", __dir__)
-    JSON.parse(File.read(File.join(root, "docs/schemas/batch-usage-receipt-v1.schema.json")))
+    JSON.parse(File.read(File.join(root, "docs/schemas/batch-usage-receipt-v#{version}.schema.json")))
   end
 end

@@ -796,7 +796,9 @@ module BatchTokenBudget
                     when "approve" then %w[approval]
                     when "override" then %w[override]
                     when "reconcile"
-                      return false unless command.dig("usage_receipt", "schema") == "batch-usage-receipt-v1"
+                      return false unless %w[batch-usage-receipt-v1 batch-usage-receipt-v2].include?(
+                        command.dig("usage_receipt", "schema")
+                      )
 
                       fields = %w[
                         completed_reservation_ids usage_receipt usage_receipt_digest usage_receipt_ref
@@ -1955,7 +1957,7 @@ module BatchTokenBudget
   end
 
   def batch_usage_projection(usage_receipt, state)
-    return unless usage_receipt.is_a?(Hash) && usage_receipt["schema"] == "batch-usage-receipt-v1"
+    return unless usage_receipt.is_a?(Hash) && usage_receipt["schema"] == "batch-usage-receipt-v2"
 
     allowed_top_keys = %w[accounting batch coordinator evidence lanes privacy schema window]
     allowed_top_keys << "credit_equivalents" if usage_receipt.key?("credit_equivalents")
@@ -2071,6 +2073,10 @@ module BatchTokenBudget
 
   def reconcile_batch_usage_command(original_state, command)
     usage_receipt = command["usage_receipt"]
+    if usage_receipt["schema"] == "batch-usage-receipt-v1"
+      return blocked_usage_result(original_state, "usage-receipt-version-unsupported")
+    end
+
     projection = batch_usage_projection(usage_receipt, original_state)
     return blocked_usage_result(original_state, "usage-telemetry-malformed-or-unknown") unless projection
 

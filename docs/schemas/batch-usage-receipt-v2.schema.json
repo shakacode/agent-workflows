@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://shakacode.github.io/agent-workflows/schemas/batch-usage-receipt-v1.schema.json",
-  "title": "Batch Usage Receipt v1",
+  "$id": "https://shakacode.github.io/agent-workflows/schemas/batch-usage-receipt-v2.schema.json",
+  "title": "Batch Usage Receipt v2",
   "type": "object",
   "required": ["schema", "batch", "coordinator", "lanes", "window", "accounting", "evidence", "privacy"],
   "properties": {
-    "schema": {"const": "batch-usage-receipt-v1"},
+    "schema": {"const": "batch-usage-receipt-v2"},
     "batch": {"$ref": "#/$defs/batchScope"},
     "coordinator": {"$ref": "#/$defs/coordinatorScope"},
     "lanes": {"type": "array", "items": {"$ref": "#/$defs/laneScope"}},
@@ -49,6 +49,7 @@
   "additionalProperties": false,
   "$defs": {
     "counter": {"oneOf": [{"type": "integer", "minimum": 0}, {"const": "UNKNOWN"}]},
+    "turnCounter": {"oneOf": [{"type": "integer", "minimum": 0}, {"const": "UNKNOWN"}]},
     "usage": {
       "type": "object",
       "required": ["input_tokens", "output_tokens", "reasoning_output_tokens", "cache_read_tokens", "total_tokens"],
@@ -94,9 +95,37 @@
       },
       "additionalProperties": false
     },
+    "executionTurns": {
+      "type": "object",
+      "required": ["self_only", "descendant_inclusive"],
+      "properties": {
+        "self_only": {"$ref": "#/$defs/turnCounter"},
+        "descendant_inclusive": {"$ref": "#/$defs/turnCounter"}
+      },
+      "additionalProperties": false
+    },
+    "laneTurns": {
+      "type": "object",
+      "required": ["self_only", "descendant_inclusive", "unattributed"],
+      "properties": {
+        "self_only": {"$ref": "#/$defs/turnCounter"},
+        "descendant_inclusive": {"$ref": "#/$defs/turnCounter"},
+        "unattributed": {"$ref": "#/$defs/turnCounter"}
+      },
+      "additionalProperties": false
+    },
+    "batchTurns": {
+      "type": "object",
+      "required": ["descendant_inclusive", "unattributed"],
+      "properties": {
+        "descendant_inclusive": {"$ref": "#/$defs/turnCounter"},
+        "unattributed": {"$ref": "#/$defs/turnCounter"}
+      },
+      "additionalProperties": false
+    },
     "executionScope": {
       "type": "object",
-      "required": ["scope", "id", "root_thread_id", "requested_route", "observed_routes", "usage", "evidence"],
+      "required": ["scope", "id", "root_thread_id", "requested_route", "observed_routes", "usage", "turns", "evidence"],
       "properties": {
         "scope": {"enum": ["coordinator", "worker"]},
         "id": {"type": "string", "minLength": 1},
@@ -112,6 +141,7 @@
           },
           "additionalProperties": false
         },
+        "turns": {"$ref": "#/$defs/executionTurns"},
         "evidence": {"$ref": "#/$defs/scopeEvidence"}
       },
       "additionalProperties": false
@@ -130,7 +160,7 @@
     },
     "laneScope": {
       "type": "object",
-      "required": ["scope", "id", "root_thread_id", "requested_route", "observed_routes", "usage", "evidence", "workers", "reconciliation"],
+      "required": ["scope", "id", "root_thread_id", "requested_route", "observed_routes", "usage", "turns", "evidence", "workers", "reconciliation"],
       "properties": {
         "scope": {"const": "lane"},
         "id": {"type": "string", "minLength": 1},
@@ -147,6 +177,7 @@
           },
           "additionalProperties": false
         },
+        "turns": {"$ref": "#/$defs/laneTurns"},
         "evidence": {"$ref": "#/$defs/scopeEvidence"},
         "workers": {"type": "array", "items": {"$ref": "#/$defs/workerScope"}},
         "reconciliation": {
@@ -163,7 +194,7 @@
     },
     "batchScope": {
       "type": "object",
-      "required": ["scope", "id", "usage", "reconciliation"],
+      "required": ["scope", "id", "usage", "turns", "reconciliation"],
       "properties": {
         "scope": {"const": "batch"},
         "id": {"type": "string", "minLength": 1},
@@ -176,6 +207,7 @@
           },
           "additionalProperties": false
         },
+        "turns": {"$ref": "#/$defs/batchTurns"},
         "reconciliation": {
           "type": "object",
           "required": ["status", "equation"],

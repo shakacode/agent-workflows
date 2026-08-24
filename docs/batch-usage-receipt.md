@@ -1,10 +1,18 @@
-# Batch Usage Receipt v1
+# Batch Usage Receipts v1 And v2
 
-`batch-usage-receipt-v1` is a deterministic, privacy-safe accounting artifact
-for a Codex batch. It reports host-observed token metadata for batch,
+Batch usage receipts are deterministic, privacy-safe accounting artifacts for
+a Codex batch. They report host-observed token metadata for batch,
 coordinator/root, lane, and worker scopes without reading those scopes from
-conversation prose. The machine-readable schema is
-[`batch-usage-receipt-v1.schema.json`](schemas/batch-usage-receipt-v1.schema.json).
+conversation prose.
+
+The published
+[`batch-usage-receipt-v1`](schemas/batch-usage-receipt-v1.schema.json) contract
+is frozen at its original token-usage shape. The current helper emits
+`batch-usage-receipt-v2`, whose
+[`v2` schema](schemas/batch-usage-receipt-v2.schema.json) adds required
+per-scope contributing-turn counters. A v1 receipt cannot carry v2 `turns`, and
+a consumer that needs verified turn evidence must request v2 rather than
+reinterpret or extend v1.
 
 The reporter is analytical telemetry, not billing infrastructure. A receipt is
 not an invoice, charge, or authoritative provider cost, and token families must
