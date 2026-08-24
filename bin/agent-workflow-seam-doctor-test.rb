@@ -684,6 +684,28 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_coordination_backend_contract_rejects_html_comment_markers
+    ["private <!-- backend", "private --> backend"].each do |identifier|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(
+          root,
+          POLICY.merge(
+            "coordination_backend" => identifier,
+            "coordination_backend_contract" => coordination_backend_contract(identifier)
+          )
+        )
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, identifier
+        assert_includes out, "invalid coordination_backend_contract policy", identifier
+        assert_includes out, "must not contain an HTML comment marker", identifier
+      end
+    end
+  end
+
   def test_coordination_backend_contract_rejects_malformed_closed_values
     fixtures = {
       "not a mapping" => PRIVATE_COORDINATION_BACKEND,
@@ -753,7 +775,26 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       out, status = run_doctor(root)
 
       refute status.success?
-      assert_includes out, "invalid coordination_backend_contract policy: " \
+      assert_includes out, "invalid coordination_backend policy: " \
+                           "$ contains duplicate key \"coordination_backend\""
+    end
+  end
+
+  def test_coordination_backend_rejects_duplicate_root_keys_without_an_optional_contract
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.to_yaml.sub(
+        "coordination_backend: public claim-comment fallback.\n",
+        "coordination_backend: another private backend\n" \
+        "coordination_backend: public claim-comment fallback.\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend policy: " \
                            "$ contains duplicate key \"coordination_backend\""
     end
   end
