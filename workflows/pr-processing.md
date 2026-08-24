@@ -37,8 +37,9 @@ questions before continuing.
    - Fetch/prune `main`, confirm the expected repository root, and verify nested repo paths before assigning work.
    - When the repo's private coordination backend (see `coordination_backend`
      in `.agents/agent-workflow.yml`) is available, acquire an `agent-coord`
-     claim for each issue/PR/ad-hoc lane before creating that lane's worktree or
-     branch. Resolve `PR_BATCH_SKILL_DIR` in this order: explicit environment
+     claim for each GitHub issue/PR lane, each verified Linear lane using its
+     verified Linear ID as the coordination target, and each ad-hoc lane before
+     creating that lane's worktree or branch. Resolve `PR_BATCH_SKILL_DIR` in this order: explicit environment
      variable; the loaded skill's base directory when the host exposes it;
      repo-local `.agents/skills/pr-batch`; then stop with a precise blocker if
      the helper is still missing. Use that bounded helper for agent-run preflight
@@ -73,6 +74,12 @@ questions before continuing.
      structured public `codex-claim` comment is a GitHub issue/PR comment
      containing a `codex-claim` HTML comment (`<!-- codex-claim v1 ... -->`) with
      key/value fields; see the "Public claim comment" format below.
+     A verified Linear lane is external to GitHub, so it has no GitHub public
+     claim-comment or claim-label surface, just like an ad-hoc lane. If a
+     verified Linear or ad-hoc lane cannot establish its private claim, stop
+     before branching; proceed without a backend only under the existing
+     explicit no-backend single-operator approval. Public claim comments and
+     claim-label mirroring apply only to GitHub issue/PR surfaces.
    - For lanes declared in `batches/<batch-id>.json` with `depends_on`, run
      bounded `agent-coord status` at lane start and before rebase or push. If
      the lane shows unmet `blocked_on` refs, treat them as verified source facts
@@ -1886,7 +1893,7 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
 
 - Use a maintainer-applied eligibility label such as `codex-ready` only if the repo has adopted it.
 - Use a temporary `codex-wip` label only as a visible hint; do not treat it as the durable lock.
-- Mirror an active lane claim on the claimed issue/PR with the seam's claim
+- Mirror an active lane claim on the claimed GitHub issue/PR with the seam's claim
   label (`agent_claimed_label`, default `agent-claimed`) when a coordination
   backend is in use: apply it after a successful
   `agent-coord claim`, and remove it when the claim is released — but only for the
@@ -1904,7 +1911,8 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   item indefinitely, so do not mirror. Skip label mirroring entirely when
   `coordination_backend: n/a` (single-operator). Adopt the claim label per repo
   the same way `codex-ready`/`codex-wip` are (a one-time `gh label create`),
-  before mirroring.
+  before mirroring. Public claim comments and claim-label mirroring apply only
+  to GitHub issue/PR surfaces.
 - Owned means skip is symmetric for humans and agents: a human assignee (see the
   assignee-aware batch selection and the stale-assignment sweep) or an
   `agent-claimed` label both mean skip, and both decay — human assignments via
@@ -1960,19 +1968,24 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   claims and public claim comments. Treat the run as intentionally
   single-operator, and record that single-operator assumption in the Lane Card and final handoff
   rather than reporting coordination as healthy or `UNKNOWN`.
-- For an ad-hoc lane when the configured private backend is unavailable, public claim fallback is unavailable because there is no issue or PR comment surface.
-  Stop before branching; require a coordination target or explicit no-backend single-operator approval.
+- A verified Linear lane is external to GitHub, so it has no GitHub public
+  claim-comment or claim-label surface, just like an ad-hoc lane. When the
+  configured private backend is unavailable for either lane type, public claim
+  fallback is unavailable. If a verified Linear or ad-hoc lane cannot establish
+  its private claim, stop before branching; proceed without a backend only under
+  the existing explicit no-backend single-operator approval.
   Do not invent a public claim surface or silently
   proceed without an ownership guard.
-- Acquire an `agent-coord claim` for each issue/PR/ad-hoc lane before creating that
-  lane's worktree or branch. A refused claim is a hard stop for machine agents:
+- Acquire an `agent-coord claim` for each GitHub issue/PR, verified Linear, or
+  ad-hoc lane before creating that lane's worktree or branch. For Linear, pass
+  only its verified Linear ID as the coordination target. A refused claim is a hard stop for machine agents:
   report the holder, heartbeat liveness, and target instead of creating a
   competing branch.
   Targeted `agent-coord status` is advisory preflight, while
   `agent-coord claim` is the backend's compare-and-swap gate for concurrent
-  claim races. After a successful claim on an issue or PR lane (not an ad-hoc
-  lane, which has no GitHub surface), apply the claim label per the label-mirror
-  rule above.
+  claim races. After a successful claim on a GitHub issue or PR lane, apply the
+  claim label per the label-mirror rule above. Do not mirror a claim label for a
+  verified Linear or ad-hoc lane because neither has a GitHub issue/PR surface.
 - For exact independent lanes that have no `depends_on` refs, degraded bounded
   doctor/status does not automatically block work. A coordinator may attempt the
   bounded `agent-coord claim` directly. If the direct claim succeeds, proceed in
@@ -2015,7 +2028,7 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   when that permission is false. Re-check bounded `agent-coord status` before
   resuming, rebasing, or pushing. Missing or `UNKNOWN` dependency state remains
   a blanket hard stop.
-- Use a structured public claim comment only as an advisory fallback or human
+- Use a structured public claim comment only on a GitHub issue/PR surface as an advisory fallback or human
   hint when the private claim cannot be started, definitively fails with a
   non-timeout setup/auth error before mutation, or is explicitly mirrored.
   Before posting a fallback claim, inspect existing recent issue/PR comments for

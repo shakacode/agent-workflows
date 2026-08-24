@@ -59,6 +59,7 @@ def extract_source_template_awk(text)
 end
 
 batch = read_repo_file("skills/pr-batch/SKILL.md")
+plan = read_repo_file("skills/plan-pr-batch/SKILL.md")
 guide = read_repo_file("docs/pr-batch-skills.md")
 workflow = read_repo_file("workflows/pr-processing.md")
 batch_metadata = read_repo_file("skills/pr-batch/agents/openai.yaml")
@@ -70,6 +71,18 @@ address_review_templates = read_repo_file("skills/address-review/references/temp
 supported_target_enumeration =
   "Use this mode for one direct-prompt task, GitHub issue, Linear issue, or pull request."
 assert(batch.include?(supported_target_enumeration), "single-target mode must enumerate every supported target type")
+plan_frontmatter_description =
+  "description: Use when choosing GitHub issues, pull requests, or verified Linear issues for a PR batch, recommending and grouping worker lanes by model/reasoning-effort assignment, preparing a subagent batch plan, or producing a ready goal prompt that invokes pr-batch."
+plan_frontmatter_argument_hint =
+  "argument-hint: '[GitHub issue/PR numbers, verified Linear IDs, labels, milestone, or search query]'"
+batch_frontmatter_description =
+  "description: Plan and safely run one or more GitHub issue, pull request, verified Linear issue, or ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Use for a single direct-prompt task as well as multi-lane batches, worktree or machine splits, and goal prompts."
+batch_frontmatter_argument_hint =
+  "argument-hint: '[task, exact GitHub issue/PR numbers, verified Linear IDs, or filters]'"
+assert(plan.lines.count { |line| line.chomp == plan_frontmatter_description } == 1, "plan-pr-batch frontmatter must advertise verified Linear issues exactly once")
+assert(plan.lines.count { |line| line.chomp == plan_frontmatter_argument_hint } == 1, "plan-pr-batch argument hint must advertise verified Linear IDs exactly once")
+assert(batch.lines.count { |line| line.chomp == batch_frontmatter_description } == 1, "pr-batch frontmatter must advertise verified Linear issues exactly once")
+assert(batch.lines.count { |line| line.chomp == batch_frontmatter_argument_hint } == 1, "pr-batch argument hint must advertise verified Linear IDs exactly once")
 assert(batch.include?("A single target is\na batch of one"), "pr-batch must own single-target mode")
 assert(batch.include?("dispatch one\n  worker subagent"), "single-target mode must default to a worker subagent")
 assert(batch.include?("Do not silently default it"), "single-target mode must require explicit merge authority")
@@ -115,8 +128,11 @@ assert(workflow.lines.count { |line| line.chomp == target_ids_line } == 1, "cano
 assert(!workflow.include?(duplicated_target_ids_line), "canonical file-touch map must reject the duplicate ad-hoc suffix")
 assert(workflow.include?("For an ad-hoc target, record the evidence and rationale directly in the final handoff"), "canonical final handoff must support ad-hoc no-PR evidence")
 assert(workflow.include?("For an ad-hoc task, the final handoff is the evidence surface"), "canonical outcome classification must support ad-hoc no-PR evidence")
-assert(workflow.include?("public claim fallback is unavailable because there is no issue or PR comment surface"), "canonical coordination must handle ad-hoc lanes without a public claim surface")
-assert(workflow.include?("coordination target or explicit no-backend single-operator approval"), "ad-hoc degraded coordination must stop for a safe ownership decision")
+assert(workflow.include?("A verified Linear lane is external to GitHub, so it has no GitHub public"), "canonical coordination must classify Linear with lanes that lack a GitHub public surface")
+assert(workflow.include?("If a verified Linear or ad-hoc lane cannot establish"), "Linear/ad-hoc degraded coordination must stop for a safe ownership decision")
+assert(workflow.include?("explicit no-backend single-operator approval"), "Linear/ad-hoc no-backend operation must require explicit approval")
+assert(workflow.include?("Public claim comments and claim-label mirroring apply only"), "canonical coordination must restrict public mirroring to GitHub targets")
+assert(workflow.include?("For Linear, pass\n  only its verified Linear ID as the coordination target"), "canonical private claims must use the verified Linear ID")
 assert(workflow.include?("or inline `AGENTS.md` configuration"), "canonical goal handoff must support inline AGENTS configuration")
 
 assert(batch.include?("COORDINATED_AUTOFIX=1"), "canonical single-target closeout must enable coordinated autofix")

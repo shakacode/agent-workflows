@@ -1,7 +1,7 @@
 ---
 name: pr-batch
-description: Plan and safely run one or more issue, PR, or ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Use for a single direct-prompt task as well as multi-lane batches, worktree or machine splits, and goal prompts.
-argument-hint: '[task, exact issue/PR numbers, or filters]'
+description: Plan and safely run one or more GitHub issue, pull request, verified Linear issue, or ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Use for a single direct-prompt task as well as multi-lane batches, worktree or machine splits, and goal prompts.
+argument-hint: '[task, exact GitHub issue/PR numbers, verified Linear IDs, or filters]'
 ---
 
 # PR Batch

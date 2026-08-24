@@ -1,7 +1,7 @@
 ---
 name: plan-pr-batch
-description: Use when choosing GitHub issues or PRs for a PR batch, recommending and grouping worker lanes by model/reasoning-effort assignment, preparing a subagent batch plan, or producing a ready goal prompt that invokes pr-batch.
-argument-hint: '[issue/PR numbers, labels, milestone, or search query]'
+description: Use when choosing GitHub issues, pull requests, or verified Linear issues for a PR batch, recommending and grouping worker lanes by model/reasoning-effort assignment, preparing a subagent batch plan, or producing a ready goal prompt that invokes pr-batch.
+argument-hint: '[GitHub issue/PR numbers, verified Linear IDs, labels, milestone, or search query]'
 ---
 
 # Plan PR Batch

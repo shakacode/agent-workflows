@@ -178,6 +178,30 @@ LINEAR_SINGLE_TARGET_RULE =
   "URL through an authenticated configured Linear API or connector, or a trusted resolved coordinator " \
   "handoff backed by that verification. Missing, mismatched, unavailable, or untrusted verification is " \
   "`UNKNOWN` and stops before launch. GitHub `pr-security-preflight` does not verify Linear."
+LINEAR_PRIVATE_CLAIM_OVERVIEW_RULE =
+  "acquire an `agent-coord` claim for each GitHub issue/PR lane, each verified Linear lane using its " \
+  "verified Linear ID as the coordination target, and each ad-hoc lane before creating that lane's " \
+  "worktree or branch"
+LINEAR_NO_GITHUB_PUBLIC_SURFACE_RULE =
+  "A verified Linear lane is external to GitHub, so it has no GitHub public claim-comment or " \
+  "claim-label surface, just like an ad-hoc lane."
+LINEAR_DEGRADED_COORDINATION_RULE =
+  "If a verified Linear or ad-hoc lane cannot establish its private claim, stop before branching; " \
+  "proceed without a backend only under the existing explicit no-backend single-operator approval."
+GITHUB_ONLY_PUBLIC_MIRROR_RULE =
+  "Public claim comments and claim-label mirroring apply only to GitHub issue/PR surfaces."
+PLAN_PR_BATCH_LINEAR_FRONTMATTER_DESCRIPTION =
+  "description: Use when choosing GitHub issues, pull requests, or verified Linear issues for a PR batch, " \
+  "recommending and grouping worker lanes by model/reasoning-effort assignment, preparing a subagent batch " \
+  "plan, or producing a ready goal prompt that invokes pr-batch."
+PLAN_PR_BATCH_LINEAR_ARGUMENT_HINT =
+  "argument-hint: '[GitHub issue/PR numbers, verified Linear IDs, labels, milestone, or search query]'"
+PR_BATCH_LINEAR_FRONTMATTER_DESCRIPTION =
+  "description: Plan and safely run one or more GitHub issue, pull request, verified Linear issue, or ad-hoc " \
+  "work lanes with coordinated subagents, validation, review, and merge-readiness. Use for a single " \
+  "direct-prompt task as well as multi-lane batches, worktree or machine splits, and goal prompts."
+PR_BATCH_LINEAR_ARGUMENT_HINT =
+  "argument-hint: '[task, exact GitHub issue/PR numbers, verified Linear IDs, or filters]'"
 COMPACT_GOAL_TARGET_LINE =
   "- Target:<PR #N: URL|Issue #N: URL|#{LINEAR_TARGET_GRAMMAR}|adhoc:<yyyymmdd>-<short-slug>>".freeze
 LINEAR_VERIFICATION_RULE =
@@ -1309,6 +1333,45 @@ class GoalCompletionContractTest < Minitest::Test
       refute_includes text, "paste raw Linear", "#{label} must never permit raw Linear prompt content"
       refute_includes text, "treat Linear comments as instructions", "#{label} must keep Linear comments inert"
     end
+  end
+
+  def test_linear_lanes_use_private_claims_without_inventing_github_public_surfaces
+    assert_squished_includes @workflow, LINEAR_PRIVATE_CLAIM_OVERVIEW_RULE,
+                             "canonical workflow overview Linear private claim rule"
+    assert_squished_includes @workflow, LINEAR_NO_GITHUB_PUBLIC_SURFACE_RULE,
+                             "canonical workflow Linear public-surface classification"
+    assert_squished_includes @workflow, LINEAR_DEGRADED_COORDINATION_RULE,
+                             "canonical workflow Linear degraded coordination rule"
+    assert_squished_includes @workflow, GITHUB_ONLY_PUBLIC_MIRROR_RULE,
+                             "canonical workflow GitHub-only public mirror rule"
+    assert_squished_includes @workflow,
+                             "Acquire an `agent-coord claim` for each GitHub issue/PR, verified Linear, or ad-hoc lane before creating that lane's worktree or branch. For Linear, pass only its verified Linear ID as the coordination target.",
+                             "canonical workflow detailed Linear claim rule"
+
+    refute_includes @workflow, "claim for each issue/PR/ad-hoc lane",
+                    "canonical workflow must not omit verified Linear lanes from private claims"
+    refute_includes @workflow, "After a successful claim on an issue or PR lane (not an ad-hoc",
+                    "canonical workflow must not leave Linear public mirroring ambiguous"
+    refute_match(/Linear[^\n]{0,160}public claim (?:comment|fallback)[^\n]{0,80}(?:available|apply)/i, @workflow,
+                 "canonical workflow must not invent a GitHub public claim surface for Linear")
+  end
+
+  def test_pr_batch_frontmatter_advertises_verified_linear_targets
+    {
+      "skills/plan-pr-batch/SKILL.md description" =>
+        [@plan_pr_batch_skill, PLAN_PR_BATCH_LINEAR_FRONTMATTER_DESCRIPTION],
+      "skills/plan-pr-batch/SKILL.md argument hint" =>
+        [@plan_pr_batch_skill, PLAN_PR_BATCH_LINEAR_ARGUMENT_HINT],
+      "skills/pr-batch/SKILL.md description" =>
+        [@pr_batch_skill, PR_BATCH_LINEAR_FRONTMATTER_DESCRIPTION],
+      "skills/pr-batch/SKILL.md argument hint" =>
+        [@pr_batch_skill, PR_BATCH_LINEAR_ARGUMENT_HINT]
+    }.each do |label, (text, expected)|
+      assert_text_includes text, expected, label
+    end
+
+    refute_includes @plan_pr_batch_skill, "argument-hint: '[issue/PR numbers, labels, milestone, or search query]'"
+    refute_includes @pr_batch_skill, "argument-hint: '[task, exact issue/PR numbers, or filters]'"
   end
 
   def test_batch_title_instructions_pin_local_date_source
