@@ -475,7 +475,7 @@ class PrMergeSubmitTest < Minitest::Test
 
     assert_equal 1, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "guarded-direct executable does not match the trusted-base blob"
-    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    assert_equal(1, log.lines.count { |line| line.include?("number=42") })
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
     assert_empty guard_log
@@ -869,7 +869,7 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "enqueuePullRequest"
     assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
     assert_includes log, "GH_HOST=#{HOST} api graphql"
-    assert_equal 3, log.scan("GraphQL-Features: merge_queue").length
+    assert_equal 4, log.scan("GraphQL-Features: merge_queue").length
     refute_includes log, "--auto"
   end
 
@@ -1259,28 +1259,29 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal true, payload.fetch("reconciled_after_failure")
   end
 
-  def test_enqueue_transport_failure_does_not_dequeue_a_retargeted_entry
+  def test_final_revalidation_blocks_retargeted_entry_before_enqueue_transport
     assert_retargeted_queue_entry_is_not_dequeued("enqueue_transport_base_race")
   end
 
-  def test_enqueue_graphql_errors_do_not_dequeue_a_retargeted_entry
+  def test_final_revalidation_blocks_retargeted_entry_before_enqueue_graphql
     assert_retargeted_queue_entry_is_not_dequeued("enqueue_graphql_error_base_race")
   end
 
-  def test_post_enqueue_base_mismatch_reports_unknown_without_dequeue
+  def test_final_revalidation_blocks_a_queue_base_mismatch_before_enqueue
     result, log = run_cli(mode: "queue_base_race", merge_submission: merge_queue_policy)
 
-    assert_equal 2, result.fetch(:status).exitstatus
+    assert_equal 1, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "PR base moved"
-    assert_includes result.fetch(:stderr), "automatic queue cleanup is unsafe"
+    refute_includes log, "enqueuePullRequest"
     refute_includes log, "dequeuePullRequest"
   end
 
-  def test_post_enqueue_replacement_entry_is_not_dequeued
+  def test_final_revalidation_blocks_a_retargeted_queue_entry_before_enqueue
     result, log = run_cli(mode: "queue_entry_replaced", merge_submission: merge_queue_policy)
 
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "automatic queue cleanup is unsafe"
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "PR base moved"
+    refute_includes log, "enqueuePullRequest"
     refute_includes log, "dequeuePullRequest"
   end
 
@@ -1355,6 +1356,45 @@ class PrMergeSubmitTest < Minitest::Test
                     "ci policy evidence does not match authenticated trusted-base policy"
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_no_policy_repository_still_refreshes_complete_ci_before_every_mutation_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :valid, merge_submission:,
+        ci_transition: :unrelated_failure
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), "current CI", mode
+      refute_includes log, mutation, mode
+      assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
+    end
+  end
+
+  def test_pr_base_is_revalidated_after_final_ci_refresh_on_every_mutation_route
+    routes = {
+      direct_ci_base_race: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue_ci_base_race: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_ci_base_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_ci_base_race: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), "PR base moved", mode
+      refute_includes log, mutation, mode
+      assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
+    end
   end
 
   def test_uppercase_expected_head_remains_bound_through_final_ci_refresh_on_every_route
@@ -2012,8 +2052,8 @@ class PrMergeSubmitTest < Minitest::Test
       index < mutation_index && commands[index].include?("number=42")
     end
     refute_empty metadata_indexes
-    assert_equal mutation_index - 1, refresh_index
-    assert_operator metadata_indexes.last, :<, refresh_index
+    assert_operator refresh_index, :<, metadata_indexes.last
+    assert_equal mutation_index - 1, metadata_indexes.last
     %w[actions/runs check-runs /status].each do |inventory|
       assert commands[0...refresh_index].any? { |command| command.include?(inventory) }, inventory
     end
@@ -2064,9 +2104,9 @@ class PrMergeSubmitTest < Minitest::Test
   def assert_retargeted_queue_entry_is_not_dequeued(mode)
     result, log = run_cli(mode:, merge_submission: merge_queue_policy)
 
-    assert_equal 2, result.fetch(:status).exitstatus
+    assert_equal 1, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "PR base moved"
-    assert_includes result.fetch(:stderr), "cannot be safely dequeued"
+    refute_includes log, "enqueuePullRequest"
     refute_includes log, "dequeuePullRequest"
   end
 
@@ -2179,11 +2219,18 @@ class PrMergeSubmitTest < Minitest::Test
         interpreter_attack
       bash_env_attack_path = prepare_bash_env_attack(dir, attacker_log_path) if bash_env_attack
       gh_path = File.join(dir, "gh")
+      effective_ci_transition = if ci_transition == :held &&
+                                   !receipt_mode.to_s.start_with?("optional_held")
+                                  :success
+                                else
+                                  ci_transition
+                                end
       File.write(
         gh_path,
         fake_gh(
           mode:, head:, base:, base_sha: receipt_base_sha || base_sha,
-          url_host:, repo:, merge_commit_oid:, head_ref_name:, ci_transition:
+          url_host:, repo:, merge_commit_oid:, head_ref_name:,
+          ci_transition: effective_ci_transition
         )
       )
       FileUtils.chmod(0o755, gh_path)
@@ -2269,7 +2316,7 @@ class PrMergeSubmitTest < Minitest::Test
         gh_path,
         fake_gh(
           mode:, head: HEAD_SHA, base: "main", base_sha:,
-          url_host: HOST, repo: "owner/repo"
+          url_host: HOST, repo: "owner/repo", ci_transition: :success
         )
       )
       FileUtils.chmod(0o755, gh_path)
@@ -2958,16 +3005,16 @@ class PrMergeSubmitTest < Minitest::Test
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
       end
       transition = #{ci_transition.inspect}
-      if ARGV[0, 3] == ["api", "repos/owner/repo/pulls/42"]
+      if ARGV[0, 3] == ["api", "repos/#{repo}/pulls/42"]
         puts JSON.generate(
           "id" => 420, "number" => 42,
           "head" => {
             "sha" => #{head.inspect}, "ref" => #{head_ref_name.inspect},
-            "repo" => { "id" => 10, "full_name" => "owner/repo" }
+            "repo" => { "id" => 10, "full_name" => #{repo.inspect} }
           },
           "base" => {
             "sha" => #{base_sha.inspect}, "ref" => #{base.inspect},
-            "repo" => { "id" => 10, "full_name" => "owner/repo" }
+            "repo" => { "id" => 10, "full_name" => #{repo.inspect} }
           }
         )
         exit 0
@@ -2997,18 +3044,18 @@ class PrMergeSubmitTest < Minitest::Test
         exit 0
       end
       requested_run_endpoint = ARGV.find do |arg|
-        arg.match?(%r{repos/owner/repo/actions/runs/(?:42|43)\\z})
+        ["repos/#{repo}/actions/runs/42", "repos/#{repo}/actions/runs/43"].include?(arg)
       end
       if requested_run_endpoint
         run_id = requested_run_endpoint[%r{/runs/(\\d+)\\z}, 1].to_i
         puts JSON.generate(
           "id" => run_id, "name" => "requested-\#{run_id}", "head_sha" => #{head.inspect},
           "status" => "completed", "conclusion" => "success",
-          "html_url" => "https://#{HOST}/owner/repo/actions/runs/\#{run_id}"
+          "html_url" => "https://#{HOST}/#{repo}/actions/runs/\#{run_id}"
         )
         exit 0
       end
-      actions_endpoint = ARGV.find { |arg| arg.include?("repos/owner/repo/actions/runs?head_sha=") }
+      actions_endpoint = ARGV.find { |arg| arg.include?("repos/#{repo}/actions/runs?head_sha=") }
       if actions_endpoint
         exit 1 if transition == :actions_inventory_missing
 
@@ -3021,7 +3068,7 @@ class PrMergeSubmitTest < Minitest::Test
                           "head_repository" => { "id" => 10 }, "pull_requests" => [],
                           "head_sha" => #{head.inspect}, "name" => "current-actions",
                           "status" => status, "conclusion" => conclusion,
-                          "html_url" => "https://#{HOST}/owner/repo/actions/runs/501",
+                          "html_url" => "https://#{HOST}/#{repo}/actions/runs/501",
                           "actor" => { "login" => "octocat" },
                           "triggering_actor" => { "login" => "octocat" }
                         }]
@@ -3031,7 +3078,7 @@ class PrMergeSubmitTest < Minitest::Test
         puts JSON.generate("total_count" => action_rows.length, "workflow_runs" => action_rows)
         exit 0
       end
-      if ARGV.any? { |arg| arg.include?("repos/owner/repo/actions/runs/501/jobs?") }
+      if ARGV.any? { |arg| arg.include?("repos/#{repo}/actions/runs/501/jobs?") }
         puts JSON.generate("total_count" => 0, "jobs" => [])
         exit 0
       end
@@ -3042,10 +3089,10 @@ class PrMergeSubmitTest < Minitest::Test
         status_rows = case transition
                       when :status_failure
                         [{ "id" => 701, "context" => "current-status", "state" => "failure",
-                           "target_url" => "https://#{HOST}/owner/repo/status/701" }]
+                           "target_url" => "https://#{HOST}/#{repo}/status/701" }]
                       when :status_pending
                         [{ "id" => 701, "context" => "current-status", "state" => "pending",
-                           "target_url" => "https://#{HOST}/owner/repo/status/701" }]
+                           "target_url" => "https://#{HOST}/#{repo}/status/701" }]
                       else
                         []
                       end
@@ -3067,7 +3114,7 @@ class PrMergeSubmitTest < Minitest::Test
           {
             "id" => id, "name" => name, "head_sha" => head_sha,
             "status" => status, "conclusion" => conclusion, "started_at" => started_at,
-            "html_url" => "https://#{HOST}/owner/repo/checks/\#{id}",
+            "html_url" => "https://#{HOST}/#{repo}/checks/\#{id}",
             "app" => { "slug" => app_slug }
           }
         end
@@ -3279,7 +3326,7 @@ class PrMergeSubmitTest < Minitest::Test
         puts JSON.generate("total_count" => total_count, "check_runs" => check_runs)
         exit 0
       end
-      if ARGV.include?("repos/owner/repo/check-runs/31")
+      if ARGV.include?("repos/#{repo}/check-runs/31")
         phase = case #{ci_transition.inspect}
                 when :running
                   { "status" => "in_progress", "conclusion" => nil,
@@ -3299,7 +3346,7 @@ class PrMergeSubmitTest < Minitest::Test
         )
         exit 0
       end
-      if ARGV.include?("repos/owner/repo/issues/1")
+      if ARGV.include?("repos/#{repo}/issues/1")
         puts #{JSON.generate(semantic_issue).inspect}
         exit 0
       end
@@ -3324,6 +3371,8 @@ class PrMergeSubmitTest < Minitest::Test
         File.write(query_count_path, (query_count + 1).to_s)
         current_mode = #{mode.inspect}
         guard_called = File.exist?(ENV.fetch("PR_TEST_GUARD_MARKER"))
+        gh_log = File.read(ENV.fetch("GH_LOG"))
+        enqueue_attempted = gh_log.include?("enqueuePullRequest")
         queue_enabled = case current_mode
                         when "queue", "queue_fast_merged", "queue_fast_merged_base_advanced",
                              "queue_missing_entry", "already_queued", "already_queued_base_advanced",
@@ -3339,8 +3388,10 @@ class PrMergeSubmitTest < Minitest::Test
                              "enqueue_transport_queued_base_advanced", "queue_post_queued_base_advanced",
                              "queue_post_queued_with_commit",
                              "enqueue_non_object_response_queued", "queue_base_race",
-                             "queue_entry_replaced", "queue_entry_replaced_same_target" then true
-                        when "direct_queue_race", "guard_queue_race" then query_count.positive?
+                             "queue_entry_replaced", "queue_entry_replaced_same_target",
+                             "queue_ci_base_race" then true
+                        when "direct_queue_race", "guard_queue_race", "guard_queue_ci_base_race"
+                          query_count.positive?
                         when "direct_graphql_error_queue_enabled" then query_count >= 2
                         else false
                         end
@@ -3354,7 +3405,7 @@ class PrMergeSubmitTest < Minitest::Test
                       "enqueue_graphql_error_merged_queued",
                       "queue_entry_replaced_same_target",
                       "queue_post_queued_base_advanced",
-                      "queue_post_queued_with_commit" then query_count.positive?
+                      "queue_post_queued_with_commit" then enqueue_attempted
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
                  when "direct_graphql_error_in_queue" then query_count >= 2
@@ -3375,12 +3426,17 @@ class PrMergeSubmitTest < Minitest::Test
           direct_transport_merged direct_graphql_error_merged direct_response_invalid_merged
         ].include?(current_mode) && direct_attempted
         merged = ["already_merged", "already_merged_base_advanced"].include?(current_mode) ||
-                 (merged_after_mutation && query_count.positive?) || guarded_direct_merged || directly_merged
+                 (merged_after_mutation && enqueue_attempted) || guarded_direct_merged || directly_merged
         base_race_modes = [
           "queue_base_race", "queue_entry_replaced", "enqueue_transport_base_race",
           "enqueue_graphql_error_base_race"
         ]
-        live_base = if base_race_modes.include?(current_mode) && query_count.positive?
+        ci_base_race_modes = %w[
+          direct_ci_base_race queue_ci_base_race guard_queue_ci_base_race guard_ci_base_race
+        ]
+        ci_inventory_complete = gh_log.include?("/commits/")
+        live_base = if (base_race_modes.include?(current_mode) && query_count.positive?) ||
+                       (ci_base_race_modes.include?(current_mode) && ci_inventory_complete)
                       "release"
                     else
                       #{base.inspect}
@@ -3395,7 +3451,7 @@ class PrMergeSubmitTest < Minitest::Test
           already_merged_base_advanced initial_open_base_advanced already_queued_base_advanced
         ]
         live_base_oid = if base_advanced_modes.include?(current_mode) &&
-                           (initially_advanced_modes.include?(current_mode) || query_count.positive?)
+                           (initially_advanced_modes.include?(current_mode) || enqueue_attempted)
                           #{ADVANCED_BASE_SHA.inspect}
                         else
                           #{base_sha.inspect}

@@ -678,6 +678,19 @@ module PrCiReadiness
           )
         end
       inventory = exact_head_inventory(repo, target_pr)
+      final_required_fetch = fetch_checks(repo, pr_number, required: true)
+      final_required_rows = PrCiReadiness.parse_rows(final_required_fetch.fetch(:raw))
+      required_snapshot_unchanged =
+        canonical_check_snapshot(required_rows) == canonical_check_snapshot(final_required_rows)
+      required_inventory_stable = required_query_known && final_required_fetch.fetch(:known_good) &&
+                                  required_snapshot_unchanged
+      unless required_inventory_stable
+        inventory[:required_complete] = false
+        inventory[:errors]["required_status_check_rollup"] = [
+          inventory[:errors]["required_status_check_rollup"],
+          "required-check inventory changed during exact-head assessment"
+        ].compact.join("; ")
+      end
       target_identity_error =
         begin
           final_target_pr = fetch_target_pr_identity(repo, pr_number, require_base: !trusted_repo_root.nil?)
@@ -742,6 +755,12 @@ module PrCiReadiness
       )
       merged["ci_policy"] = trusted_ci_policy if trusted_ci_policy
       merged
+    end
+
+    def canonical_check_snapshot(rows)
+      rows.map do |row|
+        row.is_a?(Hash) ? JSON.generate(row.keys.sort.to_h { |key| [key, row[key]] }) : JSON.generate(row)
+      end.sort
     end
 
     def supplemental_readiness_verdict(result)

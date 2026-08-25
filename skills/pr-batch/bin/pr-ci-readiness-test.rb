@@ -958,6 +958,23 @@ class PrCiReadinessCliTest < Minitest::Test
                      exact_statuses, exact_inventory_error, exact_actions_total_count,
                      pr_head_state_path, pr_identity_state_path, expected_host,
                      exact_status_sha, exact_status_total_count, exact_status_pages)
+    required_check_command = if required_json.is_a?(Array)
+                               state_path = "#{pr_head_state_path}.required-checks"
+                               cases = required_json.each_with_index.map do |payload, index|
+                                 "#{index}) printf '%s' #{payload.inspect} ;;"
+                               end.join("\n")
+                               <<~BASH
+                                 count=0
+                                 if [ -f #{state_path.inspect} ]; then count=$(cat #{state_path.inspect}); fi
+                                 case "$count" in
+                                 #{cases}
+                                   *) printf '%s' #{required_json.last.inspect} ;;
+                                 esac
+                                 printf '%s' "$((count + 1))" > #{state_path.inspect}
+                               BASH
+                             else
+                               "printf '%s' #{required_json.inspect}"
+                             end
     host_guard =
       if expected_host
         <<~BASH
@@ -1194,7 +1211,7 @@ class PrCiReadinessCliTest < Minitest::Test
         for arg in "$@"; do
           if [ "$arg" = "--required" ]; then
           #{required_check_error_command}
-            printf '%s' #{required_json.inspect}
+          #{required_check_command}
             exit #{check_status}
           fi
         done
@@ -2590,6 +2607,47 @@ class PrCiReadinessCliTest < Minitest::Test
         assert_equal "NOT_READY", data.fetch("verdict")
         assert_equal "NOT_READY", data.dig("scopes", "other", "state")
         assert_equal 1, data.dig("scopes", "other", "policy_dispositions").length
+      end
+    end
+  end
+
+  def test_optional_disposition_fails_closed_when_required_inventory_changes_during_assessment
+    head = "a" * 40
+    with_optional_policy_repo do |root, base_sha|
+      identity = {
+        "id" => 9_001, "number" => 123,
+        "head" => {
+          "sha" => head, "ref" => "feature",
+          "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+        },
+        "base" => {
+          "sha" => base_sha, "ref" => "main",
+          "repo" => { "id" => 9_003, "full_name" => "owner/repo" }
+        }
+      }
+      held = {
+        "id" => 31, "name" => "storybook-review-app", "status" => "in_progress",
+        "conclusion" => nil, "started_at" => nil, "head_sha" => head,
+        "app" => { "slug" => "circleci-checks" }, "html_url" => "https://example/check/31"
+      }
+      required = {
+        "workflow" => "circleci-checks", "name" => "storybook-review-app", "bucket" => "pending"
+      }
+      with_fake_gh(
+        required_json: ["[]", JSON.generate([required])],
+        full_json: JSON.generate([required]),
+        pr_head: head, pr_identity: identity, exact_check_runs: [held]
+      ) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+        assert status.success?, out
+        data = JSON.parse(out)
+
+        assert_equal "NOT_READY", data.fetch("verdict")
+        assert_equal false, data.dig("scopes", "required_status_check_rollup", "complete")
+        assert_includes data.dig("scopes", "required_status_check_rollup", "error"),
+                        "required-check inventory changed during exact-head assessment"
       end
     end
   end
