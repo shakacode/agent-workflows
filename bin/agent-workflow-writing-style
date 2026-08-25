@@ -25,7 +25,7 @@ module AgentWorkflowWritingStyle
 
   def resolve(repo_root:, home: Dir.home)
     repo_path = File.join(repo_root, ".agents", "agent-workflow.yml")
-    if File.exist?(repo_path) || File.symlink?(repo_path)
+    if configuration_path_present?(repo_path, label: "repository")
       config = load_mapping(repo_path, label: "repository")
       guide = extract_guide(config, label: "repository")
       if guide
@@ -34,18 +34,27 @@ module AgentWorkflowWritingStyle
     end
 
     user_path = File.join(home, ".agents", "agent-workflow.yml")
-    if File.exist?(user_path) || File.symlink?(user_path)
-      begin
+    begin
+      if configuration_path_present?(user_path, label: "user-global")
         config = load_mapping(user_path, label: "user-global")
         guide = extract_guide(config, label: "user-global")
         return Result.new(guide:, provenance: "user-global", warnings: []) if guide
-      rescue ConfigurationError => e
-        warning = "WARNING: #{e.message} at #{user_path}. Fix or remove writing_style; using portable default."
-        return Result.new(guide: PORTABLE_DEFAULT, provenance: "portable-default", warnings: [warning])
       end
+    rescue ConfigurationError => e
+      warning = "WARNING: #{e.message} at #{user_path}. Fix or remove writing_style; using portable default."
+      return Result.new(guide: PORTABLE_DEFAULT, provenance: "portable-default", warnings: [warning])
     end
 
     Result.new(guide: PORTABLE_DEFAULT, provenance: "portable-default", warnings: [])
+  end
+
+  def configuration_path_present?(path, label:)
+    File.lstat(path)
+    true
+  rescue Errno::ENOENT
+    false
+  rescue SystemCallError => e
+    raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
   end
 
   def load_mapping(path, label:)

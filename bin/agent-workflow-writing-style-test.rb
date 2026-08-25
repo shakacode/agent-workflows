@@ -180,6 +180,43 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
     end
   end
 
+  def test_unsearchable_repository_parent_blocks_instead_of_falling_back
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      agents_dir = File.join(repo_root, ".agents")
+      repo_path = File.join(agents_dir, "agent-workflow.yml")
+      FileUtils.mkdir_p(agents_dir)
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.write(repo_path, "writing_style:\n  guide: Unreadable repository style.\n")
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style:\n  guide: User fallback must not be used.\n"
+      )
+
+      stdout = stderr = status = nil
+      File.chmod(0o000, agents_dir)
+      begin
+        begin
+          File.lstat(repo_path)
+        rescue Errno::EACCES
+          stdout, stderr, status = run_resolver(repo_root:, home:)
+        else
+          skip "filesystem does not enforce owner search permissions"
+        end
+      ensure
+        File.chmod(0o700, agents_dir)
+      end
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style configuration"
+      assert_includes stderr, "Errno::EACCES"
+      refute_includes stderr, "User fallback must not be used"
+      refute_includes stderr, "Unreadable repository style"
+    end
+  end
+
   def test_malformed_user_global_value_warns_and_falls_back_to_default
     Dir.mktmpdir do |directory|
       repo_root = File.join(directory, "repo")
@@ -298,6 +335,41 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       assert_equal 1, result.fetch("warnings").length
       assert_includes stderr, "expected a readable regular file"
       assert_includes stderr, "using portable default"
+    end
+  end
+
+  def test_unsearchable_user_global_parent_warns_and_uses_default
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      agents_dir = File.join(home, ".agents")
+      user_path = File.join(agents_dir, "agent-workflow.yml")
+      Dir.mkdir(repo_root)
+      FileUtils.mkdir_p(agents_dir)
+      File.write(user_path, "writing_style:\n  guide: Unreadable user style.\n")
+
+      stdout = stderr = status = nil
+      File.chmod(0o000, agents_dir)
+      begin
+        begin
+          File.lstat(user_path)
+        rescue Errno::EACCES
+          stdout, stderr, status = run_resolver(repo_root:, home:)
+        else
+          skip "filesystem does not enforce owner search permissions"
+        end
+      ensure
+        File.chmod(0o700, agents_dir)
+      end
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "portable-default", result.fetch("provenance")
+      assert_equal 1, result.fetch("warnings").length
+      assert_includes stderr, "invalid user-global writing_style configuration"
+      assert_includes stderr, "Errno::EACCES"
+      assert_includes stderr, "using portable default"
+      refute_includes stdout, "Unreadable user style"
     end
   end
 
