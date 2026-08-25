@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add an opt-in Claude Code `SessionEnd` adapter that records a non-terminal lane drain event without releasing the claim.** [issue 268](https://github.com/shakacode/agent-workflows/issues/268).
 - **Add a dedicated, locally reproducible lint gate for tracked Ruby, shell, Markdown, YAML, and GitHub Actions files, with pinned tool versions, read-only CI permissions, and the canonical `.agents/bin/lint` command.** [issue 310](https://github.com/shakacode/agent-workflows/issues/310).
 - **Add a fail-closed queue-or-guarded-direct merge-submission seam whose fixed-argv repository guard runs from receipt-base-bound private Git state, resolves trusted script interpreters independently from checkout-controlled paths and injection variables, and requires exact live post-mutation reconciliation.** [issue 292](https://github.com/shakacode/agent-workflows/issues/292).
 - **Document that current install and upgrade paths are development channels without independent human release approval, and track an immutable human-reviewed stable channel.** [issue 296](https://github.com/shakacode/agent-workflows/issues/296).

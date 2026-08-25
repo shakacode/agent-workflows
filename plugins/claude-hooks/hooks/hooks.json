@@ -1,20 +1,8 @@
 {
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/plugins/claude-hooks/hooks/block-merge-without-ci-readiness",
-            "timeout": 90
-          }
-        ]
-      }
-    ],
     "SessionEnd": [
       {
-        "matcher": "clear|logout|prompt_input_exit|bypass_permissions_disabled|other",
+        "matcher": "clear|logout|prompt_input_exit|other",
         "hooks": [
           {
             "type": "command",

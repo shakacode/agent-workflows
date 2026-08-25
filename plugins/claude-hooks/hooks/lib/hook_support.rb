@@ -5,11 +5,7 @@ require "json"
 require "tempfile"
 require "yaml"
 
-# Shared plumbing for the Claude Code hook adapters in this directory.
-#
-# These adapters are delivery mechanisms only. Every rule they enforce is
-# written down and independently testable in a host-neutral validator; a hook is
-# never the only place a rule lives.
+# Shared plumbing for the Claude Code SessionEnd adapter in this directory.
 module HookSupport
   # A hook payload is a small JSON object. Cap the read so a malformed or
   # hostile stream cannot make a hook hang or exhaust memory.
@@ -30,16 +26,7 @@ module HookSupport
 
   module_function
 
-  # The agent-workflows checkout that contains these hooks. Hook scripts resolve
-  # their validators through this so the adapter and the rule it enforces can
-  # never drift apart across installs.
-  def pack_root
-    File.expand_path("../../../..", __dir__)
-  end
-
-  # True when an operator has switched the adapters off. The hook process
-  # inherits the agent runner's environment, not the inspected command's inline
-  # `VAR=value` prefix, so a model cannot reach this switch from a tool call.
+  # True when an operator has switched the adapter off.
   def disabled?(env = ENV)
     env[DISABLE_ENV].to_s.strip.downcase == "off"
   end
@@ -48,22 +35,8 @@ module HookSupport
   # the stream is larger than the read cap, or nil when it is absent or
   # unparseable.
   #
-  # Three outcomes rather than two, because "genuinely unparseable" and "merely
-  # unusual" deserve opposite answers:
-  #
-  #   * Oversized is unparseable and vanishingly rare. Truncating the stream
-  #     turns a well-formed payload into a parse failure, so a command whose
-  #     merge is plainly visible at the start would be silently allowed just for
-  #     being long. Callers block; a Bash command over a megabyte essentially
-  #     never happens, so the cost is close to zero.
-  #   * Invalid UTF-8 is unusual but entirely ordinary -- `cat` on a binary
-  #     filename, `grep` for a byte pattern. JSON.parse raises EncodingError on
-  #     those bytes, so they are scrubbed first and the payload still parses,
-  #     preserving recognition. Blocking everyday commands is how a guardrail
-  #     gets switched off, which costs far more safety than it buys.
-  #   * Anything still unparseable stays nil, the documented applicability
-  #     fail-open. The model cannot reach this case: it supplies only the value
-  #     of `tool_input.command`, and the host serialises the envelope.
+  # The distinct oversized result lets the adapter report why it skipped the
+  # event without retaining an unbounded input in memory.
   def read_payload(input = $stdin)
     raw = input.read(MAX_PAYLOAD_BYTES + 1)
     return :oversized if raw && raw.bytesize > MAX_PAYLOAD_BYTES
@@ -74,8 +47,7 @@ module HookSupport
     nil
   end
 
-  # Best-effort UTF-8 view of arbitrary bytes. Scrubbing only removes invalid
-  # sequences, so it can reveal a command but never conceal one.
+  # Best-effort UTF-8 view of arbitrary bytes for JSON parsing.
   def decodable(raw)
     text = raw.to_s
     text = text.dup.force_encoding(Encoding::UTF_8) unless text.encoding == Encoding::UTF_8
@@ -128,10 +100,7 @@ module HookSupport
   def run_bounded(argv, timeout_seconds:, grace_seconds: 0.5, chdir: nil)
     return { ok: false, status: nil, stdout: "", stderr: "", failure: "spawn_error" } if argv.nil? || argv.empty?
 
-    # Reject unspawnable values before Process.spawn can raise on them. A raise
-    # here would propagate out of the hook and exit non-2, which the host reads
-    # as a non-blocking error -- i.e. it would allow the very command a
-    # fail-closed gate exists to stop.
+    # Reject unspawnable values before Process.spawn can raise on them.
     unless argv.all? { |value| safe_argument?(value) } && (chdir.nil? || safe_argument?(chdir))
       return { ok: false, status: nil, stdout: "", stderr: "argument contains a NUL byte", failure: "unsafe_argument" }
     end

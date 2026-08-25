@@ -14,45 +14,24 @@ class HooksInstallContractTest < Minitest::Test
     @hooks = JSON.parse(File.read(HOOKS_JSON)).fetch("hooks")
   end
 
-  def test_registers_exactly_the_two_documented_events
-    assert_equal %w[PreToolUse SessionEnd].sort, @hooks.keys.sort
-  end
-
-  def test_pre_tool_use_gate_targets_bash_and_points_at_an_executable_adapter
-    entry = @hooks.fetch("PreToolUse").fetch(0)
-
-    assert_equal "Bash", entry.fetch("matcher")
-    assert_equal 1, entry.fetch("hooks").length
-    assert_adapter(entry.fetch("hooks").fetch(0), "block-merge-without-ci-readiness")
+  def test_registers_exactly_the_session_end_event
+    assert_equal %w[SessionEnd], @hooks.keys
+    refute @hooks.key?("PreToolUse"), "the opt-in pack must not ship the withdrawn merge-command gate"
   end
 
   def test_session_end_matcher_covers_the_stopping_reasons_and_excludes_resume
     entry = @hooks.fetch("SessionEnd").fetch(0)
-    matcher = Regexp.new(entry.fetch("matcher"))
+    matcher_source = entry.fetch("matcher")
+    matcher = Regexp.new(matcher_source)
 
-    # bypass_permissions_disabled is a real termination reason: the lane stops,
-    # so it must be recorded like any other stop.
-    %w[clear logout prompt_input_exit bypass_permissions_disabled other].each do |reason|
+    assert_equal %w[clear logout prompt_input_exit other].sort, matcher_source.split("|").sort
+    %w[clear logout prompt_input_exit other].each do |reason|
       assert_match matcher, reason, "SessionEnd must fire for #{reason}"
     end
     refute_match matcher, "resume", "SessionEnd must not fire for a resumed session"
+    refute_match matcher, "bypass_permissions_disabled",
+                 "SessionEnd must use only the reasons in the current host contract"
     assert_adapter(entry.fetch("hooks").fetch(0), "close-lane-on-session-end")
-  end
-
-  # The adapter must reach its own blocking decision before the host's
-  # registered timeout can fire, otherwise "readiness could not be established
-  # in time" is decided by the host rather than by the gate.
-  def test_merge_gate_internal_budget_stays_under_its_registered_timeout
-    load File.expand_path("block-merge-without-ci-readiness", __dir__)
-    registered = @hooks.fetch("PreToolUse").fetch(0).fetch("hooks").fetch(0).fetch("timeout")
-    budget = BlockMergeWithoutCiReadiness::DEFAULT_TOTAL_BUDGET_SECONDS
-
-    assert_operator budget, :<, registered,
-                    "internal budget #{budget}s must be below the registered #{registered}s timeout"
-    assert_operator registered - budget, :>=, 10,
-                    "leave at least 10s of margin for process teardown and hook startup"
-    assert_operator BlockMergeWithoutCiReadiness::DEFAULT_TIMEOUT_SECONDS, :<=, budget,
-                    "a single stage must not be able to consume more than the whole budget"
   end
 
   # A literal NUL byte makes git classify a source file as binary, so it renders
@@ -70,8 +49,8 @@ class HooksInstallContractTest < Minitest::Test
                  "a NUL byte makes these files binary to git and invisible in review diffs"
   end
 
-  # Same rule as the merge gate: the adapter must finish on its own terms rather
-  # than being killed mid-write by the host.
+  # The adapter must finish on its own terms rather than being killed mid-write
+  # by the host.
   def test_session_end_budget_stays_under_its_registered_timeout
     load File.expand_path("close-lane-on-session-end", __dir__)
     registered = @hooks.fetch("SessionEnd").fetch(0).fetch("hooks").fetch(0).fetch("timeout")
@@ -95,9 +74,8 @@ class HooksInstallContractTest < Minitest::Test
     end
   end
 
-  # The adapters ship opt-in and off by default. A `hooks` key in the plugin
-  # manifest would activate them for everyone who enables the pack, which is
-  # exactly what issue #276 asked us not to do.
+  # The adapter ships opt-in and off by default. A `hooks` key in the plugin
+  # manifest would activate it for everyone who enables the pack.
   def test_the_plugin_manifest_does_not_activate_the_hooks
     manifest = JSON.parse(File.read(PLUGIN_MANIFEST))
 
@@ -107,9 +85,9 @@ class HooksInstallContractTest < Minitest::Test
   def test_the_enable_steps_are_documented
     documentation = File.read(DOCS)
 
-    assert_includes documentation, "block-merge-without-ci-readiness"
     assert_includes documentation, "close-lane-on-session-end"
-    assert_includes documentation, "intercom/2x-skills"
+    refute_includes documentation, "block-merge-without-ci-readiness"
+    refute_includes documentation, "bypass_permissions_disabled"
     assert_includes documentation, "Codex"
   end
 
