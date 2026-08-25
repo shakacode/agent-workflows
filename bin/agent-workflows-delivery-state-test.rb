@@ -26,24 +26,31 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV[0, 3] == %w[plugin list --marketplace] && ARGV.length == 4
       marketplace = ARGV.fetch(3)
       if marketplace != "agent-workflows"
+        sleep Float(ENV.fetch("QA_SUPERPOWERS_SLEEP_SECONDS", "0"))
+        if marketplace == ENV["QA_SUPERPOWERS_FAIL_MARKETPLACE"]
+          warn "catalog unavailable"
+          exit 2
+        end
         state = ENV.fetch("QA_SUPERPOWERS_STATE", "installed-disabled")
         catalog_root = ENV.fetch("QA_SUPERPOWERS_CATALOG_ROOT")
         plugin_id = "superpowers@\#{marketplace}"
         if marketplace == ENV.fetch("QA_SUPERPOWERS_MARKETPLACE", "openai-curated")
           puts "PLUGIN STATUS VERSION PATH"
-          case state
-          when "active"
-            puts "\#{plugin_id}  installed, enabled   catalog-rev  \#{catalog_root}"
-          when "installed-disabled"
-            puts "\#{plugin_id}  installed, disabled  catalog-rev  \#{catalog_root}"
-          when "available-not-installed"
-            puts "\#{plugin_id}  not installed                     \#{catalog_root}"
-          when "UNKNOWN"
-            warn "catalog unavailable"
-            exit 2
-          else
-            abort "unknown Superpowers state: \#{state}"
-          end
+          row = case state
+                when "active"
+                  "\#{plugin_id}  installed, enabled   catalog-rev  \#{catalog_root}"
+                when "installed-disabled"
+                  "\#{plugin_id}  installed, disabled  catalog-rev  \#{catalog_root}"
+                when "available-not-installed"
+                  "\#{plugin_id}  not installed                     \#{catalog_root}"
+                when "UNKNOWN"
+                  warn "catalog unavailable"
+                  exit 2
+                else
+                  abort "unknown Superpowers state: \#{state}"
+                end
+          puts row
+          puts row if marketplace == ENV["QA_SUPERPOWERS_DUPLICATE_MARKETPLACE"]
         else
           puts "No plugins found in marketplace `\#{marketplace}`."
         end
@@ -229,6 +236,80 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert_equal "https://github.com/obra/superpowers", payload.dig("superpowers", "catalog_entries", 0, "upstream_repository")
       assert_nil payload.dig("superpowers", "upstream_version")
       assert_equal "not-queried", payload.dig("superpowers", "upstream_version_source")
+    end
+  end
+
+  def test_queries_superpowers_marketplaces_concurrently_with_one_timeout_window
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      write_codex_native_state(target)
+
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      out, err, status = run_state_with_env(
+        {
+          "AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS" => "1",
+          "QA_SUPERPOWERS_SLEEP_SECONDS" => "5"
+        },
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "UNKNOWN", payload.dig("superpowers", "state")
+      assert_equal(
+        %w[openai-curated openai-curated-remote superpowers-dev],
+        payload.dig("superpowers", "warnings").map { |warning| warning[/marketplace (\S+)/, 1] }
+      )
+      assert_operator elapsed, :<, 2.2, "marketplace queries took #{elapsed.round(3)}s"
+    end
+  end
+
+  def test_active_superpowers_preserves_partial_marketplace_failures_as_warnings
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      write_codex_native_state(target)
+
+      out, err, status = run_state_with_env(
+        {
+          "QA_SUPERPOWERS_STATE" => "active",
+          "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev",
+          "QA_SUPERPOWERS_FAIL_MARKETPLACE" => "openai-curated"
+        },
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", payload.dig("superpowers", "state")
+      assert_equal 1, payload.dig("superpowers", "warnings").length
+      assert_includes payload.dig("superpowers", "warnings", 0), "openai-curated"
+      assert_includes payload.dig("superpowers", "warnings", 0), "catalog unavailable"
+    end
+  end
+
+  def test_duplicate_superpowers_rows_are_ambiguous
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      write_codex_native_state(target)
+
+      out, err, status = run_state_with_env(
+        {
+          "QA_SUPERPOWERS_STATE" => "installed-disabled",
+          "QA_SUPERPOWERS_DUPLICATE_MARKETPLACE" => "openai-curated"
+        },
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "UNKNOWN", payload.dig("superpowers", "state")
+      assert_equal 1, payload.dig("superpowers", "warnings").length
+      assert_includes payload.dig("superpowers", "warnings", 0), "ambiguous"
+      assert_includes payload.dig("superpowers", "warnings", 0), "openai-curated"
     end
   end
 

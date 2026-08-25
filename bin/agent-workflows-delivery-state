@@ -206,6 +206,7 @@ module AgentWorkflowsDeliveryState
       return {
         "state" => "UNKNOWN",
         "catalog_entries" => [],
+        "warnings" => [],
         "upstream_version" => nil,
         "upstream_version_source" => "not-queried",
         "reason" => "Superpowers marketplace state detection is available only for Codex"
@@ -214,8 +215,12 @@ module AgentWorkflowsDeliveryState
 
     entries = []
     failures = []
-    SUPERPOWERS_MARKETPLACES.each do |marketplace|
-      output, error = codex_marketplace_output(target, marketplace)
+    marketplace_queries = SUPERPOWERS_MARKETPLACES.map do |marketplace|
+      Thread.new(marketplace) do |marketplace_name|
+        [marketplace_name, codex_marketplace_output(target, marketplace_name)]
+      end
+    end
+    marketplace_queries.map(&:value).each do |marketplace, (output, error)|
       if error
         failures << error
         next
@@ -234,12 +239,12 @@ module AgentWorkflowsDeliveryState
 
       row = rows.first
       status_text = row[1]
-      marketplace_revision = status_text == "not installed" ? nil : row[2]
-      root = status_text == "not installed" ? row[2] : row[3]
       unless ["installed, enabled", "installed, disabled", "not installed"].include?(status_text)
         failures << "unrecognized Codex Superpowers status in marketplace #{marketplace}: #{status_text || 'missing'}"
         next
       end
+      marketplace_revision = status_text == "not installed" ? nil : row[2]
+      root = status_text == "not installed" ? row[2] : row[3]
 
       entries << {
         "plugin_id" => plugin_id,
@@ -269,6 +274,7 @@ module AgentWorkflowsDeliveryState
       "state" => state,
       "catalog_entries" => entries,
       "marketplaces_checked" => SUPERPOWERS_MARKETPLACES,
+      "warnings" => failures,
       "upstream_version" => nil,
       "upstream_version_source" => "not-queried",
       "reason" => reason

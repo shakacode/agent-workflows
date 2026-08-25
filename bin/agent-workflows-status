@@ -191,8 +191,8 @@ module AgentWorkflowsStatus
            end
 
     superpowers_state = payload.dig("superpowers", "state")
-    line = "#{line} superpowers=#{superpowers_state}" if superpowers_state
     if superpowers_state
+      line = "#{line} superpowers=#{superpowers_state}"
       catalog_versions = Array(payload.dig("superpowers", "catalog_entries"))
                          .filter_map { |entry| entry["catalog_version"] }
                          .uniq
