@@ -22,6 +22,22 @@ For an interactive human-oriented explanation of a PR, use
 one conceptual change at a time, explains why it exists, and pauses for
 questions before continuing.
 
+## User-Facing Coordination Contract
+
+The current task is the sole user-facing coordinator. Its subagents and lane
+workers are internal workers, not separate chats the user must coordinate.
+External task messages supply evidence or requests without transferring
+ownership, and automations are wake-up mechanisms only. Use
+[User-Facing Coordination](../docs/user-facing-coordination.md) to route existing
+authority, new decisions, and materially separate scope.
+
+For a heartbeat or monitor, a no-change wake produces no user-visible
+notification. Notify only for an HST-v1 actionable material state change: a
+decision or action is required, a target is ready for walkthrough or approval,
+a blocker exhausted its bounded retries and needs intervention, or
+closeout/archive completed; delete the heartbeat when its gate clears or
+becomes durably terminal. The automation never owns the task or next action.
+
 ## Default Operating Model
 
 1. Resolve the work item:
@@ -1622,13 +1638,14 @@ Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; e
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+HST-v1
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
   Original:trusted ad-hoc prompt|n/a
   Goal:one-line outcome
-  Notes:scope/branch/dependency
+  Notes:scope/branch/deps
   Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
@@ -1914,6 +1931,53 @@ Pressure checks:
 - A blocker that publishes an exact future reset time gets one same-thread heartbeat scheduled for that time, because neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that exact published time; use it as the single scheduled mechanism for that blocker and gate; do not start or retain either watcher mode for the same gate, and create or update its durable record before stopping or replacing any existing watcher so no wake is lost. Replay updates that one heartbeat instead of duplicating it, and a terminal state pauses or deletes it. An `UNKNOWN` retry time, a `blocked-user-input` blocker, or an unavailable scheduling capability creates no automation and keeps the exact manual resume instructions.
 - `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
+
+### Human-Status Translation Contract
+
+`HST-v1` is the canonical boundary between internal telemetry and text shown to
+the user. Recurring monitors, Goal-mode wakes, workflow-owned heartbeats, and
+their prompt generators must reference this contract instead of defining local
+notification wording.
+
+- Keep raw coordination phases and lane codes, load samples, process identifiers
+  (PIDs), holder identities, lease details, and other exact machine evidence in
+  lifecycle records. They are internal telemetry by default.
+- Classify the wake before rendering anything for the user. A routine
+  successful, intermediate, repeated, or unchanged wake is silent. If the host
+  requires a payload, return exactly:
+
+  ```text
+  DONT_NOTIFY: No user action is needed. Monitoring will continue.
+  ```
+
+  The payload is a stable transport response, not a user notification; do not
+  add phase names, queue movement, or other telemetry.
+- Send an actionable notification only when a decision or action is required,
+  a target is ready for walkthrough or approval, a blocker exhausted its bounded
+  retries and needs intervention, or closeout/archive completed. Write it in
+  plain English with exactly these labeled parts: `What changed:`, `Action needed:`
+  (use `none` when applicable), and `Next:`. Each part must answer its
+  label directly.
+- Include an internal identifier only when it is necessary for the requested
+  action, and expand it on first use. Never guess an expansion that the evidence
+  does not establish.
+- An explicit technical or diagnostic status request may return exact telemetry.
+  Expand identifiers on first use, retain exact values, and mark unavailable
+  meanings `UNKNOWN` rather than translating them speculatively.
+- At closeout/archive completion, place the three labeled parts before, not
+  instead of, the existing mandatory closeout handoff. Preserve every item of
+  required handoff evidence and exact `Conversation status:` line, which remains
+  the final user-visible line.
+- Treat automation lifecycle as separate from notification rendering. After
+  each refresh, automatically delete an obsolete heartbeat or monitor when its
+  gate clears or becomes durably terminal; retain it on a no-change wake.
+  Cleanup itself does not imply a user notification. The current task remains
+  the owner, and automation output must not imply that ownership changed.
+- For `blocked-user-input`, do not create or retain a heartbeat or monitor;
+  preserve one exact question and manual resume instructions.
+- This boundary changes presentation only. It does not alter machine evidence or
+  any security, ownership, retry, scope, continuous integration (CI), review, or
+  merge gates.
 
 ### Coordination State
 
@@ -2597,6 +2661,7 @@ Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule 
 ```text
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>.
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
+HST-v1
 
 First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
 
@@ -2806,6 +2871,22 @@ Pressure checks:
 - Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the marker grammar above; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`
 
 ### Coordinator Closeout Lane
+
+The current task remains the sole user-facing coordinator through closeout. If
+ownership is ambiguous or the user asks who is working, emit only:
+
+```text
+Current task: <responsibility and scoped outcome>
+Internal workers: <owned implementation, review, QA, or audit roles; or none>
+External tasks: <request or evidence role only; ownership did not transfer; or none>
+Next: <current-task action or exact required decision>
+```
+
+Do not append raw cross-task messages, coordination backend events, heartbeat
+logs, worker transcripts, or claim telemetry. For an approval or readiness
+handoff, report `Technical readiness:`, `Ownership:`, `Repository submission
+policy:`, and `Merge authority:` separately. Act under existing authority; ask
+one exact question only when new authority or a product decision is required.
 
 After workers finish, the coordinator keeps working until each target has a live
 final state. Do not stop at PR creation unless the user explicitly requested
@@ -3096,12 +3177,14 @@ Do not create separate tracking issues for these metrics. Keep them in the PR ev
 
 ## Human Attention Notifications
 
-If the user provides a Slack channel and the Slack connector or app is available, send a concise
-message when the agent needs a maintainer decision, has merge-ready PRs, is blocked, or is about to
-stop a long batch. For private channels, the Slack app or bot must be invited first.
+Apply [`HST-v1`](#human-status-translation-contract) before sending any Slack
+or other user-facing workflow notification. Its actionable categories, message
+shape, identifier expansion, diagnostic exception, and routine-wake silence
+govern; this section adds only channel-specific transport rules.
 
-Notification messages should include only the exact decision or status needed, the PR/issue links,
-and the next action the agent will take after a response. Do not post routine progress noise.
+If the user provides a Slack channel and the Slack connector or app is
+available, send an actionable `HST-v1` notice there with the relevant PR/issue
+links. For private channels, the Slack app or bot must be invited first.
 
 ## Hosted CI Backpressure
 

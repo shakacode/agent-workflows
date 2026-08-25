@@ -103,6 +103,34 @@ GOAL_MODE_AUTOLOAD_NORMATIVE_PHRASES = [
   "inline semantics remain normative when the workflow reference is",
   "missing or cannot autoload"
 ].freeze
+HUMAN_STATUS_VERSION_KEY = "HST-v1"
+HUMAN_STATUS_SKILL_REFERENCE = "Use `HST-v1` from the canonical " \
+                               "[Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) " \
+                               "for every recurring wake or workflow-owned heartbeat."
+HUMAN_STATUS_CONTRACT_PHRASES = [
+  "### Human-Status Translation Contract",
+  "internal telemetry",
+  "successful, intermediate, repeated, or unchanged wake is silent",
+  "DONT_NOTIFY: No user action is needed. Monitoring will continue.",
+  "Send an actionable notification only when a decision or action is required,",
+  "a target is ready for walkthrough or approval, a blocker exhausted its bounded",
+  "retries and needs intervention, or closeout/archive completed.",
+  "What changed:",
+  "Action needed:",
+  "Next:",
+  "explicit technical or diagnostic status",
+  "Expand identifiers on first use, retain exact values, and mark unavailable",
+  "meanings `UNKNOWN` rather than translating them speculatively.",
+  "automatically delete an obsolete heartbeat or monitor when its",
+  "gate clears or becomes durably terminal; retain it on a no-change wake.",
+  "The current task remains",
+  "the owner, and automation output must not imply that ownership changed.",
+  "At closeout/archive completion, place the three labeled parts before, not",
+  "instead of, the existing mandatory closeout handoff.",
+  "required handoff evidence and exact `Conversation status:` line",
+  "security, ownership, retry, scope, continuous integration (CI), review, or",
+  "merge gates"
+].freeze
 MIXED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
   Dispatch implementation: preferred remote@balanced/medium; fallbacks remote@strongest/high; auth dispatch y; pending/active.
   Dispatch qa-review: preferred remote@strongest/high; fallbacks none; auth dispatch n; pending/active.
@@ -126,7 +154,7 @@ GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
     Original:trusted ad-hoc prompt|n/a
     Goal:one-line outcome
-    Notes:scope/branch/dependency
+    Notes:scope/branch/deps
     Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 TEXT
 TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
@@ -176,6 +204,7 @@ TEXT
 CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   CONTINUATION_BATCH_TITLE_LINE,
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
+  HUMAN_STATUS_VERSION_KEY,
   "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
   "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries.",
   "If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear.",
@@ -561,6 +590,7 @@ required_all_prompt_phrases = [
   "trusted-direct adhoc:=>skip",
   "no raw GitHub/override",
   GOAL_MODE_COMPACT_CONTRACT,
+  HUMAN_STATUS_VERSION_KEY,
   "merge_authority:",
   BATCH_SIZE_TARGET_PROMPT_PHRASE,
   COORDINATOR_MODEL_EFFORT_PROMPT_LINE,
@@ -723,6 +753,7 @@ end
   require_occurrence_count(template, GOAL_PROMPT_ITEM_SHAPE, 1, "#{label} complete item shape")
   require_occurrence_count(template, GOAL_PROMPT_BASE_RESOLUTION_LINE, 1, "#{label} base-resolution contract")
   require_occurrence_count(template, GOAL_MODE_COMPACT_CONTRACT, 1, "#{label} compact completion contract")
+  require_occurrence_count(template, HUMAN_STATUS_VERSION_KEY, 1, "#{label} human-status contract reference")
   require_occurrence_count(template, STAGE_DEPENDENCY_PROMPT_LINE, 1, "#{label} stage-dependency contract")
   require_occurrence_count(template, STAGE_DEPENDENCY_SCOPE_LINE, 1, "#{label} stage-dependency scope")
   require_occurrence_count(template, BATCH_QA_PROMPT_LINE, 1, "#{label} Batch QA contract")
@@ -794,6 +825,12 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
+  HUMAN_STATUS_VERSION_KEY,
+  2,
+  "triage generated-prompt and canonical human-status contract references"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
   CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE,
   1,
   "triage generated-prompt complete exactly-once current-wave coverage"
@@ -826,6 +863,24 @@ require_phrases(
   GOAL_MODE_AUTOLOAD_NORMATIVE_PHRASES,
   "canonical workflow compact completion fallback"
 )
+require_phrases(
+  workflow_text,
+  HUMAN_STATUS_CONTRACT_PHRASES,
+  "canonical workflow human-status translation contract"
+)
+require_occurrence_count(
+  extract_section(workflow_text, "## Human Attention Notifications", /^##\s+/),
+  "[`HST-v1`](#human-status-translation-contract)",
+  1,
+  "workflow human-attention notification reference"
+)
+{
+  "skills/plan-pr-batch/SKILL.md" => skill_text,
+  "skills/pr-batch/SKILL.md" => pr_batch_skill_text,
+  "skills/triage/SKILL.md" => triage_skill_text
+}.each do |path, text|
+  require_occurrence_count(text, HUMAN_STATUS_SKILL_REFERENCE, 1, "#{path} human-status contract reference")
+end
 require_phrases(
   triage_skill_text,
   GOAL_MODE_AUTOLOAD_NORMATIVE_PHRASES,
