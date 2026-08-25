@@ -2123,7 +2123,7 @@ test_recovery_capture_supports_system_ruby_2_6() {
 cat > "$fake_bin/ruby" <<'SH'
 #!/bin/sh
 case "$*" in
-  *renameatx_np*|*".agent-workflows-install.json"*)
+  *RecoverySyscalls*|*RecoveryReceiptSyscalls*|*RecoveryRestoreSyscalls*|*RecoveryCleanupSyscalls*|*renameatx_np*)
   /usr/bin/ruby -e 'abort RUBY_VERSION unless RUBY_VERSION.start_with?("2.6.")'
   printf 'system-ruby-2.6\n' >> "$QA_SYSTEM_RUBY_MARKER"
   exec /usr/bin/ruby "$@"
