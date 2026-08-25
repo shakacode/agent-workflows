@@ -157,6 +157,8 @@ module HookSupport
       pid = Process.spawn([argv.first, argv.first], *argv.drop(1), **options)
       err_writer.close
       status, timed_out = await(pid, timeout_seconds, grace_seconds)
+      # Join the drainer before reading its buffer; ensure repeats this only
+      # for cleanup safety.
       finish_stderr_capture(err_reader, err_writer, stderr_drainer)
       {
         ok: !timed_out && status&.success? || false,

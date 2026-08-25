@@ -20,7 +20,7 @@ the typed-event rules in
   operation. If it does not, the adapter records
   `conditional drain transport: unavailable` and skips.
 - That single operation atomically verifies the expected holder, generation or instance, and live lease or heartbeat before appending the drain event.
-- A missing, malformed, or unsafe conditional advertisement is an
+- A malformed or unsafe conditional advertisement is an
   attempted-write failure. Plain append-only event transport is unsupported.
 - An advertised conditional operation runs the exact executable and ordered
   opaque argv with no shell evaluation, under a finite deadline, in its own
