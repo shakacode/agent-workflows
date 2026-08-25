@@ -422,8 +422,8 @@ receipt classifications. They are not statuses returned by
 `dispatcher-capability-preflight`, which emits `selected`, `launch-pending`,
 `replay-already-active`, `blocked-user-input`, `blocked-replacement-fencing`,
 and `invalid-input`; that helper still does not observe the actual route at
-dispatch time. `MODEL_ROUTE_MISMATCH` remains the table outcome, not a helper
-return value.
+dispatch time. A route mismatch remains a disposition-table outcome, not a
+helper return value.
 
 A lane that resolves to `proceed-unmeasured` or `proceed-as-fallback` continues
 unless an independent risk, scope, evidence, or authority gate blocks it. It
