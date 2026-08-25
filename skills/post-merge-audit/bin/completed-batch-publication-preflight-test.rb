@@ -815,7 +815,9 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       "number" => 9_521
     }
     target = input.fetch("expected_targets").first
+    projection_verifier_calls = 0
     projection_verifier = lambda do |source:, target:|
+      projection_verifier_calls += 1
       next unless source == issue && target == input.fetch("expected_targets").first
 
       issue_projection_proof(source:, target:)
@@ -831,6 +833,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     )
 
     assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal 1, projection_verifier_calls
     assert_equal [target], result.fetch("targets")
     lanes = result.dig("snapshot", "coordination", "lanes")
     assert_equal(%w[issue-9521 qa-issue-9521], lanes.map { |lane| lane.fetch("name") })

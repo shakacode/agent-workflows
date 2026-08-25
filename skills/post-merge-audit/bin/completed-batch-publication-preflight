@@ -451,6 +451,16 @@ module CompletedBatchPublicationPreflight
     batch_repo = batch["repo"].to_s
     seen_names = {}
     entries = []
+    target_projection_cache = {}
+    cached_target_projection_verifier = if target_projection_verifier.respond_to?(:call)
+                                          lambda do |source:, target:|
+                                            key = [target_key(source), target_key(target)]
+                                            target_projection_cache.fetch(key) do
+                                              target_projection_cache[key] =
+                                                target_projection_verifier.call(source:, target:)
+                                            end
+                                          end
+                                        end
     lanes.each do |lane|
       name = normalized_known_string(lane["name"])
       if !name || seen_names[name.downcase]
@@ -462,7 +472,7 @@ module CompletedBatchPublicationPreflight
         lane,
         batch_repo,
         expected_targets,
-        target_projection_verifier:
+        target_projection_verifier: cached_target_projection_verifier
       )
       if resolved_targets.empty?
         blockers << "coordination lane #{name || 'UNKNOWN'} target is absent or ambiguous"
