@@ -145,37 +145,62 @@ class CloseLaneOnSessionEndTest < Minitest::Test
   end
 
   def test_timeout_kills_a_term_ignoring_descendant_after_the_leader_exits
-    with_repo(backend: "private-http") do |repo, emitter, _calls|
+    Dir.mktmpdir("session-end-group-test") do |directory|
+      ready_reader, ready_writer = IO.pipe
+      leader_pid = nil
       child_pid = nil
       begin
-        marker = File.join(repo, "late-marker")
-        child_pid_path = File.join(repo, "child.pid")
-        File.write(emitter, <<~RUBY)
-          #!/usr/bin/env ruby
-          child_pid = fork do
-            trap("TERM") { }
-            sleep 1.3
-            File.write(#{marker.inspect}, "late mutation")
-          end
-          File.write(#{child_pid_path.inspect}, child_pid.to_s)
-          trap("TERM") { exit 0 }
-          sleep 30
-        RUBY
+        marker = File.join(directory, "late-marker")
+        leader_pid = fork do
+          Process.setpgrp
+          ready_reader.close
+          trap("TERM") { exit! 0 }
 
-        status, stderr = run_hook(repo, advertisement: [emitter, "event"],
-                                        env: { "AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS" => "0.5" })
-        child_pid = Integer(File.read(child_pid_path))
+          fork do
+            trap("TERM") { nil }
+            ready_writer.puts(Process.pid)
+            ready_writer.close
+            sleep 1.3
+            File.write(marker, "late mutation")
+            exit! 0
+          end
+          ready_writer.close
+          sleep 30
+        end
+        ready_writer.close
+
+        ready_line = Timeout.timeout(5) { ready_reader.gets }
+        refute_nil ready_line, "the descendant must report ready before the timeout starts"
+        child_pid = Integer(ready_line)
+        assert Process.kill(0, child_pid), "the TERM-ignoring descendant must be running"
+
+        status, timed_out = HookSupport.await(leader_pid, 0, 0.5)
+        leader_pid = nil
         sleep 0.9
 
-        assert_equal 0, status.exitstatus
-        assert_includes stderr, "UNKNOWN: drain event write timed out"
+        assert_nil status
+        assert timed_out
         refute File.exist?(marker), "a TERM-ignoring descendant must not mutate after the hook returns"
         assert_raises(Errno::ESRCH) { Process.kill(0, child_pid) }
       ensure
+        ready_reader.close unless ready_reader.closed?
+        ready_writer.close unless ready_writer.closed?
         begin
           Process.kill("KILL", child_pid) if child_pid
         rescue Errno::ESRCH
           nil
+        end
+        if leader_pid
+          begin
+            Process.kill("KILL", -leader_pid)
+          rescue Errno::ESRCH
+            nil
+          end
+          begin
+            Process.wait(leader_pid)
+          rescue Errno::ECHILD
+            nil
+          end
         end
       end
     end
