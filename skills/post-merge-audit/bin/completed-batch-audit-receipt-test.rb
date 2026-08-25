@@ -3669,7 +3669,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           exit 1 if ENV["FAKE_GH_MODE"] == "post-nonzero"
           if ENV["FAKE_GH_MODE"] == "post-timeout"
             File.write(ENV.fetch("FAKE_GH_PID"), Process.pid.to_s)
-            sleep 2
+            sleep 5
             File.write(ENV.fetch("FAKE_GH_LATE_SIDE_EFFECT"), "completed")
           end
           if ENV["FAKE_GH_MODE"] == "post-invalid-json"
@@ -3729,7 +3729,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "FAKE_COORDINATION_STATUS" => JSON.generate(preflight.dig("source_input", "coordination_status")),
         "FAKE_WORKFLOW_CONFIG" => workflow_config,
         "COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT" => File.join(directory, "publication-preflight.json"),
-        "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "1" : nil
+        "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "3" : nil
       }
       File.write(env.fetch("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT"), JSON.generate(preflight))
       yield env, directory
