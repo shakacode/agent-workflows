@@ -1,0 +1,158 @@
+{
+  "schema_version": "human-status-translation-replay-v1",
+  "stable_dont_notify_payload": "DONT_NOTIFY: No user action is needed. Monitoring will continue.",
+  "automation_lifecycle": {
+    "no_change": "retain_without_user_notification",
+    "gate_cleared": "delete_obsolete_automation",
+    "durably_terminal": "delete_obsolete_automation",
+    "blocked_user_input": "no_automation_exact_question_manual_resume",
+    "owner": "current_task"
+  },
+  "cases": [
+    {
+      "id": "routine-success-opaque-telemetry",
+      "input": {
+        "kind": "routine_success",
+        "host_requires_payload": false,
+        "telemetry": "functional B2 completed; raw load 4.82 8.13 8.94; PID 4312; holder aw-runner-7; lease heartbeat-385-9"
+      },
+      "expected_user_output": null
+    },
+    {
+      "id": "routine-success-host-payload",
+      "input": {
+        "kind": "routine_success",
+        "host_requires_payload": true,
+        "telemetry": "functional B2 completed; raw load 4.82 8.13 8.94; PID 4312; holder aw-runner-7; lease heartbeat-385-9"
+      },
+      "expected_user_output": "DONT_NOTIFY: No user action is needed. Monitoring will continue."
+    },
+    {
+      "id": "intermediate-b3",
+      "input": {
+        "kind": "intermediate",
+        "host_requires_payload": false,
+        "telemetry": "B3 queued"
+      },
+      "expected_user_output": null
+    },
+    {
+      "id": "intermediate-b-plus-c",
+      "input": {
+        "kind": "intermediate",
+        "host_requires_payload": false,
+        "telemetry": "B+C replay active"
+      },
+      "expected_user_output": null
+    },
+    {
+      "id": "intermediate-c6",
+      "input": {
+        "kind": "intermediate",
+        "host_requires_payload": false,
+        "telemetry": "c6 checkpoint reached"
+      },
+      "expected_user_output": null
+    },
+    {
+      "id": "repeated-unchanged",
+      "input": {
+        "kind": "unchanged",
+        "host_requires_payload": false,
+        "repeat_count": 3,
+        "telemetry": "B3 still queued; holder aw-runner-7; lease heartbeat-385-9"
+      },
+      "expected_user_output": null
+    },
+    {
+      "id": "blocked-user-input-no-automation",
+      "input": {
+        "kind": "blocked_user_input",
+        "automation_action": "none",
+        "what_changed": "A current-scope decision requires your answer before work can continue.",
+        "exact_question": "Do you approve the compatibility change for this exact diff?",
+        "manual_resume": "Reply with the decision and this task will resume from the preserved gate."
+      },
+      "expected_user_output": "What changed: A current-scope decision requires your answer before work can continue. Action needed: Do you approve the compatibility change for this exact diff? Next: Reply with the decision and this task will resume from the preserved gate."
+    },
+    {
+      "id": "actionable-decision",
+      "input": {
+        "kind": "action_required",
+        "trigger": "decision_or_action_required",
+        "what_changed": "The implementation reached a compatibility choice that cannot be made safely without you.",
+        "action_needed": "Choose whether to preserve the legacy behavior.",
+        "next": "After you decide, implementation will resume with that choice.",
+        "telemetry": "functional B2 stopped before B3; holder aw-runner-7"
+      },
+      "expected_user_output": "What changed: The implementation reached a compatibility choice that cannot be made safely without you. Action needed: Choose whether to preserve the legacy behavior. Next: After you decide, implementation will resume with that choice."
+    },
+    {
+      "id": "actionable-walkthrough-or-approval-ready",
+      "input": {
+        "kind": "action_required",
+        "trigger": "walkthrough_or_approval_ready",
+        "what_changed": "The target passed its gates and is ready for walkthrough or approval.",
+        "action_needed": "Review the exact diff and approve it if it matches your intent.",
+        "next": "After approval, the coordinator will refresh the current head and continue closeout."
+      },
+      "expected_user_output": "What changed: The target passed its gates and is ready for walkthrough or approval. Action needed: Review the exact diff and approve it if it matches your intent. Next: After approval, the coordinator will refresh the current head and continue closeout."
+    },
+    {
+      "id": "actionable-bounded-retries-exhausted",
+      "input": {
+        "kind": "action_required",
+        "trigger": "bounded_retries_exhausted",
+        "what_changed": "The blocker remained after every bounded retry and now needs intervention.",
+        "action_needed": "Resolve the external check failure or provide direction.",
+        "next": "After intervention, the coordinator will refresh the evidence and resume closeout."
+      },
+      "expected_user_output": "What changed: The blocker remained after every bounded retry and now needs intervention. Action needed: Resolve the external check failure or provide direction. Next: After intervention, the coordinator will refresh the evidence and resume closeout."
+    },
+    {
+      "id": "actionable-closeout-archive-completed",
+      "input": {
+        "kind": "action_required",
+        "trigger": "closeout_or_archive_completed",
+        "what_changed": "Closeout and archive preparation completed.",
+        "action_needed": "none.",
+        "next": "You may archive this conversation.",
+        "existing_closeout_handoff": "PR: https://github.com/acme/widgets/pull/42 at head 0123456789abcdef0123456789abcdef01234567.\nValidation: focused and full gates passed.\nBlockers: none.\nConversation status: Ready for archiving."
+      },
+      "expected_user_output": "What changed: Closeout and archive preparation completed. Action needed: none. Next: You may archive this conversation.\n\nPR: https://github.com/acme/widgets/pull/42 at head 0123456789abcdef0123456789abcdef01234567.\nValidation: focused and full gates passed.\nBlockers: none.\nConversation status: Ready for archiving."
+    },
+    {
+      "id": "explicit-diagnostics",
+      "input": {
+        "kind": "explicit_diagnostic",
+        "what_changed": "You requested the exact coordination evidence.",
+        "action_needed": "none.",
+        "next": "Monitoring will continue under the existing gates.",
+        "expanded_telemetry": [
+          "functional B2 (functional workflow phase B2)",
+          "B3 (workflow phase B3)",
+          "B+C (combined workflow phases B and C)",
+          "c6 (coordination checkpoint 6)",
+          "raw load 4.82/8.13/8.94 (one-, five-, and fifteen-minute system load averages)",
+          "PID 4312 (process identifier 4312)",
+          "holder aw-runner-7 (coordination claim holder aw-runner-7)",
+          "lease heartbeat-385-9 (coordination lease heartbeat-385-9)"
+        ]
+      },
+      "expected_user_output": "What changed: You requested the exact coordination evidence. Action needed: none. Next: Monitoring will continue under the existing gates. Diagnostic details: functional B2 (functional workflow phase B2); B3 (workflow phase B3); B+C (combined workflow phases B and C); c6 (coordination checkpoint 6); raw load 4.82/8.13/8.94 (one-, five-, and fifteen-minute system load averages); PID 4312 (process identifier 4312); holder aw-runner-7 (coordination claim holder aw-runner-7); lease heartbeat-385-9 (coordination lease heartbeat-385-9)."
+    },
+    {
+      "id": "explicit-diagnostic-unknown-meaning",
+      "input": {
+        "kind": "explicit_diagnostic",
+        "what_changed": "You requested an internal phase whose meaning is unavailable in the evidence.",
+        "action_needed": "none.",
+        "next": "The exact value will remain in diagnostics without a speculative translation.",
+        "expanded_telemetry": [
+          "B3 (internal workflow phase code; meaning UNKNOWN)"
+        ]
+      },
+      "expected_user_output": "What changed: You requested an internal phase whose meaning is unavailable in the evidence. Action needed: none. Next: The exact value will remain in diagnostics without a speculative translation. Diagnostic details: B3 (internal workflow phase code; meaning UNKNOWN)."
+    }
+  ]
+}
