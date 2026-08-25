@@ -1083,11 +1083,19 @@ class PrCiReadinessCliTest < Minitest::Test
         end
         prepared
       end
+      suite_status = runs_for_suite.any? { |row| row["status"] != "completed" } ? "in_progress" : "completed"
+      suite_conclusion = if suite_status == "completed"
+                           runs_for_suite.filter_map { |row| row["conclusion"] }
+                                         .find { |value| !%w[neutral skipped success].include?(value) } || "success"
+                         end
       suite = {
         "id" => suite_id,
         "created_at" => "2026-08-25T#{format('%02d', 10 + index)}:00:00Z",
         "head_sha" => suite_head,
-        "app" => app
+        "app" => app,
+        "status" => suite_status,
+        "conclusion" => suite_conclusion,
+        "latest_check_runs_count" => runs_for_suite.length
       }
       [suite, runs_for_suite]
     end
@@ -3256,7 +3264,16 @@ class PrCiReadinessCliTest < Minitest::Test
             { "id" => 10, "created_at" => "2026-08-25T10:00:00Z" },
             { "id" => 20, "created_at" => "2026-08-25T12:00:00Z" }
           ].map do |suite|
-            suite.merge("head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" })
+            latest_conclusion_for_suite = if suite.fetch("id") == 10
+                                            latest_conclusion == "success" ? "failure" : "success"
+                                          else
+                                            latest_conclusion
+                                          end
+            suite.merge(
+              "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+              "status" => "completed", "conclusion" => latest_conclusion_for_suite,
+              "latest_check_runs_count" => 1
+            )
           end
         else
           suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
@@ -3296,7 +3313,11 @@ class PrCiReadinessCliTest < Minitest::Test
             { "id" => 10, "created_at" => "2026-08-25T10:00:00Z" },
             { "id" => 20, "created_at" => second_created_at }
           ].map do |suite|
-            suite.merge("head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" })
+            suite.merge(
+              "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+              "status" => "completed", "conclusion" => "success",
+              "latest_check_runs_count" => 1
+            )
           end
         else
           suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
@@ -3315,6 +3336,31 @@ class PrCiReadinessCliTest < Minitest::Test
       refute complete, second_created_at.inspect
       assert_empty rows, second_created_at.inspect
       assert_match(/chronology|created_at/, error, second_created_at.inspect)
+    end
+  end
+
+  def test_empty_nonterminal_or_malformed_check_suite_is_not_complete
+    head = "a" * 40
+    %w[queued requested in_progress waiting pending UNKNOWN].each do |suite_status|
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          [{
+            "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+            "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+            "status" => suite_status, "conclusion" => nil, "latest_check_runs_count" => 0
+          }]
+        else
+          []
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      refute complete, suite_status
+      assert_empty rows, suite_status
+      assert_match(/check suite/, error, suite_status)
     end
   end
 

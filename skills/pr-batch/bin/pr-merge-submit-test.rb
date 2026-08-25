@@ -1666,6 +1666,41 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  def test_empty_or_unmaterialized_check_suite_blocks_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    transitions = %i[
+      empty_suite_queued empty_suite_requested empty_suite_in_progress
+      empty_suite_waiting empty_suite_pending empty_suite_unknown
+      empty_suite_malformed_conclusion empty_suite_malformed_count
+      empty_suite_count_mismatch empty_suite_completed
+    ]
+    routes.each do |mode, (merge_submission, mutation)|
+      ready, ready_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        ci_transition: :success
+      )
+      assert ready.fetch(:status).success?, "#{mode}/completed-ready: #{ready.fetch(:stderr)}"
+      assert_ci_refresh_immediately_precedes_mutation(ready_log, mutation)
+
+      transitions.each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+          ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
   def test_sole_successful_replacement_is_accepted_with_final_ordering_on_every_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
@@ -3061,17 +3096,9 @@ class PrMergeSubmitTest < Minitest::Test
                                   when :unrelated_success
                                     [[held, unrelated_success], 2]
                                   when :historical_then_latest_success
-                                    if check_inventory_endpoint.include?("filter=latest")
-                                      [[successful_replacement], 1]
-                                    else
-                                      [[held, successful_replacement], 2]
-                                    end
+                                    [[successful_replacement], 1]
                                   when :historical_then_latest_failure
-                                    if check_inventory_endpoint.include?("filter=latest")
-                                      [[failed_replacement], 1]
-                                    else
-                                      [[held, failed_replacement], 2]
-                                    end
+                                    [[failed_replacement], 1]
                                   when :later_lower_id_success
                                     [[earlier_higher_id_failure, later_lower_id_success], 2]
                                   when :later_lower_id_failure
@@ -3136,7 +3163,54 @@ class PrMergeSubmitTest < Minitest::Test
             "head_sha" => #{current_check_head.inspect},
             "app" => { "id" => slug == "circleci-checks" ? 901 : 902, "slug" => slug } }
         end
-        suites = check_runs.map { |row| suite_for_row.call(row) }.uniq
+        suites = check_runs.group_by { |row| suite_for_row.call(row) }.map do |suite, suite_rows|
+          suite_status = suite_rows.any? { |row| row["status"] != "completed" } ? "in_progress" : "completed"
+          suite_conclusion = if suite_status == "completed"
+                               suite_rows.filter_map { |row| row["conclusion"] }
+                                         .find { |value| !%w[neutral skipped success].include?(value) } || "success"
+                             end
+          suite.merge(
+            "status" => suite_status,
+            "conclusion" => suite_conclusion,
+            "latest_check_runs_count" => if %i[pagination_success incomplete_inventory].include?(transition)
+                                           total_count
+                                         else
+                                           suite_rows.length
+                                         end
+          )
+        end
+        empty_suite_status = {
+          empty_suite_queued: "queued",
+          empty_suite_requested: "requested",
+          empty_suite_in_progress: "in_progress",
+          empty_suite_waiting: "waiting",
+          empty_suite_pending: "pending",
+          empty_suite_unknown: "UNKNOWN",
+          empty_suite_malformed_conclusion: "queued",
+          empty_suite_malformed_count: "completed",
+          empty_suite_count_mismatch: "completed",
+          empty_suite_completed: "completed"
+        }[transition]
+        if empty_suite_status
+          suites << {
+            "id" => 899, "created_at" => "2026-08-25T12:30:00Z",
+            "head_sha" => #{current_check_head.inspect},
+            "app" => { "id" => 999, "slug" => "empty-suite-app" },
+            "status" => empty_suite_status,
+            "conclusion" => if transition == :empty_suite_malformed_conclusion
+                              "success"
+                            elsif empty_suite_status == "completed"
+                              "success"
+                            end,
+            "latest_check_runs_count" => if transition == :empty_suite_malformed_count
+                                            "1"
+                                          elsif transition == :empty_suite_count_mismatch
+                                            1
+                                          else
+                                            0
+                                          end
+          }
+        end
         if suite_inventory_endpoint
           puts JSON.generate("total_count" => suites.length, "check_suites" => suites)
           exit 0

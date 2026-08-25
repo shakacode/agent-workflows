@@ -452,6 +452,7 @@ module PrCiReadiness
     CHECK_RUN_CONCLUSIONS = %w[
       action_required cancelled failure neutral success skipped stale startup_failure timed_out
     ].freeze
+    CHECK_SUITE_READY_CONCLUSIONS = %w[neutral skipped success].freeze
 
     def initialize(command_runner: nil)
       @command_runner = command_runner
@@ -874,16 +875,21 @@ module PrCiReadiness
       )
       suite_ids = {}
       rows = suites.flat_map do |suite|
-        suite_id, suite_app, suite_created_at = validate_check_suite_identity!(suite, head_sha)
+        suite_id, suite_app, suite_created_at, suite_status, suite_conclusion, latest_count =
+          validate_check_suite_identity!(suite, head_sha)
         raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
 
         suite_ids[suite_id] = true
-        fetch_paginated_collection(
+        suite_rows = fetch_paginated_collection(
           "repos/#{repo}/check-suites/#{suite_id}/check-runs?filter=latest&per_page=100&page=%<page>s",
           "check_runs"
         ).map do |row|
-          [normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:), suite_created_at]
+          normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
         end
+        validate_check_suite_materialization!(
+          suite_rows, latest_count:, status: suite_status, conclusion: suite_conclusion
+        )
+        suite_rows.map { |row| [row, suite_created_at] }
       end
       duplicate_ids = rows.group_by { |row, _created_at| row["id"] }
                           .any? { |_id, matches| matches.length > 1 }
@@ -920,8 +926,43 @@ module PrCiReadiness
       end
 
       created_at = strict_rfc3339_time!(suite["created_at"], "check suite created_at")
+      status = suite["status"]
+      conclusion = suite["conclusion"]
+      latest_count = suite["latest_check_runs_count"]
+      valid_phase = CHECK_RUN_STATUSES.include?(status) && suite.key?("conclusion") &&
+                    if status == "completed"
+                      CHECK_RUN_CONCLUSIONS.include?(conclusion)
+                    else
+                      conclusion.nil?
+                    end
+      unless valid_phase && latest_count.is_a?(Integer) && latest_count >= 0
+        raise Error, "check suite phase or latest-run count was malformed or unknown"
+      end
 
-      [suite_id, app, created_at]
+      [suite_id, app, created_at, status, conclusion, latest_count]
+    end
+
+    def validate_check_suite_materialization!(rows, latest_count:, status:, conclusion:)
+      if latest_count.zero?
+        raise Error, "check suite latest-run inventory was empty and cannot prove readiness"
+      end
+      unless rows.length == latest_count
+        raise Error, "check suite latest-run count did not match materialized rows"
+      end
+
+      if status == "completed"
+        raise Error, "completed check suite contained a nonterminal latest run" unless
+          rows.all? { |row| row["status"] == "completed" }
+
+        row_states = rows.map { |row| PrCiReadiness.evidence_row_state(row) }
+        conclusion_ready = CHECK_SUITE_READY_CONCLUSIONS.include?(conclusion)
+        rows_ready = row_states.all? { |state| state == "READY" }
+        unless conclusion_ready == rows_ready
+          raise Error, "completed check suite conclusion contradicted its latest runs"
+        end
+      elsif rows.all? { |row| row["status"] == "completed" }
+        raise Error, "nonterminal check suite contained only completed latest runs"
+      end
     end
 
     def strict_rfc3339_time!(value, context)
