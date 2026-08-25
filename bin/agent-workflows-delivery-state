@@ -244,7 +244,7 @@ module AgentWorkflowsDeliveryState
         next
       end
       installed_version = status_text == "not installed" ? nil : row[2]
-      root = status_text == "not installed" ? row[2] : row[3]
+      root = status_text == "not installed" ? row.last : row[3]
 
       entries << {
         "plugin_id" => plugin_id,

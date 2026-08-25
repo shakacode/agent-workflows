@@ -42,7 +42,12 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
                 when "installed-disabled"
                   "\#{plugin_id}  installed, disabled  host-version  \#{catalog_root}"
                 when "available-not-installed"
-                  "\#{plugin_id}  not installed                     \#{catalog_root}"
+                  version = ENV["QA_SUPERPOWERS_NOT_INSTALLED_VERSION"]
+                  if version.to_s.empty?
+                    "\#{plugin_id}  not installed                     \#{catalog_root}"
+                  else
+                    "\#{plugin_id}  not installed  \#{version}  \#{catalog_root}"
+                  end
                 when "UNKNOWN"
                   warn "catalog unavailable"
                   exit 2
@@ -267,6 +272,14 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_not_installed_row_with_blank_version_reads_catalog_metadata_from_path
+    assert_not_installed_catalog_metadata({})
+  end
+
+  def test_not_installed_row_with_version_reads_catalog_metadata_from_final_path_column
+    assert_not_installed_catalog_metadata("QA_SUPERPOWERS_NOT_INSTALLED_VERSION" => "catalog-version")
+  end
+
   def test_native_and_superpowers_queries_share_the_workflow_timeout_window
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       target = File.join(tmp, "codex")
@@ -291,6 +304,27 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert_equal "UNKNOWN", payload.dig("superpowers", "state")
       assert_operator elapsed, :<, AgentDoctor::TimeoutBudget::WORKFLOW_STATUS_DEFAULT,
                       "delivery-state check took #{elapsed.round(3)}s"
+    end
+  end
+
+  def assert_not_installed_catalog_metadata(environment)
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      write_codex_native_state(target)
+
+      out, err, status = run_state_with_env(
+        environment.merge("QA_SUPERPOWERS_STATE" => "available-not-installed"),
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+      entry = payload.dig("superpowers", "catalog_entries", 0)
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "available-not-installed", payload.dig("superpowers", "state")
+      assert_nil entry.fetch("installed_version")
+      assert_equal "5.1.3", entry.fetch("catalog_version")
+      assert_equal "https://github.com/obra/superpowers", entry.fetch("upstream_repository")
     end
   end
 
