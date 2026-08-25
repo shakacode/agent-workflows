@@ -56,7 +56,7 @@ Non-command policy lives in `.agents/agent-workflow.yml`. Required keys are:
 ```yaml
 base_branch: main
 follow_up_prefix: "Follow-up:"
-review_gate: "..."
+review_gate: "n/a"
 approval_exempt: "..."
 coordination_backend: "..."
 changelog: "..."
@@ -69,6 +69,37 @@ ci_change_detector: "n/a"
 
 Use `n/a` for unavailable policy. Add repo-specific keys such as
 `secret_redaction_patterns` when they are part of that repo's policy.
+
+`review_gate` is either the exact string `n/a` or a closed executable version 1
+mapping. Legacy prose is not a gate and is not migrated from `AGENTS.md`.
+Configured reviewers name their exact current-head check and every GitHub login
+and artifact kind that can attest the review:
+
+```yaml
+review_gate:
+  version: 1
+  reviewers:
+    - id: claude
+      check_name: claude-review
+      artifact:
+        actors: [claude, "claude[bot]"]
+        kinds: [issue_comment, pull_request_review, review_thread]
+  require_current_head: true
+  artifact_settlement:
+    required: true
+    quiet_period_seconds: 30
+  thread_disposition:
+    required: true
+    marker: "configured-review-disposition:"
+  failure_policy: block
+  fallback:
+    mode: disabled
+```
+
+The gate blocks missing, stale, pending, failed, unsettled, or unknown evidence
+and unresolved current-head review threads. A fallback must instead use
+`mode: named_attested_check` with explicit `triggers` and a complete `reviewer`
+mapping; provider failure alone never implies readiness.
 
 Repo-local trust lives in `.agents/trusted-github-actors.yml` and follows the
 same resolution order as `pr-security-preflight`: `--trust-config`, repo-local

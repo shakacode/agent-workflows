@@ -10,6 +10,7 @@ review_gate:
       artifact:
         actors:
           - claude
+          - claude[bot]
         kinds:
           - issue_comment
           - pull_request_review

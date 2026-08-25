@@ -111,7 +111,6 @@ module PushDownstream
     "Follow-up issue prefix" => "follow_up_prefix",
     "Changelog" => "changelog",
     "Merge ledger" => "merge_ledger",
-    "Review gate" => "review_gate",
     "Approval-exempt change categories" => "approval_exempt",
     "Coordination backend" => "coordination_backend"
   }.freeze

@@ -19,10 +19,56 @@ class ConfiguredReviewGateTest < Minitest::Test
   HEAD_SHA = "a" * 40
   NOW = Time.iso8601("2026-08-25T12:00:00Z")
   PR4701_FIXTURE = File.expand_path("fixtures/configured-review-pr4701.json", __dir__)
+  SOURCE_POLICY = File.expand_path("../../../.agents/agent-workflow.yml", __dir__)
 
   FakeClient = Struct.new(:snapshots) do
     def collect
       snapshots.length > 1 ? snapshots.shift : snapshots.first
+    end
+  end
+
+  class FakeGitHubApiClient < ConfiguredReviewGate::GitHubClient
+    def initialize(policy:, threads:)
+      @host = HOST
+      @repo = REPO
+      @pr = PR
+      @policy = policy
+      @threads = threads
+    end
+
+    private
+
+    def api_json(*arguments)
+      endpoint = arguments.find { |argument| argument.start_with?("repos/") }
+      return pull_response if endpoint == "repos/#{REPO}/pulls/#{PR}"
+      return [{ "check_runs" => [] }] if endpoint&.include?("/check-runs?")
+      return [[]] if endpoint&.include?("/issues/#{PR}/comments?")
+      return [[]] if endpoint&.include?("/pulls/#{PR}/reviews?")
+      return graphql_response if arguments.include?("graphql")
+
+      raise "unexpected fake GitHub API request: #{arguments.inspect}"
+    end
+
+    def pull_response
+      {
+        "base" => { "ref" => "main", "sha" => BASE_SHA },
+        "head" => { "sha" => HEAD_SHA }
+      }
+    end
+
+    def graphql_response
+      [{
+        "data" => {
+          "repository" => {
+            "pullRequest" => {
+              "reviewThreads" => {
+                "nodes" => @threads,
+                "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+              }
+            }
+          }
+        }
+      }]
     end
   end
 
@@ -59,7 +105,7 @@ class ConfiguredReviewGateTest < Minitest::Test
           "id" => "claude",
           "check_name" => "claude-review",
           "artifact" => {
-            "actors" => ["claude"],
+            "actors" => %w[claude claude[bot]],
             "kinds" => %w[issue_comment pull_request_review review_thread]
           }
         }
@@ -168,6 +214,99 @@ class ConfiguredReviewGateTest < Minitest::Test
       assert_includes result.fetch("blockers").map { |blocker| blocker.fetch("code") }, blocker_code, label
       refute result.key?("receipt"), label
     end
+  end
+
+  def test_source_policy_names_each_live_claude_artifact_login
+    source_policy = YAML.safe_load(File.read(SOURCE_POLICY), aliases: false)
+
+    assert_equal %w[claude claude[bot]],
+                 source_policy.dig("review_gate", "reviewers", 0, "artifact", "actors")
+  end
+
+  def test_queued_current_head_duplicate_without_timestamps_blocks_success_and_replay
+    successful = check
+    queued = check(status: "queued", conclusion: nil).merge(
+      "started_at" => nil,
+      "completed_at" => nil,
+      "details_url" => "https://github.com/example/widgets/actions/runs/2"
+    )
+    current = live_snapshot("checks" => [successful, queued], "artifacts" => [artifact])
+
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: current,
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-pending", result.dig("blockers", 0, "code")
+    assert_equal "https://github.com/example/widgets/actions/runs/2",
+                 result.dig("blockers", 0, "details_url")
+
+    initial = live_snapshot("checks" => [successful], "artifacts" => [artifact])
+    receipt = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: initial,
+      settled: true,
+      now: NOW
+    ).fetch("receipt")
+    replay = ConfiguredReviewGate.replay(
+      receipt: receipt,
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: current.merge("collected_at" => (NOW + 20).iso8601),
+      now: NOW + 20
+    )
+
+    assert_equal "NOT_READY", replay.fetch("verdict")
+    assert_equal "configured-review-pending", replay.dig("blockers", 0, "code")
+  end
+
+  def test_live_collector_materializes_only_current_head_configured_review_thread_artifacts
+    raw_thread = lambda do |id:, actor:, head_sha:, resolved: false|
+      {
+        "id" => id,
+        "isResolved" => resolved,
+        "isOutdated" => false,
+        "comments" => {
+          "nodes" => [{
+            "id" => "#{id}-root",
+            "url" => "https://github.com/example/widgets/pull/42#discussion_r#{id}",
+            "body" => "Please fix this.",
+            "createdAt" => "2026-08-25T11:59:10Z",
+            "author" => { "login" => actor },
+            "authorAssociation" => "CONTRIBUTOR",
+            "commit" => { "oid" => head_sha },
+            "originalCommit" => { "oid" => head_sha },
+            "replyTo" => nil
+          }],
+          "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+        }
+      }
+    end
+    client = FakeGitHubApiClient.new(
+      policy: policy,
+      threads: [
+        raw_thread.call(id: "current", actor: "claude", head_sha: HEAD_SHA, resolved: true),
+        raw_thread.call(id: "stale", actor: "claude", head_sha: "c" * 40),
+        raw_thread.call(id: "other", actor: "human-reviewer", head_sha: HEAD_SHA)
+      ]
+    )
+
+    collected = client.collect
+
+    assert_equal true, collected.fetch("complete")
+    assert_equal [{
+      "id" => "current-root",
+      "kind" => "review_thread",
+      "actor" => "claude",
+      "created_at" => "2026-08-25T11:59:10Z",
+      "url" => "https://github.com/example/widgets/pull/42#discussion_rcurrent",
+      "head_sha" => HEAD_SHA
+    }], collected.fetch("artifacts")
   end
 
   def test_success_requires_a_current_head_artifact_and_a_settled_snapshot

@@ -22,7 +22,7 @@ module AgentWorkflowSeamDoctorTestHelpers
         "id" => "claude",
         "check_name" => "claude-review",
         "artifact" => {
-          "actors" => ["claude"],
+          "actors" => %w[claude claude[bot]],
           "kinds" => %w[issue_comment pull_request_review review_thread]
         }
       }

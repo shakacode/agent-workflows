@@ -101,6 +101,18 @@ script means that capability is n/a in that repo.
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
 
+`review_gate` is not free-form policy text. It must be exactly `n/a` or a
+closed version 1 mapping with a nonempty `reviewers` list, exact check names,
+artifact actors and kinds, `require_current_head: true`, required artifact
+settlement, required thread dispositions, `failure_policy: block`, and an
+explicit fallback mode. Actor values are exact GitHub logins, so an integration
+that emits both `claude` inline and `claude[bot]` in reviews or issue comments
+must list both. `named_attested_check` fallbacks must name their allowed failure
+triggers and a complete fallback reviewer; disabled fallback is the portable
+default. The configured-review helper reads this mapping from the trusted base
+and binds its receipt to host, repository, PR, base, head, and the settled
+artifact snapshot.
+
 `hosted_qa_gate` is an optional closed mapping during first-phase adoption.
 Omission or the exact string `n/a` means that no hosted runtime gate is
 configured. A mapping has exactly these fields:

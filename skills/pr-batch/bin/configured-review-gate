@@ -163,7 +163,9 @@ module ConfiguredReviewGate
       }
       checks = collect_checks(bindings.fetch("head_sha"))
       artifacts = collect_artifacts(bindings.fetch("head_sha"), checks)
-      threads, threads_complete = collect_threads
+      threads, threads_complete, thread_artifacts = collect_threads(bindings.fetch("head_sha"))
+      artifacts.concat(thread_artifacts)
+      artifacts.sort_by! { |artifact| [artifact["kind"], artifact["id"].to_s] }
       {
         "contract" => SNAPSHOT_CONTRACT,
         "version" => VERSION,
@@ -204,14 +206,14 @@ module ConfiguredReviewGate
       reviews = paginated_array("repos/#{@repo}/pulls/#{@pr}/reviews?per_page=100")
       artifacts = issue_comments.filter_map do |comment|
         actor = comment.dig("user", "login")
-        next unless artifact_actor?(actor)
+        next unless artifact_configured?(actor, "issue_comment")
 
         inferred_head = artifact_after_matching_check?(actor, comment["created_at"], checks) ? head_sha : nil
         artifact_record(comment["id"], "issue_comment", actor, comment["created_at"], comment["html_url"], inferred_head)
       end
       artifacts.concat(reviews.filter_map do |review|
         actor = review.dig("user", "login")
-        next unless artifact_actor?(actor)
+        next unless artifact_configured?(actor, "pull_request_review")
 
         artifact_record(
           review["id"], "pull_request_review", actor, review["submitted_at"], review["html_url"], review["commit_id"]
@@ -220,7 +222,7 @@ module ConfiguredReviewGate
       artifacts.sort_by { |artifact| [artifact["kind"], artifact["id"].to_s] }
     end
 
-    def collect_threads
+    def collect_threads(head_sha)
       owner, name = @repo.split("/", 2)
       pages = api_json(
         "graphql", "--paginate", "--slurp",
@@ -228,6 +230,7 @@ module ConfiguredReviewGate
         "-f", "owner=#{owner}", "-f", "name=#{name}", "-F", "number=#{@pr}"
       )
       complete = true
+      artifacts = []
       threads = Array(pages).flat_map do |page|
         connection = page.dig("data", "repository", "pullRequest", "reviewThreads")
         raise Error, "review-thread query returned no pull request" unless connection.is_a?(Hash)
@@ -251,16 +254,27 @@ module ConfiguredReviewGate
           }
         end
         root = Array(comments_connection["nodes"]).first || {}
+        root_head_sha = root.dig("commit", "oid") || root.dig("originalCommit", "oid")
+        root_actor = root.dig("author", "login")
+        if artifact_configured?(root_actor, "review_thread") &&
+           root_head_sha.to_s.casecmp?(head_sha.to_s)
+          artifacts << artifact_record(
+            root["id"], "review_thread", root_actor, root["createdAt"], root["url"], root_head_sha
+          )
+        end
         {
           "id" => thread["id"],
           "url" => root["url"],
           "resolved" => thread["isResolved"],
           "outdated" => thread["isOutdated"],
-          "root_head_sha" => root.dig("commit", "oid") || root.dig("originalCommit", "oid"),
+          "root_head_sha" => root_head_sha,
           "comments" => comments
         }
       end
-      [threads.uniq { |thread| thread["id"] }.sort_by { |thread| thread["id"].to_s }, complete]
+      normalized_threads = threads.uniq { |thread| thread["id"] }.sort_by { |thread| thread["id"].to_s }
+      normalized_artifacts = artifacts.uniq { |artifact| artifact["id"] }
+                                      .sort_by { |artifact| artifact["id"].to_s }
+      [normalized_threads, complete, normalized_artifacts]
     end
 
     def artifact_record(id, kind, actor, created_at, url, head_sha)
@@ -282,8 +296,12 @@ module ConfiguredReviewGate
       fallback ? reviewers + [fallback] : reviewers
     end
 
-    def artifact_actor?(actor)
-      all_reviewers.any? { |reviewer| Array(reviewer.dig("artifact", "actors")).include?(actor) }
+    def artifact_configured?(actor, kind)
+      all_reviewers.any? do |reviewer|
+        artifact = reviewer["artifact"]
+        Array(artifact&.fetch("actors", nil)).include?(actor) &&
+          Array(artifact&.fetch("kinds", nil)).include?(kind)
+      end
     end
 
     def artifact_after_matching_check?(actor, created_at, checks)
@@ -623,7 +641,7 @@ module ConfiguredReviewGate
       if candidates.empty?
         blocker("configured-review-missing", reviewer, nil, "missing")
       else
-        check = latest_check(candidates)
+        check = governing_check(candidates, snapshot.dig("bindings", "head_sha"))
         classify_check_blocker(reviewer, check, snapshot.dig("bindings", "head_sha"))
       end
     end
@@ -642,7 +660,10 @@ module ConfiguredReviewGate
   def artifact_blockers(reviewers, snapshot)
     head_sha = snapshot.dig("bindings", "head_sha")
     reviewers.filter_map do |reviewer|
-      check = latest_check(snapshot.fetch("checks").select { |item| item["name"] == reviewer["check_name"] })
+      check = governing_check(
+        snapshot.fetch("checks").select { |item| item["name"] == reviewer["check_name"] },
+        head_sha
+      )
       artifact_policy = reviewer.fetch("artifact")
       present = snapshot.fetch("artifacts").any? do |artifact|
         artifact_policy.fetch("actors").include?(artifact["actor"]) &&
@@ -696,6 +717,15 @@ module ConfiguredReviewGate
 
   def latest_check(checks)
     checks.max_by { |check| [check["started_at"].to_s, check["completed_at"].to_s] }
+  end
+
+  def governing_check(checks, expected_head)
+    current_head = checks.select do |check|
+      check["head_sha"].to_s.casecmp?(expected_head.to_s)
+    end
+    candidates = current_head.empty? ? checks : current_head
+    active = candidates.reject { |check| check["status"] == "completed" }
+    latest_check(active.empty? ? candidates : active)
   end
 
   def classify_check_blocker(reviewer, check, expected_head)
