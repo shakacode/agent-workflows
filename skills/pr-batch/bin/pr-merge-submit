@@ -395,8 +395,10 @@ module PrMergeSubmit
       return ci_result if trusted_ci_policy.nil?
 
       requested_hosted = ci_result["requested_hosted"] if ci_result.is_a?(Hash)
-      requested_run_ids = requested_hosted.nil? ? [] : requested_hosted["run_ids"]
-      unless requested_run_ids.is_a?(Array) && requested_run_ids.all? { |run_id| run_id.to_s.match?(/\A[1-9]\d*\z/) }
+      requested_run_ids = requested_hosted["run_ids"] if requested_hosted.is_a?(Hash)
+      unless requested_hosted.is_a?(Hash) && requested_run_ids.is_a?(Array) &&
+             requested_run_ids.all? { |run_id| run_id.is_a?(String) && run_id.match?(/\A[1-9]\d*\z/) } &&
+             requested_run_ids.uniq == requested_run_ids
         raise Error, "current CI requested hosted-run bindings are malformed"
       end
 
@@ -411,6 +413,11 @@ module PrMergeSubmit
         repo: options[:repo], pr_number: options[:pr], host: options[:host],
         requested_hosted_runs: requested_run_ids, trusted_repo_root: @repo_root
       )
+      unless refreshed.dig("requested_hosted", "run_ids") == requested_run_ids
+        raise Error, "current CI requested hosted-run bindings changed during reassessment"
+      end
+
+      validate_policy_disposition_continuity!(ci_result, refreshed, trusted_ci_policy:)
       expected = {
         "context" => { "host" => options[:host] },
         "repo" => options[:repo],
@@ -426,6 +433,72 @@ module PrMergeSubmit
       refreshed
     rescue PrCiReadiness::Error => e
       raise Error, "current CI evidence could not be refreshed completely: #{e.message}"
+    end
+
+    def validate_policy_disposition_continuity!(receipt_ci, refreshed_ci, trusted_ci_policy:)
+      receipt_dispositions = receipt_ci.dig("scopes", "other", "policy_dispositions") if receipt_ci.is_a?(Hash)
+      unless receipt_dispositions.is_a?(Array)
+        raise Error, "receipt CI policy dispositions are malformed"
+      end
+
+      scopes = refreshed_ci["scopes"]
+      raise Error, "current CI scopes are malformed" unless scopes.is_a?(Hash)
+
+      current_rows = scopes.flat_map do |scope_name, scope|
+        next [] unless scope.is_a?(Hash) && scope["rows"].is_a?(Array)
+
+        scope["rows"].filter_map do |row|
+          [scope_name, row] if row.is_a?(Hash) && row["kind"] == "check_run"
+        end
+      end
+      required_rows = scopes.dig("required_status_check_rollup", "rows")
+      current_dispositions = scopes.dig("other", "policy_dispositions")
+      receipt_dispositions.each do |disposition|
+        rule = trusted_ci_policy.fetch("optional_approval_held_checks").find do |candidate|
+          candidate["id"] == disposition["rule_id"] &&
+            candidate["app_slug"] == disposition["app_slug"] && candidate["name"] == disposition["name"]
+        end
+        raise Error, "receipt CI disposition no longer matches an authenticated rule" unless rule
+
+        matches = current_rows.select do |_scope_name, row|
+          row["app_slug"] == rule["app_slug"] && row["name"] == rule["name"]
+        end
+        unless matches.length == 1 && matches.first.first == "other"
+          inventory_errors = scopes.values.filter_map do |scope|
+            scope["error"] if scope.is_a?(Hash) && !scope["error"].to_s.empty?
+          end
+          observed = current_rows.map do |scope_name, row|
+            "#{scope_name}:#{row['app_slug']}/#{row['name']}##{row['id']}"
+          end
+          diagnostics = inventory_errors + ["observed #{observed.empty? ? '(none)' : observed.join(', ')}"]
+          detail = ": #{diagnostics.join('; ')}"
+          raise Error, "current CI inventory does not contain exactly one disposed check in the other scope#{detail}"
+        end
+
+        current = matches.first.last
+        if Array(required_rows).any? { |required| PrCiReadiness.required_matches_optional_row?(required, current) }
+          raise Error, "current CI disposed check was reclassified as required"
+        end
+
+        current_state = PrCiReadiness.evidence_row_state(current)
+        if current["id"] != disposition["id"] && current_state != "READY"
+          raise Error, "current CI replacement for a disposed check is not independently ready"
+        end
+        unless current_state == "READY" || PrCiReadiness.optional_approval_held_row?(current)
+          raise Error, "current CI disposed check is neither held nor independently ready"
+        end
+
+        next if current_state == "READY"
+
+        has_exact_disposition = current_dispositions.is_a?(Array) &&
+                                current_dispositions.one? do |candidate|
+                                  PrCiReadiness.disposition_matches_row?(candidate, current) &&
+                                    candidate["rule_id"] == rule["id"]
+                                end
+        next if has_exact_disposition
+
+        raise Error, "current held check lacks one exact authenticated policy disposition"
+      end
     end
 
     def validate_receipt_evidence!(receipt, evidence)

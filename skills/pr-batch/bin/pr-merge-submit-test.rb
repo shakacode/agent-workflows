@@ -77,7 +77,7 @@ class PrMergeSubmitTest < Minitest::Test
       trusted_policy_observer: ->(policy) { trusted_policy = policy }
     )
 
-    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert result.fetch(:status).success?, "#{result.fetch(:stderr)}\n#{log}"
     payload = JSON.parse(result.fetch(:stdout))
     assert_equal "direct", payload.fetch("submission")
     assert_equal "squash", payload.fetch("method")
@@ -214,7 +214,7 @@ class PrMergeSubmitTest < Minitest::Test
   def test_direct_graphql_errors_reconcile_an_exact_merge
     result, log, = run_cli(mode: "direct_graphql_error_merged")
 
-    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert result.fetch(:status).success?, "#{result.fetch(:stderr)}\n#{log}"
     assert_unknown_reconciled_merge(
       JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
     )
@@ -1339,6 +1339,30 @@ class PrMergeSubmitTest < Minitest::Test
     assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
   end
 
+  def test_authenticated_requested_run_bindings_are_preserved_through_final_refresh
+    result, log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held_requested,
+      merge_submission: { "mode" => "direct" }
+    )
+
+    assert result.fetch(:status).success?, "#{result.fetch(:stderr)}\n#{log}"
+    first_run = log.index("actions/runs/42")
+    second_run = log.index("actions/runs/43")
+    assert first_run
+    assert second_run
+    assert_operator first_run, :<, second_run
+    assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
+  end
+
+  def test_receipt_cannot_delete_authenticated_requested_run_bindings
+    result, log = run_cli(mode: "direct", receipt_mode: :requested_hosted_missing)
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "requested hosted-run bindings are invalid"
+    assert_empty log
+  end
+
   def test_guarded_queue_refreshes_optional_held_ci_after_its_final_pr_read
     result, log = run_cli(
       mode: "guard_queue_race",
@@ -1353,9 +1377,9 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_optional_approval_held_receipt_blocks_when_the_check_changes_or_mismatches
     {
-      running: "current CI evidence does not currently qualify",
-      failed: "current CI evidence does not currently qualify",
-      moved: "current CI evidence does not currently qualify"
+      running: "current CI",
+      failed: "current CI",
+      moved: "current CI"
     }.each do |transition, expected_error|
       result, log = run_cli(
         mode: "direct",
@@ -1366,7 +1390,8 @@ class PrMergeSubmitTest < Minitest::Test
 
       assert_equal 1, result.fetch(:status).exitstatus, transition
       assert_includes result.fetch(:stderr), expected_error, transition
-      assert_includes log, "check-runs", transition
+      inventory_endpoint = transition == :moved ? "check-suites" : "check-runs"
+      assert_includes log, inventory_endpoint, transition
       refute_includes log, "mergePullRequest", transition
       refute_includes log, "enqueuePullRequest", transition
     end
@@ -1382,8 +1407,7 @@ class PrMergeSubmitTest < Minitest::Test
       )
 
       assert_equal 1, result.fetch(:status).exitstatus, transition
-      assert_includes result.fetch(:stderr),
-                      "current CI evidence does not currently qualify", transition
+      assert_includes result.fetch(:stderr), "current CI", transition
       assert_includes log, "check-runs", transition
       refute_includes log, "mergePullRequest", transition
       refute_includes log, "enqueuePullRequest", transition
@@ -1453,6 +1477,26 @@ class PrMergeSubmitTest < Minitest::Test
         refute_includes log, mutation, "#{mode}/#{transition}"
         assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
       end
+    end
+  end
+
+  def test_missing_policy_disposed_check_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        ci_transition: :missing_disposed
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), "current CI", mode
+      refute_includes log, mutation, mode
+      assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
     end
   end
 
@@ -2266,6 +2310,13 @@ class PrMergeSubmitTest < Minitest::Test
       "checked_at" => checked_at,
       "verdict" => "READY",
       "ordinary_verdict" => "READY",
+      "requested_hosted" => {
+        "run_ids" => [],
+        "pending" => [],
+        "failing" => [],
+        "stale" => [],
+        "unknown" => []
+      },
       "scopes" => {
         "required_status_check_rollup" => scope.call(
           "required", [{ "name" => "required", "bucket" => "pass" }]
@@ -2277,6 +2328,9 @@ class PrMergeSubmitTest < Minitest::Test
         "other" => scope.call("other", [])
       }
     }
+    if mode == :optional_held_requested
+      ci_result.fetch("requested_hosted")["run_ids"] = %w[42 43]
+    end
     trusted_ci_policy = nil
     if mode.to_s.start_with?("optional_held")
       begin
@@ -2394,6 +2448,9 @@ class PrMergeSubmitTest < Minitest::Test
     raise "test receipt did not qualify: #{receipt.inspect}" unless receipt["eligible"]
 
     case mode
+    when :requested_hosted_missing
+      receipt.dig("evidence", "ci_result").delete("requested_hosted")
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :nested_unknown
       receipt.dig("evidence", "autonomous_result", "helper_trust", "manifest")["note"] = "UNKNOWN"
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
@@ -2766,6 +2823,18 @@ class PrMergeSubmitTest < Minitest::Test
         )
         exit 0
       end
+      requested_run_endpoint = ARGV.find do |arg|
+        arg.match?(%r{repos/owner/repo/actions/runs/(?:42|43)\\z})
+      end
+      if requested_run_endpoint
+        run_id = requested_run_endpoint[%r{/runs/(\\d+)\\z}, 1].to_i
+        puts JSON.generate(
+          "id" => run_id, "name" => "requested-\#{run_id}", "head_sha" => #{head.inspect},
+          "status" => "completed", "conclusion" => "success",
+          "html_url" => "https://#{HOST}/owner/repo/actions/runs/\#{run_id}"
+        )
+        exit 0
+      end
       actions_endpoint = ARGV.find { |arg| arg.include?("repos/owner/repo/actions/runs?head_sha=") }
       if actions_endpoint
         exit 1 if transition == :actions_inventory_missing
@@ -2815,8 +2884,11 @@ class PrMergeSubmitTest < Minitest::Test
         exit 0
       end
       inventory_endpoint = ARGV.find { |arg| arg.include?("/commits/#{head}/check-runs?") }
-      if inventory_endpoint
-        page = inventory_endpoint[/[?&]page=(\\d+)/, 1].to_i
+      suite_inventory_endpoint = ARGV.find { |arg| arg.include?("/commits/#{head}/check-suites?") }
+      suite_runs_endpoint = ARGV.find { |arg| arg.include?("/check-suites/") && arg.include?("/check-runs?") }
+      check_inventory_endpoint = inventory_endpoint || suite_inventory_endpoint || suite_runs_endpoint
+      if check_inventory_endpoint
+        page = check_inventory_endpoint[/[?&]page=(\\d+)/, 1].to_i
         build_check_run = lambda do |id:, status:, conclusion:, started_at:, name: "storybook-review-app",
                                     app_slug: "circleci-checks", head_sha: #{current_check_head.inspect}|
           {
@@ -2886,24 +2958,26 @@ class PrMergeSubmitTest < Minitest::Test
                                   when :unrelated_success
                                     [[held, unrelated_success], 2]
                                   when :historical_then_latest_success
-                                    if inventory_endpoint.include?("filter=latest")
+                                    if check_inventory_endpoint.include?("filter=latest")
                                       [[successful_replacement], 1]
                                     else
                                       [[held, successful_replacement], 2]
                                     end
                                   when :historical_then_latest_failure
-                                    if inventory_endpoint.include?("filter=latest")
+                                    if check_inventory_endpoint.include?("filter=latest")
                                       [[failed_replacement], 1]
                                     else
                                       [[held, failed_replacement], 2]
                                     end
+                                  when :missing_disposed
+                                    [[], 0]
                                   when :pagination_success
                                     if page == 1
                                       unrelated = Array.new(100) do |index|
                                         build_check_run.call(
                                           id: 1000 + index, status: "completed", conclusion: "success",
                                           started_at: "2026-08-25T12:00:00Z", name: "unrelated-\#{index}",
-                                          app_slug: "unrelated-app"
+                                          app_slug: "circleci-checks"
                                         )
                                       end
                                       [unrelated, 101]
@@ -2929,6 +3003,32 @@ class PrMergeSubmitTest < Minitest::Test
                                   else
                                     [[held], 1]
                                   end
+        suite_for_slug = lambda do |slug|
+          { "id" => slug == "circleci-checks" ? 801 : 802,
+            "head_sha" => #{current_check_head.inspect},
+            "app" => { "id" => slug == "circleci-checks" ? 901 : 902, "slug" => slug } }
+        end
+        suites = check_runs.map { |row| suite_for_slug.call(row.dig("app", "slug")) }.uniq
+        if suite_inventory_endpoint
+          puts JSON.generate("total_count" => suites.length, "check_suites" => suites)
+          exit 0
+        end
+        if suite_runs_endpoint
+          suite_id = suite_runs_endpoint[%r{/check-suites/(\\d+)/}, 1].to_i
+          suite_runs = check_runs.filter_map do |row|
+            suite = suite_for_slug.call(row.dig("app", "slug"))
+            next unless suite.fetch("id") == suite_id
+
+            row.merge("check_suite" => { "id" => suite_id }, "app" => suite.fetch("app"))
+          end
+          suite_total = if %i[pagination_success incomplete_inventory].include?(transition)
+                          total_count
+                        else
+                          suite_runs.length
+                        end
+          puts JSON.generate("total_count" => suite_total, "check_runs" => suite_runs)
+          exit 0
+        end
         puts JSON.generate("total_count" => total_count, "check_runs" => check_runs)
         exit 0
       end

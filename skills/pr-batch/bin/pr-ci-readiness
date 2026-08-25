@@ -448,6 +448,11 @@ module PrCiReadiness
   # gh-backed CLI: parses args, fetches the check rows, and prints the verdict.
   # All subprocess calls use array args (no shell).
   class Runner
+    CHECK_RUN_STATUSES = %w[queued in_progress completed waiting requested pending].freeze
+    CHECK_RUN_CONCLUSIONS = %w[
+      action_required cancelled failure neutral success skipped stale startup_failure timed_out
+    ].freeze
+
     def initialize(command_runner: nil)
       @command_runner = command_runner
     end
@@ -653,8 +658,10 @@ module PrCiReadiness
       query_evidence_known = required_query_known && full_query_known != false
       result["verdict"] = "UNKNOWN" if !query_evidence_known && result["verdict"] == "READY"
       ordinary_checks_verdict = result.fetch("verdict")
-      result = apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
-      result = apply_viewer_review_inventory(result, repo, pr_number)
+      result = apply_requested_hosted_runs(
+        result, repo, pr_number, requested_hosted_runs, exact_head_sha
+      )
+      result = apply_viewer_review_inventory(result, repo, pr_number, exact_head_sha)
       required_evidence_rows =
         if required_used
           PrCiReadiness.readiness_rows(required_rows, required_used: true)
@@ -861,28 +868,93 @@ module PrCiReadiness
     end
 
     def fetch_exact_head_check_runs(repo, head_sha)
-      rows = fetch_paginated_collection(
-        "repos/#{repo}/commits/#{head_sha}/check-runs?filter=latest&per_page=100&page=%<page>s",
-        "check_runs"
-      ).map do |row|
-        ensure_exact_head!(row, head_sha, "check run")
-        normalized = {
-          "kind" => "check_run",
-          "id" => row["id"],
-          "name" => row["name"].to_s,
-          "status" => row["status"].to_s,
-          "conclusion" => row["conclusion"],
-          "url" => row["html_url"].to_s,
-          "head_sha" => head_sha,
-          "app_slug" => row.dig("app", "slug").to_s,
-          "dependabot" => dependabot_attributed?(row)
-        }
-        normalized["started_at"] = row["started_at"] if row.key?("started_at")
-        normalized
+      suites = fetch_paginated_collection(
+        "repos/#{repo}/commits/#{head_sha}/check-suites?per_page=100&page=%<page>s",
+        "check_suites"
+      )
+      suite_ids = {}
+      rows = suites.flat_map do |suite|
+        suite_id, suite_app = validate_check_suite_identity!(suite, head_sha)
+        raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
+
+        suite_ids[suite_id] = true
+        fetch_paginated_collection(
+          "repos/#{repo}/check-suites/#{suite_id}/check-runs?filter=latest&per_page=100&page=%<page>s",
+          "check_runs"
+        ).map do |row|
+          normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
+        end
       end
+      duplicate_ids = rows.group_by { |row| row["id"] }.any? { |_id, matches| matches.length > 1 }
+      raise Error, "latest check-run inventory repeated an id" if duplicate_ids
+
+      rows_by_name = rows.group_by do |row|
+        row.values_at("app_slug", "name")
+      end
+      rows = rows_by_name.values.map { |attempts| attempts.max_by { |row| row.fetch("id") } }
+
       [rows, true, nil]
     rescue StandardError => e
       [[], false, "exact-head check-run inventory failed: #{e.message}"]
+    end
+
+    def validate_check_suite_identity!(suite, head_sha)
+      raise Error, "check suite was not an object" unless suite.is_a?(Hash)
+
+      suite_id = suite["id"]
+      raise Error, "check suite id was not a positive integer" unless suite_id.is_a?(Integer) && suite_id.positive?
+
+      ensure_exact_head!(suite, head_sha, "check suite")
+      app = suite["app"]
+      unless valid_check_app?(app)
+        raise Error, "check suite app identity was malformed or unknown"
+      end
+
+      [suite_id, app]
+    end
+
+    def normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
+      raise Error, "check run was not an object" unless row.is_a?(Hash)
+
+      run_id = row["id"]
+      name = row["name"]
+      status = row["status"]
+      conclusion = row["conclusion"]
+      started_at = row["started_at"]
+      app = row["app"]
+      valid_identity = run_id.is_a?(Integer) && run_id.positive? &&
+                       name.is_a?(String) && !name.empty? && name != "UNKNOWN" &&
+                       !name.match?(/[[:cntrl:]]/) && valid_check_app?(app)
+      valid_phase = CHECK_RUN_STATUSES.include?(status) && row.key?("conclusion") &&
+                    if status == "completed"
+                      CHECK_RUN_CONCLUSIONS.include?(conclusion)
+                    else
+                      conclusion.nil?
+                    end
+      valid_started_at = row.key?("started_at") &&
+                         (started_at.nil? || started_at.is_a?(String) && valid_iso8601_time?(started_at))
+      unless valid_identity && valid_phase && valid_started_at
+        raise Error, "check run identity or phase evidence was malformed or unknown"
+      end
+
+      ensure_exact_head!(row, head_sha, "check run")
+      unless row.dig("check_suite", "id") == suite_id &&
+             app.values_at("id", "slug") == suite_app.values_at("id", "slug")
+        raise Error, "check run contradicted its enumerated suite or app identity"
+      end
+
+      {
+        "kind" => "check_run", "id" => run_id, "name" => name,
+        "status" => status, "conclusion" => conclusion,
+        "url" => row["html_url"].to_s, "head_sha" => head_sha,
+        "app_slug" => app["slug"], "dependabot" => dependabot_attributed?(row),
+        "started_at" => started_at
+      }
+    end
+
+    def valid_check_app?(app)
+      app.is_a?(Hash) && app["id"].is_a?(Integer) && app["id"].positive? &&
+        app["slug"].is_a?(String) && !app["slug"].empty? && app["slug"] != "UNKNOWN"
     end
 
     # Commit statuses are read from the combined status endpoint
@@ -1191,11 +1263,11 @@ module PrCiReadiness
       normalized.match?(/\Ano (?:required )?checks reported on the '[^\r\n]+' branch(?:\r?\n)?\z/)
     end
 
-    def apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
+    def apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs, expected_head_sha)
       result["requested_hosted"] = empty_requested_hosted
       return result if requested_hosted_runs.empty?
 
-      requested = requested_hosted_summary(repo, pr_number, requested_hosted_runs)
+      requested = requested_hosted_summary(repo, pr_number, requested_hosted_runs, expected_head_sha)
       result["requested_hosted"] = requested
       if requested["pending"].any? || requested["failing"].any?
         result["verdict"] = "NOT_READY"
@@ -1225,8 +1297,8 @@ module PrCiReadiness
       }
     end
 
-    def apply_viewer_review_inventory(result, repo, pr_number)
-      inventory = viewer_pending_review_draft_inventory(repo, pr_number)
+    def apply_viewer_review_inventory(result, repo, pr_number, expected_head_sha)
+      inventory = viewer_pending_review_draft_inventory(repo, pr_number, expected_head_sha)
       result["viewer_pending_review_drafts"] = inventory.fetch("viewer_pending_review_drafts")
       result["viewer_review_inventory"] = inventory.reject { |key, _value| key == "viewer_pending_review_drafts" }
       if inventory.fetch("viewer_pending_review_drafts").any?
@@ -1249,11 +1321,12 @@ module PrCiReadiness
         }
       }
     GRAPHQL
+    REVIEW_STATES = %w[APPROVED CHANGES_REQUESTED COMMENTED DISMISSED PENDING].freeze
 
-    def viewer_pending_review_draft_inventory(repo, pr_number)
+    def viewer_pending_review_draft_inventory(repo, pr_number, expected_head_sha)
       owner, name = repo.split("/", 2)
-      expected_head_sha = fetch_pr_head_oid(repo, pr_number)
       viewer_pending_review_drafts = []
+      seen_review_ids = {}
       cursor = nil
       pages = 0
 
@@ -1263,6 +1336,14 @@ module PrCiReadiness
         page_info = reviews.fetch("pageInfo")
         raise Error, "review inventory returned non-array nodes" unless nodes.is_a?(Array)
         raise Error, "review inventory returned incomplete page info" unless page_info.is_a?(Hash)
+
+        nodes.each do |review|
+          validate_review_inventory_row!(review)
+          review_id = review.fetch("id")
+          raise Error, "review inventory repeated review id #{review_id}" if seen_review_ids[review_id]
+
+          seen_review_ids[review_id] = true
+        end
 
         pending_reviews = nodes.select do |review|
           review["state"] == "PENDING" && review["submittedAt"].nil? &&
@@ -1285,6 +1366,33 @@ module PrCiReadiness
         "viewer_pending_review_drafts" => viewer_pending_review_drafts || [], "error" => e.message }
     end
 
+    def validate_review_inventory_row!(review)
+      expected_keys = %w[commit id state submittedAt]
+      unless review.is_a?(Hash) && review.keys.sort == expected_keys &&
+             review["id"].is_a?(String) && !review["id"].empty? &&
+             REVIEW_STATES.include?(review["state"])
+        raise Error, "review inventory returned a malformed or unknown review row"
+      end
+
+      commit = review["commit"]
+      unless commit.is_a?(Hash) && commit.keys.sort == ["oid"] && full_sha?(commit["oid"])
+        raise Error, "review inventory returned a review without an exact commit binding"
+      end
+
+      submitted_at = review["submittedAt"]
+      valid_submission = submitted_at.nil? ||
+                         submitted_at.is_a?(String) && valid_iso8601_time?(submitted_at)
+      valid_submission &&= submitted_at.nil? if review["state"] == "PENDING"
+      raise Error, "review inventory returned contradictory submission evidence" unless valid_submission
+    end
+
+    def valid_iso8601_time?(value)
+      Time.iso8601(value)
+      true
+    rescue ArgumentError
+      false
+    end
+
     def fetch_reviews_page(owner, name, pr_number, cursor)
       cmd = ["gh", "api", "graphql", "-f", "owner=#{owner}", "-f", "name=#{name}", "-F", "pr=#{pr_number}"]
       cmd += ["-f", "endCursor=#{cursor}"] unless cursor.nil?
@@ -1294,12 +1402,15 @@ module PrCiReadiness
         raise(Error, "review inventory response was incomplete")
     end
 
-    def requested_hosted_summary(repo, pr_number, requested_hosted_runs)
-      expected_head_sha = fetch_pr_head_oid(repo, pr_number)
+    def requested_hosted_summary(repo, _pr_number, requested_hosted_runs, expected_head_sha)
       requested_hosted_runs.each_with_object(empty_requested_hosted) do |input, summary|
         run_id = requested_hosted_run_id(input)
         summary["run_ids"] << run_id
         run = fetch_actions_run(repo, run_id)
+        unless run["id"].is_a?(Integer) && run["id"].positive? && run["id"].to_s == run_id
+          raise Error, "requested hosted run payload id did not match requested id #{run_id}"
+        end
+
         classify_requested_run(summary, repo, run_id, run, expected_head_sha)
       rescue Error => e
         summary["unknown"] << { "run_id" => run_id || input.to_s, "reason" => e.message }
@@ -1357,14 +1468,6 @@ module PrCiReadiness
         "conclusion" => payload["conclusion"],
         "url" => payload["html_url"].to_s
       }
-    end
-
-    def fetch_pr_head_oid(repo, pr_number)
-      data = capture_json!("gh", "pr", "view", pr_number.to_s, "--repo", repo, "--json", "headRefOid")
-      head = data.fetch("headRefOid", "").to_s
-      raise Error, "could not resolve PR headRefOid for ##{pr_number}" if head.empty?
-
-      head
     end
 
     def fetch_target_pr_identity(repo, pr_number, require_base: false)

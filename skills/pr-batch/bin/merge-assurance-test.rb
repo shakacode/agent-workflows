@@ -4217,6 +4217,13 @@ class MergeAssuranceTest < Minitest::Test
       "checked_at" => "2026-07-30T11:59:00Z",
       "verdict" => "READY",
       "ordinary_verdict" => "READY",
+      "requested_hosted" => {
+        "run_ids" => [],
+        "pending" => [],
+        "failing" => [],
+        "stale" => [],
+        "unknown" => []
+      },
       "scopes" => scopes
     }
   end

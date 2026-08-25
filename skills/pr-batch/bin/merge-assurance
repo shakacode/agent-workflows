@@ -39,6 +39,7 @@ module MergeAssurance
     required_status_check_rollup github_actions dependabot other
   ].freeze
   SCOPE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
+  REQUESTED_HOSTED_KEYS = %w[failing pending run_ids stale unknown].freeze
   CI_BUCKET_READY_VALUES = %w[pass skipping].freeze
   CI_BUCKET_NOT_READY_VALUES = %w[cancel fail pending].freeze
   CI_STATE_READY_VALUES = %w[neutral skipped success].freeze
@@ -325,6 +326,7 @@ module MergeAssurance
     failures << "ci_result repo binding mismatch" unless ci_result["repo"] == context["repo"]
     failures << "ci_result PR binding mismatch" unless ci_result["pr"] == context["pr"]
     failures << "ci_result head binding mismatch" unless ci_result["head_sha"] == context["head_sha"]
+    validate_requested_hosted(ci_result["requested_hosted"], failures)
     scopes = ci_result["scopes"]
     unless scopes.is_a?(Hash) && scopes.keys.sort == SCOPE_NAMES.sort
       failures << "ci_result scopes are missing or unknown"

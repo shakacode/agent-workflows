@@ -777,6 +777,14 @@ class PrCiReadinessCliTest < Minitest::Test
                    exact_actions_total_count: nil, expected_host: nil,
                    exact_status_sha: :echo, exact_status_total_count: nil,
                    exact_status_pages: nil)
+    if pr_identity.nil? && (!pr_head.is_a?(String) || !pr_head.match?(/\A[0-9a-f]{40}\z/i))
+      fixture_head = "a" * 40
+      runs = replace_fixture_value(runs, pr_head, fixture_head)
+      review_pages = replace_fixture_value(review_pages, pr_head, fixture_head)
+      exact_actions = replace_fixture_value(exact_actions, pr_head, fixture_head)
+      exact_check_runs = replace_fixture_value(exact_check_runs, pr_head, fixture_head)
+      pr_head = fixture_head
+    end
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
       File.write(
@@ -793,6 +801,18 @@ class PrCiReadinessCliTest < Minitest::Test
       FileUtils.chmod(0o755, gh)
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
       yield env
+    end
+  end
+
+  def replace_fixture_value(value, old_value, new_value)
+    case value
+    when Array then value.map { |item| replace_fixture_value(item, old_value, new_value) }
+    when Hash
+      value.to_h do |key, item|
+        [key, replace_fixture_value(item, old_value, new_value)]
+      end
+    else
+      value == old_value ? new_value : value
     end
   end
 
@@ -1044,6 +1064,37 @@ class PrCiReadinessCliTest < Minitest::Test
                                else
                                  ""
                                end
+    identity_payload = pr_identity.is_a?(Array) ? pr_identity.compact.first : pr_identity
+    suite_head = identity_payload&.dig("head", "sha") || pr_head
+    check_runs_by_slug = exact_check_runs.each_with_index.group_by do |(row, index)|
+      row.dig("app", "slug") || "malformed-#{index}"
+    end
+    prepared_suite_runs = check_runs_by_slug.map.with_index do |(slug, indexed_rows), index|
+      suite_id = 800 + index
+      app = { "id" => 900 + index, "slug" => slug }
+      runs_for_suite = indexed_rows.map do |row, _row_index|
+        prepared = JSON.parse(JSON.generate(row))
+        if prepared["app"].is_a?(Hash)
+          prepared["app"] = app.merge(prepared["app"])
+        end
+        prepared["check_suite"] ||= { "id" => suite_id }
+        unless prepared.key?("started_at")
+          prepared["started_at"] = prepared["status"] == "completed" ? "2026-08-25T12:00:00Z" : nil
+        end
+        prepared
+      end
+      [{ "id" => suite_id, "head_sha" => suite_head, "app" => app }, runs_for_suite]
+    end
+    suite_rows = prepared_suite_runs.map(&:first)
+    suite_run_cases = prepared_suite_runs.map do |suite, suite_runs|
+      <<~BASH
+        if [[ "$*" = *"/check-suites/#{suite.fetch('id')}/check-runs?filter=latest&per_page="* ]]; then
+          #{exact_inventory_error == 'check_runs' ? 'exit 1' : ''}
+          #{shell_json_printf('total_count' => suite_runs.length, 'check_runs' => suite_runs)}
+          exit 0
+        fi
+      BASH
+    end.join("\n")
 
     <<~SH
       #!/usr/bin/env bash
@@ -1094,11 +1145,12 @@ class PrCiReadinessCliTest < Minitest::Test
           )}
           exit 0
         fi
-        if [[ "$*" = *"/check-runs?filter=latest&per_page="* ]]; then
+        if [[ "$*" = *"/check-suites?per_page="* ]]; then
           #{exact_inventory_error == 'check_runs' ? 'exit 1' : ''}
-          #{shell_json_printf('total_count' => exact_check_runs.length, 'check_runs' => exact_check_runs)}
+          #{shell_json_printf('total_count' => suite_rows.length, 'check_suites' => suite_rows)}
           exit 0
         fi
+      #{suite_run_cases}
       #{combined_status_branch(
         exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count, exact_status_pages
       )}
@@ -1661,11 +1713,6 @@ class PrCiReadinessCliTest < Minitest::Test
       pr_head: head,
       exact_actions: [old_run, current_run],
       exact_check_runs: [
-        {
-          "id" => 2000, "name" => "unit", "status" => "completed", "conclusion" => "failure",
-          "head_sha" => head, "app" => { "slug" => "github-actions" },
-          "html_url" => "https://github.com/owner/repo/actions/runs/100/job/1000"
-        },
         {
           "id" => 2001, "name" => "unit", "status" => "completed", "conclusion" => "success",
           "head_sha" => head, "app" => { "slug" => "github-actions" },
@@ -3057,6 +3104,216 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_review_draft_inventory_uses_outer_authenticated_head_during_transient_head_change
+    outer_head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    transient_head = "4f67da47c44b7f403c72be2ed8f5bf4505666975"
+    identity = hichee_data_431_identity.merge(
+      "head" => hichee_data_431_identity.fetch("head").merge("sha" => outer_head)
+    )
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: transient_head,
+      pr_identity: [identity, identity],
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => [
+                    { "id" => "PRR_outer", "state" => "PENDING", "submittedAt" => nil,
+                      "commit" => { "oid" => outer_head } }
+                  ],
+                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal(
+        ["PRR_outer"], data.fetch("viewer_pending_review_drafts").map { |row| row.fetch("id") }
+      )
+    end
+  end
+
+  def test_requested_run_uses_outer_authenticated_head_during_transient_head_change
+    outer_head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    transient_head = "4f67da47c44b7f403c72be2ed8f5bf4505666975"
+    identity = hichee_data_431_identity.merge(
+      "head" => hichee_data_431_identity.fetch("head").merge("sha" => outer_head)
+    )
+    with_fake_gh(
+      required_json: "",
+      full_json: "[]",
+      pr_head: transient_head,
+      pr_identity: [identity, identity],
+      runs: {
+        "100" => {
+          run: {
+            "id" => 100, "name" => "requested", "head_sha" => transient_head,
+            "status" => "completed", "conclusion" => "success",
+            "html_url" => "https://github.com/shakacode/hichee-data/actions/runs/100"
+          },
+          jobs: []
+        }
+      }
+    ) do |env|
+      out, status = run_script(
+        env, "431", "--repo", "shakacode/hichee-data", "--requested-hosted-run", "100"
+      )
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal(
+        ["100"], data.dig("requested_hosted", "stale").map { |row| row.fetch("run_id") }
+      )
+    end
+  end
+
+  def test_requested_run_payload_id_must_match_requested_id
+    head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    identity = hichee_data_431_identity.merge(
+      "head" => hichee_data_431_identity.fetch("head").merge("sha" => head)
+    )
+    with_fake_gh(
+      required_json: "", full_json: "[]", pr_head: head,
+      pr_identity: [identity, identity],
+      runs: {
+        "100" => {
+          run: {
+            "id" => 999, "name" => "wrong-run", "head_sha" => head,
+            "status" => "completed", "conclusion" => "success",
+            "html_url" => "https://github.com/shakacode/hichee-data/actions/runs/999"
+          },
+          jobs: []
+        }
+      }
+    ) do |env|
+      out, status = run_script(
+        env, "431", "--repo", "shakacode/hichee-data", "--requested-hosted-run", "100"
+      )
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_includes data.dig("requested_hosted", "unknown", 0, "reason"), "id"
+    end
+  end
+
+  def test_malformed_successful_check_run_makes_exact_inventory_unknown
+    head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]', full_json: "[]", pr_head: head,
+      exact_check_runs: [
+        { "id" => nil, "name" => nil, "head_sha" => head, "app" => nil,
+          "status" => "completed", "conclusion" => "success" }
+      ]
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+    end
+  end
+
+  def test_exact_check_inventory_does_not_use_capped_git_ref_runs_endpoint
+    runner = PrCiReadiness::Runner.new
+    endpoints = []
+    runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, _key, validate_page: nil|
+      endpoints << endpoint
+      _validate_page = validate_page
+      []
+    end
+
+    runner.send(:fetch_exact_head_check_runs, "owner/repo", "a" * 40)
+
+    refute(endpoints.any? do |endpoint|
+      endpoint.include?("/commits/") && endpoint.include?("/check-runs")
+    end)
+  end
+
+  def test_check_suite_inventory_selects_latest_cross_suite_attempt_without_hiding_failure
+    head = "a" * 40
+    %w[success failure].each do |latest_conclusion|
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          [10, 20].map do |suite_id|
+            { "id" => suite_id, "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" } }
+          end
+        else
+          suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
+          run_id = suite_id == 10 ? 100 : 101
+          conclusion = suite_id == 10 ? "failure" : latest_conclusion
+          [{
+            "id" => run_id, "name" => "build", "head_sha" => head,
+            "status" => "completed", "conclusion" => conclusion,
+            "started_at" => "2026-08-25T12:00:00Z", "html_url" => "",
+            "app" => { "id" => 9, "slug" => "ci-app" },
+            "check_suite" => { "id" => suite_id }
+          }]
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      assert complete, latest_conclusion
+      assert_nil error, latest_conclusion
+      assert_equal [101], rows.map { |row| row.fetch("id") }, latest_conclusion
+      assert_equal latest_conclusion, rows.first.fetch("conclusion"), latest_conclusion
+    end
+  end
+
+  def test_malformed_or_unknown_review_rows_make_inventory_incomplete
+    head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    identity = hichee_data_431_identity.merge(
+      "head" => hichee_data_431_identity.fetch("head").merge("sha" => head)
+    )
+    invalid_rows = {
+      missing_commit: {
+        "id" => "PRR_missing_commit", "state" => "PENDING", "submittedAt" => nil, "commit" => nil
+      },
+      unknown_state: {
+        "id" => "PRR_unknown", "state" => "UNKNOWN", "submittedAt" => nil,
+        "commit" => { "oid" => head }
+      }
+    }
+    invalid_rows.each do |label, row|
+      with_fake_gh(
+        required_json: '[{"name":"unit","bucket":"pass"}]',
+        full_json: "[]", pr_head: head, pr_identity: [identity, identity],
+        review_pages: {
+          nil => {
+            "data" => {
+              "repository" => {
+                "pullRequest" => {
+                  "reviews" => {
+                    "nodes" => [row],
+                    "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ) do |env|
+        out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
+        assert status.success?, "#{label}: #{out}"
+        data = JSON.parse(out)
+        assert_equal "UNKNOWN", data.fetch("verdict"), label
+        assert_equal false, data.dig("viewer_review_inventory", "complete"), label
+      end
+    end
+  end
+
   def test_pending_current_head_review_drafts_block_unknown_checks
     with_fake_gh(
       required_json: "",
@@ -3105,7 +3362,7 @@ class PrCiReadinessCliTest < Minitest::Test
                     { "id" => "PRR_dismissed", "state" => "DISMISSED", "submittedAt" => nil,
                       "commit" => { "oid" => "current-head" } },
                     { "id" => "PRR_old", "state" => "PENDING", "submittedAt" => nil,
-                      "commit" => { "oid" => "old-head" } }
+                      "commit" => { "oid" => "b" * 40 } }
                   ],
                   "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
                 }
