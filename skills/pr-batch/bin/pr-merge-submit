@@ -433,7 +433,13 @@ module PrMergeSubmit
         "head_sha" => options[:expected_head],
         "ci_policy" => trusted_ci_policy
       }
-      changed_bindings = expected.keys.reject { |key| refreshed[key] == expected[key] }
+      changed_bindings = expected.keys.reject do |key|
+        if key == "head_sha"
+          refreshed[key].is_a?(String) && refreshed[key].casecmp?(expected[key])
+        else
+          refreshed[key] == expected[key]
+        end
+      end
       unless changed_bindings.empty?
         raise Error, "current CI reassessment changed bound fields: #{changed_bindings.join(', ')}"
       end

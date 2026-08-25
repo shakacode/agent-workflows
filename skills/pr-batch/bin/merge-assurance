@@ -535,6 +535,7 @@ module MergeAssurance
   def validated_ci_policy_dispositions(scope, required_rows:, authenticated_policy:, failures:)
     dispositions = scope["policy_dispositions"]
     return [] if dispositions.nil?
+    return [] unless scope["rows"].is_a?(Array)
 
     unless dispositions.is_a?(Array)
       failures << "ci_result scope other policy dispositions are invalid"

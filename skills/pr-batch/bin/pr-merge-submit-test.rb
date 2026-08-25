@@ -1339,6 +1339,29 @@ class PrMergeSubmitTest < Minitest::Test
     assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
   end
 
+  def test_uppercase_expected_head_remains_bound_through_final_ci_refresh_on_every_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        uppercase_expected_head: true
+      )
+
+      assert result.fetch(:status).success?, "#{mode}: #{result.fetch(:stderr)}"
+      if mutation == "GUARD_EXECUTION"
+        assert_match(/--expected-head\n[0-9A-F]{40}\n/, guard_log, mode)
+      else
+        assert_includes log, mutation, mode
+        assert_ci_refresh_immediately_precedes_mutation(log, mutation)
+      end
+    end
+  end
+
   def test_authenticated_requested_run_bindings_are_preserved_through_final_refresh
     result, log = run_cli(
       mode: "direct",
@@ -2092,7 +2115,8 @@ class PrMergeSubmitTest < Minitest::Test
     guard_timeout_seconds: nil,
     interrupt_guard: false,
     ci_transition: :held,
-    requested_hosted_runs: []
+    requested_hosted_runs: [],
+    uppercase_expected_head: false
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
@@ -2115,6 +2139,7 @@ class PrMergeSubmitTest < Minitest::Test
         head = fixture_head
         expected_head = fixture_head
       end
+      expected_head = expected_head.upcase if uppercase_expected_head
       trusted_policy_observer&.call(
         YAML.safe_load(
           run_git!(repo_root, "show", "#{base_sha}:.agents/agent-workflow.yml"),
@@ -2147,8 +2172,9 @@ class PrMergeSubmitTest < Minitest::Test
       after_stub_warmup&.call
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       unless receipt_mode == :missing
+        receipt_head = uppercase_expected_head ? expected_head.downcase : expected_head
         write_merge_assurance_receipt(
-          receipt_path, mode: receipt_mode, repo:, head: expected_head,
+          receipt_path, mode: receipt_mode, repo:, head: receipt_head,
                         base_ref: expected_base, base_sha: receipt_base_sha || base_sha,
                         diff_base_sha: receipt_diff_base_sha,
                         host: HOST, pr_number: 42, gh_dir: dir, repo_root:,

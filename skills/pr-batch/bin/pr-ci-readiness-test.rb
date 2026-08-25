@@ -673,6 +673,32 @@ class PrCiReadinessTest < Minitest::Test
     end
   end
 
+  def test_heterogeneous_policy_and_rule_keys_fail_with_controlled_errors
+    valid_rule = {
+      "id" => "circleci-storybook",
+      "app_slug" => "circleci-checks",
+      "name" => "storybook-review-app"
+    }
+    policies = [
+      {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule],
+        1 => "unexpected"
+      },
+      {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge(1 => "unexpected")]
+      }
+    ]
+
+    policies.each do |policy|
+      error = assert_raises(PrCiReadiness::Error) do
+        PrCiReadiness.validate_optional_approval_held_policy!(policy)
+      end
+      assert_match(/closed version 1 mapping|contain exactly app_slug, id, and name/, error.message)
+    end
+  end
+
   def run_fixture_git(root, *arguments)
     output, status = Open3.capture2e(
       { "GIT_CONFIG_NOSYSTEM" => "1", "GIT_CONFIG_GLOBAL" => File::NULL },
@@ -755,6 +781,46 @@ end
 
 # CLI / Runner integration via a fake gh on PATH.
 class PrCiReadinessCliTest < Minitest::Test
+  def test_cli_heterogeneous_trusted_policy_keys_fail_without_a_traceback
+    Dir.mktmpdir("pr-ci-policy-heterogeneous") do |root|
+      run_policy_git(root, "init", "-q")
+      run_policy_git(root, "config", "user.name", "Test User")
+      run_policy_git(root, "config", "user.email", "test@example.test")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        <<~YAML
+          ci_readiness:
+            version: 1
+            optional_approval_held_checks:
+              - id: circleci-storybook
+                app_slug: circleci-checks
+                name: storybook-review-app
+                1: unexpected
+        YAML
+      )
+      run_policy_git(root, "add", ".agents/agent-workflow.yml")
+      run_policy_git(root, "commit", "-q", "-m", "malformed policy")
+      base_sha = run_policy_git(root, "rev-parse", "HEAD").strip
+      head = "a" * 40
+      identity = {
+        "id" => 9_001, "number" => 123,
+        "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002, "full_name" => "owner/repo" } },
+        "base" => { "sha" => base_sha, "ref" => "main", "repo" => { "id" => 9_003, "full_name" => "owner/repo" } }
+      }
+      with_fake_gh(required_json: "[]", full_json: "[]", pr_head: head, pr_identity: identity) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+
+        refute status.success?
+        assert_includes out, "each optional approval-held check must contain exactly"
+        refute_includes out, "ArgumentError"
+        refute_includes out, "from "
+      end
+    end
+  end
+
   HICHEE_DATA_431_HEAD = "6c7f86b92e2eac2fc73ce29c74ab5cce9ea9b2c1"
 
   def hichee_data_431_identity
