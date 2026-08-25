@@ -227,7 +227,7 @@ ROUTE_ONLY_STANDALONE_BLOCKED_ACTIVITY_SOURCE =
 ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE =
   "(?:an?\\s+)?(?:otherwise\\s+)?(?:independent(?:,\\s*|\\s+and\\s+|\\s+))?(?:evidence-backed\\s+)?(?:review|audit|readiness|checker\\s+verdict)"
 # This bounded, guide-derived stop/prohibition vocabulary needs matching mutation coverage whenever routing-guide phrasing changes.
-ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+(?:the\\s+lane|otherwise\\s+valid\\s+work)|halts?\\s+(?:the\\s+lane|otherwise\\s+valid\\s+work|#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+(?:blocked|stopped|prevented)|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:must|should|may|can|will|would|could|shall)\\s+be\\s+(?:blocked|stopped|prevented)|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:cannot|can['’]?t)\\s+proceed|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
+ROUTE_ONLY_OUTCOME_SOURCE = "stops?\\s+(?:the\\s+lane|otherwise\\s+valid\\s+work)|halts?\\s+(?:the\\s+lane|otherwise\\s+valid\\s+work|#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|blocks?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:is|are)\\s+(?:blocked|stopped|prevented|halted)|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:must|should|may|can|will|would|could|shall)\\s+be\\s+(?:blocked|stopped|prevented|halted)|(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})(?:\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE}))*\\s+(?:cannot|can['’]?t)\\s+proceed|disqualif(?:y|ies)\\s+(?:the\\s+lane|#{ROUTE_ONLY_DISQUALIFIED_VERDICT_SOURCE})|requires?\\s+(?:a\\s+)?relaunch\\s+before\\s+editing|prevents?\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+both\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\\s+and\\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})|prevents?\\s+editing\\s+until\\s+(?:a\\s+)?relaunch".freeze
 ROUTE_ONLY_OUTCOME_PATTERN = /\b(?:#{ROUTE_ONLY_OUTCOME_SOURCE})\b/i
 ROUTE_ONLY_CONTRADICTION_PATTERN =
   /(?:#{ROUTE_ONLY_SUBJECT_PATTERN}[^.!?]*#{ROUTE_ONLY_OUTCOME_PATTERN}|#{ROUTE_ONLY_OUTCOME_PATTERN}[^.!?]*#{ROUTE_ONLY_SUBJECT_PATTERN})/im
@@ -1351,9 +1351,11 @@ class ModelRoutingContractTest < Minitest::Test
       "outcome-first passive blocked launch" => "When a route mismatch occurs, launch is blocked.",
       "outcome-first passive blocked the launch" => "The launch is blocked when a route mismatch occurs.",
       "outcome-first passive stopped launch" => "Launch is stopped when a route mismatch occurs.",
+      "outcome-first passive halted launch" => "Launch is halted when a route mismatch occurs.",
       "outcome-first passive prevented review" => "Review is prevented when a route mismatch occurs.",
       "outcome-first launch cannot proceed" => "Launch cannot proceed when a route mismatch occurs.",
       "outcome-first modal passive stopped launch" => "Launch must be stopped when a route mismatch occurs.",
+      "outcome-first modal passive halted launch" => "Launch must be halted when a route mismatch occurs.",
       "outcome-first modal passive prevented review" => "Review should be prevented when an inherited route occurs.",
       "outcome-first would-passive stopped launch" => "Launch would be stopped when a route mismatch occurs.",
       "outcome-first could-passive prevented review" => "Review could be prevented when an inherited route occurs.",
@@ -1549,16 +1551,20 @@ class ModelRoutingContractTest < Minitest::Test
       "When a route mismatch occurs, launch is not blocked.",
       "The launch is not blocked when a route mismatch occurs.",
       "Launch is not stopped when a route mismatch occurs.",
+      "Launch is not halted when a route mismatch occurs.",
       "Review is not prevented when a route mismatch occurs.",
       "Launch must not be stopped when a route mismatch occurs.",
+      "Launch must not be halted when a route mismatch occurs.",
       "Review should not be prevented when an inherited route occurs.",
       "Launch would not be stopped when a route mismatch occurs.",
       "Review could not be prevented when an inherited route occurs.",
       "A route mismatch occurs. Launch is blocked only if an independent risk gate blocks execution.",
+      "A route mismatch occurs. Launch is halted only if an independent risk gate blocks execution.",
       "Do not stop otherwise valid work when a route mismatch occurs.",
       "Do not halt launch when a route mismatch occurs.",
       "Never halt otherwise valid work when a route mismatch occurs.",
       "A route mismatch occurs. Launch must be blocked only if an independent scope gate blocks execution.",
+      "A route mismatch occurs. Launch must be halted only if an independent scope gate blocks execution.",
       "A route mismatch means review and audit are not blocked.",
       "Launch must not be blocked when a route mismatch occurs.",
       "Replay should not be blocked when there is an inherited route.",
