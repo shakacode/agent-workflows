@@ -652,6 +652,28 @@ unsupported states are invalid. A rejected result launches nothing; an accepted
 result permits only `launch.eligible_lane_ids` and leaves
 `launch.held_lane_ids` unlaunched.
 
+The optional top-level `expansion_path_reservations` array is additive to v1;
+omitting it or providing an empty array preserves existing inputs. Each active
+scalar reservation is one exact `expansion-path-reservation` v1 record containing
+`batch_plan_id`, `stage_dependency_plan_id`, `lane_id`, `wave`, one canonical
+repository-relative `path`, a known `reason`, and a durable `evidence_ref`. A
+directory rename instead uses an exact `expansion-rename-reservation` v1 record
+with the same identity, reason, and evidence fields, replacing `path` with a
+`rename` object containing canonical, distinct `old` and `new` endpoints.
+Presence is the active state; cancellation removes the record, so no independent
+status boolean or dependency edge is introduced. The preflight binds each record
+to known plan and lane identities, rejects malformed, `UNKNOWN`, noncanonical,
+duplicate, mismatched, completed-lane, or already-reflected reservations, and
+derives collision and risky-capacity inputs from the union of verified
+`file_touch_map.paths` and active reservations. Scalar path reservations retain
+exact-path collision semantics; only typed rename reservations apply
+ancestor/descendant collision checks at both endpoints. Any reservation-derived
+same-wave collision requires an explicit shared serialization group whose
+`max_concurrency` is one; a typed edit edge alone is insufficient. Keep the
+reservation until the request is cancelled or the verified PR map reflects the
+path or exact rename pair, then remove it before the next preflight because a
+reflected reservation is stale.
+
 ### Hierarchical Token Budget
 
 `batch-token-budget v1` is opt-in. When `plan.token_budget` is absent, legacy
@@ -917,11 +939,53 @@ Every lane whose risk or bounded delegation requires an execution envelope
 receives one from the coordinator role before editing, regardless of route:
 exact goal and non-goals, owned paths, supported diagnosis, invariants,
 acceptance criteria, required verification, and stop conditions. The worker
-does not redefine scope or substitute a new diagnosis. Contradictory evidence,
-ambiguity, scope or blast-radius growth, a new high-risk boundary, weakened
-verification, or architecture, security, performance, compatibility, or product
-judgment triggers an immediate stop and return to the coordinator; it does not
-wait for two failed implementation attempts.
+does not redefine scope or substitute a new diagnosis. Necessary in-repository
+path expansion defaults to allowed when repository evidence shows an added path
+is reasonably necessary to complete the already-authorized goal or its required
+validation. Treat owned paths and the execution envelope as coordination and
+collision controls, not as a user-permission boundary. Before editing, record
+each added path and reason in the lane envelope when one is present; otherwise
+use a durable coordinator-owned lane record or Lane Card that the coordinator
+can read. Every added path not yet reflected in its verified file-touch map must
+have an active typed `expansion-path-reservation` before edit. When a lane is the
+sole active editor, the coordinator durably records the reservation, refreshes
+authoritative file-touch maps, lane lifecycle state, and active-lane claim and
+collision checks, and reruns `batch-plan-preflight`; the worker continues without
+user approval or a blocked lifecycle only after the preflight accepts.
+Before a worker in a multi-editor wave changes an added path, it persists a typed
+expansion request, marks its durable lane lifecycle blocked, refreshes its
+heartbeat, emits a Lane Card with the path, reason, and request evidence
+reference, and pauses at a safe checkpoint. The coordinator processes expansion
+requests serially, records an active `expansion_path_reservations` entry,
+refreshes authoritative file-touch maps and lane lifecycle state, and reruns
+`batch-plan-preflight`. For every multi-editor request, acceptance alone does not
+authorize resume: the requester must durably transition out of `blocked`, a fresh
+preflight must accept, and the requester must be absent from
+`launch.held_lane_ids`; when launch or relaunch is needed, it must also be present
+in `launch.eligible_lane_ids`. Under maximum-concurrency-one serialization, the
+current holder must also release the slot before resume. The
+reservation persists until the verified PR file-touch map contains the path or
+the request is cancelled, and it is removed once reflected or cancelled. A
+collision or `UNKNOWN` collision state remains stopped until then. A missing
+path alone is not material scope growth and must not produce
+`blocked-user-input`.
+Directory renames use a distinct `expansion-rename-reservation` v1 record with
+canonical, distinct `old` and `new` endpoints; only this typed rename form adds
+ancestor/descendant collision checks, while scalar path reservations remain
+exact-path collision controls.
+Necessary additions can include contract or type files, tests or fixtures,
+offline demo stubs, and build or generated integration surfaces when repository
+evidence makes them necessary.
+Contradictory evidence remains an immediate stop. Stop and return control when
+any of the following applies: the approved goal, accepted behavior, or acceptance
+criteria changes; the work adds unrelated work; it crosses a repository or trust
+boundary; it requires a destructive or difficult-to-reverse action; it introduces
+secrets, permissions, deployments, billing, or other external effects; it
+requires consequential architecture, performance, compatibility, or product
+judgment; it materially changes security, privacy, compliance, or release policy;
+it collides with another active lane and cannot be safely coordinated; it exposes
+consequential ambiguity; or it weakens verification. An omitted path alone is not
+such a condition.
 
 Before escalating, the worker stops at a safe checkpoint and emits a
 `MODEL_ESCALATION_REQUEST` with lane/claim state, branch/worktree/HEAD, current
@@ -1682,7 +1746,7 @@ Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop
 Worker model/effort preferences:<initial>/<effort>-><lanes>;escalate <route> after MODEL_ESCALATION_REQUEST;max=N.
 Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;ordinary pending/active lifecycle.
 - Deps:v1 edit|validation_open|merge_order;missing/UNKNOWN/stale=>closed;combined-tip@seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
@@ -1698,7 +1762,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Budget:v1 reserve/reconcile auth usage;warn checkpoint;approval/hard stop;gates unchanged.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
@@ -1911,7 +1975,7 @@ Use this compact, self-contained `GMCC-v4` line verbatim in PR-batch goal
 prompts.
 `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 
 `GMCC-v4` expands to this canonical contract:
 
@@ -2250,10 +2314,39 @@ When worker subagents are explicitly authorized:
 - Before editing, when lane risk or bounded delegation requires an execution
   envelope, restate the coordinator-role-approved goal/non-goals, owned paths,
   supported diagnosis, invariants, acceptance criteria, verification, and stop
-  conditions regardless of route. With or without an envelope, stop and return
-  control rather than re-plan when evidence contradicts the diagnosis, criteria
-  are ambiguous, scope or risk grows, a security boundary appears, verification
-  weakens, or consequential judgment is required.
+  conditions regardless of route. Expand owned paths without user approval when
+  repository evidence makes an in-repository path reasonably necessary for the
+  authorized goal or required validation. A sole active editor records the path
+  and reason in the envelope or durable coordinator-owned lane record, then the
+  coordinator records the active reservation, refreshes authoritative file-touch
+  maps, lane lifecycle state, and active claims and collision checks, and reruns
+  `batch-plan-preflight`; the worker continues without user approval or a blocked
+  lifecycle only after the preflight accepts. In a multi-editor wave, the worker
+  persists a typed expansion request, marks its durable lifecycle blocked,
+  refreshes its heartbeat, emits a Lane Card with path, reason, and request
+  evidence reference, and pauses before changing the path. The coordinator
+  processes requests serially, records the active reservation, refreshes
+  authoritative file-touch maps and lane lifecycle state, and reruns
+  `batch-plan-preflight`. For every multi-editor request, acceptance alone does
+  not authorize resume: the requester must durably transition out of `blocked`,
+  a fresh preflight must accept, and the requester must be absent from
+  `launch.held_lane_ids`; when launch or relaunch is needed, it must also be
+  present in `launch.eligible_lane_ids`. Under maximum-concurrency-one
+  serialization, the current holder must also release the slot before resume.
+  The reservation remains active until the
+  verified file-touch map reflects the path or the request is cancelled. A
+  collision or `UNKNOWN` collision state remains stopped. With or without an
+  envelope, contradictory evidence remains an
+  immediate stop. Stop and return control when any of the following applies: the
+  approved goal, accepted behavior, or acceptance criteria changes; the work adds
+  unrelated work; it crosses a repository or trust boundary; it requires a
+  destructive or difficult-to-reverse action; it introduces secrets, permissions,
+  deployments, billing, or other external effects; it requires consequential
+  architecture, performance, compatibility, or product judgment; it materially
+  changes security, privacy, compliance, or release policy; it collides with
+  another active lane and cannot be safely coordinated; it exposes consequential
+  ambiguity; or it weakens verification. An omitted path alone is not such a
+  condition.
 - Refresh that worker's heartbeat whenever it starts an item, pushes or updates a
   PR, completes a review pass, becomes blocked, resumes, or finishes the lane.
 - Emit a portable Lane Card after a successful claim, on blocked/cancelled state,
@@ -2270,6 +2363,8 @@ When worker subagents are explicitly authorized:
   - `Branch:` `<branch>`; `pr_url`: `<verified GitHub PR url|backend url|UNKNOWN>`
   - `Phase:` `<phase>`; `claim:` `<holder|UNKNOWN>/<generation|UNKNOWN>/<instance|UNKNOWN>`;
     `coordinator:` `<coordinator-id|UNKNOWN>`
+  - `Path expansion:` `<canonical path|none>`; `reason:` `<known reason|n/a>`;
+    `request_ref:` `<durable evidence ref|n/a>`
     Never infer observed values from prompt text or worker self-report. If the
     backend does not provide `dashboard_url`, generation, or instance
     metadata, show `UNKNOWN` and continue with the available GitHub links. If the

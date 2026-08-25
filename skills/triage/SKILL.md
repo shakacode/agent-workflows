@@ -215,10 +215,56 @@ precise blocker.
    intent, risk, or readiness verdict when the checker role, independence,
    scope, current-head evidence, and evidence quality qualify. Every lane whose
    risk or bounded delegation requires an execution envelope receives the
-   canonical coordinator-role-approved envelope regardless of route and returns
-   control before further edits on contradictory evidence,
-   ambiguous criteria, scope or risk growth, weakened verification, or
-   consequential judgment.
+   canonical coordinator-role-approved envelope regardless of route.
+   Necessary in-repository path expansion defaults to allowed when repository
+   evidence shows an added path is reasonably necessary to complete the
+   already-authorized goal or its required validation. Treat owned paths and
+   the execution envelope as coordination and collision controls, not as a
+   user-permission boundary. Before editing, record each added path and reason
+   in the lane envelope when one is present; otherwise use a durable
+   coordinator-owned lane record or Lane Card that the coordinator can read.
+   Every added path not yet reflected in its verified file-touch map must have
+   an active typed `expansion-path-reservation` before edit. When a lane is the
+   sole active editor, the coordinator durably records the reservation,
+   refreshes authoritative file-touch maps, lane lifecycle state, and
+   active-lane claim and collision checks, and reruns `batch-plan-preflight`;
+   the worker continues without user approval or a blocked lifecycle only
+   after the preflight accepts.
+   Before a worker in a multi-editor wave changes an added path, it persists a
+   typed expansion request, marks its durable lane lifecycle blocked, refreshes
+   its heartbeat, emits a Lane Card with the path, reason, and request evidence
+   reference, and pauses at a safe checkpoint. The coordinator processes
+   expansion requests serially, records an active
+   `expansion_path_reservations` entry, refreshes authoritative file-touch maps
+   and lane lifecycle state, and reruns `batch-plan-preflight`. For every
+   multi-editor request, acceptance alone does not authorize resume: the
+   requester must durably transition out of `blocked`, a fresh preflight must
+   accept, and the requester must be absent from `launch.held_lane_ids`; when
+   launch or relaunch is needed, it must also be present in
+   `launch.eligible_lane_ids`. Under maximum-concurrency-one serialization, the
+   current holder must also release the slot before resume. The reservation persists until the
+   verified PR file-touch map contains the path or the request is cancelled,
+   and it is removed once reflected or cancelled. A collision or `UNKNOWN`
+   collision state remains stopped until then. A missing path alone is not
+   material scope growth and must not produce `blocked-user-input`.
+   Directory renames use a distinct `expansion-rename-reservation` v1 record
+   with canonical, distinct `old` and `new` endpoints; only this typed rename
+   form adds ancestor/descendant collision checks, while scalar path
+   reservations remain exact-path collision controls.
+   Necessary additions can include contract or type files, tests or fixtures,
+   offline demo stubs, and build or generated integration surfaces when
+   repository evidence makes them necessary.
+   Contradictory evidence remains an immediate stop. Stop and return control
+   when any of the following applies: the approved goal, accepted behavior, or
+   acceptance criteria changes; the work adds unrelated work; it crosses a
+   repository or trust boundary; it requires a destructive or
+   difficult-to-reverse action; it introduces secrets, permissions,
+   deployments, billing, or other external effects; it requires consequential
+   architecture, performance, compatibility, or product judgment; it
+   materially changes security, privacy, compliance, or release policy; it
+   collides with another active lane and cannot be safely coordinated; it
+   exposes consequential ambiguity; or it weakens verification. An omitted
+   path alone is not such a condition.
    The current-wave item cap applies across all generated groups in aggregate;
    never multiply it by `N`, registered profiles, inboxes, or machines. If
    actionable work exceeds the capped current wave, report the remaining
@@ -269,7 +315,7 @@ precise blocker.
    ``- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.``
    Each prompt must include this exact `ask` authority line:
    ``- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
-   GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+   GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
    `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
    Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
    `ready-human-review-required` carries the exact current head SHA, every triggered gate, rollback status, and the exact durable human decision needed.

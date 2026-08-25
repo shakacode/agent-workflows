@@ -53,7 +53,7 @@ TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
                                      "live=<replay/ref>; " \
                                      "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
 GOAL_MODE_COMPACT_CONTRACT = "GMCC-v4:CI@head/configured-reviewers " \
-                             "pending|missing|untriaged or threads unresolved|UNKNOWN=>" \
+                             "pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>" \
                              "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                              "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
                              "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;" \
@@ -584,7 +584,7 @@ required_all_prompt_phrases = [
   COORDINATION_DEPENDENCY_PROMPT_LINE,
   "register before launch when supported",
   "push holder/generation check",
-  "facts are UNKNOWN",
+  "unverifiable=>UNKNOWN",
   FINAL_CLOSEOUT_PROMPT_LINE
 ]
 
