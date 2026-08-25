@@ -3873,7 +3873,10 @@ Each rule identifies one exact third-party check run. The helper reads the
 policy blob from the live PR base SHA in the explicitly supplied trusted Git
 repository, records base ref/SHA and blob provenance, keeps every raw row in
 `scopes.other.rows`, and adds a `policy_dispositions` entry only while a matching
-non-required row is approval-held. A configured required row with the same
+non-required row is approval-held: its status is `in_progress` and GitHub's
+check-run `started_at` field is explicitly present and null. A non-null start
+timestamp means execution has begun. Missing, malformed, queued, or otherwise
+ambiguous phase evidence remains blocking. A configured required row with the same
 producer/context, any requested GitHub Actions run, failures, completed unknown
 conclusions, malformed or incomplete inventory, and every unmatched pending or
 `UNKNOWN` row remain blocking. Omission or exact `n/a` grants no disposition;
@@ -3947,6 +3950,11 @@ canonical nonempty Git refs and both SHAs must be exactly 40 lowercase hex
 characters. Changing the base ref, resolved base/effective merge-base SHA, or
 head SHA changes the identity and invalidates walkthrough, decision, CI, and
 merge-receipt evidence.
+Store `DIFF_BASE_SHA` separately as `context.diff_base_sha` and copy that exact
+binding into the `pr-walkthrough` and `human-merge-decision` evidence. Keep
+`context.base.sha` bound to the live `baseRefOid` used to authenticate base
+policy and by `pr-merge-submit`; an effective merge base never replaces that
+live binding.
 
 After it completes or is skipped, refresh the diff identity and ordinary
 readiness. If the diff identity changed, invalidate the walkthrough and

@@ -283,7 +283,7 @@ module PrMergeSubmit
       freshness issued_at verdict version
     ].freeze
     RECEIPT_BINDING_KEYS = %w[
-      authority base diff_identity head_sha host pr repo
+      authority base diff_base_sha diff_identity head_sha host pr repo
     ].freeze
     RECEIPT_EVIDENCE_KEYS = %w[
       authenticated_tracker_reads autonomous_result ci_result context

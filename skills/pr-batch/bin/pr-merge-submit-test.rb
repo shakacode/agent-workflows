@@ -1326,6 +1326,13 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "enqueuePullRequest"
   end
 
+  def test_reviewed_diff_base_may_differ_from_the_live_base_binding
+    result, log = run_cli(mode: "direct", receipt_diff_base_sha: "c" * 40)
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "mergePullRequest"
+  end
+
   def test_authenticated_tracker_receipt_evidence_is_exact_and_current
     cases = {
       semantic_read_missing: "authenticated tracker read count is malformed",
@@ -1549,6 +1556,7 @@ class PrMergeSubmitTest < Minitest::Test
     merge_submission: SOURCE_REPO_POLICY,
     policy_fixture: :present,
     receipt_base_sha: nil,
+    receipt_diff_base_sha: nil,
     guard_fixture: :executable,
     head_ref_name: "feature/test",
     interpreter_attack: false,
@@ -1610,6 +1618,7 @@ class PrMergeSubmitTest < Minitest::Test
         write_merge_assurance_receipt(
           receipt_path, mode: receipt_mode, repo:, head: expected_head,
                         base_ref: expected_base, base_sha: receipt_base_sha || base_sha,
+                        diff_base_sha: receipt_diff_base_sha,
                         host: HOST, pr_number: 42, gh_dir: dir
         )
       end
@@ -1858,8 +1867,10 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def write_merge_assurance_receipt(
-    path, mode:, repo:, head:, base_ref:, base_sha:, host:, pr_number:, gh_dir:
+    path, mode:, repo:, head:, base_ref:, base_sha:, host:, pr_number:, gh_dir:,
+    diff_base_sha: nil
   )
+    diff_base_sha ||= base_sha
     now = Time.now.utc
     checked_at = (now - 1).iso8601
     scope = lambda do |name, rows|
@@ -1942,9 +1953,10 @@ class PrMergeSubmitTest < Minitest::Test
       "repo" => repo,
       "pr" => pr_number,
       "base" => { "ref" => base_ref, "sha" => base_sha },
+      "diff_base_sha" => diff_base_sha,
       "head_sha" => head,
       "authority" => "auto_merge_when_gates_pass",
-      "diff_identity" => DiffIdentity.derive(base_ref:, base_sha:, head_sha: head),
+      "diff_identity" => DiffIdentity.derive(base_ref:, base_sha: diff_base_sha, head_sha: head),
       "human_merge_decision" => nil,
       "walkthrough" => nil,
       "semantic_github_actions_change" => semantic,

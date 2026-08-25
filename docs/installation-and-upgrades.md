@@ -619,6 +619,9 @@ repositories that omit `ci_readiness` or set it to exact `n/a` retain the prior
 fail-closed behavior; no pending row becomes optional. After adoption, raw rows
 remain in the v2 result, while only exact configured check-run identities that
 are still approval-held and not required receive authenticated dispositions.
+The held phase requires an `in_progress` check run with GitHub's `started_at`
+field explicitly present and null. A start timestamp, missing or malformed
+phase evidence, or another pending/queued state remains blocking.
 
 The upgraded pack also supplies `skills/pr-batch/bin/diff-identity`. Replace
 opaque or locally invented digests with this helper before creating new
@@ -626,6 +629,10 @@ walkthrough, approval, or merge-context evidence. Existing evidence made for an
 arbitrary digest is not migrated: recompute the identity from the exact base
 ref, resolved base/effective merge-base full lowercase SHA, and full lowercase
 head SHA, then repeat any evidence gate bound to the old identity.
+Store that reviewed base/effective-merge-base SHA as `context.diff_base_sha`
+and bind the same value in walkthrough and human-decision evidence. Continue to
+store the live GitHub `baseRefOid` in `context.base.sha`; installed merge
+submission uses that distinct live binding to reject base movement.
 
 Then dry-run one installed workflow, such as `$plan-pr-batch` or
 `$address-review`, until it resolves base branch, validation, hosted CI,

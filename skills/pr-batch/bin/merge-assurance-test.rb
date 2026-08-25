@@ -88,6 +88,7 @@ class MergeAssuranceTest < Minitest::Test
         "repo" => "owner/repo",
         "pr" => 42,
         "base" => { "ref" => "main", "sha" => BASE_SHA },
+        "diff_base_sha" => BASE_SHA,
         "head_sha" => HEAD_SHA,
         "authority" => "auto_merge_when_gates_pass",
         "diff_identity" => DIFF_IDENTITY
@@ -2160,6 +2161,23 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_non_object_required_scope_returns_structured_blocked_result
+    ci_result = ready_ci
+    ci_result.fetch("scopes")["required_status_check_rollup"] = "malformed"
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_equal "BLOCKED", result.fetch("verdict")
+    assert_includes result.fetch("failures"),
+                    "ci_result scope required_status_check_rollup has invalid state"
+  end
+
   def test_ci_row_representations_must_be_recognized_and_agree
     invalid_rows = {
       "bucket-state-contradiction" => {
@@ -2369,6 +2387,7 @@ class MergeAssuranceTest < Minitest::Test
     autonomous, base_sha = eligibility_artifact
     merge_context = context("auto_merge_when_gates_pass")
     merge_context.fetch("base")["sha"] = base_sha
+    merge_context["diff_base_sha"] = base_sha
     merge_context["diff_identity"] = DiffIdentity.derive(
       base_ref: merge_context.dig("base", "ref"),
       base_sha:,
@@ -2906,7 +2925,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_human_decision_and_walkthrough_require_exact_target_bindings
-    binding_keys = %w[host repo pr base_ref]
+    binding_keys = %w[host repo pr base_ref diff_base_sha]
     unbound_decision = human_merge_decision.reject { |key, _value| binding_keys.include?(key) }
     unbound_walkthrough = walkthrough("completed", "pr-walkthrough").reject do |key, _value|
       binding_keys.include?(key)
@@ -4304,6 +4323,7 @@ class MergeAssuranceTest < Minitest::Test
       "repo" => "owner/repo",
       "pr" => 42,
       "base_ref" => "main",
+      "diff_base_sha" => BASE_SHA,
       "head_sha" => HEAD_SHA,
       "diff_identity" => DIFF_IDENTITY,
       "provenance" => "direct-user",
@@ -4321,6 +4341,7 @@ class MergeAssuranceTest < Minitest::Test
       "repo" => "owner/repo",
       "pr" => 42,
       "base_ref" => "main",
+      "diff_base_sha" => BASE_SHA,
       "head_sha" => HEAD_SHA,
       "diff_identity" => DIFF_IDENTITY,
       "provenance" => provenance

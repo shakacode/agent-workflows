@@ -189,6 +189,7 @@ module MergeAssurance
         "repo" => safe_context["repo"],
         "pr" => safe_context["pr"],
         "base" => safe_context["base"],
+        "diff_base_sha" => safe_context["diff_base_sha"],
         "head_sha" => safe_context["head_sha"],
         "authority" => safe_context["authority"],
         "diff_identity" => safe_context["diff_identity"]
@@ -279,20 +280,21 @@ module MergeAssurance
            valid_ref?(base["ref"]) && canonical_full_sha?(base["sha"])
       failures << "context base binding is invalid"
     end
+    failures << "context diff_base_sha is invalid" unless canonical_full_sha?(context["diff_base_sha"])
     failures << "context head_sha is invalid" unless canonical_full_sha?(context["head_sha"])
     failures << "context authority is invalid" unless AUTHORITIES.include?(context["authority"])
     failures << "context diff_identity must be a lowercase SHA-256" unless
       context["diff_identity"].to_s.match?(/\A[0-9a-f]{64}\z/)
-    if base.is_a?(Hash) && valid_ref?(base["ref"]) && canonical_full_sha?(base["sha"]) &&
+    if base.is_a?(Hash) && valid_ref?(base["ref"]) && canonical_full_sha?(context["diff_base_sha"]) &&
        canonical_full_sha?(context["head_sha"])
       begin
         expected_diff_identity = DiffIdentity.derive(
           base_ref: base["ref"],
-          base_sha: base["sha"],
+          base_sha: context["diff_base_sha"],
           head_sha: context["head_sha"]
         )
         unless context["diff_identity"] == expected_diff_identity
-          failures << "context diff_identity does not match canonical base/head derivation"
+          failures << "context diff_identity does not match canonical reviewed diff-base/head derivation"
         end
       rescue DiffIdentity::Error
         failures << "context base binding is invalid"
@@ -330,7 +332,8 @@ module MergeAssurance
     end
     ci_policy = ci_result["ci_policy"]
     authenticated_policy = authenticate_ci_policy(ci_policy, trusted_ci_policy, context, failures)
-    required_rows = scopes.dig("required_status_check_rollup", "rows")
+    required_scope = scopes["required_status_check_rollup"]
+    required_rows = required_scope["rows"] if required_scope.is_a?(Hash)
     scopes.each do |name, scope|
       unless scope.is_a?(Hash) && SCOPE_STATES.include?(scope["state"])
         failures << "ci_result scope #{name} has invalid state"
@@ -508,7 +511,7 @@ module MergeAssurance
     return false unless policy["version"] == 1
     return false unless policy["base"] == context["base"]
 
-    expected_prefix = "git:#{context.dig('base', 'sha')}:.agents/agent-workflow.yml@"
+    expected_prefix = "git:#{context_base_value(context, 'sha')}:.agents/agent-workflow.yml@"
     return false unless policy["provenance"].to_s.match?(
       /\A#{Regexp.escape(expected_prefix)}[0-9a-f]{40}\z/
     )
@@ -700,9 +703,9 @@ module MergeAssurance
       failures << "autonomous_result human decision evidence shape is invalid"
     end
     failures << "autonomous_result policy provenance binding mismatch" unless
-      valid_policy_provenance?(result["policy_provenance"], context.dig("base", "sha"))
+      valid_policy_provenance?(result["policy_provenance"], context_base_value(context, "sha"))
     failures << "autonomous_result helper provenance binding mismatch" unless
-      valid_helper_provenance?(result["helper_provenance"], context.dig("base", "sha"))
+      valid_helper_provenance?(result["helper_provenance"], context_base_value(context, "sha"))
     if !result["evidence_failures"].is_a?(Array)
       failures << "autonomous_result evidence failures are unavailable"
     elsif !result["evidence_failures"].empty?
@@ -862,7 +865,7 @@ module MergeAssurance
   def valid_human_merge_decision?(decision, context, now)
     return false unless decision.is_a?(Hash)
     return false unless decision.keys.sort == %w[
-      base_ref contract decided_at decision diff_identity head_sha host merge_authority
+      base_ref contract decided_at decision diff_base_sha diff_identity head_sha host merge_authority
       pr provenance repo version
     ].sort
     return false unless decision["contract"] == "human-merge-decision" && decision["version"] == 1
@@ -876,7 +879,7 @@ module MergeAssurance
   def valid_walkthrough?(walkthrough, context)
     return false unless walkthrough.is_a?(Hash)
     return false unless walkthrough.keys.sort == %w[
-      base_ref contract diff_identity disposition head_sha host pr provenance repo version
+      base_ref contract diff_base_sha diff_identity disposition head_sha host pr provenance repo version
     ].sort
     return false unless walkthrough["contract"] == "pr-walkthrough" && walkthrough["version"] == 1
     return false unless valid_target_bindings?(walkthrough, context)
@@ -895,7 +898,8 @@ module MergeAssurance
     receipt["host"] == context["host"] &&
       receipt["repo"] == context["repo"] &&
       receipt["pr"] == context["pr"] &&
-      receipt["base_ref"] == context.dig("base", "ref") &&
+      receipt["base_ref"] == context_base_value(context, "ref") &&
+      receipt["diff_base_sha"] == context["diff_base_sha"] &&
       receipt["head_sha"] == context["head_sha"] &&
       receipt["diff_identity"] == context["diff_identity"]
   end
@@ -1338,6 +1342,12 @@ module MergeAssurance
 
   def valid_ref?(value)
     DiffIdentity.canonical_ref?(value)
+  end
+
+  def context_base_value(context, key)
+    return unless context.is_a?(Hash) && context["base"].is_a?(Hash)
+
+    context["base"][key]
   end
 
   def valid_host?(value)

@@ -150,7 +150,7 @@ module PrCiReadiness
   POLICY_KEYS = %w[optional_approval_held_checks version].freeze
   OPTIONAL_CHECK_KEYS = %w[app_slug id name].freeze
   POLICY_RULE_ID = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
-  APPROVAL_HELD_STATUSES = %w[in_progress pending queued requested waiting].freeze
+  APPROVAL_HELD_STATUSES = %w[in_progress].freeze
   SYSTEM_GIT = %w[/opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git /bin/git].find do |path|
     File.file?(path) && File.executable?(path)
   end
@@ -637,6 +637,7 @@ module PrCiReadiness
         end
       query_evidence_known = required_query_known && full_query_known != false
       result["verdict"] = "UNKNOWN" if !query_evidence_known && result["verdict"] == "READY"
+      ordinary_checks_verdict = result.fetch("verdict")
       result = apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
       result = apply_viewer_review_inventory(result, repo, pr_number)
       required_evidence_rows =
@@ -694,11 +695,18 @@ module PrCiReadiness
       contract = PrCiReadiness.evidence_contract(
         repo:, pr_number:, head_sha: exact_head_sha, checked_at:, scopes:
       )
-      ordinary_verdict = result.fetch("verdict")
+      disposition_owns_fallback = !required_used && ordinary_checks_verdict == "NOT_READY" &&
+                                  contract.fetch("verdict") == "READY" &&
+                                  scopes.dig("other", "policy_dispositions").is_a?(Array) &&
+                                  scopes.dig("other", "policy_dispositions").any?
+      ordinary_verdict = disposition_owns_fallback ? contract.fetch("verdict") : ordinary_checks_verdict
+      supplemental_verdict = supplemental_readiness_verdict(result)
       overall_verdict =
-        if ordinary_verdict == "NOT_READY" || contract.fetch("verdict") == "NOT_READY"
+        if ordinary_verdict == "NOT_READY" || contract.fetch("verdict") == "NOT_READY" ||
+           supplemental_verdict == "NOT_READY"
           "NOT_READY"
-        elsif ordinary_verdict == "UNKNOWN" || contract.fetch("verdict") == "UNKNOWN"
+        elsif ordinary_verdict == "UNKNOWN" || contract.fetch("verdict") == "UNKNOWN" ||
+              supplemental_verdict == "UNKNOWN"
           "UNKNOWN"
         else
           "READY"
@@ -710,6 +718,18 @@ module PrCiReadiness
       )
       merged["ci_policy"] = trusted_ci_policy if trusted_ci_policy
       merged
+    end
+
+    def supplemental_readiness_verdict(result)
+      requested = result.fetch("requested_hosted", {})
+      viewer_drafts = result.fetch("viewer_pending_review_drafts", [])
+      viewer_inventory = result.fetch("viewer_review_inventory", {})
+      return "NOT_READY" if Array(requested["pending"]).any? || Array(requested["failing"]).any? ||
+                            Array(viewer_drafts).any?
+      return "UNKNOWN" if Array(requested["stale"]).any? || Array(requested["unknown"]).any? ||
+                          viewer_inventory["complete"] != true
+
+      "READY"
     end
 
     def unavailable_target_pr_result(repo, pr_number, checked_at, error)
@@ -830,7 +850,7 @@ module PrCiReadiness
         "check_runs"
       ).map do |row|
         ensure_exact_head!(row, head_sha, "check run")
-        {
+        normalized = {
           "kind" => "check_run",
           "id" => row["id"],
           "name" => row["name"].to_s,
@@ -841,6 +861,8 @@ module PrCiReadiness
           "app_slug" => row.dig("app", "slug").to_s,
           "dependabot" => dependabot_attributed?(row)
         }
+        normalized["started_at"] = row["started_at"] if row.key?("started_at")
+        normalized
       end
       [rows, true, nil]
     rescue StandardError => e

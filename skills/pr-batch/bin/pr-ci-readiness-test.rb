@@ -367,6 +367,7 @@ class PrCiReadinessTest < Minitest::Test
     held = {
       "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
       "status" => "in_progress", "conclusion" => nil,
+      "started_at" => nil,
       "app_slug" => "circleci-checks", "dependabot" => false
     }
 
@@ -395,6 +396,80 @@ class PrCiReadinessTest < Minitest::Test
       ],
       scopes.dig("other", "policy_dispositions")
     )
+  end
+
+  def test_optional_policy_keeps_an_actively_running_check_blocking
+    head = "a" * 40
+    running = {
+      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil,
+      "started_at" => "2026-07-30T11:58:00Z",
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [running], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+  end
+
+  def test_optional_policy_requires_explicit_check_start_evidence
+    head = "a" * 40
+    base_row = {
+      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    ambiguous_rows = {
+      "missing started_at" => base_row,
+      "empty started_at" => base_row.merge("started_at" => ""),
+      "malformed started_at" => base_row.merge("started_at" => "not-a-timestamp"),
+      "ordinary queued phase" => base_row.merge("status" => "queued", "started_at" => nil)
+    }
+
+    ambiguous_rows.each do |label, row|
+      scopes = PrCiReadiness.inventory_scopes(
+        head_sha: head,
+        checked_at: "2026-07-30T12:00:00Z",
+        required_rows: [], required_complete: true,
+        actions_rows: [], actions_complete: true,
+        check_runs: [row], check_runs_complete: true,
+        statuses: [], statuses_complete: true,
+        optional_approval_held_policy: policy
+      )
+
+      assert_equal "NOT_READY", scopes.dig("other", "state"), label
+      assert_empty scopes.dig("other", "policy_dispositions"), label
+    end
   end
 
   def test_optional_policy_does_not_disposition_duplicate_conflicting_check_run_identity
@@ -1044,6 +1119,43 @@ class PrCiReadinessCliTest < Minitest::Test
   def run_script(env, *args)
     fake_env = env.merge("FAKE_PR_NUMBER" => args.first.to_s)
     Open3.capture2e(fake_env, "ruby", SCRIPT, *args)
+  end
+
+  def with_optional_policy_repo
+    Dir.mktmpdir("pr-ci-readiness-policy") do |root|
+      run_policy_git(root, "init", "-q")
+      run_policy_git(root, "config", "user.name", "Test User")
+      run_policy_git(root, "config", "user.email", "test@example.test")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        {
+          "ci_readiness" => {
+            "version" => 1,
+            "optional_approval_held_checks" => [
+              {
+                "id" => "circleci-storybook",
+                "app_slug" => "circleci-checks",
+                "name" => "storybook-review-app"
+              }
+            ]
+          }
+        }.to_yaml
+      )
+      run_policy_git(root, "add", ".agents/agent-workflow.yml")
+      run_policy_git(root, "commit", "-q", "-m", "policy")
+      yield root, run_policy_git(root, "rev-parse", "HEAD").strip
+    end
+  end
+
+  def run_policy_git(root, *arguments)
+    output, status = Open3.capture2e(
+      { "GIT_CONFIG_NOSYSTEM" => "1", "GIT_CONFIG_GLOBAL" => File::NULL },
+      PrCiReadiness::SYSTEM_GIT, *arguments, chdir: root
+    )
+    raise "fixture git failed: #{output}" unless status.success?
+
+    output
   end
 
   def test_check_fetch_requests_workflow_identity
@@ -2288,6 +2400,70 @@ class PrCiReadinessCliTest < Minitest::Test
         assert_includes scope.fetch("error"), moved_head, name
       end
       assert_empty data.dig("scopes", "required_status_check_rollup", "rows")
+    end
+  end
+
+  def test_optional_disposition_owns_fallback_verdict_when_required_inventory_is_empty
+    head = "a" * 40
+    with_optional_policy_repo do |root, base_sha|
+      pr_identity = {
+        "id" => 9_001, "number" => 123,
+        "head" => {
+          "sha" => head, "ref" => "feature",
+          "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+        },
+        "base" => {
+          "sha" => base_sha, "ref" => "main",
+          "repo" => { "id" => 9_003, "full_name" => "owner/repo" }
+        }
+      }
+      held = {
+        "id" => 31, "name" => "storybook-review-app", "status" => "in_progress",
+        "conclusion" => nil, "started_at" => nil, "head_sha" => head,
+        "app" => { "slug" => "circleci-checks" }, "html_url" => "https://example/check/31"
+      }
+      with_fake_gh(
+        required_json: "",
+        full_json: '[{"workflow":"circleci-checks","name":"storybook-review-app","bucket":"pending"}]',
+        pr_head: head,
+        pr_identity:,
+        exact_check_runs: [held]
+      ) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+        assert status.success?, out
+        data = JSON.parse(out)
+
+        assert_equal "READY", data.fetch("verdict"), data.inspect
+        assert_equal "READY", data.fetch("ordinary_verdict")
+        assert_equal "READY", data.dig("scopes", "other", "state")
+        refute_empty data.dig("scopes", "other", "policy_dispositions")
+      end
+
+      running = {
+        "id" => 32, "name" => "security", "status" => "in_progress",
+        "conclusion" => nil, "started_at" => "2026-07-30T11:58:00Z", "head_sha" => head,
+        "app" => { "slug" => "external-ci" }, "html_url" => "https://example/check/32"
+      }
+      with_fake_gh(
+        required_json: "",
+        full_json: '[{"workflow":"circleci-checks","name":"storybook-review-app","bucket":"pending"},' \
+                   '{"workflow":"external-ci","name":"security","bucket":"pending"}]',
+        pr_head: head,
+        pr_identity:,
+        exact_check_runs: [held, running]
+      ) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+        assert status.success?, out
+        data = JSON.parse(out)
+
+        assert_equal "NOT_READY", data.fetch("verdict")
+        assert_equal "NOT_READY", data.dig("scopes", "other", "state")
+        assert_equal 1, data.dig("scopes", "other", "policy_dispositions").length
+      end
     end
   end
 
