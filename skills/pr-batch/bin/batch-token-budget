@@ -1944,18 +1944,28 @@ module BatchTokenBudget
     [state, result(state, "released", "receipt" => release_receipt)]
   end
 
+  def valid_usage_turn_pair?(tokens, turns)
+    nonnegative_integer?(tokens) && nonnegative_integer?(turns) &&
+      (tokens.zero? ? turns.zero? : turns.between?(1, tokens))
+  end
+
   def lane_usage_projection(lane)
     return unless lane.is_a?(Hash) && lane["scope"] == "lane" &&
                   nonempty_string?(lane["id"]) && nonempty_string?(lane["root_thread_id"]) &&
                   lane.dig("reconciliation", "status") == "balanced"
 
     lane_tokens = lane.dig("usage", "descendant_inclusive", "total_tokens")
+    lane_self_tokens = lane.dig("usage", "self_only", "total_tokens")
     unattributed_tokens = lane.dig("usage", "unattributed", "total_tokens")
     lane_turns = lane.dig("turns", "descendant_inclusive")
     lane_self_turns = lane.dig("turns", "self_only")
     unattributed_turns = lane.dig("turns", "unattributed")
-    return unless [lane_tokens, unattributed_tokens, lane_turns, lane_self_turns, unattributed_turns].all? do |value|
-      nonnegative_integer?(value)
+    return unless [
+      [lane_tokens, lane_turns],
+      [lane_self_tokens, lane_self_turns],
+      [unattributed_tokens, unattributed_turns]
+    ].all? do |tokens, turns|
+      valid_usage_turn_pair?(tokens, turns)
     end
 
     workers = lane["workers"]
@@ -1966,11 +1976,11 @@ module BatchTokenBudget
 
     worker_projections = workers.map do |worker|
       tokens = worker.dig("usage", "descendant_inclusive", "total_tokens")
+      self_tokens = worker.dig("usage", "self_only", "total_tokens")
       turns = worker.dig("turns", "descendant_inclusive")
       self_turns = worker.dig("turns", "self_only")
       next unless worker["scope"] == "worker" && nonempty_string?(worker["root_thread_id"]) &&
-                  [tokens, turns, self_turns].all? { |value| nonnegative_integer?(value) } &&
-                  (tokens.zero? || turns.between?(1, tokens))
+                  valid_usage_turn_pair?(tokens, turns) && valid_usage_turn_pair?(self_tokens, self_turns)
 
       { "tokens" => tokens, "turns" => turns }
     end
