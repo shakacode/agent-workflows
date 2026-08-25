@@ -1383,8 +1383,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     coordination_calls = []
     target_payload = publication_target_payload
 
-    with_stubbed_gh_api(lambda { |_host, _endpoint, **_options| target_payload }) do
-      with_stubbed_coordination_status(lambda { |**arguments| coordination_calls << arguments }) do
+    with_stubbed_gh_api(->(_host, _endpoint, **_options) { target_payload }) do
+      with_stubbed_coordination_status(->(**arguments) { coordination_calls << arguments }) do
         CompletedBatchAuditReceipt.validate_publication_preflight!(
           preflight,
           expected_batch_id: "batch-184",
@@ -3596,8 +3596,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     coordination_applicability: nil,
     target_type: "pull_request"
   )
-    coordination_applicability ||= coordination_backend == "n/a" ?
-      "coordination_not_applicable" : "coordination_required"
+    coordination_applicability ||= if coordination_backend == "n/a"
+                                     "coordination_not_applicable"
+                                   else
+                                     "coordination_required"
+                                   end
     target = { "host" => "github.com", "repo" => "acme/widgets", "type" => target_type, "number" => 184 }
     waiver_url = "https://github.com/acme/widgets/pull/184#issuecomment-9184"
     evidence = <<~MARKER

@@ -68,7 +68,7 @@ COORDINATION_DECLARATION_RULE = "Batch Coordination Declaration: every `coordina
                                 "that wrote nothing to the coordination backend must say so in the declaration.".freeze
 COORDINATION_APPLICABILITY_DECLARATION_RULE =
   "That declaration rule applies only to `coordination_required`. For `coordination_not_applicable`, " \
-  "omit the `coordination:` line and do not invoke the declaration helper.".freeze
+  "omit the `coordination:` line and do not invoke the declaration helper."
 
 MISSING_DECLARATION_BLOCKER = CoordinationDeclaration::MISSING_DECLARATION_BLOCKER
 

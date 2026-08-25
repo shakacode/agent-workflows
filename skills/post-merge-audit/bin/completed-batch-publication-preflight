@@ -234,10 +234,12 @@ module CompletedBatchPublicationPreflight
 
     backend = normalized_known_string(receipt["coordination_backend"])
     return false unless backend && backend == receipt.dig("snapshot", "coordination_backend")
+
     applicability = receipt["coordination_applicability"]
     return false unless COORDINATION_APPLICABILITIES.include?(applicability)
     return false unless applicability == receipt.dig("snapshot", "coordination_applicability")
     return false unless applicability == receipt.dig("source_input", "coordination_applicability")
+
     applicability_proof = receipt["applicability_proof"]
     applicability_proof_digest = receipt["applicability_proof_digest"]
     return false unless applicability_proof.is_a?(Hash)
