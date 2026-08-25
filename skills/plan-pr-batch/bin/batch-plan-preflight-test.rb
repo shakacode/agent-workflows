@@ -380,6 +380,28 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_token_budget_enforces_the_pinned_trusted_plan_artifact_size_limit
+    input = input_for
+    candidate = token_budget
+    enable_token_budget(input, candidate)
+    artifact_path = input.dig("plan", "token_budget_anchor", "trusted_plan_path")
+    artifact_json = JSON.generate(canonicalize(candidate))
+    File.write(artifact_path, artifact_json.ljust(1_048_576))
+
+    accepted, accepted_stderr, accepted_status = evaluate(input)
+
+    assert accepted_status.success?, accepted_stderr
+    assert_equal "accepted", accepted.fetch("status")
+
+    File.write(artifact_path, artifact_json.ljust(1_048_577))
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-trusted-plan-oversized"
+  end
+
   def test_token_budget_rejects_malformed_or_duplicate_key_trusted_plan_artifacts
     candidate = token_budget
     duplicate_key_json = JSON.generate(candidate).sub(
