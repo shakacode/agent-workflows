@@ -1378,7 +1378,7 @@ module MergeAssurance
       )
       puts JSON.pretty_generate(result)
       result["eligible"] ? 0 : 1
-    rescue Error => e
+    rescue Error, PrCiReadiness::Error => e
       puts JSON.pretty_generate(MergeAssurance.blocked_result([e.message]))
       1
     end
