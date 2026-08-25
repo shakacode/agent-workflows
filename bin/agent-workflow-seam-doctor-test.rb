@@ -1336,7 +1336,9 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     assert_equal PRIVATE_COORDINATION_BACKEND, config.fetch("coordination_backend")
     assert_equal coordination_backend_contract(PRIVATE_COORDINATION_BACKEND),
                  config.fetch("coordination_backend_contract")
-    assert_equal structured_review_gate_policy, config.fetch("review_gate")
+    expected_review_gate = structured_review_gate_policy
+    expected_review_gate.dig("reviewers", 0, "artifact", "actors") << "github-actions[bot]"
+    assert_equal expected_review_gate, config.fetch("review_gate")
   end
 
   def test_incomplete_untrusted_contributor_intake_policy_fails
