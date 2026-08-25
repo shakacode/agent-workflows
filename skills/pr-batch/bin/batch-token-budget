@@ -2537,11 +2537,12 @@ begin
   unless BatchTokenBudget.timestamp?(command["evaluated_at"])
     raise BatchTokenBudget::InvalidInput, "invalid-evaluated-at"
   end
+  unless BatchTokenBudget.nonempty_string?(command["batch_id"])
+    raise BatchTokenBudget::InvalidInput, "invalid-batch-id"
+  end
 
   if command["action"] == "initialize"
-    if BatchTokenBudget.nonempty_string?(command["batch_id"]) && command["batch_id"] != trusted_budget["batch_id"]
-      raise BatchTokenBudget::InvalidInput, "batch-id-mismatch"
-    end
+    raise BatchTokenBudget::InvalidInput, "batch-id-mismatch" if command["batch_id"] != trusted_budget["batch_id"]
     if BatchTokenBudget.canonicalize(command["budget"]) != trusted_budget
       raise BatchTokenBudget::InvalidInput, "initialize-budget-anchor-mismatch"
     end
