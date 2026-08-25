@@ -115,7 +115,7 @@ WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: <init
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
 MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory."
-DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
+DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch:pending=>persist/reissue token;active=>no launch;input=>decision;fence=>stop/reconcile."
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle."
 COORDINATION_DEPENDENCY_PROMPT_LINE =
   "- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; " \
@@ -230,11 +230,11 @@ TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE =
   "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
   "block=>stop; no raw GitHub/override"
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
-  - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-    Original:trusted ad-hoc prompt|n/a
+  - Target:PR #N:URL|Issue #N:URL|Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
+    Original:trusted ad-hoc|n/a
     Goal:one-line outcome
     Notes:scope/branch/deps
-    Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
+    Done:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 TEXT
 TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
@@ -249,8 +249,8 @@ TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
   "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
 GOAL_PROMPT_FALLBACK_LINE =
-  "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
-  "persist output before resume/launch; preflight issue/PR only."
+  "- $pr-batch:resolve/autoload/self-contained;load state pre-preflight;" \
+  "persist output pre-resume/launch;preflight issue/PR only."
 ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
                               "chg=>redo/stop;gate fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
@@ -561,12 +561,12 @@ def assert_goal_prompt_heading_is_line_anchored
 end
 
 def with_items(prompt_template, items)
-  updated_prompt = prompt_template.sub(/Items:\n.*?\nExecution rules:/m) do
-    "Items:\n#{items}\nExecution rules:"
+  updated_prompt = prompt_template.sub(/Items:\n.*?\nRules:/m) do
+    "Items:\n#{items}\nRules:"
   end
   if updated_prompt == prompt_template
     abort_with_failure(
-      "goal prompt template must contain an Items section followed by Execution rules:"
+      "goal prompt template must contain an Items section followed by Rules:"
     )
   end
 
@@ -774,7 +774,7 @@ required_all_prompt_phrases = [
   "merge iff `merge_authority` is `auto_merge_when_gates_pass`",
   "explicit merge approval",
   "ready-no-merge-authority",
-  "document confidence data in PR description",
+  "record confidence in PR body",
   "Verify live GitHub before edits",
   COORDINATION_DEPENDENCY_PROMPT_LINE,
   "register before launch when supported",

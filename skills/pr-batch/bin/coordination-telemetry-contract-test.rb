@@ -21,6 +21,8 @@ MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                        "UNKNOWN=field;no guesses"
 APPLICABILITY_PROMPT_LINE =
   "coordination_not_applicable=>no calls;coordination_required+n/a=>stop"
+REPOSITORY_PROMPT_LINE = "Repo:OWNER/REPO"
+BATCH_QA_LANE_PROMPT_LINE = "Batch QA Lane:<owner/scope+QA Evidence|none+rationale>"
 LANE_CARD_PROMPT_LINE =
   "Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;" \
   "observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN"
@@ -524,6 +526,15 @@ class CoordinationTelemetryContractTest < Minitest::Test
       end
 
       assert_equal [LANE_CARD_PROMPT_LINE], lane_card_lines, path
+    end
+  end
+
+  def test_generated_goal_prompts_keep_repository_and_batch_qa_fields_exactly_aligned
+    [PR_BATCH_SKILL_PATH, PLAN_PR_BATCH_SKILL_PATH, WORKFLOW_PATH].each do |path|
+      prompt_lines = read_repo_file(path).each_line.map(&:strip)
+
+      assert_equal 1, prompt_lines.count(REPOSITORY_PROMPT_LINE), path
+      assert_equal 1, prompt_lines.count(BATCH_QA_LANE_PROMPT_LINE), path
     end
   end
 

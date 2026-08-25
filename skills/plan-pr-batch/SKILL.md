@@ -805,6 +805,7 @@ Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
+Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
@@ -816,24 +817,25 @@ Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispat
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
+Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
-- Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original:trusted ad-hoc prompt|n/a
+- Target:PR #N:URL|Issue #N:URL|Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
+  Original:trusted ad-hoc|n/a
   Goal:one-line outcome
   Notes:scope/branch/deps
-  Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
-Execution rules:
+  Done:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
+Rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+- $pr-batch:resolve/autoload/self-contained;load state pre-preflight;persist output pre-resume/launch;preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
-- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
+- Dispatch:pending=>persist/reissue token;active=>no launch;input=>decision;fence=>stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 coordination_not_applicable=>no calls;coordination_required+n/a=>stop
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
-merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
+merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record confidence in PR body
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 ```
