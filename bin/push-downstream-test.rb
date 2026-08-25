@@ -87,9 +87,9 @@ class PushDownstreamAuditWorkflowTest < Minitest::Test
     enforce = steps.find { |step| step["name"] == "Preserve audit exit status" }
 
     assert_equal false, checkout.dig("with", "persist-credentials")
-    assert_includes audit.fetch("run"), 'ruby bin/push-downstream --audit > "$AUDIT_REPORT"'
-    assert_equal "${{ runner.temp }}/downstream-seam-audit.json", upload.dig("with", "path")
-    assert_equal "always()", upload.fetch("if")
+    assert_includes audit.fetch("run"), 'ruby bin/push-downstream --audit | tee "$AUDIT_REPORT"'
+    assert_includes audit.fetch("run"), 'audit_exit=${PIPESTATUS[0]}'
+    assert_nil upload, "audit reports must not depend on an untrusted artifact action"
     assert_equal "always()", enforce.fetch("if")
     assert_includes enforce.fetch("run"), 'exit "$AUDIT_EXIT_CODE"'
 

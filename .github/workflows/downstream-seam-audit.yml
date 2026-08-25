@@ -40,20 +40,12 @@ jobs:
         env:
           AUDIT_REPORT: ${{ runner.temp }}/downstream-seam-audit.json
         run: |
+          set -o pipefail
           set +e
-          ruby bin/push-downstream --audit > "$AUDIT_REPORT"
-          audit_exit=$?
+          ruby bin/push-downstream --audit | tee "$AUDIT_REPORT"
+          audit_exit=${PIPESTATUS[0]}
           echo "exit_code=$audit_exit" >> "$GITHUB_OUTPUT"
           exit 0
-
-      - name: Upload audit report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: downstream-seam-audit-${{ github.sha }}
-          path: ${{ runner.temp }}/downstream-seam-audit.json
-          if-no-files-found: error
-          retention-days: 30
 
       - name: Preserve audit exit status
         if: always()
