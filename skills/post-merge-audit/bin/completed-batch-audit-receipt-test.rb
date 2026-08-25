@@ -326,6 +326,55 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_rejects_a_predecessor_with_a_helper_managed_snapshot
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    terminal = nil
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+    end
+    accepted_snapshot = terminal[/^accepted_deferral_snapshot: (.+)$/, 1]
+    publication_snapshot = CompletedBatchAuditReceipt.encoded_snapshot_value(preflight.fetch("snapshot"))
+    variants = {
+      "publication snapshot" => publication_snapshot,
+      "accepted-deferral snapshot" => accepted_snapshot
+    }
+
+    variants.each do |label, snapshot|
+      field = label.tr("-", "_").split.first(2).join("_")
+      predecessor = blocked.sub(/^scope_evidence:.*\n/, "\\0#{field}: #{snapshot}\n")
+      assert CompletedBatchAuditReceipt.marker_state(predecessor), label
+
+      api = accepted_deferral_api(preflight, unpublished_predecessor_marker: predecessor)
+      with_accepted_deferral_api(preflight, api) do
+        assert_raises(CompletedBatchAuditReceipt::AcceptedDeferralError, label) do
+          CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+            predecessor,
+            input:,
+            expected_batch_id: "ror-d-issue-4731-20260817",
+            targets: [target],
+            publication_preflight: preflight,
+            coordination_backend: REAL_BACKEND
+          )
+        end
+      end
+    end
+  end
+
   def test_accepted_deferral_accepts_one_attributable_multi_blocker_mechanism_defect
     target = accepted_deferral_target
     preflight = accepted_deferral_publication_preflight(target)

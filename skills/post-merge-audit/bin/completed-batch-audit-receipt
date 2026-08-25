@@ -883,6 +883,7 @@ module CompletedBatchAuditReceipt
   def accepted_deferral_predecessor?(marker, expected_batch_id:)
     state = marker_state(marker)
     return false unless state && state.fields["batch_id"] == expected_batch_id
+    return false if state.fields.key?("publication_snapshot") || state.fields.key?("accepted_deferral_snapshot")
     return false unless state.fields["audit_status"] == "blocked" && state.fields["verdict"] == "follow-ups-remain"
     return false unless state.records.one? && state.records.first.non_ready?
     return false if state.fields.values.any? { |value| unknown_value?(value) }
