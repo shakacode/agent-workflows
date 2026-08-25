@@ -1093,6 +1093,51 @@ RUBY
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "replaced prepared metadata leaked install lock"
 }
 
+test_metadata_commit_capability_failure_stops_before_managed_mutation() {
+  local tmp source target injection output status license_before metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-atomic-metadata-rename-import.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  license_before="$(shasum "$target/LICENSE")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  printf '\ncapability probe source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailAtomicMetadataRenameImport
+  def extern(signature, *arguments)
+    if signature.include?("renameat2") || signature.include?("renameatx_np")
+      raise Fiddle::DLError, "atomic rename unavailable"
+    end
+    super
+  end
+end
+Fiddle::Importer.prepend(FailAtomicMetadataRenameImport)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "missing metadata commit capability unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "missing metadata commit capability mutated a managed file"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "missing metadata commit capability changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
+    fail "missing metadata commit capability prepared new metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "missing metadata commit capability leaked install lock"
+}
+
 test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat() {
   local tmp target staging
   tmp="$(mktemp -d)"
@@ -5644,6 +5689,7 @@ main() {
     test_metadata_commit_rejects_destination_directory_race
     test_metadata_commit_rolls_back_failed_present_compare_and_swap
     test_metadata_commit_rejects_replaced_prepared_file
+    test_metadata_commit_capability_failure_stops_before_managed_mutation
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
     test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data
     test_flat_crash_recovery_rejects_symlink_skills_root_before_move

@@ -1464,6 +1464,101 @@ prepare_metadata() {
   ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}")"
 }
 
+preflight_metadata_commit_capability() {
+  local probe_status=0
+  ruby -rfiddle/import -e '
+    module AtomicMetadataRenameProbe
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"
+      extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x4)
+        end
+        def self.exchange(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x2)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x1)
+        end
+        def self.exchange(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x2)
+        end
+      end
+    end
+
+    lock = File.expand_path(ARGV.fetch(0))
+    first_name = "metadata-rename-probe-a"
+    second_name = "metadata-rename-probe-b"
+    first_path = File.join(lock, first_name)
+    second_path = File.join(lock, second_name)
+    directory = nil
+    ios = []
+    open_at = lambda do |name|
+      fd = AtomicMetadataRenameProbe.openat(
+        directory.fileno,
+        name,
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      io = File.for_fd(fd)
+      ios << io
+      io
+    end
+    create = lambda do |path, content|
+      file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
+      file.write(content)
+      file.flush
+      file.fsync
+      file.close
+    end
+
+    begin
+      abort unless File.const_defined?(:NOFOLLOW)
+      lock_path_stat = File.lstat(lock)
+      abort unless lock_path_stat.directory? && !lock_path_stat.symlink?
+      directory = File.open(lock, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      directory_stat = directory.stat
+      abort unless directory_stat.directory? &&
+                   directory_stat.dev == lock_path_stat.dev && directory_stat.ino == lock_path_stat.ino
+
+      create.call(first_path, "first")
+      abort unless AtomicMetadataRenameProbe.no_replace(
+        directory.fileno,
+        first_name,
+        second_name
+      ) == 0
+      create.call(first_path, "second")
+      abort unless AtomicMetadataRenameProbe.exchange(
+        directory.fileno,
+        first_name,
+        second_name
+      ) == 0
+      abort unless open_at.call(first_name).read == "first" && open_at.call(second_name).read == "second"
+      named_lock_stat = File.lstat(lock)
+      abort unless named_lock_stat.directory? && !named_lock_stat.symlink? &&
+                   named_lock_stat.dev == directory_stat.dev && named_lock_stat.ino == directory_stat.ino
+    ensure
+      ios.reverse_each { |io| io.close unless io.closed? }
+      if directory
+        AtomicMetadataRenameProbe.unlinkat(directory.fileno, first_name, 0)
+        AtomicMetadataRenameProbe.unlinkat(directory.fileno, second_name, 0)
+      end
+      directory&.close
+    end
+  ' "$install_lock" 2>/dev/null || probe_status=$?
+
+  if [[ "$probe_status" -ne 0 ]]; then
+    echo "METADATA_COMMIT_UNAVAILABLE: the current Ruby runtime or target filesystem does not support the atomic metadata rename operations required for a safe install." >&2
+    echo "Use a supported macOS or Linux runtime/filesystem, or install into a new target where the capability probe passes." >&2
+    return 1
+  fi
+}
+
 commit_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
@@ -2785,6 +2880,9 @@ if [[ "$delivery_status" -ne 0 ]]; then
     warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
     warn payload.fetch("guidance")
   '
+  exit 1
+fi
+if ! preflight_metadata_commit_capability; then
   exit 1
 fi
 verify_pack_doc_destinations
