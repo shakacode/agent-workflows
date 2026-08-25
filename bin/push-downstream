@@ -74,7 +74,7 @@ module PushDownstream
                           "is never used to represent an unknown value.",
     "exit_codes" => {
       "0" => "every selected consumer is clean",
-      "1" => "at least one consumer is drifted or blocked"
+      "1" => "at least one consumer is drifted or blocked, or no consumers were selected"
     }
   }.freeze
   AUDIT_SCOPE = {
@@ -2575,7 +2575,7 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--apply", "Apply changes (write files; push branches and open PRs)") { options[:apply] = true }
     opts.on("--audit",
             "Read-only fleet seam-drift report as JSON; never writes, pushes, or opens PRs.",
-            "Exit 0 when every consumer is clean, 1 when any is drifted or blocked.",
+            "Exit 0 when every selected consumer is clean; 1 when any is drifted or blocked, or none are selected.",
             "Per consumer, seam_doctor_issues, changed_managed_paths, and follow_ups are",
             "each an Array, or the string \"UNKNOWN\" when the consumer is blocked and the",
             "value could not be established. Type-check these fields before iterating.") do

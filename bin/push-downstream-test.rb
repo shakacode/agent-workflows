@@ -1945,7 +1945,8 @@ class PushDownstreamAuditTest < Minitest::Test
                  contract.fetch("polymorphic_fields")
     assert_includes contract.fetch("polymorphic_note"), "Type-check before iterating"
     assert_includes contract.fetch("polymorphic_note"), "\"UNKNOWN\""
-    assert_equal "at least one consumer is drifted or blocked", contract.fetch("exit_codes").fetch("1")
+    assert_equal "at least one consumer is drifted or blocked, or no consumers were selected",
+                 contract.fetch("exit_codes").fetch("1")
   end
 
   private
@@ -3663,6 +3664,14 @@ class PushDownstreamCliTest < Minitest::Test
       assert_includes out, "would reconcile binstub scaffold"
       refute File.exist?(File.join(root, ".agents/bin/validate"))
     end
+  end
+
+  def test_audit_help_documents_empty_selection_as_failure
+    out, status = run_cli("--help")
+
+    assert status.success?, out
+    assert_includes out,
+                    "Exit 0 when every selected consumer is clean; 1 when any is drifted or blocked, or none are selected."
   end
 
   def test_policy_fleet_apply_rejects_explicit_empty_only_without_syncing
