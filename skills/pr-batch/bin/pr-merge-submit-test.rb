@@ -1326,6 +1326,108 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "enqueuePullRequest"
   end
 
+  def test_authenticated_optional_approval_held_receipt_reaches_the_merge_mutation
+    result, log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" }
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_optional_approval_held_receipt_cannot_supply_missing_malformed_or_tampered_policy
+    missing_result, missing_log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held_policy_missing,
+      merge_submission: { "mode" => "direct" },
+      policy_fixture: :missing
+    )
+    assert_equal 1, missing_result.fetch(:status).exitstatus
+    assert_includes missing_result.fetch(:stderr),
+                    "ci policy disposition is not authenticated from trusted base"
+    assert_empty missing_log
+
+    malformed_result, malformed_log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held_policy_malformed,
+      merge_submission: { "mode" => "direct" },
+      policy_fixture: :malformed
+    )
+    assert_equal 1, malformed_result.fetch(:status).exitstatus
+    assert_includes malformed_result.fetch(:stderr),
+                    "trusted-base ci_readiness policy could not be authenticated"
+    assert_empty malformed_log
+
+    tampered_result, tampered_log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held_policy_tampered,
+      merge_submission: { "mode" => "direct" }
+    )
+    assert_equal 1, tampered_result.fetch(:status).exitstatus
+    assert_includes tampered_result.fetch(:stderr),
+                    "ci policy evidence does not match authenticated trusted-base policy"
+    assert_empty tampered_log
+  end
+
+  def test_reused_runner_resolves_the_trusted_repository_root_for_each_run
+    Dir.mktmpdir("pr-merge-submit-runner-lifecycle") do |dir|
+      first_root, first_base_sha, = prepare_consumer_repo(
+        dir,
+        merge_submission: { "mode" => "direct" },
+        policy_fixture: :present,
+        guard_fixture: :executable,
+        ci_readiness: true
+      )
+      second_root = File.join(dir, "consumer-two")
+      run_git!(dir, "clone", "-q", first_root, second_root)
+      File.write(File.join(second_root, "README.md"), "second consumer fixture\n")
+      run_git!(second_root, "add", "README.md")
+      run_git!(
+        second_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-qm", "second trusted base"
+      )
+      second_base_sha = run_git!(second_root, "rev-parse", "HEAD").strip
+
+      gh_path = File.join(dir, "gh")
+      gh_log = File.join(dir, "gh.log")
+      guard_marker = File.join(dir, "guard-called")
+      runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => gh_path })
+      runner.define_singleton_method(:system_tool_test_environment) do
+        { "GH_LOG" => gh_log, "PR_TEST_GUARD_MARKER" => guard_marker }
+      end
+
+      repositories = [first_root, second_root].zip([first_base_sha, second_base_sha])
+      statuses = repositories.map.with_index do |(repo_root, base_sha), index|
+        receipt_path = File.join(dir, "merge-assurance-receipt-#{index}.json")
+        write_merge_assurance_receipt(
+          receipt_path, mode: :optional_held, repo: "owner/repo", head: HEAD_SHA,
+                        base_ref: "main", base_sha:, host: HOST, pr_number: 42,
+                        gh_dir: dir, repo_root:
+        )
+        File.write(
+          gh_path,
+          fake_gh(
+            mode: "direct", head: HEAD_SHA, base: "main", base_sha:,
+            url_host: HOST, repo: "owner/repo"
+          )
+        )
+        FileUtils.chmod(0o755, gh_path)
+        arguments = cli_arguments(
+          "owner/repo", HEAD_SHA, true, true,
+          include_merge_assurance_receipt: true, receipt_path:, gh_path:
+        ).drop(3)
+        status = nil
+        capture_io { status = Dir.chdir(repo_root) { runner.run(arguments) } }
+        status
+      end
+
+      assert_equal [0, 0], statuses
+      assert_equal File.realpath(second_root), runner.instance_variable_get(:@repo_root)
+    end
+  end
+
   def test_reviewed_diff_base_may_differ_from_the_live_base_binding
     result, log = run_cli(mode: "direct", receipt_diff_base_sha: "c" * 40)
 
@@ -1575,7 +1677,9 @@ class PrMergeSubmitTest < Minitest::Test
                                             [File.expand_path("../../..", __dir__), BASE_SHA, HEAD_SHA]
                                           else
                                             prepare_consumer_repo(
-                                              dir, merge_submission:, policy_fixture:, guard_fixture:
+                                              dir,
+                                              merge_submission:, policy_fixture:, guard_fixture:,
+                                              ci_readiness: receipt_mode.to_s.start_with?("optional_held")
                                             )
                                           end
       if !source_repo_policy &&
@@ -1619,7 +1723,7 @@ class PrMergeSubmitTest < Minitest::Test
           receipt_path, mode: receipt_mode, repo:, head: expected_head,
                         base_ref: expected_base, base_sha: receipt_base_sha || base_sha,
                         diff_base_sha: receipt_diff_base_sha,
-                        host: HOST, pr_number: 42, gh_dir: dir
+                        host: HOST, pr_number: 42, gh_dir: dir, repo_root:
         )
       end
       environment = cli_environment(
@@ -1699,7 +1803,8 @@ class PrMergeSubmitTest < Minitest::Test
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       write_merge_assurance_receipt(
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
-                      base_ref: "main", base_sha:, host: HOST, pr_number: 42, gh_dir: dir
+                      base_ref: "main", base_sha:, host: HOST, pr_number: 42, gh_dir: dir,
+                      repo_root:
       )
       result = Open3.popen3(
         cli_environment(
@@ -1868,7 +1973,7 @@ class PrMergeSubmitTest < Minitest::Test
 
   def write_merge_assurance_receipt(
     path, mode:, repo:, head:, base_ref:, base_sha:, host:, pr_number:, gh_dir:,
-    diff_base_sha: nil
+    repo_root:, diff_base_sha: nil
   )
     diff_base_sha ||= base_sha
     now = Time.now.utc
@@ -1904,6 +2009,43 @@ class PrMergeSubmitTest < Minitest::Test
         "other" => scope.call("other", [])
       }
     }
+    trusted_ci_policy = nil
+    if mode.to_s.start_with?("optional_held")
+      begin
+        trusted_ci_policy = PrCiReadiness.trusted_ci_policy_at(
+          repo_root:, base_ref:, base_sha:
+        )
+      rescue PrCiReadiness::Error
+        raise unless mode == :optional_held_policy_malformed
+      end
+      if trusted_ci_policy.nil? && %i[
+        optional_held_policy_missing optional_held_policy_malformed
+      ].include?(mode)
+        trusted_ci_policy = claimed_optional_held_policy(base_ref:, base_sha:)
+      end
+      raise "optional-held receipt fixture needs a policy" unless trusted_ci_policy
+
+      held = {
+        "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+        "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
+        "app_slug" => "circleci-checks", "dependabot" => false
+      }
+      ci_result.fetch("scopes").fetch("other").merge!(
+        "state" => "READY",
+        "rows" => [held],
+        "policy_dispositions" => [
+          {
+            "disposition" => "optional_approval_held",
+            "rule_id" => "circleci-storybook",
+            "kind" => "check_run",
+            "id" => 31,
+            "app_slug" => "circleci-checks",
+            "name" => "storybook-review-app"
+          }
+        ]
+      )
+      ci_result["ci_policy"] = trusted_ci_policy
+    end
     autonomous_result = {
       "verdict" => "autonomous-merge-eligible",
       "head_sha" => head,
@@ -2026,6 +2168,21 @@ class PrMergeSubmitTest < Minitest::Test
     File.write(path, JSON.generate(receipt))
   end
 
+  def claimed_optional_held_policy(base_ref:, base_sha:)
+    {
+      "version" => 1,
+      "provenance" => "git:#{base_sha}:.agents/agent-workflow.yml@#{'e' * 40}",
+      "base" => { "ref" => base_ref, "sha" => base_sha },
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+  end
+
   def with_fake_gh(dir)
     original_path = ENV.fetch("PATH")
     original_log = ENV["GH_LOG"]
@@ -2073,11 +2230,25 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def prepare_consumer_repo(dir, merge_submission:, policy_fixture:, guard_fixture:)
+  def prepare_consumer_repo(
+    dir, merge_submission:, policy_fixture:, guard_fixture:, ci_readiness: false
+  )
     root = File.join(dir, "consumer")
     FileUtils.mkdir_p(File.join(root, ".agents/bin"))
     policy = { "base_branch" => "main" }
     policy["merge_submission"] = merge_submission unless merge_submission.nil?
+    if ci_readiness
+      policy["ci_readiness"] = {
+        "version" => 1,
+        "optional_approval_held_checks" => [
+          {
+            "id" => "circleci-storybook",
+            "app_slug" => "circleci-checks",
+            "name" => "storybook-review-app"
+          }
+        ]
+      }
+    end
     policy_path = File.join(root, ".agents/agent-workflow.yml")
     case policy_fixture
     when :present

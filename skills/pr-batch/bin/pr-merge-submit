@@ -158,6 +158,7 @@ module PrMergeSubmit
     end
 
     def run(argv)
+      @repo_root = nil
       @pending_signal = nil
       @cancellation_signal = nil
       @mutation_attempted = false
@@ -319,6 +320,7 @@ module PrMergeSubmit
       now = Time.now.utc
       validate_receipt_evidence!(receipt, evidence)
       validate_receipt_freshness!(receipt, now)
+      trusted_ci_policy = trusted_ci_policy_for_receipt!(evidence)
       reassessed = MergeAssurance.assess(
         ci_result: evidence["ci_result"],
         autonomous_result: evidence["autonomous_result"],
@@ -347,6 +349,24 @@ module PrMergeSubmit
       receipt
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "merge-assurance receipt is unavailable: #{e.message}"
+    end
+
+    def trusted_ci_policy_for_receipt!(evidence)
+      ci_result = evidence["ci_result"]
+      return nil unless ci_result.is_a?(Hash) && ci_result.key?("ci_policy")
+
+      context = evidence["context"]
+      base = context["base"] if context.is_a?(Hash)
+      return nil unless base.is_a?(Hash)
+
+      @repo_root ||= trusted_repo_root!
+      PrCiReadiness.trusted_ci_policy_at(
+        repo_root: @repo_root,
+        base_ref: base["ref"],
+        base_sha: base["sha"]
+      )
+    rescue PrCiReadiness::Error => e
+      raise Error, "trusted-base ci_readiness policy could not be authenticated: #{e.message}"
     end
 
     def validate_receipt_evidence!(receipt, evidence)
@@ -455,7 +475,7 @@ module PrMergeSubmit
 
     def load_merge_submission_policy!
       base_sha = @merge_assurance_receipt.dig("bindings", "base", "sha").to_s
-      @repo_root = trusted_repo_root!
+      @repo_root ||= trusted_repo_root!
       raw = trusted_blob!(
         base_sha, POLICY_CONFIG, "trusted-base merge-submission policy", allow_missing: true
       )
