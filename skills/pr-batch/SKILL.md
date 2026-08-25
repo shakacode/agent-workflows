@@ -100,8 +100,21 @@ facts remain fail-closed and stop before mutation.
   owns schema and launch scheduling, including the required active wave and
   max-one serialization. Preserve real PR verified `pr-file-touch-map` results
   unchanged; encode explicit pre-PR paths as typed `planned-path-evidence` v1
-  records with durable evidence references. A rejection launches nothing; an
-  acceptance permits only the returned eligible lanes.
+  records with durable evidence references. Optional additive
+  `expansion_path_reservations` entries use exact
+  `expansion-path-reservation` v1 records bound to the batch, dependency plan,
+  known lane, and wave, with one canonical path, known reason, and durable
+  evidence reference. A directory rename instead uses an exact
+  `expansion-rename-reservation` v1 record with the same identity, reason, and
+  evidence fields and a canonical, distinct `rename` old/new pair in place of
+  `path`. Presence means active and omission means cancelled. Reject malformed,
+  `UNKNOWN`, noncanonical, duplicate, mismatched, completed-lane, or
+  already-reflected reservations. Collision and risky-cap decisions use verified
+  paths plus active reservations. Scalar path reservations remain exact-only;
+  typed rename reservations add ancestor/descendant collision checks at both
+  endpoints. Reservation-derived overlap requires explicit max-one
+  serialization. A rejection launches nothing; an acceptance permits only the
+  returned eligible lanes.
 - **Dispatcher capability preflight**: before launch, pass the requested
   route preference/dispatcher, explicit dispatch authority, ordered candidates,
   and preserved lane state to `bin/dispatcher-capability-preflight`. It records
@@ -575,7 +588,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
@@ -590,7 +603,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
@@ -796,9 +809,52 @@ Alongside that packet, a private-backend worker emits
 `escalation_requested` with `from_route`, `to_route`, and `evidence`.
 Before editing, workers in lanes whose risk or bounded delegation requires an
 execution envelope restate the coordinator-role-approved envelope regardless of
-route. Contradictory evidence, ambiguous criteria, scope/risk
-growth, weakened verification, or consequential judgment returns control to the
-coordinator immediately rather than authorizing worker re-planning.
+route. Necessary in-repository path expansion defaults to allowed when
+repository evidence shows an added path is reasonably necessary to complete the
+already-authorized goal or its required validation. Treat owned paths and the
+execution envelope as coordination and collision controls, not as a
+user-permission boundary. Before editing, record each added path and reason in
+the lane envelope when one is present; otherwise use a durable coordinator-owned
+lane record or Lane Card that the coordinator can read. Every added path not yet
+reflected in its verified file-touch map must have an active typed
+`expansion-path-reservation` before edit. When a lane is the sole active editor,
+the coordinator durably records the reservation, refreshes authoritative
+file-touch maps, lane lifecycle state, and active-lane claim and collision checks,
+and reruns `batch-plan-preflight`; the worker continues without user approval or
+a blocked lifecycle only after the preflight accepts. Before a worker in a multi-editor wave
+changes an added path, it persists a typed expansion request, marks its durable
+lane lifecycle blocked, refreshes its heartbeat, emits a Lane Card with the path,
+reason, and request evidence reference, and pauses at a safe checkpoint. The
+coordinator processes expansion requests serially, records an active
+`expansion_path_reservations` entry, refreshes authoritative file-touch maps and
+lane lifecycle state, and reruns `batch-plan-preflight`. For every multi-editor
+request, acceptance alone does not authorize resume: the requester must durably
+transition out of `blocked`, a fresh preflight must accept, and the requester
+must be absent from `launch.held_lane_ids`; when launch or relaunch is needed, it
+must also be present in `launch.eligible_lane_ids`. Under
+maximum-concurrency-one serialization, the current holder must also release the
+slot before resume. The reservation persists until the verified PR file-touch map
+contains the path or the request is cancelled, and it is removed once reflected
+or cancelled. A collision or `UNKNOWN` collision state remains stopped until
+then. A missing path alone is not material scope growth and must not produce
+`blocked-user-input`.
+Directory renames use a distinct `expansion-rename-reservation` v1 record with
+canonical, distinct `old` and `new` endpoints; only this typed rename form adds
+ancestor/descendant collision checks, while scalar path reservations remain
+exact-path collision controls.
+Necessary additions can include contract or type files, tests or fixtures,
+offline demo stubs, and build or generated integration surfaces when repository
+evidence makes them necessary.
+Contradictory evidence remains an immediate stop. Stop and return control when
+any of the following applies: the approved goal, accepted behavior, or acceptance
+criteria changes; the work adds unrelated work; it crosses a repository or trust
+boundary; it requires a destructive or difficult-to-reverse action; it introduces
+secrets, permissions, deployments, billing, or other external effects; it
+requires consequential architecture, performance, compatibility, or product
+judgment; it materially changes security, privacy, compliance, or release policy;
+it collides with another active lane and cannot be safely coordinated; it exposes
+consequential ambiguity; or it weakens verification. An omitted path alone is not
+such a condition.
 
 ## Pausing Or Stopping A Batch
 

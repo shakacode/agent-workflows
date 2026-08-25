@@ -110,8 +110,11 @@ the selected model. A pinned high-risk boundary uses Sol/xhigh; other unknown or
 uncertainty uses Sol/high. If unavailable, use the closest available route or
 runtime default and record it honestly. Every
 worker stops without editing further and returns to the coordinator when evidence
-contradicts the diagnosis, scope or blast radius grows, a high-risk boundary
-appears, verification weakens, or consequential judgment is required. Sol/xhigh
+contradicts the diagnosis, material semantic scope growth or material blast-radius
+growth appears, a high-risk boundary appears, verification weakens, or
+consequential judgment is required. Evidence-backed discovery of a necessary
+in-repository path alone is not such growth; follow the [path-expansion
+contract](pr-batch-skills.md#implementation-batch-planning-flow). Sol/xhigh
 is the recommendation for high-risk or qualified escalated work, not a
 prerequisite.
 
@@ -175,9 +178,12 @@ regardless of the selected model. A present or disputed pinned high-risk
 boundary uses Opus 5/xhigh; other missing or disputed simplicity criteria use
 Opus 5/high. If unavailable, use the closest available route or runtime default
 and record it honestly. Every worker stops without editing further and returns
-to the coordinator when evidence contradicts the diagnosis, scope or blast
-radius grows, a high-risk boundary appears, verification weakens, or
-consequential judgment is required.
+to the coordinator when evidence contradicts the diagnosis, material semantic
+scope growth or material blast-radius growth appears, a high-risk boundary
+appears, verification weakens, or consequential judgment is required.
+Evidence-backed discovery of a necessary in-repository path alone is not such
+growth; follow the [path-expansion
+contract](pr-batch-skills.md#implementation-batch-planning-flow).
 
 Haiku 4.5 is outside this provisional profile.
 
