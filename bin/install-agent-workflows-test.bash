@@ -201,11 +201,16 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/skills/pr-batch/agents/openai.yaml"
   assert_file "$target/workflows/pr-processing.md"
   assert_file "$target/docs/coordination-backend.md"
+  assert_file "$target/docs/execution-provenance-schema.md"
   assert_file "$target/docs/review-finding-schema.md"
   assert_file "$target/docs/agent-workflows-model-routing.md"
   assert_file "$target/docs/user-facing-coordination.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
+  assert_file "$target/bin/validate-execution-provenance"
+  "$target/bin/validate-execution-provenance" >"$tmp/validate-execution-provenance.out"
+  grep -Fqx 'PASS execution provenance schema' "$tmp/validate-execution-provenance.out" || \
+    fail "Codex copy install could not validate its installed provenance schema guide"
   assert_file "$target/bin/agent-workflows-status"
   assert_file "$target/bin/agent-workflows-doctor"
   assert_file "$target/bin/agent_doctor/process_runner.rb"
@@ -225,7 +230,14 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata is source-pack metadata, not installer-managed install metadata"
-  ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    provenance_fingerprint = metadata.fetch("managed_pack_doc_copy_fingerprints")["execution-provenance-schema.md"]
+    abort metadata.inspect unless metadata["host"] == "codex" &&
+                                  metadata["mode"] == "copy" &&
+                                  metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
+                                  provenance_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/)
+  ' "$target/.agent-workflows-install.json"
 }
 
 test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision() {
@@ -1152,6 +1164,8 @@ test_installation_docs_describe_managed_coordination_doc_fingerprints() {
   changelog="$(cat "$ROOT/CHANGELOG.md")"
 
   assert_contains "$docs" '<target>/docs/user-facing-coordination.md'
+  assert_contains "$docs" '<target>/docs/execution-provenance-schema.md'
+  assert_contains "$docs" '<target>/bin/validate-execution-provenance'
   assert_contains "$docs" 'managed_skill_copy_fingerprints'
   assert_contains "$docs" 'managed_pack_doc_copy_fingerprints'
   assert_contains "$docs" 'including every installed'
@@ -1970,12 +1984,14 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/workflows"
   assert_file "$target/docs/personal.md"
   assert_symlink "$target/docs/coordination-backend.md"
+  assert_symlink "$target/docs/execution-provenance-schema.md"
   assert_symlink "$target/docs/review-finding-schema.md"
   assert_symlink "$target/docs/agent-workflows-model-routing.md"
   assert_symlink "$target/docs/user-facing-coordination.md"
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
+  assert_symlink "$target/bin/validate-execution-provenance"
   assert_symlink "$target/bin/agent_doctor"
   assert_symlink "$target/bin/agent-workflows-trust-audit"
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not symlink stack-specific helper"

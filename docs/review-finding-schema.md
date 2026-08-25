@@ -133,18 +133,21 @@ workflow into the same shape:
 ## Review Receipt
 
 `review_receipt` is an optional additive top-level object. Existing
-`review-finding-v0` reports without it remain valid. Autoreview, adversarial PR
-review, continuous evaluation, post-merge audit, and address-review use
-receipts to make review scope and limitations replayable without making another
-review engine a dependency. The `model`, `effort`, and `usage` provenance
-extensions are additive.
+`review-finding-v0` reports without it remain valid. The `model`, `effort`, and
+`usage` provenance extensions are additive.
+
+This review invocation metadata does not replace a lane execution-provenance receipt.
+Use the
+[execution-provenance receipt](execution-provenance-schema.md) to record
+requested-versus-observed route evidence and influenced commits.
 
 Older receipts that omit all three fields remain valid.
 
 The receipt includes:
 
-- `source`: `autoreview`, `adversarial-pr-review`,
-  `continuous-evaluation-loop`, `post-merge-audit`, or `address-review`;
+Allowed receipt sources: `autoreview`, `adversarial-pr-review`, `continuous-evaluation-loop`, `post-merge-audit`, `address-review`, `structural-review`, `fix-flaky-tests`.
+
+- `source`: one allowed receipt source;
 - `target`: `kind` of `committed` or `uncommitted`, plus non-empty `base_ref`,
   immutable `base_sha`, and `head_sha` strings for the reviewed diff;
 - `provenance`: non-empty `engine` and `invocation` strings, plus the optional

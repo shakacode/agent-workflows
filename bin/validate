@@ -84,6 +84,10 @@ echo "== review finding schema =="
 ruby bin/validate-review-findings-test.rb
 ruby bin/validate-review-findings
 
+echo "== execution provenance schema =="
+ruby bin/validate-execution-provenance-test.rb
+ruby bin/validate-execution-provenance
+
 echo "== installer/status/upgrade tests =="
 bash bin/install-agent-workflows-test.bash
 bash bin/agent-stack-test.bash

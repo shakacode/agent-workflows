@@ -4,6 +4,7 @@
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
+load File.join(ROOT, "bin/validate-execution-provenance")
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 
@@ -1223,6 +1224,12 @@ class ModelRoutingContractTest < Minitest::Test
 
   def test_routing_guide_pins_requested_versus_observed_route_provenance
     assert_route_provenance_contract(self, read_repo_file(MODEL_ROUTING_GUIDE_PATH), MODEL_ROUTING_GUIDE_PATH)
+  end
+
+  def test_execution_provenance_schema_cases_equal_disposition_table_rows
+    table_cases = route_dispositions(read_repo_file(MODEL_ROUTING_GUIDE_PATH)).keys.sort
+
+    assert_equal table_cases, ValidateExecutionProvenance::DISPOSITIONS.sort
   end
 
   def test_aw_d_route_mismatches_continue_without_route_measurement_evidence
