@@ -3326,32 +3326,44 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def test_command_timestamp_rejects_leap_seconds_without_normalization
-    Dir.mktmpdir("batch-token-budget-leap-seconds") do |directory|
-      ["2016-12-31T23:59:60Z", "2026-08-12T12:30:60Z"].each_with_index do |timestamp, index|
-        state_path = File.join(directory, "invalid-#{index}.json")
-        output, stderr, status = run_helper(
+  def test_invalid_command_timestamps_are_rejected_before_lock_artifact_creation
+    Dir.mktmpdir("batch-token-budget-invalid-timestamps") do |directory|
+      invalid_timestamps = ["2016-12-31T23:59:60Z", "2026-08-12T12:30:60Z", "12:30"]
+      invalid_timestamps.each_with_index do |timestamp, index|
+        state_path = File.join(directory, "invalid-#{index}", "state.json")
+        candidate = budget(state_path: state_path)
+        anchor = install_trusted_plan(File.join(directory, "anchor-#{index}"), candidate)
+        output, stderr, status = run_helper_raw(
           state_path,
-          command("initialize", "evaluated_at" => timestamp, "budget" => budget(state_path: state_path))
+          JSON.generate(command("initialize", "evaluated_at" => timestamp, "budget" => candidate)),
+          anchor: anchor
         )
 
         refute status.success?, timestamp
         assert_nil output, timestamp
         assert_equal "invalid-evaluated-at", JSON.parse(stderr).fetch("reason"), timestamp
+        refute File.exist?(state_path), timestamp
+        refute File.exist?("#{state_path}.lock"), timestamp
+        refute Dir.exist?(File.dirname(state_path)), timestamp
       end
 
-      valid_state_path = File.join(directory, "valid.json")
-      initialized, stderr, status = run_helper(
+      valid_state_path = File.join(directory, "valid", "state.json")
+      valid_budget = budget(state_path: valid_state_path)
+      valid_anchor = install_trusted_plan(File.join(directory, "valid-anchor"), valid_budget)
+      initialized, stderr, status = run_helper_raw(
         valid_state_path,
-        command(
-          "initialize",
-          "evaluated_at" => "2026-08-12T12:30:59.999999-05:30",
-          "budget" => budget(state_path: valid_state_path)
-        )
+        JSON.generate(command(
+                        "initialize",
+                        "evaluated_at" => "2026-08-12T12:30:59.999999-05:30",
+                        "budget" => valid_budget
+                      )),
+        anchor: valid_anchor
       )
 
       assert status.success?, stderr
       assert_equal "initialized", initialized.fetch("status")
+      assert File.file?(valid_state_path)
+      assert File.file?("#{valid_state_path}.lock")
     end
   end
 end

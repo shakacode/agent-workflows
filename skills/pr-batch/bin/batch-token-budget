@@ -2513,6 +2513,9 @@ begin
   unless BatchTokenBudget.valid_command_shape?(command)
     raise BatchTokenBudget::InvalidInput, "unsupported-command-contract"
   end
+  unless BatchTokenBudget.timestamp?(command["evaluated_at"])
+    raise BatchTokenBudget::InvalidInput, "invalid-evaluated-at"
+  end
 
   FileUtils.mkdir_p(File.dirname(state_path))
   File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
