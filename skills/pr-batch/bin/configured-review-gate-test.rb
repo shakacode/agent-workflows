@@ -141,7 +141,7 @@ class ConfiguredReviewGateTest < Minitest::Test
   end
 
   def artifact(
-    id: "A1", kind: "pull_request_review", actor: "claude", head_sha: HEAD_SHA,
+    id: "1", kind: "pull_request_review", actor: "claude", head_sha: HEAD_SHA,
     created_at: "2026-08-25T11:59:10Z", state: "COMMENTED"
   )
     record = {
@@ -427,9 +427,9 @@ class ConfiguredReviewGateTest < Minitest::Test
   end
 
   def test_only_latest_current_head_pull_request_review_per_actor_can_qualify
-    older_comment = artifact(id: "R1", created_at: "2026-08-25T11:57:00Z", state: "COMMENTED")
+    older_comment = artifact(id: "1", created_at: "2026-08-25T11:57:00Z", state: "COMMENTED")
     newer_change_request = artifact(
-      id: "R2", created_at: "2026-08-25T11:59:00Z", state: "CHANGES_REQUESTED"
+      id: "2", created_at: "2026-08-25T11:59:00Z", state: "CHANGES_REQUESTED"
     )
 
     result = ConfiguredReviewGate.evaluate(
@@ -460,9 +460,9 @@ class ConfiguredReviewGateTest < Minitest::Test
   end
 
   def test_newest_acceptable_current_head_review_qualifies_regardless_of_api_order
-    newer_comment = artifact(id: "R2", created_at: "2026-08-25T11:59:00Z", state: "COMMENTED")
+    newer_comment = artifact(id: "2", created_at: "2026-08-25T11:59:00Z", state: "COMMENTED")
     older_change_request = artifact(
-      id: "R1", created_at: "2026-08-25T11:57:00Z", state: "CHANGES_REQUESTED"
+      id: "1", created_at: "2026-08-25T11:57:00Z", state: "CHANGES_REQUESTED"
     )
 
     result = ConfiguredReviewGate.evaluate(
@@ -474,6 +474,37 @@ class ConfiguredReviewGateTest < Minitest::Test
     )
 
     assert_equal "READY", result.fetch("verdict")
+  end
+
+  def test_equal_time_pull_request_reviews_use_numeric_rest_id_order
+    earlier_approved = artifact(id: "9", state: "APPROVED")
+    later_change_request = artifact(id: "10", state: "CHANGES_REQUESTED")
+
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [later_change_request, earlier_approved]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code")
+  end
+
+  def test_malformed_non_numeric_or_missing_pull_request_review_ids_fail_closed
+    [nil, "", "review-10", "10x", "0", "-1"].each do |id|
+      result = ConfiguredReviewGate.evaluate(
+        policy: policy,
+        policy_source: JSON.generate(policy),
+        snapshot: snapshot("checks" => [check], "artifacts" => [artifact(id:)]),
+        settled: true,
+        now: NOW
+      )
+
+      assert_equal "NOT_READY", result.fetch("verdict"), id.inspect
+      assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code"), id.inspect
+    end
   end
 
   def test_settled_success_with_no_untriaged_current_head_threads_is_ready

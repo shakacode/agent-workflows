@@ -711,14 +711,23 @@ module ConfiguredReviewGate
       artifact["kind"] == "pull_request_review" &&
         artifact["head_sha"].to_s.casecmp?(head_sha.to_s)
     end.group_by { |artifact| artifact["actor"] }.to_h do |actor, reviews|
-      parsed = reviews.map do |review|
-        [review, Time.iso8601(review["created_at"].to_s)]
-      rescue ArgumentError
-        nil
+      ordered = reviews.map do |review|
+        [review, pull_request_review_order_key(review)]
       end
-      latest = parsed.all? ? parsed.max_by { |review, submitted_at| [submitted_at, review["id"].to_s] }&.first : nil
+      latest = if ordered.all? { |_review, key| key }
+                 ordered.max_by { |_review, key| key }&.first
+               end
       [actor, latest]
     end
+  end
+
+  def pull_request_review_order_key(review)
+    id = review["id"].to_s
+    return unless id.match?(/\A[1-9]\d*\z/)
+
+    [Time.iso8601(review["created_at"].to_s), Integer(id, 10)]
+  rescue ArgumentError
+    nil
   end
 
   def qualifying_review_artifact?(artifact, latest_reviews)
