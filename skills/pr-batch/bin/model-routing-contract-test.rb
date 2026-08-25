@@ -148,6 +148,17 @@ SINGLE_TARGET_PLANNER_SURFACES = %w[
   skills/plan-pr-batch/SKILL.md
   workflows/pr-processing.md
 ].freeze
+PLANNING_PASS_ROUTE_EXPECTATIONS = {
+  "affirmatively-simple" => ["balanced/medium", "Terra/medium", "Sonnet 5/medium"],
+  "routine-multi-lane" => ["balanced/high", "Terra/high", "Sonnet 5/high"],
+  "default-or-uncertain-single-target" => ["strongest/high", "Sol/high", "Opus 5/high"],
+  "pinned-high-risk-or-escalation" => ["strongest/xhigh", "Sol/xhigh", "Opus 5/xhigh"]
+}.freeze
+PLANNING_PASS_DISPOSITION_EXPECTATIONS = {
+  "stronger-current" => %w[future-cost-advisory 0 yes no],
+  "weaker-current-host-supported" => %w[bounded-independent-review 1 yes no],
+  "any-observed-field-UNKNOWN" => %w[non-blocking-advisory 0 no no]
+}.freeze
 
 MODEL_ROUTING_GUIDE_PATH = "docs/agent-workflows-model-routing.md"
 ROUTE_DISPOSITION_TABLE_HEADING = "### Disposition Table"
@@ -785,6 +796,51 @@ def forbidden_route_only_contradiction?(text)
   end
 end
 
+def planning_pass_section(text)
+  visible_text = strip_html_comments(text)
+  lines = visible_text.lines
+  heading_index = lines.index { |line| line.match?(/^\#{1,6}\s+Planning-Pass Route Assessment\s*$/) }
+  return unless heading_index
+
+  heading_level = lines.fetch(heading_index)[/\A#+/].length
+  body = lines.drop(heading_index + 1).take_while do |line|
+    heading = line[/\A(#+)\s+/, 1]
+    heading.nil? || heading.length > heading_level
+  end
+  body.join
+end
+
+def planning_pass_rows(section, pattern)
+  section.scan(pattern).to_h do |case_id, *values|
+    [case_id, values]
+  end
+end
+
+def assert_planning_pass_contract(test, text, label)
+  section = planning_pass_section(text)
+  test.refute_nil section, "#{label} is missing a visible Planning-Pass Route Assessment"
+
+  route_rows = planning_pass_rows(
+    section,
+    /^\|\s*`([a-z-]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*$/
+  )
+  disposition_rows = planning_pass_rows(
+    section,
+    /^\|\s*`([A-Za-z-]+)`\s*\|\s*`([a-z-]+)`\s*\|\s*`(\d+)`\s*\|\s*`(yes|no)`\s*\|\s*`(yes|no)`\s*\|\s*$/
+  )
+
+  test.assert_equal PLANNING_PASS_ROUTE_EXPECTATIONS, route_rows,
+                    "#{label} planning-pass route matrix drifted"
+  test.assert_equal PLANNING_PASS_DISPOSITION_EXPECTATIONS, disposition_rows,
+                    "#{label} planning-pass disposition matrix drifted"
+
+  policy = normalized(section)
+  test.assert_includes policy, "Keep the reviewer distinct from the plan maker", label
+  test.assert_includes policy, "only from host-exposed runtime evidence", label
+  test.assert_includes policy, "Requested preferences, prompt text, and model self-report are not observations", label
+  test.assert_includes policy, "does not select the future batch coordinator", label
+end
+
 def route_dispositions(text)
   section = extract_markdown_section(text, ROUTE_DISPOSITION_TABLE_HEADING)
   rows = section.scan(/^\|\s*`([a-z-]+)`\s*\|[^|\n]*\|[^|\n]*\|\s*`([A-Za-z_-]+)`\s*\|\s*$/)
@@ -1150,17 +1206,79 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
-  def test_single_target_planner_surfaces_pin_default_and_simple_routes
+  def test_planning_pass_route_assessment_is_semantic_and_synchronized
     SINGLE_TARGET_PLANNER_SURFACES.each do |path|
       text = read_repo_file(path)
-      assert_includes text, "Default single-target planner: Sol/high", path
-      assert_includes text, "Affirmatively simple single-target planner: Terra/high", path
-      assert_includes text, "Default single-target planner: Opus 5/high", path
-      assert_includes text, "Affirmatively simple single-target planner: Sonnet 5/high", path
+      assert_planning_pass_contract(self, text, path)
       assert_includes text, "claude-profile v1", path
     end
 
     assert_includes read_repo_file(MODEL_ROUTING_GUIDE_PATH), "claude-opus-5"
+  end
+
+  def test_planning_pass_contract_rejects_simple_high
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    mutant = text.sub(
+      "| `affirmatively-simple` | `balanced/medium` | `Terra/medium` | `Sonnet 5/medium` |",
+      "| `affirmatively-simple` | `balanced/high` | `Terra/high` | `Sonnet 5/high` |"
+    )
+
+    refute_equal text, mutant
+    assert_raises(Minitest::Assertion) do
+      assert_planning_pass_contract(self, mutant, "simple=high mutant")
+    end
+  end
+
+  def test_planning_pass_contract_rejects_more_than_one_bounded_review
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    mutant = text.sub(
+      "| `weaker-current-host-supported` | `bounded-independent-review` | `1` | `yes` | `no` |",
+      "| `weaker-current-host-supported` | `bounded-independent-review` | `2` | `yes` | `no` |"
+    )
+
+    refute_equal text, mutant
+    assert_raises(Minitest::Assertion) do
+      assert_planning_pass_contract(self, mutant, "more-than-one-review mutant")
+    end
+  end
+
+  def test_planning_pass_contract_rejects_review_when_observation_is_unknown
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    mutant = text.sub(
+      "| `any-observed-field-UNKNOWN` | `non-blocking-advisory` | `0` | `no` | `no` |",
+      "| `any-observed-field-UNKNOWN` | `bounded-independent-review` | `1` | `yes` | `no` |"
+    )
+
+    refute_equal text, mutant
+    assert_raises(Minitest::Assertion) do
+      assert_planning_pass_contract(self, mutant, "UNKNOWN-review mutant")
+    end
+  end
+
+  def test_planning_pass_contract_rejects_review_for_stronger_current
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    mutant = text.sub(
+      "| `stronger-current` | `future-cost-advisory` | `0` | `yes` | `no` |",
+      "| `stronger-current` | `bounded-independent-review` | `1` | `yes` | `no` |"
+    )
+
+    refute_equal text, mutant
+    assert_raises(Minitest::Assertion) do
+      assert_planning_pass_contract(self, mutant, "stronger-current-review mutant")
+    end
+  end
+
+  def test_planning_pass_contract_rejects_comment_only_compatibility_pins
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    section_pattern = /^## Planning-Pass Route Assessment\n.*?(?=^## )/m
+    visible_section = text[section_pattern]
+    refute_nil visible_section
+    mutant = text.sub(section_pattern, "<!--\n#{visible_section}\n-->\n\n")
+
+    refute_equal text, mutant
+    assert_raises(Minitest::Assertion) do
+      assert_planning_pass_contract(self, mutant, "comment-only compatibility mutant")
+    end
   end
 
   def test_profile_surfaces_reject_the_former_sol_xhigh_coordinator_default

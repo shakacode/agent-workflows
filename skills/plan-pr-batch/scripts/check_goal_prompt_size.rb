@@ -9,12 +9,83 @@ GOAL_PROMPT_MIN_HEADROOM = 300
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
+PLANNING_PASS_ROUTE_ROW =
+  /^\|\s*`(?<classification>[a-z-]+)`\s*\|\s*`(?<neutral>[^`]+)`\s*\|\s*`(?<codex>[^`]+)`\s*\|\s*`(?<claude>[^`]+)`\s*\|\s*$/
+PLANNING_PASS_DISPOSITION_ROW =
+  /^\|\s*`(?<case_id>[A-Za-z-]+)`\s*\|\s*`(?<disposition>[a-z-]+)`\s*\|\s*`(?<max_reviews>[01])`\s*\|\s*`(?<compare>yes|no)`\s*\|\s*`(?<restart>yes|no)`\s*\|\s*$/
+PLANNING_PASS_ACCEPTANCE_CASES = [
+  {
+    id: "simple",
+    classification: "affirmatively-simple",
+    neutral: "balanced/medium",
+    codex: "Terra/medium",
+    claude: "Sonnet 5/medium"
+  },
+  {
+    id: "routine multi-lane",
+    classification: "routine-multi-lane",
+    neutral: "balanced/high",
+    codex: "Terra/high",
+    claude: "Sonnet 5/high"
+  },
+  {
+    id: "uncertain single target",
+    classification: "default-or-uncertain-single-target",
+    neutral: "strongest/high",
+    codex: "Sol/high",
+    claude: "Opus 5/high"
+  },
+  {
+    id: "pinned high risk",
+    classification: "pinned-high-risk-or-escalation",
+    neutral: "strongest/xhigh",
+    codex: "Sol/xhigh",
+    claude: "Opus 5/xhigh"
+  }
+].freeze
+PLANNING_PASS_DISPOSITION_CASES = [
+  {
+    id: "stronger current",
+    case_id: "stronger-current",
+    disposition: "future-cost-advisory",
+    max_reviews: "0",
+    compare: "yes",
+    restart: "no"
+  },
+  {
+    id: "weaker current",
+    case_id: "weaker-current-host-supported",
+    disposition: "bounded-independent-review",
+    max_reviews: "1",
+    compare: "yes",
+    restart: "no"
+  },
+  {
+    id: "UNKNOWN observation",
+    case_id: "any-observed-field-UNKNOWN",
+    disposition: "non-blocking-advisory",
+    max_reviews: "0",
+    compare: "no",
+    restart: "no"
+  }
+].freeze
+PLANNING_PASS_POLICY_PHRASES = [
+  "does not select the future batch coordinator",
+  "Keep the reviewer distinct from the plan maker",
+  "only from host-exposed runtime evidence",
+  "Requested preferences, prompt text, and model self-report are not observations"
+].freeze
+LEGACY_PLANNING_PASS_PROFILE_PHRASES = [
+  "Default single-target planner:",
+  "Affirmatively simple single-target planner:"
+].freeze
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
 OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
+PLANNING_PASS_ASSESSMENT_FIELD = "Planning-pass model/effort assessment:"
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_preference=<model>/<effort>;" \
@@ -364,6 +435,72 @@ def require_occurrence_count(text, phrase, expected_count, label)
   )
 end
 
+def planning_pass_route_rows(text)
+  strip_html_comments(text).scan(PLANNING_PASS_ROUTE_ROW).to_h do |classification, neutral, codex, claude|
+    [classification, { neutral: neutral, codex: codex, claude: claude }]
+  end
+end
+
+def planning_pass_disposition_rows(text)
+  strip_html_comments(text).scan(PLANNING_PASS_DISPOSITION_ROW).to_h do |case_id, disposition, max_reviews, compare, restart|
+    [case_id, { disposition: disposition, max_reviews: max_reviews, compare: compare, restart: restart }]
+  end
+end
+
+def strip_html_comments(text)
+  text.gsub(/<!--.*?-->/m, "")
+end
+
+def require_planning_pass_acceptance_cases(text, label)
+  visible_text = strip_html_comments(text)
+  route_rows = planning_pass_route_rows(visible_text)
+  disposition_rows = planning_pass_disposition_rows(visible_text)
+
+  PLANNING_PASS_ACCEPTANCE_CASES.each do |acceptance_case|
+    actual = route_rows[acceptance_case.fetch(:classification)]
+    unless actual
+      abort_with_failure(
+        "#{label} planning-pass #{acceptance_case.fetch(:id)} case is missing " \
+        "#{acceptance_case.fetch(:classification)}"
+      )
+    end
+
+    expected = acceptance_case.slice(:neutral, :codex, :claude)
+    next if actual == expected
+
+    abort_with_failure(
+      "#{label} planning-pass #{acceptance_case.fetch(:id)} case expected #{expected.inspect}, " \
+      "got #{actual.inspect}"
+    )
+  end
+
+  PLANNING_PASS_DISPOSITION_CASES.each do |acceptance_case|
+    actual = disposition_rows[acceptance_case.fetch(:case_id)]
+    unless actual
+      abort_with_failure(
+        "#{label} planning-pass #{acceptance_case.fetch(:id)} case is missing " \
+        "#{acceptance_case.fetch(:case_id)}"
+      )
+    end
+
+    expected = acceptance_case.slice(:disposition, :max_reviews, :compare, :restart)
+    next if actual == expected
+
+    abort_with_failure(
+      "#{label} planning-pass #{acceptance_case.fetch(:id)} case expected #{expected.inspect}, " \
+      "got #{actual.inspect}"
+    )
+  end
+
+  normalized_text = visible_text.gsub(/\s+/, " ")
+  require_phrases(normalized_text, PLANNING_PASS_POLICY_PHRASES, "#{label} planning-pass policy")
+  reject_phrases(
+    visible_text,
+    LEGACY_PLANNING_PASS_PROFILE_PHRASES,
+    "#{label} visible planning-pass compatibility policy"
+  )
+end
+
 def reject_phrases(text, phrases, label)
   phrases.each do |phrase|
     abort_with_failure("#{label} contains forbidden phrase: #{phrase}") if text.include?(phrase)
@@ -505,6 +642,19 @@ enforce_restart_docs_drift = ENV[SOURCE_CHECKOUT_ENV] == "1"
 pr_batch_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/pr-batch-skills.md") : nil
 context_text = enforce_restart_docs_drift ? read_optional_repo_file("CONTEXT.md") : nil
 restart_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/agent-runner-restarts.md") : nil
+routing_guide_text = read_repo_file("docs/agent-workflows-model-routing.md")
+
+planning_pass_text_by_path = {
+  "skills/plan-pr-batch/SKILL.md" => skill_text,
+  "docs/agent-workflows-model-routing.md" => routing_guide_text,
+  "workflows/pr-processing.md" => workflow_text
+}
+if enforce_restart_docs_drift
+  planning_pass_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text
+end
+planning_pass_text_by_path.each do |path, text|
+  require_planning_pass_acceptance_cases(text, path)
+end
 pressure_scenario_text = extract_section(
   workflow_text,
   "Pressure scenarios this prompt must satisfy:",
@@ -555,6 +705,10 @@ required_skill_rule_phrases = [
   "worker host is known but its roster is unavailable",
   "advisory preferences",
   "host-observed host, model, and effort",
+  PLANNING_PASS_ASSESSMENT_FIELD,
+  "classification, recommended route,",
+  "field-granular observed host/model/effort",
+  "requested planning-pass recommendation separate from host-observed fields",
   "coordinator-role-approved envelope",
   "collated by initial/escalation pair",
   "inherits or defaults to the coordinator route",
@@ -624,10 +778,10 @@ host_aware_batch_sizing_phrase_checks = {
     ["`generic`: use the Claude-sized 5/3", 1],
     ["- Batch size target: `codex`, `claude`, or `generic`", 1],
     ["less than 300 characters of headroom", 1],
-    ["Default single-target planner: Sol/high", 1],
-    ["Affirmatively simple single-target planner: Terra/high", 1],
-    ["Default single-target planner: Opus 5/high", 1],
-    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Default single-target future coordinator: Sol/high", 1],
+    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
+    ["Default single-target future coordinator: Opus 5/high", 1],
+    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
     ["Opus 5/xhigh exception:", 1],
     ["`claude-profile v1`", 1],
     ["subagents alone do", 1]
@@ -636,13 +790,13 @@ host_aware_batch_sizing_phrase_checks = {
     ["`codex`: up to 10 independent items, or 8", 1],
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
-    ["Default single-target planner: Sol/high", 1],
-    ["Affirmatively simple single-target planner: Terra/high", 1],
-    ["Default single-target planner: Opus 5/high", 1],
-    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Default single-target future coordinator: Sol/high", 1],
+    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
+    ["Default single-target future coordinator: Opus 5/high", 1],
+    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
     ["Opus 5/xhigh exception:", 1],
     ["`claude-profile v1`", 1],
-    ["advise from `UNKNOWN`, repeat", 1]
+    ["If any field needed for comparison is `UNKNOWN`, make no", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
     ["Use `codex` for up to 10", 1],
@@ -691,13 +845,13 @@ if enforce_restart_docs_drift
   host_aware_batch_sizing_phrase_checks["docs/pr-batch-skills.md"] = [
     ["Codex-targeted waves may use up to 10", 1],
     ["Claude and generic waves use up to 5", 1],
-    ["Default single-target planner: Sol/high", 1],
-    ["Affirmatively simple single-target planner: Terra/high", 1],
-    ["Default single-target planner: Opus 5/high", 1],
-    ["Affirmatively simple single-target planner: Sonnet 5/high", 1],
+    ["Default single-target future coordinator: Sol/high", 1],
+    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
+    ["Default single-target future coordinator: Opus 5/high", 1],
+    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
     ["Opus 5/xhigh exception:", 1],
     ["`claude-profile v1`", 1],
-    ["The advisory never blocks, requests a", 1]
+    ["at most one bounded independent", 1]
   ]
   host_aware_batch_sizing_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text
 
@@ -719,6 +873,19 @@ end
 
 # These phrases live in the broader skill rules, not necessarily inside the prompt fence.
 require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
+
+require_occurrence_count(
+  skill_text,
+  "- #{PLANNING_PASS_ASSESSMENT_FIELD}",
+  1,
+  "SKILL.md Batch Plan planning-pass assessment field"
+)
+require_occurrence_count(
+  workflow_text,
+  PLANNING_PASS_ASSESSMENT_FIELD,
+  1,
+  "canonical workflow Batch Plan planning-pass assessment field"
+)
 
 host_aware_batch_sizing_phrase_checks.each do |path, phrase_checks|
   text = host_aware_batch_sizing_text_by_path.fetch(path)
@@ -744,6 +911,11 @@ end
   "pr-batch goal prompt" => pr_batch_prompt_template,
   "workflow plan-to-goal prompt" => workflow_prompt_template
 }.each do |label, template|
+  reject_phrases(
+    template,
+    [PLANNING_PASS_ASSESSMENT_FIELD],
+    "#{label} must keep the planning-pass assessment outside the future-coordinator prompt"
+  )
   reject_phrases(
     template,
     [MANIFEST_WHOLE_COORDINATOR_PREFERENCE_UNKNOWN_FRAGMENT],
