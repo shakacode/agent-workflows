@@ -1390,6 +1390,79 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  def test_completed_success_removes_the_stale_disposition_on_direct_and_guarded_queue_routes
+    {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"]
+    }.each do |mode, (merge_submission, mutation)|
+      result, log = run_cli(
+        mode: mode.to_s,
+        receipt_mode: :optional_held,
+        merge_submission:,
+        ci_transition: :success
+      )
+
+      assert result.fetch(:status).success?, "#{mode}: #{result.fetch(:stderr)}"
+      assert_includes log, mutation, mode
+      assert_ci_refresh_immediately_precedes_mutation(log, mutation)
+    end
+  end
+
+  def test_refresh_removes_only_ready_dispositions_and_rejects_duplicate_row_identity
+    rows = [31, 32].map do |id|
+      {
+        "kind" => "check_run", "id" => id, "name" => "optional-#{id}",
+        "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
+        "app_slug" => "third-party", "dependabot" => false
+      }
+    end
+    dispositions = rows.map do |row|
+      {
+        "disposition" => "optional_approval_held", "rule_id" => "rule-#{row.fetch('id')}",
+        "kind" => "check_run", "id" => row.fetch("id"),
+        "app_slug" => row.fetch("app_slug"), "name" => row.fetch("name")
+      }
+    end
+    ci_result = {
+      "scopes" => {
+        "other" => {
+          "rows" => rows,
+          "policy_dispositions" => dispositions,
+          "checked_at" => Time.now.utc.iso8601
+        }
+      },
+      "checked_at" => Time.now.utc.iso8601
+    }
+    runner = PrMergeSubmit::Runner.new
+    runner.instance_variable_set(
+      :@merge_assurance_receipt, { "bindings" => { "head_sha" => HEAD_SHA } }
+    )
+    runner.define_singleton_method(:fetch_current_check_run!) do |_options, disposition:, expected_head:|
+      success = disposition.fetch("id") == 31
+      {
+        "id" => disposition.fetch("id"), "name" => disposition.fetch("name"),
+        "head_sha" => expected_head, "app_slug" => disposition.fetch("app_slug"),
+        "status" => success ? "completed" : "in_progress",
+        "conclusion" => success ? "success" : nil,
+        "started_at" => "2026-08-25T12:00:00Z"
+      }
+    end
+
+    refreshed = runner.send(:refresh_policy_disposed_ci_result!, ci_result, {})
+
+    disposition_ids = refreshed.dig("scopes", "other", "policy_dispositions").map { |row| row.fetch("id") }
+    assert_equal [32], disposition_ids
+    assert_equal "READY", PrCiReadiness.evidence_row_state(refreshed.dig("scopes", "other", "rows", 0))
+    assert_equal "NOT_READY", PrCiReadiness.evidence_row_state(refreshed.dig("scopes", "other", "rows", 1))
+
+    duplicated = JSON.parse(JSON.generate(ci_result))
+    duplicated.dig("scopes", "other", "rows") << rows.first.dup
+    error = assert_raises(PrMergeSubmit::Error) do
+      runner.send(:refresh_policy_disposed_ci_result!, duplicated, {})
+    end
+    assert_equal "current CI policy disposition does not identify exactly one receipt row", error.message
+  end
+
   def test_optional_approval_held_receipt_cannot_supply_missing_malformed_or_tampered_policy
     missing_result, missing_log = run_cli(
       mode: "direct",
@@ -2533,6 +2606,9 @@ class PrMergeSubmitTest < Minitest::Test
                     "started_at" => "2026-08-25T12:00:00Z" }
                 when :failed
                   { "status" => "completed", "conclusion" => "failure",
+                    "started_at" => "2026-08-25T12:00:00Z" }
+                when :success
+                  { "status" => "completed", "conclusion" => "success",
                     "started_at" => "2026-08-25T12:00:00Z" }
                 else
                   { "status" => "in_progress", "conclusion" => nil, "started_at" => nil }

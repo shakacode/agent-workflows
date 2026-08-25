@@ -399,7 +399,8 @@ module PrMergeSubmit
       rows = refreshed.dig("scopes", "other", "rows")
       raise Error, "current CI policy-disposed rows are malformed" unless rows.is_a?(Array)
 
-      dispositions.each do |disposition|
+      resolved_disposition_indexes = []
+      dispositions.each_with_index do |disposition, disposition_index|
         unless disposition.is_a?(Hash) && disposition["kind"] == "check_run" &&
                disposition["id"].is_a?(Integer) && disposition["id"].positive?
           raise Error, "current CI policy disposition cannot be refreshed"
@@ -416,7 +417,14 @@ module PrMergeSubmit
           options, disposition:, expected_head: @merge_assurance_receipt.dig("bindings", "head_sha")
         )
         rows[matching_indexes.first].merge!(current)
+        if PrCiReadiness.evidence_row_state(rows[matching_indexes.first]) == "READY"
+          resolved_disposition_indexes << disposition_index
+        end
       end
+      remaining_dispositions = dispositions.each_with_index.filter_map do |disposition, index|
+        disposition unless resolved_disposition_indexes.include?(index)
+      end
+      refreshed.dig("scopes", "other")["policy_dispositions"] = remaining_dispositions
 
       checked_at = Time.now.utc.iso8601
       refreshed["checked_at"] = checked_at

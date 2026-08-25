@@ -695,6 +695,7 @@ module PrCiReadiness
       contract = PrCiReadiness.evidence_contract(
         repo:, pr_number:, head_sha: exact_head_sha, checked_at:, scopes:
       )
+      # The fallback verdict is disposition-blind; override it only when an exact-head disposition made the contract READY.
       disposition_owns_fallback = !required_used && ordinary_checks_verdict == "NOT_READY" &&
                                   contract.fetch("verdict") == "READY" &&
                                   scopes.dig("other", "policy_dispositions").is_a?(Array) &&
