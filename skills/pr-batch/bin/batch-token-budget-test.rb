@@ -7,6 +7,7 @@ require "open3"
 require "openssl"
 require "base64"
 require "digest"
+require "rbconfig"
 require "tmpdir"
 
 HELPER = File.expand_path("batch-token-budget", __dir__)
@@ -538,6 +539,27 @@ class BatchTokenBudgetTest < Minitest::Test
       refute mismatch_status.success?
       assert_nil output
       assert_equal "state-path-mismatch", JSON.parse(mismatch_stderr).fetch("reason")
+    end
+  end
+
+  def test_initialize_replay_at_a_later_command_time_is_idempotent
+    with_state do |state_path|
+      first, stderr, status = initialize_budget(state_path)
+      assert status.success?, stderr
+      assert_equal "initialized", first.fetch("status")
+      state_before = File.read(state_path)
+
+      replayed, replay_stderr, replay_status = initialize_budget(
+        state_path,
+        evaluated_at: "2026-08-12T12:00:00Z"
+      )
+
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal state_before, File.read(state_path)
+      state = JSON.parse(state_before)
+      assert_equal "2026-08-12T11:00:00Z", state.fetch("last_evaluated_at")
+      assert_equal 1, state.fetch("control_events").length
     end
   end
 
@@ -3333,6 +3355,84 @@ class BatchTokenBudgetTest < Minitest::Test
         assert_equal "active", state.dig("reservations", "#{name}-reservation", "status"), name
         assert_empty state.fetch("usage_receipts"), name
       end
+    end
+  end
+
+  def test_batch_usage_receipt_rejects_a_fifo_even_when_it_serves_matching_json
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "fifo-receipt", tokens: 100)
+      receipt, = real_descendants_usage_receipt(state_path)
+      fifo_path = File.join(File.dirname(state_path), "usage-receipt.fifo")
+      assert system("mkfifo", fifo_path), "mkfifo failed"
+      ready_reader, ready_writer = IO.pipe
+      writer_pid = Process.spawn(
+        RbConfig.ruby,
+        "-e",
+        "$stdout.write('1'); $stdout.flush; " \
+        "loop do; File.open(ARGV.fetch(0), 'w') { |file| file.write(ARGV.fetch(1)) }; " \
+        "sleep 0.05; rescue Errno::EPIPE; end",
+        fifo_path,
+        JSON.generate(canonicalize(receipt)),
+        out: ready_writer,
+        err: File::NULL
+      )
+      ready_writer.close
+      assert_equal "1", ready_reader.read(1)
+      ready_reader.close
+      state_before = File.read(state_path)
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => "file://#{fifo_path}",
+          "usage_receipt_digest" => "sha256:#{object_digest(receipt)}",
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-receipt-artifact-mismatch", blocked.fetch("reason")
+      assert_equal state_before, File.read(state_path)
+    ensure
+      ready_reader&.close unless ready_reader&.closed?
+      ready_writer&.close unless ready_writer&.closed?
+      if writer_pid && Process.waitpid(writer_pid, Process::WNOHANG).nil?
+        Process.kill("KILL", writer_pid)
+        Process.wait(writer_pid)
+      end
+    end
+  end
+
+  def test_batch_usage_receipt_rejects_an_oversized_regular_artifact
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "oversized-receipt", tokens: 100)
+      receipt, = real_descendants_usage_receipt(state_path)
+      receipt.fetch("privacy").fetch("excluded") << ("x" * (1024 * 1024))
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "oversized")
+      artifact_path = receipt_ref.delete_prefix("file://")
+      assert_operator File.size(artifact_path), :>, 1024 * 1024
+      state_before = File.read(state_path)
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-receipt-artifact-mismatch", blocked.fetch("reason")
+      assert_equal state_before, File.read(state_path)
     end
   end
 

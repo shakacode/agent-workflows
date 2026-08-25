@@ -34,6 +34,7 @@ module BatchTokenBudget
     \z
   /ix
   TRUSTED_PLAN_MAX_BYTES = 1024 * 1024
+  USAGE_RECEIPT_MAX_BYTES = TRUSTED_PLAN_MAX_BYTES
 
   class InvalidInput < StandardError; end
   class DuplicateJSONKey < StandardError; end
@@ -137,11 +138,20 @@ module BatchTokenBudget
     path = reference.delete_prefix("file://")
     return false unless Pathname.new(path).absolute?
 
-    artifact = parse_json_strict(File.read(path, encoding: "UTF-8"))
+    artifact_json = File.open(path, File::RDONLY | File::NONBLOCK, encoding: "UTF-8") do |file|
+      artifact_stat = file.stat
+      return false unless artifact_stat.file? && artifact_stat.size <= USAGE_RECEIPT_MAX_BYTES
+
+      bounded_json = file.read(USAGE_RECEIPT_MAX_BYTES + 1) || ""
+      return false if bounded_json.bytesize > USAGE_RECEIPT_MAX_BYTES
+
+      bounded_json
+    end
+    artifact = parse_json_strict(artifact_json)
     return false unless "sha256:#{digest(artifact)}" == receipt_digest
 
     inline_receipt.nil? || canonicalize(artifact) == canonicalize(inline_receipt)
-  rescue Errno::ENOENT, Errno::EACCES, Errno::EISDIR, JSON::ParserError, ArgumentError
+  rescue SystemCallError, JSON::ParserError, ArgumentError
     false
   end
 
@@ -2396,6 +2406,9 @@ module BatchTokenBudget
     raise InvalidInput, "batch-id-mismatch" if state && state["batch_id"] != command["batch_id"]
     if state && seconds_between(command["evaluated_at"], state.fetch("last_evaluated_at")).negative?
       raise InvalidInput, "command-time-rollback"
+    end
+    if state && command["action"] == "initialize"
+      return initialize_command(state, command, trusted_budget, trusted_plan_binding)
     end
 
     state = expire_overrides(state, command["evaluated_at"]) if state
