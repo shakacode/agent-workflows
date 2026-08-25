@@ -841,6 +841,20 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
   end
 
+  def test_duplicate_direct_target_lanes_remain_blocked
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lanes = input.dig("coordination_status", "batches", 0, "lanes")
+    duplicate = JSON.parse(JSON.generate(lanes.first))
+    duplicate["name"] = "hc-b-10049-duplicate"
+    lanes << duplicate
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10049 appears in multiple coordination lanes"
+  end
+
   def test_authenticated_projection_requires_symmetric_github_relationships
     input = issue_to_pr_with_qa_lane_input
     target = input.fetch("expected_targets").first

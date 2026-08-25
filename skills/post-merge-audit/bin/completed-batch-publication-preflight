@@ -476,6 +476,14 @@ module CompletedBatchPublicationPreflight
         }
       end
     end
+    entries.group_by { |entry| target_key(entry.fetch("target")) }.each_value do |target_entries|
+      next if target_entries.one?
+
+      projections = target_entries.map { |entry| entry["target_projection"] }
+      next if projections.first && projections.all? { |projection| projection == projections.first }
+
+      blockers << "#{target_label(target_entries.first.fetch('target'))} appears in multiple coordination lanes"
+    end
     entries.sort_by! { |entry| target_sort_key(entry.fetch("target")) + [entry.fetch("name").to_s] }
     [entries, entries.map { |entry| entry.fetch("target") }]
   end
