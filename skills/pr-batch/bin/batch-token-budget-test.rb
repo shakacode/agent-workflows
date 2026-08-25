@@ -3325,4 +3325,33 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "2026-08-12T17:30:00.123456+05:30", JSON.parse(File.read(valid_state_path)).fetch("last_evaluated_at")
     end
   end
+
+  def test_command_timestamp_rejects_leap_seconds_without_normalization
+    Dir.mktmpdir("batch-token-budget-leap-seconds") do |directory|
+      ["2016-12-31T23:59:60Z", "2026-08-12T12:30:60Z"].each_with_index do |timestamp, index|
+        state_path = File.join(directory, "invalid-#{index}.json")
+        output, stderr, status = run_helper(
+          state_path,
+          command("initialize", "evaluated_at" => timestamp, "budget" => budget(state_path: state_path))
+        )
+
+        refute status.success?, timestamp
+        assert_nil output, timestamp
+        assert_equal "invalid-evaluated-at", JSON.parse(stderr).fetch("reason"), timestamp
+      end
+
+      valid_state_path = File.join(directory, "valid.json")
+      initialized, stderr, status = run_helper(
+        valid_state_path,
+        command(
+          "initialize",
+          "evaluated_at" => "2026-08-12T12:30:59.999999-05:30",
+          "budget" => budget(state_path: valid_state_path)
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "initialized", initialized.fetch("status")
+    end
+  end
 end
