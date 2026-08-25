@@ -243,14 +243,14 @@ module AgentWorkflowsDeliveryState
         failures << "unrecognized Codex Superpowers status in marketplace #{marketplace}: #{status_text || 'missing'}"
         next
       end
-      marketplace_revision = status_text == "not installed" ? nil : row[2]
+      installed_version = status_text == "not installed" ? nil : row[2]
       root = status_text == "not installed" ? row[2] : row[3]
 
       entries << {
         "plugin_id" => plugin_id,
         "marketplace" => marketplace,
         "status" => status_text,
-        "marketplace_revision" => marketplace_revision
+        "installed_version" => installed_version
       }.merge(superpowers_catalog_metadata(root))
     end
 
@@ -684,8 +684,13 @@ module AgentWorkflowsDeliveryState
   end
 
   def check(host:, target:, source:, delivery_mode:)
-    native = native_state(host, target)
-    superpowers = superpowers_state(host, target)
+    host_queries = [
+      Thread.new { ["native", native_state(host, target)] },
+      Thread.new { ["superpowers", superpowers_state(host, target)] }
+    ]
+    host_state = host_queries.map(&:value).to_h
+    native = host_state.fetch("native")
+    superpowers = host_state.fetch("superpowers")
     collision_names = Array(native["skill_names"])
     flat = managed_flat_inventory(
       target: target,

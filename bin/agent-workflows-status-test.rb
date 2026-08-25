@@ -37,7 +37,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
           state = ENV.fetch("QA_SUPERPOWERS_STATE", "installed-disabled")
           puts "PLUGIN STATUS VERSION PATH"
           status = state == "active" ? "installed, enabled" : "installed, disabled"
-          puts "superpowers@\#{marketplace}  \#{status}  catalog-rev  \#{ENV.fetch('QA_SUPERPOWERS_CATALOG_ROOT')}"
+          puts "superpowers@\#{marketplace}  \#{status}  host-version  \#{ENV.fetch('QA_SUPERPOWERS_CATALOG_ROOT')}"
         else
           puts "No plugins found in marketplace `\#{marketplace}`."
         end
@@ -47,7 +47,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
           state = ENV.fetch("QA_SUPERPOWERS_STATE", "installed-disabled")
           puts "PLUGIN STATUS VERSION PATH"
           status = state == "active" ? "installed, enabled" : "installed, disabled"
-          puts "superpowers@\#{marketplace}  \#{status}  catalog-rev  \#{ENV.fetch('QA_SUPERPOWERS_CATALOG_ROOT')}"
+          puts "superpowers@\#{marketplace}  \#{status}  host-version  \#{ENV.fetch('QA_SUPERPOWERS_CATALOG_ROOT')}"
         else
           puts "No plugins found in marketplace `\#{marketplace}`."
         end
@@ -96,6 +96,38 @@ class AgentWorkflowsStatusTest < Minitest::Test
 
       assert_equal 2, status.exitstatus, out
       assert_includes out, "NOT_INSTALLED"
+    end
+  end
+
+  def test_not_installed_json_reports_active_superpowers_advisory
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      out, status = run_status(
+        { "QA_SUPERPOWERS_STATE" => "active", "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev" },
+        "--target", target, "--host", "codex", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert_equal 2, status.exitstatus, out
+      assert_equal "NOT_INSTALLED", payload.fetch("status")
+      assert_equal "active", payload.dig("superpowers", "state")
+      assert_equal "superpowers@superpowers-dev", payload.dig("superpowers", "catalog_entries", 0, "plugin_id")
+      assert_equal "host-version", payload.dig("superpowers", "catalog_entries", 0, "installed_version")
+      assert_equal "5.1.3", payload.dig("superpowers", "catalog_entries", 0, "catalog_version")
+    end
+  end
+
+  def test_not_installed_text_warns_when_superpowers_is_active
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      out, status = run_status(
+        { "QA_SUPERPOWERS_STATE" => "active", "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev" },
+        "--target", target, "--host", "codex"
+      )
+
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "NOT_INSTALLED"
+      assert_includes out, "superpowers=active"
+      assert_includes out, "superpowers_catalog_versions=5.1.3"
+      assert_includes out, "WARNING Agent Workflows remains the sole delivery orchestrator"
     end
   end
 

@@ -6,6 +6,8 @@ require "optparse"
 require "open3"
 require "rbconfig"
 
+load File.expand_path("agent-workflows-delivery-state", __dir__)
+
 module AgentWorkflowsStatus
   METADATA_NAME = ".agent-workflows-install.json"
   STATUS_EXIT = {
@@ -219,7 +221,14 @@ module AgentWorkflowsStatus
     host, target = resolve_host_and_target(options.fetch(:host), options[:target])
     metadata = read_metadata(target)
     unless metadata
-      return status_payload("NOT_INSTALLED", target:, source: options[:source], host:)
+      superpowers = AgentWorkflowsDeliveryState.superpowers_state(host, target)
+      return status_payload(
+        "NOT_INSTALLED",
+        target:,
+        source: options[:source],
+        host:,
+        delivery_state: { "superpowers" => superpowers }
+      )
     end
 
     source = File.expand_path(options[:source] || metadata["source"].to_s)

@@ -38,9 +38,9 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
           puts "PLUGIN STATUS VERSION PATH"
           row = case state
                 when "active"
-                  "\#{plugin_id}  installed, enabled   catalog-rev  \#{catalog_root}"
+                  "\#{plugin_id}  installed, enabled   host-version  \#{catalog_root}"
                 when "installed-disabled"
-                  "\#{plugin_id}  installed, disabled  catalog-rev  \#{catalog_root}"
+                  "\#{plugin_id}  installed, disabled  host-version  \#{catalog_root}"
                 when "available-not-installed"
                   "\#{plugin_id}  not installed                     \#{catalog_root}"
                 when "UNKNOWN"
@@ -78,7 +78,7 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
         warn "invalid Codex TOML"
         exit 2
       when "sleep"
-        sleep 5
+        sleep Float(ENV.fetch("QA_CODEX_PLUGIN_SLEEP_SECONDS", "5"))
       else
         abort "unknown fake state: \#{state}"
       end
@@ -232,7 +232,8 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert_equal "active", payload.dig("superpowers", "state")
       assert_equal "superpowers@superpowers-dev", payload.dig("superpowers", "catalog_entries", 0, "plugin_id")
       assert_equal "5.1.3", payload.dig("superpowers", "catalog_entries", 0, "catalog_version")
-      assert_equal "catalog-rev", payload.dig("superpowers", "catalog_entries", 0, "marketplace_revision")
+      assert_equal "host-version", payload.dig("superpowers", "catalog_entries", 0, "installed_version")
+      refute payload.dig("superpowers", "catalog_entries", 0).key?("marketplace_revision")
       assert_equal "https://github.com/obra/superpowers", payload.dig("superpowers", "catalog_entries", 0, "upstream_repository")
       assert_nil payload.dig("superpowers", "upstream_version")
       assert_equal "not-queried", payload.dig("superpowers", "upstream_version_source")
@@ -263,6 +264,33 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
         payload.dig("superpowers", "warnings").map { |warning| warning[/marketplace (\S+)/, 1] }
       )
       assert_operator elapsed, :<, 2.2, "marketplace queries took #{elapsed.round(3)}s"
+    end
+  end
+
+  def test_native_and_superpowers_queries_share_the_workflow_timeout_window
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(target)
+      File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = true\n")
+
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      out, _err, status = run_state_with_env(
+        {
+          "QA_CODEX_PLUGIN_STATE" => "sleep",
+          "QA_CODEX_PLUGIN_SLEEP_SECONDS" => "10",
+          "QA_SUPERPOWERS_SLEEP_SECONDS" => "10"
+        },
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "flat", "--json"
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      payload = JSON.parse(out)
+
+      refute status.success?, out
+      assert_equal "unknown", payload.dig("native", "state")
+      assert_equal "UNKNOWN", payload.dig("superpowers", "state")
+      assert_operator elapsed, :<, AgentDoctor::TimeoutBudget::WORKFLOW_STATUS_DEFAULT,
+                      "delivery-state check took #{elapsed.round(3)}s"
     end
   end
 

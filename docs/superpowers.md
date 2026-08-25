@@ -38,8 +38,10 @@ The JSON `superpowers.state` field has exactly four values:
 The helper checks the distinct `superpowers@openai-curated`,
 `superpowers@openai-curated-remote`, and pinned-pilot
 `superpowers@superpowers-dev` identities. `catalog_entries` reports the
-marketplace name, the host-reported marketplace revision, and the catalog
-manifest version when readable. These are observations only. The diagnostic
+marketplace name, the `installed_version` reported by the host CLI, and the
+`catalog_version` read from the catalog manifest when available. The
+host-reported installed version is not a marketplace snapshot revision. These
+are observations only. The diagnostic
 does not contact upstream and does not claim an upstream version. It performs no
 plugin installation, enablement, disablement, removal, upgrade, or
 configuration write, and an advisory state never changes the Agent Workflows
@@ -115,7 +117,8 @@ technique:
 - repository and exact base/head SHA;
 - host and host version;
 - Agent Workflows revision;
-- Superpowers marketplace identity, marketplace revision, catalog version,
+- Superpowers marketplace identity, host-reported installed version, catalog
+  version,
   upstream tag, tag object, and peeled commit;
 - selected Superpowers skill and exact bounded role;
 - allowed and observed mutations;
