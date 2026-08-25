@@ -161,7 +161,7 @@ class PrMergeSubmitTest < Minitest::Test
     )
     assert_equal 1, malformed_result.fetch(:status).exitstatus
     assert_includes malformed_result.fetch(:stderr),
-                    "Error: trusted-base merge-submission policy is invalid YAML:"
+                    "Error: trusted-base ci_readiness policy could not be authenticated:"
     assert_empty malformed_log
 
     invalid_base_result, invalid_base_log, = run_cli(
@@ -169,7 +169,7 @@ class PrMergeSubmitTest < Minitest::Test
     )
     assert_equal 1, invalid_base_result.fetch(:status).exitstatus
     assert_includes invalid_base_result.fetch(:stderr),
-                    "Error: trusted-base merge-submission policy is unavailable:"
+                    "Error: trusted-base ci_readiness policy could not be authenticated:"
     assert_empty invalid_base_log
   end
 
@@ -1339,6 +1339,24 @@ class PrMergeSubmitTest < Minitest::Test
     assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
   end
 
+  def test_trusted_base_ci_policy_cannot_be_bypassed_by_omitting_receipt_policy_evidence
+    observed_policy = nil
+    result, log = run_cli(
+      mode: "direct",
+      receipt_mode: :ci_policy_omitted,
+      merge_submission: { "mode" => "direct" },
+      ci_transition: :failed,
+      trusted_policy_observer: ->(policy) { observed_policy = policy }
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal 1, observed_policy.dig("ci_readiness", "version")
+    assert_includes result.fetch(:stderr),
+                    "ci policy evidence does not match authenticated trusted-base policy"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
   def test_uppercase_expected_head_remains_bound_through_final_ci_refresh_on_every_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
@@ -2131,7 +2149,8 @@ class PrMergeSubmitTest < Minitest::Test
                                             prepare_consumer_repo(
                                               dir,
                                               merge_submission:, policy_fixture:, guard_fixture:,
-                                              ci_readiness: receipt_mode.to_s.start_with?("optional_held")
+                                              ci_readiness: receipt_mode.to_s.start_with?("optional_held") ||
+                                                receipt_mode == :ci_policy_omitted
                                             )
                                           end
       if !source_repo_policy &&

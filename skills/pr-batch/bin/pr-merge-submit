@@ -360,9 +360,6 @@ module PrMergeSubmit
     end
 
     def trusted_ci_policy_for_receipt!(evidence)
-      ci_result = evidence["ci_result"]
-      return nil unless ci_result.is_a?(Hash) && ci_result.key?("ci_policy")
-
       context = evidence["context"]
       base = context["base"] if context.is_a?(Hash)
       return nil unless base.is_a?(Hash)
