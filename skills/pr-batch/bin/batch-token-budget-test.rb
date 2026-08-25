@@ -541,6 +541,46 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_runtime_trusted_plan_limit_accepts_the_boundary_and_blocks_oversized_state_creation
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+      artifact_json = File.read(anchor.fetch("path"))
+      File.write(anchor.fetch("path"), artifact_json.ljust(1_048_576))
+
+      initialized, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("initialize", "budget" => candidate)),
+        anchor: anchor
+      )
+
+      assert status.success?, stderr
+      assert_equal "initialized", initialized.fetch("status")
+      assert File.file?(state_path)
+    end
+
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+      artifact_json = File.read(anchor.fetch("path"))
+      File.write(anchor.fetch("path"), artifact_json.ljust(1_048_577))
+
+      output, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("initialize", "budget" => candidate)),
+        anchor: anchor
+      )
+
+      assert_equal(
+        { "state" => false, "lock" => false },
+        { "state" => File.exist?(state_path), "lock" => File.exist?("#{state_path}.lock") }
+      )
+      refute status.success?
+      assert_nil output
+      assert_equal "trusted-plan-oversized", JSON.parse(stderr).fetch("reason")
+    end
+  end
+
   def test_every_operation_requires_the_same_external_immutable_budget_anchor
     with_state do |state_path|
       candidate = budget(state_path: state_path)
