@@ -28,6 +28,75 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     )
   end
 
+  def test_live_collection_returns_a_verdict_with_non_ascii_payload_in_a_c_locale
+    result = evaluate(subprocess_env: { "LANG" => "C", "LC_ALL" => "C" }) do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(1),
+        decision_comments: [
+          decision_comment(
+            id: "1",
+            url: "https://github.com/example/repo/pull/1#issuecomment-1",
+            body: "reviewed by Jos\u00e9"
+          )
+        ]
+      )
+    end
+
+    assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+    assert_equal [], result.fetch("evidence_failures")
+  end
+
+  def test_live_collection_returns_structured_unknown_for_an_undecodable_payload
+    result = evaluate(gh_invalid_utf8_field: "filename") do |base_sha|
+      evidence(base_sha:, files: files(1))
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_match(/malformed or invalid GitHub evidence/, result.fetch("evidence_failures").first)
+  end
+
+  def test_live_collection_rejects_invalid_utf8_in_uninspected_comment_fields
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    result = evaluate(gh_invalid_utf8_field: "comment_url") do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: [
+          decision_comment(
+            id: "1",
+            url:,
+            body: decision_body(head_sha: HEAD_SHA, gates: ["changed-files-limit"], evidence: url)
+          )
+        ],
+        semantic: semantic_assessment.merge(
+          "decision_provenance" => [decision_provenance("1")]
+        )
+      )
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_match(/malformed or invalid GitHub evidence/, result.fetch("evidence_failures").first)
+  end
+
+  def test_live_collection_rejects_invalid_utf8_in_semantic_assessment_fields
+    result = evaluate(invalid_utf8_semantic_field: "rollback_assessment") do |base_sha|
+      evidence(base_sha:, files: files(1))
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_match(/malformed or invalid semantic assessment/, result.fetch("evidence_failures").first)
+  end
+
+  def test_live_collection_returns_structured_unknown_when_parser_error_contains_invalid_utf8
+    result = evaluate(invalid_utf8_semantic_syntax: true) do |base_sha|
+      evidence(base_sha:, files: files(1))
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_predicate result.fetch("evidence_failures").first, :valid_encoding?
+  end
+
   def test_portable_size_and_commit_boundaries_are_inclusive_human_gates
     cases = {
       "changed-files-limit" => evidence_override(files: files(30)),
@@ -155,7 +224,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
           root:,
           calibration_path:,
           evaluation: evidence(base_sha:, files: files(1)),
-          environment: { "RUBYOPT" => "-r#{open3_patch}" }
+          subprocess_env: { "RUBYOPT" => "-r#{open3_patch}" }
         )
 
         assert_equal "UNKNOWN", result.fetch("verdict")
@@ -1131,6 +1200,20 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
   end
 
+  def test_invalid_utf8_stdin_returns_structured_unknown
+    Dir.mktmpdir("autonomous-merge-invalid-stdin-test") do |root|
+      calibration_path = write_calibration(root)
+      initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      invalid_json = "{\"x\":".b + "\xFF}".b
+
+      result = invoke(root:, calibration_path:, stdin_data: invalid_json)
+
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert_match(/malformed autonomous-merge evaluation JSON/, result.fetch("evidence_failures").first)
+      assert_predicate result.fetch("evidence_failures").first, :valid_encoding?
+    end
+  end
+
   def test_risk_marker_never_converts_unknown_evidence_into_approval
     url = "https://github.com/example/repo/pull/1#issuecomment-1"
     result = evaluate do |base_sha|
@@ -1252,7 +1335,8 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   private
 
   def invoke(root:, calibration_path:, stdin_data: "", evaluation: nil, semantic_path: nil,
-             helper_provenance: :trusted_base, environment: {})
+             helper_provenance: :trusted_base, subprocess_env: {}, gh_invalid_utf8_field: nil,
+             invalid_utf8_semantic_field: nil, invalid_utf8_semantic_syntax: false)
     command = [
       "ruby",
       SCRIPT,
@@ -1275,8 +1359,17 @@ class AutonomousMergeEligibilityTest < Minitest::Test
         objective_path = File.join(input_root, "objective.json")
         resolved_semantic_path = semantic_path || File.join(input_root, "semantic.json")
         fake_gh = File.join(input_root, "gh")
-        File.write(objective_path, JSON.generate(evaluation.fetch("objective")))
-        File.write(resolved_semantic_path, JSON.generate(evaluation.fetch("semantic_assessment"))) unless semantic_path
+        File.write(objective_path, JSON.generate(evaluation.fetch("objective"), ascii_only: true))
+        unless semantic_path
+          semantic_json = JSON.generate(evaluation.fetch("semantic_assessment"))
+          if invalid_utf8_semantic_syntax
+            semantic_json = "{\"x\":".b + "\xFF}".b
+          elsif invalid_utf8_semantic_field
+            semantic_value = evaluation.fetch("semantic_assessment").fetch(invalid_utf8_semantic_field)
+            semantic_json = semantic_json.b.sub(semantic_value.b, "\xFF".b)
+          end
+          File.binwrite(resolved_semantic_path, semantic_json)
+        end
         write_fake_gh(fake_gh)
         command.concat(
           ["--repo", "example/repo", "--pr", "1", "--semantic-assessment", resolved_semantic_path]
@@ -1284,8 +1377,9 @@ class AutonomousMergeEligibilityTest < Minitest::Test
         stdout, stderr, status = Open3.capture3(
           {
             "AUTONOMOUS_MERGE_GH" => fake_gh,
-            "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path
-          }.merge(environment),
+            "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path,
+            "AUTONOMOUS_MERGE_TEST_INVALID_UTF8_FIELD" => gh_invalid_utf8_field.to_s
+          }.merge(subprocess_env),
           *command,
           stdin_data:
         )
@@ -1299,12 +1393,15 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     JSON.parse(stdout)
   end
 
-  def evaluate(reviewed_heads_mode: "shadow", policy_yaml: nil)
+  def evaluate(reviewed_heads_mode: "shadow", policy_yaml: nil, subprocess_env: {},
+               gh_invalid_utf8_field: nil, invalid_utf8_semantic_field: nil,
+               invalid_utf8_semantic_syntax: false)
     Dir.mktmpdir("autonomous-merge-eligibility-test") do |root|
       calibration_path = write_calibration(root, reviewed_heads_mode:)
       base_sha = initialize_trusted_base(root, policy_yaml:, include_runtime: true)
       evaluation = yield(base_sha)
-      invoke(root:, calibration_path:, evaluation:)
+      invoke(root:, calibration_path:, evaluation:, subprocess_env:, gh_invalid_utf8_field:,
+             invalid_utf8_semantic_field:, invalid_utf8_semantic_syntax:)
     end
   end
 
@@ -1416,7 +1513,19 @@ class AutonomousMergeEligibilityTest < Minitest::Test
                    warn "unexpected GitHub API path: #{request}"
                    exit 1
                  end
-      puts JSON.generate(response)
+      payload = JSON.generate(response)
+      invalid_field = ENV["AUTONOMOUS_MERGE_TEST_INVALID_UTF8_FIELD"]
+      if invalid_field == "filename" && request == "repos/example/repo/pulls/1/files?per_page=100&page=1"
+        payload = payload.b.sub("lib/file_00.rb".b, "\xFF".b)
+      elsif invalid_field == "comment_url" &&
+            request == "repos/example/repo/issues/1/comments?per_page=100&page=1"
+        payload = payload.b.sub(
+          "https://github.com/example/repo/pull/1#issuecomment-1".b,
+          "\xFF".b
+        )
+      end
+      $stdout.write(payload)
+      $stdout.write("\n")
     RUBY
     File.chmod(0o755, path)
   end
