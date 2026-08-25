@@ -602,6 +602,44 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_fresh_state_invalid_batch_ids_leave_no_artifacts
+    Dir.mktmpdir("batch-token-budget-fresh-invalid-batch-id") do |directory|
+      invalid_batch_ids = ["", "   ", "UNKNOWN"]
+      observations = invalid_batch_ids.each_with_index.to_h do |invalid_batch_id, index|
+        suffix = "invalid-#{index}"
+        state_path = File.join(directory, suffix, "state.json")
+        candidate = budget(state_path: state_path)
+        anchor = install_trusted_plan(File.join(directory, "anchor-#{suffix}"), candidate)
+        output, stderr, status = run_helper_raw(
+          state_path,
+          JSON.generate(command("initialize", "batch_id" => invalid_batch_id, "budget" => candidate)),
+          anchor: anchor
+        )
+
+        [invalid_batch_id, {
+          "success" => status.success?,
+          "output" => output,
+          "reason" => JSON.parse(stderr).fetch("reason"),
+          "state" => File.exist?(state_path),
+          "lock" => File.exist?("#{state_path}.lock"),
+          "parent" => Dir.exist?(File.dirname(state_path))
+        }]
+      end
+      expected = invalid_batch_ids.to_h do |invalid_batch_id|
+        [invalid_batch_id, {
+          "success" => false,
+          "output" => nil,
+          "reason" => "invalid-batch-id",
+          "state" => false,
+          "lock" => false,
+          "parent" => false
+        }]
+      end
+
+      assert_equal expected, observations
+    end
+  end
+
   def test_fresh_state_mismatched_initialize_projection_leaves_no_artifacts
     Dir.mktmpdir("batch-token-budget-fresh-projection") do |directory|
       state_path = File.join(directory, "fresh", "state.json")
