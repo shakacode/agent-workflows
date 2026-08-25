@@ -1102,6 +1102,106 @@ class PrCiReadinessCliTest < Minitest::Test
     )
   end
 
+  # Regression: exact_head_inventory must not re-append a superseded GitHub
+  # Actions check run after fetch_exact_head_actions selects the current run.
+  def test_exact_head_actions_do_not_reappend_superseded_check_runs
+    head = "a" * 40
+    old_run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "failure",
+      "html_url" => "https://github.com/owner/repo/actions/runs/100"
+    }
+    current_run = old_run.merge(
+      "id" => 101, "run_number" => 8, "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101"
+    )
+    current_job = {
+      "id" => 1010, "name" => "unit", "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010"
+    }
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [old_run, current_run],
+      exact_check_runs: [
+        {
+          "id" => 2000, "name" => "unit", "status" => "completed", "conclusion" => "failure",
+          "head_sha" => head, "app" => { "slug" => "github-actions" },
+          "html_url" => "https://github.com/owner/repo/actions/runs/100/job/1000"
+        },
+        {
+          "id" => 2001, "name" => "unit", "status" => "completed", "conclusion" => "success",
+          "head_sha" => head, "app" => { "slug" => "github-actions" },
+          "html_url" => current_job.fetch("html_url")
+        }
+      ],
+      runs: {
+        "100" => { run: old_run, jobs: [], jobs_error: true },
+        "101" => { run: current_run, jobs: [current_job] }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "READY", data.dig("scopes", "github_actions", "state")
+      assert_equal([101, 1010], data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") })
+    end
+  end
+
+  def test_exact_head_actions_retain_unobserved_and_unassociated_check_runs
+    head = "a" * 40
+    current_run = {
+      "id" => 101, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101"
+    }
+    current_job = {
+      "id" => 1010, "name" => "unit", "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010"
+    }
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [current_run],
+      exact_check_runs: [
+        {
+          "id" => 2000, "name" => "unknown-run", "status" => "completed", "conclusion" => "failure",
+          "head_sha" => head, "app" => { "slug" => "github-actions" },
+          "html_url" => "https://github.com/owner/repo/actions/runs/999/job/9990"
+        },
+        {
+          "id" => 2001, "name" => "unassociated", "status" => "completed", "conclusion" => "failure",
+          "head_sha" => head, "app" => { "slug" => "github-actions" },
+          "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010/not-a-job-url"
+        }
+      ],
+      runs: { "101" => { run: current_run, jobs: [current_job] } }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal "NOT_READY", data.dig("scopes", "github_actions", "state")
+      assert_equal(
+        [101, 1010, 2000, 2001],
+        data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      )
+    end
+  end
+
   def test_exact_head_actions_select_target_pr_before_current_run_grouping
     head = "a" * 40
     target_identity = {

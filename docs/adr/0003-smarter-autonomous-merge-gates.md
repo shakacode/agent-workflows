@@ -610,6 +610,32 @@ rollback status, and the exact decision needed.
 failure, policy provenance, and repair action. Neither state may collapse into
 `ready-gates-clean` or a generic `blocked-user-input`.
 
+### Human-first closeout rendering
+
+The evaluator remains the machine source of truth. The portable
+`skills/pr-batch/bin/autonomous-merge-closeout` helper reads that JSON without
+changing it and deterministically renders the two blocking outcomes. Its
+plain-English summary precedes the closeout state, verdict, and gate IDs. Each
+human-approval gate is explained from its canonical meaning plus available
+path evidence; the action identifies the qualifying human actor, the complete
+`autonomous-merge-risk-decision:v1` PR comment as the durable location, and the
+exact head to approve. It also defines durable and current-head and says that a
+new head invalidates the decision.
+
+For `UNKNOWN`, the renderer says that the result is an evidence/authority
+failure rather than an approvable policy-risk verdict, lists the exact evidence
+failures, and directs the coordinator or evaluator operator to repair trusted
+evidence, rerun eligibility, and replace the coordinator-owned result artifact
+used by merge assurance. A new or unknown head requires fresh binding. Both
+forms distinguish the gate from a code defect, failed CI, or review finding;
+ordinary-readiness claims remain separate and require their own evidence.
+
+Malformed renderer input fails closed. Optional `--format json` emits the
+versioned `autonomous-merge-closeout` v1 presentation contract while repeating
+the evaluator's exact verdict, head, sorted gates, rollback, policy provenance,
+and evidence failures. The original evaluator artifact, not this presentation
+contract, remains the input to merge assurance and existing automation.
+
 ## Consequences
 
 Benefits:

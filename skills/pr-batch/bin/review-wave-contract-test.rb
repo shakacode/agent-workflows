@@ -51,6 +51,24 @@ class ReviewWaveContractTest < Minitest::Test
     refute_match(/Wait for current-head checks.*?Fetch current unresolved review threads/m, closeout)
   end
 
+  def test_section_extractor_ignores_a_quoted_heading
+    document = <<~MARKDOWN
+      <!-- Keep `### Coordinator Closeout Lane` synchronized. -->
+      decoy body
+
+      ### Coordinator Closeout Lane
+
+      real body
+
+      ## Next
+    MARKDOWN
+
+    extracted = section(document, "### Coordinator Closeout Lane", /^##\s+/)
+
+    assert_includes extracted, "real body"
+    refute_includes extracted, "decoy body"
+  end
+
   def test_pr_entry_points_preserve_the_same_review_wave_contract
     [@pr_batch, @pr_monitoring, @docs].each do |text|
       assert_rule text, REVIEW_WAVE_BARRIER
@@ -106,12 +124,11 @@ class ReviewWaveContractTest < Minitest::Test
   end
 
   def section(text, heading, end_heading)
-    start_index = text.index(heading)
-    raise "missing heading #{heading.inspect}" unless start_index
+    heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+    raise "missing heading #{heading.inspect}" unless heading_match
 
-    body_start = start_index + heading.length
-    tail = text[body_start..]
-    ending = tail.index(end_heading)
-    ending ? tail[0...ending] : tail
+    body_start = heading_match.end(0)
+    ending = text.match(end_heading, body_start)
+    text[body_start...(ending ? ending.begin(0) : text.length)]
   end
 end
