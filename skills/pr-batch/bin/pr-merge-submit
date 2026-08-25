@@ -178,7 +178,6 @@ module PrMergeSubmit
                else
                  validate_receipt_live_bindings!(pull_request, options)
                  validate_pr!(pull_request, options)
-                 validate_current_ci_for_submission!(options)
                  submit(pull_request, options)
                end
 
@@ -941,6 +940,7 @@ module PrMergeSubmit
         raise Error, "PR merge-queue state became missing, inconsistent, or UNKNOWN before direct submission"
       end
 
+      validate_current_ci_for_submission!(options)
       stdout, stderr, status = run_gh(
         *direct_merge_args(refreshed, options), host: options[:host], mutation: true
       )
@@ -1050,6 +1050,7 @@ module PrMergeSubmit
         raise UnknownOutcome, "PR merge-queue state became missing or UNKNOWN before guarded-direct submission"
       end
 
+      validate_current_ci_for_submission!(options)
       validate_live_guard!(policy.fetch("executable"), policy.fetch("trusted_bytes"))
       guard_stdout, guard_stderr, guard_status = run_guard(policy, options)
       diagnostics = failure_output(guard_stdout, guard_stderr)
@@ -1356,6 +1357,7 @@ module PrMergeSubmit
     end
 
     def enqueue_result(pull_request, options)
+      validate_current_ci_for_submission!(options)
       stdout, stderr, status = run_gh(
         "api", "graphql",
         "-H", GRAPHQL_FEATURE_HEADER,

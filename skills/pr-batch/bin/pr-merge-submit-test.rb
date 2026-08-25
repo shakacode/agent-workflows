@@ -1336,6 +1336,19 @@ class PrMergeSubmitTest < Minitest::Test
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_includes log, "repos/owner/repo/check-runs/31"
     assert_includes log, "mergePullRequest"
+    assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
+  end
+
+  def test_guarded_queue_refreshes_optional_held_ci_after_its_final_pr_read
+    result, log = run_cli(
+      mode: "guard_queue_race",
+      receipt_mode: :optional_held,
+      merge_submission: guarded_direct_policy
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "enqueuePullRequest"
+    assert_ci_refresh_immediately_precedes_mutation(log, "enqueuePullRequest")
   end
 
   def test_optional_approval_held_receipt_blocks_when_the_check_changes_or_mismatches
@@ -1353,6 +1366,24 @@ class PrMergeSubmitTest < Minitest::Test
 
       assert_equal 1, result.fetch(:status).exitstatus, transition
       assert_includes result.fetch(:stderr), expected_error, transition
+      assert_includes log, "repos/owner/repo/check-runs/31", transition
+      refute_includes log, "mergePullRequest", transition
+      refute_includes log, "enqueuePullRequest", transition
+    end
+  end
+
+  def test_guarded_queue_blocks_when_the_optional_held_check_starts_or_fails
+    %i[running failed].each do |transition|
+      result, log = run_cli(
+        mode: "guard_queue_race",
+        receipt_mode: :optional_held,
+        merge_submission: guarded_direct_policy,
+        ci_transition: transition
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, transition
+      assert_includes result.fetch(:stderr),
+                      "current CI evidence does not currently qualify", transition
       assert_includes log, "repos/owner/repo/check-runs/31", transition
       refute_includes log, "mergePullRequest", transition
       refute_includes log, "enqueuePullRequest", transition
@@ -1573,6 +1604,20 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   private
+
+  def assert_ci_refresh_immediately_precedes_mutation(log, mutation)
+    commands = log.split(/(?=^GH_HOST=)/).reject(&:empty?)
+    mutation_index = commands.index { |command| command.include?(mutation) }
+    refute_nil mutation_index, mutation
+    refresh_index = commands.index { |command| command.include?("repos/owner/repo/check-runs/31") }
+    refute_nil refresh_index
+    metadata_indexes = commands.each_index.select do |index|
+      index < mutation_index && commands[index].include?("number=42")
+    end
+    refute_empty metadata_indexes
+    assert_equal mutation_index - 1, refresh_index
+    assert_operator metadata_indexes.last, :<, refresh_index
+  end
 
   def guarded_direct_policy(
     executable: ".agents/bin/merge-pr-after-checks",
@@ -2539,7 +2584,7 @@ class PrMergeSubmitTest < Minitest::Test
                              "queue_post_queued_with_commit",
                              "enqueue_non_object_response_queued", "queue_base_race",
                              "queue_entry_replaced", "queue_entry_replaced_same_target" then true
-                        when "direct_queue_race" then query_count.positive?
+                        when "direct_queue_race", "guard_queue_race" then query_count.positive?
                         when "direct_graphql_error_queue_enabled" then query_count >= 2
                         else false
                         end
@@ -2557,6 +2602,7 @@ class PrMergeSubmitTest < Minitest::Test
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
                  when "direct_graphql_error_in_queue" then query_count >= 2
+                 when "guard_queue_race" then query_count >= 2
                  else false
                  end
         merged_after_mutation = [
