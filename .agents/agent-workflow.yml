@@ -11,6 +11,7 @@ review_gate:
         actors:
           - claude
           - claude[bot]
+          - github-actions[bot]
         kinds:
           - pull_request_review
           - review_thread

@@ -695,6 +695,18 @@ module ConfiguredReviewGate
         head_sha
       )
       artifact_policy = reviewer.fetch("artifact")
+      configured_reviews = snapshot.fetch("artifacts").select do |artifact|
+        artifact["kind"] == "pull_request_review" &&
+          artifact_policy.fetch("actors").include?(artifact["actor"]) &&
+          artifact["head_sha"].to_s.casecmp?(head_sha.to_s)
+      end
+      configured_actors = configured_reviews.group_by { |artifact| artifact["actor"] }.keys
+      formal_review_blocked = configured_actors.any? do |actor|
+        latest = latest_reviews[actor]
+        latest.nil? || !ACCEPTABLE_PULL_REQUEST_REVIEW_STATES.include?(latest["state"])
+      end
+      next blocker("configured-review-artifact-missing", reviewer, check, "missing") if formal_review_blocked
+
       present = snapshot.fetch("artifacts").any? do |artifact|
         artifact_policy.fetch("actors").include?(artifact["actor"]) &&
           artifact_policy.fetch("kinds").include?(artifact["kind"]) &&

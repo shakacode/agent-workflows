@@ -59,6 +59,7 @@ jobs:
       # add a misleading one. And a successful run that legitimately skips Claude
       # (so emits no execution_file/result) is treated as a pass, not a failure.
       - name: Verify review completed (fail on invalid/expired token)
+        id: verify-review
         if: steps.claude-review.outcome == 'success'
         env:
           EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
@@ -92,3 +93,27 @@ jobs:
             echo "::error::Claude review failed (is_error=true, cost=$cost, turns=$turns). This usually means the token is invalid or expired. $TOKEN_HINT"
             exit 1
           fi
+
+          echo "completed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish exact-head review artifact
+        if: steps.verify-review.outputs.completed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+             [[ ! "$PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
+             [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Refusing to publish a review artifact with invalid repository, PR, or head bindings."
+            exit 1
+          fi
+
+          gh api --method POST \
+            "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews" \
+            -f event=COMMENT \
+            -f commit_id="$EXPECTED_HEAD_SHA" \
+            -f body="Claude review completed for exact head ${EXPECTED_HEAD_SHA}."

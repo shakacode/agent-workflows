@@ -21,6 +21,7 @@ class ConfiguredReviewGateTest < Minitest::Test
   NOW = Time.iso8601("2026-08-25T12:00:00Z")
   PR4701_FIXTURE = File.expand_path("fixtures/configured-review-pr4701.json", __dir__)
   SOURCE_POLICY = File.expand_path("../../../.agents/agent-workflow.yml", __dir__)
+  CLAUDE_REVIEW_WORKFLOW = File.expand_path("../../../.github/workflows/claude-code-review.yml", __dir__)
 
   FakeClient = Struct.new(:snapshots) do
     def collect
@@ -274,8 +275,39 @@ class ConfiguredReviewGateTest < Minitest::Test
   def test_source_policy_names_each_live_claude_artifact_login
     source_policy = YAML.safe_load(File.read(SOURCE_POLICY), aliases: false)
 
-    assert_equal %w[claude claude[bot]],
+    assert_equal %w[claude claude[bot] github-actions[bot]],
                  source_policy.dig("review_gate", "reviewers", 0, "artifact", "actors")
+  end
+
+  def test_completed_claude_workflow_publishes_an_exact_head_gate_accepted_review
+    source = File.read(CLAUDE_REVIEW_WORKFLOW)
+    workflow = YAML.safe_load(source, aliases: false)
+    steps = workflow.dig("jobs", "claude-review", "steps")
+    verification = steps.find { |step| step["name"] == "Verify review completed (fail on invalid/expired token)" }
+    publisher = steps.find { |step| step["name"] == "Publish exact-head review artifact" }
+
+    assert_equal "verify-review", verification.fetch("id")
+    assert_includes verification.fetch("run"), 'echo "completed=true" >> "$GITHUB_OUTPUT"'
+    assert_equal "steps.verify-review.outputs.completed == 'true'", publisher.fetch("if")
+    assert_equal "${{ github.event.pull_request.head.sha }}", publisher.dig("env", "EXPECTED_HEAD_SHA")
+    refute_includes publisher.fetch("run"), "${{"
+    assert_includes publisher.fetch("run"), 'repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews'
+    assert_includes publisher.fetch("run"), "-f event=COMMENT"
+    assert_includes publisher.fetch("run"), '-f commit_id="$EXPECTED_HEAD_SHA"'
+
+    source_policy = YAML.safe_load(File.read(SOURCE_POLICY), aliases: false).fetch("review_gate")
+    result = ConfiguredReviewGate.evaluate(
+      policy: source_policy,
+      policy_source: File.read(SOURCE_POLICY),
+      snapshot: snapshot(
+        "checks" => [check],
+        "artifacts" => [artifact(actor: "github-actions[bot]")]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "READY", result.fetch("verdict")
   end
 
   def test_queued_current_head_duplicate_without_timestamps_blocks_success_and_replay
@@ -505,6 +537,66 @@ class ConfiguredReviewGateTest < Minitest::Test
       assert_equal "NOT_READY", result.fetch("verdict"), id.inspect
       assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code"), id.inspect
     end
+  end
+
+  def test_latest_blocked_formal_review_hard_blocks_a_resolved_thread_artifact
+    review_thread = artifact(id: "thread-1", kind: "review_thread")
+    blocked_review = artifact(id: "10", state: "CHANGES_REQUESTED")
+
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [review_thread, blocked_review]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code")
+  end
+
+  def test_invalid_latest_formal_review_hard_blocks_a_resolved_thread_artifact
+    cases = [
+      ["dismissed", artifact(id: "10", state: "DISMISSED")],
+      ["unknown state", artifact(id: "10", state: "UNEXPECTED")],
+      ["malformed id", artifact(id: "review-10", state: "COMMENTED")],
+      ["missing id", artifact(id: nil, state: "COMMENTED")]
+    ]
+
+    cases.each do |label, formal_review|
+      result = ConfiguredReviewGate.evaluate(
+        policy: policy,
+        policy_source: JSON.generate(policy),
+        snapshot: snapshot(
+          "checks" => [check],
+          "artifacts" => [artifact(id: "thread-1", kind: "review_thread"), formal_review]
+        ),
+        settled: true,
+        now: NOW
+      )
+
+      assert_equal "NOT_READY", result.fetch("verdict"), label
+      assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code"), label
+    end
+  end
+
+  def test_later_acceptable_formal_review_supersedes_a_blocked_review_with_a_resolved_thread
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot(
+        "checks" => [check],
+        "artifacts" => [
+          artifact(id: "thread-1", kind: "review_thread"),
+          artifact(id: "9", state: "CHANGES_REQUESTED"),
+          artifact(id: "10", state: "COMMENTED")
+        ]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "READY", result.fetch("verdict")
   end
 
   def test_settled_success_with_no_untriaged_current_head_threads_is_ready

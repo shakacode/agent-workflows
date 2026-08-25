@@ -82,7 +82,7 @@ review_gate:
     - id: claude
       check_name: claude-review
       artifact:
-        actors: [claude, "claude[bot]"]
+        actors: [claude, "claude[bot]", "github-actions[bot]"]
         kinds: [pull_request_review, review_thread]
   require_current_head: true
   artifact_settlement:
@@ -100,7 +100,10 @@ Only pull-request reviews and review-thread roots carry exact-head attribution;
 issue comments never qualify. For each configured actor, only its latest
 current-head pull-request review qualifies, and only in `APPROVED` or
 `COMMENTED` state. `CHANGES_REQUESTED`, `DISMISSED`, pending, or unknown states
-do not satisfy the artifact gate. The gate blocks missing, stale, pending,
+hard-block alternate artifact kinds until a later acceptable formal review
+supersedes them. The source Claude workflow publishes an exact-head
+`COMMENTED` review as `github-actions[bot]` after its result is verified. The
+gate blocks missing, stale, pending,
 failed, unsettled, or unknown evidence and unresolved current-head review
 threads. A fallback must instead use
 `mode: named_attested_check` with explicit `triggers` and a complete `reviewer`

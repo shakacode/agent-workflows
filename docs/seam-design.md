@@ -106,12 +106,14 @@ closed version 1 mapping with a nonempty `reviewers` list, exact check names,
 artifact actors and kinds, `require_current_head: true`, required artifact
 settlement, required thread dispositions, `failure_policy: block`, and an
 explicit fallback mode. Actor values are exact GitHub logins, so an integration
-that emits both `claude` inline and `claude[bot]` in review threads or review
-objects must list both. Only `pull_request_review` and `review_thread` can be
+that emits `claude` inline, `claude[bot]` in review objects, and a
+`github-actions[bot]` completion review must list all three. Only
+`pull_request_review` and `review_thread` can be
 configured because issue comments have no exact-head attribution. For each
 actor, only its latest current-head pull-request review qualifies, and only in
 `APPROVED` or `COMMENTED` state. `CHANGES_REQUESTED`, `DISMISSED`, pending, and
-unknown states fail closed. `named_attested_check` fallbacks must name their
+unknown states hard-block alternate artifact kinds until superseded by a later
+acceptable formal review. `named_attested_check` fallbacks must name their
 allowed failure triggers and a complete fallback reviewer; disabled fallback
 is the portable default. While an authorized named fallback is missing or
 pending, bounded evaluation continues; a provider terminal result still ends
