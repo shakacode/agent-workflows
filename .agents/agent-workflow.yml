@@ -12,7 +12,6 @@ review_gate:
           - claude
           - claude[bot]
         kinds:
-          - issue_comment
           - pull_request_review
           - review_thread
   require_current_head: true

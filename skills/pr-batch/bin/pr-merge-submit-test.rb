@@ -23,6 +23,7 @@ class PrMergeSubmitTest < Minitest::Test
   ADVANCED_BASE_SHA = "d" * 40
   MERGE_COMMIT_SHA = "c" * 40
   SOURCE_REPO_POLICY = Object.new.freeze
+  SOURCE_REVIEW_GATE = Object.new.freeze
 
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
   # not just against the hang it is meant to catch.
@@ -263,6 +264,7 @@ class PrMergeSubmitTest < Minitest::Test
     result, log, guard_log, _attacker_log, fixture_head = run_cli(
       mode: "guard_success",
       merge_submission: guarded_direct_policy,
+      review_gate: "n/a",
       body: "Detailed merge body"
     )
 
@@ -289,6 +291,57 @@ class PrMergeSubmitTest < Minitest::Test
       "--merge-assurance-receipt", merge_assurance_receipt,
       "--subject", "Fix the thing (#42)", "--body", "Detailed merge body"
     ], argv
+  end
+
+  def test_structured_review_gate_rejects_queue_disabled_guarded_direct_before_guard_validation
+    result, log, guard_log = run_cli(
+      mode: "guard_ambiguous",
+      merge_submission: guarded_direct_policy,
+      review_gate: structured_review_gate,
+      guard_fixture: :modified_after_commit
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr),
+                    "structured review_gate cannot be enforced adjacent to a consumer-owned guarded-direct mutation"
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_structured_review_gate_rejects_when_queue_flips_to_disabled_before_enqueue
+    result, log, guard_log = run_cli(
+      mode: "queue_flip_disabled",
+      merge_submission: guarded_direct_policy,
+      review_gate: structured_review_gate,
+      guard_fixture: :modified_after_commit
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr),
+                    "structured review_gate cannot be enforced adjacent to a consumer-owned guarded-direct mutation"
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_missing_or_legacy_review_gate_never_inherits_not_applicable_guard_authority
+    { "missing" => nil, "legacy" => "AI reviewers are advisory." }.each do |label, review_gate|
+      result, log, guard_log = run_cli(
+        mode: "guard_ambiguous",
+        merge_submission: guarded_direct_policy,
+        review_gate:,
+        guard_fixture: :modified_after_commit
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, label
+      assert_includes result.fetch(:stderr),
+                      "guarded-direct submission requires trusted-base review_gate: n/a",
+                      label
+      assert_equal(2, log.lines.count { |line| line.include?("number=42") }, label)
+      assert_empty guard_log, label
+    end
   end
 
   def test_guard_executes_identity_bound_bytes_when_live_path_is_swapped_after_validation
@@ -859,7 +912,7 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_enabled_merge_queue_enqueues_the_same_head_without_a_direct_attempt
     result, log, guard_log = run_cli(
-      mode: "queue", merge_submission: guarded_direct_policy
+      mode: "queue_guarded", merge_submission: guarded_direct_policy, review_gate: structured_review_gate
     )
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
@@ -874,8 +927,16 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "enqueuePullRequest"
     assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
     assert_includes log, "GH_HOST=#{HOST} api graphql"
-    assert_equal 3, log.scan("GraphQL-Features: merge_queue").length
+    assert_equal 4, log.scan("GraphQL-Features: merge_queue").length
     refute_includes log, "--auto"
+    lines = log.lines
+    replay_index = lines.index("configured-review-replay\n")
+    enqueue_index = lines.index { |line| line.include?("enqueuePullRequest") }
+    refute_nil replay_index
+    refute_nil enqueue_index
+    assert_operator replay_index, :<, enqueue_index
+    assert_includes lines.fetch(replay_index + 1), " api graphql "
+    assert_includes lines.fetch(replay_index + 1), "query=mutation("
   end
 
   def test_enqueue_graphql_failure_with_unresolved_state_is_unknown
@@ -1497,6 +1558,28 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
+  def structured_review_gate
+    {
+      "version" => 1,
+      "reviewers" => [{
+        "id" => "claude",
+        "check_name" => "claude-review",
+        "artifact" => {
+          "actors" => %w[claude claude[bot]],
+          "kinds" => %w[pull_request_review review_thread]
+        }
+      }],
+      "require_current_head" => true,
+      "artifact_settlement" => { "required" => true, "quiet_period_seconds" => 30 },
+      "thread_disposition" => {
+        "required" => true,
+        "marker" => "configured-review-disposition:"
+      },
+      "failure_policy" => "block",
+      "fallback" => { "mode" => "disabled" }
+    }
+  end
+
   def merge_queue_policy
     { "mode" => "merge_queue_only" }
   end
@@ -1591,7 +1674,8 @@ class PrMergeSubmitTest < Minitest::Test
     interpreter_attack: false,
     bash_env_attack: false,
     guard_timeout_seconds: nil,
-    interrupt_guard: false
+    interrupt_guard: false,
+    review_gate: SOURCE_REVIEW_GATE
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
@@ -1600,11 +1684,15 @@ class PrMergeSubmitTest < Minitest::Test
           "mode" => queue_submission_mode?(mode) ? "merge_queue_only" : "direct"
         }
       end
+      if !source_repo_policy && review_gate.equal?(SOURCE_REVIEW_GATE)
+        review_gate = merge_submission.is_a?(Hash) &&
+                      merge_submission["mode"] == "merge_queue_or_guarded_direct" ? "n/a" : nil
+      end
       repo_root, base_sha, fixture_head = if source_repo_policy
                                             [File.expand_path("../../..", __dir__), BASE_SHA, HEAD_SHA]
                                           else
                                             prepare_consumer_repo(
-                                              dir, merge_submission:, policy_fixture:, guard_fixture:
+                                              dir, merge_submission:, review_gate:, policy_fixture:, guard_fixture:
                                             )
                                           end
       if !source_repo_policy &&
@@ -2122,11 +2210,12 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def prepare_consumer_repo(dir, merge_submission:, policy_fixture:, guard_fixture:)
+  def prepare_consumer_repo(dir, merge_submission:, policy_fixture:, guard_fixture:, review_gate: nil)
     root = File.join(dir, "consumer")
     FileUtils.mkdir_p(File.join(root, ".agents/bin"))
     policy = { "base_branch" => "main" }
     policy["merge_submission"] = merge_submission unless merge_submission.nil?
+    policy["review_gate"] = review_gate unless review_gate.nil?
     policy_path = File.join(root, ".agents/agent-workflow.yml")
     case policy_fixture
     when :present
@@ -2360,7 +2449,7 @@ class PrMergeSubmitTest < Minitest::Test
         current_mode = #{mode.inspect}
         guard_called = File.exist?(ENV.fetch("PR_TEST_GUARD_MARKER"))
         queue_enabled = case current_mode
-                        when "queue", "queue_fast_merged", "queue_fast_merged_base_advanced",
+                        when "queue", "queue_guarded", "queue_fast_merged", "queue_fast_merged_base_advanced",
                              "queue_missing_entry", "already_queued", "already_queued_base_advanced",
                              "already_queued_with_commit",
                              "enqueue_transport_queued", "enqueue_transport_merged",
@@ -2376,6 +2465,7 @@ class PrMergeSubmitTest < Minitest::Test
                              "enqueue_non_object_response_queued", "queue_base_race",
                              "queue_entry_replaced", "queue_entry_replaced_same_target" then true
                         when "direct_queue_race" then query_count.positive?
+                        when "queue_flip_disabled" then query_count.zero?
                         when "direct_graphql_error_queue_enabled" then query_count >= 2
                         else false
                         end
@@ -2390,6 +2480,8 @@ class PrMergeSubmitTest < Minitest::Test
                       "queue_entry_replaced_same_target",
                       "queue_post_queued_base_advanced",
                       "queue_post_queued_with_commit" then query_count.positive?
+                 when "queue_guarded"
+                   File.read(ENV.fetch("GH_LOG")).include?("enqueuePullRequest")
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
                  when "direct_graphql_error_in_queue" then query_count >= 2

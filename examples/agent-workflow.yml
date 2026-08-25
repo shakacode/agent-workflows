@@ -17,7 +17,7 @@ review_gate: "n/a"
 #       check_name: "configured-review-check"
 #       artifact:
 #         actors: ["configured-reviewer[bot]"]
-#         kinds: [issue_comment, pull_request_review, review_thread]
+#         kinds: [pull_request_review, review_thread]
 #   require_current_head: true
 #   artifact_settlement:
 #     required: true

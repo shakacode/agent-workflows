@@ -24,6 +24,7 @@ module ConfiguredReviewGate
   MAX_RECEIPT_AGE_SECONDS = 300
   MAX_FUTURE_SKEW_SECONDS = 30
   PENDING_CHECK_STATES = %w[queued in_progress pending waiting requested].freeze
+  ACCEPTABLE_PULL_REQUEST_REVIEW_STATES = %w[APPROVED COMMENTED].freeze
   TERMINAL_FAILURE_CODES = {
     "failure" => "configured-review-failed",
     "cancelled" => "configured-review-cancelled",
@@ -109,6 +110,11 @@ module ConfiguredReviewGate
       )
       raise Error, "trusted-base review policy is unavailable" unless status.success?
 
+      duplicate_errors = ConfiguredReviewGate.review_gate_duplicate_key_errors(stdout)
+      unless duplicate_errors.empty?
+        raise Error, "trusted-base review policy is ambiguous: #{duplicate_errors.join('; ')}"
+      end
+
       document = YAML.safe_load(
         stdout, permitted_classes: [], permitted_symbols: [], aliases: false
       ) || {}
@@ -162,7 +168,7 @@ module ConfiguredReviewGate
         "head_sha" => pull.dig("head", "sha")
       }
       checks = collect_checks(bindings.fetch("head_sha"))
-      artifacts = collect_artifacts(bindings.fetch("head_sha"), checks)
+      artifacts = collect_artifacts
       threads, threads_complete, thread_artifacts = collect_threads(bindings.fetch("head_sha"))
       artifacts.concat(thread_artifacts)
       artifacts.sort_by! { |artifact| [artifact["kind"], artifact["id"].to_s] }
@@ -201,25 +207,17 @@ module ConfiguredReviewGate
       end.sort_by { |check| [check["name"].to_s, check["started_at"].to_s] }
     end
 
-    def collect_artifacts(head_sha, checks)
-      issue_comments = paginated_array("repos/#{@repo}/issues/#{@pr}/comments?per_page=100")
+    def collect_artifacts
       reviews = paginated_array("repos/#{@repo}/pulls/#{@pr}/reviews?per_page=100")
-      artifacts = issue_comments.filter_map do |comment|
-        actor = comment.dig("user", "login")
-        next unless artifact_configured?(actor, "issue_comment")
-
-        inferred_head = artifact_after_matching_check?(actor, comment["created_at"], checks) ? head_sha : nil
-        artifact_record(comment["id"], "issue_comment", actor, comment["created_at"], comment["html_url"], inferred_head)
-      end
-      artifacts.concat(reviews.filter_map do |review|
+      reviews.filter_map do |review|
         actor = review.dig("user", "login")
         next unless artifact_configured?(actor, "pull_request_review")
 
         artifact_record(
-          review["id"], "pull_request_review", actor, review["submitted_at"], review["html_url"], review["commit_id"]
+          review["id"], "pull_request_review", actor, review["submitted_at"], review["html_url"], review["commit_id"],
+          state: review["state"]
         )
-      end)
-      artifacts.sort_by { |artifact| [artifact["kind"], artifact["id"].to_s] }
+      end.sort_by { |artifact| [artifact["kind"], artifact["id"].to_s] }
     end
 
     def collect_threads(head_sha)
@@ -277,8 +275,8 @@ module ConfiguredReviewGate
       [normalized_threads, complete, normalized_artifacts]
     end
 
-    def artifact_record(id, kind, actor, created_at, url, head_sha)
-      {
+    def artifact_record(id, kind, actor, created_at, url, head_sha, state: nil)
+      record = {
         "id" => id.to_s,
         "kind" => kind,
         "actor" => actor,
@@ -286,6 +284,8 @@ module ConfiguredReviewGate
         "url" => url,
         "head_sha" => head_sha
       }
+      record["state"] = state unless state.nil?
+      record
     end
 
     def all_reviewers
@@ -301,17 +301,6 @@ module ConfiguredReviewGate
         artifact = reviewer["artifact"]
         Array(artifact&.fetch("actors", nil)).include?(actor) &&
           Array(artifact&.fetch("kinds", nil)).include?(kind)
-      end
-    end
-
-    def artifact_after_matching_check?(actor, created_at, checks)
-      all_reviewers.any? do |reviewer|
-        next false unless Array(reviewer.dig("artifact", "actors")).include?(actor)
-
-        check = ConfiguredReviewGate.latest_check(
-          checks.select { |item| item["name"] == reviewer["check_name"] }
-        )
-        check && ConfiguredReviewGate.timestamp_at_or_after?(created_at, check["started_at"])
       end
     end
 
@@ -401,8 +390,16 @@ module ConfiguredReviewGate
     private
 
     def terminal_without_wait?(codes)
+      pending_fallback = %w[
+        configured-review-fallback-missing configured-review-fallback-pending
+      ]
+      return false if codes.any? { |code| pending_fallback.include?(code) }
+
       terminal = BLOCKER_TRIGGER.keys - ["configured-review-missing"]
-      codes.any? { |code| terminal.include?(code) }
+      codes.any? do |code|
+        normalized = code.sub("configured-review-fallback-", "configured-review-")
+        terminal.include?(normalized)
+      end
     end
   end
 
@@ -424,8 +421,40 @@ module ConfiguredReviewGate
   rescue Errno::ENOENT, Errno::EACCES => e
     raise Error, "#{name} is unavailable: #{e.message}"
   end
+  module_function :resolve_system_tool!
 
   module_function
+
+  def review_gate_duplicate_key_errors(yaml)
+    stream = Psych.parse_stream(yaml)
+    errors = []
+    walk_for_duplicate_keys(stream, "$", errors)
+    errors.select do |error|
+      error == '$ contains duplicate key "review_gate"' ||
+        error.start_with?("$.review_gate ") || error.start_with?("$.review_gate.")
+    end
+  end
+
+  def walk_for_duplicate_keys(node, path, errors)
+    return unless node.respond_to?(:children) && node.children.is_a?(Array)
+
+    if node.is_a?(Psych::Nodes::Mapping)
+      seen = {}
+      node.children.each_slice(2) do |key_node, value_node|
+        key = key_node.respond_to?(:value) ? key_node.value : nil
+        if key.nil?
+          errors << "#{path} contains a non-scalar mapping key"
+        elsif seen.key?(key)
+          errors << "#{path} contains duplicate key #{key.inspect}"
+        else
+          seen[key] = true
+        end
+        walk_for_duplicate_keys(value_node, "#{path}.#{key}", errors)
+      end
+    else
+      node.children.each { |child| walk_for_duplicate_keys(child, path, errors) }
+    end
+  end
 
   def evaluate(policy:, policy_source:, snapshot:, settled:, now: Time.now.utc)
     validate_snapshot!(snapshot)
@@ -659,6 +688,7 @@ module ConfiguredReviewGate
 
   def artifact_blockers(reviewers, snapshot)
     head_sha = snapshot.dig("bindings", "head_sha")
+    latest_reviews = latest_current_head_reviews_by_actor(snapshot.fetch("artifacts"), head_sha)
     reviewers.filter_map do |reviewer|
       check = governing_check(
         snapshot.fetch("checks").select { |item| item["name"] == reviewer["check_name"] },
@@ -669,10 +699,33 @@ module ConfiguredReviewGate
         artifact_policy.fetch("actors").include?(artifact["actor"]) &&
           artifact_policy.fetch("kinds").include?(artifact["kind"]) &&
           artifact["head_sha"].to_s.casecmp?(head_sha.to_s) &&
-          timestamp_at_or_after?(artifact["created_at"], check["started_at"])
+          timestamp_at_or_after?(artifact["created_at"], check["started_at"]) &&
+          qualifying_review_artifact?(artifact, latest_reviews)
       end
       blocker("configured-review-artifact-missing", reviewer, check, "missing") unless present
     end
+  end
+
+  def latest_current_head_reviews_by_actor(artifacts, head_sha)
+    artifacts.select do |artifact|
+      artifact["kind"] == "pull_request_review" &&
+        artifact["head_sha"].to_s.casecmp?(head_sha.to_s)
+    end.group_by { |artifact| artifact["actor"] }.to_h do |actor, reviews|
+      parsed = reviews.map do |review|
+        [review, Time.iso8601(review["created_at"].to_s)]
+      rescue ArgumentError
+        nil
+      end
+      latest = parsed.all? ? parsed.max_by { |review, submitted_at| [submitted_at, review["id"].to_s] }&.first : nil
+      [actor, latest]
+    end
+  end
+
+  def qualifying_review_artifact?(artifact, latest_reviews)
+    return true unless artifact["kind"] == "pull_request_review"
+
+    latest_reviews[artifact["actor"]].equal?(artifact) &&
+      ACCEPTABLE_PULL_REQUEST_REVIEW_STATES.include?(artifact["state"])
   end
 
   def thread_blockers(policy, snapshot)

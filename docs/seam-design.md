@@ -106,12 +106,18 @@ closed version 1 mapping with a nonempty `reviewers` list, exact check names,
 artifact actors and kinds, `require_current_head: true`, required artifact
 settlement, required thread dispositions, `failure_policy: block`, and an
 explicit fallback mode. Actor values are exact GitHub logins, so an integration
-that emits both `claude` inline and `claude[bot]` in reviews or issue comments
-must list both. `named_attested_check` fallbacks must name their allowed failure
-triggers and a complete fallback reviewer; disabled fallback is the portable
-default. The configured-review helper reads this mapping from the trusted base
-and binds its receipt to host, repository, PR, base, head, and the settled
-artifact snapshot.
+that emits both `claude` inline and `claude[bot]` in review threads or review
+objects must list both. Only `pull_request_review` and `review_thread` can be
+configured because issue comments have no exact-head attribution. For each
+actor, only its latest current-head pull-request review qualifies, and only in
+`APPROVED` or `COMMENTED` state. `CHANGES_REQUESTED`, `DISMISSED`, pending, and
+unknown states fail closed. `named_attested_check` fallbacks must name their
+allowed failure triggers and a complete fallback reviewer; disabled fallback
+is the portable default. While an authorized named fallback is missing or
+pending, bounded evaluation continues; a provider terminal result still ends
+waiting when no configured fallback can apply. The configured-review helper
+reads this mapping from the trusted base and binds its receipt to host,
+repository, PR, base, head, and the settled artifact snapshot.
 
 `hosted_qa_gate` is an optional closed mapping during first-phase adoption.
 Omission or the exact string `n/a` means that no hosted runtime gate is
@@ -287,10 +293,16 @@ when the authorized head is an exact terminal merge on the expected base. This
 exception explicitly acknowledges that GitHub direct merge has no atomic
 expected-base OID; it does not make direct merge equivalent to the merge queue.
 Queue-enabled PRs use canonical enqueue only in a queue-capable mode and never
-invoke the guard; direct mode instead reports the required seam opt-in before
-mutation. On a queue-disabled base, only explicit `merge_queue_only` is a
-deterministic configuration error (exit 1), not an `UNKNOWN` mutation outcome.
-An absent seam uses the portable direct path.
+invoke the guard. A structured executable `review_gate` cannot guarantee replay
+adjacent to a mutation owned inside an unversioned consumer guard, so a
+queue-disabled `merge_queue_or_guarded_direct` route rejects before validating
+or launching the guard. Exact `review_gate: n/a` preserves the historical fixed
+guard argv; missing and legacy prose review policies never inherit that
+exception. Direct mode instead reports the required seam opt-in before mutation.
+On a queue-disabled base, explicit `merge_queue_only` and the unsupported
+structured-review guarded route are deterministic configuration errors (exit
+1), not `UNKNOWN` mutation outcomes. An absent merge-submission seam uses the
+portable direct path.
 
 ## AGENTS Pointer
 

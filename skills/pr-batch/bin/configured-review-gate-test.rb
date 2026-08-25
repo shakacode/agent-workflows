@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "fileutils"
 require "minitest/autorun"
 require "open3"
 require "tmpdir"
@@ -28,12 +29,14 @@ class ConfiguredReviewGateTest < Minitest::Test
   end
 
   class FakeGitHubApiClient < ConfiguredReviewGate::GitHubClient
-    def initialize(policy:, threads:)
+    def initialize(policy:, threads:, reviews: [], checks: [])
       @host = HOST
       @repo = REPO
       @pr = PR
       @policy = policy
       @threads = threads
+      @reviews = reviews
+      @checks = checks
     end
 
     private
@@ -41,9 +44,9 @@ class ConfiguredReviewGateTest < Minitest::Test
     def api_json(*arguments)
       endpoint = arguments.find { |argument| argument.start_with?("repos/") }
       return pull_response if endpoint == "repos/#{REPO}/pulls/#{PR}"
-      return [{ "check_runs" => [] }] if endpoint&.include?("/check-runs?")
+      return [{ "check_runs" => @checks }] if endpoint&.include?("/check-runs?")
       return [[]] if endpoint&.include?("/issues/#{PR}/comments?")
-      return [[]] if endpoint&.include?("/pulls/#{PR}/reviews?")
+      return [@reviews] if endpoint&.include?("/pulls/#{PR}/reviews?")
       return graphql_response if arguments.include?("graphql")
 
       raise "unexpected fake GitHub API request: #{arguments.inspect}"
@@ -106,7 +109,7 @@ class ConfiguredReviewGateTest < Minitest::Test
           "check_name" => "claude-review",
           "artifact" => {
             "actors" => %w[claude claude[bot]],
-            "kinds" => %w[issue_comment pull_request_review review_thread]
+            "kinds" => %w[pull_request_review review_thread]
           }
         }
       ],
@@ -137,15 +140,20 @@ class ConfiguredReviewGateTest < Minitest::Test
     }
   end
 
-  def artifact(id: "A1", kind: "issue_comment", actor: "claude", head_sha: HEAD_SHA)
-    {
+  def artifact(
+    id: "A1", kind: "pull_request_review", actor: "claude", head_sha: HEAD_SHA,
+    created_at: "2026-08-25T11:59:10Z", state: "COMMENTED"
+  )
+    record = {
       "id" => id,
       "kind" => kind,
       "actor" => actor,
-      "created_at" => "2026-08-25T11:59:10Z",
+      "created_at" => created_at,
       "url" => "https://github.com/example/widgets/pull/42#issuecomment-1",
       "head_sha" => head_sha
     }
+    record["state"] = state if kind == "pull_request_review"
+    record
   end
 
   def thread(id:, resolved: false, head_sha: HEAD_SHA, comments: [])
@@ -168,6 +176,22 @@ class ConfiguredReviewGateTest < Minitest::Test
     }
   end
 
+  def with_trusted_policy(yaml)
+    Dir.mktmpdir("configured-review-policy-test") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      system("git", "-C", root, "init", "-q", exception: true)
+      system("git", "-C", root, "add", ".agents/agent-workflow.yml", exception: true)
+      system(
+        "git", "-C", root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-qm", "policy fixture", exception: true
+      )
+      base_sha, status = Open3.capture2("git", "-C", root, "rev-parse", "HEAD")
+      assert status.success?
+      yield root, base_sha.strip
+    end
+  end
+
   def test_explicit_n_a_is_ready_without_inventing_a_review_cohort
     result = ConfiguredReviewGate.evaluate(
       policy: "n/a",
@@ -184,6 +208,37 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal snapshot.fetch("bindings"), receipt.fetch("bindings")
     assert_equal true, receipt.dig("policy", "not_applicable")
     assert_equal false, receipt.fetch("mutation_eligible")
+  end
+
+  def test_trusted_policy_loader_rejects_duplicate_top_level_review_gate
+    with_trusted_policy("review_gate: n/a\nreview_gate: n/a\n") do |root, base_sha|
+      error = assert_raises(ConfiguredReviewGate::Error) do
+        ConfiguredReviewGate::TrustedPolicy.load(repo_root: root, base_sha:)
+      end
+
+      assert_includes error.message, '$ contains duplicate key "review_gate"'
+    end
+  end
+
+  def test_trusted_policy_loader_rejects_duplicate_nested_review_gate_keys
+    yaml = <<~YAML
+      review_gate:
+        version: 1
+        reviewers:
+          - id: claude
+            check_name: claude-review
+            check_name: shadow-review
+            artifact:
+              actors: [claude]
+              kinds: [pull_request_review]
+    YAML
+    with_trusted_policy(yaml) do |root, base_sha|
+      error = assert_raises(ConfiguredReviewGate::Error) do
+        ConfiguredReviewGate::TrustedPolicy.load(repo_root: root, base_sha:)
+      end
+
+      assert_includes error.message, '$.review_gate.reviewers contains duplicate key "check_name"'
+    end
   end
 
   def test_default_policy_blocks_the_complete_check_state_matrix
@@ -309,6 +364,40 @@ class ConfiguredReviewGateTest < Minitest::Test
     }], collected.fetch("artifacts")
   end
 
+  def test_live_collector_never_queries_issue_comments_as_review_artifacts
+    client_class = Class.new(FakeGitHubApiClient) do
+      private
+
+      def api_json(*arguments)
+        endpoint = arguments.find { |argument| argument.start_with?("repos/") }
+        raise "issue comments cannot prove exact-head review attribution" if endpoint&.include?("/issues/")
+
+        super
+      end
+    end
+    client = client_class.new(policy: policy, threads: [])
+
+    collected = client.collect
+
+    assert_empty collected.fetch("artifacts")
+  end
+
+  def test_live_collector_materializes_pull_request_review_state
+    review = {
+      "id" => 7,
+      "user" => { "login" => "claude[bot]" },
+      "state" => "COMMENTED",
+      "submitted_at" => "2026-08-25T11:59:10Z",
+      "html_url" => "https://github.com/example/widgets/pull/42#pullrequestreview-7",
+      "commit_id" => HEAD_SHA
+    }
+    client = FakeGitHubApiClient.new(policy: policy, threads: [], reviews: [review])
+
+    collected = client.collect
+
+    assert_equal "COMMENTED", collected.dig("artifacts", 0, "state")
+  end
+
   def test_success_requires_a_current_head_artifact_and_a_settled_snapshot
     missing = ConfiguredReviewGate.evaluate(
       policy: policy,
@@ -335,6 +424,56 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "configured-review-artifact-missing", missing.dig("blockers", 0, "code")
     assert_equal "configured-review-artifact-unsettled", unsettled.dig("blockers", 0, "code")
     assert_equal "configured-review-artifact-missing", stale_artifact.dig("blockers", 0, "code")
+  end
+
+  def test_only_latest_current_head_pull_request_review_per_actor_can_qualify
+    older_comment = artifact(id: "R1", created_at: "2026-08-25T11:57:00Z", state: "COMMENTED")
+    newer_change_request = artifact(
+      id: "R2", created_at: "2026-08-25T11:59:00Z", state: "CHANGES_REQUESTED"
+    )
+
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [older_comment, newer_change_request]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code")
+  end
+
+  def test_rejected_or_unknown_pull_request_review_states_never_qualify
+    ["CHANGES_REQUESTED", "DISMISSED", "PENDING", "UNKNOWN", nil].each do |state|
+      result = ConfiguredReviewGate.evaluate(
+        policy: policy,
+        policy_source: JSON.generate(policy),
+        snapshot: snapshot("checks" => [check], "artifacts" => [artifact(state:)]),
+        settled: true,
+        now: NOW
+      )
+
+      assert_equal "NOT_READY", result.fetch("verdict"), state.inspect
+      assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code"), state.inspect
+    end
+  end
+
+  def test_newest_acceptable_current_head_review_qualifies_regardless_of_api_order
+    newer_comment = artifact(id: "R2", created_at: "2026-08-25T11:59:00Z", state: "COMMENTED")
+    older_change_request = artifact(
+      id: "R1", created_at: "2026-08-25T11:57:00Z", state: "CHANGES_REQUESTED"
+    )
+
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [newer_comment, older_change_request]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "READY", result.fetch("verdict")
   end
 
   def test_settled_success_with_no_untriaged_current_head_threads_is_ready
@@ -424,7 +563,7 @@ class ConfiguredReviewGateTest < Minitest::Test
         "check_name" => "codex-review",
         "artifact" => {
           "actors" => ["codex-reviewer"],
-          "kinds" => ["issue_comment"]
+          "kinds" => ["pull_request_review"]
         }
       }
     }
@@ -457,7 +596,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       "reviewer" => {
         "id" => "codex-fallback",
         "check_name" => "codex-review",
-        "artifact" => { "actors" => ["codex-reviewer"], "kinds" => ["issue_comment"] }
+        "artifact" => { "actors" => ["codex-reviewer"], "kinds" => ["pull_request_review"] }
       }
     }
     result = ConfiguredReviewGate.evaluate(
@@ -600,6 +739,124 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy_source: JSON.generate(policy),
       expected_base_sha: BASE_SHA,
       wait_seconds: 60,
+      poll_seconds: 30,
+      clock: -> { current },
+      sleeper: ->(seconds) { sleeps << seconds; current += seconds }
+    ).run
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-quota-exhausted", result.dig("blockers", 0, "code")
+    assert_empty sleeps
+  end
+
+  def test_live_evaluator_waits_for_missing_authorized_fallback_to_succeed
+    fallback_policy = policy
+    fallback_policy["fallback"] = {
+      "mode" => "named_attested_check",
+      "triggers" => ["quota_exhausted"],
+      "reviewer" => {
+        "id" => "codex-fallback",
+        "check_name" => "codex-review",
+        "artifact" => {
+          "actors" => ["codex-reviewer"],
+          "kinds" => ["pull_request_review"]
+        }
+      }
+    }
+    primary_failure = check(conclusion: "failure", output: "quota exhausted")
+    missing_fallback = live_snapshot("checks" => [primary_failure])
+    successful_fallback = live_snapshot(
+      "checks" => [primary_failure, check(name: "codex-review")],
+      "artifacts" => [artifact(actor: "codex-reviewer")]
+    )
+    current = NOW
+    sleeps = []
+
+    result = ConfiguredReviewGate::LiveEvaluator.new(
+      client: FakeClient.new([missing_fallback, successful_fallback, Marshal.load(Marshal.dump(successful_fallback))]),
+      policy: fallback_policy,
+      policy_source: JSON.generate(fallback_policy),
+      expected_base_sha: BASE_SHA,
+      wait_seconds: 90,
+      poll_seconds: 30,
+      clock: -> { current },
+      sleeper: ->(seconds) { sleeps << seconds; current += seconds }
+    ).run
+
+    assert_equal "READY", result.fetch("verdict")
+    assert_equal [30, 30], sleeps
+    assert_equal "codex-fallback", result.dig("receipt", "policy", "override", "reviewer_id")
+  end
+
+  def test_live_evaluator_waits_for_queued_authorized_fallback_to_succeed
+    fallback_policy = policy
+    fallback_policy["fallback"] = {
+      "mode" => "named_attested_check",
+      "triggers" => ["quota_exhausted"],
+      "reviewer" => {
+        "id" => "codex-fallback",
+        "check_name" => "codex-review",
+        "artifact" => {
+          "actors" => ["codex-reviewer"],
+          "kinds" => ["pull_request_review"]
+        }
+      }
+    }
+    primary_failure = check(conclusion: "failure", output: "quota exhausted")
+    queued_fallback = live_snapshot(
+      "checks" => [primary_failure, check(name: "codex-review", status: "queued", conclusion: nil)]
+    )
+    successful_fallback = live_snapshot(
+      "checks" => [primary_failure, check(name: "codex-review")],
+      "artifacts" => [artifact(actor: "codex-reviewer")]
+    )
+    current = NOW
+    sleeps = []
+
+    result = ConfiguredReviewGate::LiveEvaluator.new(
+      client: FakeClient.new([queued_fallback, successful_fallback, Marshal.load(Marshal.dump(successful_fallback))]),
+      policy: fallback_policy,
+      policy_source: JSON.generate(fallback_policy),
+      expected_base_sha: BASE_SHA,
+      wait_seconds: 90,
+      poll_seconds: 30,
+      clock: -> { current },
+      sleeper: ->(seconds) { sleeps << seconds; current += seconds }
+    ).run
+
+    assert_equal "READY", result.fetch("verdict")
+    assert_equal [30, 30], sleeps
+  end
+
+  def test_live_evaluator_stops_on_provider_failure_without_an_authorized_pending_fallback
+    fallback_policy = policy
+    fallback_policy["fallback"] = {
+      "mode" => "named_attested_check",
+      "triggers" => ["rate_limited"],
+      "reviewer" => {
+        "id" => "codex-fallback",
+        "check_name" => "codex-review",
+        "artifact" => {
+          "actors" => ["codex-reviewer"],
+          "kinds" => ["pull_request_review"]
+        }
+      }
+    }
+    current = NOW
+    sleeps = []
+    unavailable = live_snapshot(
+      "checks" => [
+        check(conclusion: "failure", output: "quota exhausted"),
+        check(name: "codex-review", status: "queued", conclusion: nil)
+      ]
+    )
+
+    result = ConfiguredReviewGate::LiveEvaluator.new(
+      client: FakeClient.new([unavailable]),
+      policy: fallback_policy,
+      policy_source: JSON.generate(fallback_policy),
+      expected_base_sha: BASE_SHA,
+      wait_seconds: 90,
       poll_seconds: 30,
       clock: -> { current },
       sleeper: ->(seconds) { sleeps << seconds; current += seconds }

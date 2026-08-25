@@ -3334,6 +3334,15 @@ action-required, unknown, rate-, quota-, or capacity-limited checks block by
 default. So do missing or unsettled artifacts and newly untriaged actionable
 threads rooted on the current head.
 
+Configured artifacts are limited to exact-head pull-request reviews and review
+thread roots; issue comments cannot qualify. For each configured actor, only
+its latest current-head pull-request review is eligible, and only when its state
+is `APPROVED` or `COMMENTED`. `CHANGES_REQUESTED`, `DISMISSED`, pending, or
+unknown review states fail closed. When a primary terminal failure authorizes a
+named fallback, bounded evaluation continues while that fallback is missing or
+pending; without an authorized pending fallback, the provider terminal result
+may stop waiting but remains blocking.
+
 An unresolved current-head thread is triaged only by resolution, obsolescence,
 or a later trusted-collaborator comment containing the configured marker on its
 own line, for example `configured-review-disposition: fixed`. A named fallback
@@ -3344,9 +3353,11 @@ that override explicit.
 The replayable receipt binds the canonical host, repository, PR number, base
 branch and SHA, head SHA, trusted policy digest, and semantic artifact-settlement
 snapshot. `pr-merge-submit` collects live state and replays the receipt
-immediately before every merge, enqueue, or guarded-direct mutation. Any moved
-base or head, newly pending review, changed settlement evidence, or newly
-untriaged current-head thread rejects the submission.
+immediately before every parent-owned direct merge or enqueue mutation. Any
+moved base or head, newly pending review, changed settlement evidence, or newly
+untriaged current-head thread rejects the submission. A consumer-owned guard
+has no versioned mutation-adjacent replay protocol; the guarded-direct
+limitation below therefore fails closed for structured review policies.
 
 The repository workflow publishes the stable `configured-review-gate` status
 check and can be made required by a repository ruleset. Native GitHub auto-merge
@@ -4110,8 +4121,13 @@ configured method, explicit non-atomic-base acknowledgement and rationale, and
 `atomic_expected_base_oid: false`. Failed, ambiguous, moved-head, or
 unreconciled outcomes are `UNKNOWN` and must not be retried blindly. A
 queue-enabled PR in `merge_queue_or_guarded_direct` mode always follows
-canonical enqueue and never invokes the guard. The helper never invokes `gh pr
-merge`, enables auto-merge, or enables a merge queue.
+canonical enqueue and never invokes the guard. On a queue-disabled base, a
+structured executable `review_gate` rejects deterministically before guard
+validation, materialization, launch, or mutation because the unversioned guard
+protocol cannot guarantee replay adjacent to its internal mutation. Exact
+`review_gate: n/a` preserves the historical fixed argv; missing or legacy prose
+review policies do not. The helper never invokes `gh pr merge`, enables
+auto-merge, or enables a merge queue.
 
 Submission is restart-safe for an exact head already merged, and for an exact
 head already present in the queue when a queue-capable mode is configured.

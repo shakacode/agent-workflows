@@ -475,29 +475,42 @@ module PrMergeSubmit
       ) || {}
       raise Error, "trusted-base policy is not a mapping" unless config.is_a?(Hash)
 
+      review_gate = trusted_review_gate_classification(config)
       seam = config["merge_submission"]
-      return { "mode" => "direct", "source" => "portable_default" } if seam.nil?
+      if seam.nil?
+        return {
+          "mode" => "direct", "source" => "portable_default", "review_gate" => review_gate
+        }
+      end
 
       validate_merge_submission_mapping!(seam)
       if %w[direct merge_queue_only].include?(seam["mode"])
-        return { "mode" => seam["mode"], "source" => "trusted_base" }
+        return {
+          "mode" => seam["mode"], "source" => "trusted_base", "review_gate" => review_gate
+        }
       end
 
       guarded_direct = seam.fetch("guarded_direct")
-      guard_identity, trusted_guard_bytes = load_trusted_guard_identity!(
-        base_sha, guarded_direct.fetch("executable")
-      )
-      {
+      result = {
         "mode" => seam["mode"],
         "source" => "trusted_base",
+        "review_gate" => review_gate,
         "guarded_direct" => {
           "executable" => guarded_direct.fetch("executable"),
           "method" => guarded_direct.fetch("method"),
-          "non_atomic_base" => guarded_direct.fetch("non_atomic_base").dup,
-          "identity" => guard_identity,
-          "trusted_bytes" => trusted_guard_bytes
+          "non_atomic_base" => guarded_direct.fetch("non_atomic_base").dup
         }
       }
+      if review_gate == "not_applicable"
+        guard_identity, trusted_guard_bytes = load_trusted_guard_identity!(
+          base_sha, guarded_direct.fetch("executable")
+        )
+        result.fetch("guarded_direct").merge!(
+          "identity" => guard_identity,
+          "trusted_bytes" => trusted_guard_bytes
+        )
+      end
+      result
     rescue Psych::Exception => e
       raise Error, "trusted-base merge-submission policy is invalid YAML: #{e.message.lines.first.to_s.strip}"
     end
@@ -540,6 +553,13 @@ module PrMergeSubmit
       return if valid_non_atomic_rationale?(rationale)
 
       raise Error, "merge_submission.guarded_direct.non_atomic_base.rationale must be nonempty, resolved single-line prose"
+    end
+
+    def trusted_review_gate_classification(config)
+      return "not_applicable" if config["review_gate"] == "n/a"
+      return "structured" if config["review_gate"].is_a?(Hash) && config.dig("review_gate", "version") == 1
+
+      "invalid"
     end
 
     def valid_guard_executable?(value)
@@ -917,7 +937,7 @@ module PrMergeSubmit
       }.reject { |_key, value| value.nil? || value == "" }
     end
 
-    def guarded_direct_result(options)
+    def guarded_direct_result(options, refreshed: nil)
       policy = @merge_submission.fetch("guarded_direct")
       unless options[:method] == policy["method"]
         raise Error, "--method #{options[:method]} does not match trusted-base guarded-direct method #{policy['method']}"
@@ -925,7 +945,7 @@ module PrMergeSubmit
 
       # Narrow the acknowledged non-atomic-base window immediately before the
       # repository guard. A queue enabled in the meantime remains canonical.
-      refreshed = fetch_pr(options)
+      refreshed ||= fetch_pr(options)
       validate_receipt_live_bindings!(refreshed, options)
       validate_pr!(refreshed, options)
       if refreshed["isInMergeQueue"] == true
@@ -936,11 +956,12 @@ module PrMergeSubmit
       unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil?
         raise UnknownOutcome, "PR merge-queue membership became inconsistent or UNKNOWN before guarded-direct submission"
       end
-      return enqueue_result(refreshed, options) if refreshed["isMergeQueueEnabled"] == true
+      return enqueue_result(refreshed, options, live_rechecked: true) if refreshed["isMergeQueueEnabled"] == true
       unless refreshed["isMergeQueueEnabled"] == false
         raise UnknownOutcome, "PR merge-queue state became missing or UNKNOWN before guarded-direct submission"
       end
 
+      validate_guarded_direct_review_gate!
       validate_live_guard!(policy.fetch("executable"), policy.fetch("trusted_bytes"))
       guard_stdout, guard_stderr, guard_status = run_guard(policy, options)
       diagnostics = failure_output(guard_stdout, guard_stderr)
@@ -980,6 +1001,20 @@ module PrMergeSubmit
         "merge_commit" => reconciled.dig("mergeCommit", "oid"),
         "reconciled_after_guard" => true
       }
+    end
+
+    def validate_guarded_direct_review_gate!
+      case @merge_submission["review_gate"]
+      when "not_applicable"
+        nil
+      when "structured"
+        raise Error, "structured review_gate cannot be enforced adjacent to a consumer-owned " \
+                     "guarded-direct mutation; use direct submission, Merge Queue, or an explicit " \
+                     "mutation-adjacent consumer protocol"
+      else
+        raise Error, "guarded-direct submission requires trusted-base review_gate: n/a; missing or " \
+                     "legacy review policy is not executable"
+      end
     end
 
     def run_guard(policy, options)
@@ -1247,7 +1282,35 @@ module PrMergeSubmit
       queue_result(pull_request, entry, options, reconciled:)
     end
 
-    def enqueue_result(pull_request, options)
+    def enqueue_result(pull_request, options, live_rechecked: false)
+      unless live_rechecked || @merge_submission.fetch("mode") != "merge_queue_or_guarded_direct"
+        refreshed = fetch_pr(options)
+        validate_receipt_live_bindings!(refreshed, options)
+        validate_pr!(refreshed, options)
+        if refreshed["isInMergeQueue"] == true
+          return existing_queue_result(refreshed, options) if exact_queue?(refreshed, options)
+
+          raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof before enqueue"
+        end
+        unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil?
+          raise UnknownOutcome, "PR merge-queue membership became inconsistent or UNKNOWN before enqueue"
+        end
+        if refreshed["isMergeQueueEnabled"] == false
+          if @merge_submission.fetch("mode") == "merge_queue_or_guarded_direct"
+            return guarded_direct_result(options, refreshed: refreshed)
+          end
+
+          raise Error, "queue-disabled submission is unsupported by the trusted-base merge_submission " \
+                       "policy; configure mode: direct, configure an explicit repository-owned guarded-direct " \
+                       "exception, or enable the repository merge queue"
+        end
+        unless refreshed["isMergeQueueEnabled"] == true
+          raise UnknownOutcome, "PR merge-queue state became missing or UNKNOWN before enqueue"
+        end
+
+        pull_request = refreshed
+      end
+
       replay_configured_review_gate!(options)
       stdout, stderr, status = run_gh(
         "api", "graphql",

@@ -23,7 +23,7 @@ module AgentWorkflowSeamDoctorTestHelpers
         "check_name" => "claude-review",
         "artifact" => {
           "actors" => %w[claude claude[bot]],
-          "kinds" => %w[issue_comment pull_request_review review_thread]
+          "kinds" => %w[pull_request_review review_thread]
         }
       }
     ],
@@ -524,6 +524,55 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       refute status.success?
       assert_includes out, 'invalid review_gate policy: duplicate reviewer id "claude"'
       assert_includes out, 'invalid review_gate policy: duplicate reviewer check_name "claude-review"'
+    end
+  end
+
+  def test_review_gate_rejects_issue_comments_as_exact_head_artifacts
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      gate = structured_review_gate_policy
+      gate.dig("reviewers", 0, "artifact")["kinds"] = ["issue_comment"]
+      write_policy(root, POLICY.merge("review_gate" => gate))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid review_gate policy: reviewers[0].artifact.kinds contains an invalid kind"
+    end
+  end
+
+  def test_review_gate_rejects_duplicate_top_level_yaml_key
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      File.write(
+        File.join(root, ".agents/agent-workflow.yml"),
+        "#{POLICY.to_yaml}review_gate: n/a\n"
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, 'invalid review_gate policy: $ contains duplicate key "review_gate"'
+    end
+  end
+
+  def test_review_gate_rejects_duplicate_nested_yaml_key
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.to_yaml.sub(
+        "    check_name: claude-review\n",
+        "    check_name: claude-review\n    check_name: shadow-review\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      'invalid review_gate policy: $.review_gate.reviewers contains duplicate key "check_name"'
     end
   end
 

@@ -83,7 +83,7 @@ review_gate:
       check_name: claude-review
       artifact:
         actors: [claude, "claude[bot]"]
-        kinds: [issue_comment, pull_request_review, review_thread]
+        kinds: [pull_request_review, review_thread]
   require_current_head: true
   artifact_settlement:
     required: true
@@ -96,8 +96,13 @@ review_gate:
     mode: disabled
 ```
 
-The gate blocks missing, stale, pending, failed, unsettled, or unknown evidence
-and unresolved current-head review threads. A fallback must instead use
+Only pull-request reviews and review-thread roots carry exact-head attribution;
+issue comments never qualify. For each configured actor, only its latest
+current-head pull-request review qualifies, and only in `APPROVED` or
+`COMMENTED` state. `CHANGES_REQUESTED`, `DISMISSED`, pending, or unknown states
+do not satisfy the artifact gate. The gate blocks missing, stale, pending,
+failed, unsettled, or unknown evidence and unresolved current-head review
+threads. A fallback must instead use
 `mode: named_attested_check` with explicit `triggers` and a complete `reviewer`
 mapping; provider failure alone never implies readiness.
 

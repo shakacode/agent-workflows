@@ -146,7 +146,7 @@ module AgentWorkflowSeamDoctor
   REVIEW_GATE_FALLBACK_MODES = %w[disabled named_attested_check].freeze
   REVIEW_GATE_REVIEWER_KEYS = %w[id check_name artifact].freeze
   REVIEW_GATE_ARTIFACT_KEYS = %w[actors kinds].freeze
-  REVIEW_GATE_ARTIFACT_KINDS = %w[issue_comment pull_request_review review_thread].freeze
+  REVIEW_GATE_ARTIFACT_KINDS = %w[pull_request_review review_thread].freeze
   REVIEW_GATE_SETTLEMENT_KEYS = %w[required quiet_period_seconds].freeze
   REVIEW_GATE_THREAD_DISPOSITION_KEYS = %w[required marker].freeze
   REVIEW_GATE_FALLBACK_KEYS = %w[mode triggers reviewer].freeze
@@ -1780,7 +1780,7 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(coordination_backend_policy_issues(yaml))
-    issues.concat(review_gate_policy_issues(config))
+    issues.concat(review_gate_policy_issues(config, yaml))
     issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
@@ -1798,11 +1798,14 @@ module AgentWorkflowSeamDoctor
     ["invalid policy config: #{POLICY_CONFIG}"]
   end
 
-  def review_gate_policy_issues(config)
+  def review_gate_policy_issues(config, yaml)
     review_gate = config[REVIEW_GATE_POLICY_KEY]
-    return [] if review_gate == "n/a"
+    errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
+      error == '$ contains duplicate key "review_gate"' ||
+        error.start_with?("$.review_gate ") || error.start_with?("$.review_gate.")
+    end
+    return errors.map { |error| "invalid review_gate policy: #{error}" } if review_gate == "n/a"
 
-    errors = []
     unless review_gate.is_a?(Hash) && review_gate["version"] == 1
       errors << "must be explicit n/a or a closed version 1 mapping"
     end
