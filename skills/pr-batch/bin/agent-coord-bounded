@@ -7,6 +7,198 @@ require "tempfile"
 
 DEFAULT_TIMEOUT_SECONDS = ENV.fetch("AGENT_COORD_BOUNDED_TIMEOUT_SECONDS", "20")
 
+class AgentCoordBoundedRunner
+  EMERGENCY_REAP_SECONDS = 1
+  EMERGENCY_REAP_POLL_SECONDS = 0.05
+
+  def initialize(
+    clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
+    sleeper: ->(seconds) { sleep seconds },
+    stdout: $stdout,
+    stderr: $stderr
+  )
+    @clock = clock
+    @sleeper = sleeper
+    @stdout = stdout
+    @stderr = stderr
+  end
+
+  def run(command, timeout:, env: nil)
+    stdout_file = Tempfile.new("agent-coord-bounded-stdout")
+    stderr_file = Tempfile.new("agent-coord-bounded-stderr")
+    interrupted_signal = nil
+    previous_signal_handlers = install_signal_handlers { |signal| interrupted_signal ||= signal }
+    started_at = @clock.call
+
+    begin
+      pid = spawn_command(env, command, stdout_file, stderr_file)
+    rescue SystemCallError => e
+      @stderr.puts "agent-coord-bounded: unable to start #{Shellwords.join(command)}: #{e.message}"
+      return 127
+    end
+
+    status = nil
+    timed_out = false
+
+    loop do
+      if interrupted_signal
+        terminate_process_group(pid, signal: interrupted_signal)
+        flush_captured_output(stdout_file, stderr_file)
+        return 128 + Signal.list.fetch(interrupted_signal)
+      end
+
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      if waited
+        status = waited[1]
+        break
+      end
+
+      if @clock.call - started_at >= timeout
+        timed_out = true
+        break
+      end
+
+      @sleeper.call(0.05)
+    end
+
+    if interrupted_signal
+      terminate_process_group(pid, signal: interrupted_signal)
+      flush_captured_output(stdout_file, stderr_file)
+      return 128 + Signal.list.fetch(interrupted_signal)
+    end
+
+    terminate_process_group(pid) if timed_out
+
+    if timed_out
+      flush_captured_output(stdout_file, stderr_file)
+      @stderr.puts "agent-coord-bounded: timed out after #{timeout}s: #{Shellwords.join(command)}"
+      return 124
+    end
+
+    flush_captured_output(stdout_file, stderr_file)
+    exit_code_for_status(status)
+  rescue StandardError
+    emergency_cleanup_process_group(pid) if pid
+    raise
+  ensure
+    restore_signal_handlers(previous_signal_handlers) if previous_signal_handlers
+    stdout_file&.close!
+    stderr_file&.close!
+  end
+
+  private
+
+  def spawn_command(env, command, stdout_file, stderr_file)
+    options = { out: stdout_file.path, err: stderr_file.path, pgroup: true }
+    return Process.spawn(*command, **options) unless env
+
+    Process.spawn(env, *command, **options)
+  end
+
+  def install_signal_handlers
+    %w[INT TERM HUP].each_with_object({}) do |signal, handlers|
+      next unless Signal.list.key?(signal)
+
+      handlers[signal] = Signal.trap(signal) { yield signal }
+    end
+  end
+
+  def restore_signal_handlers(handlers)
+    handlers.each { |signal, handler| Signal.trap(signal, handler) }
+  end
+
+  def wait_for_child(pid, deadline)
+    while @clock.call < deadline
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      return waited[1] if waited
+
+      @sleeper.call(0.05)
+    end
+
+    nil
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def signal_process_group(pid, signal)
+    Process.kill(signal, -pid)
+  rescue Errno::ESRCH
+    nil
+  end
+
+  def emergency_cleanup_process_group(pid)
+    signal_process_group(pid, "TERM")
+    signal_process_group(pid, "KILL")
+    deadline = real_monotonic_now + EMERGENCY_REAP_SECONDS
+
+    loop do
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      return waited[1] if waited
+      return nil if real_monotonic_now >= deadline
+
+      real_sleep(EMERGENCY_REAP_POLL_SECONDS)
+    end
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def real_monotonic_now
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  def real_sleep(seconds)
+    sleep seconds
+  end
+
+  def process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def wait_for_process_group_exit(pid, deadline)
+    while @clock.call < deadline
+      return true unless process_group_alive?(pid)
+
+      @sleeper.call(0.05)
+    end
+
+    !process_group_alive?(pid)
+  end
+
+  def terminate_process_group(pid, signal: "TERM", grace_seconds: 1, kill_grace_seconds: 1)
+    term_deadline = @clock.call + grace_seconds
+    signal_process_group(pid, signal)
+    status = wait_for_child(pid, term_deadline)
+    return status if wait_for_process_group_exit(pid, term_deadline)
+
+    # The direct child may exit before helper processes in its process group.
+    signal_process_group(pid, "KILL")
+    kill_deadline = @clock.call + kill_grace_seconds
+    status ||= wait_for_child(pid, kill_deadline)
+    wait_for_process_group_exit(pid, kill_deadline)
+
+    status
+  end
+
+  def exit_code_for_status(status)
+    return 1 unless status
+    return 128 + status.termsig if status.signaled?
+
+    status.exitstatus || 1
+  end
+
+  def flush_captured_output(stdout_file, stderr_file)
+    stdout_file.rewind
+    stderr_file.rewind
+    @stdout.write(stdout_file.read)
+    @stderr.write(stderr_file.read)
+  end
+end
+
 def parse_timeout(value, source)
   timeout = Float(value)
   return timeout if timeout.positive? && timeout.finite?
@@ -18,168 +210,39 @@ rescue ArgumentError
   exit 64
 end
 
-def wait_for_child(pid, deadline)
-  while Time.now < deadline
-    waited = Process.waitpid2(pid, Process::WNOHANG)
-    return waited[1] if waited
+if $PROGRAM_NAME == __FILE__
+  options = {}
 
-    sleep 0.05
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: agent-coord-bounded [--timeout SECONDS] <agent-coord-args...>"
+    opts.on("--timeout SECONDS", Float, "Seconds before reporting private state as degraded") do |value|
+      options[:timeout] = value
+      options[:timeout_source] = "--timeout"
+    end
+    opts.on("-h", "--help", "Show this help") do
+      puts opts
+      exit 0
+    end
   end
 
-  nil
-rescue Errno::ECHILD
-  nil
-end
-
-def signal_process_group(pid, signal)
-  Process.kill(signal, -pid)
-rescue Errno::ESRCH
-  nil
-end
-
-def process_group_alive?(pid)
-  Process.kill(0, -pid)
-  true
-rescue Errno::ESRCH
-  false
-rescue Errno::EPERM
-  true
-end
-
-def wait_for_process_group_exit(pid, deadline)
-  while Time.now < deadline
-    return true unless process_group_alive?(pid)
-
-    sleep 0.05
-  end
-
-  !process_group_alive?(pid)
-end
-
-def terminate_process_group(pid, signal: "TERM", grace_seconds: 1, kill_grace_seconds: 1)
-  term_deadline = Time.now + grace_seconds
-  signal_process_group(pid, signal)
-  status = wait_for_child(pid, term_deadline)
-  return status if wait_for_process_group_exit(pid, term_deadline)
-
-  # The direct child may exit before helper processes in its process group.
-  signal_process_group(pid, "KILL")
-  kill_deadline = Time.now + kill_grace_seconds
-  status ||= wait_for_child(pid, kill_deadline)
-  wait_for_process_group_exit(pid, kill_deadline)
-
-  status
-end
-
-def exit_code_for_status(status)
-  return 1 unless status
-  return 128 + status.termsig if status.signaled?
-
-  status.exitstatus || 1
-end
-
-def flush_captured_output(stdout_file, stderr_file)
-  stdout_file.rewind
-  stderr_file.rewind
-  print stdout_file.read
-  $stderr.print(stderr_file.read)
-end
-
-options = {}
-
-parser = OptionParser.new do |opts|
-  opts.banner = "Usage: agent-coord-bounded [--timeout SECONDS] <agent-coord-args...>"
-  opts.on("--timeout SECONDS", Float, "Seconds before reporting private state as degraded") do |value|
-    options[:timeout] = value
-    options[:timeout_source] = "--timeout"
-  end
-  opts.on("-h", "--help", "Show this help") do
-    puts opts
-    exit 0
-  end
-end
-
-begin
-  parser.order!(ARGV)
-rescue OptionParser::ParseError => e
-  warn e.message
-  warn parser
-  exit 64
-end
-
-if ARGV.empty?
-  warn parser
-  exit 64
-end
-
-timeout = parse_timeout(
-  options.fetch(:timeout, DEFAULT_TIMEOUT_SECONDS),
-  options.fetch(:timeout_source, "AGENT_COORD_BOUNDED_TIMEOUT_SECONDS")
-)
-
-command = ["agent-coord", *ARGV]
-stdout_file = nil
-stderr_file = nil
-begin
-  stdout_file = Tempfile.new("agent-coord-bounded-stdout")
-  stderr_file = Tempfile.new("agent-coord-bounded-stderr")
-  interrupted_signal = nil
-
-  %w[INT TERM HUP].each do |signal|
-    next unless Signal.list.key?(signal)
-
-    Signal.trap(signal) { interrupted_signal ||= signal }
-  end
-
-  started_at = Time.now
   begin
-    pid = Process.spawn(*command, out: stdout_file.path, err: stderr_file.path, pgroup: true)
-  rescue SystemCallError => e
-    warn "agent-coord-bounded: unable to start #{Shellwords.join(command)}: #{e.message}"
-    exit 127
-  end
-  status = nil
-  timed_out = false
-
-  loop do
-    if interrupted_signal
-      terminate_process_group(pid, signal: interrupted_signal)
-      flush_captured_output(stdout_file, stderr_file)
-      exit(128 + Signal.list.fetch(interrupted_signal))
-    end
-
-    waited = Process.waitpid2(pid, Process::WNOHANG)
-    if waited
-      status = waited[1]
-      break
-    end
-
-    if Time.now - started_at >= timeout
-      timed_out = true
-      break
-    end
-
-    sleep 0.05
+    parser.order!(ARGV)
+  rescue OptionParser::ParseError => e
+    warn e.message
+    warn parser
+    exit 64
   end
 
-  if interrupted_signal
-    terminate_process_group(pid, signal: interrupted_signal)
-    flush_captured_output(stdout_file, stderr_file)
-    exit(128 + Signal.list.fetch(interrupted_signal))
+  if ARGV.empty?
+    warn parser
+    exit 64
   end
 
-  terminate_process_group(pid) if timed_out
+  timeout = parse_timeout(
+    options.fetch(:timeout, DEFAULT_TIMEOUT_SECONDS),
+    options.fetch(:timeout_source, "AGENT_COORD_BOUNDED_TIMEOUT_SECONDS")
+  )
 
-  if timed_out
-    flush_captured_output(stdout_file, stderr_file)
-    warn "agent-coord-bounded: timed out after #{timeout}s: #{Shellwords.join(command)}"
-    exit 124
-  end
-
-  flush_captured_output(stdout_file, stderr_file)
-
-  exit(exit_code_for_status(status))
-ensure
-  stdout_file&.close!
-  stderr_file&.close!
+  command = ["agent-coord", *ARGV]
+  exit(AgentCoordBoundedRunner.new.run(command, timeout:))
 end

@@ -5,11 +5,142 @@ require "fileutils"
 require "minitest/autorun"
 require "open3"
 require "rbconfig"
+require "stringio"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-coord-bounded", __dir__)
+load SCRIPT
 
 class AgentCoordBoundedTest < Minitest::Test
+  def test_exposes_runner_without_executing_cli_when_required
+    code = "load #{SCRIPT.dump}; print AgentCoordBoundedRunner.name"
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-e", code)
+
+    assert_predicate status, :success?
+    assert_equal "AgentCoordBoundedRunner", stdout
+    assert_empty stderr
+  end
+
+  def test_runner_times_out_only_after_injected_monotonic_clock_advances
+    Dir.mktmpdir("agent-coord-bounded-test") do |dir|
+      child_pid_file = File.join(dir, "child.pid")
+
+      with_fake_agent_coord(<<~RUBY, "AGENT_COORD_CHILD_PID" => child_pid_file) do |env|
+        File.write(ENV.fetch("AGENT_COORD_CHILD_PID"), Process.pid.to_s)
+        sleep 10
+      RUBY
+        clock = ManualClock.new
+        polls_while_ready = 0
+        sleeper = lambda do |seconds|
+          if clock.now.zero? && File.size?(child_pid_file)
+            polls_while_ready += 1
+            clock.advance(1) if polls_while_ready == 3
+          else
+            sleep seconds
+            clock.advance(seconds) unless clock.now.zero?
+          end
+        end
+        stdout = StringIO.new
+        stderr = StringIO.new
+        runner = AgentCoordBoundedRunner.new(clock: clock.method(:now), sleeper:, stdout:, stderr:)
+
+        exit_code = runner.run(%w[agent-coord status], timeout: 1, env:)
+
+        assert_equal 124, exit_code
+        assert_equal 3, polls_while_ready
+        assert_empty stdout.string
+        assert_includes stderr.string, "agent-coord-bounded: timed out after 1s: agent-coord status"
+
+        child_pid = File.read(child_pid_file).to_i
+        assert wait_until(timeout: 5) { !process_alive?(child_pid) }, "fake agent-coord survived timeout cleanup"
+      end
+    end
+  end
+
+  def test_runner_cleans_up_process_group_when_injected_readiness_wait_fails
+    Dir.mktmpdir("agent-coord-bounded-test") do |dir|
+      child_pid_file = File.join(dir, "child.pid")
+      helper_pid_file = File.join(dir, "helper.pid")
+      child_pid = nil
+      helper_pid = nil
+
+      process_env = {
+        "AGENT_COORD_CHILD_PID" => child_pid_file,
+        "AGENT_COORD_HELPER_PID" => helper_pid_file
+      }
+      with_fake_agent_coord(<<~RUBY, process_env) do |env|
+        helper_code = "File.write(ENV.fetch('AGENT_COORD_HELPER_PID'), Process.pid.to_s); sleep 10"
+        Process.spawn({ "AGENT_COORD_HELPER_PID" => ENV.fetch("AGENT_COORD_HELPER_PID") },
+                      #{RbConfig.ruby.dump}, "-e", helper_code)
+        File.write(ENV.fetch("AGENT_COORD_CHILD_PID"), Process.pid.to_s)
+        sleep 10
+      RUBY
+        readiness_polls = 0
+        injected_failure = false
+        sleeper = lambda do |_seconds|
+          sleep 0.01
+          next unless File.size?(child_pid_file) && File.size?(helper_pid_file)
+
+          readiness_polls += 1
+          if readiness_polls == 3
+            injected_failure = true
+            raise ReadinessTimeout, "fake readiness did not arrive"
+          end
+        end
+        runner = AgentCoordBoundedRunner.new(
+          clock: -> { 0.0 },
+          sleeper:,
+          stdout: StringIO.new,
+          stderr: StringIO.new
+        )
+
+        original_waitpid = Process.method(:waitpid)
+        original_waitpid2 = Process.method(:waitpid2)
+        cleanup_polls = 0
+        Process.define_singleton_method(:waitpid) do |pid, *arguments|
+          if injected_failure && File.size?(child_pid_file) && pid == File.read(child_pid_file).to_i
+            raise "emergency cleanup used blocking waitpid"
+          end
+
+          original_waitpid.call(pid, *arguments)
+        end
+        Process.define_singleton_method(:waitpid2) do |pid, flags = 0|
+          if injected_failure && File.size?(child_pid_file) && pid == File.read(child_pid_file).to_i
+            raise "emergency cleanup did not use WNOHANG" unless flags == Process::WNOHANG
+
+            cleanup_polls += 1
+            next nil if cleanup_polls <= 3
+          end
+
+          original_waitpid2.call(pid, flags)
+        end
+
+        begin
+          error = assert_raises(ReadinessTimeout) do
+            runner.run(%w[agent-coord status], timeout: 1.0, env:)
+          end
+          assert_equal "fake readiness did not arrive", error.message
+        ensure
+          Process.define_singleton_method(:waitpid, original_waitpid)
+          Process.define_singleton_method(:waitpid2, original_waitpid2)
+        end
+
+        child_pid = File.read(child_pid_file).to_i
+        helper_pid = File.read(helper_pid_file).to_i
+        assert_operator cleanup_polls, :>, 3
+        assert_operator cleanup_polls, :<=, 25
+        assert_raises(Errno::ECHILD) { Process.waitpid(child_pid, Process::WNOHANG) }
+        assert wait_until(timeout: 5) { !process_alive?(child_pid) },
+               "fake agent-coord survived readiness failure"
+        assert wait_until(timeout: 5) { !process_alive?(helper_pid) },
+               "fake helper survived readiness failure"
+      ensure
+        Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+        Process.kill("KILL", helper_pid) if helper_pid && process_alive?(helper_pid)
+      end
+    end
+  end
+
   def test_forwards_agent_coord_exit_status_stdout_and_stderr
     with_fake_agent_coord(<<~RUBY) do |env|
       $stderr.print "fake stderr"
@@ -26,19 +157,37 @@ class AgentCoordBoundedTest < Minitest::Test
 
   def test_times_out_and_reports_unknown_friendly_status
     with_fake_agent_coord(<<~RUBY) do |env|
-      puts "partial json output"
-      $stderr.puts "partial stderr output"
-      $stdout.flush
-      $stderr.flush
       sleep 5
     RUBY
       stdout, stderr, status = run_script(env, "--timeout", "1", "doctor", "--json")
 
       assert_equal 124, status.exitstatus
-      assert_equal "partial json output\n", stdout
-      assert_includes stderr, "partial stderr output"
+      assert_empty stdout
       assert_includes stderr, "agent-coord-bounded: timed out after 1.0s"
       assert_includes stderr, "agent-coord doctor --json"
+    end
+  end
+
+  def test_runner_replays_partial_output_after_deterministic_timeout
+    Dir.mktmpdir("agent-coord-bounded-test") do |dir|
+      ready_file = File.join(dir, "ready")
+
+      with_fake_agent_coord(<<~RUBY, "AGENT_COORD_READY_FILE" => ready_file) do |env|
+        puts "partial json output"
+        $stderr.puts "partial stderr output"
+        $stdout.flush
+        $stderr.flush
+        File.write(ENV.fetch("AGENT_COORD_READY_FILE"), Process.pid.to_s)
+        sleep 10
+      RUBY
+        exit_code, stdout, stderr = run_runner_after_ready(env, ready_file, "doctor", "--json")
+
+        assert_equal 124, exit_code
+        assert_equal "partial json output\n", stdout
+        assert_includes stderr, "partial stderr output"
+        assert_includes stderr, "agent-coord-bounded: timed out after 1.0s"
+        assert_includes stderr, "agent-coord doctor --json"
+      end
     end
   end
 
@@ -88,7 +237,7 @@ class AgentCoordBoundedTest < Minitest::Test
     with_fake_agent_coord(<<~RUBY, "AGENT_COORD_BOUNDED_TIMEOUT_SECONDS" => "not-a-number") do |env|
       puts "ok"
     RUBY
-      stdout, stderr, status = run_script(env, "--timeout", "1", "status")
+      stdout, stderr, status = run_script(env, "--timeout", "20", "status")
 
       assert_predicate status, :success?
       assert_equal "ok\n", stdout
@@ -162,13 +311,11 @@ class AgentCoordBoundedTest < Minitest::Test
         helper_pid = Process.spawn({ "AGENT_COORD_HELPER_PID" => ENV.fetch("AGENT_COORD_HELPER_PID") },
                                    #{RbConfig.ruby.dump}, "-e", helper_code)
         Process.detach(helper_pid)
-        deadline = Time.now + 5
-        sleep 0.05 until File.size?(ENV.fetch("AGENT_COORD_HELPER_PID")) || Time.now >= deadline
         sleep 10
       RUBY
-        stdout, stderr, status = run_script(env, "--timeout", "1", "status")
+        exit_code, stdout, stderr = run_runner_after_ready(env, helper_pid_file, "status")
 
-        assert_equal 124, status.exitstatus
+        assert_equal 124, exit_code
         assert_empty stdout
         assert_includes stderr, "agent-coord-bounded: timed out after 1.0s"
         assert wait_until(timeout: 5) { File.size?(helper_pid_file) }, "fake helper did not start"
@@ -184,31 +331,65 @@ class AgentCoordBoundedTest < Minitest::Test
   def test_timeout_replays_helper_output_before_killing_process_group
     Dir.mktmpdir("agent-coord-bounded-test") do |dir|
       helper_pid_file = File.join(dir, "helper.pid")
+      term_observed_file = File.join(dir, "term-observed")
+      output_release_file = File.join(dir, "output-release")
+      output_flushed_file = File.join(dir, "output-flushed")
       helper_pid = nil
 
-      with_fake_agent_coord(<<~RUBY, "AGENT_COORD_HELPER_PID" => helper_pid_file) do |env|
+      helper_env = {
+        "AGENT_COORD_HELPER_PID" => helper_pid_file,
+        "AGENT_COORD_TERM_OBSERVED" => term_observed_file,
+        "AGENT_COORD_OUTPUT_RELEASE" => output_release_file,
+        "AGENT_COORD_OUTPUT_FLUSHED" => output_flushed_file
+      }
+      with_fake_agent_coord(<<~RUBY, helper_env) do |env|
         helper_code = <<~'HELPER'
           trap("TERM") do
-            sleep 0.2
+            File.write(ENV.fetch("AGENT_COORD_TERM_OBSERVED"), Process.pid.to_s)
+            deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+            until File.size?(ENV.fetch("AGENT_COORD_OUTPUT_RELEASE"))
+              exit! 70 if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+              sleep 0.01
+            end
             puts "helper stdout after TERM"
             $stderr.puts "helper stderr after TERM"
             $stdout.flush
             $stderr.flush
+            File.write(ENV.fetch("AGENT_COORD_OUTPUT_FLUSHED"), Process.pid.to_s)
             exit! 0
           end
           File.write(ENV.fetch("AGENT_COORD_HELPER_PID"), Process.pid.to_s)
           sleep 10
         HELPER
-        helper_pid = Process.spawn({ "AGENT_COORD_HELPER_PID" => ENV.fetch("AGENT_COORD_HELPER_PID") },
-                                   #{RbConfig.ruby.dump}, "-e", helper_code)
+        helper_env = {
+          "AGENT_COORD_HELPER_PID" => ENV.fetch("AGENT_COORD_HELPER_PID"),
+          "AGENT_COORD_TERM_OBSERVED" => ENV.fetch("AGENT_COORD_TERM_OBSERVED"),
+          "AGENT_COORD_OUTPUT_RELEASE" => ENV.fetch("AGENT_COORD_OUTPUT_RELEASE"),
+          "AGENT_COORD_OUTPUT_FLUSHED" => ENV.fetch("AGENT_COORD_OUTPUT_FLUSHED")
+        }
+        helper_pid = Process.spawn(helper_env, #{RbConfig.ruby.dump}, "-e", helper_code)
         Process.detach(helper_pid)
-        deadline = Time.now + 5
-        sleep 0.05 until File.size?(ENV.fetch("AGENT_COORD_HELPER_PID")) || Time.now >= deadline
         sleep 10
       RUBY
-        stdout, stderr, status = run_script(env, "--timeout", "1", "status")
+        post_term_sync = lambda do
+          raise ReadinessTimeout, "helper did not observe TERM" unless wait_until(timeout: 5) do
+            File.size?(term_observed_file)
+          end
 
-        assert_equal 124, status.exitstatus
+          File.write(output_release_file, "release")
+          raise ReadinessTimeout, "helper output did not flush after TERM" unless wait_until(timeout: 5) do
+            File.size?(output_flushed_file)
+          end
+        end
+        exit_code, stdout, stderr = run_runner_after_ready(
+          env,
+          helper_pid_file,
+          "status",
+          post_timeout: post_term_sync
+        )
+
+        assert_equal 124, exit_code
         assert_includes stdout, "helper stdout after TERM"
         assert_includes stderr, "helper stderr after TERM"
         assert_includes stderr, "agent-coord-bounded: timed out after 1.0s"
@@ -235,8 +416,60 @@ class AgentCoordBoundedTest < Minitest::Test
 
   private
 
+  class ManualClock
+    attr_reader :first_advance, :now
+
+    def initialize
+      @now = 0.0
+    end
+
+    def advance(seconds)
+      @first_advance ||= seconds
+      @now += seconds
+    end
+  end
+
+  class ReadinessTimeout < StandardError
+  end
+
   def run_script(env, *)
     Open3.capture3(env, RbConfig.ruby, SCRIPT, *)
+  end
+
+  def run_runner_after_ready(env, ready_file, *command, post_timeout: nil)
+    clock = ManualClock.new
+    stdout = StringIO.new
+    stderr = StringIO.new
+    readiness_deadline = monotonic_now + 5
+    advanced = false
+    sleeper = lambda do |seconds|
+      unless advanced
+        raise "fake helper did not become ready" if monotonic_now >= readiness_deadline
+
+        if File.size?(ready_file)
+          clock.advance(1.0)
+          advanced = true
+        else
+          sleep 0.01
+        end
+        next
+      end
+
+      if post_timeout
+        synchronization = post_timeout
+        post_timeout = nil
+        synchronization.call
+      end
+      sleep seconds
+      clock.advance(seconds)
+    end
+    runner = AgentCoordBoundedRunner.new(clock: clock.method(:now), sleeper:, stdout:, stderr:)
+    exit_code = runner.run(["agent-coord", *command], timeout: 1.0, env:)
+
+    assert advanced, "logical timeout advanced before fake helper readiness"
+    assert_equal 1.0, clock.first_advance
+
+    [exit_code, stdout.string, stderr.string]
   end
 
   def with_fake_agent_coord(body, extra_env = {})
@@ -254,14 +487,18 @@ class AgentCoordBoundedTest < Minitest::Test
   end
 
   def wait_until(timeout: 2)
-    deadline = Time.now + timeout
-    until Time.now >= deadline
+    deadline = monotonic_now + timeout
+    until monotonic_now >= deadline
       return true if yield
 
       sleep 0.05
     end
 
     false
+  end
+
+  def monotonic_now
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 
   def process_alive?(pid)
