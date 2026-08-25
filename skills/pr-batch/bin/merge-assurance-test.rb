@@ -355,6 +355,98 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_cli_suppresses_nonzero_seam_diagnostics_when_declared_credentials_are_forwarded
+    credentials = {
+      "multiline" => "fixture-first-line\nfixture-second-line",
+      "one-character" => "x"
+    }
+
+    credentials.each do |label, credential|
+      with_selected_hosted_ci_cli_fixture do |fixture|
+        replace_fixture_trusted_seam!(
+          fixture,
+          <<~RUBY
+            #!#{RbConfig.ruby}
+            warn ENV.fetch("HOSTED_CI_TOKEN")
+            exit 1
+          RUBY
+        )
+
+        stdout, stderr, status = run_selected_hosted_ci_cli_fixture(
+          fixture, credential_value: credential
+        )
+        result = JSON.parse(stdout)
+
+        assert_equal 1, status.exitstatus, label
+        assert_empty stderr, "#{label}: unexpected CLI exception: #{stderr}"
+        refute stdout.include?(credential.lines.first), "#{label}: credential fragment leaked in CLI JSON"
+        assert(result.fetch("failures").all? do |failure|
+          failure.end_with?("diagnostic output suppressed because credentials were forwarded")
+        end, "#{label}: raw diagnostic was not fully suppressed")
+      end
+    end
+  end
+
+  def test_cli_preserves_safe_nonzero_seam_diagnostic_without_declared_credentials
+    with_selected_hosted_ci_cli_fixture(credential_env: []) do |fixture|
+      replace_fixture_trusted_seam!(
+        fixture,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          warn "safe noncredential diagnostic"
+          exit 1
+        RUBY
+      )
+
+      stdout, stderr, status = run_selected_hosted_ci_cli_fixture(fixture)
+      result = JSON.parse(stdout)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr, "unexpected CLI exception: #{stderr}"
+      assert_equal(
+        ["trusted-base selected hosted CI seam failed: safe noncredential diagnostic"],
+        result.fetch("failures")
+      )
+    end
+  end
+
+  def test_cli_redacts_declared_credential_from_invalid_selected_hosted_ci_json_diagnostic
+    with_selected_hosted_ci_cli_fixture do |fixture|
+      replace_fixture_trusted_seam!(
+        fixture,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          puts ENV.fetch("HOSTED_CI_TOKEN")
+        RUBY
+      )
+
+      stdout, stderr, status = run_selected_hosted_ci_cli_fixture(fixture)
+      result = JSON.parse(stdout)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr, "unexpected CLI exception: #{stderr}"
+      assert(result.fetch("failures").any? do |failure|
+        failure.start_with?("trusted-base selected hosted CI seam returned invalid JSON")
+      end)
+      refute stdout.include?("preflight-secret"), "declared credential leaked in CLI JSON"
+    end
+  end
+
+  def test_cli_blocks_repo_with_ascii_control_byte_before_selected_hosted_ci_seam_launch
+    with_selected_hosted_ci_cli_fixture do |fixture|
+      fixture.fetch(:context)["repo"] = "owner/repo\u0000x"
+      fixture.fetch(:ci_result)["repo"] = fixture.fetch(:context).fetch("repo")
+
+      stdout, stderr, status = run_selected_hosted_ci_cli_fixture(fixture)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr, "unexpected CLI exception: #{stderr}"
+      result = JSON.parse(stdout)
+      assert_equal ["context repo is invalid"], result.fetch("failures")
+      refute File.exist?(fixture.fetch(:seam_marker)), "selected hosted CI seam was launched"
+    end
+  end
+
   def test_cli_blocks_duplicate_selected_hosted_runs_before_seam_launch
     with_selected_hosted_ci_cli_fixture do |fixture|
       selections = fixture.fetch(:context).fetch("selected_hosted_runs")
@@ -2483,7 +2575,8 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def with_selected_hosted_ci_cli_fixture(
-    host: "github.com", selected_at: (Time.now.utc - 1).iso8601
+    host: "github.com", selected_at: (Time.now.utc - 1).iso8601,
+    credential_env: ["HOSTED_CI_TOKEN"]
   )
     Dir.mktmpdir("merge-assurance-local-preflight") do |repo_root|
       seam_marker = File.join(repo_root, "selected-hosted-ci-seam-called")
@@ -2491,13 +2584,17 @@ class MergeAssuranceTest < Minitest::Test
       run_git!(repo_root, "config", "user.name", "Test")
       run_git!(repo_root, "config", "user.email", "test@example.com")
       FileUtils.mkdir_p(File.join(repo_root, ".agents/bin"))
+      credential_env_yaml = if credential_env.empty?
+                              " []"
+                            else
+                              format("\n%s", credential_env.map { |name| "  - #{name}" }.join("\n"))
+                            end
       File.write(
         File.join(repo_root, ".agents/agent-workflow.yml"),
         <<~YAML
           selected_hosted_ci_receipts:
             executable: ".agents/bin/selected-hosted-ci-receipts"
-            credential_env:
-              - HOSTED_CI_TOKEN
+            credential_env:#{credential_env_yaml}
         YAML
       )
       File.write(
@@ -2544,13 +2641,27 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
-  def run_selected_hosted_ci_cli_fixture(fixture)
+  def run_selected_hosted_ci_cli_fixture(fixture, credential_value: "preflight-secret")
     arguments = write_selected_hosted_ci_cli_fixture(fixture)
     Open3.capture3(
-      { "PATH" => @original_path, "HOSTED_CI_TOKEN" => "preflight-secret" },
+      { "PATH" => @original_path, "HOSTED_CI_TOKEN" => credential_value },
       RbConfig.ruby, SCRIPT, *arguments,
       chdir: fixture.fetch(:repo_root)
     )
+  end
+
+  def replace_fixture_trusted_seam!(fixture, source)
+    seam = File.join(
+      fixture.fetch(:repo_root), ".agents/bin/selected-hosted-ci-receipts"
+    )
+    File.write(seam, source)
+    FileUtils.chmod(0o755, seam)
+    run_git!(fixture.fetch(:repo_root), "add", ".agents/bin/selected-hosted-ci-receipts")
+    run_git!(fixture.fetch(:repo_root), "commit", "-qm", "replace trusted selected hosted CI seam")
+    base_sha = run_git!(fixture.fetch(:repo_root), "rev-parse", "HEAD").strip
+    fixture.fetch(:context).fetch("base")["sha"] = base_sha
+    fixture.fetch(:autonomous_result)["policy_provenance"] = "git:#{base_sha}"
+    fixture.fetch(:autonomous_result)["helper_provenance"] = "trusted-base:#{base_sha}"
   end
 
   def run_selected_hosted_ci_runner_fixture(fixture, times:)

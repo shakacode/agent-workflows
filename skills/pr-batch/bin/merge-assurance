@@ -266,8 +266,7 @@ module MergeAssurance
     unknown_keys = context.keys - CONTEXT_KEYS
     failures << "context has unknown keys: #{unknown_keys.sort.join(', ')}" unless unknown_keys.empty?
     failures << "context host is invalid" unless valid_host?(context["host"])
-    failures << "context repo is invalid" unless
-      context["repo"].is_a?(String) && context["repo"].match?(%r{\A[^/\s]+/[^/\s]+\z})
+    failures << "context repo is invalid" unless valid_repo?(context["repo"])
     failures << "context PR is invalid" unless context["pr"].is_a?(Integer) && context["pr"].positive?
     base = context["base"]
     unless base.is_a?(Hash) && base.keys.sort == %w[ref sha] &&
@@ -1200,6 +1199,11 @@ module MergeAssurance
       value.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?\z/i)
   end
 
+  def valid_repo?(value)
+    value.is_a?(String) &&
+      value.match?(%r{\A[^/\s\x00-\x1F\x7F]+/[^/\s\x00-\x1F\x7F]+\z})
+  end
+
   class Runner
     def run(argv)
       options = parse_options(argv)
@@ -1396,15 +1400,16 @@ module MergeAssurance
         chdir: snapshot_root
       )
       unless status.success?
-        raise Error, "trusted-base selected hosted CI seam failed: #{failure_output(stdout, stderr)}"
+        raise Error, "trusted-base selected hosted CI seam failed: " \
+                     "#{selected_hosted_ci_diagnostic(stdout, stderr, credential_env)}"
       end
 
       parsed = JSON.parse(stdout)
       raise Error, "trusted-base selected hosted CI seam returned non-object JSON" unless parsed.is_a?(Hash)
 
       parsed
-    rescue JSON::ParserError => e
-      raise Error, "trusted-base selected hosted CI seam returned invalid JSON: #{e.message}"
+    rescue JSON::ParserError
+      raise Error, "trusted-base selected hosted CI seam returned invalid JSON"
     ensure
       FileUtils.remove_entry(directory) if directory && File.exist?(directory)
     end
@@ -1631,6 +1636,12 @@ module MergeAssurance
         environment[name] = value
       end
       environment
+    end
+
+    def selected_hosted_ci_diagnostic(stdout, stderr, credential_env)
+      return "diagnostic output suppressed because credentials were forwarded" unless credential_env.empty?
+
+      failure_output(stdout, stderr)
     end
 
     def system_tool_environment
