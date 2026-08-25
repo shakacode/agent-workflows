@@ -88,10 +88,14 @@ class HooksInstallContractTest < Minitest::Test
     assert_includes documentation, "close-lane-on-session-end"
     refute_includes documentation, "block-merge-without-ci-readiness"
     refute_includes documentation, "bypass_permissions_disabled"
-    assert_includes documentation, '"args": []'
-    assert_includes documentation, "AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER"
-    assert_includes documentation, "must remove the marker before or atomically with claim release"
-    assert_includes documentation, "The SessionEnd adapter never creates, removes, or releases the marker or claim."
+    assert_includes documentation, '"args": ["--project-dir", "${CLAUDE_PROJECT_DIR}"]'
+    assert_includes documentation, "AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV"
+    assert_includes documentation, "atomically verifies the expected holder, generation or instance, and live lease or heartbeat"
+    assert_includes documentation, "Exit 3 means no current live claim"
+    assert_includes documentation, "append-only `agent-coord record-event` is unsupported"
+    assert_includes documentation, "The hook payload's `cwd` is not trusted"
+    refute_includes documentation, "AGENT_WORKFLOWS_DRAIN_EVENT_ARGV"
+    refute_includes documentation, "AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER"
     assert_includes documentation, "Codex"
   end
 
@@ -99,7 +103,8 @@ class HooksInstallContractTest < Minitest::Test
 
   def assert_adapter(hook, basename)
     assert_equal "command", hook.fetch("type")
-    assert_equal [], hook.fetch("args"), "command hooks must use the host's exec form"
+    assert_equal ["--project-dir", "${CLAUDE_PROJECT_DIR}"], hook.fetch("args"),
+                 "command hooks must use exec form and bind the stable launch project"
     command = hook.fetch("command")
 
     assert_includes command, "${CLAUDE_PLUGIN_ROOT}/"

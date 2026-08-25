@@ -5,8 +5,6 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
-require "pathname"
-require "stringio"
 require "tmpdir"
 require "timeout"
 require_relative "lib/hook_support"
@@ -34,106 +32,148 @@ class CloseLaneOnSessionEndTest < Minitest::Test
     end
   end
 
+  def test_uses_the_trusted_project_directory_for_the_seam_and_emitter_cwd
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      File.write(emitter, <<~RUBY)
+        #!/usr/bin/env ruby
+        File.write(#{calls.inspect}, Dir.pwd)
+      RUBY
+
+      Dir.mktmpdir("session-end-mutable-cwd") do |payload_cwd|
+        FileUtils.mkdir_p(File.join(payload_cwd, ".agents"))
+        File.write(File.join(payload_cwd, ".agents/agent-workflow.yml"), "---\ncoordination_backend: n/a\n")
+
+        status, stderr = run_hook(repo, advertisement: [emitter, "event"], payload_cwd: payload_cwd)
+
+        assert_equal 0, status.exitstatus
+        assert_includes stderr, "emitted human_intervention kind: drain"
+        assert_equal File.realpath(repo), File.realpath(File.read(calls)),
+                     "payload cwd changes must not redirect seam lookup or the emitter working directory"
+      end
+    end
+  end
+
+  def test_skips_without_a_canonical_absolute_project_directory
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      [nil, "."].each do |project_dir|
+        status, stderr = run_hook(repo, advertisement: [emitter, "event"], project_dir: project_dir)
+
+        assert_equal 0, status.exitstatus
+        assert_includes stderr, "skipped: no trusted project directory"
+      end
+      assert_empty emitter_calls(calls)
+    end
+  end
+
   def test_records_transport_unavailable_when_nothing_is_advertised
     with_repo(backend: "private-http") do |repo, _emitter, calls|
       status, stderr = run_hook(repo, advertisement: nil)
 
       assert_equal 0, status.exitstatus
-      assert_includes stderr, "typed event transport: unavailable"
+      assert_includes stderr, "conditional drain transport: unavailable"
       assert_empty emitter_calls(calls)
     end
   end
 
-  def test_static_advertisement_without_a_live_claim_marker_does_not_emit
-    with_repo(backend: "private-http") do |repo, emitter, calls|
-      status, stderr = run_hook(repo, advertisement: [emitter, "event"], claim_marker: nil)
-
-      assert_equal 0, status.exitstatus
-      assert_includes stderr, "skipped: no live lane claim"
-      assert_empty emitter_calls(calls)
-    end
-  end
-
-  def test_removed_claim_marker_after_release_does_not_emit
-    with_repo(backend: "private-http") do |repo, emitter, calls|
-      marker = File.join(repo, "released-session-claim")
-      File.write(marker, "live")
-      File.delete(marker)
-
-      status, stderr = run_hook(repo, advertisement: [emitter, "event"], claim_marker: marker)
-
-      assert_equal 0, status.exitstatus
-      assert_includes stderr, "skipped: no live lane claim"
-      assert_empty emitter_calls(calls)
-    end
-  end
-
-  def test_non_file_claim_marker_does_not_emit
-    with_repo(backend: "private-http") do |repo, emitter, calls|
-      marker = File.join(repo, "claim-marker-directory")
-      Dir.mkdir(marker)
-
-      status, stderr = run_hook(repo, advertisement: [emitter, "event"], claim_marker: marker)
-
-      assert_equal 0, status.exitstatus
-      assert_includes stderr, "skipped: no live lane claim"
-      assert_empty emitter_calls(calls)
-    end
-  end
-
-  def test_relative_claim_marker_path_does_not_emit
-    with_repo(backend: "private-http") do |repo, emitter, calls|
-      relative_marker = __FILE__
-      refute Pathname.new(relative_marker).absolute?, "the fixture must exercise a relative marker path"
-
-      status, stderr = run_hook(repo, advertisement: [emitter, "event"], claim_marker: relative_marker)
-
-      assert_equal 0, status.exitstatus
-      assert_includes stderr, "skipped: no live lane claim"
-      assert_empty emitter_calls(calls)
-    end
-  end
-
-  def test_symlink_claim_marker_does_not_emit
-    with_repo(backend: "private-http") do |repo, emitter, calls|
-      target = File.join(repo, "real-claim-marker")
-      marker = File.join(repo, "linked-claim-marker")
-      File.write(target, "live")
-      File.symlink(target, marker)
-
-      status, stderr = run_hook(repo, advertisement: [emitter, "event"], claim_marker: marker)
-
-      assert_equal 0, status.exitstatus
-      assert_includes stderr, "skipped: no live lane claim"
-      assert_empty emitter_calls(calls)
-    end
-  end
-
-  def test_nul_claim_marker_path_does_not_emit
-    with_repo(backend: "private-http") do |repo, emitter, calls|
-      env = {
-        CloseLaneOnSessionEnd::ADVERTISEMENT_ENV => [emitter, "event"].to_json,
-        CloseLaneOnSessionEnd::CLAIM_MARKER_ENV => "#{repo}/claim\0marker"
-      }
-      payload = { "hook_event_name" => "SessionEnd", "reason" => "clear", "cwd" => repo }
-
-      outcome = CloseLaneOnSessionEnd.outcome(StringIO.new(payload.to_json), env)
-
-      assert_equal "skipped: no live lane claim", outcome
-      assert_empty emitter_calls(calls)
-    end
-  end
-
-  def test_active_claim_marker_emits_the_advertised_drain_event_once
+  def test_current_conditional_operation_emits_the_advertised_drain_event_once
     with_repo(backend: "private-http") do |repo, emitter, calls|
       argv = [emitter, "event", "--type", "human_intervention", "--kind", "drain",
-              "--batch-id", "aw-f", "--message", "lane stopped deliberately"]
+              "--batch-id", "aw-f", "--expected-holder", "worker-a", "--expected-generation", "3",
+              "--expected-instance", "session-7", "--message", "lane stopped deliberately"]
       status, stderr = run_hook(repo, advertisement: argv)
 
       assert_equal 0, status.exitstatus
       assert_includes stderr, "emitted human_intervention kind: drain"
       assert_equal [argv.drop(1)], emitter_calls(calls),
                    "the advertised argv must be passed through unmodified, including spaces"
+    end
+  end
+
+  def test_conditional_drain_skips_when_the_claim_was_replaced
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      claim_state = File.join(repo, "claim-state.json")
+      File.write(claim_state, {
+        "holder" => "replacement-worker",
+        "generation" => 2,
+        "instance_id" => "replacement-instance",
+        "expires_at" => (Time.now + 60).utc.iso8601
+      }.to_json)
+      File.write(emitter, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        require "time"
+        current = JSON.parse(File.read(ARGV.fetch(0)))
+        expected = { "holder" => ARGV.fetch(1), "generation" => Integer(ARGV.fetch(2)), "instance_id" => ARGV.fetch(3) }
+        exit 3 unless current.values_at(*expected.keys) == expected.values
+        exit 3 unless Time.parse(current.fetch("expires_at")) > Time.now
+        File.write(#{calls.inspect}, "drained")
+      RUBY
+      argv = [emitter, claim_state, "original-worker", "1", "original-instance"]
+
+      status, stderr = run_hook(
+        repo,
+        advertisement: argv,
+        env: { "AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV" => argv.to_json }
+      )
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "skipped: no current live lane claim"
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_conditional_drain_skips_when_the_claim_lease_expired
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      claim_state = File.join(repo, "claim-state.json")
+      File.write(claim_state, {
+        "holder" => "original-worker",
+        "generation" => 1,
+        "instance_id" => "original-instance",
+        "expires_at" => (Time.now - 60).utc.iso8601
+      }.to_json)
+      File.write(emitter, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        require "time"
+        current = JSON.parse(File.read(ARGV.fetch(0)))
+        expected = { "holder" => ARGV.fetch(1), "generation" => Integer(ARGV.fetch(2)), "instance_id" => ARGV.fetch(3) }
+        exit 3 unless current.values_at(*expected.keys) == expected.values
+        exit 3 unless Time.parse(current.fetch("expires_at")) > Time.now
+        File.write(#{calls.inspect}, "drained")
+      RUBY
+      argv = [emitter, claim_state, "original-worker", "1", "original-instance"]
+
+      status, stderr = run_hook(repo, advertisement: argv)
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "skipped: no current live lane claim"
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_plain_event_transport_is_not_a_conditional_drain_capability
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      status, stderr = run_hook(repo, plain_advertisement: [emitter, "record-event", "--kind", "drain"])
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "skipped: conditional drain transport: unavailable"
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_append_only_agent_coord_record_event_is_not_a_conditional_operation
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      plain_agent_coord = File.join(repo, "agent-coord")
+      FileUtils.mv(emitter, plain_agent_coord)
+
+      status, stderr = run_hook(
+        repo,
+        advertisement: [plain_agent_coord, "record-event", "--type", "human_intervention", "--kind", "drain"]
+      )
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "skipped: conditional drain transport: unsupported"
+      assert_empty emitter_calls(calls)
     end
   end
 
@@ -169,7 +209,7 @@ class CloseLaneOnSessionEndTest < Minitest::Test
   end
 
   def test_rejects_a_malformed_advertisement
-    ["not json", "{}", "[]", '["ok", 7]', '["   "]'].each do |raw|
+    ["not json", "{}", "[]", '["ok", 7]', '["   "]', '["ok\\u0000bad"]'].each do |raw|
       with_repo(backend: "private-http") do |repo, _emitter, calls|
         status, stderr = run_hook(repo, raw_advertisement: raw)
 
@@ -181,7 +221,7 @@ class CloseLaneOnSessionEndTest < Minitest::Test
   end
 
   def test_records_unknown_when_the_emitter_fails
-    with_repo(backend: "private-http", emitter_exit_code: 3, emitter_stderr: "backend refused") do |repo, emitter, _calls|
+    with_repo(backend: "private-http", emitter_exit_code: 4, emitter_stderr: "backend refused") do |repo, emitter, _calls|
       status, stderr = run_hook(repo, advertisement: [emitter, "event"])
 
       assert_equal 0, status.exitstatus
@@ -467,17 +507,17 @@ class CloseLaneOnSessionEndTest < Minitest::Test
     File.readlines(calls_path, chomp: true).map { |line| line.split("\t") }
   end
 
-  def run_hook(repo, advertisement: nil, raw_advertisement: nil, reason: "clear", env: {}, claim_marker: :active)
+  def run_hook(repo, advertisement: nil, plain_advertisement: nil, raw_advertisement: nil, reason: "clear", env: {},
+               payload_cwd: repo, project_dir: repo)
     hook_env = env.dup
     value = raw_advertisement || advertisement&.to_json
-    hook_env["AGENT_WORKFLOWS_DRAIN_EVENT_ARGV"] = value if value
-    if claim_marker == :active
-      claim_marker = File.join(repo, "live-session-claim")
-      File.write(claim_marker, "live")
+    hook_env["AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV"] = value if value
+    if plain_advertisement
+      hook_env["AGENT_WORKFLOWS_DRAIN_EVENT_ARGV"] = plain_advertisement.to_json
     end
-    hook_env["AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER"] = claim_marker if claim_marker
-    payload = { "hook_event_name" => "SessionEnd", "reason" => reason, "cwd" => repo }
-    _stdout, stderr, status = Open3.capture3(hook_env, SESSION_END_HOOK, stdin_data: payload.to_json)
+    payload = { "hook_event_name" => "SessionEnd", "reason" => reason, "cwd" => payload_cwd }
+    hook_args = project_dir ? ["--project-dir", project_dir] : []
+    _stdout, stderr, status = Open3.capture3(hook_env, SESSION_END_HOOK, *hook_args, stdin_data: payload.to_json)
     [status, stderr]
   end
 end

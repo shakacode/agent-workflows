@@ -16,14 +16,17 @@ the typed-event rules in
 [coordination-backend.md](../coordination-backend.md#operational-signal-events):
 
 - Backend `n/a`, or no readable seam, skips silently.
-- An active backend continues to the advertised transport. If no transport is
-  advertised, the adapter records `typed event transport: unavailable` and skips.
-- A missing, unsafe, removed, or non-file live-claim marker skips without
-  invoking the advertised transport.
-- A missing, malformed, or unsafe advertisement is an attempted-write failure.
-- An advertised write runs the exact executable and ordered opaque argv with no
-  shell evaluation, under a finite deadline, in its own process group.
-- Any write failure is best-effort `UNKNOWN`. Emission never blocks shutdown.
+- An active backend continues only when it advertises one conditional drain
+  operation. If it does not, the adapter records
+  `conditional drain transport: unavailable` and skips.
+- That single operation atomically verifies the expected holder, generation or instance, and live lease or heartbeat before appending the drain event.
+- A missing, malformed, or unsafe conditional advertisement is an
+  attempted-write failure. Plain append-only event transport is unsupported.
+- An advertised conditional operation runs the exact executable and ordered
+  opaque argv with no shell evaluation, under a finite deadline, in its own
+  process group.
+- Exit 0 means the event was appended. Exit 3 means no current live claim, so
+  the adapter skips. Any other failure is best-effort `UNKNOWN`.
 
 The adapter **never releases the claim**. A `SessionEnd` event cannot distinguish
 a restart from abandonment, so releasing would break a lane that is about to be
@@ -57,7 +60,7 @@ form and is the copy source:
           {
             "type": "command",
             "command": "AGENT_WORKFLOWS_CHECKOUT/plugins/claude-hooks/hooks/close-lane-on-session-end",
-            "args": [],
+            "args": ["--project-dir", "${CLAUDE_PROJECT_DIR}"],
             "timeout": 5
           }
         ]
@@ -68,41 +71,48 @@ form and is the copy source:
 ```
 
 Restart Claude Code, or re-read settings, for the change to take effect.
-The explicit empty `args` array selects the host's exec form, so spaces or shell
-metacharacters in the checkout path are not parsed as shell syntax.
+The explicit `args` array selects the host's exec form, so spaces or shell
+metacharacters in either path are not parsed as shell syntax. Claude Code
+substitutes its stable session-start project root for `${CLAUDE_PROJECT_DIR}`.
 
 ## Configuration
 
 | Variable | Meaning |
 | --- | --- |
 | `AGENT_WORKFLOWS_HOOKS` | Set to `off` to disable the adapter |
-| `AGENT_WORKFLOWS_DRAIN_EVENT_ARGV` | The backend-advertised drain-event executable and argv, as a JSON array of strings |
-| `AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER` | Canonical absolute path to this session's live-claim marker; must be a regular file, not a symlink |
+| `AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV` | The backend-advertised conditional drain executable and opaque argv, as a JSON array of strings |
 | `AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS` | Emission deadline; defaults to 1 and is clamped to 3, below the registered 5s timeout |
 
-`AGENT_WORKFLOWS_DRAIN_EVENT_ARGV` advertises transport only; static argv is not
-proof that the session still holds a claim. Whoever launches a lane knows its
-batch, lane, agent, repository, target, and branch context, so that context is
-baked into the argv and every argument is passed through unmodified.
+`AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV` is a capability advertisement, not a
+plain event command. The launcher bakes the expected batch, lane, holder,
+generation or instance, repository, target, and branch into its opaque argv.
+In one backend transaction, the advertised operation must compare that expected
+identity with the current active claim, verify its live lease or heartbeat, and
+append `human_intervention` with `kind: drain` only when all checks still match.
+A pre-read followed by an append is not equivalent because takeover can occur
+between those operations.
 
-The launcher creates a unique `AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER` regular
-file only while this exact session holds the advertised lane claim. Every terminal
-or explicit release path must remove the marker before or atomically with claim release.
-A subsequent SessionEnd then observes no live claim and
-does not use stale argv. The SessionEnd adapter never creates, removes, or releases the marker or claim.
+The currently available append-only `agent-coord record-event` is unsupported
+and must not be advertised in this variable. Until a backend ships and
+advertises the conditional capability, the adapter skips without writing. The
+adapter also rejects an advertised `agent-coord record-event` command directly.
 
-Example launcher state while the session holds its claim:
+Illustrative launcher state after a backend provides that capability:
 
 ```bash
-export AGENT_WORKFLOWS_DRAIN_EVENT_ARGV='["agent-coord","event","--type","human_intervention","--kind","drain","--batch-id","aw-f"]'
-export AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER='/absolute/run/agent-workflows/aw-f/session-claim'
+export AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV='["/absolute/path/to/conditional-drain","--batch-id","aw-f","--lane","implementation","--expected-holder","worker-a","--expected-generation","3","--expected-instance","session-7"]'
 ```
 
-Only an operator can reach these variables. The adapter reads a bounded JSON
-payload under a short finite read deadline, rejects NUL-containing executable
-arguments, invokes no shell, and terminates the entire advertised process group
-when the finite deadline expires. Emitter stdout is discarded; stderr is drained
-continuously while only its first 4 KiB is retained for a useful failure detail.
+The hook payload's `cwd` is not trusted for repository selection because it
+follows in-session directory changes. The adapter instead validates the
+host-substituted `${CLAUDE_PROJECT_DIR}` as a canonical absolute directory and
+uses it for both seam lookup and the conditional operation's working directory.
+Only an operator can reach the capability variable. The adapter reads a bounded
+JSON payload under a short finite read deadline, rejects NUL-containing
+executable arguments, invokes no shell, and terminates the entire advertised
+process group when the finite deadline expires. Emitter stdout is discarded;
+stderr is drained continuously while only its first 4 KiB is retained for a
+useful failure detail.
 
 ## Codex parity
 

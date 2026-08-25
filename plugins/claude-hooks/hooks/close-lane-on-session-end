@@ -16,12 +16,12 @@
 # break a lane that is about to be resumed. Recording a non-terminal event is
 # safe in both cases; releasing is not.
 #
-# Emission follows the repository's typed-event contract exactly: backend `n/a`
-# skips silently; an unadvertised transport records `typed event transport:
-# unavailable` and skips; a missing, malformed, or unsafe advertisement is an
-# attempted-write failure; and an advertised write runs the exact executable and
-# ordered opaque argv without shell evaluation, with a finite deadline in its
-# own process group. Emission is best-effort and never blocks anything.
+# Emission requires a backend-advertised conditional operation that atomically
+# proves this session's expected claim identity and current liveness while
+# appending the drain. Backend `n/a` and an unavailable capability skip; a
+# malformed advertisement or failed advertised operation becomes best-effort
+# UNKNOWN. The exact opaque argv runs without shell evaluation, with a finite
+# deadline in its own process group, and never blocks anything.
 
 require "json"
 require_relative "lib/hook_support"
@@ -31,19 +31,18 @@ module CloseLaneOnSessionEnd
   # cleanup only and always exits 0.
   DONE = 0
 
-  # The backend-advertised drain-event executable and ordered opaque argv, as a
-  # JSON array of strings. Whoever configures a lane also knows that lane's
-  # batch, lane, agent, repository, target, and branch context, so the argv is
-  # baked with that context and each argument is passed through unmodified.
-  # The separate mutable claim marker, not this static argv, proves that the
-  # session still holds the lane claim at SessionEnd.
-  ADVERTISEMENT_ENV = "AGENT_WORKFLOWS_DRAIN_EVENT_ARGV"
-  CLAIM_MARKER_ENV = "AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER"
+  # One backend-advertised conditional drain operation and its ordered opaque
+  # argv, as a JSON array of strings. The operation must atomically verify the
+  # expected holder, generation/instance, and live lease or heartbeat before it
+  # appends the event. Static append-only event argv is not this capability.
+  ADVERTISEMENT_ENV = "AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV"
   TIMEOUT_ENV = "AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS"
+  PROJECT_DIR_FLAG = "--project-dir"
 
   # Claude Code budgets SessionEnd hooks tightly, so the default deadline is
   # short. A slow backend records UNKNOWN rather than delaying shutdown.
   DEFAULT_TIMEOUT_SECONDS = 1.0
+  NO_CURRENT_CLAIM_EXIT = 3
 
   # `resume` is excluded by the installed matcher; re-checked here so a
   # hand-edited install cannot drain a session that is merely being resumed.
@@ -51,8 +50,8 @@ module CloseLaneOnSessionEnd
 
   module_function
 
-  def run(input: $stdin, err: $stderr, env: ENV)
-    err.puts("close-lane-on-session-end: #{outcome(input, env)}")
+  def run(input: $stdin, err: $stderr, env: ENV, argv: ARGV)
+    err.puts("close-lane-on-session-end: #{outcome(input, env, trusted_project_directory(argv))}")
     DONE
   rescue StandardError => e
     # This adapter can never block anything, so an unexpected error is reported
@@ -61,7 +60,7 @@ module CloseLaneOnSessionEnd
     DONE
   end
 
-  def outcome(input, env)
+  def outcome(input, env, directory)
     return "skipped: adapter disabled" if HookSupport.disabled?(env)
 
     payload = HookSupport.read_payload(input)
@@ -70,45 +69,42 @@ module CloseLaneOnSessionEnd
     return "skipped: unreadable SessionEnd payload" unless payload.is_a?(Hash)
     return "skipped: session end reason is #{payload['reason']}" if SKIPPED_REASONS.include?(payload["reason"].to_s)
 
-    directory = working_directory(payload)
+    return "skipped: no trusted project directory" unless directory
     return "skipped: no coordination backend" unless HookSupport.coordination_backend(directory)
-    return "skipped: no live lane claim" unless live_claim?(env)
 
     emit(advertisement(env), directory, env)
   end
 
-  def live_claim?(env)
-    path = env[CLAIM_MARKER_ENV].to_s
-    return false unless HookSupport.safe_argument?(path)
-    return false unless File.expand_path(path) == path
+  def trusted_project_directory(argv)
+    return nil unless argv.length == 2 && argv.first == PROJECT_DIR_FLAG
 
-    File.lstat(path).file?
+    path = argv.last.to_s
+    return nil unless HookSupport.safe_argument?(path)
+    return nil unless File.expand_path(path) == path
+    return nil unless File.directory?(path)
+
+    path
   rescue SystemCallError, ArgumentError
-    false
+    nil
   end
 
   def emit(argv, directory, env)
-    return "skipped: typed event transport: unavailable" if argv.nil?
-    return "attempted-write failure: malformed drain-event advertisement" if argv == :malformed
+    return "skipped: conditional drain transport: unavailable" if argv.nil?
+    return "skipped: conditional drain transport: unsupported" if argv == :unsupported
+    return "attempted-write failure: malformed conditional drain advertisement" if argv == :malformed
 
     result = HookSupport.run_bounded(argv, timeout_seconds: timeout_seconds(env), chdir: directory)
     return "emitted human_intervention kind: drain" if result[:ok]
     return "UNKNOWN: drain event write timed out" if result[:failure] == "timeout"
+    return "skipped: no current live lane claim" if result[:status]&.exitstatus == NO_CURRENT_CLAIM_EXIT
 
     detail = result[:stderr].to_s.strip.lines.first.to_s.strip
     "UNKNOWN: drain event write failed#{detail.empty? ? '' : ": #{detail}"}"
   end
 
-  def working_directory(payload)
-    directory = payload["cwd"].to_s
-    # File.directory? raises on a NUL byte, so screen it before use.
-    return Dir.pwd unless HookSupport.safe_argument?(directory)
-
-    File.directory?(directory) ? directory : Dir.pwd
-  end
-
-  # nil when nothing is advertised, :malformed when the advertisement cannot be
-  # trusted, otherwise the opaque argv to run verbatim.
+  # nil when nothing is advertised, :unsupported for the known append-only
+  # record-event command, :malformed when the advertisement cannot be trusted,
+  # otherwise the opaque conditional-operation argv to run verbatim.
   def advertisement(env)
     raw = env[ADVERTISEMENT_ENV].to_s.strip
     return nil if raw.empty?
@@ -119,6 +115,7 @@ module CloseLaneOnSessionEnd
     # reach a shell. A NUL byte cannot survive exec, so it is unsafe.
     return :malformed unless parsed.all? { |value| HookSupport.safe_argument?(value) }
     return :malformed if parsed.first.strip.empty?
+    return :unsupported if File.basename(parsed.first) == "agent-coord" && parsed[1] == "record-event"
 
     parsed
   rescue JSON::ParserError

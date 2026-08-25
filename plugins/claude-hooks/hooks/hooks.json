@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/plugins/claude-hooks/hooks/close-lane-on-session-end",
-            "args": [],
+            "args": ["--project-dir", "${CLAUDE_PROJECT_DIR}"],
             "timeout": 5
           }
         ]
