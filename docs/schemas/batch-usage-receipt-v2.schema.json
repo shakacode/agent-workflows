@@ -22,7 +22,16 @@
     "accounting": {
       "type": "object",
       "required": ["compactions", "counter_resets", "duplicate_samples_omitted", "inherited_seeds_omitted", "replay_records_omitted", "session_rebind_attempts_ignored", "usage_samples"],
-      "additionalProperties": {"type": "integer", "minimum": 0}
+      "properties": {
+        "compactions": {"type": "integer", "minimum": 0},
+        "counter_resets": {"type": "integer", "minimum": 0},
+        "duplicate_samples_omitted": {"type": "integer", "minimum": 0},
+        "inherited_seeds_omitted": {"type": "integer", "minimum": 0},
+        "replay_records_omitted": {"type": "integer", "minimum": 0},
+        "session_rebind_attempts_ignored": {"type": "integer", "minimum": 0},
+        "usage_samples": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
     },
     "evidence": {
       "type": "object",

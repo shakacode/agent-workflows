@@ -1225,6 +1225,13 @@ class BatchUsageReceiptTest < Minitest::Test
     refute_empty JSONSchemer.schema(schema).validate(missing_turns).to_a
   end
 
+  def test_v2_schema_rejects_accounting_extensions_the_budget_evaluator_does_not_accept
+    receipt, = run_fixture("replay")
+    receipt.fetch("accounting")["future_counter"] = 0
+
+    refute_empty JSONSchemer.schema(receipt_schema(2)).validate(receipt).to_a
+  end
+
   def test_output_is_deterministic_across_replays_and_public_contract_is_versioned
     first_receipt, first_output = run_fixture("replay")
     second_receipt, second_output = run_fixture("replay")
