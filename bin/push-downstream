@@ -874,6 +874,49 @@ module PushDownstream
     AUDIT_UNKNOWN
   end
 
+  def managed_scaffold_paths
+    fixed_paths = [
+      "AGENTS.md",
+      "CLAUDE.md",
+      AgentWorkflowSeamDoctor::POLICY_CONFIG,
+      TRUST_CONFIG,
+      ".agents/bin/README.md"
+    ]
+    fixed_paths + COMMAND_ORDER.map { |command| ".agents/bin/#{command}" }
+  end
+
+  # Reconciliation is confined to a disposable clone, but it must not follow a
+  # consumer-controlled symlink out of that clone. Treat an unsafe managed path
+  # as uninterpretable so the audit reports blocked/UNKNOWN without writing it.
+  def validate_managed_scaffold_paths!(root)
+    clone_root = File.expand_path(root)
+    root_stat = File.lstat(clone_root)
+    unless root_stat.directory? && !root_stat.symlink?
+      raise "managed scaffold clone root is not a safe directory"
+    end
+
+    managed_scaffold_paths.each do |relative_path|
+      target = File.expand_path(relative_path, clone_root)
+      unless target.start_with?("#{clone_root}#{File::SEPARATOR}")
+        raise "managed scaffold path escapes the clone root: #{relative_path}"
+      end
+
+      current = clone_root
+      relative_path.split(File::SEPARATOR).each do |component|
+        current = File.join(current, component)
+        begin
+          stat = File.lstat(current)
+        rescue Errno::ENOENT
+          break
+        end
+        raise "managed scaffold path contains a symlink: #{relative_path}" if stat.symlink?
+      end
+    end
+    true
+  rescue Errno::EACCES, Errno::ENOTDIR => e
+    raise "managed scaffold path could not be safely inspected: #{e.message}"
+  end
+
   def audit_repo(repo, presets)
     begin
       contract = resolve_contract(repo, presets)
@@ -909,6 +952,7 @@ module PushDownstream
       end
 
       begin
+        validate_managed_scaffold_paths!(clone)
         issues = AgentWorkflowSeamDoctor.check(clone)
       rescue RuntimeError, SystemCallError => e
         # The doctor reads consumer files and shells out (bash -n), so a single

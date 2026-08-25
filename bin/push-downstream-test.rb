@@ -90,6 +90,11 @@ class PushDownstreamAuditWorkflowTest < Minitest::Test
     assert_equal false, checkout.dig("with", "persist-credentials")
     assert_includes audit.fetch("run"), 'ruby bin/push-downstream --audit | tee "$AUDIT_REPORT"'
     assert_includes audit.fetch("run"), 'audit_exit=${PIPESTATUS[0]}'
+    assert_includes audit.fetch("run"), 'JSON.parse(File.binread(ENV.fetch("AUDIT_REPORT")))'
+    assert_includes audit.fetch("run"), 'source.fetch("sha") == ENV.fetch("GITHUB_SHA")'
+    assert_includes audit.fetch("run"), 'consumer.fetch("status") == "blocked"'
+    assert_includes audit.fetch("run"), 'value == "UNKNOWN"'
+    assert_includes audit.fetch("run"), 'expected_exit == Integer(ENV.fetch("AUDIT_EXIT"), 10)'
     assert_nil upload, "audit reports must not depend on an untrusted artifact action"
     assert_equal "always()", enforce.fetch("if")
     assert_includes enforce.fetch("run"), 'exit "$AUDIT_EXIT_CODE"'
@@ -1561,6 +1566,27 @@ class PushDownstreamAuditTest < Minitest::Test
       # untouched and no sync branch is ever pushed.
       branches = `git --git-dir=#{remote.shellescape} branch --list`.split.reject { |token| token == "*" }
       assert_equal ["main"], branches
+    end
+  end
+
+  def test_audit_blocks_managed_path_symlink_without_following_external_target
+    Dir.mktmpdir("push-downstream-audit-symlink") do |dir|
+      remote, seed = seed_bare_consumer(dir)
+      external_target = File.join(dir, "external-agents.md")
+      File.binwrite(external_target, "unchanged\n")
+      File.symlink(external_target, File.join(seed, "AGENTS.md"))
+      system("git", "-C", seed, "add", "AGENTS.md")
+      system("git", "-C", seed, "commit", "-m", "add managed path symlink", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+
+      entry = audit(remote)
+
+      assert_equal "blocked", entry.fetch("status")
+      assert_includes entry.fetch("reason"), "managed scaffold path contains a symlink"
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("seam_doctor_issues")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("changed_managed_paths")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("follow_ups")
+      assert_equal "unchanged\n", File.binread(external_target)
     end
   end
 
