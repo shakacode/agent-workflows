@@ -1186,8 +1186,8 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
         "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
         "coordination_backend_contract" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND)
       ).to_yaml.sub(
-        "  version: 1\n",
-        "  version: 1\n  version: 2\n"
+        "coordination_backend_contract:\n  version: 1\n",
+        "coordination_backend_contract:\n  version: 1\n  version: 2\n"
       )
       File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
       write_skill(root, "No commands here.\n")
