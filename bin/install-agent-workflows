@@ -1498,6 +1498,7 @@ preflight_metadata_commit_capability() {
     second_path = File.join(lock, second_name)
     directory = nil
     ios = []
+    cleanup_failed = false
     open_at = lambda do |name|
       fd = AtomicMetadataRenameProbe.openat(
         directory.fileno,
@@ -1545,10 +1546,15 @@ preflight_metadata_commit_capability() {
     ensure
       ios.reverse_each { |io| io.close unless io.closed? }
       if directory
-        AtomicMetadataRenameProbe.unlinkat(directory.fileno, first_name, 0)
-        AtomicMetadataRenameProbe.unlinkat(directory.fileno, second_name, 0)
+        [first_name, second_name].each do |name|
+          next if AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0) == 0
+
+          cleanup_failed = true
+          AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0)
+        end
       end
       directory&.close
+      raise "atomic metadata rename probe cleanup failed" if cleanup_failed
     end
   ' "$install_lock" 2>/dev/null || probe_status=$?
 

@@ -1138,6 +1138,62 @@ RUBY
     fail "missing metadata commit capability leaked install lock"
 }
 
+test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation() {
+  local tmp source target injection output status license_before metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-atomic-metadata-probe-cleanup.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  license_before="$(shasum "$target/LICENSE")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  printf '\ncapability cleanup source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailAtomicMetadataProbeCleanup
+  def extern(signature, *arguments)
+    result = super
+    if name == "AtomicMetadataRenameProbe" && signature.include?("unlinkat")
+      real_unlinkat = method(:unlinkat)
+      failed_once = false
+      define_singleton_method(:unlinkat) do |directory_fd, entry_name, flags|
+        if !failed_once && entry_name.start_with?("metadata-rename-probe-")
+          failed_once = true
+          Fiddle.last_error = 1
+          -1
+        else
+          real_unlinkat.call(directory_fd, entry_name, flags)
+        end
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(FailAtomicMetadataProbeCleanup)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "failed metadata probe cleanup unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "failed metadata probe cleanup mutated a managed file"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "failed metadata probe cleanup changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
+    fail "failed metadata probe cleanup prepared new metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "failed metadata probe cleanup leaked install lock"
+}
+
 test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat() {
   local tmp target staging
   tmp="$(mktemp -d)"
@@ -5690,6 +5746,7 @@ main() {
     test_metadata_commit_rolls_back_failed_present_compare_and_swap
     test_metadata_commit_rejects_replaced_prepared_file
     test_metadata_commit_capability_failure_stops_before_managed_mutation
+    test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
     test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data
     test_flat_crash_recovery_rejects_symlink_skills_root_before_move
