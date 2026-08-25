@@ -1094,7 +1094,7 @@ class PrCiReadinessCliTest < Minitest::Test
           )}
           exit 0
         fi
-        if [[ "$*" = *"/check-runs?per_page="* ]]; then
+        if [[ "$*" = *"/check-runs?filter=latest&per_page="* ]]; then
           #{exact_inventory_error == 'check_runs' ? 'exit 1' : ''}
           #{shell_json_printf('total_count' => exact_check_runs.length, 'check_runs' => exact_check_runs)}
           exit 0

@@ -39,10 +39,6 @@ module PrMergeSubmit
   NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
   GUARDED_DIRECT_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
   GIT_BLOB_OID = /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/
-  CHECK_RUN_STATUSES = %w[queued in_progress completed waiting requested pending].freeze
-  CHECK_RUN_CONCLUSIONS = %w[
-    action_required cancelled failure neutral success skipped stale startup_failure timed_out
-  ].freeze
   ENV_INTERPRETER = "/usr/bin/env"
   ENV_PROGRAM = /\A[A-Za-z0-9][A-Za-z0-9_.+-]*\z/
   TRUSTED_INTERPRETER_DIRS = [
@@ -376,7 +372,7 @@ module PrMergeSubmit
     def validate_current_ci_for_submission!(options)
       evidence = @merge_assurance_receipt.fetch("evidence")
       trusted_ci_policy = trusted_ci_policy_for_receipt!(evidence)
-      refreshed_ci_result = refresh_policy_disposed_ci_result!(
+      refreshed_ci_result = refresh_complete_ci_result!(
         evidence.fetch("ci_result"), options, trusted_ci_policy:
       )
       reassessed = MergeAssurance.assess(
@@ -395,248 +391,41 @@ module PrMergeSubmit
       raise Error, "current CI reassessment changed merge-assurance bindings or accounting"
     end
 
-    def refresh_policy_disposed_ci_result!(ci_result, options, trusted_ci_policy: nil)
+    def refresh_complete_ci_result!(ci_result, options, trusted_ci_policy: nil)
       return ci_result if trusted_ci_policy.nil?
 
-      dispositions = ci_result.dig("scopes", "other", "policy_dispositions") if ci_result.is_a?(Hash)
-      raise Error, "current CI policy dispositions are malformed" unless dispositions.is_a?(Array)
+      requested_hosted = ci_result["requested_hosted"] if ci_result.is_a?(Hash)
+      requested_run_ids = requested_hosted.nil? ? [] : requested_hosted["run_ids"]
+      unless requested_run_ids.is_a?(Array) && requested_run_ids.all? { |run_id| run_id.to_s.match?(/\A[1-9]\d*\z/) }
+        raise Error, "current CI requested hosted-run bindings are malformed"
+      end
 
-      refreshed = JSON.parse(JSON.generate(ci_result))
-      rows = refreshed.dig("scopes", "other", "rows")
-      raise Error, "current CI policy-disposed rows are malformed" unless rows.is_a?(Array)
+      readiness = PrCiReadiness::Runner.new(
+        command_runner: lambda do |command, *arguments|
+          raise PrCiReadiness::Error, "readiness attempted an unsupported command" unless command == "gh"
 
-      expected_head = @merge_assurance_receipt.dig("bindings", "head_sha")
-      current_check_runs = fetch_current_exact_head_check_runs!(options, expected_head:)
-      validate_complete_check_run_inventory!(
-        refreshed, current_check_runs, dispositions:, trusted_ci_policy:
+          run_gh(*arguments, host: options[:host])
+        end
       )
-      resolved_disposition_indexes = []
-      trusted_ci_policy.fetch("optional_approval_held_checks").each do |rule|
-        matching_current = current_check_runs.select do |check_run|
-          check_run["app_slug"] == rule["app_slug"] && check_run["name"] == rule["name"]
-        end
-        if matching_current.length > 1
-          raise Error, "current CI inventory repeats configured check identity #{rule['app_slug']}/#{rule['name']}"
-        end
-
-        disposition_indexes = dispositions.each_index.select do |index|
-          disposition = dispositions[index]
-          disposition.is_a?(Hash) && disposition["kind"] == "check_run" &&
-            disposition["rule_id"] == rule["id"] &&
-            disposition["app_slug"] == rule["app_slug"] && disposition["name"] == rule["name"]
-        end
-        if disposition_indexes.length > 1
-          raise Error, "current CI inventory has repeated dispositions for configured check identity"
-        end
-
-        if disposition_indexes.empty?
-          merge_newly_observed_policy_row!(rows, matching_current.first, rule:)
-          next
-        end
-
-        disposition_index = disposition_indexes.first
-        disposition = dispositions[disposition_index]
-        unless disposition["id"].is_a?(Integer) && disposition["id"].positive?
-          raise Error, "current CI policy disposition cannot be refreshed"
-        end
-
-        receipt_row_indexes = rows.each_index.select do |index|
-          PrCiReadiness.disposition_matches_row?(disposition, rows[index])
-        end
-        unless receipt_row_indexes.length == 1
-          raise Error, "current CI policy disposition does not identify exactly one receipt row"
-        end
-
-        current = matching_current.first
-        raise Error, "current CI inventory is missing a configured disposed check" unless current
-
-        independently_ready = PrCiReadiness.evidence_row_state(current) == "READY"
-        if current["id"] != disposition["id"] && !independently_ready
-          raise Error, "current CI replacement check is not independently ready"
-        end
-
-        rows[receipt_row_indexes.first].merge!(current)
-        if independently_ready
-          resolved_disposition_indexes << disposition_index
-        end
-      end
-      remaining_dispositions = dispositions.each_with_index.filter_map do |disposition, index|
-        disposition unless resolved_disposition_indexes.include?(index)
-      end
-      refreshed.dig("scopes", "other")["policy_dispositions"] = remaining_dispositions
-
-      checked_at = Time.now.utc.iso8601
-      refreshed["checked_at"] = checked_at
-      refreshed.dig("scopes", "other")["checked_at"] = checked_at
-      refreshed
-    rescue JSON::GeneratorError, JSON::ParserError => e
-      raise Error, "current CI evidence could not be copied safely: #{e.message}"
-    end
-
-    def validate_complete_check_run_inventory!(ci_result, current_rows, dispositions:, trusted_ci_policy:)
-      current_identity_groups = current_rows.group_by { |row| row.values_at("app_slug", "name") }
-      if current_identity_groups.any? { |_identity, rows| rows.length > 1 }
-        raise Error, "current CI exact-head inventory repeats a check-run app/name identity"
-      end
-
-      scopes = ci_result["scopes"]
-      raise Error, "current CI evidence scopes are malformed" unless scopes.is_a?(Hash)
-
-      receipt_check_runs = scopes.flat_map do |scope_name, scope|
-        raise Error, "current CI evidence scope #{scope_name} is malformed" unless scope.is_a?(Hash)
-
-        scope_rows = scope["rows"]
-        raise Error, "current CI evidence scope #{scope_name} rows are malformed" unless scope_rows.is_a?(Array)
-
-        scope_rows.filter_map do |row|
-          next unless row.is_a?(Hash) && row["kind"] == "check_run"
-          unless row["id"].is_a?(Integer) && row["id"].positive? &&
-                 row["app_slug"].is_a?(String) && !row["app_slug"].empty? &&
-                 row["name"].is_a?(String) && !row["name"].empty?
-            raise Error, "current CI evidence contains a malformed check-run identity"
-          end
-
-          [scope_name, row]
-        end
-      end
-      receipt_ids = receipt_check_runs.group_by { |_scope_name, row| row["id"] }
-      receipt_names = receipt_check_runs.group_by { |_scope_name, row| row.values_at("app_slug", "name") }
-      if receipt_ids.any? { |_identity, rows| rows.length > 1 } ||
-         receipt_names.any? { |_identity, rows| rows.length > 1 }
-        raise Error, "current CI evidence repeats a check-run identity across scopes or rows"
-      end
-
-      required_rows = scopes.dig("required_status_check_rollup", "rows")
-      current_rows.each do |row|
-        next if PrCiReadiness.evidence_row_state(row) == "READY"
-        next if authenticated_policy_disposition?(
-          row, dispositions:, trusted_ci_policy:, required_rows:
-        )
-
-        raise Error, "current CI exact-head inventory contains a blocking check #{row['app_slug']}/#{row['name']}"
-      end
-    end
-
-    # An exact authenticated disposition may proceed to the ordinary refresh
-    # and reassessment below. That reassessment independently rejects it unless
-    # the refreshed row is still genuinely approval-held (or has become READY).
-    def authenticated_policy_disposition?(row, dispositions:, trusted_ci_policy:, required_rows:)
-      return false if Array(required_rows).any? do |required|
-        PrCiReadiness.required_matches_optional_row?(required, row)
-      end
-
-      matching_dispositions = dispositions.select do |disposition|
-        PrCiReadiness.disposition_matches_row?(disposition, row)
-      end
-      return false unless matching_dispositions.length == 1
-
-      disposition = matching_dispositions.first
-      trusted_ci_policy.fetch("optional_approval_held_checks").one? do |rule|
-        rule["id"] == disposition["rule_id"] &&
-          rule["app_slug"] == disposition["app_slug"] && rule["name"] == disposition["name"]
-      end
-    end
-
-    def merge_newly_observed_policy_row!(rows, current, rule:)
-      return unless current
-
-      matching_indexes = rows.each_index.select do |index|
-        row = rows[index]
-        row.is_a?(Hash) && row["kind"] == "check_run" &&
-          row["app_slug"] == rule["app_slug"] && row["name"] == rule["name"]
-      end
-      if matching_indexes.length > 1
-        raise Error, "current CI receipt repeats configured check identity #{rule['app_slug']}/#{rule['name']}"
-      end
-
-      if matching_indexes.empty?
-        rows << current.merge("dependabot" => false)
-      else
-        rows[matching_indexes.first].merge!(current)
-      end
-    end
-
-    def fetch_current_exact_head_check_runs!(options, expected_head:)
-      expected_total = nil
-      page = 1
-      rows = []
-      loop do
-        endpoint = "repos/#{options[:repo]}/commits/#{expected_head}/check-runs" \
-                   "?filter=all&per_page=100&page=#{page}"
-        stdout, stderr, status = run_gh(
-          "api", endpoint, "-H", "Accept: application/vnd.github+json",
-          host: options[:host]
-        )
-        unless status.success?
-          raise Error, "current CI exact-head inventory is unavailable: #{failure_output(stdout, stderr)}"
-        end
-
-        payload = PrMergeSubmit.parse_json!(stdout, "current CI exact-head inventory")
-        total = payload["total_count"]
-        page_rows = payload["check_runs"]
-        unless total.is_a?(Integer) && total >= 0 && page_rows.is_a?(Array)
-          raise Error, "current CI exact-head inventory is malformed"
-        end
-
-        expected_total ||= total
-        raise Error, "current CI exact-head inventory total changed during pagination" unless total == expected_total
-
-        rows.concat(page_rows.map { |check_run| normalize_current_check_run!(check_run, expected_head:) })
-        raise Error, "current CI exact-head inventory exceeded its reported total" if rows.length > expected_total
-        break if rows.length == expected_total
-        if page_rows.length < 100
-          raise Error, "current CI exact-head inventory pagination was incomplete"
-        end
-
-        page += 1
-        maximum_pages = [(expected_total.to_f / 100).ceil, 1].max
-        raise Error, "current CI exact-head inventory pagination exceeded its reported total" if page > maximum_pages
-      end
-      unless rows.map { |row| row["id"] }.uniq.length == rows.length
-        raise Error, "current CI exact-head inventory repeats a check-run ID"
-      end
-
-      rows
-    end
-
-    def normalize_current_check_run!(check_run, expected_head:)
-      raise Error, "current CI exact-head inventory row is malformed" unless check_run.is_a?(Hash)
-      if MergeAssurance.contains_unknown?(check_run)
-        raise Error, "current CI exact-head inventory row contains UNKNOWN"
-      end
-
-      started_at = check_run["started_at"]
-      app_slug = check_run["app"]["slug"] if check_run["app"].is_a?(Hash)
-      conclusion = check_run["conclusion"]
-      valid_started_at = started_at.nil? || started_at.is_a?(String) && valid_rfc3339?(started_at)
-      valid = check_run["id"].is_a?(Integer) && check_run["id"].positive? &&
-              check_run["name"].is_a?(String) && !check_run["name"].empty? &&
-              app_slug.is_a?(String) && !app_slug.empty? &&
-              check_run["head_sha"] == expected_head &&
-              CHECK_RUN_STATUSES.include?(check_run["status"]) &&
-              check_run.key?("conclusion") &&
-              (conclusion.nil? || CHECK_RUN_CONCLUSIONS.include?(conclusion)) &&
-              check_run.key?("started_at") && valid_started_at
-      raise Error, "current CI exact-head inventory row is malformed or mismatched" unless valid
-
-      {
-        "kind" => "check_run",
-        "id" => check_run["id"],
-        "name" => check_run["name"],
-        "head_sha" => check_run["head_sha"],
-        "status" => check_run["status"],
-        "conclusion" => conclusion,
-        "started_at" => started_at,
-        "app_slug" => app_slug,
-        "url" => check_run["html_url"].to_s
+      refreshed = readiness.assess_authenticated(
+        repo: options[:repo], pr_number: options[:pr], host: options[:host],
+        requested_hosted_runs: requested_run_ids, trusted_repo_root: @repo_root
+      )
+      expected = {
+        "context" => { "host" => options[:host] },
+        "repo" => options[:repo],
+        "pr" => options[:pr].to_i,
+        "head_sha" => options[:expected_head],
+        "ci_policy" => trusted_ci_policy
       }
-    end
+      changed_bindings = expected.keys.reject { |key| refreshed[key] == expected[key] }
+      unless changed_bindings.empty?
+        raise Error, "current CI reassessment changed bound fields: #{changed_bindings.join(', ')}"
+      end
 
-    def valid_rfc3339?(value)
-      Time.iso8601(value)
-      true
-    rescue ArgumentError
-      false
+      refreshed
+    rescue PrCiReadiness::Error => e
+      raise Error, "current CI evidence could not be refreshed completely: #{e.message}"
     end
 
     def validate_receipt_evidence!(receipt, evidence)

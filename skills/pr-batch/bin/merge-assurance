@@ -359,6 +359,7 @@ module MergeAssurance
       end
       validate_timestamp(scope["checked_at"], now, "ci_result scope #{name}", failures)
     end
+    validate_unique_check_run_scope_identities(scopes, failures)
     validate_timestamp(ci_result["checked_at"], now, "ci_result", failures)
   end
 

@@ -1355,7 +1355,7 @@ class PrMergeSubmitTest < Minitest::Test
     {
       running: "current CI evidence does not currently qualify",
       failed: "current CI evidence does not currently qualify",
-      moved: "current CI exact-head inventory row is malformed or mismatched"
+      moved: "current CI evidence does not currently qualify"
     }.each do |transition, expected_error|
       result, log = run_cli(
         mode: "direct",
@@ -1466,15 +1466,80 @@ class PrMergeSubmitTest < Minitest::Test
     assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
   end
 
-  def test_cross_scope_check_run_identity_stops_before_direct_mutation
-    result, log = run_cli(
-      mode: "direct", receipt_mode: :optional_held_cross_scope,
-      merge_submission: { "mode" => "direct" }, ci_transition: :cross_scope_success
-    )
+  def test_actions_or_commit_status_transition_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[
+        required_failure required_pending actions_failure actions_pending status_failure status_pending
+      ].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s,
+          receipt_mode: :optional_held,
+          merge_submission:,
+          ci_transition: transition
+        )
 
-    assert_equal 1, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "current CI"
-    refute_includes log, "mergePullRequest"
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        expected_scope = if transition.to_s.start_with?("required")
+                           "required_status_check_rollup"
+                         elsif transition.to_s.start_with?("actions")
+                           "github_actions"
+                         else
+                           "other"
+                         end
+        assert_includes result.fetch(:stderr), expected_scope, "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_complete_ci_surface_inventory_errors_stop_before_direct_mutation
+    %i[actions_inventory_missing status_inventory_missing].each do |transition|
+      result, log = run_cli(
+        mode: "direct", receipt_mode: :optional_held,
+        merge_submission: { "mode" => "direct" }, ci_transition: transition
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, transition
+      assert_includes result.fetch(:stderr), "current CI", transition
+      assert_includes result.fetch(:stderr), "not complete", transition
+      refute_includes log, "mergePullRequest", transition
+    end
+  end
+
+  def test_historical_check_attempt_uses_latest_result_on_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      success, success_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        ci_transition: :historical_then_latest_success
+      )
+      assert success.fetch(:status).success?, "#{mode}: #{success.fetch(:stderr)}"
+      assert_includes success_log, "filter=latest", mode
+      assert_ci_refresh_immediately_precedes_mutation(success_log, mutation)
+
+      failure, failure_log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        ci_transition: :historical_then_latest_failure
+      )
+      assert_equal 1, failure.fetch(:status).exitstatus, mode
+      assert_includes failure.fetch(:stderr), "current CI", mode
+      assert_includes failure_log, "filter=latest", mode
+      refute_includes failure_log, mutation, mode
+      assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
+    end
   end
 
   def test_sole_successful_replacement_is_accepted_with_final_ordering_on_every_route
@@ -1518,77 +1583,6 @@ class PrMergeSubmitTest < Minitest::Test
       assert_includes result.fetch(:stderr), "current CI", transition
       refute_includes log, "mergePullRequest", transition
     end
-  end
-
-  def test_refresh_removes_only_ready_dispositions_and_rejects_duplicate_row_identity
-    rows = [31, 32].map do |id|
-      {
-        "kind" => "check_run", "id" => id, "name" => "optional-#{id}",
-        "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
-        "app_slug" => "third-party", "dependabot" => false
-      }
-    end
-    dispositions = rows.map do |row|
-      {
-        "disposition" => "optional_approval_held", "rule_id" => "rule-#{row.fetch('id')}",
-        "kind" => "check_run", "id" => row.fetch("id"),
-        "app_slug" => row.fetch("app_slug"), "name" => row.fetch("name")
-      }
-    end
-    ci_result = {
-      "scopes" => {
-        "other" => {
-          "rows" => rows,
-          "policy_dispositions" => dispositions,
-          "checked_at" => Time.now.utc.iso8601
-        }
-      },
-      "checked_at" => Time.now.utc.iso8601
-    }
-    runner = PrMergeSubmit::Runner.new
-    runner.instance_variable_set(
-      :@merge_assurance_receipt, { "bindings" => { "head_sha" => HEAD_SHA } }
-    )
-    runner.define_singleton_method(:fetch_current_exact_head_check_runs!) do |_options, expected_head:|
-      dispositions.map do |disposition|
-        success = disposition.fetch("id") == 31
-        {
-          "kind" => "check_run", "id" => disposition.fetch("id"),
-          "name" => disposition.fetch("name"), "head_sha" => expected_head,
-          "app_slug" => disposition.fetch("app_slug"),
-          "status" => success ? "completed" : "in_progress",
-          "conclusion" => success ? "success" : nil,
-          "started_at" => "2026-08-25T12:00:00Z"
-        }
-      end
-    end
-    trusted_ci_policy = {
-      "optional_approval_held_checks" => dispositions.map do |disposition|
-        {
-          "id" => disposition.fetch("rule_id"),
-          "app_slug" => disposition.fetch("app_slug"),
-          "name" => disposition.fetch("name")
-        }
-      end
-    }
-
-    refreshed = runner.send(
-      :refresh_policy_disposed_ci_result!, ci_result, {}, trusted_ci_policy:
-    )
-
-    disposition_ids = refreshed.dig("scopes", "other", "policy_dispositions").map { |row| row.fetch("id") }
-    assert_equal [32], disposition_ids
-    assert_equal "READY", PrCiReadiness.evidence_row_state(refreshed.dig("scopes", "other", "rows", 0))
-    assert_equal "NOT_READY", PrCiReadiness.evidence_row_state(refreshed.dig("scopes", "other", "rows", 1))
-
-    duplicated = JSON.parse(JSON.generate(ci_result))
-    duplicated.dig("scopes", "other", "rows") << rows.first.dup
-    error = assert_raises(PrMergeSubmit::Error) do
-      runner.send(
-        :refresh_policy_disposed_ci_result!, duplicated, {}, trusted_ci_policy:
-      )
-    end
-    assert_equal "current CI evidence repeats a check-run identity across scopes or rows", error.message
   end
 
   def test_optional_approval_held_receipt_cannot_supply_missing_malformed_or_tampered_policy
@@ -1811,7 +1805,7 @@ class PrMergeSubmitTest < Minitest::Test
     mutation_index = commands.index { |command| command.include?(mutation) }
     refute_nil mutation_index, mutation
     refresh_index = commands.each_index.select do |index|
-      index < mutation_index && commands[index].include?("check-runs")
+      index < mutation_index && commands[index].include?("api repos/owner/repo/pulls/42")
     end.last
     refute_nil refresh_index
     metadata_indexes = commands.each_index.select do |index|
@@ -1820,6 +1814,9 @@ class PrMergeSubmitTest < Minitest::Test
     refute_empty metadata_indexes
     assert_equal mutation_index - 1, refresh_index
     assert_operator metadata_indexes.last, :<, refresh_index
+    %w[actions/runs check-runs /status].each do |inventory|
+      assert commands[0...refresh_index].any? { |command| command.include?(inventory) }, inventory
+    end
   end
 
   def guarded_direct_policy(
@@ -2316,16 +2313,6 @@ class PrMergeSubmitTest < Minitest::Test
         ]
       )
       ci_result["ci_policy"] = trusted_ci_policy
-      if mode == :optional_held_cross_scope
-        duplicate = {
-          "kind" => "check_run", "id" => 99, "name" => "unrelated-check",
-          "status" => "completed", "conclusion" => "success",
-          "started_at" => "2026-08-25T12:00:00Z", "head_sha" => head,
-          "app_slug" => "unrelated-app", "dependabot" => false
-        }
-        ci_result.dig("scopes", "github_actions", "rows") << duplicate
-        ci_result.dig("scopes", "other", "rows") << duplicate.dup
-      end
     end
     autonomous_result = {
       "verdict" => "autonomous-merge-eligible",
@@ -2740,6 +2727,93 @@ class PrMergeSubmitTest < Minitest::Test
       File.open(ENV.fetch("GH_LOG"), "a") do |file|
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
       end
+      transition = #{ci_transition.inspect}
+      if ARGV[0, 3] == ["api", "repos/owner/repo/pulls/42"]
+        puts JSON.generate(
+          "id" => 420, "number" => 42,
+          "head" => {
+            "sha" => #{head.inspect}, "ref" => #{head_ref_name.inspect},
+            "repo" => { "id" => 10, "full_name" => "owner/repo" }
+          },
+          "base" => {
+            "sha" => #{base_sha.inspect}, "ref" => #{base.inspect},
+            "repo" => { "id" => 10, "full_name" => "owner/repo" }
+          }
+        )
+        exit 0
+      end
+      if ARGV[0, 3] == ["pr", "checks", "42"]
+        state, bucket = case transition
+                        when :required_failure then ["FAILURE", "fail"]
+                        when :required_pending then ["PENDING", "pending"]
+                        else ["SUCCESS", "pass"]
+                        end
+        puts JSON.generate([
+          { "name" => "required", "state" => state, "bucket" => bucket,
+            "link" => "", "workflow" => "required-app" }
+        ])
+        exit 0
+      end
+      if ARGV[0, 3] == ["pr", "view", "42"]
+        puts JSON.generate("headRefOid" => #{head.inspect})
+        exit 0
+      end
+      if ARGV.any? { |arg| arg.include?("reviews(first:100") }
+        puts JSON.generate(
+          "data" => { "repository" => { "pullRequest" => {
+            "reviews" => { "nodes" => [], "pageInfo" => { "hasNextPage" => false, "endCursor" => nil } }
+          } } }
+        )
+        exit 0
+      end
+      actions_endpoint = ARGV.find { |arg| arg.include?("repos/owner/repo/actions/runs?head_sha=") }
+      if actions_endpoint
+        exit 1 if transition == :actions_inventory_missing
+
+        action_rows = if %i[actions_failure actions_pending].include?(transition)
+                        status = transition == :actions_failure ? "completed" : "in_progress"
+                        conclusion = transition == :actions_failure ? "failure" : nil
+                        [{
+                          "id" => 501, "workflow_id" => 601, "run_number" => 1, "run_attempt" => 1,
+                          "event" => "pull_request", "head_branch" => #{head_ref_name.inspect},
+                          "head_repository" => { "id" => 10 }, "pull_requests" => [],
+                          "head_sha" => #{head.inspect}, "name" => "current-actions",
+                          "status" => status, "conclusion" => conclusion,
+                          "html_url" => "https://#{HOST}/owner/repo/actions/runs/501",
+                          "actor" => { "login" => "octocat" },
+                          "triggering_actor" => { "login" => "octocat" }
+                        }]
+                      else
+                        []
+                      end
+        puts JSON.generate("total_count" => action_rows.length, "workflow_runs" => action_rows)
+        exit 0
+      end
+      if ARGV.any? { |arg| arg.include?("repos/owner/repo/actions/runs/501/jobs?") }
+        puts JSON.generate("total_count" => 0, "jobs" => [])
+        exit 0
+      end
+      status_endpoint = ARGV.find { |arg| arg.include?("/commits/#{head}/status?") }
+      if status_endpoint
+        exit 1 if transition == :status_inventory_missing
+
+        status_rows = case transition
+                      when :status_failure
+                        [{ "id" => 701, "context" => "current-status", "state" => "failure",
+                           "target_url" => "https://#{HOST}/owner/repo/status/701" }]
+                      when :status_pending
+                        [{ "id" => 701, "context" => "current-status", "state" => "pending",
+                           "target_url" => "https://#{HOST}/owner/repo/status/701" }]
+                      else
+                        []
+                      end
+        combined_state = transition == :status_failure ? "failure" : "pending"
+        puts JSON.generate(
+          "sha" => #{head.inspect}, "state" => combined_state,
+          "total_count" => status_rows.length, "statuses" => status_rows
+        )
+        exit 0
+      end
       inventory_endpoint = ARGV.find { |arg| arg.include?("/commits/#{head}/check-runs?") }
       if inventory_endpoint
         page = inventory_endpoint[/[?&]page=(\\d+)/, 1].to_i
@@ -2786,7 +2860,6 @@ class PrMergeSubmitTest < Minitest::Test
           started_at: "2026-08-25T12:00:00Z", name: "unrelated-check",
           app_slug: "unrelated-app"
         )
-        transition = #{ci_transition.inspect}
         if transition == :missing_inventory
           warn "inventory unavailable"
           exit 1
@@ -2812,8 +2885,18 @@ class PrMergeSubmitTest < Minitest::Test
                                     [[held, unrelated_held], 2]
                                   when :unrelated_success
                                     [[held, unrelated_success], 2]
-                                  when :cross_scope_success
-                                    [[held, unrelated_success], 2]
+                                  when :historical_then_latest_success
+                                    if inventory_endpoint.include?("filter=latest")
+                                      [[successful_replacement], 1]
+                                    else
+                                      [[held, successful_replacement], 2]
+                                    end
+                                  when :historical_then_latest_failure
+                                    if inventory_endpoint.include?("filter=latest")
+                                      [[failed_replacement], 1]
+                                    else
+                                      [[held, failed_replacement], 2]
+                                    end
                                   when :pagination_success
                                     if page == 1
                                       unrelated = Array.new(100) do |index|
