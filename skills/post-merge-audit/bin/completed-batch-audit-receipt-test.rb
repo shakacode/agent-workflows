@@ -1125,7 +1125,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: "n/a"
+          coordination_backend: "n/a",
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1159,7 +1160,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         preflight,
         expected_batch_id: "batch-184",
         targets: [target],
-        coordination_backend: "n/a"
+        coordination_backend: "n/a",
+        **trusted_applicability(preflight)
       )
     end
 
@@ -1170,7 +1172,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: "n/a"
+          coordination_backend: "n/a",
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1197,7 +1200,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: "n/a"
+          coordination_backend: "n/a",
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1221,7 +1225,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1247,7 +1252,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: "n/a"
+          coordination_backend: "n/a",
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1282,7 +1288,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1318,7 +1325,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             preflight,
             expected_batch_id: "batch-184",
             targets: [target],
-            coordination_backend: backend
+            coordination_backend: backend,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -1353,7 +1361,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: "n/a"
+          coordination_backend: "n/a",
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1380,7 +1389,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1817,6 +1827,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         targets_path,
         "--reference-file",
         missing_reference,
+        *cli_applicability_args(directory),
         "--other-blocker",
         " release owner confirmation ",
         "--other-blocker",
@@ -1860,7 +1871,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       }
 
       cases.each do |label, args|
-        out, _err, status = capture_receipt_cli("ruby", SCRIPT, *args)
+        out, _err, status = capture_receipt_cli(
+          "ruby", SCRIPT, *args, *cli_applicability_args(directory)
+        )
 
         assert_equal 1, status.exitstatus, label
         result = JSON.parse(out)
@@ -1888,7 +1901,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--targets-json",
         targets_path,
         "--receipt",
-        receipt_path
+        receipt_path,
+        *cli_applicability_args(directory)
       )
 
       assert_equal 1, status.exitstatus
@@ -3495,15 +3509,27 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     path
   end
 
+  def cli_applicability_args(directory)
+    proof_path = write_json(directory, "cli-applicability-proof.json", {})
+    ["--applicability-proof", proof_path, "--applicability-proof-sha256", "sha256:#{'0' * 64}"]
+  end
+
   def capture_receipt_cli(*arguments)
     command = arguments.dup
     script_index = command.index(SCRIPT)
-    if script_index &&
-       %w[publish replay supersede].include?(command[script_index + 1]) &&
-       !command.include?("--workflow-config")
-      environment = command.first.is_a?(Hash) ? command.first : {}
+    receipt_command = script_index && %w[publish replay supersede].include?(command[script_index + 1])
+    environment = command.first.is_a?(Hash) ? command.first : {}
+    if receipt_command && !command.include?("--workflow-config")
       workflow_config = environment.fetch("FAKE_WORKFLOW_CONFIG", WORKFLOW_CONFIG)
       command.concat(["--workflow-config", workflow_config])
+    end
+    if receipt_command && environment["FAKE_APPLICABILITY_PROOF"] && !command.include?("--applicability-proof")
+      command.concat(
+        [
+          "--applicability-proof", environment.fetch("FAKE_APPLICABILITY_PROOF"),
+          "--applicability-proof-sha256", environment.fetch("FAKE_APPLICABILITY_PROOF_DIGEST")
+        ]
+      )
     end
     stdout, stderr, status = Open3.capture3(*command)
     # The receipt CLI emits UTF-8 JSON, but Open3 labels captured output with
@@ -3543,7 +3569,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
                               "version" => 1,
                               "batch_id" => "batch-184",
                               "mode" => "single_operator",
-                              "rationale" => "repository workflow seam declares coordination_backend: n/a",
+                              "rationale" => "trusted controller verified one accountable serialized execution",
                               "source" => "https://github.com/acme/widgets/blob/#{head_sha}/.agents/agent-workflow.yml",
                               "completed_at" => "2026-07-18T17:59:59Z",
                               "targets" => [target]
@@ -3586,9 +3612,12 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "qa_evidence" => [qa_row]
     }
     comment = publication_waiver_comment(head_sha:, url: waiver_url)
+    proof = applicability_proof(input)
     CompletedBatchPublicationPreflight.assess(
       input,
       coordination_backend:,
+      trusted_applicability: proof,
+      trusted_applicability_digest: CompletedBatchPublicationPreflight.digest(proof),
       waiver_verifier: ->(**_keywords) { comment },
       target_verifier: lambda do |target:|
         {
@@ -3603,6 +3632,27 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         coordination_status if backend == coordination_backend && batch_id == "batch-184"
       end
     )
+  end
+
+  def trusted_applicability(preflight)
+    {
+      trusted_applicability: preflight.fetch("applicability_proof"),
+      trusted_applicability_digest: preflight.fetch("applicability_proof_digest")
+    }
+  end
+
+  def applicability_proof(input)
+    {
+      "contract" => "completed-batch-coordination-applicability",
+      "version" => 1,
+      "batch_id" => input.fetch("batch_id"),
+      "coordination_applicability" => input.fetch("coordination_applicability"),
+      "expected_targets" => JSON.parse(JSON.generate(input.fetch("expected_targets"))),
+      "policy_source" => "https://github.com/acme/widgets/blob/#{'a' * 40}/.agents/agent-workflow.yml",
+      "topology_source" => "https://github.com/acme/widgets/blob/#{'a' * 40}/.agents/batch-topology.json",
+      "verified_at" => "2026-08-25T12:00:00Z",
+      "rationale" => "trusted controller verified policy and topology"
+    }
   end
 
   def publication_target_payload(head_sha: "a" * 40)
@@ -3691,6 +3741,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
       "batch_id" => "ror-d-issue-4731-20260817",
+      "coordination_applicability" => "coordination_required",
       "expected_targets" => [target],
       "coordination_status" => coordination_status,
       "target_snapshots" => [{
@@ -3705,9 +3756,12 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "evidence" => qa_evidence
       }]
     }
+    proof = applicability_proof(source_input)
     result = CompletedBatchPublicationPreflight.assess(
       source_input,
       coordination_backend: REAL_BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: CompletedBatchPublicationPreflight.digest(proof),
       target_verifier: lambda do |target:|
         {
           "target" => target,
@@ -4047,6 +4101,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       RUBY
       FileUtils.chmod(0o755, agent_coord)
       preflight = publication_preflight(coordination_backend:)
+      applicability_proof_path = File.join(directory, "applicability-proof.json")
+      File.write(applicability_proof_path, JSON.generate(preflight.fetch("applicability_proof")))
       workflow_config = File.join(directory, "agent-workflow.yml")
       File.write(workflow_config, "coordination_backend: #{coordination_backend.inspect}\n")
       env = {
@@ -4061,6 +4117,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "FAKE_COORDINATION_LOG" => File.join(directory, "agent-coord.log"),
         "FAKE_COORDINATION_STATUS" => JSON.generate(preflight.dig("source_input", "coordination_status")),
         "FAKE_WORKFLOW_CONFIG" => workflow_config,
+        "FAKE_APPLICABILITY_PROOF" => applicability_proof_path,
+        "FAKE_APPLICABILITY_PROOF_DIGEST" => preflight.fetch("applicability_proof_digest"),
         "COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT" => File.join(directory, "publication-preflight.json"),
         "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "3" : nil
       }

@@ -107,7 +107,9 @@ module CompletedBatchAuditReceipt
     other_blockers: [],
     publication_preflight: nil,
     expected_targets: nil,
-    coordination_backend: nil
+    coordination_backend: nil,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil
   )
     state = marker_state(marker)
     state = nil unless state&.fields&.fetch("batch_id") == expected_batch_id
@@ -117,7 +119,9 @@ module CompletedBatchAuditReceipt
                             state,
                             publication_preflight,
                             expected_targets:,
-                            coordination_backend:
+                            coordination_backend:,
+                            trusted_applicability:,
+                            trusted_applicability_digest:
                           )
                       else
                         [INVALID_MARKER_BLOCKER]
@@ -141,7 +145,9 @@ module CompletedBatchAuditReceipt
     targets:,
     publication_preflight:,
     predecessor_receipt: nil,
-    coordination_backend: nil
+    coordination_backend: nil,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil
   )
     state = marker_state(marker)
     raise AcceptedDeferralError, "accepted-deferral predecessor marker is invalid" unless state
@@ -157,7 +163,9 @@ module CompletedBatchAuditReceipt
       expected_batch_id:,
       targets: deterministic,
       publication_preflight:,
-      coordination_backend:
+      coordination_backend:,
+      trusted_applicability:,
+      trusted_applicability_digest:
     )
     raise AcceptedDeferralError, "accepted-deferral evidence is invalid" unless snapshot
 
@@ -232,7 +240,9 @@ module CompletedBatchAuditReceipt
     publication_preflight: nil,
     coordination_backend: nil,
     accepted_deferral_input: nil,
-    predecessor_receipt: nil
+    predecessor_receipt: nil,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil
   )
     comment_body = canonical_comment_body(receipt)
     raise Error, "local completed-batch audit receipt is invalid" unless comment_body
@@ -247,7 +257,9 @@ module CompletedBatchAuditReceipt
         targets: deterministic,
         publication_preflight:,
         predecessor_receipt:,
-        coordination_backend:
+        coordination_backend:,
+        trusted_applicability:,
+        trusted_applicability_digest:
       )
       comment_body = "#{COMMENT_HEADER}\n\n#{marker}"
     end
@@ -257,7 +269,9 @@ module CompletedBatchAuditReceipt
         publication_preflight,
         expected_batch_id:,
         targets: deterministic,
-        coordination_backend:
+        coordination_backend:,
+        trusted_applicability:,
+        trusted_applicability_digest:
       )
       marker = bind_publication_snapshot(marker, publication_preflight)
       comment_body = "#{COMMENT_HEADER}\n\n#{marker}"
@@ -268,7 +282,9 @@ module CompletedBatchAuditReceipt
       other_blockers:,
       publication_preflight:,
       expected_targets: deterministic,
-      coordination_backend:
+      coordination_backend:,
+      trusted_applicability:,
+      trusted_applicability_digest:
     )
     raise Error, "local completed-batch audit receipt is invalid" unless local.fetch("well_formed")
     if state&.fields&.key?("accepted_deferral_snapshot") && !local.fetch("ready")
@@ -314,7 +330,9 @@ module CompletedBatchAuditReceipt
       other_blockers:,
       publication_preflight:,
       expected_targets: deterministic,
-      coordination_backend:
+      coordination_backend:,
+      trusted_applicability:,
+      trusted_applicability_digest:
     )
     raise Error, "readback completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
 
@@ -340,6 +358,8 @@ module CompletedBatchAuditReceipt
     accepted_deferral_input:,
     publication_preflight:,
     coordination_backend:,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil,
     other_blockers: []
   )
     predecessor = verified_reference_receipt(
@@ -356,7 +376,9 @@ module CompletedBatchAuditReceipt
       publication_preflight:,
       coordination_backend:,
       accepted_deferral_input:,
-      predecessor_receipt: predecessor
+      predecessor_receipt: predecessor,
+      trusted_applicability:,
+      trusted_applicability_digest:
     )
   end
 
@@ -366,7 +388,9 @@ module CompletedBatchAuditReceipt
     reference:,
     other_blockers: [],
     publication_preflight: nil,
-    coordination_backend: nil
+    coordination_backend: nil,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil
   )
     parsed = parse_reference(reference)
     target = parsed.fetch("target")
@@ -379,7 +403,9 @@ module CompletedBatchAuditReceipt
       other_blockers:,
       publication_preflight:,
       expected_targets: deterministic,
-      coordination_backend:
+      coordination_backend:,
+      trusted_applicability:,
+      trusted_applicability_digest:
     )
     raise Error, "readback completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
     raise Error, "compact reference result does not match receipt verdict" unless
@@ -661,12 +687,21 @@ module CompletedBatchAuditReceipt
     "#{COMMENT_HEADER}\n\n#{marker}"
   end
 
-  def validate_publication_preflight!(preflight, expected_batch_id:, targets:, coordination_backend: nil)
+  def validate_publication_preflight!(
+    preflight,
+    expected_batch_id:,
+    targets:,
+    coordination_backend: nil,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil
+  )
     valid = publication_preflight_reassessed?(
       preflight,
       expected_batch_id:,
       expected_targets: targets,
-      coordination_backend:
+      coordination_backend:,
+      trusted_applicability:,
+      trusted_applicability_digest:
     )
     raise PublicationPreflightError, "completed-batch publication preflight is missing or invalid" unless valid
     raise PublicationPreflightError, "completed-batch publication preflight is blocked" unless preflight.fetch("eligible")
@@ -730,7 +765,14 @@ module CompletedBatchAuditReceipt
     value&.split(";", 2)&.first
   end
 
-  def publication_snapshot_blockers(state, preflight, expected_targets: nil, coordination_backend: nil)
+  def publication_snapshot_blockers(
+    state,
+    preflight,
+    expected_targets: nil,
+    coordination_backend: nil,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil
+  )
     accepted_value = state.fields["accepted_deferral_snapshot"]
     if accepted_value
       return [ACCEPTED_DEFERRAL_MISMATCH_BLOCKER] unless preflight && expected_targets
@@ -743,7 +785,9 @@ module CompletedBatchAuditReceipt
         expected_batch_id: state.fields.fetch("batch_id"),
         expected_targets:,
         publication_preflight: preflight,
-        coordination_backend:
+        coordination_backend:,
+        trusted_applicability:,
+        trusted_applicability_digest:
       )
       return [] if reassessed && accepted_deferral_terminal_fields(snapshot) == state.fields
 
@@ -758,7 +802,9 @@ module CompletedBatchAuditReceipt
       preflight,
       expected_batch_id: state.fields.fetch("batch_id"),
       expected_targets:,
-      coordination_backend:
+      coordination_backend:,
+      trusted_applicability:,
+      trusted_applicability_digest:
     )
     return [PUBLICATION_MISMATCH_BLOCKER] unless preflight.fetch("eligible")
 
@@ -775,6 +821,8 @@ module CompletedBatchAuditReceipt
     targets:,
     publication_preflight:,
     coordination_backend:,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil,
     accepted_tracking_issue: nil
   )
     return unless input.is_a?(Hash) && input.keys.sort == %w[contract decision_url version]
@@ -784,7 +832,9 @@ module CompletedBatchAuditReceipt
       publication_preflight,
       expected_batch_id:,
       targets:,
-      coordination_backend:
+      coordination_backend:,
+      trusted_applicability:,
+      trusted_applicability_digest:
     )
 
     predecessor = accepted_deferral_predecessor_snapshot(
@@ -867,7 +917,9 @@ module CompletedBatchAuditReceipt
     expected_batch_id:,
     expected_targets:,
     publication_preflight:,
-    coordination_backend:
+    coordination_backend:,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil
   )
     return false unless snapshot.is_a?(Hash)
     return false unless snapshot["batch_id"] == expected_batch_id
@@ -891,6 +943,8 @@ module CompletedBatchAuditReceipt
       targets: deterministic_targets(expected_targets),
       publication_preflight:,
       coordination_backend:,
+      trusted_applicability:,
+      trusted_applicability_digest:,
       accepted_tracking_issue: snapshot["tracking_issue"]
     )
     refreshed == snapshot
@@ -995,7 +1049,14 @@ module CompletedBatchAuditReceipt
     end
   end
 
-  def accepted_deferral_product_evidence?(preflight, expected_batch_id:, targets:, coordination_backend:)
+  def accepted_deferral_product_evidence?(
+    preflight,
+    expected_batch_id:,
+    targets:,
+    coordination_backend:,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil
+  )
     return false unless accepted_deferral_preflight_integrity?(
       preflight,
       expected_batch_id:,
@@ -1006,7 +1067,9 @@ module CompletedBatchAuditReceipt
       preflight,
       expected_batch_id:,
       targets:,
-      coordination_backend:
+      coordination_backend:,
+      trusted_applicability:,
+      trusted_applicability_digest:
     )
     return false unless preflight["eligible"] == false && preflight["verdict"] == "BLOCKED"
 
@@ -1044,7 +1107,14 @@ module CompletedBatchAuditReceipt
     false
   end
 
-  def accepted_deferral_preflight_reassessed?(preflight, expected_batch_id:, targets:, coordination_backend:)
+  def accepted_deferral_preflight_reassessed?(
+    preflight,
+    expected_batch_id:,
+    targets:,
+    coordination_backend:,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil
+  )
     return false unless accepted_deferral_preflight_integrity?(
       preflight,
       expected_batch_id:,
@@ -1055,6 +1125,8 @@ module CompletedBatchAuditReceipt
     refreshed = CompletedBatchPublicationPreflight.assess(
       preflight.fetch("source_input"),
       coordination_backend:,
+      trusted_applicability:,
+      trusted_applicability_digest:,
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
       coordination_verifier: method(:authenticated_publication_coordination_status)
@@ -1246,7 +1318,14 @@ module CompletedBatchAuditReceipt
     )
   end
 
-  def publication_preflight_reassessed?(preflight, expected_batch_id:, expected_targets:, coordination_backend: nil)
+  def publication_preflight_reassessed?(
+    preflight,
+    expected_batch_id:,
+    expected_targets:,
+    coordination_backend: nil,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil
+  )
     trusted_backend = CompletedBatchPublicationPreflight.normalized_known_string(coordination_backend)
     return false unless trusted_backend
     return false unless preflight.is_a?(Hash)
@@ -1265,6 +1344,8 @@ module CompletedBatchAuditReceipt
     CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       preflight,
       coordination_backend: trusted_backend,
+      trusted_applicability:,
+      trusted_applicability_digest:,
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
       coordination_verifier: method(:authenticated_publication_coordination_status)
@@ -1894,6 +1975,8 @@ module CompletedBatchAuditReceipt
       opts.on("--publication-preflight PATH") { |value| options["publication_preflight"] = value }
       opts.on("--accepted-deferral PATH") { |value| options["accepted_deferral"] = value }
       opts.on("--workflow-config PATH") { |value| options["workflow_config"] = value }
+      opts.on("--applicability-proof PATH") { |value| options["applicability_proof"] = value }
+      opts.on("--applicability-proof-sha256 DIGEST") { |value| options["applicability_proof_digest"] = value }
       opts.on("--other-blocker TEXT") { |value| options.fetch("other_blockers") << value }
       opts.on("-h", "--help") do
         puts opts
@@ -1903,7 +1986,9 @@ module CompletedBatchAuditReceipt
     parser.parse!(argv)
     raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
 
-    %w[expected_batch_id targets_json workflow_config].each do |field|
+    %w[
+      expected_batch_id targets_json workflow_config applicability_proof applicability_proof_digest
+    ].each do |field|
       raise OptionParser::MissingArgument, "--#{field.tr('_', '-')}" if options[field].to_s.empty?
     end
 
@@ -1943,6 +2028,10 @@ module CompletedBatchAuditReceipt
                               else
                                 JSON.parse(File.read(options.fetch("accepted_deferral"), encoding: "UTF-8"))
                               end
+    trusted_applicability = JSON.parse(
+      File.read(options.fetch("applicability_proof"), encoding: "UTF-8")
+    )
+    trusted_applicability_digest = options.fetch("applicability_proof_digest")
     result = if command == "publish"
                publish(
                  expected_batch_id: options.fetch("expected_batch_id"),
@@ -1951,7 +2040,9 @@ module CompletedBatchAuditReceipt
                  other_blockers: options.fetch("other_blockers"),
                  publication_preflight:,
                  coordination_backend:,
-                 accepted_deferral_input:
+                 accepted_deferral_input:,
+                 trusted_applicability:,
+                 trusted_applicability_digest:
                )
              elsif command == "replay"
                reference_path = options.fetch("reference_file")
@@ -1962,7 +2053,9 @@ module CompletedBatchAuditReceipt
                  reference:,
                  other_blockers: options.fetch("other_blockers"),
                  publication_preflight:,
-                 coordination_backend:
+                 coordination_backend:,
+                 trusted_applicability:,
+                 trusted_applicability_digest:
                )
              else
                reference_path = options.fetch("reference_file")
@@ -1974,6 +2067,8 @@ module CompletedBatchAuditReceipt
                  accepted_deferral_input:,
                  publication_preflight:,
                  coordination_backend:,
+                 trusted_applicability:,
+                 trusted_applicability_digest:,
                  other_blockers: options.fetch("other_blockers")
                )
              end
@@ -2007,6 +2102,7 @@ module CompletedBatchAuditReceipt
   def usage
     "Usage: completed-batch-audit-receipt <publish|replay|supersede> --expected-batch-id ID " \
       "--targets-json PATH --workflow-config PATH (--receipt PATH | --reference-file PATH|-) " \
+      "--applicability-proof PATH --applicability-proof-sha256 sha256:... " \
       "[--publication-preflight PATH] [--accepted-deferral PATH] [--other-blocker TEXT ...]"
   end
 end

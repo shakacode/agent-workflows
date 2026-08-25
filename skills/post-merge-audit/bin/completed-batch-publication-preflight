@@ -23,6 +23,7 @@ load File.expand_path("closeout-evidence-replay", __dir__) unless defined?(Close
 module CompletedBatchPublicationPreflight
   CONTRACT = "completed-batch-publication-preflight"
   INPUT_CONTRACT = "completed-batch-publication-preflight-input"
+  APPLICABILITY_PROOF_CONTRACT = "completed-batch-coordination-applicability"
   VERSION = 1
   COORDINATION_APPLICABILITIES = %w[coordination_not_applicable coordination_required].freeze
   SHA_PATTERN = /\A[0-9a-f]{40}\z/i
@@ -56,6 +57,8 @@ module CompletedBatchPublicationPreflight
   def assess(
     input,
     coordination_backend:,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil,
     waiver_verifier: nil,
     target_verifier: nil,
     coordination_verifier: nil
@@ -65,15 +68,30 @@ module CompletedBatchPublicationPreflight
     validate_input_envelope(input, blockers)
     backend = normalized_known_string(coordination_backend)
     blockers << "configured coordination backend is unavailable" unless backend
+    batch_id = normalized_known_string(input["batch_id"])
+    blockers << "publication batch id is invalid" unless batch_id
+    expected_targets = validated_target_set(input["expected_targets"], blockers, "expected target")
     applicability = input["coordination_applicability"]
     unless COORDINATION_APPLICABILITIES.include?(applicability)
       blockers << "coordination applicability is missing, invalid, or contradictory"
       return blocked_result(blockers)
     end
+    applicability_proof = validated_applicability_proof(
+      trusted_applicability,
+      expected_digest: trusted_applicability_digest,
+      batch_id:,
+      expected_targets:
+    )
+    unless applicability_proof
+      blockers << "trusted coordination applicability proof is missing, invalid, or tampered"
+      return blocked_result(blockers.uniq)
+    end
+    unless applicability == applicability_proof.fetch("coordination_applicability")
+      blockers << "coordination applicability contradicts trusted proof"
+      return blocked_result(blockers.uniq)
+    end
+    return blocked_result(blockers.uniq) unless blockers.empty?
 
-    batch_id = normalized_known_string(input["batch_id"])
-    blockers << "publication batch id is invalid" unless batch_id
-    expected_targets = validated_target_set(input["expected_targets"], blockers, "expected target")
     coordination_not_applicable = applicability == "coordination_not_applicable"
     coordination_required = applicability == "coordination_required"
     if coordination_not_applicable
@@ -129,6 +147,7 @@ module CompletedBatchPublicationPreflight
       "batch_id" => batch_id,
       "coordination_backend" => backend,
       "coordination_applicability" => applicability,
+      "applicability_proof_digest" => trusted_applicability_digest,
       "coordination" => canonical_coordination_snapshot(
         batch,
         canonical_lanes,
@@ -149,6 +168,8 @@ module CompletedBatchPublicationPreflight
       "batch_id" => batch_id,
       "coordination_backend" => backend,
       "coordination_applicability" => applicability,
+      "applicability_proof" => applicability_proof,
+      "applicability_proof_digest" => trusted_applicability_digest,
       "eligible" => eligible,
       "verdict" => eligible ? "ELIGIBLE" : "BLOCKED",
       "targets" => expected_targets,
@@ -170,6 +191,7 @@ module CompletedBatchPublicationPreflight
       "batch_id" => nil,
       "coordination_backend" => nil,
       "coordination_applicability" => nil,
+      "applicability_proof_digest" => nil,
       "coordination" => { "status" => nil, "updated_at" => nil, "completed_at" => nil, "lanes" => [] },
       "targets" => [],
       "qa" => []
@@ -180,6 +202,8 @@ module CompletedBatchPublicationPreflight
       "batch_id" => nil,
       "coordination_backend" => nil,
       "coordination_applicability" => nil,
+      "applicability_proof" => nil,
+      "applicability_proof_digest" => nil,
       "eligible" => false,
       "verdict" => "BLOCKED",
       "targets" => [],
@@ -214,12 +238,25 @@ module CompletedBatchPublicationPreflight
     return false unless COORDINATION_APPLICABILITIES.include?(applicability)
     return false unless applicability == receipt.dig("snapshot", "coordination_applicability")
     return false unless applicability == receipt.dig("source_input", "coordination_applicability")
+    applicability_proof = receipt["applicability_proof"]
+    applicability_proof_digest = receipt["applicability_proof_digest"]
+    return false unless applicability_proof.is_a?(Hash)
+    return false unless applicability_proof_digest.to_s.match?(DIGEST_PATTERN)
+    return false unless applicability_proof_digest == digest(canonicalize(applicability_proof))
+    return false unless applicability_proof_digest == receipt.dig("snapshot", "applicability_proof_digest")
+    return false unless applicability == applicability_proof["coordination_applicability"]
     return false if expected_batch_id && receipt["batch_id"] != expected_batch_id
 
     target_blockers = []
     targets = validated_target_set(receipt["targets"], target_blockers, "receipt target")
     return false unless target_blockers.empty?
     return false unless targets == receipt["targets"]
+    return false unless validated_applicability_proof(
+      applicability_proof,
+      expected_digest: applicability_proof_digest,
+      batch_id: receipt["batch_id"],
+      expected_targets: targets
+    ) == applicability_proof
     return false unless targets == receipt.dig("snapshot", "targets").map { |entry| entry.fetch("target") }
 
     coordination = receipt.dig("snapshot", "coordination")
@@ -295,11 +332,15 @@ module CompletedBatchPublicationPreflight
   def reassessed_receipt_valid?(
     receipt,
     coordination_backend:,
+    trusted_applicability:,
+    trusted_applicability_digest:,
     waiver_verifier:,
     target_verifier:,
     coordination_verifier:
   )
     return false unless valid_receipt?(receipt)
+    return false unless trusted_applicability_digest == receipt["applicability_proof_digest"]
+    return false unless canonicalize(trusted_applicability) == receipt["applicability_proof"]
 
     trusted_backend = normalized_known_string(coordination_backend)
     return false unless trusted_backend
@@ -309,6 +350,8 @@ module CompletedBatchPublicationPreflight
     refreshed = assess(
       receipt.fetch("source_input"),
       coordination_backend: trusted_backend,
+      trusted_applicability:,
+      trusted_applicability_digest:,
       waiver_verifier:,
       target_verifier:,
       coordination_verifier:
@@ -324,6 +367,32 @@ module CompletedBatchPublicationPreflight
     required = %w[batch_id expected_targets coordination_status target_snapshots qa_evidence]
     missing = required.reject { |key| input.key?(key) }
     blockers << "publication preflight input fields are missing: #{missing.join(', ')}" unless missing.empty?
+  end
+
+  def validated_applicability_proof(proof, expected_digest:, batch_id:, expected_targets:)
+    return unless proof.is_a?(Hash)
+    return unless expected_digest.to_s.match?(DIGEST_PATTERN)
+
+    canonical = canonicalize(proof)
+    return unless expected_digest == digest(canonical)
+    return unless proof.keys.sort == %w[
+      batch_id contract coordination_applicability expected_targets policy_source rationale
+      topology_source verified_at version
+    ]
+    return unless proof["contract"] == APPLICABILITY_PROOF_CONTRACT && proof["version"] == VERSION
+    return unless batch_id && proof["batch_id"] == batch_id
+    return unless COORDINATION_APPLICABILITIES.include?(proof["coordination_applicability"])
+
+    target_blockers = []
+    proof_targets = validated_target_set(proof["expected_targets"], target_blockers, "applicability proof target")
+    return unless target_blockers.empty? && proof_targets == expected_targets
+    return unless proof_targets == proof["expected_targets"]
+    return unless durable_https_url(proof["policy_source"])
+    return unless durable_https_url(proof["topology_source"])
+    return unless valid_timestamp?(proof["verified_at"])
+    return unless normalized_known_string(proof["rationale"])
+
+    canonical
   end
 
   def resolved_batch(status, batch_id, blockers)
@@ -1504,9 +1573,12 @@ module CompletedBatchPublicationPreflight
   def run(argv)
     options = {}
     parser = OptionParser.new do |opts|
-      opts.banner = "Usage: completed-batch-publication-preflight --workflow-config PATH --input PATH|-"
+      opts.banner = "Usage: completed-batch-publication-preflight --workflow-config PATH --input PATH|- " \
+                    "--applicability-proof PATH --applicability-proof-sha256 sha256:..."
       opts.on("--workflow-config PATH") { |value| options["workflow_config"] = value }
       opts.on("--input PATH") { |value| options["input"] = value }
+      opts.on("--applicability-proof PATH") { |value| options["applicability_proof"] = value }
+      opts.on("--applicability-proof-sha256 DIGEST") { |value| options["applicability_proof_digest"] = value }
       opts.on("-h", "--help") do
         puts opts
         return 0
@@ -1515,7 +1587,7 @@ module CompletedBatchPublicationPreflight
     parser.parse!(argv)
     raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
 
-    %w[workflow_config input].each do |key|
+    %w[workflow_config input applicability_proof applicability_proof_digest].each do |key|
       raise OptionParser::MissingArgument, "--#{key.tr('_', '-')}" if options[key].to_s.empty?
     end
 
@@ -1523,10 +1595,15 @@ module CompletedBatchPublicationPreflight
     raise TypeError, "workflow config must be a mapping" unless config.is_a?(Hash)
 
     raw = options.fetch("input") == "-" ? $stdin.read : File.read(options.fetch("input"), encoding: "UTF-8")
+    trusted_applicability = JSON.parse(
+      File.read(options.fetch("applicability_proof"), encoding: "UTF-8")
+    )
     configure_gh_timeout!
     result = assess(
       JSON.parse(raw),
       coordination_backend: config["coordination_backend"],
+      trusted_applicability:,
+      trusted_applicability_digest: options.fetch("applicability_proof_digest"),
       waiver_verifier: method(:authenticated_waiver_comment),
       target_verifier: method(:authenticated_target_snapshot),
       coordination_verifier: method(:authenticated_coordination_status)

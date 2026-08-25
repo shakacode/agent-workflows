@@ -53,6 +53,21 @@ registration, claim, heartbeat, fallback, typed coordination event, or
 coordination footer. Completed-batch publication instead accepts and binds the
 typed single-controller proof described by the post-merge workflow.
 
+For completed-batch publication, persist the applicability decision separately
+as a `completed-batch-coordination-applicability` v1 JSON artifact. It contains
+exactly `contract`, `version`, `batch_id`, `coordination_applicability`, the
+canonical `expected_targets`, durable HTTPS `policy_source` and
+`topology_source`, `verified_at`, and a known `rationale`. The trusted
+controller/operator supplies both its path and an independently retained
+canonical SHA-256 (`sha256:<64 lowercase hex>`); never derive that expected
+digest from the receipt, its `source_input`, or the artifact at publication
+time. Pass them as `--applicability-proof` and
+`--applicability-proof-sha256` to publication preflight and receipt
+publish/replay. Missing, malformed, tampered, target/batch mismatched, or
+receipt-contradictory proof stops before target, waiver, coordination, or POST
+activity. An authenticated `coordination_not_applicable` proof still makes zero
+coordination calls during initial assessment and reassessment.
+
 `coordination_required` covers concurrent same-machine work by independently
 running sessions, concurrent multi-machine or multi-operator work,
 cross-session dependencies, any repository-required release or shared-resource

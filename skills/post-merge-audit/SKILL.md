@@ -416,12 +416,17 @@ Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper
 Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
 
-Before preflight, record trusted `coordination_applicability`; for
-`coordination_required`, capture fresh bounded exact-batch coordination status,
-while for `coordination_not_applicable`, supply the typed single-controller
-proof without any coordination command. Before publishing `audit_status:
-complete`, run `completed-batch-publication-preflight` against the repository's
-configured `coordination_backend`, that selected status or proof, the trusted
+Before preflight, persist trusted `coordination_applicability` in a separate
+controller/operator-owned `completed-batch-coordination-applicability` v1
+artifact and retain its canonical SHA-256 independently from receipt input. It
+binds the exact batch and canonical targets to durable HTTPS policy/topology
+sources, verification time, and rationale. For `coordination_required`, capture
+fresh bounded exact-batch coordination status; for
+`coordination_not_applicable`, supply the typed single-controller status proof
+without any coordination command. Before publishing `audit_status: complete`,
+run `completed-batch-publication-preflight` against the repository's configured
+`coordination_backend`, that selected status or proof, the trusted applicability
+artifact and independently retained digest, the trusted
 target manifest, refreshed terminal target/head snapshots, and one per-target
 QA Evidence marker. The preflight derives the full target set from required
 coordination lanes or from the not-applicable proof and fails closed when the
@@ -446,8 +451,10 @@ For `audit_status: complete`, that parse/bind step additionally requires the
 eligible publication preflight and exact manifest match. Pass the same refreshed
 preflight receipt to `publish` and `replay`
 with `--publication-preflight` and explicit `--workflow-config <trusted repo
-workflow config>`; replay reports a snapshot mismatch/staleness blocker if
-coordination, target/head, or QA state no longer matches the published binding.
+workflow config>`, plus `--applicability-proof <trusted artifact>` and
+`--applicability-proof-sha256 <independently retained digest>`; replay reports a
+snapshot mismatch/staleness blocker if applicability, coordination, target/head,
+or QA state no longer matches the published binding.
 
 Use `completed-batch-audit-receipt` for both `publish` and `replay`;
 `--targets-json` is a JSON array of exact `host`, `repo`, `type`
@@ -468,13 +475,15 @@ v2-contradictory classification blocks.
 
 The preflight receipt embeds the canonical raw v1 input as `source_input` with
 `source_input_digest`; digests prove integrity only and never authenticate
-terminal facts. Before publish or replay accepts a complete receipt, it
-re-assesses that bound source input, re-fetches each exact target through
-authenticated `gh api`, reruns bounded exact-batch coordination status only for
-`coordination_required`, and re-authenticates any waiver; missing, altered, stale, or
-mismatched terminal facts block before POST or ready replay.
+applicability or terminal facts. Before publish or replay accepts a complete
+receipt, it authenticates the separate applicability artifact against the
+independently retained digest, re-assesses that bound source input, re-fetches
+each exact target through authenticated `gh api`, reruns bounded exact-batch
+coordination status only for `coordination_required`, and re-authenticates any
+waiver. Missing, altered, stale, tampered, contradictory, or mismatched facts
+block before any verifier or POST.
 
-Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt binds both that configured backend and the trusted `coordination_applicability` from `source_input`; applicability, not backend presence, selects the runtime path. `coordination_required` requires a matching real backend and bounded exact-batch status replay, while a missing or `n/a` backend blocks. `coordination_not_applicable` accepts the typed single-controller proof with any configured backend and invokes no coordination command. Missing, invalid, contradictory, or mismatched applicability/config facts block before publication or ready replay.
+Completed-batch receipt `publish` and `replay` require explicit trusted workflow config plus the separate applicability artifact/path and independently retained digest. They load `coordination_backend` only from that YAML seam and bind applicability only from the authenticated artifact, never from an environment or receipt/source-input override. `coordination_required` requires a matching real backend and bounded exact-batch status replay, while a missing or `n/a` backend blocks. Authenticated `coordination_not_applicable` accepts the typed single-controller status proof with any configured backend and invokes no coordination command, including during reassessment. Missing, invalid, tampered, contradictory, or mismatched applicability/config facts block before any verifier or POST.
 
 Configured `public claim-comment fallback` is advisory ownership state only; it
 must not invoke private `agent-coord`, and without a separate authenticated
