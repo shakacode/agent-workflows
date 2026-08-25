@@ -41,10 +41,6 @@ module CompletedBatchAuditReceipt
   ACCEPTED_DEFERRAL_INPUT_CONTRACT = "completed-batch-accepted-deferral-input"
   ACCEPTED_DEFERRAL_DECISION_MARKER = "completed-batch-accepted-deferral-decision v1"
   ACCEPTED_DEFERRAL_MECHANISM = "publication-preflight-target-resolution"
-  ACCEPTED_DEFERRAL_BLOCKER_PATTERNS = [
-    /\Acoordination lane .+ target is absent or ambiguous\z/,
-    /\A(?:issue|pull request) .+ is absent from resolved coordination scope\z/
-  ].freeze
   CURRENT_STATUSES = %w[open unresolved pending UNKNOWN terminal].freeze
   TERMINAL_DISPOSITIONS = %w[resolved accepted-waiver accepted-deferral not-applicable].freeze
   NONTERMINAL_ACTIONS = %w[investigate fix await-input retry replay track].freeze
@@ -767,13 +763,16 @@ module CompletedBatchAuditReceipt
 
     blocker_ref = canonical_ref(decision.fetch("blocker_ref"))
     return unless safe_canonical_ref?(blocker_ref)
-    return unless accepted_deferral_predecessor_blocker?(predecessor_marker, blocker_ref)
+
+    blocker_record = accepted_deferral_predecessor_blocker(predecessor_marker, blocker_ref)
+    return unless blocker_record && decision.fetch("owner") == blocker_record.owner
+    return unless accepted_deferral_tracking_reference?(blocker_record, decision.fetch("tracking_issue"))
 
     tracking_issue = authenticated_tracking_issue(
       decision.fetch("tracking_issue"),
       allow_closed: !accepted_tracking_issue.nil?
     )
-    return unless tracking_issue && tracking_issue.fetch("url") == blocker_ref.canonical_display
+    return unless tracking_issue && tracking_issue.fetch("url") == blocker_record.evidence
 
     if accepted_tracking_issue
       return unless accepted_tracking_issue == tracking_issue.merge("state" => "open")
@@ -878,14 +877,16 @@ module CompletedBatchAuditReceipt
     accepted_deferral_predecessor_refs(state)&.one?
   end
 
-  def accepted_deferral_predecessor_blocker?(marker, blocker_ref)
+  def accepted_deferral_predecessor_blocker(marker, blocker_ref)
     state = marker_state(marker)
-    return false unless state&.records&.one?
+    return unless state&.records&.one?
 
     record = state.records.first
     blocker_refs = accepted_deferral_predecessor_refs(state)
-    record.ref_identity == blocker_ref.identity && blocker_refs&.one? &&
-      blocker_refs.first.identity == blocker_ref.identity
+    return unless record.ref_identity == blocker_ref.identity && blocker_refs&.one?
+    return unless blocker_refs.first.identity == blocker_ref.identity
+
+    record
   end
 
   def accepted_deferral_predecessor_refs(state)
@@ -933,20 +934,16 @@ module CompletedBatchAuditReceipt
       targets:,
       coordination_backend:
     )
-    return false unless publication_preflight_reassessed?(
+    return false unless accepted_deferral_preflight_reassessed?(
       preflight,
       expected_batch_id:,
-      expected_targets: targets,
+      targets:,
       coordination_backend:
     )
     return false unless preflight["eligible"] == false && preflight["verdict"] == "BLOCKED"
 
     blockers = preflight["blockers"]
-    return false unless blockers.is_a?(Array) && blockers.one?
-    return false unless blockers.all? do |blocker|
-      blocker.is_a?(String) && !unknown_value?(blocker) &&
-      ACCEPTED_DEFERRAL_BLOCKER_PATTERNS.any? { |pattern| blocker.match?(pattern) }
-    end
+    return false unless accepted_deferral_target_resolution_blockers?(preflight, targets, blockers)
     return false if nested_unknown?(preflight)
 
     coordination = preflight.dig("snapshot", "coordination")
@@ -976,6 +973,107 @@ module CompletedBatchAuditReceipt
           row["evidence_sha256"].to_s.match?(CompletedBatchPublicationPreflight::DIGEST_PATTERN)
       end
   rescue KeyError, TypeError
+    false
+  end
+
+  def accepted_deferral_preflight_reassessed?(preflight, expected_batch_id:, targets:, coordination_backend:)
+    return false unless accepted_deferral_preflight_integrity?(
+      preflight,
+      expected_batch_id:,
+      targets:,
+      coordination_backend:
+    )
+
+    refreshed = CompletedBatchPublicationPreflight.assess(
+      preflight.fetch("source_input"),
+      coordination_backend:,
+      waiver_verifier: method(:authenticated_publication_waiver_comment),
+      target_verifier: method(:authenticated_publication_target_snapshot),
+      coordination_verifier: method(:authenticated_publication_coordination_status)
+    )
+    CompletedBatchPublicationPreflight.canonicalize(refreshed) ==
+      CompletedBatchPublicationPreflight.canonicalize(preflight)
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def accepted_deferral_target_resolution_blockers?(preflight, targets, blockers)
+    return false unless blockers.is_a?(Array) && blockers.all? { |blocker| blocker.is_a?(String) }
+    return false unless targets.one?
+
+    target = validated_target(targets.first)
+    return false unless target.fetch("type") == "issue"
+
+    source_input = preflight.fetch("source_input")
+    target_rows = source_input.fetch("target_snapshots")
+    return false unless target_rows.is_a?(Array) && target_rows.one?
+
+    target_row = target_rows.first
+    return false unless validated_target(target_row.fetch("target")) == target
+    return false unless target_row.fetch("state") == "closed"
+    return false unless target_row.fetch("head_sha").to_s.downcase.match?(/\A[0-9a-f]{40}\z/)
+
+    source_pr = parse_target_url(target_row.fetch("source"))
+    return false unless source_pr && source_pr.fetch("type") == "pull_request"
+    return false unless source_pr.values_at("host", "repo") == target.values_at("host", "repo")
+
+    lane = accepted_deferral_target_resolution_lane(source_input, target, target_row.fetch("source"))
+    return false unless lane
+
+    snapshot_rows = preflight.dig("snapshot", "targets")
+    return false unless snapshot_rows.is_a?(Array) && snapshot_rows.one?
+
+    snapshot_row = snapshot_rows.first
+    return false unless validated_target(snapshot_row.fetch("target")) == target
+    return false unless snapshot_row.fetch("state") == "closed"
+    return false unless snapshot_row.fetch("head_sha") == target_row.fetch("head_sha").downcase
+    return false unless snapshot_row.fetch("source") == target_row.fetch("source")
+    return false unless snapshot_row["verification_source"].nil?
+
+    label = "#{target.fetch('repo')}#issue:#{target.fetch('number')}"
+    expected = [
+      "coordination lane #{lane.fetch('name')} target is absent or ambiguous",
+      "#{label} is absent from resolved coordination scope",
+      "#{label} target state/head is not authenticated or fresh"
+    ]
+    blockers.sort == expected.sort
+  rescue KeyError, TypeError, ArgumentError
+    false
+  end
+
+  def accepted_deferral_target_resolution_lane(source_input, target, source_url)
+    batches = source_input.dig("coordination_status", "batches")
+    return unless batches.is_a?(Array)
+
+    batches = batches.select { |batch| batch.is_a?(Hash) && batch["batch_id"] == source_input["batch_id"] }
+    return unless batches.one?
+
+    lanes = batches.first["lanes"]
+    return unless lanes.is_a?(Array)
+
+    candidates = lanes.select do |lane|
+      lane.is_a?(Hash) && lane["targets"].is_a?(Array) &&
+        lane["targets"].map(&:to_s) == [target.fetch("number").to_s] && lane["pr_url"] == source_url
+    end
+    return unless candidates.one?
+
+    lane = candidates.first
+    name = CompletedBatchPublicationPreflight.normalized_known_string(lane["name"])
+    lane.merge("name" => name) if name
+  end
+
+  def accepted_deferral_tracking_reference?(record, tracking_issue_url)
+    evidence_target = parse_target_url(record.evidence)
+    tracking_target = parse_target_url(tracking_issue_url)
+    return false unless evidence_target && tracking_target
+    return false unless evidence_target.fetch("type") == "issue" && tracking_target == evidence_target
+    return false unless record.evidence == target_base_url(evidence_target) && tracking_issue_url == record.evidence
+
+    repository = evidence_target.fetch("repo").split("/", 2).last
+    shorthand = canonical_ref("#{repository}-#{evidence_target.fetch('number')}")
+    full_url = canonical_ref(record.evidence)
+    [shorthand, full_url].any? { |reference| reference.identity == record.ref_identity }
+  rescue KeyError, TypeError, ArgumentError
     false
   end
 
@@ -1165,7 +1263,6 @@ module CompletedBatchAuditReceipt
       return
     end
     return unless safe_owner?(fields["owner"])
-    return unless fields["tracking_issue"] == fields["blocker_ref"]
 
     {
       "url" => decision_url,
@@ -1249,7 +1346,7 @@ module CompletedBatchAuditReceipt
   end
 
   def safe_owner?(value)
-    evidenced_scalar?(value) && value.match?(/\A[A-Za-z0-9_.-]+\z/)
+    evidenced_scalar?(value) && value.match?(/\A[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*\z/)
   end
 
   def trusted_coordination_backend(workflow_config)
