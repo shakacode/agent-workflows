@@ -581,6 +581,96 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_fresh_state_wrong_batch_id_leaves_no_state_lock_or_parent_directory
+    Dir.mktmpdir("batch-token-budget-fresh-batch-id") do |directory|
+      state_path = File.join(directory, "fresh", "state.json")
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(File.join(directory, "anchor"), candidate)
+
+      output, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("initialize", "batch_id" => "other-batch", "budget" => candidate)),
+        anchor: anchor
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "batch-id-mismatch", JSON.parse(stderr).fetch("reason")
+      refute File.exist?(state_path)
+      refute File.exist?("#{state_path}.lock")
+      refute Dir.exist?(File.dirname(state_path))
+    end
+  end
+
+  def test_fresh_state_mismatched_initialize_projection_leaves_no_artifacts
+    Dir.mktmpdir("batch-token-budget-fresh-projection") do |directory|
+      state_path = File.join(directory, "fresh", "state.json")
+      candidate = budget(state_path: state_path)
+      mismatched_projection = canonicalize(candidate)
+      mismatched_projection.fetch("telemetry")["max_age_seconds"] += 1
+      anchor = install_trusted_plan(File.join(directory, "anchor"), candidate)
+
+      output, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("initialize", "budget" => mismatched_projection)),
+        anchor: anchor
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "initialize-budget-anchor-mismatch", JSON.parse(stderr).fetch("reason")
+      refute File.exist?(state_path)
+      refute File.exist?("#{state_path}.lock")
+      refute Dir.exist?(File.dirname(state_path))
+    end
+  end
+
+  def test_fresh_state_closeout_without_state_leaves_no_artifacts
+    Dir.mktmpdir("batch-token-budget-fresh-closeout") do |directory|
+      state_path = File.join(directory, "fresh", "state.json")
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(File.join(directory, "anchor"), candidate)
+
+      output, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout")),
+        anchor: anchor
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "state-required", JSON.parse(stderr).fetch("reason")
+      refute File.exist?(state_path)
+      refute File.exist?("#{state_path}.lock")
+      refute Dir.exist?(File.dirname(state_path))
+    end
+  end
+
+  def test_concurrent_valid_initialization_remains_serialized
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+      input = JSON.generate(command("initialize", "budget" => candidate))
+
+      outcomes = 2.times.map do
+        Thread.new { run_helper_raw(state_path, input, anchor: anchor) }
+      end.map(&:value)
+
+      assert outcomes.all? { |_output, _stderr, status| status.success? }, outcomes.map { |row| row[1] }.join
+      assert_equal %w[initialized replayed], outcomes.map { |output, _stderr, _status| output.fetch("status") }.sort
+      assert File.file?(state_path)
+      assert File.file?("#{state_path}.lock")
+
+      closeout, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout")),
+        anchor: anchor
+      )
+      assert status.success?, stderr
+      assert_equal "complete", closeout.fetch("status")
+    end
+  end
+
   def test_every_operation_requires_the_same_external_immutable_budget_anchor
     with_state do |state_path|
       candidate = budget(state_path: state_path)

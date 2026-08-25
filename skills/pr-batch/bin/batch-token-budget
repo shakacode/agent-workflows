@@ -2538,6 +2538,17 @@ begin
     raise BatchTokenBudget::InvalidInput, "invalid-evaluated-at"
   end
 
+  if command["action"] == "initialize"
+    if BatchTokenBudget.nonempty_string?(command["batch_id"]) && command["batch_id"] != trusted_budget["batch_id"]
+      raise BatchTokenBudget::InvalidInput, "batch-id-mismatch"
+    end
+    if BatchTokenBudget.canonicalize(command["budget"]) != trusted_budget
+      raise BatchTokenBudget::InvalidInput, "initialize-budget-anchor-mismatch"
+    end
+  elsif !File.file?(state_path)
+    raise BatchTokenBudget::InvalidInput, "state-required"
+  end
+
   FileUtils.mkdir_p(File.dirname(state_path))
   File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     lock.flock(File::LOCK_EX)
