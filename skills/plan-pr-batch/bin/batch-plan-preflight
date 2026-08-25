@@ -332,16 +332,59 @@ module BatchPlanPreflight
       )
     end
     expected_budget_digest = "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(budget)))}"
-    unless anchor.is_a?(Hash) && anchor.keys.sort == %w[
+    valid_anchor = anchor.is_a?(Hash) && anchor.keys.sort == %w[
       trusted_plan_digest trusted_plan_id trusted_plan_path
     ] && absolute_path?(anchor["trusted_plan_path"]) &&
-           anchor["trusted_plan_id"] == budget["batch_id"] &&
-           anchor["trusted_plan_digest"] == expected_budget_digest
+                   anchor["trusted_plan_id"] == budget["batch_id"] &&
+                   anchor["trusted_plan_digest"] == expected_budget_digest
+    unless valid_anchor
       violations << violation(
         "token-budget-anchor-invalid",
         "$.plan.token_budget_anchor",
         "Persist the external trusted plan path, matching batch id, and exact canonical sha256 budget digest."
       )
+    end
+    trusted_plan_artifact = nil
+    trusted_plan_parsed = false
+    if valid_anchor
+      trusted_plan_path = anchor.fetch("trusted_plan_path")
+      if File.file?(trusted_plan_path) && File.readable?(trusted_plan_path)
+        begin
+          trusted_plan_artifact = parse_json_strict(File.read(trusted_plan_path, encoding: "UTF-8"))
+          trusted_plan_parsed = true
+        rescue JSON::ParserError
+          violations << violation(
+            "token-budget-trusted-plan-malformed",
+            "$.plan.token_budget_anchor.trusted_plan_path",
+            "Trusted token-budget plan must contain one strict JSON object without duplicate keys."
+          )
+        rescue SystemCallError
+          violations << violation(
+            "token-budget-trusted-plan-unreadable",
+            "$.plan.token_budget_anchor.trusted_plan_path",
+            "Trusted token-budget plan must be a readable persisted file before preflight."
+          )
+        end
+      else
+        violations << violation(
+          "token-budget-trusted-plan-unreadable",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must be a readable persisted file before preflight."
+        )
+      end
+    end
+    if trusted_plan_parsed
+      trusted_plan_digest = "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(trusted_plan_artifact)))}"
+      unless trusted_plan_artifact.is_a?(Hash) &&
+             trusted_plan_artifact["batch_id"] == anchor["trusted_plan_id"] &&
+             trusted_plan_digest == anchor["trusted_plan_digest"] &&
+             canonicalize(trusted_plan_artifact) == canonicalize(budget)
+        violations << violation(
+          "token-budget-trusted-plan-mismatch",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must equal the inline budget and match the anchored batch id and canonical digest."
+        )
+      end
     end
     if anchor.is_a?(Hash) && absolute_path?(anchor["trusted_plan_path"]) &&
        absolute_path?(budget["state_path"]) &&

@@ -25,6 +25,14 @@ module BatchTokenBudget
     batch-token-budget-override-expiration-receipt batch-token-budget-release-receipt
     batch-token-budget-reconciliation-receipt
   ].freeze
+  COMPLETE_TIMESTAMP = /
+    \A
+    (?<year>\d{4})-(?<month>0[1-9]|1[0-2])-(?<day>0[1-9]|[12]\d|3[01])
+    T(?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)
+    (?:\.\d+)?
+    (?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)
+    \z
+  /ix
 
   class InvalidInput < StandardError; end
   class DuplicateJSONKey < StandardError; end
@@ -138,6 +146,10 @@ module BatchTokenBudget
 
   def timestamp?(value)
     return false unless nonempty_string?(value)
+
+    timestamp_match = COMPLETE_TIMESTAMP.match(value)
+    return false unless timestamp_match &&
+                        Date.valid_date?(*timestamp_match.values_at(:year, :month, :day).map(&:to_i))
 
     DateTime.iso8601(value)
     true
