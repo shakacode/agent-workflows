@@ -152,6 +152,10 @@ ruby skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-contra
 ruby skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-preflight-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb
 
+echo "== hook adapter tests =="
+ruby plugins/claude-hooks/hooks/close-lane-on-session-end-test.rb
+ruby plugins/claude-hooks/hooks/hooks-install-contract-test.rb
+
 echo "== rubocop ${RUBOCOP_VERSION} =="
 RUBOCOP_VERSION="${RUBOCOP_VERSION}" ruby - <<'RUBY'
 version = ENV.fetch("RUBOCOP_VERSION")
