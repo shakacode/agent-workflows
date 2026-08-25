@@ -54,6 +54,35 @@ assert_not_contains() {
   [[ "$haystack" != *"$needle"* ]] || fail "expected output not to contain '$needle', got: $haystack"
 }
 
+assert_unsigned_launch_helpers() {
+  local target="$1"
+  local label="$2"
+  local dispatch_output batch_output
+
+  assert_file "$target/skills/pr-batch/bin/dispatcher-capability-preflight"
+  assert_file "$target/skills/pr-batch/fixtures/unsigned-dispatch-smoke.json"
+  assert_file "$target/skills/plan-pr-batch/bin/batch-plan-preflight"
+  assert_file "$target/skills/plan-pr-batch/fixtures/unsigned-lifecycle-smoke.json"
+  [[ -z "$(find "$target" -type f \( -name 'dispatcher-launch-trust.json' -o -name 'workflow-control-lifecycle-trust.json' \) -print -quit)" ]] || \
+    fail "$label clean install generated a launch trust anchor"
+
+  dispatch_output="$("$target/skills/pr-batch/bin/dispatcher-capability-preflight" \
+    < "$target/skills/pr-batch/fixtures/unsigned-dispatch-smoke.json")"
+  ruby -rjson -e '
+    result = JSON.parse(ARGV.fetch(0))
+    abort result.inspect unless result["status"] == "selected" &&
+                                result.dig("dispatch", "lifecycle") == "launch-pending"
+  ' "$dispatch_output" || fail "$label clean install could not select an unsigned assignment"
+
+  batch_output="$("$target/skills/plan-pr-batch/bin/batch-plan-preflight" \
+    < "$target/skills/plan-pr-batch/fixtures/unsigned-lifecycle-smoke.json")"
+  ruby -rjson -e '
+    result = JSON.parse(ARGV.fetch(0))
+    abort result.inspect unless result["status"] == "accepted" &&
+                                result.dig("launch", "eligible_lane_ids") == ["install-smoke"]
+  ' "$batch_output" || fail "$label clean install could not accept unsigned lifecycle state"
+}
+
 write_native_scw_state() {
   local host="$1"
   local target="$2"
@@ -190,6 +219,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   assert_file "$target/bin/upgrade-agent-workflows"
   assert_file "$target/.agent-workflows-install.json"
+  assert_unsigned_launch_helpers "$target" "Codex"
   [[ ! -e "$target/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
@@ -311,6 +341,7 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/bin/agent-workflows-doctor"
     assert_file "$target/bin/agent_doctor/process_runner.rb"
     assert_file "$target/bin/agent-workflows-delivery-state"
+    assert_file "$target/lib/agent-workflows/secure_github_actions_scanner.rb"
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
       abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
@@ -324,6 +355,59 @@ autonomous_merge:
 YAML
     output="$("$target/bin/agent-workflow-seam-doctor" --root "$consumer" 2>&1)"
     assert_contains "$output" "PASS agent workflow seam is complete"
+  done
+}
+
+test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation() {
+  local tmp target outside output status mode variant unsafe_ancestor outside_scanner
+
+  for mode in copy symlink; do
+    for variant in lib-symlink companion-symlink lib-file companion-file; do
+      tmp="$(mktemp -d)"
+      target="$tmp/claude-home"
+      outside="$tmp/outside"
+      write_native_scw_state claude "$target"
+      mkdir -p "$outside"
+      case "$variant" in
+        lib-symlink)
+          unsafe_ancestor="$target/lib"
+          outside_scanner="$outside/agent-workflows/secure_github_actions_scanner.rb"
+          ln -s "$outside" "$unsafe_ancestor"
+          ;;
+        companion-symlink)
+          mkdir -p "$target/lib"
+          unsafe_ancestor="$target/lib/agent-workflows"
+          outside_scanner="$outside/secure_github_actions_scanner.rb"
+          ln -s "$outside" "$unsafe_ancestor"
+          ;;
+        lib-file)
+          unsafe_ancestor="$target/lib"
+          outside_scanner="$outside/unused"
+          printf 'owned file\n' > "$unsafe_ancestor"
+          ;;
+        companion-file)
+          mkdir -p "$target/lib"
+          unsafe_ancestor="$target/lib/agent-workflows"
+          outside_scanner="$outside/unused"
+          printf 'owned file\n' > "$unsafe_ancestor"
+          ;;
+      esac
+
+      set +e
+      output="$("$ROOT/bin/install-agent-workflows" --host claude --target "$target" --mode "$mode" \
+        --delivery-mode plugin-companion 2>&1)"
+      status=$?
+      set -e
+
+      [[ "$status" -ne 0 ]] || fail "$mode companion install accepted unsafe ancestor variant $variant"
+      assert_contains "$output" "Refusing unsafe scanner companion ancestor: $unsafe_ancestor"
+      [[ -L "$unsafe_ancestor" || -f "$unsafe_ancestor" ]] || \
+        fail "$mode companion install replaced unsafe ancestor variant $variant"
+      [[ ! -e "$outside_scanner" ]] || \
+        fail "$mode companion install wrote the scanner outside the selected agent home"
+      [[ ! -e "$target/LICENSE" ]] || fail "$mode companion path preflight ran after install mutation"
+      [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "$mode companion path preflight wrote metadata"
+    done
   done
 }
 
@@ -1200,6 +1284,7 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/bin/agent-workflows-status"
   assert_file "$tmp/.claude/bin/agent-workflows-doctor"
   assert_file "$tmp/.claude/bin/agent-workflows-trust-audit"
+  assert_unsigned_launch_helpers "$tmp/.claude" "Claude"
   [[ ! -e "$tmp/.claude/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   [[ ! -e "$tmp/.claude/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest must not be installed into Claude home metadata"
   [[ ! -e "$tmp/.claude/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata must not be installed into Claude home metadata"
@@ -1726,6 +1811,7 @@ main() {
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_plugin_companion_installs_non_skill_assets_and_records_mode
+    test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass
     test_metadata_temp_failure_preserves_flat_tree_and_prior_mode

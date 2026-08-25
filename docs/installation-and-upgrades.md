@@ -149,6 +149,13 @@ Install into an explicit shared agent home:
 bin/install-agent-workflows --host codex --target "$HOME/.agents"
 ```
 
+A clean Codex or Claude installation can plan and launch ordinary batches as
+installed. Do not generate project signing keys or provision fixed launch trust
+anchors: assignment activation and lane progression use ordinary durable
+lifecycle state. Model/effort values are advisory preferences, while any
+host/model/effort observations are optional, host-exposed metadata with
+field-granular `UNKNOWN` for unavailable values.
+
 Install companion assets for an already-enabled native plugin:
 
 ```bash

@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+
+require_relative "../lib/secure_github_actions_scanner"
+
+options = { json: false }
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: secure-github-actions-scan [--json] CONSUMER_ROOT"
+  opts.on("--json", "Print review-finding-v0 JSON") { options[:json] = true }
+end
+
+begin
+  parser.parse!(ARGV)
+rescue OptionParser::ParseError => e
+  warn "#{e.message}\n#{parser}"
+  exit 64
+end
+
+unless ARGV.length == 1
+  warn parser
+  exit 64
+end
+
+begin
+  result = SecureGitHubActions::Scanner.new(ARGV.first).scan
+rescue ArgumentError, SystemCallError => e
+  warn "secure-github-actions-scan: invalid consumer root: #{e.message}"
+  exit 64
+end
+
+if options[:json]
+  puts JSON.pretty_generate(result.document)
+elsif result.clean?
+  puts "secure-github-actions-scan: CLEAN (#{result.files.length} file(s) scanned)"
+else
+  puts "secure-github-actions-scan: FINDINGS"
+  result.findings.each do |finding|
+    location = finding.fetch("location")
+    puts "- #{location.fetch('file')}:#{location.fetch('line')} " \
+         "[#{finding.fetch('rule_id')}] #{finding.fetch('title')}"
+  end
+end
+
+exit(result.clean? ? 0 : 1)

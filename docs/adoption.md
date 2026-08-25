@@ -84,25 +84,52 @@ notes.
    override the deterministic repository-name abbreviation used in batch titles
    and thread handles. The initializer does not add this optional key.
 
+   Repositories that use repository-based GitHub Actions and reusable workflows
+   must also add a closed, exact `trusted_actions` allowlist. Its entries are
+   case-insensitive `owner/repository` identities, with no refs, subpaths, or
+   wildcards:
+
+   ```yaml
+   trusted_actions:
+     - actions/checkout
+     - ruby/setup-ruby
+   ```
+
+   A missing or invalid allowlist trusts no external action. Adding an identity
+   never waives the independent full-SHA and readable-version-comment rules.
+   Maintainers must review the action before adding it. The scanner reads this
+   policy from the checkout under review and cannot prove that a pull request
+   left it unchanged, so compare every `trusted_actions` addition with the
+   trusted base.
+
+   For `docker://` references, the scanner enforces digest immutability, but
+   `trusted_actions` does not mechanically approve the container. Maintainers
+   must manually review the exact registry, image, and digest.
+
    Initialization adds the optional merge-submission seam in its portable,
    fail-closed form:
 
    ```yaml
    merge_submission:
-     mode: merge_queue_only
+     mode: direct
    ```
 
-   Keep that value, or omit the mapping, unless the consumer deliberately owns
-   a guarded direct-merge exception. Such a consumer may select
-   `merge_queue_or_guarded_direct` and name one executable guard under
+   Keep that value, or omit the mapping, for the normal GitHub direct-merge
+   path. A repository that enables Merge Queue must explicitly select
+   `merge_queue_only` or `merge_queue_or_guarded_direct`; both modes use
+   canonical enqueue while the live base is queue-controlled. Direct mode fails
+   deterministically before mutation in that state so the repository policy
+   cannot silently change the submission route. A consumer that deliberately
+   owns a guarded direct-merge exception may select the latter mode and name one
+   executable guard under
    `.agents/bin`, an exact merge method, and an explicit acknowledgement plus
    rationale for the non-atomic base binding. The guard is a path, not a shell
    command. It receives the fixed argv contract documented in
    [seam-design.md](seam-design.md), and its return value is accepted only after
    live GitHub state proves the authorized head merged exactly. Queue-enabled
-   PRs continue through canonical enqueue and never invoke the guard. A
-   queue-disabled PR without this opt-in returns a deterministic configuration
-   error before mutation. The
+   PRs continue through canonical enqueue and never invoke the guard. An
+   explicit `merge_queue_only` policy on a queue-disabled base returns a
+   deterministic configuration error before mutation. The
    helper executes a private copy of the validated trusted-base bytes from an
    isolated Git root whose detached `HEAD`, index, and working files all bind
    the receipt-base commit and tree. This is HEAD/index/worktree isolation, not
@@ -163,7 +190,14 @@ notes.
 8. **Validate the contract.** Initialization runs the same seam-doctor check.
    After resolving any fail-closed wrapper guidance, rerun
    `agent-workflow-seam-doctor` with `--shared` pointing at the cloned or
-   installed pack root. Then run one dry workflow pass without making changes.
+   installed pack root. The doctor scans `.github/workflows/*.{yml,yaml}` and
+   recursively discovers eligible tracked or unignored `action.yml` / `action.yaml` descriptors.
+   Unreferenced ignored descriptors and excluded roots are not discovered. Any
+   explicitly referenced ignored local actions are resolved separately and scanned.
+   Workflow/action changes also activate the same checks in `$autoreview` and `$adversarial-pr-review`.
+   A clean mechanical scan is necessary but not sufficient: review permissions,
+   triggers, untrusted checkout/execution, and credential persistence manually.
+   Then run one dry workflow pass without making changes.
 
 9. **Make `AGENTS.md` canonical.** Tool-specific files such as `CLAUDE.md`
    should stay thin and link back to `AGENTS.md`.
@@ -342,6 +376,11 @@ malformed schema.
 - `agent-workflows-status --host <codex|claude>` reports `UP_TO_DATE`, or the
   upgrade decision is recorded.
 - `agent-workflow-seam-doctor --shared <path-to-shakacode/agent-workflows>` passes.
+- `/path/to/trusted/agent-workflows/skills/secure-github-actions/bin/secure-github-actions-scan <path-to-consumer>`
+  passes, and a human reviews
+  GitHub Actions permissions, triggers, checkout trust, and credentials.
+- Every `docker://` reference is digest-pinned, and a human reviews its exact
+  registry, image, and digest.
 - Every generated wrapper's underlying command exists in the target repo.
 - `pr-security-preflight --repo OWNER/REPO --trust-config .agents/trusted-github-actors.yml --strict-trust <exact-targets>`
   reports `SECURITY_PREFLIGHT_OK` for maintainer-approved exact targets.
