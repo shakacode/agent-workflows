@@ -1061,18 +1061,34 @@ module CompletedBatchAuditReceipt
     batches = batches.select { |batch| batch.is_a?(Hash) && batch["batch_id"] == source_input["batch_id"] }
     return unless batches.one?
 
-    lanes = batches.first["lanes"]
+    batch = batches.first
+    batch_repo = CompletedBatchPublicationPreflight.normalized_known_string(batch["repo"])
+    return unless batch_repo&.casecmp?(target.fetch("repo"))
+
+    lanes = batch["lanes"]
     return unless lanes.is_a?(Array)
 
     candidates = lanes.select do |lane|
       lane.is_a?(Hash) && lane["targets"].is_a?(Array) &&
-        lane["targets"].map(&:to_s) == [target.fetch("number").to_s] && lane["pr_url"] == source_url
+        lane["targets"].map(&:to_s) == [target.fetch("number").to_s] && lane["pr_url"] == source_url &&
+        accepted_deferral_lane_identity_urls_match?(lane, target)
     end
     return unless candidates.one?
 
     lane = candidates.first
     name = CompletedBatchPublicationPreflight.normalized_known_string(lane["name"])
     lane.merge("name" => name) if name
+  end
+
+  def accepted_deferral_lane_identity_urls_match?(lane, target)
+    %w[issue_url target_url].all? do |field|
+      next true if lane[field].nil?
+
+      identity = parse_target_url(lane[field])
+      identity && identity.fetch("host") == target.fetch("host") &&
+        identity.fetch("repo").casecmp?(target.fetch("repo")) && identity.fetch("type") == "issue" &&
+        identity.fetch("number") == target.fetch("number")
+    end
   end
 
   def accepted_deferral_tracking_reference?(record, tracking_issue_url)

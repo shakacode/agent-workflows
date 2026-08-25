@@ -340,6 +340,53 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_binds_the_coordination_batch_repo_and_lane_identity_urls
+    target = accepted_deferral_target
+    rejected = {
+      "missing batch repo" => { coordination_repo: nil },
+      "unknown batch repo" => { coordination_repo: "UNKNOWN" },
+      "wrong batch repo" => { coordination_repo: "shakacode/another_repository" },
+      "conflicting issue URL" => {
+        lane_identity_fields: { "issue_url" => "https://github.com/shakacode/another_repository/issues/4731" }
+      },
+      "conflicting issue URL type" => {
+        lane_identity_fields: { "issue_url" => "https://github.com/shakacode/react_on_rails/pull/4731" }
+      },
+      "conflicting target URL" => {
+        lane_identity_fields: { "target_url" => "https://github.com/shakacode/react_on_rails/issues/4732" }
+      }
+    }
+
+    rejected.each do |label, options|
+      preflight = accepted_deferral_publication_preflight(target, **options)
+      with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+        refute CompletedBatchAuditReceipt.accepted_deferral_product_evidence?(
+          preflight,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          coordination_backend: REAL_BACKEND
+        ), label
+      end
+    end
+
+    accepted = [
+      { coordination_repo: "ShakaCode/React_On_Rails" },
+      { lane_identity_fields: { "issue_url" => "https://github.com/shakacode/react_on_rails/issues/4731" } },
+      { lane_identity_fields: { "target_url" => "https://github.com/shakacode/react_on_rails/issues/4731" } }
+    ]
+    accepted.each do |options|
+      preflight = accepted_deferral_publication_preflight(target, **options)
+      with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+        assert CompletedBatchAuditReceipt.accepted_deferral_product_evidence?(
+          preflight,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          coordination_backend: REAL_BACKEND
+        ), options.inspect
+      end
+    end
+  end
+
   def test_accepted_deferral_binds_shorthand_blocker_to_its_exact_tracking_issue
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
@@ -3396,14 +3443,16 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   def accepted_deferral_publication_preflight(
     target,
     blockers: nil,
-    extra_unattributed_lane_names: []
+    extra_unattributed_lane_names: [],
+    coordination_repo: "shakacode/react_on_rails",
+    lane_identity_fields: {}
   )
     head_sha = "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e"
     coordination_status = {
       "scope" => { "kind" => "batch", "batch_id" => "ror-d-issue-4731-20260817" },
       "batches" => [{
         "batch_id" => "ror-d-issue-4731-20260817",
-        "repo" => "shakacode/react_on_rails",
+        "repo" => coordination_repo,
         "status" => "completed",
         "updated_at" => "2026-08-17T20:00:00Z",
         "completed_at" => "2026-08-17T20:00:00Z",
@@ -3416,7 +3465,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             "closed_at" => "2026-08-17T20:00:00Z",
             "pr_state" => "closed",
             "pr_url" => "https://github.com/shakacode/react_on_rails/pull/4918",
-            "evidence_url" => "https://github.com/shakacode/react_on_rails/pull/4918"
+            "evidence_url" => "https://github.com/shakacode/react_on_rails/pull/4918",
+            **lane_identity_fields
           },
           *extra_unattributed_lane_names.map do |lane_name|
             {
