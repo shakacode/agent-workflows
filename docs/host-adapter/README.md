@@ -18,6 +18,8 @@ the typed-event rules in
 - Backend `n/a`, or no readable seam, skips silently.
 - An active backend continues to the advertised transport. If no transport is
   advertised, the adapter records `typed event transport: unavailable` and skips.
+- A missing, unsafe, removed, or non-file live-claim marker skips without
+  invoking the advertised transport.
 - A missing, malformed, or unsafe advertisement is an attempted-write failure.
 - An advertised write runs the exact executable and ordered opaque argv with no
   shell evaluation, under a finite deadline, in its own process group.
@@ -75,16 +77,25 @@ metacharacters in the checkout path are not parsed as shell syntax.
 | --- | --- |
 | `AGENT_WORKFLOWS_HOOKS` | Set to `off` to disable the adapter |
 | `AGENT_WORKFLOWS_DRAIN_EVENT_ARGV` | The backend-advertised drain-event executable and argv, as a JSON array of strings |
+| `AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER` | Canonical absolute path to this session's live-claim marker; must be a regular file, not a symlink |
 | `AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS` | Emission deadline; defaults to 1 and is clamped to 3, below the registered 5s timeout |
 
-`AGENT_WORKFLOWS_DRAIN_EVENT_ARGV` is both the transport advertisement and the
-session's declaration that it holds a lane claim. Whoever launches a lane knows
-its batch, lane, agent, repository, target, and branch context, so that context
-is baked into the argv and every argument is passed through unmodified. With no
-advertisement there is no lane event to emit. Example:
+`AGENT_WORKFLOWS_DRAIN_EVENT_ARGV` advertises transport only; static argv is not
+proof that the session still holds a claim. Whoever launches a lane knows its
+batch, lane, agent, repository, target, and branch context, so that context is
+baked into the argv and every argument is passed through unmodified.
+
+The launcher creates a unique `AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER` regular
+file only while this exact session holds the advertised lane claim. Every terminal
+or explicit release path must remove the marker before or atomically with claim release.
+A subsequent SessionEnd then observes no live claim and
+does not use stale argv. The SessionEnd adapter never creates, removes, or releases the marker or claim.
+
+Example launcher state while the session holds its claim:
 
 ```bash
 export AGENT_WORKFLOWS_DRAIN_EVENT_ARGV='["agent-coord","event","--type","human_intervention","--kind","drain","--batch-id","aw-f"]'
+export AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER='/absolute/run/agent-workflows/aw-f/session-claim'
 ```
 
 Only an operator can reach these variables. The adapter reads a bounded JSON

@@ -89,6 +89,9 @@ class HooksInstallContractTest < Minitest::Test
     refute_includes documentation, "block-merge-without-ci-readiness"
     refute_includes documentation, "bypass_permissions_disabled"
     assert_includes documentation, '"args": []'
+    assert_includes documentation, "AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER"
+    assert_includes documentation, "must remove the marker before or atomically with claim release"
+    assert_includes documentation, "The SessionEnd adapter never creates, removes, or releases the marker or claim."
     assert_includes documentation, "Codex"
   end
 

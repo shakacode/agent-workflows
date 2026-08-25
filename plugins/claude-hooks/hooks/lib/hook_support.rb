@@ -182,18 +182,32 @@ module HookSupport
 
   def await(pid, timeout_seconds, grace_seconds)
     deadline = monotonic_now + timeout_seconds
+    leader_status = nil
     loop do
-      waited = Process.waitpid2(pid, Process::WNOHANG)
-      return [waited[1], false] if waited
+      unless leader_status
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        leader_status = waited[1] if waited
+      end
+
+      # Reaping the leader is not enough: descendants inherit its process
+      # group. A remaining member keeps the group id allocated, so it is safe
+      # to continue checking that same group until it becomes quiescent.
+      return [leader_status, false] if leader_status && !process_group_alive?(pid)
       break if monotonic_now >= deadline
 
       sleep 0.02
     end
 
     terminate_group(pid, grace_seconds)
-    [nil, true]
+    [leader_status, true]
   rescue Errno::ECHILD
-    [nil, false]
+    return [leader_status, false] unless process_group_alive?(pid)
+
+    sleep 0.02 while monotonic_now < deadline && process_group_alive?(pid)
+    return [leader_status, false] unless process_group_alive?(pid)
+
+    terminate_group(pid, grace_seconds)
+    [leader_status, true]
   end
 
   def terminate_group(pid, grace_seconds)

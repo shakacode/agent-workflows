@@ -35,9 +35,10 @@ module CloseLaneOnSessionEnd
   # JSON array of strings. Whoever configures a lane also knows that lane's
   # batch, lane, agent, repository, target, and branch context, so the argv is
   # baked with that context and each argument is passed through unmodified.
-  # Its presence is this session's declaration that it holds a lane claim; with
-  # no advertisement there is nothing to close out.
+  # The separate mutable claim marker, not this static argv, proves that the
+  # session still holds the lane claim at SessionEnd.
   ADVERTISEMENT_ENV = "AGENT_WORKFLOWS_DRAIN_EVENT_ARGV"
+  CLAIM_MARKER_ENV = "AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER"
   TIMEOUT_ENV = "AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS"
 
   # Claude Code budgets SessionEnd hooks tightly, so the default deadline is
@@ -71,8 +72,19 @@ module CloseLaneOnSessionEnd
 
     directory = working_directory(payload)
     return "skipped: no coordination backend" unless HookSupport.coordination_backend(directory)
+    return "skipped: no live lane claim" unless live_claim?(env)
 
     emit(advertisement(env), directory, env)
+  end
+
+  def live_claim?(env)
+    path = env[CLAIM_MARKER_ENV].to_s
+    return false unless HookSupport.safe_argument?(path)
+    return false unless File.expand_path(path) == path
+
+    File.lstat(path).file?
+  rescue SystemCallError, ArgumentError
+    false
   end
 
   def emit(argv, directory, env)

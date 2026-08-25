@@ -5,11 +5,14 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "pathname"
+require "stringio"
 require "tmpdir"
 require "timeout"
 require_relative "lib/hook_support"
 
 SESSION_END_HOOK = File.expand_path("close-lane-on-session-end", __dir__)
+load SESSION_END_HOOK
 
 class CloseLaneOnSessionEndTest < Minitest::Test
   def test_skips_silently_when_the_repository_has_no_coordination_backend
@@ -41,7 +44,87 @@ class CloseLaneOnSessionEndTest < Minitest::Test
     end
   end
 
-  def test_emits_the_advertised_drain_event_verbatim
+  def test_static_advertisement_without_a_live_claim_marker_does_not_emit
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      status, stderr = run_hook(repo, advertisement: [emitter, "event"], claim_marker: nil)
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "skipped: no live lane claim"
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_removed_claim_marker_after_release_does_not_emit
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      marker = File.join(repo, "released-session-claim")
+      File.write(marker, "live")
+      File.delete(marker)
+
+      status, stderr = run_hook(repo, advertisement: [emitter, "event"], claim_marker: marker)
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "skipped: no live lane claim"
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_non_file_claim_marker_does_not_emit
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      marker = File.join(repo, "claim-marker-directory")
+      Dir.mkdir(marker)
+
+      status, stderr = run_hook(repo, advertisement: [emitter, "event"], claim_marker: marker)
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "skipped: no live lane claim"
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_relative_claim_marker_path_does_not_emit
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      relative_marker = __FILE__
+      refute Pathname.new(relative_marker).absolute?, "the fixture must exercise a relative marker path"
+
+      status, stderr = run_hook(repo, advertisement: [emitter, "event"], claim_marker: relative_marker)
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "skipped: no live lane claim"
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_symlink_claim_marker_does_not_emit
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      target = File.join(repo, "real-claim-marker")
+      marker = File.join(repo, "linked-claim-marker")
+      File.write(target, "live")
+      File.symlink(target, marker)
+
+      status, stderr = run_hook(repo, advertisement: [emitter, "event"], claim_marker: marker)
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "skipped: no live lane claim"
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_nul_claim_marker_path_does_not_emit
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      env = {
+        CloseLaneOnSessionEnd::ADVERTISEMENT_ENV => [emitter, "event"].to_json,
+        CloseLaneOnSessionEnd::CLAIM_MARKER_ENV => "#{repo}/claim\0marker"
+      }
+      payload = { "hook_event_name" => "SessionEnd", "reason" => "clear", "cwd" => repo }
+
+      outcome = CloseLaneOnSessionEnd.outcome(StringIO.new(payload.to_json), env)
+
+      assert_equal "skipped: no live lane claim", outcome
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_active_claim_marker_emits_the_advertised_drain_event_once
     with_repo(backend: "private-http") do |repo, emitter, calls|
       argv = [emitter, "event", "--type", "human_intervention", "--kind", "drain",
               "--batch-id", "aw-f", "--message", "lane stopped deliberately"]
@@ -141,6 +224,94 @@ class CloseLaneOnSessionEndTest < Minitest::Test
       assert_equal 0, status.exitstatus
       assert_includes stderr, "UNKNOWN: drain event write timed out"
       assert_operator elapsed, :<, 5, "a slow backend must not delay session shutdown"
+    end
+  end
+
+  def test_successful_leader_times_out_when_a_descendant_outlives_the_deadline
+    Dir.mktmpdir("session-end-successful-leader-test") do |directory|
+      ready_reader, ready_writer = IO.pipe
+      release_reader, release_writer = IO.pipe
+      leader_pid = nil
+      child_pid = nil
+      begin
+        marker = File.join(directory, "late-marker")
+        leader_pid = fork do
+          Process.setpgrp
+          ready_reader.close
+          release_writer.close
+
+          fork do
+            release_reader.close
+            trap("TERM") { nil }
+            ready_writer.puts(Process.pid)
+            ready_writer.close
+            sleep 0.4
+            File.write(marker, "late mutation")
+            exit! 0
+          end
+          ready_writer.close
+          release_reader.read(1)
+          exit! 0
+        end
+        ready_writer.close
+        release_reader.close
+
+        ready_line = Timeout.timeout(5) { ready_reader.gets }
+        refute_nil ready_line, "the descendant must report ready before the leader exits"
+        child_pid = Integer(ready_line)
+        release_writer.write("x")
+        release_writer.close
+
+        status, timed_out = HookSupport.await(leader_pid, 0.15, 0.05)
+        leader_pid = nil
+        sleep 0.5
+
+        assert status&.success?, "the group leader must have exited successfully"
+        assert timed_out, "a successful leader cannot make a live process group successful"
+        refute File.exist?(marker), "the lingering descendant must not mutate after the deadline"
+        assert_raises(Errno::ESRCH) { Process.kill(0, child_pid) }
+      ensure
+        ready_reader.close unless ready_reader.closed?
+        ready_writer.close unless ready_writer.closed?
+        release_reader.close unless release_reader.closed?
+        release_writer.close unless release_writer.closed?
+        begin
+          Process.kill("KILL", child_pid) if child_pid
+        rescue Errno::ESRCH
+          nil
+        end
+        if leader_pid
+          begin
+            Process.kill("KILL", -leader_pid)
+          rescue Errno::ESRCH
+            nil
+          end
+          begin
+            Process.wait(leader_pid)
+          rescue Errno::ECHILD
+            nil
+          end
+        end
+      end
+    end
+  end
+
+  def test_successful_leader_and_short_lived_descendant_complete_successfully
+    with_repo(backend: "private-http") do |repo, emitter, _calls|
+      File.write(emitter, <<~RUBY)
+        #!/usr/bin/env ruby
+        fork do
+          sleep 0.05
+          exit! 0
+        end
+        exit! 0
+      RUBY
+
+      result = HookSupport.run_bounded([emitter], timeout_seconds: 1, chdir: repo)
+
+      assert result[:ok]
+      assert result[:status].success?
+      assert_nil result[:failure]
     end
   end
 
@@ -296,10 +467,15 @@ class CloseLaneOnSessionEndTest < Minitest::Test
     File.readlines(calls_path, chomp: true).map { |line| line.split("\t") }
   end
 
-  def run_hook(repo, advertisement: nil, raw_advertisement: nil, reason: "clear", env: {})
+  def run_hook(repo, advertisement: nil, raw_advertisement: nil, reason: "clear", env: {}, claim_marker: :active)
     hook_env = env.dup
     value = raw_advertisement || advertisement&.to_json
     hook_env["AGENT_WORKFLOWS_DRAIN_EVENT_ARGV"] = value if value
+    if claim_marker == :active
+      claim_marker = File.join(repo, "live-session-claim")
+      File.write(claim_marker, "live")
+    end
+    hook_env["AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER"] = claim_marker if claim_marker
     payload = { "hook_event_name" => "SessionEnd", "reason" => reason, "cwd" => repo }
     _stdout, stderr, status = Open3.capture3(hook_env, SESSION_END_HOOK, stdin_data: payload.to_json)
     [status, stderr]
