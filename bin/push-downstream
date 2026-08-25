@@ -8,7 +8,6 @@ require "fileutils"
 require "json"
 require "open3"
 require "optparse"
-require "securerandom"
 require "tmpdir"
 require "yaml"
 
@@ -44,17 +43,8 @@ module PushDownstream
     "git", "-c", "protocol.ext.allow=never", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}"
   ].freeze
   AUDIT_GIT_CLONE_ARGUMENTS = ["clone", "--depth", "1", "--no-tags"].freeze
-  AUDIT_GH_AUTH_ENV = "DOWNSTREAM_SEAM_AUDIT_GH_AUTH"
-  PUBLISH_GIT_ENVIRONMENT = AUDIT_GIT_ENVIRONMENT.merge("GIT_CONFIG_GLOBAL" => nil).freeze
-  PUBLISH_GIT_PREFIX = AUDIT_GIT_PREFIX.freeze
   FALLBACK_GIT_USER_NAME = "Agent Workflows"
   FALLBACK_GIT_USER_EMAIL = "agent-workflows@users.noreply.github.com"
-  ZERO_OID = "0" * 40
-  PUBLISH_STAGING_BRANCH_PREFIX = "agent-workflows/staging/"
-  PUBLISH_STAGING_REF_PREFIX = "refs/heads/#{PUBLISH_STAGING_BRANCH_PREFIX}".freeze
-  PUBLISH_STAGING_REF_LIMIT = 50
-  PUBLISH_STAGING_STALE_AFTER = 2 * 60 * 60
-  PUBLISH_STAGING_BRANCH_PATTERN = %r{\Aagent-workflows/staging/([1-9]\d{9,})-([0-9a-f]{32})\z}
   NEW_AGENTS_HEADER = "# AGENTS.md\n"
   THIN_CLAUDE = "# CLAUDE.md\n\nSee @AGENTS.md for canonical agent instructions, commands, and policy.\n"
   CLAUDE_CONSOLIDATION_FOLLOW_UP = "existing CLAUDE.md preserved; consolidate it to import @AGENTS.md"
@@ -143,56 +133,23 @@ module PushDownstream
 
   def load_config(path)
     data = YAML.safe_load(File.read(path), aliases: false) || {}
-    raise "invalid downstream registry: top level must be a mapping" unless data.is_a?(Hash)
-
     defaults = data["defaults"] || {}
-    repos = data["repos"] || []
-    unless defaults.is_a?(Hash) && repos.is_a?(Array)
-      raise "invalid downstream registry: defaults must be a mapping and repos must be an array"
-    end
-
-    seen_repositories = {}
-    repos.map do |entry|
-      raise "invalid downstream registry: repo entry must be a mapping" unless entry.is_a?(Hash)
-
+    (data["repos"] || []).map do |entry|
       merged = defaults.merge(entry)
       owner = merged.fetch("owner")
       repo = merged.fetch("repo")
-      base_branch = merged.fetch("base_branch")
-      pr_branch = merged.fetch("pr_branch")
-      raise "invalid downstream registry owner" unless valid_github_owner?(owner)
-      raise "invalid downstream registry repo" unless valid_github_repo?(repo)
-      unless publisher_valid_branch?(base_branch)
-        raise "invalid downstream registry base_branch for #{owner}/#{repo}"
-      end
-
-      unless publisher_valid_branch?(pr_branch)
-        raise "invalid downstream registry pr_branch for #{owner}/#{repo}"
-      end
-
-      repository_key = "#{owner}/#{repo}".downcase
-      if seen_repositories.key?(repository_key)
-        raise "duplicate downstream registry repository: #{seen_repositories.fetch(repository_key)}"
-      end
-
-      seen_repositories[repository_key] = "#{owner}/#{repo}"
-
       {
         owner: owner,
         repo: repo,
         nwo: "#{owner}/#{repo}",
-        base_branch: base_branch,
-        pr_branch: pr_branch,
+        base_branch: merged.fetch("base_branch"),
+        pr_branch: merged.fetch("pr_branch"),
         enabled: merged.fetch("enabled", true),
         tier: merged["tier"],
         preset: merged["preset"],
         overrides: merged["overrides"] || {}
       }
     end
-  rescue KeyError => e
-    raise "invalid downstream registry: missing #{e.key}"
-  rescue Psych::Exception => e
-    raise "invalid downstream registry: #{e.message.lines.first.to_s.strip}"
   end
 
   def load_policy_fleet(config_path, fleet_name)
@@ -346,34 +303,7 @@ module PushDownstream
   end
 
   def load_presets(path)
-    data = YAML.safe_load(File.read(path), aliases: false) || {}
-    raise "invalid seam presets: top level must be a mapping" unless data.is_a?(Hash)
-
-    validate_seam_preset_layer!(data["defaults"], "defaults") if data.key?("defaults")
-    if data.key?("presets")
-      named = data.fetch("presets")
-      raise "invalid seam presets: presets must be a mapping" unless named.is_a?(Hash)
-
-      named.each do |name, layer|
-        unless name.is_a?(String) && !name.empty?
-          raise "invalid seam presets: preset names must be non-empty strings"
-        end
-
-        validate_seam_preset_layer!(layer, "preset #{name}")
-      end
-    end
-    data
-  rescue Psych::Exception => e
-    raise "invalid seam presets: #{e.message.lines.first.to_s.strip}"
-  end
-
-  def validate_seam_preset_layer!(layer, label)
-    raise "invalid seam presets: #{label} must be a mapping" unless layer.is_a?(Hash)
-
-    %w[commands policy trust].each do |key|
-      next unless layer.key?(key)
-      raise "invalid seam presets: #{label}.#{key} must be a mapping" unless layer[key].is_a?(Hash)
-    end
+    YAML.safe_load(File.read(path), aliases: false) || {}
   end
 
   def resolve_contract(repo, presets)
@@ -901,9 +831,6 @@ module PushDownstream
     consumers = repos.map { |repo| audit_repo(repo, presets) }
     puts JSON.pretty_generate(audit_report(consumers))
     consumers.all? { |consumer| consumer.fetch("status") == AUDIT_CLEAN } ? 0 : 1
-  rescue RuntimeError, SystemCallError => e
-    warn "audit failed closed: #{e.message}"
-    1
   end
 
   def audit_report(consumers)
@@ -947,889 +874,6 @@ module PushDownstream
     AUDIT_UNKNOWN
   end
 
-  def load_publisher_report(path, source_sha:)
-    report = JSON.parse(File.binread(path))
-    raise "top level must be a mapping" unless report.is_a?(Hash)
-    raise "unexpected schema" unless report["schema"] == AUDIT_SCHEMA
-
-    source = report["source"]
-    raise "missing source provenance" unless source.is_a?(Hash)
-    raise "unexpected source repository" unless source["repo"] == "shakacode/agent-workflows"
-
-    report_sha = source["sha"]
-    unless report_sha.is_a?(String) && report_sha.match?(/\A[0-9a-f]{40}\z/)
-      raise "source SHA is missing or UNKNOWN"
-    end
-    unless source_sha.is_a?(String) && source_sha.match?(/\A[0-9a-f]{40}\z/) && source_sha == report_sha
-      raise "requested source SHA does not exactly match the report"
-    end
-    raise "source worktree was not clean" unless source["worktree_clean"] == true
-    raise "consumers must be an array" unless report["consumers"].is_a?(Array)
-
-    validate_publisher_consumers!(report.fetch("consumers"))
-    expected_summary = { "total" => report.fetch("consumers").length }
-    AUDIT_STATUSES.each do |status|
-      expected_summary[status] = report.fetch("consumers").count { |consumer| consumer.fetch("status") == status }
-    end
-    raise "summary does not match consumer states" unless report["summary"] == expected_summary
-
-    report
-  rescue JSON::ParserError => e
-    raise "JSON parse failed: #{e.message}"
-  end
-
-  def validate_publisher_consumers!(consumers)
-    seen = {}
-    consumers.each do |consumer|
-      raise "consumer entry must be a mapping" unless consumer.is_a?(Hash)
-
-      status = consumer["status"]
-      unless AUDIT_STATUSES.include?(status)
-        raise "consumer status is missing or UNKNOWN"
-      end
-      if status == "blocked"
-        raise "blocked or UNKNOWN consumer state cannot publish"
-      end
-
-      repo = consumer["repo"]
-      owner, name = repo.to_s.split("/", 2)
-      unless valid_github_owner?(owner) && valid_github_repo?(name) && repo == "#{owner}/#{name}"
-        raise "invalid consumer repository"
-      end
-      raise "duplicate consumer repository: #{repo}" if seen[repo]
-
-      seen[repo] = true
-      base_branch = consumer["base_branch"]
-      unless base_branch.is_a?(String) && !base_branch.empty? && !base_branch.match?(/[\0\r\n]/)
-        raise "invalid consumer base branch: #{repo}"
-      end
-      unless consumer["base_sha"].is_a?(String) && consumer["base_sha"].match?(/\A[0-9a-f]{40}\z/)
-        raise "consumer base SHA is missing or UNKNOWN: #{repo}"
-      end
-
-      AUDIT_POLYMORPHIC_FIELDS.each do |field|
-        value = consumer[field]
-        unless value.is_a?(Array) && value.all? { |entry| entry.is_a?(String) }
-          raise "consumer #{field} is missing or UNKNOWN: #{repo}"
-        end
-      end
-      changed_paths = consumer.fetch("changed_managed_paths")
-      unless changed_paths == changed_paths.uniq.sort && changed_paths.all? { |path| publisher_managed_path?(path) }
-        raise "consumer reports a duplicate, unsorted, or path outside the managed scaffold: #{repo}"
-      end
-      if status == AUDIT_CLEAN &&
-         (!consumer.fetch("seam_doctor_issues").empty? || !consumer.fetch("changed_managed_paths").empty?)
-        raise "clean consumer contains drift evidence: #{repo}"
-      end
-    end
-  end
-
-  def publisher_managed_path?(path)
-    return false unless path.is_a?(String) && !path.empty? && !path.match?(/[\0\r\n]/)
-
-    managed_scaffold_paths.include?(path)
-  end
-
-  def managed_scaffold_paths
-    fixed_paths = [
-      "AGENTS.md",
-      "CLAUDE.md",
-      AgentWorkflowSeamDoctor::POLICY_CONFIG,
-      TRUST_CONFIG,
-      ".agents/bin/README.md"
-    ]
-    fixed_paths + COMMAND_ORDER.map { |command| ".agents/bin/#{command}" }
-  end
-
-  def validate_managed_scaffold_paths!(root)
-    clone_root = File.expand_path(root)
-    root_stat = File.lstat(clone_root)
-    unless root_stat.directory? && !root_stat.symlink?
-      raise "managed scaffold clone root is not a safe directory"
-    end
-
-    managed_scaffold_paths.each do |relative_path|
-      target = File.expand_path(relative_path, clone_root)
-      unless target.start_with?("#{clone_root}#{File::SEPARATOR}")
-        raise "managed scaffold path escapes the clone root: #{relative_path}"
-      end
-
-      current = clone_root
-      relative_path.split(File::SEPARATOR).each do |component|
-        current = File.join(current, component)
-        begin
-          stat = File.lstat(current)
-        rescue Errno::ENOENT
-          break
-        end
-        if stat.symlink?
-          raise "managed scaffold path contains a symlink: #{relative_path}"
-        end
-      end
-    end
-    true
-  rescue Errno::EACCES, Errno::ENOTDIR => e
-    raise "managed scaffold path could not be safely inspected: #{e.message}"
-  end
-
-  def run_publisher(report_path, config_path, presets_path, source_sha:,
-                    source_root: File.expand_path("..", __dir__))
-    report = load_publisher_report(report_path, source_sha: source_sha)
-    current_source = audit_source_provenance(source_root)
-    unless current_source["sha"] == report.fetch("source").fetch("sha") &&
-           current_source["worktree_clean"] == true
-      raise "current source does not exactly match the clean audit source"
-    end
-
-    repos = publisher_registry_repos(config_path, report.fetch("consumers"))
-    drifted_repos = repos.select do |repo|
-      report.fetch("consumers").find { |consumer| consumer.fetch("repo") == repo.fetch(:nwo) }
-                               .fetch("status") == "drifted"
-    end
-    return 0 if drifted_repos.empty?
-
-    presets = File.file?(presets_path) ? load_presets(presets_path) : {}
-    publish_plan = drifted_repos.map do |repo|
-      consumer = report.fetch("consumers").find { |entry| entry.fetch("repo") == repo.fetch(:nwo) }
-      [repo, resolve_contract(repo, presets), consumer]
-    end
-    raise "GitHub authentication is unavailable" unless publisher_authentication_ready?
-
-    publish_results = publish_plan.map do |repo, contract, consumer|
-      publish_audited_repo(repo, contract, consumer)
-    end
-    publish_results.all? ? 0 : 1
-  rescue RuntimeError, SystemCallError => e
-    warn "publisher failed closed: #{e.message}"
-    1
-  end
-
-  def publisher_registry_repos(config_path, consumers)
-    repos = select_repos(load_config(config_path), only: nil, include_disabled: false)
-    by_nwo = consumers.to_h { |consumer| [consumer.fetch("repo"), consumer] }
-    unless by_nwo.keys.sort == repos.map { |repo| repo.fetch(:nwo) }.sort
-      raise "audit consumers do not exactly match the enabled downstream registry"
-    end
-
-    repos.each do |repo|
-      unless publisher_valid_branch?(repo.fetch(:base_branch)) && publisher_valid_branch?(repo.fetch(:pr_branch))
-        raise "invalid base or publisher branch: #{repo.fetch(:nwo)}"
-      end
-      if repo.fetch(:base_branch) == repo.fetch(:pr_branch)
-        raise "publisher branch must differ from the base branch: #{repo.fetch(:nwo)}"
-      end
-
-      consumer = by_nwo.fetch(repo.fetch(:nwo))
-      unless consumer.fetch("base_branch") == repo.fetch(:base_branch) && consumer["preset"] == repo[:preset]
-        raise "audit consumer metadata does not match the registry: #{repo.fetch(:nwo)}"
-      end
-    end
-    repos
-  end
-
-  def publisher_valid_branch?(branch)
-    return false unless branch.is_a?(String) && !branch.empty? && !branch.start_with?("-") &&
-                        !branch.match?(/[\0\r\n]/)
-
-    _output, status = Open3.capture2e(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "check-ref-format", "--branch", branch
-    )
-    status.success?
-  rescue RuntimeError, SystemCallError
-    false
-  end
-
-  def publisher_authentication_ready?
-    _output, status = Open3.capture2e("gh", "auth", "status", "--hostname", "github.com")
-    status.success?
-  rescue RuntimeError, SystemCallError
-    false
-  end
-
-  def clone_destination!(temporary_root, repo_component)
-    root = File.expand_path(temporary_root)
-    root_stat = File.lstat(root)
-    destination = File.expand_path(repo_component.to_s, root)
-    unless root_stat.directory? && !root_stat.symlink? &&
-           File.dirname(destination) == root && File.basename(destination) == repo_component
-      raise "clone destination is not a contained direct child of the temporary root"
-    end
-
-    destination
-  rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR => e
-    raise "clone destination could not be safely resolved: #{e.message}"
-  end
-
-  def audit_clone_git_prefix
-    mode = ENV[AUDIT_GH_AUTH_ENV]
-    return AUDIT_GIT_PREFIX if mode.nil? || mode.empty?
-    raise "invalid audit GitHub authentication mode" unless mode == "1"
-
-    [*AUDIT_GIT_PREFIX, "-c", "credential.https://github.com.helper=!gh auth git-credential"]
-  end
-
-  def publish_audited_repo(repo, contract, audit_entry)
-    expected_base_sha = audit_entry.fetch("base_sha")
-    expected_paths = audit_entry.fetch("changed_managed_paths").sort
-    return publisher_failure(repo, "no changed managed paths were audited") if expected_paths.empty?
-
-    Dir.mktmpdir("push-downstream-publisher") do |dir|
-      clone = clone_destination!(dir, repo.fetch(:repo))
-      cloned = system(
-        PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "clone", "--no-tags",
-        "--branch", repo.fetch(:base_branch), repo_url(repo), clone,
-        out: File::NULL, err: File::NULL
-      )
-      return publisher_failure(repo, "clone or authentication failed") unless cloned
-
-      base_ref = "refs/remotes/origin/#{repo.fetch(:base_branch)}"
-      base_head = publisher_local_ref_head(clone, "HEAD")
-      tracked_base_head = publisher_local_ref_head(clone, base_ref)
-      unless base_head == expected_base_sha && tracked_base_head == expected_base_sha
-        return publisher_failure(repo, "consumer base moved or could not be bound to the audit SHA")
-      end
-
-      desired_state = publisher_desired_managed_state!(
-        clone, dir, contract, expected_base_sha, expected_paths
-      )
-
-      branch = repo.fetch(:pr_branch)
-      branch_state, remote_branch_head = publisher_remote_branch_state(clone, branch)
-      return publisher_failure(repo, "publisher branch lookup failed") if branch_state == :error
-
-      initial_pr = publisher_open_pr_state(repo, any_base: true)
-      return publisher_failure(repo, "open PR state is UNKNOWN") unless initial_pr.fetch(:ok)
-      if initial_pr[:base] && initial_pr.fetch(:base) != repo.fetch(:base_branch)
-        return publisher_failure(repo, "publisher branch has an open PR on another base")
-      end
-
-      if branch_state == :present
-        unless publisher_git(clone, "fetch", "origin", "refs/heads/#{branch}:refs/remotes/origin/#{branch}") &&
-               publisher_git(clone, "checkout", "-B", branch, "refs/remotes/origin/#{branch}")
-          return publisher_failure(repo, "publisher branch fetch failed")
-        end
-
-        existing_paths = publisher_diff_paths(clone, "#{base_ref}...HEAD")
-        unless existing_paths && (existing_paths - expected_paths).empty?
-          return publisher_failure(repo, "existing publisher branch is not focused on the audited managed paths")
-        end
-        unless publisher_branch_history_focused?(clone, base_ref, expected_paths)
-          return publisher_failure(repo, "existing publisher branch history is not focused on the audited managed paths")
-        end
-        unless publisher_git(
-          clone, *git_commit_identity_args(clone), "-c", "commit.gpgsign=false",
-          "merge", "--no-edit", base_ref
-        )
-          return publisher_failure(repo, "consumer base could not be merged into the existing publisher branch")
-        end
-      elsif !publisher_git(clone, "checkout", "-b", branch)
-        return publisher_failure(repo, "publisher branch checkout failed")
-      end
-
-      begin
-        validate_managed_scaffold_paths!(clone)
-        result = reconcile_scaffold(clone, contract)
-        issues = AgentWorkflowSeamDoctor.check(clone)
-      rescue RuntimeError, SystemCallError => e
-        return publisher_failure(repo, "desired state could not be safely applied: #{e.message}")
-      end
-      return publisher_failure(repo, "seam doctor failed: #{issues.join('; ')}") unless issues.empty?
-
-      working_paths = audit_changed_paths(clone)
-      unless working_paths && (working_paths - expected_paths).empty?
-        return publisher_failure(repo, "apply path changed files outside the audited managed paths")
-      end
-      unless publisher_git(clone, "add", "--all", "--", *expected_paths)
-        return publisher_failure(repo, "audited managed paths could not be staged")
-      end
-
-      final_paths = publisher_cached_diff_paths(clone, base_ref)
-      unless final_paths == expected_paths
-        return publisher_failure(repo, "applied diff does not exactly match the audited managed paths")
-      end
-
-      final_state = publisher_index_managed_state(clone, expected_paths)
-      unless final_state == desired_state
-        return publisher_failure(repo, "managed content does not exactly match the audited desired state")
-      end
-
-      staged_changes = publisher_cached_changes?(clone)
-      return publisher_failure(repo, "staged publisher state is UNKNOWN") if staged_changes.nil?
-
-      if staged_changes && !publisher_git(
-        clone, *git_commit_identity_args(clone), "-c", "commit.gpgsign=false",
-        "commit", "-m", COMMIT_TITLE
-      )
-        return publisher_failure(repo, "publisher commit failed")
-      end
-
-      local_branch_head = publisher_local_ref_head(clone, "HEAD")
-      if local_branch_head == remote_branch_head
-        unless publisher_assert_base(repo, expected_base_sha)
-          return publisher_failure(repo, "consumer base moved before PR confirmation")
-        end
-      else
-        unless publisher_remote_ref_head(clone, repo.fetch(:base_branch)) == expected_base_sha
-          return publisher_failure(repo, "consumer base moved before publish")
-        end
-
-        current_pr = publisher_open_pr_state(repo, any_base: true)
-        unless current_pr.fetch(:ok) && (!current_pr[:base] || current_pr.fetch(:base) == repo.fetch(:base_branch))
-          return publisher_failure(repo, "open PR state changed before publish")
-        end
-
-        current_branch_state, current_remote_head = publisher_remote_branch_state(clone, branch)
-        unless current_branch_state == branch_state && current_remote_head == remote_branch_head
-          return publisher_failure(repo, "publisher branch moved before publish")
-        end
-        unless publisher_publish_branch(
-          repo, clone, branch, remote_branch_head, local_branch_head, expected_base_sha
-        )
-          return publisher_failure(repo, "conditional non-force publisher update failed")
-        end
-      end
-
-      publisher_ensure_pull_request(
-        repo,
-        result.follow_ups,
-        clone: clone,
-        expected_head: publisher_local_ref_head(clone, "HEAD"),
-        expected_base_sha: expected_base_sha
-      )
-    end
-  rescue KeyError, RuntimeError, SystemCallError => e
-    publisher_failure(repo, "publisher state could not be interpreted: #{e.message}")
-  end
-
-  def publisher_failure(repo, reason)
-    warn "FAIL #{repo.fetch(:nwo)}: #{reason}"
-    false
-  end
-
-  def publisher_git(dir, *arguments)
-    system(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", dir, *arguments,
-      out: File::NULL, err: File::NULL
-    )
-  end
-
-  def publisher_publish_branch(repo, clone, branch, expected_remote_head, new_head, expected_base_sha)
-    return false unless expected_base_sha.is_a?(String) && expected_base_sha.match?(/\A[0-9a-f]{40}\z/)
-    return false unless publisher_reconcile_stale_staging_refs(repo)
-
-    staging = "#{PUBLISH_STAGING_BRANCH_PREFIX}#{Time.now.to_i}-#{SecureRandom.hex(16)}"
-    staging_upload_attempted = false
-    staging_atomically_deleted = false
-    published = false
-    staging_upload_attempted = true
-    if publisher_git(clone, "push", "origin", "#{new_head}:refs/heads/#{staging}") &&
-       publisher_atomic_ref_update(
-         repo, branch, expected_remote_head, new_head, staging, expected_base_sha
-       )
-      staging_atomically_deleted = true
-      target_state, target_head = publisher_remote_branch_state(clone, branch)
-      staging_state, = publisher_remote_branch_state(clone, staging)
-      published = target_state == :present && target_head == new_head && staging_state == :absent
-    end
-    published
-  rescue RuntimeError, SystemCallError => e
-    warn "FAIL #{repo.fetch(:nwo)}: conditional publisher update could not be completed: #{e.message}"
-    false
-  ensure
-    if staging_upload_attempted && !staging_atomically_deleted
-      begin
-        cleaned = publisher_delete_staging_ref(repo, staging, new_head)
-      rescue StandardError
-        cleaned = false
-      end
-      warn "FAIL #{repo.fetch(:nwo)}: publisher staging ref cleanup failed: #{staging}" unless cleaned
-    end
-  end
-
-  def publisher_reconcile_stale_staging_refs(repo, now: Time.now.to_i)
-    refs = publisher_staging_refs(repo)
-    return false unless refs && refs.length <= PUBLISH_STAGING_REF_LIMIT
-
-    stale_updates = refs.filter_map do |ref|
-      match = PUBLISH_STAGING_BRANCH_PATTERN.match(ref.fetch(:name).delete_prefix("refs/heads/"))
-      return false unless match
-
-      created_at = Integer(match[1], 10)
-      return false if created_at > now
-      next if created_at > now - PUBLISH_STAGING_STALE_AFTER
-
-      { name: ref.fetch(:name), before: ref.fetch(:oid), after: ZERO_OID }
-    end
-    stale_updates.empty? || publisher_update_refs(repo, stale_updates)
-  rescue KeyError, ArgumentError, RuntimeError, SystemCallError
-    false
-  end
-
-  def publisher_staging_refs(repo)
-    remote = repo[:remote_url]
-    return publisher_local_staging_refs(remote) if remote && publisher_local_bare_remote?(remote)
-
-    publisher_github_staging_refs(repo)
-  end
-
-  def publisher_github_staging_refs(repo)
-    query = <<~GRAPHQL.delete("\n")
-      query($owner: String!, $name: String!, $refPrefix: String!, $limit: Int!) {
-        repository(owner: $owner, name: $name) {
-          refs(refPrefix: $refPrefix, first: $limit) {
-            nodes { name prefix target { oid } }
-            pageInfo { hasNextPage }
-          }
-        }
-      }
-    GRAPHQL
-    output, status = Open3.capture2(
-      "gh", "api", "graphql", "-f", "query=#{query}",
-      "-f", "owner=#{repo.fetch(:owner)}", "-f", "name=#{repo.fetch(:repo)}",
-      "-f", "refPrefix=#{PUBLISH_STAGING_REF_PREFIX}",
-      "-F", "limit=#{PUBLISH_STAGING_REF_LIMIT + 1}"
-    )
-    return nil unless status.success?
-
-    response = JSON.parse(output)
-    return nil unless response.is_a?(Hash) && response["errors"].nil?
-
-    data = response["data"]
-    repository = data["repository"] if data.is_a?(Hash)
-    refs = repository["refs"] if repository.is_a?(Hash)
-    nodes = refs["nodes"] if refs.is_a?(Hash)
-    page_info = refs["pageInfo"] if refs.is_a?(Hash)
-    return nil unless nodes.is_a?(Array) && page_info.is_a?(Hash) &&
-                      [true, false].include?(page_info["hasNextPage"])
-    return nil if page_info["hasNextPage"] || nodes.length > PUBLISH_STAGING_REF_LIMIT
-
-    nodes.map do |node|
-      return nil unless node.is_a?(Hash) && node["target"].is_a?(Hash)
-
-      prefix = node["prefix"]
-      branch_name = node["name"]
-      oid = node.fetch("target")["oid"]
-      return nil unless prefix == "refs/heads/" && branch_name.is_a?(String)
-
-      name = "#{prefix}#{branch_name}"
-      return nil unless name.start_with?(PUBLISH_STAGING_REF_PREFIX) &&
-                        oid.is_a?(String) && oid.match?(/\A[0-9a-f]{40}\z/)
-
-      { name: name, oid: oid }
-    end
-  rescue JSON::ParserError, KeyError, RuntimeError, SystemCallError
-    nil
-  end
-
-  def publisher_local_staging_refs(remote)
-    output, status = Open3.capture2e(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "--git-dir", File.expand_path(remote),
-      "for-each-ref", "--format=%(objectname)%09%(refname)", PUBLISH_STAGING_REF_PREFIX
-    )
-    return nil unless status.success?
-
-    publisher_parse_staging_ref_rows(output.lines)
-  rescue RuntimeError, SystemCallError
-    nil
-  end
-
-  def publisher_parse_staging_ref_rows(rows)
-    rows.map do |row|
-      oid, name, extra = row.strip.split("\t", 3)
-      return nil unless extra.nil? && oid&.match?(/\A[0-9a-f]{40}\z/) &&
-                        name&.start_with?(PUBLISH_STAGING_REF_PREFIX)
-
-      { name: name, oid: oid }
-    end
-  end
-
-  def publisher_atomic_ref_update(repo, branch, expected_remote_head, new_head, staging, expected_base_sha)
-    updates = [
-      {
-        name: "refs/heads/#{repo.fetch(:base_branch)}",
-        before: expected_base_sha,
-        after: expected_base_sha
-      },
-      { name: "refs/heads/#{branch}", before: expected_remote_head || ZERO_OID, after: new_head },
-      { name: "refs/heads/#{staging}", before: new_head, after: ZERO_OID }
-    ]
-    publisher_update_refs(repo, updates)
-  end
-
-  def publisher_assert_base(repo, expected_base_sha)
-    return false unless expected_base_sha.is_a?(String) && expected_base_sha.match?(/\A[0-9a-f]{40}\z/)
-
-    publisher_update_refs(
-      repo,
-      [{
-        name: "refs/heads/#{repo.fetch(:base_branch)}",
-        before: expected_base_sha,
-        after: expected_base_sha
-      }]
-    )
-  rescue KeyError, RuntimeError, SystemCallError
-    false
-  end
-
-  def publisher_delete_staging_ref(repo, staging, expected_head)
-    deleted = publisher_update_refs(
-      repo,
-      [{ name: "refs/heads/#{staging}", before: expected_head, after: ZERO_OID }]
-    )
-    return true if deleted
-
-    refs = publisher_staging_refs(repo)
-    refs&.none? { |ref| ref.fetch(:name) == "refs/heads/#{staging}" }
-  rescue KeyError, RuntimeError, SystemCallError
-    false
-  end
-
-  def publisher_update_refs(repo, updates)
-    remote = repo[:remote_url]
-    return publisher_local_update_refs(remote, updates) if remote && publisher_local_bare_remote?(remote)
-
-    repository_id = publisher_github_repository_id(repo)
-    return false unless repository_id
-
-    declarations = ["$repositoryId: ID!"]
-    arguments = ["-F", "repositoryId=#{repository_id}"]
-    ref_updates = updates.each_with_index.map do |update, index|
-      declarations.push(
-        "$name#{index}: GitRefname!", "$before#{index}: GitObjectID!", "$after#{index}: GitObjectID!"
-      )
-      arguments.push(
-        "-f", "name#{index}=#{update.fetch(:name)}",
-        "-f", "before#{index}=#{update.fetch(:before)}",
-        "-f", "after#{index}=#{update.fetch(:after)}"
-      )
-      "{name: $name#{index}, beforeOid: $before#{index}, afterOid: $after#{index}, force: false}"
-    end
-    query = <<~GRAPHQL.delete("\n")
-      mutation(#{declarations.join(', ')}) {
-        updateRefs(input: {repositoryId: $repositoryId, refUpdates: [#{ref_updates.join(', ')}]}) {
-          clientMutationId
-        }
-      }
-    GRAPHQL
-    output, status = Open3.capture2("gh", "api", "graphql", "-f", "query=#{query}", *arguments)
-    return false unless status.success?
-
-    response = JSON.parse(output)
-    return false unless response.is_a?(Hash) && response["errors"].nil?
-
-    data = response["data"]
-    data.is_a?(Hash) && data["updateRefs"].is_a?(Hash)
-  rescue JSON::ParserError, RuntimeError, SystemCallError
-    false
-  end
-
-  def publisher_github_repository_id(repo)
-    query = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id } }"
-    output, status = Open3.capture2(
-      "gh", "api", "graphql", "-f", "query=#{query}",
-      "-f", "owner=#{repo.fetch(:owner)}", "-f", "name=#{repo.fetch(:repo)}"
-    )
-    return nil unless status.success?
-
-    response = JSON.parse(output)
-    return nil unless response.is_a?(Hash) && response["errors"].nil?
-
-    data = response["data"]
-    repository = data["repository"] if data.is_a?(Hash)
-    identifier = repository["id"] if repository.is_a?(Hash)
-    identifier if identifier.is_a?(String) && !identifier.empty?
-  rescue JSON::ParserError, KeyError, RuntimeError, SystemCallError
-    nil
-  end
-
-  def publisher_local_bare_remote?(remote)
-    expanded = File.expand_path(remote)
-    return false unless File.directory?(expanded) && !File.symlink?(expanded)
-
-    output, status = Open3.capture2(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "--git-dir", expanded,
-      "rev-parse", "--is-bare-repository"
-    )
-    status.success? && output.strip == "true"
-  rescue RuntimeError, SystemCallError
-    false
-  end
-
-  def publisher_local_update_refs(remote, updates)
-    commands = ["start"]
-    updates.each do |update|
-      commands << "update #{update.fetch(:name)} #{update.fetch(:after)} #{update.fetch(:before)}"
-    end
-    commands.concat(%w[prepare commit])
-    _output, status = Open3.capture2e(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "--git-dir", File.expand_path(remote),
-      "update-ref", "--stdin", stdin_data: "#{commands.join("\n")}\n"
-    )
-    status.success?
-  rescue RuntimeError, SystemCallError
-    false
-  end
-
-  def publisher_desired_managed_state!(clone, temporary_root, contract, expected_base_sha, expected_paths)
-    Dir.mktmpdir("push-downstream-desired-state-", temporary_root) do |workspace|
-      safe_workspace = clone_destination!(temporary_root, File.basename(workspace))
-      raise "desired state workspace escaped the temporary root" unless safe_workspace == File.expand_path(workspace)
-
-      desired = clone_destination!(safe_workspace, "worktree")
-      added = publisher_git(clone, "worktree", "add", "--detach", desired, expected_base_sha)
-      raise "audited desired state worktree could not be created" unless added
-
-      begin
-        validate_managed_scaffold_paths!(desired)
-        reconcile_scaffold(desired, contract)
-        unless expected_paths.empty? || publisher_git(desired, "add", "--all", "--", *expected_paths)
-          raise "audited desired managed paths could not be staged"
-        end
-
-        state = publisher_index_managed_state(desired, expected_paths)
-        raise "audited desired managed content could not be inspected" if state.nil?
-
-        state
-      ensure
-        publisher_git(clone, "worktree", "remove", "--force", desired)
-      end
-    end
-  end
-
-  def publisher_index_managed_state(clone, expected_paths)
-    return {} if expected_paths.empty?
-
-    output, status = Open3.capture2(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone,
-      "ls-files", "--stage", "-z", "--", *expected_paths
-    )
-    return nil unless status.success?
-
-    state = expected_paths.to_h { |path| [path, nil] }
-    output.split("\0").each do |entry|
-      match = entry.match(/\A(100644|100755) ([0-9a-f]{40,64}) 0\t(.+)\z/)
-      return nil unless match
-
-      mode, blob, path = match.captures
-      return nil unless state.key?(path) && state[path].nil?
-
-      state[path] = [mode, blob]
-    end
-    state
-  rescue RuntimeError, SystemCallError
-    nil
-  end
-
-  def publisher_local_ref_head(clone, ref)
-    output, status = Open3.capture2(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone, "rev-parse", "--verify", ref
-    )
-    status.success? ? output.strip : nil
-  end
-
-  def publisher_remote_ref_head(clone, branch)
-    state, head = publisher_remote_branch_state(clone, branch)
-    state == :present ? head : nil
-  end
-
-  def publisher_remote_branch_state(clone, branch)
-    output, status = Open3.capture2(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone,
-      "ls-remote", "--heads", "origin", "refs/heads/#{branch}"
-    )
-    return [:error, nil] unless status.success?
-    return [:absent, nil] if output.strip.empty?
-
-    fields = output.lines.map(&:split)
-    return [:error, nil] unless fields.length == 1 && fields.first.length == 2 &&
-                                fields.first.last == "refs/heads/#{branch}" &&
-                                fields.first.first.match?(/\A[0-9a-f]{40}\z/)
-
-    [:present, fields.first.first]
-  rescue RuntimeError, SystemCallError
-    [:error, nil]
-  end
-
-  def publisher_diff_paths(clone, range)
-    output, status = Open3.capture2(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone,
-      "diff", "--no-ext-diff", "--no-renames", "--name-only", range
-    )
-    status.success? ? output.lines.map(&:strip).reject(&:empty?).sort : nil
-  end
-
-  def publisher_cached_changes?(clone)
-    _output, status = Open3.capture2(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone,
-      "diff", "--cached", "--quiet", "HEAD", "--"
-    )
-    return false if status.success?
-    return true if status.exitstatus == 1
-
-    nil
-  rescue RuntimeError, SystemCallError
-    nil
-  end
-
-  def publisher_branch_history_focused?(clone, base_ref, expected_paths)
-    merge_base, merge_base_status = Open3.capture2(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone,
-      "merge-base", base_ref, "HEAD"
-    )
-    return false unless merge_base_status.success? && merge_base.strip.match?(/\A[0-9a-f]{40}\z/)
-
-    commits, commits_status = Open3.capture2(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone,
-      "rev-list", "--first-parent", "#{merge_base.strip}..HEAD"
-    )
-    return false unless commits_status.success?
-
-    commits.lines.map(&:strip).reject(&:empty?).all? do |commit|
-      parents_output, parents_status = Open3.capture2(
-        PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone,
-        "show", "-s", "--format=%P", commit
-      )
-      next false unless parents_status.success?
-
-      parents = parents_output.split
-      comparison_parent =
-        case parents.length
-        when 1
-          parents.first
-        when 2
-          next false unless publisher_ancestor?(clone, parents.last, base_ref)
-
-          parents.last
-        else
-          next false
-        end
-      paths = publisher_diff_paths(clone, "#{comparison_parent}..#{commit}")
-      paths && (paths - expected_paths).empty?
-    end
-  rescue RuntimeError, SystemCallError
-    false
-  end
-
-  def publisher_ancestor?(clone, ancestor, descendant)
-    _output, status = Open3.capture2(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone,
-      "merge-base", "--is-ancestor", ancestor, descendant
-    )
-    status.success?
-  rescue RuntimeError, SystemCallError
-    false
-  end
-
-  def publisher_cached_diff_paths(clone, from)
-    output, status = Open3.capture2(
-      PUBLISH_GIT_ENVIRONMENT, *PUBLISH_GIT_PREFIX, "-C", clone,
-      "diff", "--cached", "--no-ext-diff", "--no-renames", "--name-only", from
-    )
-    status.success? ? output.lines.map(&:strip).reject(&:empty?).sort : nil
-  end
-
-  def publisher_open_pr_state(repo, any_base: false)
-    command = ["gh", "pr", "list", "--repo", repo.fetch(:nwo), "--head", repo.fetch(:pr_branch)]
-    command += ["--base", repo.fetch(:base_branch)] unless any_base
-    command += ["--state", "open", "--limit", POLICY_PR_LIST_LIMIT.to_s,
-                "--json", "url,baseRefName,headRepository,headRepositoryOwner,headRefName"]
-    output, status = Open3.capture2(*command)
-    return { ok: false } unless status.success?
-
-    pull_requests = JSON.parse(output)
-    return { ok: false } unless pull_requests.is_a?(Array) && pull_requests.length < POLICY_PR_LIST_LIMIT
-
-    matches = pull_requests.select { |pull_request| policy_pr_head_matches_repo?(pull_request, repo) }
-    return { ok: false } if matches.length > 1
-
-    pull_request = matches.first
-    {
-      ok: true,
-      url: pull_request && normalize_url(pull_request["url"]),
-      base: pull_request && pull_request["baseRefName"]
-    }
-  rescue JSON::ParserError, RuntimeError, SystemCallError
-    { ok: false }
-  end
-
-  def publisher_pr_refs_current?(repo, clone:, expected_head:, expected_base_sha:)
-    return false unless expected_head.is_a?(String) && expected_head.match?(/\A[0-9a-f]{40}\z/)
-    return false unless expected_base_sha.is_a?(String) && expected_base_sha.match?(/\A[0-9a-f]{40}\z/)
-    return false unless publisher_remote_ref_head(clone, repo.fetch(:pr_branch)) == expected_head
-
-    publisher_update_refs(
-      repo,
-      [
-        {
-          name: "refs/heads/#{repo.fetch(:base_branch)}",
-          before: expected_base_sha,
-          after: expected_base_sha
-        },
-        {
-          name: "refs/heads/#{repo.fetch(:pr_branch)}",
-          before: expected_head,
-          after: expected_head
-        }
-      ]
-    )
-  rescue KeyError, RuntimeError, SystemCallError
-    false
-  end
-
-  def publisher_ensure_pull_request(repo, follow_ups, clone:, expected_head:, expected_base_sha:)
-    unless publisher_pr_refs_current?(
-      repo, clone: clone, expected_head: expected_head, expected_base_sha: expected_base_sha
-    )
-      return publisher_failure(
-        repo,
-        "publisher branch moved while confirming its PR, or consumer base moved during PR confirmation"
-      )
-    end
-
-    state = publisher_open_pr_state(repo, any_base: true)
-    return publisher_failure(repo, "open PR state is UNKNOWN after publish") unless state.fetch(:ok)
-
-    url = state[:url]
-    if url && state[:base] != repo.fetch(:base_branch)
-      return publisher_failure(repo, "publisher branch has an open PR on another base")
-    end
-    if url.nil? && state[:base]
-      return publisher_failure(repo, "open PR state is UNKNOWN after publish")
-    end
-
-    if url.nil?
-      unless publisher_pr_refs_current?(
-        repo, clone: clone, expected_head: expected_head, expected_base_sha: expected_base_sha
-      )
-        return publisher_failure(repo, "consumer base moved during PR confirmation before PR create")
-      end
-
-      url = create_pr(repo, repo.fetch(:pr_branch), follow_ups)
-      return publisher_failure(repo, "PR create failed") if url.nil?
-
-      state = publisher_open_pr_state(repo, any_base: true)
-      unless state.fetch(:ok) && state[:url] == url && state[:base] == repo.fetch(:base_branch)
-        return publisher_failure(repo, "created PR could not be verified as the unique open publisher PR")
-      end
-      unless publisher_pr_refs_current?(
-        repo, clone: clone, expected_head: expected_head, expected_base_sha: expected_base_sha
-      )
-        return publisher_failure(repo, "consumer base moved during PR confirmation after PR create")
-      end
-    end
-    unless publisher_pr_refs_current?(
-      repo, clone: clone, expected_head: expected_head, expected_base_sha: expected_base_sha
-    )
-      return publisher_failure(
-        repo,
-        "publisher branch moved while confirming its PR, or consumer base moved during PR confirmation"
-      )
-    end
-
-    puts "PR #{repo.fetch(:nwo)} #{url}"
-    true
-  end
-
   def audit_repo(repo, presets)
     begin
       contract = resolve_contract(repo, presets)
@@ -1838,11 +882,7 @@ module PushDownstream
     end
 
     Dir.mktmpdir("push-downstream-audit") do |dir|
-      begin
-        clone = clone_destination!(dir, repo.fetch(:repo))
-      rescue RuntimeError, SystemCallError => e
-        return audit_blocked(repo, "clone destination could not be safely resolved: #{e.message}")
-      end
+      clone = File.join(dir, repo.fetch(:repo))
 
       # Every shell-out below is guarded so one consumer degrades to a blocked
       # entry instead of aborting the fleet audit. Open3.capture2 raises when the
@@ -1851,7 +891,7 @@ module PushDownstream
       # Errno::ENOMEM), so it needs the same guard under resource pressure.
       begin
         cloned = system(
-          AUDIT_GIT_ENVIRONMENT, *audit_clone_git_prefix, *AUDIT_GIT_CLONE_ARGUMENTS,
+          AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, *AUDIT_GIT_CLONE_ARGUMENTS,
           "--branch", repo.fetch(:base_branch), repo_url(repo), clone,
           out: File::NULL, err: File::NULL
         )
@@ -1863,20 +903,12 @@ module PushDownstream
       end
 
       begin
-        head_sha = audit_local_ref_head(clone, "HEAD")
-        base_ref = "refs/remotes/origin/#{repo.fetch(:base_branch)}^{commit}"
-        tracked_base_sha = audit_local_ref_head(clone, base_ref)
+        base_sha = audit_local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
       rescue RuntimeError, SystemCallError => e
         return audit_blocked(repo, "consumer base commit could not be resolved: #{e.message}")
       end
-      unless head_sha&.match?(/\A[0-9a-f]{40}\z/) && tracked_base_sha == head_sha
-        return audit_blocked(repo, "base branch ref missing or HEAD mismatch")
-      end
-
-      base_sha = head_sha
 
       begin
-        validate_managed_scaffold_paths!(clone)
         issues = AgentWorkflowSeamDoctor.check(clone)
       rescue RuntimeError, SystemCallError => e
         # The doctor reads consumer files and shells out (bash -n), so a single
@@ -3448,9 +2480,6 @@ if $PROGRAM_NAME == __FILE__
     include_disabled: false,
     apply: false,
     audit: false,
-    publish_report: nil,
-    source_sha: nil,
-    confirm_publish: false,
     base_branch: "main",
     trust: PushDownstream.empty_trust_config
   }
@@ -3475,15 +2504,6 @@ if $PROGRAM_NAME == __FILE__
             "value could not be established. Type-check these fields before iterating.") do
       options[:audit] = true
     end
-    opts.on("--publish-report FILE", "Publish drifted consumers from a reviewed audit report") do |value|
-      options[:publish_report] = value
-    end
-    opts.on("--source-sha SHA", "Exact agent-workflows source SHA that produced the report") do |value|
-      options[:source_sha] = value
-    end
-    opts.on("--confirm-publish", "Explicitly confirm the manual cross-repository publish") do
-      options[:confirm_publish] = true
-    end
     opts.on("--base-branch NAME", "Base branch for --root mode (default: main)") { |value| options[:base_branch] = value }
     opts.on("--trusted-user LOGIN", "Seed repo-local trusted user in --root mode; repeatable") do |value|
       options[:trust]["trusted_users"] << value
@@ -3504,30 +2524,7 @@ if $PROGRAM_NAME == __FILE__
   end.parse!
 
   code =
-    if !options[:publish_report] && (options[:source_sha] || options[:confirm_publish])
-      warn "--source-sha and --confirm-publish require --publish-report"
-      1
-    elsif options[:publish_report]
-      if options[:audit] || options[:apply] || options[:root] || options[:policy_fleet] ||
-         options[:security_audit_fleet] || options[:only] || options[:include_disabled] ||
-         !PushDownstream.trust_config_empty?(options[:trust])
-        warn "--publish-report cannot be combined with audit, apply, root, fleet, selection, or trusted-actor modes"
-        1
-      elsif !options[:confirm_publish]
-        warn "--confirm-publish is required with --publish-report"
-        1
-      elsif options[:source_sha].to_s.empty?
-        warn "--source-sha is required with --publish-report"
-        1
-      else
-        PushDownstream.run_publisher(
-          options[:publish_report],
-          options[:config],
-          options[:presets],
-          source_sha: options[:source_sha]
-        )
-      end
-    elsif options[:audit]
+    if options[:audit]
       if options[:root] || options[:policy_fleet]
         warn "--audit cannot be combined with --root or --policy-fleet"
         1

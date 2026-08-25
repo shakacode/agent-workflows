@@ -145,79 +145,6 @@ bin/push-downstream --root /path/to/consumer/repo
 bin/push-downstream --root /path/to/consumer/repo --apply
 ```
 
-### Fleet Seam Audit And Manual Publisher
-
-Audit every enabled registry consumer without changing a consumer repository:
-
-```bash
-bin/push-downstream --audit > /tmp/downstream-seam-audit.json
-```
-
-Write the report outside the source checkout, as shown above. The report binds
-itself to the exact source `HEAD` and records whether that source worktree was
-clean; creating the redirected file inside the checkout would honestly record
-a dirty source. Exit `0` means every consumer is clean. Exit `1` means at least
-one consumer is drifted or blocked.
-
-The JSON report includes the exact source SHA and, for each consumer, its base
-SHA, seam-doctor issues, exact changed managed paths, and intentionally
-unapplied follow-ups. A clean or drifted entry uses arrays for those three
-fields. A blocked entry uses the literal string `UNKNOWN`, never an empty array,
-for values that could not be established. Authentication, clone/fetch, source
-binding, registry parsing, desired-state interpretation, or Git-status parsing
-failures are non-clean. The report scope is repo-local seam and scaffold
-freshness only. Host-installed shared skills and workflows have their own
-installation/status lifecycle; a clean seam report does not claim they are
-current.
-
-`.github/workflows/downstream-seam-audit.yml` runs this audit weekly, on manual
-dispatch, and when the registry, presets, seam doctor, synchronizer, or workflow
-contract changes on `main`. Automatic and scheduled runs have read-only source
-permissions, use `--audit`, emit the exact-SHA JSON into the durable workflow
-log, and never invoke a consumer mutation command. Drift makes a report-only
-run non-green so it cannot be overlooked. The protected publisher independently
-repeats the audit at that exact source SHA before it considers consumer writes.
-
-`DOWNSTREAM_SEAM_AUDIT_TOKEN` is optional for public consumers. Configure it
-with read access when the registry includes private consumers; without it, the
-workflow falls back to `github.token`, which normally cannot clone private
-repositories outside this repository. The audit injects the selected `gh`
-credential helper only into the clone command, ignores ambient Git configuration,
-and does not persist checkout credentials.
-
-Publishing is a separate, explicitly selected manual-dispatch path. Configure
-the protected `downstream-seam-publisher` GitHub environment and its
-`DOWNSTREAM_SEAM_PUBLISH_TOKEN` secret with contents and pull-request access to
-the registered consumers. Select `publish` and paste the workflow run's exact
-40-character source SHA into `source_sha`. Missing, malformed, stale, dirty, or
-`UNKNOWN` source/report state fails before consumer writes.
-
-For a locally reviewed report, the equivalent explicit publisher command is:
-
-```bash
-bin/push-downstream \
-  --publish-report /tmp/downstream-seam-audit.json \
-  --source-sha "$(git rev-parse HEAD)" \
-  --confirm-publish
-```
-
-The publisher requires the report to cover the enabled registry exactly. It
-skips clean consumers and re-fetches every drifted consumer at the report's
-exact base SHA. It stages exactly the audited managed paths, rejects hidden
-off-scope branch history, and opens or updates the configured sync branch with
-non-force conditional ref updates. Commit objects are uploaded with an ordinary
-push to a timestamped, random staging ref; the target moves only when its exact
-prior state still matches the audit. Every in-process exit after upload performs
-exact-OID-guarded staging cleanup. Before another publish, a bounded inventory
-under the exact owned staging namespace reaps only refs at least two hours old;
-recent refs are preserved for concurrent runs, while malformed, overflowing, or
-unreadable inventory fails closed. Replay reuses the same repository-owned PR
-and does not commit or publish when its branch is already current. It never
-auto-merges a consumer PR.
-A retained branch on another base, duplicate or unprovable PR state, branch
-race, base race, authentication failure, or fetch failure stops that publish as
-non-clean.
-
 ### Policy-Only Fleets
 
 `policy_fleets` in `downstream.yml` is an organized registry for a narrowly
@@ -304,10 +231,6 @@ wrappers before relying on them for real validation.
 | `--root DIR` | Reconcile one checkout instead of the registry; no network. |
 | `--policy-fleet NAME` | Run a named policy-only fleet; updates only that fleet's explicitly registered policy keys. |
 | `--security-audit-fleet NAME` | Run a named read-only GitHub Actions audit fleet; never accepts `--apply`. |
-| `--audit` | Emit the exact-SHA read-only fleet seam-drift report; never accepts `--apply`. |
-| `--publish-report FILE` | Manually publish only drifted consumers from a reviewed, complete audit report. |
-| `--source-sha SHA` | Require the publisher report and current clean source to match this exact SHA. |
-| `--confirm-publish` | Explicitly confirm the manual cross-repository publisher; required with `--publish-report`. |
 | `--only a,b` | Restrict to named repos (selects even if `enabled: false`). |
 | `--all` | Include repos marked `enabled: false`. |
 | `--apply` | Perform writes; in registry mode, push branches and open PRs. |

@@ -53,6 +53,51 @@ class PushDownstreamPointerTest < Minitest::Test
   end
 end
 
+class PushDownstreamAuditWorkflowTest < Minitest::Test
+  ROOT = File.expand_path("..", __dir__)
+  WORKFLOW = File.join(ROOT, ".github/workflows/downstream-seam-audit.yml")
+
+  def test_workflow_is_a_read_only_audit_without_a_publisher_surface
+    text = File.read(WORKFLOW)
+    workflow = YAML.safe_load(text, aliases: true)
+    triggers = workflow["on"] || workflow[true]
+
+    push = triggers.fetch("push")
+    assert_equal ["main"], push.fetch("branches")
+    assert_equal [
+      ".github/workflows/downstream-seam-audit.yml",
+      "bin/push-downstream",
+      "bin/push-downstream-test.rb",
+      "bin/agent-workflow-seam-doctor",
+      "bin/agent-workflow-seam-doctor-test.rb",
+      "bin/agent_doctor/**",
+      "downstream.yml",
+      "seam-presets.yml"
+    ], push.fetch("paths")
+    refute_empty triggers.fetch("schedule")
+    assert triggers.key?("workflow_dispatch")
+    assert_nil triggers.fetch("workflow_dispatch"), "manual dispatch must expose no publishing inputs"
+    assert_equal ["audit"], workflow.fetch("jobs").keys
+    assert_equal({ "contents" => "read" }, workflow.fetch("permissions"))
+
+    steps = workflow.dig("jobs", "audit", "steps")
+    checkout = steps.find { |step| step["uses"]&.start_with?("actions/checkout@") }
+    audit = steps.find { |step| step["id"] == "audit" }
+    upload = steps.find { |step| step["uses"]&.start_with?("actions/upload-artifact@") }
+    enforce = steps.find { |step| step["name"] == "Preserve audit exit status" }
+
+    assert_equal false, checkout.dig("with", "persist-credentials")
+    assert_includes audit.fetch("run"), 'ruby bin/push-downstream --audit > "$AUDIT_REPORT"'
+    assert_equal "${{ runner.temp }}/downstream-seam-audit.json", upload.dig("with", "path")
+    assert_equal "always()", upload.fetch("if")
+    assert_equal "always()", enforce.fetch("if")
+    assert_includes enforce.fetch("run"), 'exit "$AUDIT_EXIT_CODE"'
+
+    refute_match(/DOWNSTREAM_SEAM_PUBLISH_TOKEN|--apply|--confirm-publish|--publish-report/, text)
+    refute_match(/\bgh\s+pr\s+create\b|\bgit\s+push\b|contents:\s*write/, text)
+  end
+end
+
 class PushDownstreamConfigTest < Minitest::Test
   def with_config(yaml)
     Dir.mktmpdir("push-downstream-config") do |dir|
@@ -86,115 +131,6 @@ class PushDownstreamConfigTest < Minitest::Test
       assert_equal "agent-workflows/seam-sync", first.fetch(:pr_branch)
       assert_equal true, first.fetch(:enabled)
       assert_equal "master", repos.fetch(1).fetch(:base_branch)
-    end
-  end
-
-  def test_load_config_rejects_traversal_and_unsafe_registry_components
-    invalid_values = [
-      ["owner", "../owner"],
-      ["repo", "../escaped"],
-      ["base_branch", "../main"],
-      ["pr_branch", "-publisher"]
-    ]
-
-    invalid_values.each do |field, value|
-      registry = {
-        "defaults" => {
-          "owner" => "local",
-          "base_branch" => "main",
-          "pr_branch" => "agent-workflows/seam-sync"
-        },
-        "repos" => [{ "repo" => "consumer", field => value }]
-      }
-
-      with_config(registry.to_yaml) do |path|
-        error = assert_raises(RuntimeError, "expected #{field}=#{value.inspect} to fail closed") do
-          PushDownstream.load_config(path)
-        end
-        assert_includes error.message, "invalid downstream registry"
-      end
-    end
-  end
-
-  def test_load_config_rejects_duplicate_repositories_before_mode_selection
-    yaml = <<~YAML
-      defaults:
-        owner: ShakaCode
-        base_branch: main
-        pr_branch: agent-workflows/seam-sync
-      repos:
-        - repo: Consumer
-        - repo: consumer
-          enabled: false
-    YAML
-
-    with_config(yaml) do |path|
-      error = assert_raises(RuntimeError) { PushDownstream.load_config(path) }
-      assert_includes error.message, "duplicate downstream registry repository"
-      assert_includes error.message, "ShakaCode/Consumer"
-    end
-  end
-
-  def test_clone_destination_must_be_a_contained_direct_child_of_the_temporary_root
-    Dir.mktmpdir("push-downstream-clone-destination") do |dir|
-      assert_equal File.join(dir, "consumer"), PushDownstream.clone_destination!(dir, "consumer")
-
-      error = assert_raises(RuntimeError) do
-        PushDownstream.clone_destination!(dir, "../escaped")
-      end
-      assert_includes error.message, "clone destination is not a contained direct child"
-    end
-
-    unsafe_repo = {
-      repo: "../escaped",
-      nwo: "local/../escaped",
-      base_branch: "main",
-      pr_branch: "agent-workflows/seam-sync",
-      remote_url: "/unused"
-    }
-    contract = { commands: {}, policy: PushDownstream.minimum_policy("main") }
-    entry = with_module_stub(PushDownstream, :resolve_contract, ->(*) { contract }) do
-      PushDownstream.audit_repo(unsafe_repo, {})
-    end
-
-    assert_equal "blocked", entry.fetch("status")
-    assert_includes entry.fetch("reason"), "clone destination"
-  end
-
-  def test_audit_clone_auth_is_explicit_command_local_and_rejects_unknown_modes
-    previous = ENV["DOWNSTREAM_SEAM_AUDIT_GH_AUTH"]
-    ENV.delete("DOWNSTREAM_SEAM_AUDIT_GH_AUTH")
-    assert_equal PushDownstream::AUDIT_GIT_PREFIX, PushDownstream.audit_clone_git_prefix
-
-    ENV["DOWNSTREAM_SEAM_AUDIT_GH_AUTH"] = "1"
-    authenticated = PushDownstream.audit_clone_git_prefix
-    assert_equal PushDownstream::AUDIT_GIT_PREFIX, authenticated.first(PushDownstream::AUDIT_GIT_PREFIX.length)
-    assert_includes authenticated, "credential.https://github.com.helper=!gh auth git-credential"
-    refute_includes authenticated, "--global"
-
-    ENV["DOWNSTREAM_SEAM_AUDIT_GH_AUTH"] = "unexpected"
-    error = assert_raises(RuntimeError) { PushDownstream.audit_clone_git_prefix }
-    assert_includes error.message, "invalid audit GitHub authentication mode"
-  ensure
-    if previous
-      ENV["DOWNSTREAM_SEAM_AUDIT_GH_AUTH"] = previous
-    else
-      ENV.delete("DOWNSTREAM_SEAM_AUDIT_GH_AUTH")
-    end
-  end
-
-  def test_audit_fails_closed_for_non_mapping_seam_presets
-    with_config("repos: []\n") do |config|
-      presets = File.join(File.dirname(config), "seam-presets.yml")
-      File.write(presets, "[]\n")
-
-      out, err = capture_io do
-        @status = PushDownstream.run_audit(config, presets, only: nil, include_disabled: false)
-      end
-
-      assert_equal 1, @status
-      assert_empty out
-      assert_includes err, "audit failed closed: invalid seam presets: top level must be a mapping"
     end
   end
 
@@ -1658,27 +1594,6 @@ class PushDownstreamAuditTest < Minitest::Test
     end
   end
 
-  def test_audit_rejects_a_tag_when_the_configured_base_branch_is_missing
-    Dir.mktmpdir("push-downstream-audit-tag-only") do |dir|
-      remote = File.join(dir, "consumer.git")
-      seed = File.join(dir, "seed")
-      git!(dir, "init", "--bare", remote)
-      git!(dir, "init", "-b", "seed", seed)
-      File.write(File.join(seed, "README.md"), "tag only\n")
-      git!(seed, "add", "README.md")
-      git!(seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed")
-      git!(seed, "tag", "main")
-      git!(seed, "remote", "add", "origin", remote)
-      git!(seed, "push", "origin", "refs/tags/main")
-
-      entry = audit(remote)
-
-      assert_equal "blocked", entry.fetch("status")
-      assert_includes entry.fetch("reason"), "base branch ref missing or HEAD mismatch"
-      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("base_sha")
-    end
-  end
-
   def test_audit_clone_ignores_hostile_transport_configuration
     Dir.mktmpdir("push-downstream-audit-helper") do |dir|
       marker = File.join(dir, "helper-ran")
@@ -1975,13 +1890,6 @@ class PushDownstreamAuditTest < Minitest::Test
     system("git", "-C", seed, "branch", "-M", "main")
     system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
     [remote, seed]
-  end
-
-  def git!(root, *arguments)
-    output, status = Open3.capture2e("git", "-C", root, *arguments)
-    raise "git fixture failed: #{output}" unless status.success?
-
-    output
   end
 
   def with_module_stub(mod, name, replacement)
