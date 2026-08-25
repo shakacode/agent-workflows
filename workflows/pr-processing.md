@@ -652,6 +652,28 @@ unsupported states are invalid. A rejected result launches nothing; an accepted
 result permits only `launch.eligible_lane_ids` and leaves
 `launch.held_lane_ids` unlaunched.
 
+The optional top-level `expansion_path_reservations` array is additive to v1;
+omitting it or providing an empty array preserves existing inputs. Each active
+scalar reservation is one exact `expansion-path-reservation` v1 record containing
+`batch_plan_id`, `stage_dependency_plan_id`, `lane_id`, `wave`, one canonical
+repository-relative `path`, a known `reason`, and a durable `evidence_ref`. A
+directory rename instead uses an exact `expansion-rename-reservation` v1 record
+with the same identity, reason, and evidence fields, replacing `path` with a
+`rename` object containing canonical, distinct `old` and `new` endpoints.
+Presence is the active state; cancellation removes the record, so no independent
+status boolean or dependency edge is introduced. The preflight binds each record
+to known plan and lane identities, rejects malformed, `UNKNOWN`, noncanonical,
+duplicate, mismatched, completed-lane, or already-reflected reservations, and
+derives collision and risky-capacity inputs from the union of verified
+`file_touch_map.paths` and active reservations. Scalar path reservations retain
+exact-path collision semantics; only typed rename reservations apply
+ancestor/descendant collision checks at both endpoints. Any reservation-derived
+same-wave collision requires an explicit shared serialization group whose
+`max_concurrency` is one; a typed edit edge alone is insufficient. Keep the
+reservation until the request is cancelled or the verified PR map reflects the
+path or exact rename pair, then remove it before the next preflight because a
+reflected reservation is stale.
+
 ### Model And Effort Routing
 
 Route the parent coordinator separately from implementation, discovery, review,
@@ -793,11 +815,53 @@ Every lane whose risk or bounded delegation requires an execution envelope
 receives one from the coordinator role before editing, regardless of route:
 exact goal and non-goals, owned paths, supported diagnosis, invariants,
 acceptance criteria, required verification, and stop conditions. The worker
-does not redefine scope or substitute a new diagnosis. Contradictory evidence,
-ambiguity, scope or blast-radius growth, a new high-risk boundary, weakened
-verification, or architecture, security, performance, compatibility, or product
-judgment triggers an immediate stop and return to the coordinator; it does not
-wait for two failed implementation attempts.
+does not redefine scope or substitute a new diagnosis. Necessary in-repository
+path expansion defaults to allowed when repository evidence shows an added path
+is reasonably necessary to complete the already-authorized goal or its required
+validation. Treat owned paths and the execution envelope as coordination and
+collision controls, not as a user-permission boundary. Before editing, record
+each added path and reason in the lane envelope when one is present; otherwise
+use a durable coordinator-owned lane record or Lane Card that the coordinator
+can read. Every added path not yet reflected in its verified file-touch map must
+have an active typed `expansion-path-reservation` before edit. When a lane is the
+sole active editor, the coordinator durably records the reservation, refreshes
+authoritative file-touch maps, lane lifecycle state, and active-lane claim and
+collision checks, and reruns `batch-plan-preflight`; the worker continues without
+user approval or a blocked lifecycle only after the preflight accepts.
+Before a worker in a multi-editor wave changes an added path, it persists a typed
+expansion request, marks its durable lane lifecycle blocked, refreshes its
+heartbeat, emits a Lane Card with the path, reason, and request evidence
+reference, and pauses at a safe checkpoint. The coordinator processes expansion
+requests serially, records an active `expansion_path_reservations` entry,
+refreshes authoritative file-touch maps and lane lifecycle state, and reruns
+`batch-plan-preflight`. For every multi-editor request, acceptance alone does not
+authorize resume: the requester must durably transition out of `blocked`, a fresh
+preflight must accept, and the requester must be absent from
+`launch.held_lane_ids`; when launch or relaunch is needed, it must also be present
+in `launch.eligible_lane_ids`. Under maximum-concurrency-one serialization, the
+current holder must also release the slot before resume. The
+reservation persists until the verified PR file-touch map contains the path or
+the request is cancelled, and it is removed once reflected or cancelled. A
+collision or `UNKNOWN` collision state remains stopped until then. A missing
+path alone is not material scope growth and must not produce
+`blocked-user-input`.
+Directory renames use a distinct `expansion-rename-reservation` v1 record with
+canonical, distinct `old` and `new` endpoints; only this typed rename form adds
+ancestor/descendant collision checks, while scalar path reservations remain
+exact-path collision controls.
+Necessary additions can include contract or type files, tests or fixtures,
+offline demo stubs, and build or generated integration surfaces when repository
+evidence makes them necessary.
+Contradictory evidence remains an immediate stop. Stop and return control when
+any of the following applies: the approved goal, accepted behavior, or acceptance
+criteria changes; the work adds unrelated work; it crosses a repository or trust
+boundary; it requires a destructive or difficult-to-reverse action; it introduces
+secrets, permissions, deployments, billing, or other external effects; it
+requires consequential architecture, performance, compatibility, or product
+judgment; it materially changes security, privacy, compliance, or release policy;
+it collides with another active lane and cannot be safely coordinated; it exposes
+consequential ambiguity; or it weakens verification. An omitted path alone is not
+such a condition.
 
 Before escalating, the worker stops at a safe checkpoint and emits a
 `MODEL_ESCALATION_REQUEST` with lane/claim state, branch/worktree/HEAD, current
@@ -935,7 +999,12 @@ For each user-visible UI change:
    retain the stable `github.com/user-attachments/assets/...` URL; obtaining the
    URL does not require submitting a comment. A configured linked tracker or
    repo artifact destination is also valid when every intended reviewer has
-   access; link that evidence from the PR.
+   access; link that evidence from the PR. Upload a recording through the same
+   PR attachment flow as a screenshot, using a GitHub-supported video file
+   (`.mp4`, `.mov`, or `.webm`; prefer H.264 MP4 for browser compatibility) and
+   respecting the repository's current upload-size limit. Retain the generated
+   attachment URL in the evidence record so GitHub can render the clip for
+   reviewers.
    A `github_pr` destination must contain a reviewer-visible `github.com` URL.
    A `linked_tracker` or `repo_artifact_store` destination must name that
    destination and contain its reviewer-visible HTTPS URL.
@@ -963,7 +1032,16 @@ For each user-visible UI change:
    `measured_substitute: before_value=52px; after_value=0px; tolerance=1px`
    (or the deterministic `baseline_value` / `candidate_value` aliases). Every
    value and the tolerance require units. Stills or incidental numbers in URLs
-   do not satisfy an interaction claim.
+   do not satisfy an interaction claim. Use the repository's browser harness
+   when it names one. Otherwise, when Playwright is available, enable
+   browser-context video recording with the binding's documented options and an
+   explicit matching viewport (in JS/TS, `recordVideo: { dir, size }`); drive
+   baseline and candidate with the same script, viewport, and test data; wait
+   on asserted UI states rather than sleeps; close the context before resolving
+   or copying the video; and inspect every clip. Brief
+   post-assertion pauses may make the recording readable. Keep generated proof
+   in a repository-defined ignored artifact directory or task-owned temporary
+   directory, never committed as PR evidence.
 5. For a visual fix, exercise an intentionally unfixed negative control and
    record the observed failing assertion or mismatch. If no visual fix is in
    scope, give a reasoned `not applicable`.
@@ -1543,7 +1621,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
@@ -1558,7 +1636,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
@@ -1706,7 +1784,11 @@ Split batch handoffs into two sections:
   evidence, QA Evidence blocks that include `Tested at`, the QA required
   decision and rationale, QA lane status, review churn notes, autonomous nit
   outcomes, confidence notes, decision-point counts per PR, already-answered
-  questions, and a per-PR merge-ledger table or JSON artifact path.
+  questions, a per-PR merge-ledger table or JSON artifact path, and the compact
+  `batch-usage-receipt-v1` total or durable artifact reference described in
+  [Batch Usage Receipt v1](../docs/batch-usage-receipt.md). Preserve structured
+  `UNKNOWN` when supported host evidence is missing; usage telemetry is
+  informational and never substitutes for a readiness gate.
 
 Every target must use one explicit final state:
 
@@ -1765,7 +1847,7 @@ Use this compact, self-contained `GMCC-v4` line verbatim in PR-batch goal
 prompts.
 `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 
 `GMCC-v4` expands to this canonical contract:
 
@@ -2104,10 +2186,39 @@ When worker subagents are explicitly authorized:
 - Before editing, when lane risk or bounded delegation requires an execution
   envelope, restate the coordinator-role-approved goal/non-goals, owned paths,
   supported diagnosis, invariants, acceptance criteria, verification, and stop
-  conditions regardless of route. With or without an envelope, stop and return
-  control rather than re-plan when evidence contradicts the diagnosis, criteria
-  are ambiguous, scope or risk grows, a security boundary appears, verification
-  weakens, or consequential judgment is required.
+  conditions regardless of route. Expand owned paths without user approval when
+  repository evidence makes an in-repository path reasonably necessary for the
+  authorized goal or required validation. A sole active editor records the path
+  and reason in the envelope or durable coordinator-owned lane record, then the
+  coordinator records the active reservation, refreshes authoritative file-touch
+  maps, lane lifecycle state, and active claims and collision checks, and reruns
+  `batch-plan-preflight`; the worker continues without user approval or a blocked
+  lifecycle only after the preflight accepts. In a multi-editor wave, the worker
+  persists a typed expansion request, marks its durable lifecycle blocked,
+  refreshes its heartbeat, emits a Lane Card with path, reason, and request
+  evidence reference, and pauses before changing the path. The coordinator
+  processes requests serially, records the active reservation, refreshes
+  authoritative file-touch maps and lane lifecycle state, and reruns
+  `batch-plan-preflight`. For every multi-editor request, acceptance alone does
+  not authorize resume: the requester must durably transition out of `blocked`,
+  a fresh preflight must accept, and the requester must be absent from
+  `launch.held_lane_ids`; when launch or relaunch is needed, it must also be
+  present in `launch.eligible_lane_ids`. Under maximum-concurrency-one
+  serialization, the current holder must also release the slot before resume.
+  The reservation remains active until the
+  verified file-touch map reflects the path or the request is cancelled. A
+  collision or `UNKNOWN` collision state remains stopped. With or without an
+  envelope, contradictory evidence remains an
+  immediate stop. Stop and return control when any of the following applies: the
+  approved goal, accepted behavior, or acceptance criteria changes; the work adds
+  unrelated work; it crosses a repository or trust boundary; it requires a
+  destructive or difficult-to-reverse action; it introduces secrets, permissions,
+  deployments, billing, or other external effects; it requires consequential
+  architecture, performance, compatibility, or product judgment; it materially
+  changes security, privacy, compliance, or release policy; it collides with
+  another active lane and cannot be safely coordinated; it exposes consequential
+  ambiguity; or it weakens verification. An omitted path alone is not such a
+  condition.
 - Refresh that worker's heartbeat whenever it starts an item, pushes or updates a
   PR, completes a review pass, becomes blocked, resumes, or finishes the lane.
 - Emit a portable Lane Card after a successful claim, on blocked/cancelled state,
@@ -2124,6 +2235,8 @@ When worker subagents are explicitly authorized:
   - `Branch:` `<branch>`; `pr_url`: `<verified GitHub PR url|backend url|UNKNOWN>`
   - `Phase:` `<phase>`; `claim:` `<holder|UNKNOWN>/<generation|UNKNOWN>/<instance|UNKNOWN>`;
     `coordinator:` `<coordinator-id|UNKNOWN>`
+  - `Path expansion:` `<canonical path|none>`; `reason:` `<known reason|n/a>`;
+    `request_ref:` `<durable evidence ref|n/a>`
     Never infer observed values from prompt text or worker self-report. If the
     backend does not provide `dashboard_url`, generation, or instance
     metadata, show `UNKNOWN` and continue with the available GitHub links. If the
@@ -2821,6 +2934,18 @@ The closeout lane is:
     coordination/target/exact-head-QA publication preflight described above;
     do not emit a complete receipt while it is blocked or reuse a prior
     snapshot after any lane, target head/state, or QA evidence changes.
+    During this terminal closeout, generate the metadata-only
+    `batch-usage-receipt-v1` from the resolved pr-batch
+    `bin/batch-usage-receipt` helper when supported Codex rollout JSONL and
+    `state_5.sqlite` evidence are available. Save the JSON to the repository's
+    ordinary durable artifact store when one exists, and include either its
+    durable reference or a compact batch total in FYI / decisions made. Keep
+    requested routes distinct from observed routes and preserve structured
+    `UNKNOWN` for unsupported or missing evidence. Never attach the rollout or
+    database itself, and never copy prompt, response, tool-result, auth, secret,
+    or environment content into the handoff. Usage evidence remains
+    informational and does not block or satisfy CI, review, QA, merge, audit, or
+    archive-readiness gates.
 14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` only when archive-ready and the union is empty. Otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line, with every normalized blocker. Before emitting that final message, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff.
 
 ## Self-Review Gate
@@ -3373,6 +3498,7 @@ set -o pipefail
 TRUSTED_RUNTIME_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TRUSTED_RUNTIME_ROOT"' EXIT
 if git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-eligibility" &&
+   git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-closeout" &&
    git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy.rb" &&
    git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy_globs.rb" &&
    git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy_yaml.rb"; then
@@ -3383,6 +3509,7 @@ if git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-eli
     tar -x -C "${TRUSTED_RUNTIME_ROOT}"
   TRUSTED_PR_BATCH_SKILL_DIR="${TRUSTED_RUNTIME_ROOT}/skills/pr-batch"
 elif git cat-file -e "${TRUSTED_BASE_SHA}:.agents/skills/pr-batch/bin/autonomous-merge-eligibility" &&
+     git cat-file -e "${TRUSTED_BASE_SHA}:.agents/skills/pr-batch/bin/autonomous-merge-closeout" &&
      git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy.rb" &&
      git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy_globs.rb" &&
      git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb"; then
@@ -3411,12 +3538,12 @@ Then pass the corresponding provenance claim:
 ```
 
 For an independently verified installed pack, use
-`verified-installed-pack:<64-lowercase-sha256>` instead, after resolving
-`PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
-repo-pinned chain. The expected digest is trusted coordinator or installation
+`verified-installed-pack:<64-lowercase-sha256>` instead, after binding
+`TRUSTED_PR_BATCH_SKILL_DIR` to the independently verified pack directory.
+The expected digest is trusted coordinator or installation
 state, not output learned from the helper being evaluated. The evaluator
-mechanically recomputes a length-framed manifest over the executing helper,
-decision/evidence/policy/trust libraries (including
+mechanically recomputes a length-framed manifest over the executing evaluator
+and closeout helpers, decision/evidence/policy/trust libraries (including
 `autonomous_merge_runtime_trust.rb`), and selected calibration decision.
 For `trusted-base:<SHA>`, it instead compares every one of those runtime bytes
 with the claimed commit tree. A missing source or byte mismatch yields
@@ -3555,6 +3682,28 @@ gate. Absence of an exact current-head marker remains
 merge-authority attestation is missing or uncertain yields `UNKNOWN`. Re-run
 the evaluator immediately before `pr-merge-submit`; any head or base movement
 restarts ordinary readiness and eligibility evaluation.
+
+For either blocking verdict, render the user-facing closeout before displaying
+technical identifiers:
+
+```bash
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout" \
+  --input "${AUTONOMOUS_RESULT_PATH}"
+```
+
+Use the same authenticated runtime directory that executed the evaluator;
+never resolve or execute the renderer from the PR checkout. The renderer's
+concise summary must lead. Then retain its individual
+PR-specific gate or evidence explanations, exact action, authorized actor,
+durable recording location, exact head, and new-head invalidation behavior.
+This human layer explicitly distinguishes policy/authority or evidence gates
+from code defects, failed CI, and review findings. Do not claim ordinary checks
+passed unless their separate current-head evidence proves that fact. Keep the
+original evaluator JSON unchanged for merge assurance and automation; the
+renderer is read-only, deterministic, fails closed on malformed input, and can
+repeat the stable facts as `autonomous-merge-closeout` v1 JSON with
+`--format json`. `UNKNOWN` output directs the coordinator to repair and rerun
+the evidence pipeline and cannot be converted into an approval request.
 
 ### Merge Assurance Gate
 

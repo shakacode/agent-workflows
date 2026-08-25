@@ -10,6 +10,7 @@ require_relative "../lib/autonomous_merge_decision"
 require_relative "../lib/autonomous_merge_runtime_trust"
 
 SCRIPT = File.expand_path("autonomous-merge-eligibility", __dir__)
+CLOSEOUT_SCRIPT = File.expand_path("autonomous-merge-closeout", __dir__)
 FIXTURE_DIR = File.expand_path("../fixtures", __dir__)
 
 class AutonomousMergeEligibilityTest < Minitest::Test
@@ -202,6 +203,43 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal "autonomous-merge-eligible", shadow.fetch("verdict")
     assert_equal ["submitted-review-head-missing"], shadow.fetch("shadow_evidence_unknown")
     assert_equal "UNKNOWN", enforced.fetch("verdict")
+    assert_includes enforced.fetch("evidence_failures"),
+                    "submitted review commit_id is missing; recollect complete submitted-review evidence with full head SHAs"
+
+    stdout, stderr, status = Open3.capture3("ruby", CLOSEOUT_SCRIPT, stdin_data: JSON.generate(enforced))
+
+    assert status.success?, stderr
+    assert_empty stderr
+    assert_includes stdout, "recollect complete submitted-review evidence with full head SHAs"
+  end
+
+  def test_unavailable_policy_blob_sha_emits_a_renderable_unknown_with_repair_evidence
+    Dir.mktmpdir("autonomous-merge-policy-blob-test") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: "{}\n", include_runtime: true)
+      Dir.mktmpdir("autonomous-merge-policy-blob-patch") do |patch_root|
+        open3_patch = File.join(patch_root, "fail-policy-blob-lookup.rb")
+        write_failed_policy_blob_lookup_patch(open3_patch)
+        result = invoke(
+          root:,
+          calibration_path:,
+          evaluation: evidence(base_sha:, files: files(1)),
+          subprocess_env: { "RUBYOPT" => "-r#{open3_patch}" }
+        )
+
+        assert_equal "UNKNOWN", result.fetch("verdict")
+        assert_equal "UNKNOWN", result.fetch("policy_provenance")
+        assert_includes result.fetch("evidence_failures"),
+                        "trusted-base policy blob SHA is unavailable; repair trusted-base Git object access " \
+                        "and rerun autonomous-merge-eligibility"
+
+        stdout, stderr, status = Open3.capture3("ruby", CLOSEOUT_SCRIPT, stdin_data: JSON.generate(result))
+
+        assert status.success?, stderr
+        assert_empty stderr
+        assert_includes stdout, "repair trusted-base Git object access and rerun autonomous-merge-eligibility"
+      end
+    end
   end
 
   def test_unknown_review_state_is_rejected_by_direct_evidence_validation
@@ -391,6 +429,35 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     }
   end
 
+  def test_other_repo_path_detail_survives_evaluation_and_human_closeout
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        human_review_paths:
+          - id: checkout-boundary
+            pattern: app/services/checkout/**
+            reason: other
+            detail: payment orchestration boundary
+    YAML
+    result = evaluate(policy_yaml:) do |base_sha|
+      evidence(base_sha:, files: [file("app/services/checkout/charge.rb")])
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_includes result.fetch("path_matches"), {
+      "path" => "app/services/checkout/charge.rb",
+      "gate" => "repo-path:checkout-boundary",
+      "reason" => "other",
+      "detail" => "payment orchestration boundary"
+    }
+
+    stdout, stderr, status = Open3.capture3("ruby", CLOSEOUT_SCRIPT, stdin_data: JSON.generate(result))
+
+    assert status.success?, stderr
+    assert_empty stderr
+    assert_includes stdout, 'matching ` "payment orchestration boundary" `'
+    assert_includes stdout, '(other: ` "payment orchestration boundary" `)'
+  end
+
   def test_renamed_protected_source_path_adds_human_gates_without_double_counting_metrics
     policy_yaml = <<~YAML
       autonomous_merge:
@@ -447,6 +514,26 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal fixture.fetch("expected_verdict"), result.fetch("verdict")
     assert_equal [fixture.fetch("expected_gate")], result.fetch("triggered_gates")
     protected_paths.each do |path|
+      assert_includes result.fetch("path_matches"), {
+        "path" => path,
+        "gate" => "autonomous-merge-policy-change",
+        "reason" => "policy"
+      }
+    end
+  end
+
+  def test_closeout_renderers_are_builtin_policy_sources_in_source_and_installed_layouts
+    paths = [
+      "skills/pr-batch/bin/autonomous-merge-closeout",
+      ".agents/skills/pr-batch/bin/autonomous-merge-closeout"
+    ]
+    result = evaluate do |base_sha|
+      evidence(base_sha:, files: paths.map { |path| file(path) })
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_equal ["autonomous-merge-policy-change"], result.fetch("triggered_gates")
+    paths.each do |path|
       assert_includes result.fetch("path_matches"), {
         "path" => path,
         "gate" => "autonomous-merge-policy-change",
@@ -704,6 +791,41 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_includes unproven.fetch("evidence_failures"), "exact current-head human decision provenance is uncertain"
   end
 
+  def test_uppercase_objective_head_is_canonicalized_before_decision_matching_and_closeout
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    valid_comment = decision_comment(
+      id: "1",
+      url:,
+      body: decision_body(head_sha: HEAD_SHA, gates: ["changed-files-limit"], evidence: url)
+    )
+    approved = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: [valid_comment],
+        semantic: semantic_assessment.merge(
+          "decision_provenance" => [decision_provenance("1")]
+        )
+      ).tap { |input| input.fetch("objective")["head_sha"] = HEAD_SHA.upcase }
+    end
+    blocking = evaluate do |base_sha|
+      evidence(base_sha:, files: files(30)).tap do |input|
+        input.fetch("objective")["head_sha"] = HEAD_SHA.upcase
+      end
+    end
+
+    assert_equal "human-approved-for-current-head", approved.fetch("verdict")
+    assert_equal HEAD_SHA, approved.fetch("head_sha")
+    assert_equal "human-approval-required", blocking.fetch("verdict")
+    assert_equal HEAD_SHA, blocking.fetch("head_sha")
+
+    stdout, stderr, status = Open3.capture3("ruby", CLOSEOUT_SCRIPT, stdin_data: JSON.generate(blocking))
+
+    assert status.success?, stderr
+    assert_empty stderr
+    assert_includes stdout, "Exact head: `#{HEAD_SHA}`"
+  end
+
   def test_newer_malformed_decision_does_not_erase_older_valid_exact_head_decision
     older_url = "https://github.com/example/repo/pull/1#issuecomment-1"
     comments = [
@@ -770,6 +892,29 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal [], incomplete_reviews_shadow.fetch("shadow_evidence_unknown")
     assert_equal "autonomous-merge-eligible", incomplete_reviews_enforced.fetch("verdict")
     assert_equal "UNKNOWN", rollback_unknown.fetch("verdict")
+  end
+
+  def test_invalid_rollback_is_normalized_to_unknown_and_remains_renderable
+    ["probably-reversible", nil].each do |rollback|
+      result = evaluate do |base_sha|
+        evidence(
+          base_sha:,
+          files: files(1),
+          semantic: semantic_assessment.merge("rollback_assessment" => rollback)
+        )
+      end
+
+      assert_equal "UNKNOWN", result.fetch("verdict"), rollback.inspect
+      assert_equal "UNKNOWN", result.fetch("rollback_assessment"), rollback.inspect
+      assert_includes result.fetch("evidence_failures"), "rollback assessment is missing or unknown"
+
+      stdout, stderr, status = Open3.capture3("ruby", CLOSEOUT_SCRIPT, stdin_data: JSON.generate(result))
+
+      assert status.success?, "#{rollback.inspect}: #{stderr}"
+      assert_empty stderr, rollback.inspect
+      assert_includes stdout, "Rollback assessment: `UNKNOWN`"
+      assert_includes stdout, '"rollback assessment is missing or unknown"'
+    end
   end
 
   def test_live_deleted_comment_author_returns_structured_unknown
@@ -852,6 +997,40 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       assert_includes missing.fetch("evidence_failures").first, "helper provenance"
       assert_includes malformed.fetch("evidence_failures").first, "helper provenance"
     end
+  end
+
+  def test_runtime_trust_authenticates_closeout_renderer_for_base_and_installed_pack
+    trusted_base = evaluate { |base_sha| evidence(base_sha:, files: files(1)) }
+
+    assert_equal "skills/pr-batch/bin/autonomous-merge-closeout",
+                 trusted_base.dig("helper_trust", "manifest", "closeout-helper")
+
+    Dir.mktmpdir("autonomous-merge-installed-closeout-trust-test") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil)
+      installed = invoke(
+        root:,
+        calibration_path:,
+        evaluation: evidence(base_sha:, files: files(1)),
+        helper_provenance: installed_pack_provenance(calibration_path)
+      )
+
+      assert_equal "autonomous-merge-eligible", installed.fetch("verdict")
+      assert_equal CLOSEOUT_SCRIPT, installed.dig("helper_trust", "manifest", "closeout-helper")
+    end
+  end
+
+  def test_closeout_workflow_uses_the_authenticated_runtime_directory
+    workflow = File.read(File.expand_path("../../../workflows/pr-processing.md", __dir__), encoding: "UTF-8")
+    skill = File.read(File.expand_path("../SKILL.md", __dir__), encoding: "UTF-8")
+
+    [workflow, skill].each do |document|
+      assert_includes document, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout"'
+    end
+    assert_includes workflow,
+                    'git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-closeout"'
+    assert_includes workflow,
+                    'git cat-file -e "${TRUSTED_BASE_SHA}:.agents/skills/pr-batch/bin/autonomous-merge-closeout"'
   end
 
   def test_unverified_stdin_objective_cannot_establish_a_passing_verdict
@@ -1182,11 +1361,11 @@ class AutonomousMergeEligibilityTest < Minitest::Test
           ["--repo", "example/repo", "--pr", "1", "--semantic-assessment", resolved_semantic_path]
         )
         stdout, stderr, status = Open3.capture3(
-          subprocess_env.merge(
+          {
             "AUTONOMOUS_MERGE_GH" => fake_gh,
             "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path,
             "AUTONOMOUS_MERGE_TEST_INVALID_UTF8_FIELD" => gh_invalid_utf8_field.to_s
-          ),
+          }.merge(subprocess_env),
           *command,
           stdin_data:
         )
@@ -1335,6 +1514,24 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       $stdout.write("\n")
     RUBY
     File.chmod(0o755, path)
+  end
+
+  def write_failed_policy_blob_lookup_patch(path)
+    File.write(path, <<~'RUBY')
+      require "open3"
+
+      original_capture2 = Open3.method(:capture2)
+      failed_status = Object.new
+      failed_status.define_singleton_method(:success?) { false }
+      Open3.define_singleton_method(:capture2) do |*command, **options|
+        if command.first == "git" && command.include?("rev-parse") &&
+           command.last.match?(%r{:\.agents/agent-workflow\.yml\z})
+          ["", failed_status]
+        else
+          original_capture2.call(*command, **options)
+        end
+      end
+    RUBY
   end
 
   def evidence_override(files: files(1), commits: [{ "sha" => "c" * 40 }])

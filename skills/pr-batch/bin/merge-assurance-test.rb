@@ -4,8 +4,10 @@
 require "fileutils"
 require "json"
 require "minitest/autorun"
+require "open3"
 require "rbconfig"
 require "tmpdir"
+require_relative "../lib/autonomous_merge_runtime_trust"
 
 SCRIPT = File.expand_path("merge-assurance", __dir__)
 load SCRIPT
@@ -345,6 +347,26 @@ class MergeAssuranceTest < Minitest::Test
     assert_empty eligible_invalid_manifests
   end
 
+  def test_accepts_the_exact_runtime_manifest_emitted_by_autonomous_merge_eligibility
+    autonomous, base_sha = eligibility_artifact
+    merge_context = context("auto_merge_when_gates_pass")
+    merge_context.fetch("base")["sha"] = base_sha
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous,
+      context: merge_context,
+      now: NOW
+    )
+
+    assert_equal "autonomous-merge-eligible", autonomous.fetch("verdict")
+    assert_equal(
+      "skills/pr-batch/bin/autonomous-merge-closeout",
+      autonomous.dig("helper_trust", "manifest", "closeout-helper")
+    )
+    assert result.fetch("eligible"), result.fetch("failures", []).join("; ")
+  end
+
   def test_autonomous_result_requires_exactly_empty_evidence_failures
     autonomous = autonomous_result("autonomous-merge-eligible")
     autonomous["evidence_failures"] = ["live force-push evidence is incomplete"]
@@ -471,6 +493,28 @@ class MergeAssuranceTest < Minitest::Test
         "path" => "skills/example.rb",
         "gate" => "changed-files-limit"
       }],
+      "other-missing-detail" => [{
+        "path" => "app/services/checkout/charge.rb",
+        "gate" => "repo-path:checkout-boundary",
+        "reason" => "other"
+      }],
+      "other-blank-detail" => [{
+        "path" => "app/services/checkout/charge.rb",
+        "gate" => "repo-path:checkout-boundary",
+        "reason" => "other",
+        "detail" => " "
+      }],
+      "detail-for-non-other" => [{
+        "path" => "config/deploy.yml",
+        "gate" => "repo-path:infrastructure",
+        "reason" => "infrastructure",
+        "detail" => "extra"
+      }],
+      "unknown-reason" => [{
+        "path" => "config/deploy.yml",
+        "gate" => "repo-path:infrastructure",
+        "reason" => "future-reason"
+      }],
       "unknown-classification" => [{
         "path" => "generated/example.rb",
         "classification" => "vendored"
@@ -501,7 +545,7 @@ class MergeAssuranceTest < Minitest::Test
     autonomous["path_matches"] = [{
       "gate" => "repo-path:security",
       "path" => "config/security.yml",
-      "reason" => "repository policy matched the security path"
+      "reason" => "security"
     }]
     result = MergeAssurance.assess(
       ci_result: ready_ci,
@@ -513,6 +557,26 @@ class MergeAssuranceTest < Minitest::Test
     refute result.fetch("eligible")
     assert_includes result.fetch("failures"),
                     "autonomous_result path match gates are absent from triggered gates"
+  end
+
+  def test_accepts_repo_path_other_detail_emitted_by_autonomous_merge_eligibility
+    autonomous = autonomous_result("human-approved-for-current-head")
+    autonomous["triggered_gates"] = ["repo-path:checkout-boundary"]
+    autonomous["path_matches"] = [{
+      "gate" => "repo-path:checkout-boundary",
+      "path" => "app/services/checkout/charge.rb",
+      "reason" => "other",
+      "detail" => "payment orchestration boundary"
+    }]
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert result.fetch("eligible"), result.fetch("failures", []).join("; ")
   end
 
   def test_generated_path_rows_and_conservative_gates_preserve_one_way_binding
@@ -1435,6 +1499,144 @@ class MergeAssuranceTest < Minitest::Test
 
   private
 
+  def eligibility_artifact
+    repo_root, base_sha = initialize_eligibility_runtime_repo
+    objective = {
+      "head_sha" => HEAD_SHA,
+      "base_sha" => base_sha,
+      "files" => [{ "path" => "lib/example.rb", "additions" => 1, "deletions" => 0 }],
+      "commits" => [{ "sha" => "c" * 40 }],
+      "reviews" => [],
+      "decision_comments" => []
+    }
+    objective_path = File.join(@fake_gh_dir, "autonomous-objective.json")
+    semantic_path = File.join(@fake_gh_dir, "autonomous-semantic.json")
+    gh_path = File.join(@fake_gh_dir, "autonomous-gh")
+    File.write(objective_path, JSON.generate(objective))
+    File.write(semantic_path, JSON.generate(autonomous_semantic_assessment))
+    write_autonomous_fake_gh(gh_path)
+
+    stdout, stderr, status = Open3.capture3(
+      {
+        "AUTONOMOUS_MERGE_GH" => gh_path,
+        "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path,
+        "PATH" => @original_path
+      },
+      "ruby",
+      File.join(repo_root, "skills/pr-batch/bin/autonomous-merge-eligibility"),
+      "--repo-root", repo_root,
+      "--trusted-base", base_sha,
+      "--trusted-helper-provenance", "trusted-base:#{base_sha}",
+      "--repo", "owner/repo",
+      "--pr", "42",
+      "--semantic-assessment", semantic_path
+    )
+    assert status.success?, stderr
+
+    [JSON.parse(stdout), base_sha]
+  end
+
+  def initialize_eligibility_runtime_repo
+    source_root = File.expand_path("../../..", __dir__)
+    repo_root = File.join(@fake_gh_dir, "trusted-runtime")
+    FileUtils.mkdir_p(repo_root)
+    system({ "PATH" => @original_path }, "git", "init", "--quiet", repo_root, exception: true)
+    system(
+      { "PATH" => @original_path },
+      "git", "-C", repo_root, "config", "user.email", "test@example.com",
+      exception: true
+    )
+    system(
+      { "PATH" => @original_path },
+      "git", "-C", repo_root, "config", "user.name", "Test",
+      exception: true
+    )
+    AutonomousMergeRuntimeTrust::RUNTIME_SOURCES.each_value do |source|
+      destination = File.join(repo_root, source.fetch(:tree_paths).first)
+      FileUtils.mkdir_p(File.dirname(destination))
+      FileUtils.cp(source.fetch(:path), destination)
+    end
+    calibration_path = AutonomousMergeRuntimeTrust::CALIBRATION_TREE_PATHS.first
+    FileUtils.mkdir_p(File.dirname(File.join(repo_root, calibration_path)))
+    FileUtils.cp(File.join(source_root, calibration_path), File.join(repo_root, calibration_path))
+    system({ "PATH" => @original_path }, "git", "-C", repo_root, "add", ".", exception: true)
+    system(
+      {
+        "PATH" => @original_path,
+        "GIT_AUTHOR_DATE" => "2000-01-01T00:00:00Z",
+        "GIT_COMMITTER_DATE" => "2000-01-01T00:00:00Z"
+      },
+      "git", "-C", repo_root, "commit", "--quiet", "-m", "trusted runtime",
+      exception: true
+    )
+    base_sha, status = Open3.capture2(
+      { "PATH" => @original_path },
+      "git", "-C", repo_root, "rev-parse", "HEAD"
+    )
+    assert status.success?
+    [repo_root, base_sha.strip]
+  end
+
+  def autonomous_semantic_assessment
+    {
+      "provenance" => "trusted-coordinator",
+      "persistent_data_storage" => false,
+      "infrastructure_delivery" => false,
+      "irreversible_external_effect" => false,
+      "public_compatibility" => false,
+      "security_auth_privacy" => false,
+      "architectural_product_judgment" => false,
+      "unresolved_maintainer_concern" => false,
+      "rollback_assessment" => "code-only-rollback-established",
+      "safe_class" => "none",
+      "safe_classification_complete" => true,
+      "test_change" => "not-applicable",
+      "decision_provenance" => []
+    }
+  end
+
+  def write_autonomous_fake_gh(path)
+    File.write(path, <<~'RUBY')
+      #!/usr/bin/env ruby
+      require "json"
+
+      objective = JSON.parse(File.read(ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")))
+      request = ARGV.fetch(-1)
+      response = case request
+                 when "repos/owner/repo/pulls/42"
+                   {
+                     "head" => { "sha" => objective.fetch("head_sha") },
+                     "base" => { "sha" => objective.fetch("base_sha") },
+                     "updated_at" => "2026-07-30T11:59:00Z",
+                     "changed_files" => objective.fetch("files").length,
+                     "commits" => objective.fetch("commits").length
+                   }
+                 when "repos/owner/repo/issues/42/timeline?per_page=100&page=1"
+                   []
+                 when "repos/owner/repo/pulls/42/files?per_page=100&page=1"
+                   objective.fetch("files").map do |file|
+                     {
+                       "filename" => file.fetch("path"),
+                       "status" => "modified",
+                       "additions" => file.fetch("additions"),
+                       "deletions" => file.fetch("deletions")
+                     }
+                   end
+                 when "repos/owner/repo/pulls/42/commits?per_page=100&page=1"
+                   objective.fetch("commits")
+                 when "repos/owner/repo/pulls/42/reviews?per_page=100&page=1"
+                   objective.fetch("reviews")
+                 when "repos/owner/repo/issues/42/comments?per_page=100&page=1"
+                   objective.fetch("decision_comments")
+                 else
+                   warn "unexpected GitHub API path: #{request}"
+                   exit 1
+                 end
+      puts JSON.generate(response)
+    RUBY
+    File.chmod(0o755, path)
+  end
+
   def fake_gh_call_count
     return 0 unless File.exist?(@fake_gh_calls)
 
@@ -1586,6 +1788,7 @@ class MergeAssuranceTest < Minitest::Test
   def autonomous_runtime_manifest
     {
       "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
+      "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
       "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
       "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
       "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",

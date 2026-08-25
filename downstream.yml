@@ -64,6 +64,13 @@ repos:
   - { repo: react-webpack-rails-tutorial, preset: ror-demo, base_branch: master }
   - { repo: react-on-rails-demo-ssr-hmr, preset: ror-demo, base_branch: master }
 
+# Read-only security inventory. This registry does not authorize consumer
+# changes, choose trusted actions, add Dependabot, push branches, or open PRs.
+security_audit_fleets:
+  secure-github-actions:
+    repos:
+      - { owner: shakacode, repo: shakapacker, base_branch: main }
+
 # Policy-only fleet registries never invoke the scaffold synchronizer above.
 # Each fleet lists every allowed policy key and exact target value, so applying
 # one updates only those keys in an already-valid consumer seam.

@@ -146,11 +146,9 @@ objective = input["objective"]
 semantic = input["semantic_assessment"]
 emit_unknown("objective must be a mapping") unless objective.is_a?(Hash)
 head_sha = objective["head_sha"]
-reported_head_sha = if head_sha.is_a?(String) && head_sha.match?(/\A[0-9a-fA-F]{40}\z/)
-                      head_sha
-                    else
-                      "UNKNOWN"
-                    end
+valid_head_sha = head_sha.is_a?(String) && head_sha.match?(/\A[0-9a-fA-F]{40}\z/)
+reported_head_sha = valid_head_sha ? head_sha.downcase : "UNKNOWN"
+head_sha = reported_head_sha if valid_head_sha
 emit_unknown("semantic_assessment must be a mapping", head_sha: reported_head_sha) unless semantic.is_a?(Hash)
 unless objective["base_sha"] == base_sha.strip
   emit_unknown(
@@ -160,7 +158,6 @@ unless objective["base_sha"] == base_sha.strip
   )
 end
 objective_errors = []
-valid_head_sha = head_sha.is_a?(String) && head_sha.match?(/\A[0-9a-fA-F]{40}\z/)
 objective_errors << "head_sha must be a full hexadecimal SHA" unless valid_head_sha
 objective_errors << "file pagination is incomplete" unless objective["files_complete"] == true
 objective_errors << "commit pagination is incomplete" unless objective["commits_complete"] == true
@@ -247,6 +244,9 @@ if policy_entry.lines.map(&:strip).include?(policy_path)
   policy_provenance = if blob_status.success?
                         "git:#{base_sha.strip}:#{policy_path}@#{policy_blob.strip}"
                       else
+                        objective_errors <<
+                          "trusted-base policy blob SHA is unavailable; repair trusted-base Git object access " \
+                          "and rerun autonomous-merge-eligibility"
                         "UNKNOWN"
                       end
 else
@@ -331,11 +331,13 @@ policy.human_review_paths.each do |rule|
   paths.grep(proc { |path| AutonomousMergePolicy.match?(rule.fetch("pattern"), path) }).each do |path|
     gate = "repo-path:#{rule.fetch('id')}"
     triggered_gates << gate
-    path_matches << {
+    path_match = {
       "path" => path,
       "gate" => gate,
       "reason" => rule.fetch("reason")
     }
+    path_match["detail"] = rule.fetch("detail") if rule.fetch("reason") == "other"
+    path_matches << path_match
   end
 end
 builtin_policy_patterns = [
@@ -360,10 +362,12 @@ builtin_policy_patterns = [
   ".agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb",
   "skills/pr-batch/bin/autonomous-merge-eligibility",
   "skills/pr-batch/bin/autonomous-merge-calibrate",
+  "skills/pr-batch/bin/autonomous-merge-closeout",
   "skills/pr-batch/lib/autonomous_merge_*.rb",
   "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json",
   ".agents/skills/pr-batch/bin/autonomous-merge-eligibility",
   ".agents/skills/pr-batch/bin/autonomous-merge-calibrate",
+  ".agents/skills/pr-batch/bin/autonomous-merge-closeout",
   ".agents/skills/pr-batch/lib/autonomous_merge_*.rb",
   ".agents/skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json",
   "skills/pr-batch/bin/*contract-test.rb",
@@ -402,6 +406,10 @@ end
 reviewed_heads_triggered = metrics.fetch("reviewed_heads") > effective_reviewed_heads_limit
 if reviewed_heads_mode == "enforced"
   triggered_gates << "reviewed-heads-limit" if reviewed_heads_triggered
+  if missing_review_head
+    objective_errors <<
+      "submitted review commit_id is missing; recollect complete submitted-review evidence with full head SHAs"
+  end
   objective_errors << "review pagination is incomplete" unless objective["reviews_complete"] == true
 elsif reviewed_heads_mode == "shadow"
   shadow_triggered_gates << "reviewed-heads-limit" if reviewed_heads_triggered
@@ -440,6 +448,7 @@ safe_class = "UNKNOWN" unless safe_class_errors.empty?
 rollback_assessment = semantic["rollback_assessment"]
 unless %w[code-only-rollback-established forward-recovery-established not-applicable].include?(rollback_assessment)
   semantic_errors << "rollback assessment is missing or unknown"
+  rollback_assessment = "UNKNOWN"
 end
 if rollback_assessment == "not-applicable" && safe_class == "none"
   semantic_errors << "rollback assessment not-applicable requires a verified safe class"
@@ -459,8 +468,6 @@ if human_decision_evidence["status"] == "uncertain"
   evidence_failures << "exact current-head human decision provenance is uncertain"
 end
 verdict = if !evidence_failures.empty? || policy_provenance == "UNKNOWN"
-            "UNKNOWN"
-          elsif reviewed_heads_mode == "enforced" && missing_review_head
             "UNKNOWN"
           elsif triggered_gates.empty?
             "autonomous-merge-eligible"

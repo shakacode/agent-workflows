@@ -1771,6 +1771,7 @@ class PrMergeSubmitTest < Minitest::Test
         "status" => "mechanically-verified",
         "manifest" => {
           "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
+          "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
           "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
           "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
           "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
