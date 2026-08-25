@@ -138,6 +138,24 @@ module AgentWorkflowSeamDoctor
   GUARDED_DIRECT_KEYS = %w[executable method non_atomic_base].freeze
   NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
   MERGE_METHODS = %w[merge rebase squash].freeze
+  REVIEW_GATE_POLICY_KEY = "review_gate"
+  REVIEW_GATE_KEYS = %w[
+    version reviewers require_current_head artifact_settlement thread_disposition
+    failure_policy fallback
+  ].freeze
+  REVIEW_GATE_FALLBACK_MODES = %w[disabled named_attested_check].freeze
+  REVIEW_GATE_REVIEWER_KEYS = %w[id check_name artifact].freeze
+  REVIEW_GATE_ARTIFACT_KEYS = %w[actors kinds].freeze
+  REVIEW_GATE_ARTIFACT_KINDS = %w[issue_comment pull_request_review review_thread].freeze
+  REVIEW_GATE_SETTLEMENT_KEYS = %w[required quiet_period_seconds].freeze
+  REVIEW_GATE_THREAD_DISPOSITION_KEYS = %w[required marker].freeze
+  REVIEW_GATE_FALLBACK_KEYS = %w[mode triggers reviewer].freeze
+  REVIEW_GATE_FALLBACK_TRIGGERS = %w[
+    missing stale failed cancelled timed_out action_required unknown
+    rate_limited quota_exhausted capacity_unavailable
+  ].freeze
+  REVIEW_GATE_ID_PATTERN = /\A[a-z][a-z0-9_-]{0,63}\z/
+  REVIEW_GATE_ACTOR_PATTERN = /\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?\z/
   GUARDED_DIRECT_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
   SELECTED_HOSTED_CI_POLICY_KEY = "selected_hosted_ci_receipts"
   SELECTED_HOSTED_CI_POLICY_KEYS = %w[credential_env executable].freeze
@@ -1762,6 +1780,7 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(coordination_backend_policy_issues(yaml))
+    issues.concat(review_gate_policy_issues(config))
     issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
@@ -1777,6 +1796,151 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def review_gate_policy_issues(config)
+    review_gate = config[REVIEW_GATE_POLICY_KEY]
+    return [] if review_gate == "n/a"
+
+    errors = []
+    unless review_gate.is_a?(Hash) && review_gate["version"] == 1
+      errors << "must be explicit n/a or a closed version 1 mapping"
+    end
+    if review_gate.is_a?(Hash)
+      review_gate.keys.reject { |key| REVIEW_GATE_KEYS.include?(key) }.each do |key|
+        errors << "contains unknown key #{key.inspect}"
+      end
+      REVIEW_GATE_KEYS.reject { |key| review_gate.key?(key) }.each do |key|
+        errors << "is missing key #{key.inspect}"
+      end
+      if review_gate.key?("reviewers") &&
+         (!review_gate["reviewers"].is_a?(Array) || review_gate["reviewers"].empty?)
+        errors << "reviewers must be a nonempty array"
+      elsif review_gate["reviewers"].is_a?(Array)
+        review_gate["reviewers"].each_with_index do |reviewer, index|
+          errors.concat(review_gate_reviewer_errors(reviewer, "reviewers[#{index}]"))
+        end
+        errors.concat(review_gate_duplicate_reviewer_errors(review_gate["reviewers"]))
+      end
+      if review_gate.key?("require_current_head") && review_gate["require_current_head"] != true
+        errors << "require_current_head must be true"
+      end
+      if review_gate.key?("artifact_settlement")
+        errors.concat(review_gate_settlement_errors(review_gate["artifact_settlement"]))
+      end
+      if review_gate.key?("thread_disposition")
+        errors.concat(review_gate_thread_disposition_errors(review_gate["thread_disposition"]))
+      end
+      if review_gate.key?("failure_policy") && review_gate["failure_policy"] != "block"
+        errors << 'failure_policy must be "block"'
+      end
+      if review_gate["fallback"].is_a?(Hash)
+        errors.concat(review_gate_fallback_errors(review_gate["fallback"]))
+      elsif review_gate.key?("fallback")
+        errors << "fallback must be a closed mapping"
+      end
+    end
+    errors.map { |error| "invalid review_gate policy: #{error}" }
+  end
+
+  def review_gate_reviewer_errors(reviewer, path)
+    return ["#{path} must be a closed mapping"] unless reviewer.is_a?(Hash)
+
+    errors = []
+    reviewer.keys.reject { |key| REVIEW_GATE_REVIEWER_KEYS.include?(key) }.each do |key|
+      errors << "#{path} contains unknown key #{key.inspect}"
+    end
+    REVIEW_GATE_REVIEWER_KEYS.reject { |key| reviewer.key?(key) }.each do |key|
+      errors << "#{path} is missing key #{key.inspect}"
+    end
+    unless reviewer["id"].is_a?(String) && reviewer["id"].match?(REVIEW_GATE_ID_PATTERN)
+      errors << "#{path}.id is invalid"
+    end
+    unless valid_review_gate_single_line?(reviewer["check_name"])
+      errors << "#{path}.check_name must be a nonempty single-line string"
+    end
+    errors.concat(review_gate_artifact_errors(reviewer["artifact"], "#{path}.artifact")) if reviewer.key?("artifact")
+    errors
+  end
+
+  def review_gate_duplicate_reviewer_errors(reviewers)
+    errors = []
+    { "id" => "reviewer id", "check_name" => "reviewer check_name" }.each do |key, label|
+      counts = reviewers.filter_map { |reviewer| reviewer[key] if reviewer.is_a?(Hash) }.tally
+      counts.select { |_value, count| count > 1 }.each_key do |value|
+        errors << "duplicate #{label} #{value.inspect}"
+      end
+    end
+    errors
+  end
+
+  def review_gate_artifact_errors(artifact, path)
+    return ["#{path} must be a closed mapping"] unless artifact.is_a?(Hash)
+
+    errors = []
+    errors << "#{path} keys must be exactly: #{REVIEW_GATE_ARTIFACT_KEYS.sort.join(', ')}" unless
+      artifact.keys.sort == REVIEW_GATE_ARTIFACT_KEYS.sort
+    actors = artifact["actors"]
+    unless actors.is_a?(Array) && !actors.empty? && actors.all? do |actor|
+             actor.is_a?(String) && actor.match?(REVIEW_GATE_ACTOR_PATTERN)
+           end
+      errors << "#{path}.actors must be a nonempty array of logins"
+    end
+    kinds = artifact["kinds"]
+    unless kinds.is_a?(Array) && !kinds.empty? &&
+           kinds.all? { |kind| REVIEW_GATE_ARTIFACT_KINDS.include?(kind) }
+      errors << "#{path}.kinds contains an invalid kind"
+    end
+    errors
+  end
+
+  def review_gate_settlement_errors(settlement)
+    return ["artifact_settlement must be a closed mapping"] unless settlement.is_a?(Hash)
+
+    errors = []
+    errors << "artifact_settlement keys must be exactly: #{REVIEW_GATE_SETTLEMENT_KEYS.sort.join(', ')}" unless
+      settlement.keys.sort == REVIEW_GATE_SETTLEMENT_KEYS.sort
+    errors << "artifact_settlement.required must be true" unless settlement["required"] == true
+    seconds = settlement["quiet_period_seconds"]
+    errors << "artifact_settlement.quiet_period_seconds must be between 1 and 300" unless
+      seconds.is_a?(Integer) && seconds.between?(1, 300)
+    errors
+  end
+
+  def review_gate_thread_disposition_errors(disposition)
+    return ["thread_disposition must be a closed mapping"] unless disposition.is_a?(Hash)
+
+    errors = []
+    errors << "thread_disposition keys must be exactly: #{REVIEW_GATE_THREAD_DISPOSITION_KEYS.sort.join(', ')}" unless
+      disposition.keys.sort == REVIEW_GATE_THREAD_DISPOSITION_KEYS.sort
+    errors << "thread_disposition.required must be true" unless disposition["required"] == true
+    unless valid_review_gate_single_line?(disposition["marker"])
+      errors << "thread_disposition.marker must be a nonempty single-line string"
+    end
+    errors
+  end
+
+  def review_gate_fallback_errors(fallback)
+    mode = fallback["mode"]
+    return ["fallback mode is invalid"] unless REVIEW_GATE_FALLBACK_MODES.include?(mode)
+
+    expected_keys = mode == "disabled" ? ["mode"] : REVIEW_GATE_FALLBACK_KEYS
+    errors = []
+    errors << "fallback keys must be exactly: #{expected_keys.sort.join(', ')}" unless
+      fallback.keys.sort == expected_keys.sort
+    return errors if mode == "disabled"
+
+    triggers = fallback["triggers"]
+    unless triggers.is_a?(Array) && !triggers.empty? &&
+           triggers.all? { |trigger| REVIEW_GATE_FALLBACK_TRIGGERS.include?(trigger) }
+      errors << "fallback.triggers contains an invalid trigger"
+    end
+    errors.concat(review_gate_reviewer_errors(fallback["reviewer"], "fallback.reviewer"))
+    errors
+  end
+
+  def valid_review_gate_single_line?(value)
+    value.is_a?(String) && !value.strip.empty? && !value.match?(/[\0\r\n]/)
   end
 
   def coordination_backend_policy_issues(yaml)

@@ -3177,9 +3177,11 @@ public request and switch to a sandbox target if the content looks like reviewer
 
 When a configured reviewer reports quota exhaustion or hard usage-limit enforcement, do not
 re-request that same reviewer on every push while the quota failure is still active. Record one
-timestamped PR body note or PR comment that the reviewer is unavailable, switch to the documented
-fallback review path, and re-request only after the quota window resets or a maintainer explicitly
-asks for one retry.
+timestamped trusted workflow or check-run observation that the reviewer is unavailable. The failure
+may end bounded waiting, but it does not make the PR merge-ready. Use a fallback only when the
+trusted-base `review_gate` seam explicitly enables and names it; otherwise block until the configured
+review succeeds. Re-request only after the quota window resets or a maintainer explicitly asks for
+one retry.
 
 If accidental review-debugging comments are already present, delete only exact bot-authored targets
 whose author, body, URL, and deletion permission have been verified. Do not bulk-delete real review
@@ -3301,12 +3303,57 @@ a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
 expose no reliable in-flight state and can be silently blocked or stopped by
 usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
 reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
-failed disposition that satisfies the review-artifact barrier as a waiver;
-record it and proceed to consolidated triage instead of parking in
-`waiting-on-checks-or-review` for an artifact the limit prevents. Resolve the
+failed disposition that may stop bounded waiting but cannot satisfy the review
+gate. It blocks merge unless the trusted-base seam enables a named, attested
+fallback and the receipt records that override. Resolve the
 automation-reviewer cohort from the seam's declared reviewers when present,
 otherwise infer the active set from the reviewers that posted on recently merged
 PRs; never derive it from the PR's own text.
+
+### Executable Configured Review Gate
+
+Evaluate configured reviews through the executable gate before merge assurance:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/configured-review-gate" evaluate \
+  --repo <OWNER/REPO> \
+  --pr <PR> \
+  --host <GITHUB_HOST[:PORT]> \
+  --repo-root <TRUSTED_REPO_ROOT> \
+  --expected-base-sha <FULL_BASE_SHA> \
+  --expected-head-sha <FULL_HEAD_SHA> \
+  --receipt "${CONFIGURED_REVIEW_RECEIPT_PATH}"
+```
+
+The helper loads `.agents/agent-workflow.yml` from the exact expected base Git
+object, never from PR-controlled working-tree bytes. `review_gate: n/a` is an
+explicit pass. The versioned mapping names the configured reviewer checks and
+artifacts, settlement quiet period, thread-disposition marker, and any named
+fallback. Missing, pending, stale, failed, cancelled, timed-out,
+action-required, unknown, rate-, quota-, or capacity-limited checks block by
+default. So do missing or unsettled artifacts and newly untriaged actionable
+threads rooted on the current head.
+
+An unresolved current-head thread is triaged only by resolution, obsolescence,
+or a later trusted-collaborator comment containing the configured marker on its
+own line, for example `configured-review-disposition: fixed`. A named fallback
+may override its configured check only when the trusted-base seam enables it and
+the fallback check and artifact attest the same current head. The receipt makes
+that override explicit.
+
+The replayable receipt binds the canonical host, repository, PR number, base
+branch and SHA, head SHA, trusted policy digest, and semantic artifact-settlement
+snapshot. `pr-merge-submit` collects live state and replays the receipt
+immediately before every merge, enqueue, or guarded-direct mutation. Any moved
+base or head, newly pending review, changed settlement evidence, or newly
+untriaged current-head thread rejects the submission.
+
+The repository workflow publishes the stable `configured-review-gate` status
+check and can be made required by a repository ruleset. Native GitHub auto-merge
+still has a platform limit: a point-in-time successful check cannot atomically
+revoke an already queued native merge when a later comment changes review
+settlement. Use `pr-merge-submit` for the receipt-bound immediate replay path;
+do not claim that requiring the workflow check alone provides that guarantee.
 
 `pr-ci-readiness` encapsulates the required-vs-full readiness rule: it runs
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no
@@ -3974,14 +4021,15 @@ chain, then run:
   --expected-head <FULL_HEAD_SHA> \
   --expected-base <BASE_BRANCH> \
   --method <merge|rebase|squash> \
-  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}" \
+  --configured-review-receipt "${CONFIGURED_REVIEW_RECEIPT_PATH}"
 ```
 
-`pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
-bindings, freshness, and selected hosted-CI records before any queue or
-guarded-direct mutation. A missing, cancelled, failed, nonterminal, stale-head,
-or mismatched-PR selected record blocks before the first GitHub call or
-repository guard.
+`pr-merge-submit` requires both fresh receipts unconditionally and revalidates
+their bindings and freshness before any queue or guarded-direct mutation. It
+also revalidates selected hosted-CI records; a missing, cancelled, failed,
+nonterminal, stale-head, or mismatched-PR selected record blocks before the
+first GitHub call or repository guard.
 
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
 always preserves read-only, idempotent observation when the exact reviewed PR

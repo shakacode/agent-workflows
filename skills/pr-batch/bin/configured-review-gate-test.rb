@@ -1,0 +1,473 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "minitest/autorun"
+require "open3"
+require "tmpdir"
+require "time"
+require "yaml"
+
+SCRIPT = File.expand_path("configured-review-gate", __dir__)
+load SCRIPT
+
+class ConfiguredReviewGateTest < Minitest::Test
+  HOST = "github.com"
+  REPO = "example/widgets"
+  PR = 42
+  BASE_SHA = "b" * 40
+  HEAD_SHA = "a" * 40
+  NOW = Time.iso8601("2026-08-25T12:00:00Z")
+  PR4701_FIXTURE = File.expand_path("fixtures/configured-review-pr4701.json", __dir__)
+
+  FakeClient = Struct.new(:snapshots) do
+    def collect
+      snapshots.length > 1 ? snapshots.shift : snapshots.first
+    end
+  end
+
+  def snapshot(**overrides)
+    {
+      "contract" => "configured-review-snapshot",
+      "version" => 1,
+      "provenance" => "fixture",
+      "collected_at" => NOW.iso8601,
+      "bindings" => {
+        "host" => HOST,
+        "repo" => REPO,
+        "pr" => PR,
+        "base_ref" => "main",
+        "base_sha" => BASE_SHA,
+        "head_sha" => HEAD_SHA
+      },
+      "checks" => [],
+      "artifacts" => [],
+      "threads" => [],
+      "complete" => true
+    }.merge(overrides)
+  end
+
+  def live_snapshot(**overrides)
+    snapshot("provenance" => "gh-api", **overrides)
+  end
+
+  def policy
+    {
+      "version" => 1,
+      "reviewers" => [
+        {
+          "id" => "claude",
+          "check_name" => "claude-review",
+          "artifact" => {
+            "actors" => ["claude"],
+            "kinds" => %w[issue_comment pull_request_review review_thread]
+          }
+        }
+      ],
+      "require_current_head" => true,
+      "artifact_settlement" => { "required" => true, "quiet_period_seconds" => 30 },
+      "thread_disposition" => {
+        "required" => true,
+        "marker" => "configured-review-disposition:"
+      },
+      "failure_policy" => "block",
+      "fallback" => { "mode" => "disabled" }
+    }
+  end
+
+  def check(
+    name: "claude-review", status: "completed", conclusion: "success",
+    head_sha: HEAD_SHA, output: "review complete"
+  )
+    {
+      "name" => name,
+      "status" => status,
+      "conclusion" => conclusion,
+      "head_sha" => head_sha,
+      "started_at" => "2026-08-25T11:55:00Z",
+      "completed_at" => status == "completed" ? "2026-08-25T11:59:00Z" : nil,
+      "details_url" => "https://github.com/example/widgets/actions/runs/1",
+      "output" => output
+    }
+  end
+
+  def artifact(id: "A1", kind: "issue_comment", actor: "claude", head_sha: HEAD_SHA)
+    {
+      "id" => id,
+      "kind" => kind,
+      "actor" => actor,
+      "created_at" => "2026-08-25T11:59:10Z",
+      "url" => "https://github.com/example/widgets/pull/42#issuecomment-1",
+      "head_sha" => head_sha
+    }
+  end
+
+  def thread(id:, resolved: false, head_sha: HEAD_SHA, comments: [])
+    {
+      "id" => id,
+      "url" => "https://github.com/example/widgets/pull/42#discussion_r#{id.delete_prefix('T')}",
+      "resolved" => resolved,
+      "outdated" => false,
+      "root_head_sha" => head_sha,
+      "comments" => [
+        {
+          "id" => "#{id}-root",
+          "actor" => "claude",
+          "association" => "CONTRIBUTOR",
+          "body" => "Please fix this.",
+          "created_at" => "2026-08-25T11:59:10Z"
+        },
+        *comments
+      ]
+    }
+  end
+
+  def test_explicit_n_a_is_ready_without_inventing_a_review_cohort
+    result = ConfiguredReviewGate.evaluate(
+      policy: "n/a",
+      policy_source: "review_gate: n/a\n",
+      snapshot: snapshot,
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "READY", result.fetch("verdict")
+    assert_empty result.fetch("blockers")
+    receipt = result.fetch("receipt")
+    assert_equal "configured-review-gate-receipt", receipt.fetch("contract")
+    assert_equal snapshot.fetch("bindings"), receipt.fetch("bindings")
+    assert_equal true, receipt.dig("policy", "not_applicable")
+    assert_equal false, receipt.fetch("mutation_eligible")
+  end
+
+  def test_default_policy_blocks_the_complete_check_state_matrix
+    cases = {
+      "missing" => [[], "NOT_READY", "configured-review-missing"],
+      "pending" => [[check(status: "in_progress", conclusion: nil)], "NOT_READY", "configured-review-pending"],
+      "stale" => [[check(head_sha: "c" * 40)], "NOT_READY", "configured-review-stale"],
+      "failed" => [[check(conclusion: "failure")], "NOT_READY", "configured-review-failed"],
+      "cancelled" => [[check(conclusion: "cancelled")], "NOT_READY", "configured-review-cancelled"],
+      "timed out" => [[check(conclusion: "timed_out")], "NOT_READY", "configured-review-timed-out"],
+      "action required" => [[check(conclusion: "action_required")], "NOT_READY", "configured-review-action-required"],
+      "rate limited" => [[check(conclusion: "failure", output: "HTTP 429 rate limit exceeded")], "NOT_READY", "configured-review-rate-limited"],
+      "quota exhausted" => [[check(conclusion: "failure", output: "usage limit quota exhausted")], "NOT_READY", "configured-review-quota-exhausted"],
+      "capacity unavailable" => [[check(conclusion: "failure", output: "HTTP 503 provider capacity unavailable")], "NOT_READY", "configured-review-capacity-unavailable"],
+      "unknown status" => [[check(status: "mystery", conclusion: nil)], "UNKNOWN", "configured-review-unknown"]
+    }
+
+    cases.each do |label, (checks, verdict, blocker_code)|
+      result = ConfiguredReviewGate.evaluate(
+        policy: policy,
+        policy_source: JSON.generate(policy),
+        snapshot: snapshot("checks" => checks),
+        settled: true,
+        now: NOW
+      )
+
+      assert_equal verdict, result.fetch("verdict"), label
+      assert_includes result.fetch("blockers").map { |blocker| blocker.fetch("code") }, blocker_code, label
+      refute result.key?("receipt"), label
+    end
+  end
+
+  def test_success_requires_a_current_head_artifact_and_a_settled_snapshot
+    missing = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check]),
+      settled: true,
+      now: NOW
+    )
+    unsettled = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [artifact]),
+      settled: false,
+      now: NOW
+    )
+    stale_artifact = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [artifact(head_sha: "c" * 40)]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "configured-review-artifact-missing", missing.dig("blockers", 0, "code")
+    assert_equal "configured-review-artifact-unsettled", unsettled.dig("blockers", 0, "code")
+    assert_equal "configured-review-artifact-missing", stale_artifact.dig("blockers", 0, "code")
+  end
+
+  def test_settled_success_with_no_untriaged_current_head_threads_is_ready
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [artifact]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "READY", result.fetch("verdict")
+    assert_empty result.fetch("blockers")
+    receipt = result.fetch("receipt")
+    assert_equal HEAD_SHA, receipt.dig("bindings", "head_sha")
+    assert_equal BASE_SHA, receipt.dig("bindings", "base_sha")
+    assert_match(/\Asha256:[0-9a-f]{64}\z/, receipt.dig("artifact_settlement", "snapshot_digest"))
+    assert_equal false, receipt.fetch("mutation_eligible")
+  end
+
+  def test_pr_4701_replay_blocks_five_unresolved_untriaged_current_head_threads
+    threads = 5.times.map { |index| thread(id: "T#{index + 1}") }
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot(
+        "checks" => [check],
+        "artifacts" => [artifact(kind: "review_thread")],
+        "threads" => threads
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    blockers = result.fetch("blockers")
+    assert_equal 5, blockers.count { |blocker| blocker.fetch("code") == "configured-review-thread-untriaged" }
+    assert_equal threads.map { |item| item.fetch("id") }, blockers.map { |blocker| blocker.fetch("thread_id") }
+    refute result.key?("receipt")
+  end
+
+  def test_explicit_trusted_thread_dispositions_satisfy_the_gate
+    disposition = {
+      "id" => "reply-1",
+      "actor" => "maintainer",
+      "association" => "MEMBER",
+      "body" => "configured-review-disposition: fixed",
+      "created_at" => "2026-08-25T11:59:20Z"
+    }
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot(
+        "checks" => [check],
+        "artifacts" => [artifact(kind: "review_thread")],
+        "threads" => [thread(id: "T1", comments: [disposition])]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "READY", result.fetch("verdict")
+
+    normalized = disposition.reject { |key, _value| key == "body" }.merge("disposition" => true)
+    live_result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot(
+        "checks" => [check],
+        "artifacts" => [artifact(kind: "review_thread")],
+        "threads" => [thread(id: "T-live", comments: [normalized])]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "READY", live_result.fetch("verdict")
+  end
+
+  def test_explicit_named_attested_fallback_can_override_only_a_configured_trigger
+    fallback_policy = policy
+    fallback_policy["fallback"] = {
+      "mode" => "named_attested_check",
+      "triggers" => ["rate_limited"],
+      "reviewer" => {
+        "id" => "codex-fallback",
+        "check_name" => "codex-review",
+        "artifact" => {
+          "actors" => ["codex-reviewer"],
+          "kinds" => ["issue_comment"]
+        }
+      }
+    }
+    result = ConfiguredReviewGate.evaluate(
+      policy: fallback_policy,
+      policy_source: JSON.generate(fallback_policy),
+      snapshot: snapshot(
+        "checks" => [
+          check(conclusion: "failure", output: "HTTP 429 rate limit exceeded"),
+          check(name: "codex-review")
+        ],
+        "artifacts" => [artifact(actor: "codex-reviewer")]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "READY", result.fetch("verdict")
+    override = result.fetch("receipt").dig("policy", "override")
+    assert_equal "named_attested_check", override.fetch("mode")
+    assert_equal "codex-fallback", override.fetch("reviewer_id")
+    assert_equal ["configured-review-rate-limited"], override.fetch("primary_blocker_codes")
+  end
+
+  def test_fallback_does_not_override_an_unconfigured_failure_trigger
+    fallback_policy = policy
+    fallback_policy["fallback"] = {
+      "mode" => "named_attested_check",
+      "triggers" => ["rate_limited"],
+      "reviewer" => {
+        "id" => "codex-fallback",
+        "check_name" => "codex-review",
+        "artifact" => { "actors" => ["codex-reviewer"], "kinds" => ["issue_comment"] }
+      }
+    }
+    result = ConfiguredReviewGate.evaluate(
+      policy: fallback_policy,
+      policy_source: JSON.generate(fallback_policy),
+      snapshot: snapshot(
+        "checks" => [check(conclusion: "cancelled"), check(name: "codex-review")],
+        "artifacts" => [artifact(actor: "codex-reviewer")]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-cancelled", result.dig("blockers", 0, "code")
+  end
+
+  def test_replay_accepts_only_an_unchanged_live_exact_head_snapshot
+    initial = live_snapshot("checks" => [check], "artifacts" => [artifact])
+    receipt = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: initial,
+      settled: true,
+      now: NOW
+    ).fetch("receipt")
+    replay_snapshot = Marshal.load(Marshal.dump(initial))
+    replay_snapshot["collected_at"] = (NOW + 20).iso8601
+
+    result = ConfiguredReviewGate.replay(
+      receipt: receipt,
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: replay_snapshot,
+      now: NOW + 20
+    )
+
+    assert_equal "READY", result.fetch("verdict")
+    assert_equal true, result.fetch("mutation_eligible")
+
+    moved = Marshal.load(Marshal.dump(replay_snapshot))
+    moved["bindings"]["head_sha"] = "c" * 40
+    moved_result = ConfiguredReviewGate.replay(
+      receipt: receipt,
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: moved,
+      now: NOW + 20
+    )
+    assert_equal "NOT_READY", moved_result.fetch("verdict")
+    assert_equal "configured-review-receipt-binding-mismatch", moved_result.dig("blockers", 0, "code")
+  end
+
+  def test_replay_rejects_new_pending_or_untriaged_current_head_evidence
+    initial = live_snapshot("checks" => [check], "artifacts" => [artifact])
+    receipt = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: initial,
+      settled: true,
+      now: NOW
+    ).fetch("receipt")
+    pending = Marshal.load(Marshal.dump(initial))
+    pending["checks"] << check(status: "in_progress", conclusion: nil).merge(
+      "started_at" => "2026-08-25T12:00:10Z"
+    )
+    pending["collected_at"] = (NOW + 20).iso8601
+    pending_result = ConfiguredReviewGate.replay(
+      receipt: receipt,
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: pending,
+      now: NOW + 20
+    )
+    assert_equal "configured-review-pending", pending_result.dig("blockers", 0, "code")
+
+    untriaged = Marshal.load(Marshal.dump(initial))
+    untriaged["threads"] << thread(id: "T-late")
+    untriaged["collected_at"] = (NOW + 20).iso8601
+    thread_result = ConfiguredReviewGate.replay(
+      receipt: receipt,
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: untriaged,
+      now: NOW + 20
+    )
+    assert_equal "configured-review-thread-untriaged", thread_result.dig("blockers", 0, "code")
+  end
+
+  def test_fixture_cli_replays_pr_4701_as_not_ready
+    Dir.mktmpdir("configured-review-gate-test") do |directory|
+      policy_path = File.join(directory, "policy.yml")
+      receipt_path = File.join(directory, "receipt.json")
+      File.write(policy_path, { "review_gate" => policy }.to_yaml)
+
+      stdout, stderr, status = Open3.capture3(
+        SCRIPT, "fixture",
+        "--policy", policy_path,
+        "--snapshot", PR4701_FIXTURE,
+        "--receipt", receipt_path
+      )
+
+      assert_equal 1, status.exitstatus, stderr
+      result = JSON.parse(stdout)
+      assert_equal "NOT_READY", result.fetch("verdict")
+      assert_equal 5, result.fetch("blockers").count
+      refute File.exist?(receipt_path)
+    end
+  end
+
+  def test_live_evaluator_waits_for_one_quiet_period_before_ready
+    current = NOW
+    sleeps = []
+    live = live_snapshot("checks" => [check], "artifacts" => [artifact])
+    result = ConfiguredReviewGate::LiveEvaluator.new(
+      client: FakeClient.new([live, Marshal.load(Marshal.dump(live))]),
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      expected_base_sha: BASE_SHA,
+      wait_seconds: 60,
+      poll_seconds: 30,
+      clock: -> { current },
+      sleeper: ->(seconds) { sleeps << seconds; current += seconds }
+    ).run
+
+    assert_equal "READY", result.fetch("verdict")
+    assert_equal [30], sleeps
+    assert_equal true, result.dig("receipt", "mutation_eligible")
+  end
+
+  def test_live_evaluator_stops_waiting_on_provider_failure_without_waiving_it
+    current = NOW
+    sleeps = []
+    failed = live_snapshot(
+      "checks" => [check(conclusion: "failure", output: "quota exhausted")]
+    )
+    result = ConfiguredReviewGate::LiveEvaluator.new(
+      client: FakeClient.new([failed]),
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      expected_base_sha: BASE_SHA,
+      wait_seconds: 60,
+      poll_seconds: 30,
+      clock: -> { current },
+      sleeper: ->(seconds) { sleeps << seconds; current += seconds }
+    ).run
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-quota-exhausted", result.dig("blockers", 0, "code")
+    assert_empty sleeps
+  end
+end

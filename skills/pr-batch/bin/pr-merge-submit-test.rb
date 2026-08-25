@@ -537,6 +537,10 @@ class PrMergeSubmitTest < Minitest::Test
       :@merge_assurance_receipt,
       { "bindings" => { "base" => { "sha" => BASE_SHA } } }
     )
+    runner.instance_variable_set(
+      :@configured_review_replayer,
+      ->(**_kwargs) { { "verdict" => "READY", "mutation_eligible" => true } }
+    )
     runner.define_singleton_method(:materialize_trusted_base_repository!) { |directory| directory }
     runner.define_singleton_method(:guarded_direct_launch_command!) do |_bytes, executable|
       [[executable], nil]
@@ -554,7 +558,9 @@ class PrMergeSubmitTest < Minitest::Test
       {
         repo: "owner/repo", host: HOST, pr: 42, expected_head: HEAD_SHA,
         expected_base: "main", method: "squash",
-        merge_assurance_receipt: "/tmp/receipt.json", subject: nil, body: nil
+        merge_assurance_receipt: "/tmp/receipt.json",
+        configured_review_receipt: "/tmp/configured-review-receipt.json",
+        subject: nil, body: nil
       }
     )
 
@@ -1310,6 +1316,37 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty log
   end
 
+  def test_configured_review_receipt_flag_is_required_before_any_gh_call
+    result, log = run_cli(mode: "direct", include_configured_review_receipt: false)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--configured-review-receipt is required"
+    assert_empty log
+  end
+
+  def test_direct_replays_configured_review_immediately_before_mutation
+    result, log = run_cli(mode: "direct")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    lines = log.lines
+    mutation_index = lines.index { |line| line.include?("mergePullRequest") }
+    replay_index = lines.index("configured-review-replay\n")
+    refute_nil mutation_index
+    refute_nil replay_index
+    assert_operator replay_index, :<, mutation_index
+    assert_includes lines.fetch(replay_index + 1), " api graphql "
+    assert_includes lines.fetch(replay_index + 1), "query=mutation("
+  end
+
+  def test_configured_review_replay_blocker_prevents_mutation
+    result, log = run_cli(mode: "configured_review_blocked")
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "configured review gate is not READY"
+    assert_includes result.fetch(:stderr), "configured-review-thread-untriaged"
+    refute_includes log, "mergePullRequest"
+  end
+
   def test_unavailable_merge_assurance_receipt_stops_before_any_gh_call
     result, log = run_cli(mode: "direct", receipt_mode: :missing)
 
@@ -1542,6 +1579,7 @@ class PrMergeSubmitTest < Minitest::Test
     subject: "Fix the thing (#42)",
     body: nil,
     include_merge_assurance_receipt: true,
+    include_configured_review_receipt: true,
     receipt_mode: :valid,
     after_stub_warmup: nil,
     trusted_policy_observer: nil,
@@ -1613,6 +1651,8 @@ class PrMergeSubmitTest < Minitest::Test
                         host: HOST, pr_number: 42, gh_dir: dir
         )
       end
+      configured_review_receipt_path = File.join(dir, "configured-review-receipt.json")
+      File.write(configured_review_receipt_path, "{}\n")
       environment = cli_environment(
         dir, log_path, mode,
         guard_log_path:, guard_marker_path:, attacker_log_path:,
@@ -1622,7 +1662,8 @@ class PrMergeSubmitTest < Minitest::Test
       )
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
-        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:
+        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:,
+        include_configured_review_receipt:, configured_review_receipt_path:
       )
       result = if interrupt_guard
                  capture_with_interrupt(
@@ -1692,6 +1733,8 @@ class PrMergeSubmitTest < Minitest::Test
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
                       base_ref: "main", base_sha:, host: HOST, pr_number: 42, gh_dir: dir
       )
+      configured_review_receipt_path = File.join(dir, "configured-review-receipt.json")
+      File.write(configured_review_receipt_path, "{}\n")
       result = Open3.popen3(
         cli_environment(
           dir, log_path, mode,
@@ -1700,7 +1743,8 @@ class PrMergeSubmitTest < Minitest::Test
         ),
         *cli_arguments(
           "owner/repo", HEAD_SHA, true, true,
-          include_merge_assurance_receipt: true, receipt_path:, gh_path:
+          include_merge_assurance_receipt: true, receipt_path:, gh_path:,
+          configured_review_receipt_path:
         ),
         chdir: repo_root
       ) do |stdin, stdout, stderr, wait_thread|
@@ -1837,12 +1881,28 @@ class PrMergeSubmitTest < Minitest::Test
     gh_path:,
     expected_base: "main",
     subject: "Fix the thing (#42)", body: nil,
-    include_merge_assurance_receipt: true, receipt_path: nil
+    include_merge_assurance_receipt: true, receipt_path: nil,
+    include_configured_review_receipt: true, configured_review_receipt_path: nil
   )
     runner = <<~RUBY
       load #{SCRIPT.inspect}
       test_environment = %w[GH_LOG PR_TEST_GUARD_MARKER PR_TEST_DESCENDANT_PID_FILE].to_h { |name| [name, ENV.fetch(name)] }
-      runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => #{gh_path.inspect} })
+      configured_review_replayer = lambda do |**_arguments|
+        File.open(ENV.fetch("GH_LOG"), "a") { |file| file.puts("configured-review-replay") }
+        if ENV.fetch("PR_TEST_MODE") == "configured_review_blocked"
+          {
+            "verdict" => "NOT_READY",
+            "mutation_eligible" => false,
+            "blockers" => [{ "code" => "configured-review-thread-untriaged" }]
+          }
+        else
+          { "verdict" => "READY", "mutation_eligible" => true }
+        end
+      end
+      runner = PrMergeSubmit::Runner.new(
+        system_tools: { "gh" => #{gh_path.inspect} },
+        configured_review_replayer: configured_review_replayer
+      )
       runner.define_singleton_method(:system_tool_test_environment) { test_environment }
       exit runner.run(ARGV)
     RUBY
@@ -1854,6 +1914,9 @@ class PrMergeSubmitTest < Minitest::Test
     args.concat(["--expected-head", expected_head]) if include_expected_head
     args.concat(["--expected-base", expected_base]) if include_expected_base
     args.concat(["--merge-assurance-receipt", receipt_path]) if include_merge_assurance_receipt
+    if include_configured_review_receipt
+      args.concat(["--configured-review-receipt", configured_review_receipt_path])
+    end
     args
   end
 

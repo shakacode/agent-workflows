@@ -1,0 +1,896 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Evaluate the trusted-base configured review cohort and emit an exact-head,
+# replayable receipt. Live collection is deliberately kept separate from the
+# pure evaluator so fixture replays cannot become merge evidence.
+
+require "digest"
+require "etc"
+require "json"
+require "open3"
+require "optparse"
+require "rbconfig"
+require "tempfile"
+require "time"
+require "yaml"
+
+module ConfiguredReviewGate
+  RECEIPT_CONTRACT = "configured-review-gate-receipt"
+  RESULT_CONTRACT = "configured-review-gate-result"
+  REPLAY_CONTRACT = "configured-review-gate-replay"
+  SNAPSHOT_CONTRACT = "configured-review-snapshot"
+  VERSION = 1
+  MAX_RECEIPT_AGE_SECONDS = 300
+  MAX_FUTURE_SKEW_SECONDS = 30
+  PENDING_CHECK_STATES = %w[queued in_progress pending waiting requested].freeze
+  TERMINAL_FAILURE_CODES = {
+    "failure" => "configured-review-failed",
+    "cancelled" => "configured-review-cancelled",
+    "timed_out" => "configured-review-timed-out",
+    "action_required" => "configured-review-action-required"
+  }.freeze
+  TRUSTED_DISPOSITION_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
+  DISPOSITION_VALUES = %w[fixed waived not-actionable].freeze
+  BLOCKER_TRIGGER = {
+    "configured-review-missing" => "missing",
+    "configured-review-stale" => "stale",
+    "configured-review-failed" => "failed",
+    "configured-review-cancelled" => "cancelled",
+    "configured-review-timed-out" => "timed_out",
+    "configured-review-action-required" => "action_required",
+    "configured-review-unknown" => "unknown",
+    "configured-review-rate-limited" => "rate_limited",
+    "configured-review-quota-exhausted" => "quota_exhausted",
+    "configured-review-capacity-unavailable" => "capacity_unavailable"
+  }.freeze
+  POLICY_PATH = ".agents/agent-workflow.yml"
+  SYSTEM_TOOL_DIRS = [
+    "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"
+  ].freeze
+  GH_TIMEOUT_SECONDS = 30
+
+  class Error < StandardError; end
+
+  class Command
+    def self.capture(environment, executable, *arguments, timeout_seconds: GH_TIMEOUT_SECONDS, chdir: Dir.pwd)
+      stdout_file = Tempfile.new("configured-review-gate-stdout")
+      stderr_file = Tempfile.new("configured-review-gate-stderr")
+      pid = Process.spawn(
+        environment, executable, *arguments,
+        out: stdout_file.path, err: stderr_file.path, pgroup: true, chdir:, unsetenv_others: true
+      )
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
+      status = nil
+      loop do
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        if waited
+          status = waited[1]
+          break
+        end
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+          Process.kill("TERM", -pid)
+          sleep 0.05
+          Process.kill("KILL", -pid) rescue Errno::ESRCH
+          Process.waitpid(pid) rescue Errno::ECHILD
+          raise Error, "external command timed out after #{timeout_seconds} seconds"
+        end
+        sleep 0.02
+      end
+      stdout_file.rewind
+      stderr_file.rewind
+      [stdout_file.read, stderr_file.read, status]
+    ensure
+      stdout_file&.close!
+      stderr_file&.close!
+    end
+  end
+
+  class TrustedPolicy
+    def self.load(repo_root:, base_sha:)
+      raise Error, "trusted base SHA must be a full commit SHA" unless base_sha.to_s.match?(/\A[0-9a-f]{40}\z/i)
+
+      root = File.realpath(repo_root)
+      git = ConfiguredReviewGate.resolve_system_tool!("git", outside_root: root)
+      account = Etc.getpwuid(Process.uid)
+      environment = {
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => File::NULL,
+        "GIT_NO_REPLACE_OBJECTS" => "1",
+        "GIT_OPTIONAL_LOCKS" => "0"
+      }
+      stdout, stderr, status = Command.capture(
+        environment, git, "-C", root, "show", "--no-textconv", "--no-ext-diff",
+        "#{base_sha}:#{POLICY_PATH}", chdir: root
+      )
+      raise Error, "trusted-base review policy is unavailable" unless status.success?
+
+      document = YAML.safe_load(
+        stdout, permitted_classes: [], permitted_symbols: [], aliases: false
+      ) || {}
+      raise Error, "trusted-base review policy document is not a mapping" unless document.is_a?(Hash)
+
+      [document["review_gate"], stdout]
+    rescue Errno::ENOENT, Errno::EACCES, Psych::Exception => e
+      raise Error, "trusted-base review policy is unavailable: #{e.message.lines.first.to_s.strip}"
+    end
+  end
+
+  class GitHubClient
+    REVIEW_THREADS_QUERY = <<~GRAPHQL
+      query($owner:String!,$name:String!,$number:Int!,$endCursor:String) {
+        repository(owner:$owner,name:$name) {
+          pullRequest(number:$number) {
+            reviewThreads(first:100,after:$endCursor) {
+              nodes {
+                id isResolved isOutdated
+                comments(first:100) {
+                  nodes {
+                    id url body createdAt author { login } authorAssociation
+                    commit { oid } originalCommit { oid } replyTo { id }
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }
+    GRAPHQL
+
+    def initialize(host:, repo:, pr:, policy:)
+      @host = host
+      @repo = repo
+      @pr = pr
+      @policy = policy
+      @gh = ConfiguredReviewGate.resolve_system_tool!("gh", outside_root: Dir.pwd)
+    end
+
+    def collect
+      pull = api_json("repos/#{@repo}/pulls/#{@pr}")
+      bindings = {
+        "host" => @host,
+        "repo" => @repo,
+        "pr" => @pr,
+        "base_ref" => pull.dig("base", "ref"),
+        "base_sha" => pull.dig("base", "sha"),
+        "head_sha" => pull.dig("head", "sha")
+      }
+      checks = collect_checks(bindings.fetch("head_sha"))
+      artifacts = collect_artifacts(bindings.fetch("head_sha"), checks)
+      threads, threads_complete = collect_threads
+      {
+        "contract" => SNAPSHOT_CONTRACT,
+        "version" => VERSION,
+        "provenance" => "gh-api",
+        "collected_at" => Time.now.utc.iso8601,
+        "bindings" => bindings,
+        "checks" => checks,
+        "artifacts" => artifacts,
+        "threads" => threads,
+        "complete" => threads_complete
+      }
+    end
+
+    private
+
+    def collect_checks(head_sha)
+      pages = api_json(
+        "--paginate", "--slurp",
+        "repos/#{@repo}/commits/#{head_sha}/check-runs?per_page=100",
+        "-H", "Accept: application/vnd.github+json"
+      )
+      Array(pages).flat_map { |page| Array(page["check_runs"]) }.map do |check|
+        {
+          "name" => check["name"],
+          "status" => check["status"],
+          "conclusion" => check["conclusion"],
+          "head_sha" => check["head_sha"],
+          "started_at" => check["started_at"],
+          "completed_at" => check["completed_at"],
+          "details_url" => check["details_url"],
+          "output" => [check.dig("output", "title"), check.dig("output", "summary"), check.dig("output", "text")].compact.join("\n")
+        }
+      end.sort_by { |check| [check["name"].to_s, check["started_at"].to_s] }
+    end
+
+    def collect_artifacts(head_sha, checks)
+      issue_comments = paginated_array("repos/#{@repo}/issues/#{@pr}/comments?per_page=100")
+      reviews = paginated_array("repos/#{@repo}/pulls/#{@pr}/reviews?per_page=100")
+      artifacts = issue_comments.filter_map do |comment|
+        actor = comment.dig("user", "login")
+        next unless artifact_actor?(actor)
+
+        inferred_head = artifact_after_matching_check?(actor, comment["created_at"], checks) ? head_sha : nil
+        artifact_record(comment["id"], "issue_comment", actor, comment["created_at"], comment["html_url"], inferred_head)
+      end
+      artifacts.concat(reviews.filter_map do |review|
+        actor = review.dig("user", "login")
+        next unless artifact_actor?(actor)
+
+        artifact_record(
+          review["id"], "pull_request_review", actor, review["submitted_at"], review["html_url"], review["commit_id"]
+        )
+      end)
+      artifacts.sort_by { |artifact| [artifact["kind"], artifact["id"].to_s] }
+    end
+
+    def collect_threads
+      owner, name = @repo.split("/", 2)
+      pages = api_json(
+        "graphql", "--paginate", "--slurp",
+        "-f", "query=#{REVIEW_THREADS_QUERY}",
+        "-f", "owner=#{owner}", "-f", "name=#{name}", "-F", "number=#{@pr}"
+      )
+      complete = true
+      threads = Array(pages).flat_map do |page|
+        connection = page.dig("data", "repository", "pullRequest", "reviewThreads")
+        raise Error, "review-thread query returned no pull request" unless connection.is_a?(Hash)
+
+        Array(connection["nodes"])
+      end.map do |thread|
+        comments_connection = thread["comments"]
+        complete = false if comments_connection.dig("pageInfo", "hasNextPage") == true
+        comments = Array(comments_connection["nodes"]).map do |comment|
+          marker = @policy.is_a?(Hash) ? @policy.dig("thread_disposition", "marker") : nil
+          disposition = marker.is_a?(String) &&
+                        TRUSTED_DISPOSITION_ASSOCIATIONS.include?(comment["authorAssociation"]) &&
+                        ConfiguredReviewGate.disposition_body?(comment["body"], marker)
+          {
+            "id" => comment["id"],
+            "actor" => comment.dig("author", "login"),
+            "association" => comment["authorAssociation"],
+            "body_digest" => "sha256:#{Digest::SHA256.hexdigest(comment["body"].to_s)}",
+            "disposition" => disposition,
+            "created_at" => comment["createdAt"]
+          }
+        end
+        root = Array(comments_connection["nodes"]).first || {}
+        {
+          "id" => thread["id"],
+          "url" => root["url"],
+          "resolved" => thread["isResolved"],
+          "outdated" => thread["isOutdated"],
+          "root_head_sha" => root.dig("commit", "oid") || root.dig("originalCommit", "oid"),
+          "comments" => comments
+        }
+      end
+      [threads.uniq { |thread| thread["id"] }.sort_by { |thread| thread["id"].to_s }, complete]
+    end
+
+    def artifact_record(id, kind, actor, created_at, url, head_sha)
+      {
+        "id" => id.to_s,
+        "kind" => kind,
+        "actor" => actor,
+        "created_at" => created_at,
+        "url" => url,
+        "head_sha" => head_sha
+      }
+    end
+
+    def all_reviewers
+      return [] unless @policy.is_a?(Hash)
+
+      reviewers = Array(@policy["reviewers"])
+      fallback = @policy.dig("fallback", "reviewer")
+      fallback ? reviewers + [fallback] : reviewers
+    end
+
+    def artifact_actor?(actor)
+      all_reviewers.any? { |reviewer| Array(reviewer.dig("artifact", "actors")).include?(actor) }
+    end
+
+    def artifact_after_matching_check?(actor, created_at, checks)
+      all_reviewers.any? do |reviewer|
+        next false unless Array(reviewer.dig("artifact", "actors")).include?(actor)
+
+        check = ConfiguredReviewGate.latest_check(
+          checks.select { |item| item["name"] == reviewer["check_name"] }
+        )
+        check && ConfiguredReviewGate.timestamp_at_or_after?(created_at, check["started_at"])
+      end
+    end
+
+    def paginated_array(endpoint)
+      pages = api_json("--paginate", "--slurp", endpoint)
+      Array(pages).flat_map { |page| Array(page) }
+    end
+
+    def api_json(*arguments)
+      account = Etc.getpwuid(Process.uid)
+      environment = {
+        "GH_HOST" => @host,
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+        "GH_PROMPT_DISABLED" => "1",
+        "GIT_TERMINAL_PROMPT" => "0"
+      }
+      %w[GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN].each do |name|
+        environment[name] = ENV[name] if ENV[name] && !ENV[name].empty?
+      end
+      stdout, _stderr, status = Command.capture(environment, @gh, "api", *arguments)
+      raise Error, "GitHub review evidence query failed" unless status.success?
+
+      JSON.parse(stdout)
+    rescue JSON::ParserError
+      raise Error, "GitHub review evidence query returned invalid JSON"
+    end
+  end
+
+  class LiveEvaluator
+    def initialize(client:, policy:, policy_source:, expected_base_sha:, wait_seconds:, poll_seconds:, expected_head_sha: nil, clock: -> { Time.now.utc }, sleeper: ->(seconds) { sleep(seconds) })
+      @client = client
+      @policy = policy
+      @policy_source = policy_source
+      @expected_base_sha = expected_base_sha
+      @expected_head_sha = expected_head_sha
+      @wait_seconds = wait_seconds
+      @poll_seconds = poll_seconds
+      @clock = clock
+      @sleeper = sleeper
+    end
+
+    def run
+      started_at = @clock.call
+      baseline_digest = nil
+      baseline_at = nil
+      loop do
+        now = @clock.call
+        snapshot = @client.collect
+        unless snapshot.dig("bindings", "base_sha").to_s.casecmp?(@expected_base_sha.to_s)
+          return replay_blocked("NOT_READY", "configured-review-base-moved")
+        end
+        if @expected_head_sha &&
+           !snapshot.dig("bindings", "head_sha").to_s.casecmp?(@expected_head_sha.to_s)
+          return replay_blocked("NOT_READY", "configured-review-head-moved")
+        end
+
+        unsettled = ConfiguredReviewGate.evaluate(
+          policy: @policy, policy_source: @policy_source, snapshot:, settled: false, now:
+        )
+        blocker_codes = unsettled.fetch("blockers").map { |item| item["code"] }
+        return unsettled if terminal_without_wait?(blocker_codes)
+
+        digest = ConfiguredReviewGate.semantic_snapshot_digest(snapshot)
+        if digest == baseline_digest
+          quiet_seconds = @policy == "n/a" ? 0 : @policy.dig("artifact_settlement", "quiet_period_seconds")
+          if now - baseline_at >= quiet_seconds
+            return ConfiguredReviewGate.evaluate(
+              policy: @policy, policy_source: @policy_source, snapshot:, settled: true, now:
+            )
+          end
+        else
+          baseline_digest = digest
+          baseline_at = now
+        end
+
+        return unsettled if now - started_at >= @wait_seconds
+
+        @sleeper.call(@poll_seconds)
+      end
+    rescue Error => e
+      replay_blocked("UNKNOWN", "configured-review-evidence-unavailable").merge("diagnostic" => e.message)
+    end
+
+    private
+
+    def terminal_without_wait?(codes)
+      terminal = BLOCKER_TRIGGER.keys - ["configured-review-missing"]
+      codes.any? { |code| terminal.include?(code) }
+    end
+  end
+
+
+  def resolve_system_tool!(name, outside_root:)
+    candidate = SYSTEM_TOOL_DIRS
+                .map { |directory| File.join(directory, name) }
+                .find { |path| File.file?(path) && File.executable?(path) }
+    raise Error, "#{name} is unavailable in an approved system directory" unless candidate
+
+    realpath = File.realpath(candidate)
+    root = File.realpath(outside_root)
+    prefix = "#{root}#{File::SEPARATOR}"
+    if realpath == root || realpath.start_with?(prefix)
+      raise Error, "#{name} must resolve outside the consumer repository"
+    end
+
+    realpath
+  rescue Errno::ENOENT, Errno::EACCES => e
+    raise Error, "#{name} is unavailable: #{e.message}"
+  end
+
+  module_function
+
+  def evaluate(policy:, policy_source:, snapshot:, settled:, now: Time.now.utc)
+    validate_snapshot!(snapshot)
+    policy_digest = "sha256:#{Digest::SHA256.hexdigest(policy_source)}"
+    evidence_digest = evidence_digest(snapshot)
+    snapshot_digest = semantic_snapshot_digest(snapshot)
+
+    if policy == "n/a"
+      receipt = build_receipt(
+        snapshot:,
+        policy: { "not_applicable" => true, "digest" => policy_digest },
+        evidence_digest:,
+        snapshot_digest:,
+        mutation_eligible: snapshot["provenance"] == "gh-api",
+        now:
+      )
+      return {
+        "contract" => RESULT_CONTRACT,
+        "version" => VERSION,
+        "verdict" => "READY",
+        "blockers" => [],
+        "receipt" => receipt
+      }
+    end
+
+    validate_policy!(policy)
+    primary_blockers = check_blockers(policy, snapshot)
+    effective_reviewers = policy.fetch("reviewers")
+    override = nil
+    blockers = primary_blockers
+    if !primary_blockers.empty? && fallback_applicable?(policy.fetch("fallback"), primary_blockers)
+      fallback_reviewer = policy.dig("fallback", "reviewer")
+      fallback_blockers = check_blockers_for_reviewers([fallback_reviewer], snapshot)
+      if fallback_blockers.empty?
+        blockers = []
+        effective_reviewers = [fallback_reviewer]
+        override = {
+          "mode" => "named_attested_check",
+          "reviewer_id" => fallback_reviewer.fetch("id"),
+          "check_name" => fallback_reviewer.fetch("check_name"),
+          "primary_blocker_codes" => primary_blockers.map { |item| item.fetch("code") }.uniq.sort
+        }
+      else
+        blockers = primary_blockers + fallback_blockers.map do |item|
+          item.merge("code" => item.fetch("code").sub("configured-review-", "configured-review-fallback-"))
+        end
+      end
+    end
+    unless blockers.empty?
+      verdict = blockers.any? { |blocker| blocker["code"] == "configured-review-unknown" } ? "UNKNOWN" : "NOT_READY"
+      return {
+        "contract" => RESULT_CONTRACT,
+        "version" => VERSION,
+        "verdict" => verdict,
+        "blockers" => blockers
+      }
+    end
+
+    blockers = artifact_blockers(effective_reviewers, snapshot)
+    blockers << blocker("configured-review-artifact-unsettled", nil, nil, "unsettled") unless settled
+    blockers.concat(thread_blockers(policy, snapshot))
+    unless blockers.empty?
+      verdict = blockers.any? { |item| item["code"] == "configured-review-unknown" } ? "UNKNOWN" : "NOT_READY"
+      return {
+        "contract" => RESULT_CONTRACT,
+        "version" => VERSION,
+        "verdict" => verdict,
+        "blockers" => blockers
+      }
+    end
+
+    receipt = build_receipt(
+      snapshot:,
+      policy: {
+        "not_applicable" => false,
+        "digest" => policy_digest,
+        "reviewers" => policy.fetch("reviewers"),
+        "fallback" => policy.fetch("fallback"),
+        "override" => override
+      },
+      evidence_digest:,
+      snapshot_digest:,
+      mutation_eligible: snapshot["provenance"] == "gh-api",
+      quiet_period_seconds: policy.dig("artifact_settlement", "quiet_period_seconds"),
+      now:
+    )
+    {
+      "contract" => RESULT_CONTRACT,
+      "version" => VERSION,
+      "verdict" => "READY",
+      "blockers" => [],
+      "receipt" => receipt
+    }
+  end
+
+  def build_receipt(
+    snapshot:, policy:, evidence_digest:, snapshot_digest:, mutation_eligible:, now:,
+    quiet_period_seconds: 0
+  )
+    {
+      "contract" => RECEIPT_CONTRACT,
+      "version" => VERSION,
+      "verdict" => "READY",
+      "issued_at" => now.utc.iso8601,
+      "bindings" => snapshot.fetch("bindings"),
+      "policy" => policy,
+      "artifact_settlement" => {
+        "snapshot_digest" => snapshot_digest,
+        "collected_at" => snapshot.fetch("collected_at"),
+        "quiet_period_seconds" => quiet_period_seconds,
+        "settled" => true
+      },
+      "evidence" => snapshot,
+      "evidence_digest" => evidence_digest,
+      "mutation_eligible" => mutation_eligible
+    }
+  end
+
+  def replay(receipt:, policy:, policy_source:, snapshot:, now: Time.now.utc)
+    validate_snapshot!(snapshot)
+    receipt_error = receipt_validation_error(receipt, policy_source, now)
+    return replay_blocked("UNKNOWN", receipt_error) if receipt_error
+    unless receipt.fetch("bindings") == snapshot.fetch("bindings")
+      return replay_blocked("NOT_READY", "configured-review-receipt-binding-mismatch")
+    end
+
+    current = evaluate(policy:, policy_source:, snapshot:, settled: true, now:)
+    return current unless current["verdict"] == "READY"
+    unless receipt.dig("artifact_settlement", "snapshot_digest") == semantic_snapshot_digest(snapshot)
+      return replay_blocked("NOT_READY", "configured-review-receipt-artifact-snapshot-moved")
+    end
+    unless receipt["mutation_eligible"] == true && current.dig("receipt", "mutation_eligible") == true
+      return replay_blocked("UNKNOWN", "configured-review-receipt-non-live")
+    end
+
+    {
+      "contract" => REPLAY_CONTRACT,
+      "version" => VERSION,
+      "verdict" => "READY",
+      "mutation_eligible" => true,
+      "bindings" => snapshot.fetch("bindings"),
+      "snapshot_digest" => semantic_snapshot_digest(snapshot),
+      "blockers" => []
+    }
+  end
+
+  def receipt_validation_error(receipt, policy_source, now)
+    return "configured-review-receipt-malformed" unless receipt.is_a?(Hash) &&
+                                                        receipt["contract"] == RECEIPT_CONTRACT &&
+                                                        receipt["version"] == VERSION &&
+                                                        receipt["verdict"] == "READY" &&
+                                                        receipt["evidence"].is_a?(Hash)
+    return "configured-review-receipt-evidence-digest-mismatch" unless
+      receipt["evidence_digest"] == evidence_digest(receipt["evidence"])
+    return "configured-review-receipt-policy-mismatch" unless
+      receipt.dig("policy", "digest") == "sha256:#{Digest::SHA256.hexdigest(policy_source)}"
+
+    issued_at = Time.iso8601(receipt["issued_at"].to_s)
+    age = now - issued_at
+    return "configured-review-receipt-stale" if age > MAX_RECEIPT_AGE_SECONDS
+    return "configured-review-receipt-future-dated" if age < -MAX_FUTURE_SKEW_SECONDS
+
+    nil
+  rescue ArgumentError
+    "configured-review-receipt-malformed"
+  end
+
+  def replay_blocked(verdict, code)
+    {
+      "contract" => REPLAY_CONTRACT,
+      "version" => VERSION,
+      "verdict" => verdict,
+      "mutation_eligible" => false,
+      "blockers" => [{ "code" => code }]
+    }
+  end
+
+  def evidence_digest(snapshot)
+    "sha256:#{Digest::SHA256.hexdigest(canonical_json(snapshot))}"
+  end
+
+  def semantic_snapshot_digest(snapshot)
+    semantic = snapshot.reject { |key, _value| key == "collected_at" }
+    "sha256:#{Digest::SHA256.hexdigest(canonical_json(semantic))}"
+  end
+
+  def validate_snapshot!(snapshot)
+    unless snapshot.is_a?(Hash) &&
+           snapshot["contract"] == SNAPSHOT_CONTRACT &&
+           snapshot["version"] == VERSION &&
+           snapshot["bindings"].is_a?(Hash)
+      raise ArgumentError, "configured review snapshot is malformed"
+    end
+  end
+
+  def validate_policy!(policy)
+    unless policy.is_a?(Hash) && policy["version"] == VERSION && policy["reviewers"].is_a?(Array) &&
+           !policy["reviewers"].empty?
+      raise ArgumentError, "review_gate policy is not executable"
+    end
+  end
+
+  def check_blockers(policy, snapshot)
+    check_blockers_for_reviewers(policy.fetch("reviewers"), snapshot)
+  end
+
+  def check_blockers_for_reviewers(reviewers, snapshot)
+    return [blocker("configured-review-unknown", nil, nil, "snapshot-incomplete")] unless snapshot["complete"] == true
+
+    reviewers.filter_map do |reviewer|
+      check_name = reviewer.fetch("check_name")
+      candidates = snapshot.fetch("checks").select { |check| check["name"] == check_name }
+      if candidates.empty?
+        blocker("configured-review-missing", reviewer, nil, "missing")
+      else
+        check = latest_check(candidates)
+        classify_check_blocker(reviewer, check, snapshot.dig("bindings", "head_sha"))
+      end
+    end
+  end
+
+  def fallback_applicable?(fallback, blockers)
+    return false unless fallback.is_a?(Hash) && fallback["mode"] == "named_attested_check"
+
+    allowed = Array(fallback["triggers"])
+    blockers.all? do |item|
+      trigger = BLOCKER_TRIGGER[item["code"]]
+      trigger && allowed.include?(trigger)
+    end
+  end
+
+  def artifact_blockers(reviewers, snapshot)
+    head_sha = snapshot.dig("bindings", "head_sha")
+    reviewers.filter_map do |reviewer|
+      check = latest_check(snapshot.fetch("checks").select { |item| item["name"] == reviewer["check_name"] })
+      artifact_policy = reviewer.fetch("artifact")
+      present = snapshot.fetch("artifacts").any? do |artifact|
+        artifact_policy.fetch("actors").include?(artifact["actor"]) &&
+          artifact_policy.fetch("kinds").include?(artifact["kind"]) &&
+          artifact["head_sha"].to_s.casecmp?(head_sha.to_s) &&
+          timestamp_at_or_after?(artifact["created_at"], check["started_at"])
+      end
+      blocker("configured-review-artifact-missing", reviewer, check, "missing") unless present
+    end
+  end
+
+  def thread_blockers(policy, snapshot)
+    head_sha = snapshot.dig("bindings", "head_sha")
+    marker = policy.dig("thread_disposition", "marker")
+    snapshot.fetch("threads").filter_map do |thread|
+      next if thread["resolved"] == true || thread["outdated"] == true
+
+      root_head = thread["root_head_sha"]
+      if root_head.to_s.empty?
+        next blocker("configured-review-unknown", nil, nil, "thread-head-unknown").merge(
+          "thread_id" => thread["id"], "url" => thread["url"]
+        )
+      end
+      next unless root_head.to_s.casecmp?(head_sha.to_s)
+      next if explicitly_disposed_thread?(thread, marker)
+
+      blocker("configured-review-thread-untriaged", nil, nil, "unresolved").merge(
+        "thread_id" => thread["id"], "url" => thread["url"]
+      )
+    end
+  end
+
+  def explicitly_disposed_thread?(thread, marker)
+    Array(thread["comments"])[1..].to_a.any? do |comment|
+      comment["disposition"] == true ||
+        (TRUSTED_DISPOSITION_ASSOCIATIONS.include?(comment["association"]) &&
+          disposition_body?(comment["body"], marker))
+    end
+  end
+
+  def disposition_body?(body, marker)
+    pattern = /\A#{Regexp.escape(marker)}\s*(?:#{DISPOSITION_VALUES.map { |value| Regexp.escape(value) }.join('|')})\z/i
+    body.to_s.lines.any? { |line| line.strip.match?(pattern) }
+  end
+
+  def timestamp_at_or_after?(candidate, floor)
+    Time.iso8601(candidate.to_s) >= Time.iso8601(floor.to_s)
+  rescue ArgumentError
+    false
+  end
+
+  def latest_check(checks)
+    checks.max_by { |check| [check["started_at"].to_s, check["completed_at"].to_s] }
+  end
+
+  def classify_check_blocker(reviewer, check, expected_head)
+    unless check["head_sha"].to_s.casecmp?(expected_head.to_s)
+      return blocker("configured-review-stale", reviewer, check, "stale")
+    end
+
+    status = check["status"]
+    return blocker("configured-review-pending", reviewer, check, status) if PENDING_CHECK_STATES.include?(status)
+    return blocker("configured-review-unknown", reviewer, check, status || "unknown") unless status == "completed"
+
+    conclusion = check["conclusion"]
+    return nil if conclusion == "success"
+
+    capacity_code = provider_failure_code(check["output"])
+    code = capacity_code || TERMINAL_FAILURE_CODES[conclusion] || "configured-review-unknown"
+    blocker(code, reviewer, check, conclusion || "unknown")
+  end
+
+  def provider_failure_code(output)
+    normalized = output.to_s.downcase
+    return "configured-review-rate-limited" if normalized.match?(/(?:http\s*)?429|rate[ -]?limit/)
+    return "configured-review-quota-exhausted" if normalized.match?(/quota|usage[ -]?limit/)
+    return "configured-review-capacity-unavailable" if normalized.match?(/(?:http\s*)?503|capacity|unavailable/)
+
+    nil
+  end
+
+  def blocker(code, reviewer, check, state)
+    {
+      "code" => code,
+      "reviewer" => reviewer&.[]("id"),
+      "check_name" => reviewer&.[]("check_name"),
+      "state" => state,
+      "details_url" => check&.[]("details_url")
+    }.reject { |_key, value| value.nil? }
+  end
+
+  def canonical_json(value)
+    case value
+    when Hash
+      "{#{value.keys.sort.map { |key| "#{JSON.generate(key)}:#{canonical_json(value[key])}" }.join(',')}}"
+    when Array
+      "[#{value.map { |item| canonical_json(item) }.join(',')}]"
+    else
+      JSON.generate(value)
+    end
+  end
+
+  class CLI
+    def run(argv)
+      command = argv.shift
+      return help if command.nil? || %w[-h --help help].include?(command)
+
+      case command
+      when "fixture"
+        run_fixture(argv)
+      when "evaluate"
+        run_live_evaluate(argv)
+      when "replay"
+        run_live_replay(argv)
+      else
+        raise ArgumentError, "unknown command #{command.inspect}"
+      end
+    rescue ArgumentError, Errno::ENOENT, Errno::EACCES, Psych::Exception, JSON::ParserError => e
+      warn "Error: #{e.message.lines.first.to_s.strip}"
+      2
+    end
+
+    private
+
+    def run_fixture(argv)
+      options = parse_file_options(argv, receipt_required: false)
+      policy_source = File.read(options.fetch(:policy), encoding: "UTF-8")
+      policy_document = YAML.safe_load(
+        policy_source, permitted_classes: [], permitted_symbols: [], aliases: false
+      ) || {}
+      raise ArgumentError, "policy document must be a mapping" unless policy_document.is_a?(Hash)
+
+      snapshot = JSON.parse(File.read(options.fetch(:snapshot), encoding: "UTF-8"))
+      result = ConfiguredReviewGate.evaluate(
+        policy: policy_document["review_gate"],
+        policy_source:,
+        snapshot:,
+        settled: true
+      )
+      write_receipt(options[:receipt], result["receipt"]) if result["verdict"] == "READY" && options[:receipt]
+      puts JSON.pretty_generate(result)
+      result["verdict"] == "READY" ? 0 : result["verdict"] == "NOT_READY" ? 1 : 2
+    end
+
+    def run_live_evaluate(argv)
+      options = parse_live_options(argv, evaluate: true)
+      policy, policy_source = TrustedPolicy.load(
+        repo_root: options.fetch(:repo_root), base_sha: options.fetch(:expected_base_sha)
+      )
+      client = GitHubClient.new(
+        host: options.fetch(:host), repo: options.fetch(:repo), pr: options.fetch(:pr), policy:
+      )
+      result = LiveEvaluator.new(
+        client:, policy:, policy_source:,
+        expected_base_sha: options.fetch(:expected_base_sha),
+        expected_head_sha: options.fetch(:expected_head_sha),
+        wait_seconds: options.fetch(:wait_seconds),
+        poll_seconds: options.fetch(:poll_seconds)
+      ).run
+      write_receipt(options.fetch(:receipt), result["receipt"]) if result["verdict"] == "READY"
+      emit_result(result)
+    end
+
+    def run_live_replay(argv)
+      options = parse_live_options(argv, evaluate: false)
+      receipt = JSON.parse(File.read(options.fetch(:receipt), encoding: "UTF-8"))
+      base_sha = receipt.dig("bindings", "base_sha")
+      policy, policy_source = TrustedPolicy.load(repo_root: options.fetch(:repo_root), base_sha:)
+      client = GitHubClient.new(
+        host: options.fetch(:host), repo: options.fetch(:repo), pr: options.fetch(:pr), policy:
+      )
+      snapshot = client.collect
+      result = ConfiguredReviewGate.replay(receipt:, policy:, policy_source:, snapshot:)
+      emit_result(result)
+    end
+
+    def parse_live_options(argv, evaluate:)
+      options = { host: "github.com", wait_seconds: 900, poll_seconds: 10 }
+      parser = OptionParser.new do |opts|
+        opts.on("--repo OWNER/REPO") { |value| options[:repo] = value }
+        opts.on("--pr NUMBER", Integer) { |value| options[:pr] = value }
+        opts.on("--host HOST") { |value| options[:host] = value.downcase }
+        opts.on("--repo-root DIR") { |value| options[:repo_root] = value }
+        opts.on("--expected-base-sha SHA") { |value| options[:expected_base_sha] = value.downcase }
+        opts.on("--expected-head-sha SHA") { |value| options[:expected_head_sha] = value.downcase }
+        opts.on("--receipt FILE") { |value| options[:receipt] = value }
+        opts.on("--wait-seconds SECONDS", Integer) { |value| options[:wait_seconds] = value }
+        opts.on("--poll-seconds SECONDS", Integer) { |value| options[:poll_seconds] = value }
+      end
+      parser.parse!(argv)
+      raise ArgumentError, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+      raise ArgumentError, "--repo must use OWNER/REPO form" unless options[:repo].to_s.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z})
+      raise ArgumentError, "--pr must be positive" unless options[:pr].is_a?(Integer) && options[:pr].positive?
+      raise ArgumentError, "--host is invalid" unless options[:host].to_s.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d+)?\z/)
+      raise ArgumentError, "--repo-root is required" if options[:repo_root].to_s.empty?
+      raise ArgumentError, "--receipt is required" if options[:receipt].to_s.empty?
+      if evaluate
+        %i[expected_base_sha expected_head_sha].each do |key|
+          raise ArgumentError, "--#{key.to_s.tr('_', '-')} must be a full commit SHA" unless
+            options[key].to_s.match?(/\A[0-9a-f]{40}\z/)
+        end
+        raise ArgumentError, "--wait-seconds must be between 0 and 3600" unless options[:wait_seconds].between?(0, 3600)
+        raise ArgumentError, "--poll-seconds must be between 1 and 300" unless options[:poll_seconds].between?(1, 300)
+      end
+      options
+    end
+
+    def emit_result(result)
+      puts JSON.pretty_generate(result)
+      result["verdict"] == "READY" ? 0 : result["verdict"] == "NOT_READY" ? 1 : 2
+    end
+
+    def parse_file_options(argv, receipt_required:)
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.on("--policy FILE", "Trusted review_gate policy YAML") { |value| options[:policy] = value }
+        opts.on("--snapshot FILE", "Deterministic configured-review snapshot") { |value| options[:snapshot] = value }
+        opts.on("--receipt FILE", "Write a READY receipt") { |value| options[:receipt] = value }
+      end
+      parser.parse!(argv)
+      raise ArgumentError, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+      raise ArgumentError, "--policy is required" if options[:policy].to_s.empty?
+      raise ArgumentError, "--snapshot is required" if options[:snapshot].to_s.empty?
+      raise ArgumentError, "--receipt is required" if receipt_required && options[:receipt].to_s.empty?
+
+      options
+    end
+
+    def write_receipt(path, receipt)
+      File.write(path, "#{JSON.pretty_generate(receipt)}\n", mode: "w", perm: 0o600)
+    end
+
+    def help
+      puts <<~HELP
+        Usage:
+          configured-review-gate fixture --policy FILE --snapshot FILE [--receipt FILE]
+          configured-review-gate evaluate --repo OWNER/REPO --pr NUMBER --host HOST
+            --repo-root DIR --expected-base-sha SHA --expected-head-sha SHA
+            --receipt FILE [--wait-seconds N --poll-seconds N]
+          configured-review-gate replay --repo OWNER/REPO --pr NUMBER --host HOST
+            --repo-root DIR --receipt FILE
+
+        Fixture receipts are never mutation eligible. Live evaluate/replay commands
+        collect GitHub state and are required before merge submission.
+      HELP
+      0
+    end
+  end
+end
+
+exit ConfiguredReviewGate::CLI.new.run(ARGV) if $PROGRAM_NAME == __FILE__

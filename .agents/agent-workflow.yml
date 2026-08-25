@@ -2,7 +2,28 @@
 base_branch: main
 repo_prefix: "AW"
 follow_up_prefix: "Follow-up:"
-review_gate: "independent code review for non-trivial workflow or helper changes"
+review_gate:
+  version: 1
+  reviewers:
+    - id: claude
+      check_name: claude-review
+      artifact:
+        actors:
+          - claude
+        kinds:
+          - issue_comment
+          - pull_request_review
+          - review_thread
+  require_current_head: true
+  artifact_settlement:
+    required: true
+    quiet_period_seconds: 30
+  thread_disposition:
+    required: true
+    marker: "configured-review-disposition:"
+  failure_policy: block
+  fallback:
+    mode: disabled
 automation_reviewers: "claude-review (GitHub Action; in-flight and terminal state observable via the checks API) and coderabbitai (advisory; may fail on rate limits)"
 approval_exempt: "docs, workflow text, helper scripts, skill metadata, and validation fixtures when the change remains portable"
 trusted_actions:

@@ -1,0 +1,79 @@
+{
+  "contract": "configured-review-snapshot",
+  "version": 1,
+  "provenance": "fixture",
+  "collected_at": "2026-07-18T06:56:00Z",
+  "bindings": {
+    "host": "github.com",
+    "repo": "shakacode/react_on_rails",
+    "pr": 4701,
+    "base_ref": "master",
+    "base_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "head_sha": "df00766e2b330135c02674f794a0a5568f6b10f4"
+  },
+  "checks": [
+    {
+      "name": "claude-review",
+      "status": "completed",
+      "conclusion": "success",
+      "head_sha": "df00766e2b330135c02674f794a0a5568f6b10f4",
+      "started_at": "2026-07-18T06:43:52Z",
+      "completed_at": "2026-07-18T06:55:27Z",
+      "details_url": "https://github.com/shakacode/react_on_rails/actions/runs/4701",
+      "output": "review completed"
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "R1",
+      "kind": "review_thread",
+      "actor": "claude",
+      "created_at": "2026-07-18T06:54:30Z",
+      "url": "https://github.com/shakacode/react_on_rails/pull/4701#discussion_r1",
+      "head_sha": "df00766e2b330135c02674f794a0a5568f6b10f4"
+    }
+  ],
+  "threads": [
+    {
+      "id": "T1",
+      "url": "https://github.com/shakacode/react_on_rails/pull/4701#discussion_r1",
+      "resolved": false,
+      "outdated": false,
+      "root_head_sha": "df00766e2b330135c02674f794a0a5568f6b10f4",
+      "comments": [{"id":"C1","actor":"claude","association":"CONTRIBUTOR","body":"finding 1","created_at":"2026-07-18T06:54:30Z"}]
+    },
+    {
+      "id": "T2",
+      "url": "https://github.com/shakacode/react_on_rails/pull/4701#discussion_r2",
+      "resolved": false,
+      "outdated": false,
+      "root_head_sha": "df00766e2b330135c02674f794a0a5568f6b10f4",
+      "comments": [{"id":"C2","actor":"claude","association":"CONTRIBUTOR","body":"finding 2","created_at":"2026-07-18T06:54:33Z"}]
+    },
+    {
+      "id": "T3",
+      "url": "https://github.com/shakacode/react_on_rails/pull/4701#discussion_r3",
+      "resolved": false,
+      "outdated": false,
+      "root_head_sha": "df00766e2b330135c02674f794a0a5568f6b10f4",
+      "comments": [{"id":"C3","actor":"claude","association":"CONTRIBUTOR","body":"finding 3","created_at":"2026-07-18T06:54:36Z"}]
+    },
+    {
+      "id": "T4",
+      "url": "https://github.com/shakacode/react_on_rails/pull/4701#discussion_r4",
+      "resolved": false,
+      "outdated": false,
+      "root_head_sha": "df00766e2b330135c02674f794a0a5568f6b10f4",
+      "comments": [{"id":"C4","actor":"claude","association":"CONTRIBUTOR","body":"finding 4","created_at":"2026-07-18T06:54:40Z"}]
+    },
+    {
+      "id": "T5",
+      "url": "https://github.com/shakacode/react_on_rails/pull/4701#discussion_r5",
+      "resolved": false,
+      "outdated": false,
+      "root_head_sha": "df00766e2b330135c02674f794a0a5568f6b10f4",
+      "comments": [{"id":"C5","actor":"claude","association":"CONTRIBUTOR","body":"finding 5","created_at":"2026-07-18T06:54:44Z"}]
+    }
+  ],
+  "complete": true
+}

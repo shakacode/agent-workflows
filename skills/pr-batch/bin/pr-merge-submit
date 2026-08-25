@@ -3,7 +3,8 @@
 
 # Submit one merge-assured PR against the reviewed GitHub host, base, base SHA,
 # and head when GitHub may require a merge queue. Every run requires a fresh,
-# integrity-bound eligible merge-assurance receipt before mutation.
+# integrity-bound eligible merge-assurance receipt and a freshly replayed
+# configured-review receipt before mutation.
 
 require "json"
 require "digest"
@@ -19,6 +20,7 @@ require "uri"
 require "yaml"
 
 load File.expand_path("merge-assurance", __dir__) unless defined?(MergeAssurance)
+load File.expand_path("configured-review-gate", __dir__) unless defined?(ConfiguredReviewGate)
 
 module PrMergeSubmit
   class Error < StandardError; end
@@ -153,8 +155,9 @@ module PrMergeSubmit
       }
     GRAPHQL
 
-    def initialize(system_tools: {})
+    def initialize(system_tools: {}, configured_review_replayer: nil)
       @system_tools = system_tools
+      @configured_review_replayer = configured_review_replayer || method(:default_configured_review_replay)
     end
 
     def run(argv)
@@ -198,12 +201,13 @@ module PrMergeSubmit
       options = {
         method: nil, subject: nil, body: nil, repo: nil, host: nil,
         expected_head: nil, expected_base: nil, merge_assurance_receipt: nil,
+        configured_review_receipt: nil,
         help: false, pr: nil
       }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
-                      "--merge-assurance-receipt FILE [options]"
+                      "--merge-assurance-receipt FILE --configured-review-receipt FILE [options]"
         opts.on("--repo REPO", "GitHub repository in OWNER/REPO form") { |value| options[:repo] = value }
         opts.on("--host HOST", "Exact GitHub hostname, with an optional port") { |value| options[:host] = value }
         opts.on("--expected-head SHA", "Exact PR head SHA already cleared by readiness gates") do |value|
@@ -214,6 +218,9 @@ module PrMergeSubmit
         end
         opts.on("--merge-assurance-receipt FILE", "Fresh eligible merge-assurance receipt") do |value|
           options[:merge_assurance_receipt] = value
+        end
+        opts.on("--configured-review-receipt FILE", "Fresh READY configured-review receipt") do |value|
+          options[:configured_review_receipt] = value
         end
         opts.on("--method METHOD", METHODS, "Direct method; merge queue configuration controls queued merges") do |value|
           options[:method] = value
@@ -252,10 +259,11 @@ module PrMergeSubmit
       OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
-                      "--merge-assurance-receipt FILE [options]"
+                      "--merge-assurance-receipt FILE --configured-review-receipt FILE [options]"
         opts.separator "        --subject SUBJECT  Direct merge commit subject"
         opts.separator "        --body BODY        Direct merge commit body"
         opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v1 receipt"
+        opts.separator "        --configured-review-receipt FILE  Fresh exact-head review receipt"
       end
     end
 
@@ -273,6 +281,7 @@ module PrMergeSubmit
       end
       raise Error, "--method is required" unless METHODS.include?(options[:method])
       raise Error, "--merge-assurance-receipt is required" if options[:merge_assurance_receipt].to_s.empty?
+      raise Error, "--configured-review-receipt is required" if options[:configured_review_receipt].to_s.empty?
 
       reject_leading_at!(options, :subject)
       reject_leading_at!(options, :body)
@@ -821,6 +830,8 @@ module PrMergeSubmit
         raise Error, "PR merge-queue state became missing, inconsistent, or UNKNOWN before direct submission"
       end
 
+      replay_configured_review_gate!(options)
+
       stdout, stderr, status = run_gh(
         *direct_merge_args(refreshed, options), host: options[:host], mutation: true
       )
@@ -980,7 +991,8 @@ module PrMergeSubmit
         "--expected-base", options[:expected_base],
         "--expected-base-sha", @merge_assurance_receipt.dig("bindings", "base", "sha"),
         "--method", policy.fetch("method"),
-        "--merge-assurance-receipt", File.expand_path(options[:merge_assurance_receipt])
+        "--merge-assurance-receipt", File.expand_path(options[:merge_assurance_receipt]),
+        "--configured-review-receipt", File.expand_path(options[:configured_review_receipt])
       ]
       args.concat(["--subject", options[:subject]]) if options[:subject]
       args.concat(["--body", options[:body]]) if options[:body]
@@ -1001,6 +1013,7 @@ module PrMergeSubmit
         )
         policy.fetch("identity")["interpreter"] = interpreter_identity if interpreter_identity
         begin
+          replay_configured_review_gate!(options)
           guard_result = run_process(
             guarded_direct_environment(options),
             *launch_command, *args,
@@ -1236,6 +1249,7 @@ module PrMergeSubmit
     end
 
     def enqueue_result(pull_request, options)
+      replay_configured_review_gate!(options)
       stdout, stderr, status = run_gh(
         "api", "graphql",
         "-H", GRAPHQL_FEATURE_HEADER,
@@ -1397,6 +1411,34 @@ module PrMergeSubmit
         pull_request["baseRefName"] == options[:expected_base] &&
         pull_request["headRefOid"].to_s.casecmp?(options[:expected_head]) &&
         valid_merge_commit_oid?(pull_request.dig("mergeCommit", "oid"))
+    end
+
+    def replay_configured_review_gate!(options)
+      result = @configured_review_replayer.call(
+        options:,
+        receipt_path: File.expand_path(options.fetch(:configured_review_receipt)),
+        repo_root: @repo_root,
+        base_sha: @merge_assurance_receipt.dig("bindings", "base", "sha")
+      )
+      unless result.is_a?(Hash) && result["verdict"] == "READY" && result["mutation_eligible"] == true
+        blockers = Array(result&.[]("blockers")).filter_map { |item| item["code"] if item.is_a?(Hash) }
+        raise Error, "configured review gate is not READY#{blockers.empty? ? '' : ": #{blockers.join(', ')}"}"
+      end
+
+      @configured_review_replay = result
+    rescue ConfiguredReviewGate::Error, Errno::ENOENT, Errno::EACCES, JSON::ParserError => e
+      raise Error, "configured review receipt replay failed: #{e.message.lines.first.to_s.strip}"
+    end
+
+    def default_configured_review_replay(options:, receipt_path:, repo_root:, base_sha:)
+      receipt = PrMergeSubmit.parse_json!(
+        File.read(receipt_path, encoding: "UTF-8"), "configured-review receipt"
+      )
+      policy, policy_source = ConfiguredReviewGate::TrustedPolicy.load(repo_root:, base_sha:)
+      client = ConfiguredReviewGate::GitHubClient.new(
+        host: options.fetch(:host), repo: options.fetch(:repo), pr: options.fetch(:pr).to_i, policy:
+      )
+      ConfiguredReviewGate.replay(receipt:, policy:, policy_source:, snapshot: client.collect)
     end
 
     def valid_merge_commit_oid?(oid)
