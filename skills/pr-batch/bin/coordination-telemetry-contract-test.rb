@@ -19,9 +19,10 @@ MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                        "coordinator_preference=<model>/<effort>;" \
                        "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
                        "UNKNOWN=field;no guesses"
-APPLICABILITY_WORKERS_PROMPT_LINE =
-  "Workers:coordination_required=>next|coordination_not_applicable=>no coord;resv!=perm;stop=conflict;" \
-  "Verify live GitHub before edits;unverifiable=>UNKNOWN"
+APPLICABILITY_PROMPT_LINE = "Coord:gate;n/a=>no calls"
+PATH_RESERVATION_WORKERS_PROMPT_LINE =
+  "Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/" \
+  "verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN"
 MANIFEST_MISSING_REPETITION_LINE = MANIFEST_PROMPT_LINE.sub(">,...", ">")
 MANIFEST_WHOLE_LANE_ENTRY_UNKNOWN_LINE =
   MANIFEST_PROMPT_LINE.sub("observed-host/model/effort>,...", "observed-host/model/effort|UNKNOWN>,...")
@@ -501,9 +502,12 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_includes changelog, "issue 401"
   end
 
-  def test_generated_goal_prompts_share_the_compact_applicability_gate
+  def test_generated_goal_prompts_keep_applicability_separate_from_path_reservations
     [PR_BATCH_SKILL_PATH, PLAN_PR_BATCH_SKILL_PATH, WORKFLOW_PATH].each do |path|
-      assert_includes read_repo_file(path), APPLICABILITY_WORKERS_PROMPT_LINE, path
+      prompt_surface = read_repo_file(path)
+
+      assert_includes prompt_surface, APPLICABILITY_PROMPT_LINE, path
+      assert_includes prompt_surface, PATH_RESERVATION_WORKERS_PROMPT_LINE, path
     end
   end
 
