@@ -195,7 +195,10 @@ Report:
 
 When structured output is requested, emit findings using
 `docs/review-finding-schema.md` with `source: structural-review` on each
-finding.
+finding and set `review_receipt.source` to `structural-review` when emitting a
+receipt.
+Populate optional receipt `provenance.model`, `provenance.effort`, and `provenance.usage` only from host-reported evidence for the actual review run.
+Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt text or model self-report as binding evidence.
 
 ## Entry Points
 
