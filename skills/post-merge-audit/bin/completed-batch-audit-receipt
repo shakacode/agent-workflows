@@ -161,16 +161,9 @@ module CompletedBatchAuditReceipt
     )
     raise AcceptedDeferralError, "accepted-deferral evidence is invalid" unless snapshot
 
-    blocker_ref = snapshot.fetch("blocker_ref")
-    fields = state.fields.dup
-    fields["audit_status"] = "complete"
-    fields["verdict"] = "clean"
-    fields["findings"] = "none"
-    fields["followups_dispositions"] =
-      "ref: #{blocker_ref}; owner: #{snapshot.fetch('owner')}; current status: terminal; " \
-      "disposition: accepted-deferral; evidence: #{snapshot.dig('decision', 'url')} #{snapshot.dig('tracking_issue', 'url')}"
-    fields.delete("publication_snapshot")
-    fields["accepted_deferral_snapshot"] = encoded_snapshot_value(snapshot)
+    fields = accepted_deferral_terminal_fields(snapshot)
+    raise AcceptedDeferralError, "accepted-deferral terminal fields are invalid" unless fields
+
     ordered = LEGACY_FIELDS.flat_map do |field|
       line = "#{field}: #{fields.fetch(field)}\n"
       field == "scope_evidence" ? [line, "accepted_deferral_snapshot: #{fields.fetch('accepted_deferral_snapshot')}\n"] : [line]
@@ -701,13 +694,15 @@ module CompletedBatchAuditReceipt
 
       snapshot = accepted_deferral_snapshot(accepted_value)
       return [ACCEPTED_DEFERRAL_MISMATCH_BLOCKER] unless snapshot
-      return [] if accepted_deferral_reassessed?(
+
+      reassessed = accepted_deferral_reassessed?(
         snapshot,
         expected_batch_id: state.fields.fetch("batch_id"),
         expected_targets:,
         publication_preflight: preflight,
         coordination_backend:
       )
+      return [] if reassessed && accepted_deferral_terminal_fields(snapshot) == state.fields
 
       return [ACCEPTED_DEFERRAL_MISMATCH_BLOCKER]
     end
@@ -798,6 +793,24 @@ module CompletedBatchAuditReceipt
         "blockers" => publication_preflight.fetch("blockers")
       }
     )
+  rescue KeyError, TypeError
+    nil
+  end
+
+  def accepted_deferral_terminal_fields(snapshot)
+    predecessor = marker_state(snapshot.dig("predecessor", "marker"))
+    return unless predecessor
+
+    fields = predecessor.fields.dup
+    fields["audit_status"] = "complete"
+    fields["verdict"] = "clean"
+    fields["findings"] = "none"
+    fields["followups_dispositions"] =
+      "ref: #{snapshot.fetch('blocker_ref')}; owner: #{snapshot.fetch('owner')}; current status: terminal; " \
+      "disposition: accepted-deferral; evidence: #{snapshot.dig('decision', 'url')} #{snapshot.dig('tracking_issue', 'url')}"
+    fields.delete("publication_snapshot")
+    fields["accepted_deferral_snapshot"] = encoded_snapshot_value(snapshot)
+    fields
   rescue KeyError, TypeError
     nil
   end
@@ -1346,7 +1359,7 @@ module CompletedBatchAuditReceipt
   end
 
   def safe_owner?(value)
-    evidenced_scalar?(value) && value.match?(/\A[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*\z/)
+    evidenced_scalar?(value) && !value.match?(/[;|]/)
   end
 
   def trusted_coordination_backend(workflow_config)

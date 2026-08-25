@@ -237,6 +237,95 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_replay_binds_the_exact_terminal_wrapper
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    terminal = nil
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+    end
+
+    unrelated =
+      "ref: unrelated-999; owner: @mallory; current status: terminal; disposition: resolved; " \
+      "evidence: https://example.com/evidence"
+    mutations = {
+      "scope" => terminal.sub(/^scope_evidence:.*$/, "scope_evidence: forged but evidenced scope"),
+      "checker" => terminal.sub(/^checker_evidence:.*$/, "checker_evidence: forged but evidenced checker"),
+      "missing record" => terminal.sub(/^followups_dispositions:.*$/, "followups_dispositions: none"),
+      "replacement record" => terminal.sub(/^followups_dispositions:.*$/, "followups_dispositions: #{unrelated}")
+    }
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      mutations.each do |label, marker|
+        replay = CompletedBatchAuditReceipt.replay_marker(
+          marker,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          expected_targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+
+        refute replay.fetch("ready"), label
+        assert_equal ["completed-batch-audit accepted deferral mismatch or stale"], replay.fetch("blockers"), label
+      end
+    end
+  end
+
+  def test_accepted_deferral_preserves_receipt_valid_owner_identifiers
+    original = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+
+    ["@alice", "org/team"].each do |owner|
+      blocked = original.sub("owner: agent-workflows maintainers", "owner: #{owner}")
+      api = accepted_deferral_api(
+        preflight,
+        unpublished_predecessor_marker: blocked,
+        mutate_decision: ->(body) { body.sub("owner: agent-workflows maintainers", "owner: #{owner}") }
+      )
+
+      with_accepted_deferral_api(preflight, api) do
+        terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+        replay = CompletedBatchAuditReceipt.replay_marker(
+          terminal,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          expected_targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+
+        assert replay.fetch("ready"), owner
+        assert_equal owner, replay.fetch("records").fetch(0).fetch("owner"), owner
+      end
+    end
+  end
+
   def test_accepted_deferral_accepts_one_attributable_multi_blocker_mechanism_defect
     target = accepted_deferral_target
     preflight = accepted_deferral_publication_preflight(target)
