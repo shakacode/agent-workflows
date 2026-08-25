@@ -110,9 +110,9 @@ echo "== review finding schema =="
 ruby bin/validate-review-findings-test.rb
 ruby bin/validate-review-findings
 
-echo "== installer and stack source-revision tests =="
+echo "== installer and stack suites (contain source-revision tests) =="
 if ((skipped_cleanliness_dependent_suites)); then
-  echo "SKIP: installer and stack source-revision tests (skills/ working tree is dirty)" >&2
+  echo "SKIP: installer and stack suites that contain source-revision tests (skills/ working tree is dirty)" >&2
 else
   bash bin/install-agent-workflows-test.bash
   bash bin/agent-stack-test.bash
@@ -198,8 +198,12 @@ RUBY
 rubocop "_${RUBOCOP_VERSION}_"
 
 if ((skipped_cleanliness_dependent_suites)); then
-  echo "PARTIAL COVERAGE: installer and stack source-revision tests were skipped because skills/ has uncommitted changes." >&2
+  echo "PARTIAL COVERAGE: installer and stack suites that contain source-revision tests were skipped because skills/ has uncommitted changes." >&2
   echo "Commit or stash those changes and rerun bin/validate for full coverage." >&2
+  if [[ -n "${CI:-}" ]]; then
+    echo "ERROR: CI requires full validation coverage; refusing a partial-coverage success." >&2
+    exit 1
+  fi
 else
   echo "PASS agent-workflows validation"
 fi
