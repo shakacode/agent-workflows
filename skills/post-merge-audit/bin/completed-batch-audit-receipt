@@ -185,6 +185,45 @@ module CompletedBatchAuditReceipt
     end
   end
 
+  def same_target_identity?(left, right)
+    left = validated_target(left)
+    right = validated_target(right)
+    left.fetch("host") == right.fetch("host") &&
+      left.fetch("repo").casecmp?(right.fetch("repo")) &&
+      left.fetch("type") == right.fetch("type") &&
+      left.fetch("number") == right.fetch("number")
+  rescue KeyError, TypeError, ArgumentError
+    false
+  end
+
+  def same_repository_identity?(left, right)
+    left = validated_target(left)
+    right = validated_target(right)
+    left.fetch("host") == right.fetch("host") && left.fetch("repo").casecmp?(right.fetch("repo"))
+  rescue KeyError, TypeError, ArgumentError
+    false
+  end
+
+  def same_target_list?(left, right)
+    left = Array(left)
+    right = Array(right)
+    left.length == right.length && left.zip(right).all? { |left_target, right_target| same_target_identity?(left_target, right_target) }
+  end
+
+  def same_target_url?(value, target)
+    uri = URI.parse(value.to_s)
+    return false if uri.fragment
+
+    parsed = parse_target_url(value)
+    parsed && same_target_identity?(parsed, target)
+  rescue URI::InvalidURIError
+    false
+  end
+
+  def same_target_urls?(left, right)
+    same_target_url?(left, parse_target_url(right)) && same_target_url?(right, parse_target_url(left))
+  end
+
   def publish(
     expected_batch_id:,
     targets:,
@@ -509,9 +548,12 @@ module CompletedBatchAuditReceipt
     id = Integer(comment.fetch("id", nil), exception: false)
     raise Error, "comment id mismatch" unless id == expected_comment_id
 
-    expected_url = "#{target_base_url(target)}#issuecomment-#{expected_comment_id}"
     actual_url = comment.fetch("html_url", "").to_s
-    raise Error, "comment URL mismatch" unless actual_url == expected_url
+    actual_reference = comment_reference(actual_url)
+    unless actual_reference && actual_reference.fetch("comment_id") == expected_comment_id &&
+           same_target_identity?(actual_reference.fetch("target"), target)
+      raise Error, "comment URL mismatch"
+    end
 
     verify_issue_url!(comment.fetch("issue_url", "").to_s, target)
 
@@ -562,10 +604,11 @@ module CompletedBatchAuditReceipt
 
   def verify_issue_url!(value, target)
     uri = URI.parse(value)
-    expected_path = "/repos/#{target.fetch('repo')}/issues/#{target.fetch('number')}"
+    path = uri.path.match(%r{\A(?:/api/v3)?/repos/([^/\s]+)/([^/\s]+)/issues/(\d+)\z})
     actual_authority = canonical_host("#{uri.host}:#{uri.port}")
     allowed_authority = target.fetch("host") == "github.com" ? "api.github.com" : target.fetch("host")
-    path_matches = [expected_path, "/api/v3#{expected_path}"].include?(uri.path)
+    path_matches = path && "#{path[1]}/#{path[2]}".casecmp?(target.fetch("repo")) &&
+                   Integer(path[3], 10) == target.fetch("number")
     raise Error, "comment issue URL mismatch" unless
       uri.scheme == "https" && actual_authority == allowed_authority && path_matches
     raise Error, "comment issue URL must not include query or fragment" if uri.query || uri.fragment
@@ -744,7 +787,11 @@ module CompletedBatchAuditReceipt
       coordination_backend:
     )
 
-    predecessor = accepted_deferral_predecessor_snapshot(predecessor_marker, predecessor_receipt)
+    predecessor = accepted_deferral_predecessor_snapshot(
+      predecessor_marker,
+      predecessor_receipt,
+      expected_target: deterministic_targets(targets).first
+    )
     return unless predecessor
 
     decision = authenticated_accepted_deferral_decision(
@@ -830,8 +877,9 @@ module CompletedBatchAuditReceipt
     return false unless predecessor.is_a?(Hash)
 
     predecessor_marker = predecessor["marker"]
+    expected_target = deterministic_targets(expected_targets).first
     predecessor_receipt = if predecessor["url"]
-                            reauthenticated_predecessor(predecessor, expected_batch_id:)
+                            reauthenticated_predecessor(predecessor, expected_batch_id:, expected_target:)
                           end
     return false if predecessor["url"] && !predecessor_receipt
 
@@ -850,9 +898,9 @@ module CompletedBatchAuditReceipt
     false
   end
 
-  def reauthenticated_predecessor(predecessor, expected_batch_id:)
+  def reauthenticated_predecessor(predecessor, expected_batch_id:, expected_target:)
     reference = comment_reference(predecessor.fetch("url"))
-    return unless reference
+    return unless reference && same_target_identity?(reference.fetch("target"), expected_target)
 
     target = reference.fetch("target")
     comment = gh_api(
@@ -867,7 +915,6 @@ module CompletedBatchAuditReceipt
       expected_batch_id:
     )
     comparable = {
-      "url" => verified.fetch("url"),
       "comment_id" => verified.fetch("comment_id"),
       "sha256" => "sha256:#{verified.fetch('sha256')}",
       "author" => verified.fetch("author"),
@@ -875,7 +922,10 @@ module CompletedBatchAuditReceipt
       "updated_at" => verified.fetch("updated_at"),
       "marker" => verified.fetch("marker")
     }
-    comparable == predecessor ? verified : nil
+    stored = predecessor.reject { |field, _value| field == "url" }
+    return unless comparable == stored
+
+    verified.merge("url" => predecessor.fetch("url"))
   rescue Error, KeyError, TypeError, ArgumentError
     nil
   end
@@ -912,11 +962,15 @@ module CompletedBatchAuditReceipt
     end
   end
 
-  def accepted_deferral_predecessor_snapshot(marker, receipt)
+  def accepted_deferral_predecessor_snapshot(marker, receipt, expected_target:)
     if receipt
       required = %w[url comment_id sha256 author created_at updated_at marker]
       return unless required.all? { |field| receipt.key?(field) }
       return unless receipt.fetch("marker") == marker
+
+      reference = comment_reference(receipt.fetch("url"))
+      return unless reference && reference.fetch("comment_id") == receipt.fetch("comment_id")
+      return unless same_target_identity?(reference.fetch("target"), expected_target)
 
       {
         "url" => receipt.fetch("url"),
@@ -976,8 +1030,8 @@ module CompletedBatchAuditReceipt
     qa_rows = preflight.dig("snapshot", "qa")
     return false unless target_rows.is_a?(Array) && qa_rows.is_a?(Array)
     return false unless target_rows.length == targets.length && qa_rows.length == targets.length
-    return false unless target_rows.map { |row| validated_target(row["target"]) } == targets
-    return false unless qa_rows.map { |row| validated_target(row["target"]) } == targets
+    return false unless same_target_list?(target_rows.map { |row| row["target"] }, targets)
+    return false unless same_target_list?(qa_rows.map { |row| row["target"] }, targets)
 
     target_rows.all? { |row| accepted_deferral_target_evidence?(row) } &&
       qa_rows.each_with_index.all? do |row, index|
@@ -1023,13 +1077,13 @@ module CompletedBatchAuditReceipt
     return false unless target_rows.is_a?(Array) && target_rows.one?
 
     target_row = target_rows.first
-    return false unless validated_target(target_row.fetch("target")) == target
+    return false unless same_target_identity?(target_row.fetch("target"), target)
     return false unless target_row.fetch("state") == "closed"
     return false unless target_row.fetch("head_sha").to_s.downcase.match?(/\A[0-9a-f]{40}\z/)
 
     source_pr = parse_target_url(target_row.fetch("source"))
     return false unless source_pr && source_pr.fetch("type") == "pull_request"
-    return false unless source_pr.values_at("host", "repo") == target.values_at("host", "repo")
+    return false unless same_repository_identity?(source_pr, target)
 
     lane = accepted_deferral_target_resolution_lane(source_input, target, target_row.fetch("source"))
     return false unless lane
@@ -1038,10 +1092,10 @@ module CompletedBatchAuditReceipt
     return false unless snapshot_rows.is_a?(Array) && snapshot_rows.one?
 
     snapshot_row = snapshot_rows.first
-    return false unless validated_target(snapshot_row.fetch("target")) == target
+    return false unless same_target_identity?(snapshot_row.fetch("target"), target)
     return false unless snapshot_row.fetch("state") == "closed"
     return false unless snapshot_row.fetch("head_sha") == target_row.fetch("head_sha").downcase
-    return false unless snapshot_row.fetch("source") == target_row.fetch("source")
+    return false unless same_target_urls?(snapshot_row.fetch("source"), target_row.fetch("source"))
     return false unless snapshot_row["verification_source"].nil?
 
     label = "#{target.fetch('repo')}#issue:#{target.fetch('number')}"
@@ -1071,7 +1125,8 @@ module CompletedBatchAuditReceipt
 
     candidates = lanes.select do |lane|
       lane.is_a?(Hash) && lane["targets"].is_a?(Array) &&
-        lane["targets"].map(&:to_s) == [target.fetch("number").to_s] && lane["pr_url"] == source_url &&
+        lane["targets"].map(&:to_s) == [target.fetch("number").to_s] &&
+        same_target_urls?(lane["pr_url"], source_url) &&
         accepted_deferral_lane_identity_urls_match?(lane, target)
     end
     return unless candidates.one?
@@ -1096,8 +1151,9 @@ module CompletedBatchAuditReceipt
     evidence_target = parse_target_url(record.evidence)
     tracking_target = parse_target_url(tracking_issue_url)
     return false unless evidence_target && tracking_target
-    return false unless evidence_target.fetch("type") == "issue" && tracking_target == evidence_target
-    return false unless record.evidence == target_base_url(evidence_target) && tracking_issue_url == record.evidence
+    return false unless evidence_target.fetch("type") == "issue" && same_target_identity?(tracking_target, evidence_target)
+    return false unless same_target_url?(record.evidence, evidence_target)
+    return false unless same_target_url?(tracking_issue_url, evidence_target)
 
     repository = evidence_target.fetch("repo").split("/", 2).last
     shorthand = canonical_ref("#{repository}-#{evidence_target.fetch('number')}")
@@ -1111,7 +1167,7 @@ module CompletedBatchAuditReceipt
     return false unless preflight.is_a?(Hash)
     return false unless preflight["contract"] == CompletedBatchPublicationPreflight::CONTRACT && preflight["version"] == 1
     return false unless preflight["batch_id"] == expected_batch_id
-    return false unless preflight["targets"] == targets
+    return false unless same_target_list?(preflight["targets"], targets)
 
     target_identities = targets.map do |target|
       [target.fetch("host").downcase, target.fetch("repo").downcase, target.fetch("type"), target.fetch("number")]
@@ -1126,7 +1182,8 @@ module CompletedBatchAuditReceipt
     return false unless source_input.is_a?(Hash) && snapshot.is_a?(Hash)
     return false unless source_input["contract"] == CompletedBatchPublicationPreflight::INPUT_CONTRACT
     return false unless source_input["version"] == CompletedBatchPublicationPreflight::VERSION
-    return false unless source_input["batch_id"] == expected_batch_id && source_input["expected_targets"] == targets
+    return false unless source_input["batch_id"] == expected_batch_id
+    return false unless same_target_list?(source_input["expected_targets"], targets)
     return false unless source_input["coordination_status"].is_a?(Hash)
     return false unless source_input["target_snapshots"].is_a?(Array) && source_input["qa_evidence"].is_a?(Array)
     return false unless snapshot["batch_id"] == expected_batch_id && snapshot["coordination_backend"] == trusted_backend
@@ -1154,16 +1211,16 @@ module CompletedBatchAuditReceipt
 
     source = parse_target_url(row["source"])
     return false unless source && source.fetch("type") == "pull_request"
-    return false unless source.fetch("host") == target.fetch("host") && source.fetch("repo").casecmp?(target.fetch("repo"))
-    return false if target.fetch("type") == "pull_request" && source != target
+    return false unless same_repository_identity?(source, target)
+    return false if target.fetch("type") == "pull_request" && !same_target_identity?(source, target)
 
     live_target = gh_api(target.fetch("host"), "repos/#{target.fetch('repo')}/issues/#{target.fetch('number')}")
-    return false unless live_target["state"] == "closed" && live_target["html_url"] == target_base_url(target)
+    return false unless live_target["state"] == "closed" && same_target_url?(live_target["html_url"], target)
     return false if target.fetch("type") == "issue" && live_target.key?("pull_request")
     return false if target.fetch("type") == "pull_request" && !live_target.key?("pull_request")
 
     live_pr = gh_api(source.fetch("host"), "repos/#{source.fetch('repo')}/pulls/#{source.fetch('number')}")
-    live_pr["html_url"] == target_base_url(source) && live_pr["merged_at"].to_s != "" &&
+    same_target_url?(live_pr["html_url"], source) && live_pr["merged_at"].to_s != "" &&
       live_pr.dig("head", "sha").to_s.downcase == head_sha
   rescue Error, KeyError, TypeError, ArgumentError
     false
@@ -1250,23 +1307,28 @@ module CompletedBatchAuditReceipt
     reference = comment_reference(decision_url)
     anchor = deterministic_targets(targets).first
     return unless reference && anchor
-    return unless reference.fetch("target") == anchor
+    return unless same_target_identity?(reference.fetch("target"), anchor)
+
+    authenticated_anchor = reference.fetch("target")
 
     comment = gh_api(
       reference.dig("target", "host"),
       "repos/#{reference.dig('target', 'repo')}/issues/comments/#{reference.fetch('comment_id')}"
     )
-    return unless comment["id"] == reference.fetch("comment_id") && comment["html_url"] == decision_url
+    verified_reference = comment_reference(comment["html_url"])
+    return unless comment["id"] == reference.fetch("comment_id") && verified_reference
+    return unless verified_reference.fetch("comment_id") == reference.fetch("comment_id")
+    return unless same_target_identity?(verified_reference.fetch("target"), authenticated_anchor)
 
-    verify_issue_url!(comment.fetch("issue_url", ""), anchor)
+    verify_issue_url!(comment.fetch("issue_url", ""), authenticated_anchor)
     author = verified_human_login!(comment["user"], context: "accepted-deferral decision author")
     return unless TRUSTED_ASSOCIATIONS.include?(comment["author_association"])
     return unless comment["created_at"].to_s != "" && comment["created_at"] == comment["updated_at"]
     return unless CompletedBatchPublicationPreflight.valid_timestamp?(comment["created_at"])
 
     permission = gh_api(
-      anchor.fetch("host"),
-      "repos/#{anchor.fetch('repo')}/collaborators/#{author}/permission"
+      authenticated_anchor.fetch("host"),
+      "repos/#{authenticated_anchor.fetch('repo')}/collaborators/#{author}/permission"
     )
     verified_human_login!(permission["user"], context: "accepted-deferral permission actor", expected_login: author)
     return unless WRITE_PERMISSIONS.include?(permission["permission"])
@@ -1854,6 +1916,9 @@ module CompletedBatchAuditReceipt
       raise OptionParser::MissingArgument, "--reference-file" if options["reference_file"].to_s.empty?
       unless options["receipt"].to_s.empty?
         raise OptionParser::InvalidArgument, "--receipt is valid only with publish"
+      end
+      unless options["accepted_deferral"].to_s.empty?
+        raise OptionParser::InvalidArgument, "--accepted-deferral is invalid with replay"
       end
     else
       raise OptionParser::MissingArgument, "--reference-file" if options["reference_file"].to_s.empty?

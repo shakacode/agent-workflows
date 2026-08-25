@@ -389,6 +389,42 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_accepts_semantically_identical_mixed_case_repository_identities
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target.merge("repo" => "ShakaCode/React_On_Rails")
+    preflight = accepted_deferral_publication_preflight(target)
+    base_api = accepted_deferral_api(preflight, unpublished_predecessor_marker: blocked)
+    api = lambda do |host, endpoint, **options|
+      base_api.call(host, endpoint.downcase, **options)
+    end
+
+    with_accepted_deferral_api(preflight, api) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+
+      assert replay.fetch("ready")
+      assert_empty replay.fetch("blockers")
+    end
+  end
+
   def test_accepted_deferral_binds_the_coordination_batch_repo_and_lane_identity_urls
     target = accepted_deferral_target
     rejected = {
@@ -636,6 +672,54 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       refute replay.fetch("ready")
       assert_equal ["completed-batch-audit accepted deferral mismatch or stale"], replay.fetch("blockers")
     end
+  end
+
+  def test_post_publication_accepted_deferral_rejects_a_foreign_predecessor_before_fetch
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    predecessor = accepted_deferral_predecessor_receipt(blocked).merge(
+      "url" => "https://github.com/foreign-org/foreign-repo/issues/999#issuecomment-5389270559"
+    )
+    base_api = accepted_deferral_api(preflight, predecessor:)
+    foreign_fetches = 0
+    api = lambda do |host, endpoint, **options|
+      if endpoint == "repos/foreign-org/foreign-repo/issues/comments/5389270559"
+        foreign_fetches += 1
+        {
+          "id" => 5_389_270_559,
+          "html_url" => predecessor.fetch("url"),
+          "issue_url" => "https://api.github.com/repos/foreign-org/foreign-repo/issues/999",
+          "body" => predecessor.fetch("body"),
+          "user" => { "login" => predecessor.fetch("author"), "type" => "User" },
+          "author_association" => "MEMBER",
+          "created_at" => predecessor.fetch("created_at"),
+          "updated_at" => predecessor.fetch("updated_at")
+        }
+      else
+        base_api.call(host, endpoint, **options)
+      end
+    end
+
+    with_accepted_deferral_api(preflight, api) do
+      assert_raises(CompletedBatchAuditReceipt::AcceptedDeferralError) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          predecessor_receipt: predecessor,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+    assert_equal 0, foreign_fetches
   end
 
   def test_post_publication_accepted_deferral_replay_allows_the_authenticated_tracking_issue_to_close
@@ -1618,6 +1702,12 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       reference_path = File.join(directory, "reference.txt")
       File.write(receipt_path, ready_marker)
       File.write(reference_path, "invalid reference")
+      accepted_deferral_paths = [
+        write_json(directory, "accepted-deferral.json", {}),
+        File.join(directory, "malformed-accepted-deferral.json"),
+        File.join(directory, "missing-accepted-deferral.json")
+      ]
+      File.write(accepted_deferral_paths.fetch(1), "{")
 
       _out, _err, publish_status = capture_receipt_cli(
         "ruby",
@@ -1662,6 +1752,25 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert_equal 64, publish_status.exitstatus
       assert_equal 64, replay_status.exitstatus
       assert_equal 64, invalid_option_precedence_status.exitstatus
+
+      accepted_deferral_paths.each do |path|
+        _out, err, status = capture_receipt_cli(
+          "ruby",
+          SCRIPT,
+          "replay",
+          "--expected-batch-id",
+          "batch-184",
+          "--targets-json",
+          targets_path,
+          "--reference-file",
+          reference_path,
+          "--accepted-deferral",
+          path
+        )
+
+        assert_equal 64, status.exitstatus, path
+        assert_includes err, "--accepted-deferral is invalid with replay", path
+      end
     end
   end
 
