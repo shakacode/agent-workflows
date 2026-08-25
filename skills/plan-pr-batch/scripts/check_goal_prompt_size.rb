@@ -73,7 +73,8 @@ PLANNING_PASS_POLICY_PHRASES = [
   "does not select the future batch coordinator",
   "Keep the reviewer distinct from the plan maker",
   "only from host-exposed runtime evidence",
-  "Requested preferences, prompt text, and model self-report are not observations"
+  "Requested preferences, prompt text, and model self-report are not observations",
+  "Unavailable, inherited, substituted, or unverifiable route-specific execution gets a non-blocking advisory instead; never require a restart."
 ].freeze
 LEGACY_PLANNING_PASS_PROFILE_PHRASES = [
   "Default single-target planner:",
@@ -86,6 +87,12 @@ GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
 OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
 PLANNING_PASS_ASSESSMENT_FIELD = "Planning-pass model/effort assessment:"
+PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES = [
+  PLANNING_PASS_ASSESSMENT_FIELD,
+  "Planning-Pass Route Assessment",
+  *PLANNING_PASS_ACCEPTANCE_CASES.map { |entry| entry.fetch(:classification) },
+  *PLANNING_PASS_DISPOSITION_CASES.map { |entry| entry.fetch(:case_id) }
+].freeze
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_preference=<model>/<effort>;" \
@@ -507,6 +514,10 @@ def reject_phrases(text, phrases, label)
   end
 end
 
+def planning_pass_compact_prompt_leaks?(text)
+  PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES.any? { |phrase| text.include?(phrase) }
+end
+
 def extract_goal_prompt_template(text, heading, label:)
   heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
   abort_with_failure("missing #{heading} section") unless heading_match
@@ -913,7 +924,7 @@ end
 }.each do |label, template|
   reject_phrases(
     template,
-    [PLANNING_PASS_ASSESSMENT_FIELD],
+    PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES,
     "#{label} must keep the planning-pass assessment outside the future-coordinator prompt"
   )
   reject_phrases(
@@ -947,6 +958,13 @@ end
     1,
     "#{label} synchronized current-wave assignment contract"
   )
+end
+
+{
+  "renamed planning-pass field" => "#{prompt_template}\nPlanning recommendation: `affirmatively-simple`",
+  "disposition prose without the field label" => "#{prompt_template}\nObserved comparison: `weaker-current-host-supported`"
+}.each do |label, mutant|
+  abort_with_failure("compact-prompt mutation escaped detection: #{label}") unless planning_pass_compact_prompt_leaks?(mutant)
 end
 reject_phrases(
   triage_prompt_contract_text,

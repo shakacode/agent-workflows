@@ -839,6 +839,9 @@ def assert_planning_pass_contract(test, text, label)
   test.assert_includes policy, "only from host-exposed runtime evidence", label
   test.assert_includes policy, "Requested preferences, prompt text, and model self-report are not observations", label
   test.assert_includes policy, "does not select the future batch coordinator", label
+  test.assert_includes policy,
+                       "Unavailable, inherited, substituted, or unverifiable route-specific execution gets a non-blocking advisory instead; never require a restart.",
+                       label
 end
 
 def route_dispositions(text)
@@ -1216,6 +1219,15 @@ class ModelRoutingContractTest < Minitest::Test
     assert_includes read_repo_file(MODEL_ROUTING_GUIDE_PATH), "claude-opus-5"
   end
 
+  def test_intake_keeps_future_coordinator_policy_separate_from_current_planning_pass
+    text = read_repo_file("skills/plan-pr-batch/SKILL.md")
+    intake = text[/^1\. Intake\n.*?(?=^2\. Verify\n)/m]
+
+    refute_nil intake
+    assert_includes intake, "future coordinator route"
+    refute_includes intake, "planner route"
+  end
+
   def test_planning_pass_contract_rejects_simple_high
     text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
     mutant = text.sub(
@@ -1278,6 +1290,19 @@ class ModelRoutingContractTest < Minitest::Test
     refute_equal text, mutant
     assert_raises(Minitest::Assertion) do
       assert_planning_pass_contract(self, mutant, "comment-only compatibility mutant")
+    end
+  end
+
+  def test_planning_pass_contract_rejects_missing_nonblocking_unsupported_route_rule
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    mutant = text.sub(
+      /Unavailable, inherited, substituted, or unverifiable route-specific execution\ngets a non-blocking advisory instead; never require a restart\.\n/,
+      ""
+    )
+
+    refute_equal text, mutant
+    assert_raises(Minitest::Assertion) do
+      assert_planning_pass_contract(self, mutant, "missing unsupported-route advisory mutant")
     end
   end
 

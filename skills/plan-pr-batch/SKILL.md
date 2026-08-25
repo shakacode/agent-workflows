@@ -134,20 +134,21 @@ Plan a PR batch
      coordinator, worker, and checker model/effort preferences separately from
      any host-observed current planner fields. Do not classify the planning
      pass until the scope evidence is verified. Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
-     A one-issue or one-PR batch is single-target even when its coordinator
-     later delegates bounded implementation, review, or QA lanes. Prefer the
-     default single-target planner route because a single issue may still need
-     difficult diagnosis, design, or verification planning. Use the
-     pinned high-risk route first when a present or disputed high-risk boundary
-     exists. Otherwise use the affirmatively simple single-target route only
-     when the target has explicit acceptance criteria, a known bounded file
-     surface, no unresolved design or
+     For future coordinator routing, a one-issue or one-PR batch remains
+     single-target even when its coordinator later delegates bounded
+     implementation, review, or QA lanes. After scope verification, prefer the
+     default single-target future coordinator route because a single issue may
+     still need difficult diagnosis, design, or verification planning. Use the
+     pinned high-risk future coordinator route first when a present or disputed
+     high-risk boundary exists. Otherwise use the affirmatively simple
+     single-target future coordinator route only when the target has explicit
+     acceptance criteria, a known bounded file surface, no unresolved design or
      dependency question, no security, authorization, concurrency, persistence,
      lifecycle, routing, release, public-contract, or other high-consequence
      boundary, easy failure detection and rollback, and a strong deterministic
-     verification oracle. Reserve the multi-lane coordinator route for planning
-     multiple targets or retained cross-batch orchestration; do not
-     select it merely because one target will use subagents.
+     verification oracle. Reserve the multi-lane future coordinator route for
+     multiple targets or retained cross-batch orchestration; do not select it
+     merely because one target will use subagents.
      The future coordinator preference does not classify the current planning
      pass and must not be reused as its observed route.
      Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
