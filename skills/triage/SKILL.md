@@ -391,8 +391,9 @@ selected backend does not support it.
 
 For `coordination_required`, apply the existing declaration hardening below.
 
-Batch Coordination Declaration: every final batch handoff must carry exactly one
-`coordination:` line, and no handoff is complete or clean without it. Use
+Batch Coordination Declaration: every `coordination_required` final batch
+handoff must carry exactly one `coordination:` line, and no such handoff is
+complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
 with the coordination backend, and quote the exact backend batch id. Otherwise
 use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
@@ -404,9 +405,9 @@ a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
 
-The paragraph above applies only to `coordination_required`. For
-`coordination_not_applicable`, omit the `coordination:` declaration and do not
-describe coordination as unavailable or degraded.
+That declaration rule applies only to `coordination_required`. For
+`coordination_not_applicable`, omit the `coordination:` line and do not invoke
+the declaration helper. Do not describe coordination as unavailable or degraded.
 
 ## Output
 

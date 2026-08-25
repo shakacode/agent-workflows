@@ -416,13 +416,16 @@ Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper
 Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
 
-Before publishing `audit_status: complete`, run
-`completed-batch-publication-preflight` against the repository's configured
-`coordination_backend`, a freshly captured bounded targeted coordination status,
-the trusted target manifest, refreshed terminal target/head snapshots, and one
-per-target QA Evidence marker. The preflight deterministically derives the full
-target set from coordination lanes and fails closed when the batch or a lane is
-absent, nonterminal, unmerged/unclosed, or `UNKNOWN`; when an exact-head QA
+Before preflight, record trusted `coordination_applicability`; for
+`coordination_required`, capture fresh bounded exact-batch coordination status,
+while for `coordination_not_applicable`, supply the typed single-controller
+proof without any coordination command. Before publishing `audit_status:
+complete`, run `completed-batch-publication-preflight` against the repository's
+configured `coordination_backend`, that selected status or proof, the trusted
+target manifest, refreshed terminal target/head snapshots, and one per-target
+QA Evidence marker. The preflight derives the full target set from required
+coordination lanes or from the not-applicable proof and fails closed when the
+selected evidence is absent, nonterminal, unmerged/unclosed, or `UNKNOWN`; when an exact-head QA
 disposition is not `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`
 with an authenticated replayable maintainer-waiver comment; or when
 the configured coordination seam is unavailable. `unknown`, `in_progress`,
@@ -448,12 +451,13 @@ coordination, target/head, or QA state no longer matches the published binding.
 
 Use `completed-batch-audit-receipt` for both `publish` and `replay`;
 `--targets-json` is a JSON array of exact `host`, `repo`, `type`
-(`pull_request` or `issue`), and positive `number` objects. The preflight input
-contract is `completed-batch-publication-preflight-input` v1 with `batch_id`,
-the same `expected_targets`, raw successful targeted `coordination_status`,
-`target_snapshots` (`target`, terminal `state`, full `head_sha`, `source`), and
-`qa_evidence` (`target`, marker text, plus `maintainer_waiver: {"url": "<exact
-same-target #issuecomment URL>"}` only for `WAIVED`). The CLI reads
+(`pull_request` or `issue`), and positive `number` objects. The
+`completed-batch-publication-preflight-input` v1 fields are `batch_id`,
+`coordination_applicability`, `expected_targets`, raw `coordination_status`,
+`target_snapshots`, and `qa_evidence`. `target_snapshots` carry `target`,
+terminal `state`, full `head_sha`, and `source`; `qa_evidence` carries `target`,
+marker text, plus `maintainer_waiver: {"url": "<exact same-target #issuecomment
+URL>"}` only for `WAIVED`. The CLI reads
 `coordination_backend` only from `--workflow-config`; do not
 replace the bounded coordination result with a caller-written lane summary.
 Each `qa_evidence` row must carry a coordinator-owned
@@ -466,22 +470,22 @@ The preflight receipt embeds the canonical raw v1 input as `source_input` with
 `source_input_digest`; digests prove integrity only and never authenticate
 terminal facts. Before publish or replay accepts a complete receipt, it
 re-assesses that bound source input, re-fetches each exact target through
-authenticated `gh api`, reruns bounded exact-batch coordination status when a
-backend applies, and re-authenticates any waiver; missing, altered, stale, or
+authenticated `gh api`, reruns bounded exact-batch coordination status only for
+`coordination_required`, and re-authenticates any waiver; missing, altered, stale, or
 mismatched terminal facts block before POST or ready replay.
 
-Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay.
+Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt binds both that configured backend and the trusted `coordination_applicability` from `source_input`; applicability, not backend presence, selects the runtime path. `coordination_required` requires a matching real backend and bounded exact-batch status replay, while a missing or `n/a` backend blocks. `coordination_not_applicable` accepts the typed single-controller proof with any configured backend and invokes no coordination command. Missing, invalid, contradictory, or mismatched applicability/config facts block before publication or ready replay.
 
 Configured `public claim-comment fallback` is advisory ownership state only; it
 must not invoke private `agent-coord`, and without a separate authenticated
 terminal coordination contract it leaves completed-batch publication blocked as
 `UNKNOWN`.
 
-When `coordination_backend: n/a`, `coordination_status` must instead be a
-`completed-batch-coordination-not-applicable` v1 object with the exact batch ID
-and target set, `mode: single_operator`, a known rationale, a durable HTTPS
-source, and a valid completion timestamp; missing or malformed typed evidence
-blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus
+For `coordination_not_applicable`, `coordination_status` must be a typed
+single-controller proof: a `completed-batch-coordination-not-applicable` v1
+object with the exact batch ID and target set, `mode: single_operator`, a known
+rationale, a durable HTTPS source, and a valid completion timestamp; missing or
+malformed typed evidence blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus
 `no_pr_evidence` containing that exact issue URL, exact canonical target, and
 known rationale; it must not invent a commit SHA, and forged or malformed no-PR
 evidence blocks.

@@ -5,9 +5,12 @@ require "minitest/autorun"
 require "json"
 
 ROOT = File.expand_path("../../..", __dir__)
+CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
+PR_BATCH_DOC_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
+PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
 PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 PAUSE_SKILL_PATH = File.join(ROOT, "skills/pause/SKILL.md")
 CONTINUE_SKILL_PATH = File.join(ROOT, "skills/continue/SKILL.md")
@@ -16,6 +19,9 @@ MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                        "coordinator_preference=<model>/<effort>;" \
                        "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
                        "UNKNOWN=field;no guesses"
+APPLICABILITY_WORKERS_PROMPT_LINE =
+  "Workers:coordination_required=>next|coordination_not_applicable=>no coord;resv!=perm;stop=conflict;" \
+  "Verify live GitHub before edits;unverifiable=>UNKNOWN"
 MANIFEST_MISSING_REPETITION_LINE = MANIFEST_PROMPT_LINE.sub(">,...", ">")
 MANIFEST_WHOLE_LANE_ENTRY_UNKNOWN_LINE =
   MANIFEST_PROMPT_LINE.sub("observed-host/model/effort>,...", "observed-host/model/effort|UNKNOWN>,...")
@@ -448,6 +454,59 @@ def assert_remediation_authority_section_contract(section, location)
 end
 
 class CoordinationTelemetryContractTest < Minitest::Test
+  def test_planner_records_applicability_before_any_coordination_probe
+    planner = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
+    gate = "Before any coordination probe, record exactly one trusted `coordination_applicability` outcome"
+    no_coordination = "For `coordination_not_applicable`, make no coordination probe, registration, claim, heartbeat, fallback, or typed-event call."
+
+    assert_includes planner, gate
+    assert_includes planner, no_coordination
+    assert_operator planner.index(gate), :<, planner.index('"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded"'),
+                    "the planner must classify trusted topology before its first backend command"
+  end
+
+  def test_coordination_backend_documents_the_trusted_applicability_matrix
+    section = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Coordination Applicability").gsub(/\s+/, " ")
+
+    [
+      "trusted repository policy plus controller-owned verified topology",
+      "ordinary serialized one-agent one-target work",
+      "serialized multi-target work under one accountable controller",
+      "concurrent same-machine work",
+      "concurrent multi-machine or multi-operator work",
+      "cross-session dependencies",
+      "repository-required release or shared-resource lease",
+      "unavailable configured backend",
+      "claim refusal and holder/generation fencing",
+      "`UNKNOWN` or contradictory applicability"
+    ].each do |matrix_row|
+      assert_includes section, matrix_row
+    end
+  end
+
+  def test_pr_batch_guide_applies_applicability_before_skill_selection_probes
+    guide = read_repo_file(PR_BATCH_DOC_PATH).gsub(/\s+/, " ")
+
+    assert_includes guide, "record `coordination_applicability` before any coordination probe"
+    assert_includes guide, "`coordination_not_applicable` makes no backend or fallback call"
+    assert_includes guide, "`coordination_required` preserves claims, heartbeats, dependencies, and fencing"
+    assert_includes guide, "Missing, `UNKNOWN`, or contradictory applicability stops before worker launch"
+  end
+
+  def test_changelog_records_coordination_opt_in_contract
+    changelog = extract_section(read_repo_file(CHANGELOG_PATH), "### [Unreleased]").gsub(/\s+/, " ")
+
+    assert_includes changelog, "coordination applicability"
+    assert_includes changelog, "single-controller proof"
+    assert_includes changelog, "issue 401"
+  end
+
+  def test_generated_goal_prompts_share_the_compact_applicability_gate
+    [PR_BATCH_SKILL_PATH, PLAN_PR_BATCH_SKILL_PATH, WORKFLOW_PATH].each do |path|
+      assert_includes read_repo_file(path), APPLICABILITY_WORKERS_PROMPT_LINE, path
+    end
+  end
+
   def test_json_fence_extractor_ignores_a_quoted_heading
     fixture = <<~MARKDOWN
       <!-- Keep `## Batch Provenance Manifest` synchronized. -->

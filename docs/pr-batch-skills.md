@@ -3,6 +3,16 @@
 Use this guide when deciding between issue triage, planning, single-lane direct
 work, and execution skills for agent batch work.
 
+Whichever skill owns the run, record `coordination_applicability` before any
+coordination probe using trusted repository policy and controller-owned verified
+topology. `coordination_not_applicable` makes no backend or fallback call, even
+when the repository config names a real backend. `coordination_required`
+preserves claims, heartbeats, dependencies, and fencing and fails closed when
+its configured backend is unavailable. Missing, `UNKNOWN`, or contradictory
+applicability stops before worker launch. See
+[Coordination Applicability](coordination-backend.md#coordination-applicability)
+for the complete matrix and completed-batch proof contract.
+
 When one coordinator runs multiple batches across machines, desktop apps, or
 repositories, use the target repo's coordination backend plus
 [workflows/pr-processing.md](../workflows/pr-processing.md) for claims,
@@ -432,8 +442,9 @@ record it and proceed to consolidated triage instead of parking in
 
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
-Batch Coordination Declaration: every final batch handoff must carry exactly one
-`coordination:` line, and no handoff is complete or clean without it. Use
+Batch Coordination Declaration: every `coordination_required` final batch
+handoff must carry exactly one `coordination:` line, and no such handoff is
+complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
 with the coordination backend, and quote the exact backend batch id. Otherwise
 use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
@@ -444,3 +455,7 @@ reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+That declaration rule applies only to `coordination_required`. For
+`coordination_not_applicable`, omit the `coordination:` line and do not invoke
+the declaration helper. Do not describe coordination as unavailable or degraded.

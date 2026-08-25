@@ -604,7 +604,7 @@ Use this template when creating Codex goal text:
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
-Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
+Lane Card:PR-open;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
 Repo:OWNER/REPO
 Objective:...
@@ -632,9 +632,8 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
+Workers:coordination_required=>next|coordination_not_applicable=>no coord;resv!=perm;stop=conflict;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
-- Apply that compact coordination rule only to `coordination_required`. For `coordination_not_applicable`, preserve serial order in the local stage plan and make no coordination call.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
@@ -731,8 +730,9 @@ informational and never replaces a closeout gate.
 
 For `coordination_required`, apply the existing declaration hardening below.
 
-Batch Coordination Declaration: every final batch handoff must carry exactly one
-`coordination:` line, and no handoff is complete or clean without it. Use
+Batch Coordination Declaration: every `coordination_required` final batch
+handoff must carry exactly one `coordination:` line, and no such handoff is
+complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
 with the coordination backend, and quote the exact backend batch id. Otherwise
 use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
@@ -744,9 +744,9 @@ a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
 
-The paragraph above applies only to `coordination_required`. For
-`coordination_not_applicable`, omit the `coordination:` declaration and do not
-describe coordination as unavailable or degraded.
+That declaration rule applies only to `coordination_required`. For
+`coordination_not_applicable`, omit the `coordination:` line and do not invoke
+the declaration helper. Do not describe coordination as unavailable or degraded.
 
 When QA Evidence or P0/P1/P2/Must-Fix review-finding dispositions are part of a
 ready/merge claim, include replayable `qa-evidence v2` and

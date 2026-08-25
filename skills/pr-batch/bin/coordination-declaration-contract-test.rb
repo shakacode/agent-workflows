@@ -53,8 +53,9 @@ REQUIRED_SURFACES = {
 
 EM_DASH = CoordinationDeclaration::EM_DASH
 
-COORDINATION_DECLARATION_RULE = "Batch Coordination Declaration: every final batch handoff must carry exactly " \
-                                "one `coordination:` line, and no handoff is complete or clean without it. Use " \
+COORDINATION_DECLARATION_RULE = "Batch Coordination Declaration: every `coordination_required` final batch " \
+                                "handoff must carry exactly one `coordination:` line, and no such handoff is " \
+                                "complete or clean without it. Use " \
                                 "`coordination: registered <batch-id>` only when this batch actually registered " \
                                 "with the coordination backend, and quote the exact backend batch id. Otherwise " \
                                 "use `coordination: unavailable #{EM_DASH} <reason>` with an exact nonempty " \
@@ -65,6 +66,9 @@ COORDINATION_DECLARATION_RULE = "Batch Coordination Declaration: every final bat
                                 "blocker: report NOT COMPLETE instead of a clean handoff. Silence is not an " \
                                 "accepted value; a batch " \
                                 "that wrote nothing to the coordination backend must say so in the declaration.".freeze
+COORDINATION_APPLICABILITY_DECLARATION_RULE =
+  "That declaration rule applies only to `coordination_required`. For `coordination_not_applicable`, " \
+  "omit the `coordination:` line and do not invoke the declaration helper.".freeze
 
 MISSING_DECLARATION_BLOCKER = CoordinationDeclaration::MISSING_DECLARATION_BLOCKER
 
@@ -623,6 +627,15 @@ class CoordinationDeclarationContractTest < Minitest::Test
     end
 
     assert_empty missing.keys, "surfaces missing the Batch Coordination Declaration rule"
+  end
+
+  def test_every_required_surface_scopes_declaration_and_helper_to_required_coordination
+    normalized_rule = normalize_prose(COORDINATION_APPLICABILITY_DECLARATION_RULE)
+    missing = REQUIRED_SURFACES.reject do |_label, path|
+      normalize_prose(read_repo_file(path)).include?(normalized_rule)
+    end
+
+    assert_empty missing.keys, "surfaces missing the coordination-applicability declaration rule"
   end
 
   def test_removing_the_rule_from_a_surface_is_detected

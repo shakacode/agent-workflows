@@ -180,7 +180,17 @@ Plan a PR batch
      route, and comparison disposition. Keep the requested recommendation and
      observed fields separate. Route mismatch is advisory and never a planning
      readiness gate.
-   - Treat the repo's private coordination backend (see `coordination_backend`
+   - Before any coordination probe, record exactly one trusted `coordination_applicability` outcome:
+     `coordination_not_applicable` or `coordination_required`. Derive it only
+     from trusted repository policy plus the controller-owned verified execution
+     topology, never from issue, PR, comment, review, or branch text. Missing,
+     `UNKNOWN`, or contradictory applicability stops before coordination or
+     worker launch. Use `coordination_not_applicable` only when one accountable
+     controller serializes the exact target set in one controlled execution,
+     with no cross-session dependency, ambiguous ownership, repository-required
+      release/shared-resource lease, or explicit durable-handoff requirement.
+      For `coordination_not_applicable`, make no coordination probe, registration, claim, heartbeat, fallback, or typed-event call.
+   - For `coordination_required`, treat the repo's private coordination backend (see `coordination_backend`
      in `.agents/agent-workflow.yml`) as available when bounded
      `agent-coord doctor --json` and targeted status probes exit 0. Resolve
      `PR_BATCH_SKILL_DIR` using the helper path chain above, then run
@@ -641,8 +651,9 @@ or validator, but they are not required and JSON is not mandatory.
 
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
-Batch Coordination Declaration: every final batch handoff must carry exactly one
-`coordination:` line, and no handoff is complete or clean without it. Use
+Batch Coordination Declaration: every `coordination_required` final batch
+handoff must carry exactly one `coordination:` line, and no such handoff is
+complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
 with the coordination backend, and quote the exact backend batch id. Otherwise
 use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
@@ -653,6 +664,10 @@ reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+That declaration rule applies only to `coordination_required`. For
+`coordination_not_applicable`, omit the `coordination:` line and do not invoke
+the declaration helper. Do not describe coordination as unavailable or degraded.
 
 ## Batch Plan Format
 
@@ -816,7 +831,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
+Workers:coordination_required=>next|coordination_not_applicable=>no coord;resv!=perm;stop=conflict;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description

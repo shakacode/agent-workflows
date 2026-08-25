@@ -19,11 +19,14 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
   BACKEND = "agent-coord private backend"
 
   def fixture(name)
-    JSON.parse(File.read(File.join(FIXTURES, name), encoding: "UTF-8"))
+    JSON.parse(File.read(File.join(FIXTURES, name), encoding: "UTF-8")).tap do |input|
+      input["coordination_applicability"] = "coordination_required"
+    end
   end
 
   def no_backend_input
     input = fixture("completed-batch-publication-hichee-terminal.json")
+    input["coordination_applicability"] = "coordination_not_applicable"
     input["coordination_status"] = {
       "contract" => "completed-batch-coordination-not-applicable",
       "version" => 1,
@@ -637,7 +640,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     target_numbers = result.fetch("targets").map { |target| target.fetch("number") }
     assert_equal [10_026, 10_036, 10_048, 10_049], target_numbers
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("snapshot_digest"))
-    assert_equal "sha256:2e73bd93cdf88b511d2865d9572d6e9ba4ee3c13a65bf8048f8cded7f37e5ca5",
+    assert_equal "sha256:db65cd99710094ff4ff84dabfb64159d1ef931d1304ce9f17552322da862cd6f",
                  result.fetch("snapshot_digest")
   end
 
@@ -676,7 +679,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal 10_026, waiver.dig("target", "number")
     refute(result.dig("snapshot", "targets").any? { |target| target.key?("completed_at") })
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
-    assert_equal "sha256:a926d6266be958f222901d99cdcd78e3e3fd6148f575971922d66d491d16a5da",
+    assert_equal "sha256:358dbaa07e25a86660cc128c82f72f7ef39cc7c3045bd82c6ffa547f4684ea48",
                  result.fetch("snapshot_digest")
   end
 
@@ -1291,6 +1294,66 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal "single_operator", result.dig("snapshot", "coordination", "not_applicable", "mode")
   end
 
+  def test_not_applicable_accepts_typed_single_controller_proof_with_real_configured_backend
+    input = no_backend_input
+    coordination_calls = []
+
+    result = assess_input(
+      input,
+      backend: BACKEND,
+      coordination_verifier: lambda do |**arguments|
+        coordination_calls << arguments
+        flunk "coordination_not_applicable must not invoke coordination"
+      end
+    )
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal "coordination_not_applicable", result.fetch("coordination_applicability")
+    assert_equal "coordination_not_applicable", result.dig("snapshot", "coordination_applicability")
+    assert_equal "not_applicable", result.dig("snapshot", "coordination", "status")
+    assert_empty coordination_calls
+  end
+
+  def test_not_applicable_receipt_reassesses_with_real_backend_without_coordination
+    input = no_backend_input
+    receipt = assess_input(input, backend: BACKEND, coordination_verifier: ->(**) { flunk })
+    coordination_calls = []
+
+    assert CompletedBatchPublicationPreflight.valid_receipt?(receipt)
+    assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      receipt,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: lambda do |**arguments|
+        coordination_calls << arguments
+        flunk "not-applicable replay must not invoke coordination"
+      end
+    )
+    assert_empty coordination_calls
+  end
+
+  def test_invalid_applicability_stops_before_any_publication_verifier
+    [nil, "UNKNOWN", "coordination_required,coordination_not_applicable"].each do |applicability|
+      input = fixture("completed-batch-publication-hichee-terminal.json")
+      input["coordination_applicability"] = applicability
+      verifier = ->(**) { flunk "invalid applicability must stop before verifier activity" }
+
+      result = CompletedBatchPublicationPreflight.assess(
+        input,
+        coordination_backend: BACKEND,
+        waiver_verifier: verifier,
+        target_verifier: verifier,
+        coordination_verifier: verifier
+      )
+
+      refute result.fetch("eligible"), applicability.inspect
+      assert_includes result.fetch("blockers"),
+                      "coordination applicability is missing, invalid, or contradictory",
+                      applicability.inspect
+    end
+  end
+
   def test_no_backend_path_rejects_missing_or_malformed_typed_evidence
     mutations = [
       ->(proof) { proof.delete("rationale") },
@@ -1318,25 +1381,29 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       Tempfile.create(["agent-workflow", ".yml"]) do |config|
         config.write("coordination_backend: agent-coord private backend\n")
         config.flush
-        out, err, status = Open3.capture3(
-          env,
-          "ruby",
-          env.fetch("FAKE_PREFLIGHT_RUNNER"),
-          "--workflow-config",
-          config.path,
-          "--input",
-          File.join(FIXTURES, "completed-batch-publication-hichee-terminal.json")
-        )
+        Tempfile.create(["preflight", ".json"]) do |preflight|
+          preflight.write(JSON.generate(input))
+          preflight.flush
+          out, err, status = Open3.capture3(
+            env,
+            "ruby",
+            env.fetch("FAKE_PREFLIGHT_RUNNER"),
+            "--workflow-config",
+            config.path,
+            "--input",
+            preflight.path
+          )
 
-        assert status.success?, err
-        result = JSON.parse(out)
-        assert result.fetch("eligible")
-        assert_equal "agent-coord private backend", result.dig("snapshot", "coordination_backend")
-        calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
-        assert_includes calls,
-                        "api --hostname github.com repos/shakacode/hichee/pulls/10026"
-        assert_includes calls,
-                        "api --hostname github.com repos/shakacode/hichee/issues/comments/5000000000"
+          assert status.success?, err
+          result = JSON.parse(out)
+          assert result.fetch("eligible")
+          assert_equal "agent-coord private backend", result.dig("snapshot", "coordination_backend")
+          calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+          assert_includes calls,
+                          "api --hostname github.com repos/shakacode/hichee/pulls/10026"
+          assert_includes calls,
+                          "api --hostname github.com repos/shakacode/hichee/issues/comments/5000000000"
+        end
       end
     end
   end
@@ -1387,27 +1454,31 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         Tempfile.create(["agent-workflow", ".yml"]) do |config|
           config.write("coordination_backend: agent-coord private backend\n")
           config.flush
-          out, _err, status = Open3.capture3(
-            env,
-            "ruby",
-            env.fetch("FAKE_PREFLIGHT_RUNNER"),
-            "--workflow-config",
-            config.path,
-            "--input",
-            File.join(FIXTURES, "completed-batch-publication-hichee-terminal.json")
-          )
+          Tempfile.create(["preflight", ".json"]) do |preflight|
+            preflight.write(JSON.generate(input))
+            preflight.flush
+            out, _err, status = Open3.capture3(
+              env,
+              "ruby",
+              env.fetch("FAKE_PREFLIGHT_RUNNER"),
+              "--workflow-config",
+              config.path,
+              "--input",
+              preflight.path
+            )
 
-          assert_equal 1, status.exitstatus, permission
-          result = JSON.parse(out)
-          refute result.fetch("eligible"), permission
-          assert_includes result.fetch("blockers"),
-                          "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable",
-                          permission
-          assert_includes(
-            File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true),
-            "api --hostname github.com repos/shakacode/hichee/collaborators/justin808/permission",
-            permission
-          )
+            assert_equal 1, status.exitstatus, permission
+            result = JSON.parse(out)
+            refute result.fetch("eligible"), permission
+            assert_includes result.fetch("blockers"),
+                            "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable",
+                            permission
+            assert_includes(
+              File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true),
+              "api --hostname github.com repos/shakacode/hichee/collaborators/justin808/permission",
+              permission
+            )
+          end
         end
       end
     end

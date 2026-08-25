@@ -1360,6 +1360,34 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_empty coordination_calls
   end
 
+  def test_complete_publication_accepts_not_applicable_with_real_backend_without_coordination_call
+    preflight = publication_preflight(
+      coordination_backend: REAL_BACKEND,
+      coordination_applicability: "coordination_not_applicable"
+    )
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    coordination_calls = []
+    target_payload = publication_target_payload
+
+    with_stubbed_gh_api(lambda { |_host, _endpoint, **_options| target_payload }) do
+      with_stubbed_coordination_status(lambda { |**arguments| coordination_calls << arguments }) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "batch-184",
+          targets: [target],
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+
+    assert_empty coordination_calls
+  end
+
   def test_publish_binds_snapshot_and_replay_blocks_a_refreshed_snapshot_mismatch
     with_fake_gh do |env, directory|
       targets_path = write_json(
@@ -3483,7 +3511,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     [stdout.force_encoding(Encoding::UTF_8), stderr.force_encoding(Encoding::UTF_8), status]
   end
 
-  def publication_preflight(head_sha: "a" * 40, waived: false, coordination_backend: "n/a")
+  def publication_preflight(
+    head_sha: "a" * 40,
+    waived: false,
+    coordination_backend: "n/a",
+    coordination_applicability: nil
+  )
+    coordination_applicability ||= coordination_backend == "n/a" ?
+      "coordination_not_applicable" : "coordination_required"
     target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
     waiver_url = "https://github.com/acme/widgets/pull/184#issuecomment-9184"
     evidence = <<~MARKER
@@ -3502,7 +3537,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     MARKER
     qa_row = { "target" => target, "user_visible_ui_change" => "no", "evidence" => evidence }
     qa_row["maintainer_waiver"] = { "url" => waiver_url } if waived
-    coordination_status = if coordination_backend == "n/a"
+    coordination_status = if coordination_applicability == "coordination_not_applicable"
                             {
                               "contract" => "completed-batch-coordination-not-applicable",
                               "version" => 1,
@@ -3539,6 +3574,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
       "batch_id" => "batch-184",
+      "coordination_applicability" => coordination_applicability,
       "expected_targets" => [target],
       "coordination_status" => coordination_status,
       "target_snapshots" => [{

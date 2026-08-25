@@ -24,6 +24,7 @@ module CompletedBatchPublicationPreflight
   CONTRACT = "completed-batch-publication-preflight"
   INPUT_CONTRACT = "completed-batch-publication-preflight-input"
   VERSION = 1
+  COORDINATION_APPLICABILITIES = %w[coordination_not_applicable coordination_required].freeze
   SHA_PATTERN = /\A[0-9a-f]{40}\z/i
   DIGEST_PATTERN = /\Asha256:[0-9a-f]{64}\z/
   SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
@@ -64,12 +65,18 @@ module CompletedBatchPublicationPreflight
     validate_input_envelope(input, blockers)
     backend = normalized_known_string(coordination_backend)
     blockers << "configured coordination backend is unavailable" unless backend
+    applicability = input["coordination_applicability"]
+    unless COORDINATION_APPLICABILITIES.include?(applicability)
+      blockers << "coordination applicability is missing, invalid, or contradictory"
+      return blocked_result(blockers)
+    end
 
     batch_id = normalized_known_string(input["batch_id"])
     blockers << "publication batch id is invalid" unless batch_id
     expected_targets = validated_target_set(input["expected_targets"], blockers, "expected target")
-    no_backend = backend&.downcase == "n/a"
-    if no_backend
+    coordination_not_applicable = applicability == "coordination_not_applicable"
+    coordination_required = applicability == "coordination_required"
+    if coordination_not_applicable
       no_backend_evidence = resolved_no_backend_evidence(
         input["coordination_status"],
         batch_id,
@@ -79,7 +86,7 @@ module CompletedBatchPublicationPreflight
       batch = nil
       lane_entries = []
       resolved_targets = no_backend_evidence ? expected_targets : []
-    else
+    elsif coordination_required && backend&.downcase != "n/a"
       no_backend_evidence = nil
       authenticated_status = coordination_verifier&.call(backend:, batch_id:)
       unless authenticated_status == input["coordination_status"]
@@ -87,12 +94,18 @@ module CompletedBatchPublicationPreflight
       end
       batch = resolved_batch(input["coordination_status"], batch_id, blockers)
       lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
+    else
+      no_backend_evidence = nil
+      batch = nil
+      lane_entries = []
+      resolved_targets = []
+      blockers << "coordination is required but the configured backend is unavailable" if coordination_required
     end
     compare_resolved_scope(expected_targets, resolved_targets, blockers)
     snapshots = indexed_target_snapshots(input["target_snapshots"], expected_targets, blockers)
     qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
 
-    validate_batch_terminal(batch, blockers) unless no_backend
+    validate_batch_terminal(batch, blockers) if coordination_required
     canonical_targets, authenticated_later_target_keys = canonical_target_snapshots(
       expected_targets,
       snapshots,
@@ -115,11 +128,12 @@ module CompletedBatchPublicationPreflight
     snapshot = {
       "batch_id" => batch_id,
       "coordination_backend" => backend,
+      "coordination_applicability" => applicability,
       "coordination" => canonical_coordination_snapshot(
         batch,
         canonical_lanes,
         no_backend_evidence,
-        authenticated: no_backend || authenticated_status == input["coordination_status"]
+        authenticated: coordination_not_applicable || authenticated_status == input["coordination_status"]
       ),
       "targets" => canonical_targets,
       "qa" => canonical_qa
@@ -134,6 +148,7 @@ module CompletedBatchPublicationPreflight
       "version" => VERSION,
       "batch_id" => batch_id,
       "coordination_backend" => backend,
+      "coordination_applicability" => applicability,
       "eligible" => eligible,
       "verdict" => eligible ? "ELIGIBLE" : "BLOCKED",
       "targets" => expected_targets,
@@ -150,9 +165,11 @@ module CompletedBatchPublicationPreflight
   end
 
   def blocked_result(blocker)
+    blockers = Array(blocker)
     snapshot = canonicalize(
       "batch_id" => nil,
       "coordination_backend" => nil,
+      "coordination_applicability" => nil,
       "coordination" => { "status" => nil, "updated_at" => nil, "completed_at" => nil, "lanes" => [] },
       "targets" => [],
       "qa" => []
@@ -162,10 +179,11 @@ module CompletedBatchPublicationPreflight
       "version" => VERSION,
       "batch_id" => nil,
       "coordination_backend" => nil,
+      "coordination_applicability" => nil,
       "eligible" => false,
       "verdict" => "BLOCKED",
       "targets" => [],
-      "blockers" => [blocker],
+      "blockers" => blockers,
       "source_input" => {},
       "source_input_digest" => digest({}),
       "snapshot" => snapshot,
@@ -192,6 +210,10 @@ module CompletedBatchPublicationPreflight
 
     backend = normalized_known_string(receipt["coordination_backend"])
     return false unless backend && backend == receipt.dig("snapshot", "coordination_backend")
+    applicability = receipt["coordination_applicability"]
+    return false unless COORDINATION_APPLICABILITIES.include?(applicability)
+    return false unless applicability == receipt.dig("snapshot", "coordination_applicability")
+    return false unless applicability == receipt.dig("source_input", "coordination_applicability")
     return false if expected_batch_id && receipt["batch_id"] != expected_batch_id
 
     target_blockers = []
@@ -201,10 +223,11 @@ module CompletedBatchPublicationPreflight
     return false unless targets == receipt.dig("snapshot", "targets").map { |entry| entry.fetch("target") }
 
     coordination = receipt.dig("snapshot", "coordination")
-    if receipt.dig("snapshot", "coordination_backend").to_s.downcase == "n/a"
+    if applicability == "coordination_not_applicable"
       return false unless coordination.fetch("lanes") == []
       return false unless coordination.dig("not_applicable", "targets") == targets
     else
+      return false if backend.downcase == "n/a"
       return false unless targets == coordination.fetch("lanes").map { |entry| entry.fetch("target") }
     end
     return false unless targets == receipt.dig("snapshot", "qa").map { |entry| entry.fetch("target") }
