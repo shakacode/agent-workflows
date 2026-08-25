@@ -1,0 +1,9 @@
+<!-- completed-batch-audit v1
+batch_id: ror-d-issue-4731-20260817
+audit_status: blocked
+verdict: follow-ups-remain
+scope_evidence: targets=https://github.com/shakacode/react_on_rails/issues/4731; source=https://github.com/shakacode/react_on_rails/issues/4731#issuecomment-5389270559
+checker_evidence: independent completed-batch audit for merged PR 4918 and closed issue 4731
+findings: OUTSTANDING https://github.com/shakacode/agent-workflows/issues/320
+followups_dispositions: ref: https://github.com/shakacode/agent-workflows/issues/320; owner: agent-workflows-maintainer; current status: open; disposition: track; evidence: https://github.com/shakacode/agent-workflows/issues/320
+-->
