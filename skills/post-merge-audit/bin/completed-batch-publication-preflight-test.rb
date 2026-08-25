@@ -914,6 +914,38 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql, &original) if original
   end
 
+  def test_authenticated_projection_accepts_canonical_repository_url_casing
+    input = issue_to_pr_with_qa_lane_input
+    target = input.fetch("expected_targets").first
+    source = {
+      "host" => "github.com",
+      "repo" => target.fetch("repo"),
+      "type" => "issue",
+      "number" => 9_521
+    }
+    payload = issue_projection_graphql_payload(source:, target:)
+    canonical_repo = "ShakaCode/HiChee"
+    repository = payload.dig("data", "repository")
+    repository.fetch("result")["url"] = "https://github.com/#{canonical_repo}/pull/#{target.fetch('number')}"
+    repository.fetch("source")["url"] = "https://github.com/#{canonical_repo}/issues/#{source.fetch('number')}"
+    issue_node = repository.dig("result", "closingIssuesReferences", "nodes", 0)
+    issue_node["url"] = repository.fetch("source").fetch("url")
+    issue_node["repository"]["nameWithOwner"] = canonical_repo
+    pr_node = repository.dig("source", "closedByPullRequestsReferences", "nodes", 0)
+    pr_node["url"] = repository.fetch("result").fetch("url")
+    pr_node["repository"]["nameWithOwner"] = canonical_repo
+    original = CompletedBatchPublicationPreflight.method(:authenticated_gh_graphql)
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **_arguments|
+      payload
+    end
+
+    proof = CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+
+    assert_equal issue_projection_proof(source:, target:), proof
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql, &original) if original
+  end
+
   def test_authenticated_projection_paginates_both_relationships_and_rejects_a_repeated_cursor
     input = issue_to_pr_with_qa_lane_input
     target = input.fetch("expected_targets").first

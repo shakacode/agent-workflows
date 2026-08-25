@@ -995,6 +995,13 @@ module CompletedBatchPublicationPreflight
     "https://#{target.fetch('host')}/#{target.fetch('repo')}/#{segment}/#{target.fetch('number')}"
   end
 
+  def target_url_matches?(value, target)
+    parsed_target = target_from_url(value)
+    parsed_target && target_key(parsed_target) == target_key(target)
+  rescue KeyError
+    false
+  end
+
   def validated_target_set(value, blockers, label)
     unless value.is_a?(Array) && !value.empty?
       blockers << "#{label} set is absent or empty"
@@ -1194,7 +1201,7 @@ module CompletedBatchPublicationPreflight
   def verified_projection_result_facts(row, target)
     return unless row.is_a?(Hash)
     return unless Integer(row["number"], exception: false) == target.fetch("number")
-    return unless row["url"] == target_base_url(target) && row["state"] == "MERGED"
+    return unless target_url_matches?(row["url"], target) && row["state"] == "MERGED"
     return unless valid_timestamp?(row["mergedAt"])
 
     head_sha = row["headRefOid"].to_s.downcase
@@ -1208,7 +1215,7 @@ module CompletedBatchPublicationPreflight
   def verified_projection_source_facts(row, source)
     return unless row.is_a?(Hash)
     return unless Integer(row["number"], exception: false) == source.fetch("number")
-    return unless row["url"] == target_base_url(source) && row["state"] == "CLOSED"
+    return unless target_url_matches?(row["url"], source) && row["state"] == "CLOSED"
     return unless valid_timestamp?(row["closedAt"])
 
     { "closed_at" => row.fetch("closedAt") }
@@ -1222,7 +1229,7 @@ module CompletedBatchPublicationPreflight
 
   def projection_issue_node_matches?(node, source, source_facts)
     node.is_a?(Hash) && Integer(node["number"], exception: false) == source.fetch("number") &&
-      node["url"] == target_base_url(source) && node["state"] == "CLOSED" &&
+      target_url_matches?(node["url"], source) && node["state"] == "CLOSED" &&
       node["closedAt"] == source_facts.fetch("closed_at") &&
       node.dig("repository", "nameWithOwner").to_s.casecmp?(source.fetch("repo"))
   rescue KeyError, TypeError
@@ -1231,7 +1238,7 @@ module CompletedBatchPublicationPreflight
 
   def projection_pr_node_matches?(node, target, result_facts)
     node.is_a?(Hash) && Integer(node["number"], exception: false) == target.fetch("number") &&
-      node["url"] == target_base_url(target) && node["state"] == "MERGED" &&
+      target_url_matches?(node["url"], target) && node["state"] == "MERGED" &&
       node["mergedAt"] == result_facts.fetch("merged_at") &&
       node["headRefOid"].to_s.downcase == result_facts.fetch("head_sha") &&
       node.dig("repository", "nameWithOwner").to_s.casecmp?(target.fetch("repo"))
