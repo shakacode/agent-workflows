@@ -1083,7 +1083,13 @@ class PrCiReadinessCliTest < Minitest::Test
         end
         prepared
       end
-      [{ "id" => suite_id, "head_sha" => suite_head, "app" => app }, runs_for_suite]
+      suite = {
+        "id" => suite_id,
+        "created_at" => "2026-08-25T#{format('%02d', 10 + index)}:00:00Z",
+        "head_sha" => suite_head,
+        "app" => app
+      }
+      [suite, runs_for_suite]
     end
     suite_rows = prepared_suite_runs.map(&:first)
     suite_run_cases = prepared_suite_runs.map do |suite, suite_runs|
@@ -3246,13 +3252,20 @@ class PrCiReadinessCliTest < Minitest::Test
       runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
         _validate_page = validate_page
         if key == "check_suites"
-          [10, 20].map do |suite_id|
-            { "id" => suite_id, "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" } }
+          [
+            { "id" => 10, "created_at" => "2026-08-25T10:00:00Z" },
+            { "id" => 20, "created_at" => "2026-08-25T12:00:00Z" }
+          ].map do |suite|
+            suite.merge("head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" })
           end
         else
           suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
-          run_id = suite_id == 10 ? 100 : 101
-          conclusion = suite_id == 10 ? "failure" : latest_conclusion
+          run_id = suite_id == 10 ? 200 : 100
+          conclusion = if suite_id == 10
+                         latest_conclusion == "success" ? "failure" : "success"
+                       else
+                         latest_conclusion
+                       end
           [{
             "id" => run_id, "name" => "build", "head_sha" => head,
             "status" => "completed", "conclusion" => conclusion,
@@ -3267,8 +3280,41 @@ class PrCiReadinessCliTest < Minitest::Test
 
       assert complete, latest_conclusion
       assert_nil error, latest_conclusion
-      assert_equal [101], rows.map { |row| row.fetch("id") }, latest_conclusion
+      assert_equal [100], rows.map { |row| row.fetch("id") }, latest_conclusion
       assert_equal latest_conclusion, rows.first.fetch("conclusion"), latest_conclusion
+    end
+  end
+
+  def test_check_suite_inventory_rejects_missing_or_tied_cross_suite_chronology
+    head = "a" * 40
+    [nil, "2026-08-25T10:00:00Z"].each do |second_created_at|
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          [
+            { "id" => 10, "created_at" => "2026-08-25T10:00:00Z" },
+            { "id" => 20, "created_at" => second_created_at }
+          ].map do |suite|
+            suite.merge("head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" })
+          end
+        else
+          suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
+          [{
+            "id" => suite_id * 10, "name" => "build", "head_sha" => head,
+            "status" => "completed", "conclusion" => "success",
+            "started_at" => "2026-08-25T12:00:00Z", "html_url" => "",
+            "app" => { "id" => 9, "slug" => "ci-app" },
+            "check_suite" => { "id" => suite_id }
+          }]
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      refute complete, second_created_at.inspect
+      assert_empty rows, second_created_at.inspect
+      assert_match(/chronology|created_at/, error, second_created_at.inspect)
     end
   end
 

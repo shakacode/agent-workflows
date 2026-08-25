@@ -874,7 +874,7 @@ module PrCiReadiness
       )
       suite_ids = {}
       rows = suites.flat_map do |suite|
-        suite_id, suite_app = validate_check_suite_identity!(suite, head_sha)
+        suite_id, suite_app, suite_created_at = validate_check_suite_identity!(suite, head_sha)
         raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
 
         suite_ids[suite_id] = true
@@ -882,16 +882,25 @@ module PrCiReadiness
           "repos/#{repo}/check-suites/#{suite_id}/check-runs?filter=latest&per_page=100&page=%<page>s",
           "check_runs"
         ).map do |row|
-          normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
+          [normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:), suite_created_at]
         end
       end
-      duplicate_ids = rows.group_by { |row| row["id"] }.any? { |_id, matches| matches.length > 1 }
+      duplicate_ids = rows.group_by { |row, _created_at| row["id"] }
+                          .any? { |_id, matches| matches.length > 1 }
       raise Error, "latest check-run inventory repeated an id" if duplicate_ids
 
-      rows_by_name = rows.group_by do |row|
+      rows_by_name = rows.group_by do |row, _created_at|
         row.values_at("app_slug", "name")
       end
-      rows = rows_by_name.values.map { |attempts| attempts.max_by { |row| row.fetch("id") } }
+      rows = rows_by_name.map do |identity, attempts|
+        latest_time = attempts.map(&:last).max
+        latest_attempts = attempts.select { |_row, created_at| created_at == latest_time }
+        if latest_attempts.length != 1
+          raise Error, "latest check-run inventory had tied suite chronology for #{identity.join('/')}"
+        end
+
+        latest_attempts.first.first
+      end
 
       [rows, true, nil]
     rescue StandardError => e
@@ -910,7 +919,20 @@ module PrCiReadiness
         raise Error, "check suite app identity was malformed or unknown"
       end
 
-      [suite_id, app]
+      created_at = strict_rfc3339_time!(suite["created_at"], "check suite created_at")
+
+      [suite_id, app, created_at]
+    end
+
+    def strict_rfc3339_time!(value, context)
+      canonical = value.is_a?(String) && value.match?(
+        /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/
+      )
+      raise Error, "#{context} was missing or malformed" unless canonical
+
+      Time.iso8601(value)
+    rescue ArgumentError
+      raise Error, "#{context} was missing or malformed"
     end
 
     def normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)

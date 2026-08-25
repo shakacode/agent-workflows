@@ -91,7 +91,8 @@ class MergeAssuranceTest < Minitest::Test
         "diff_base_sha" => BASE_SHA,
         "head_sha" => HEAD_SHA,
         "authority" => "auto_merge_when_gates_pass",
-        "diff_identity" => DIFF_IDENTITY
+        "diff_identity" => DIFF_IDENTITY,
+        "requested_hosted_run_ids" => []
       },
       result.fetch("bindings")
     )

@@ -193,7 +193,8 @@ module MergeAssurance
         "diff_base_sha" => safe_context["diff_base_sha"],
         "head_sha" => safe_context["head_sha"],
         "authority" => safe_context["authority"],
-        "diff_identity" => safe_context["diff_identity"]
+        "diff_identity" => safe_context["diff_identity"],
+        "requested_hosted_run_ids" => authorized_requested_run_ids
       },
       "freshness" => {
         "ci_checked_at" => ci_result["checked_at"],
@@ -314,7 +315,7 @@ module MergeAssurance
     end
   end
 
-  def validate_ci(ci_result, context, trusted_ci_policy, now, failures)
+  def validate_ci(ci_result, context, trusted_ci_policy, authorized_requested_run_ids, now, failures)
     unless ci_result.is_a?(Hash)
       failures << "ci_result must be an object"
       return
@@ -326,7 +327,9 @@ module MergeAssurance
     failures << "ci_result repo binding mismatch" unless ci_result["repo"] == context["repo"]
     failures << "ci_result PR binding mismatch" unless ci_result["pr"] == context["pr"]
     failures << "ci_result head binding mismatch" unless ci_result["head_sha"] == context["head_sha"]
-    validate_requested_hosted(ci_result["requested_hosted"], failures)
+    validate_requested_hosted(
+      ci_result["requested_hosted"], authorized_requested_run_ids, failures
+    )
     scopes = ci_result["scopes"]
     unless scopes.is_a?(Hash) && scopes.keys.sort == SCOPE_NAMES.sort
       failures << "ci_result scopes are missing or unknown"
@@ -2276,13 +2279,15 @@ module MergeAssurance
     end
 
     def parse_options(argv)
-      options = {}
+      options = { requested_hosted_runs: [] }
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE [--trusted-repo-root DIR]"
+        opts.banner = "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE " \
+                      "[--trusted-repo-root DIR] [--requested-hosted-run RUN_ID]"
         opts.on("--ci-result FILE") { |value| options[:ci_result] = value }
         opts.on("--autonomous-result FILE") { |value| options[:autonomous_result] = value }
         opts.on("--context FILE") { |value| options[:context] = value }
         opts.on("--trusted-repo-root DIR") { |value| options[:trusted_repo_root] = value }
+        opts.on("--requested-hosted-run RUN_ID") { |value| options[:requested_hosted_runs] << value }
         opts.on("-h", "--help") { options[:help] = true }
       end
       remaining = parser.parse(argv)
@@ -2311,7 +2316,8 @@ module MergeAssurance
     end
 
     def help
-      puts "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE [--trusted-repo-root DIR]"
+      puts "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE " \
+           "[--trusted-repo-root DIR] [--requested-hosted-run RUN_ID]"
       0
     end
   end

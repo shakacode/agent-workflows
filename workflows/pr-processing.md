@@ -3610,6 +3610,10 @@ then blocks only those requested current-head hosted runs while leaving unrelate
 advisory checks advisory. When no usable required checks exist, the requested
 runs become the gate instead of the full advisory list. A stale requested run for
 an older head is `UNKNOWN`, not success.
+That describes the ordinary readiness selection step only. For a policy-bearing
+merge receipt, the final pre-mutation refresh inventories the complete CI
+surface and blocks every unmatched pending, failing, malformed, incomplete, or
+`UNKNOWN` row; requested-run selection does not waive newly blocking evidence.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 Avoid long-lived `gh ... --watch` commands in agent sessions. Avoid relying on

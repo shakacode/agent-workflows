@@ -186,7 +186,7 @@ module PrMergeSubmit
     rescue UnknownOutcome => e
       warn "UNKNOWN: #{e.message}"
       2
-    rescue Error => e
+    rescue Error, MergeAssurance::Error => e
       warn "Error: #{e.message}"
       1
     ensure
@@ -199,7 +199,7 @@ module PrMergeSubmit
       options = {
         method: nil, subject: nil, body: nil, repo: nil, host: nil,
         expected_head: nil, expected_base: nil, merge_assurance_receipt: nil,
-        help: false, pr: nil
+        requested_hosted_runs: [], help: false, pr: nil
       }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
@@ -215,6 +215,9 @@ module PrMergeSubmit
         end
         opts.on("--merge-assurance-receipt FILE", "Fresh eligible merge-assurance receipt") do |value|
           options[:merge_assurance_receipt] = value
+        end
+        opts.on("--requested-hosted-run RUN_ID", "Trusted requested Actions run ID; repeatable") do |value|
+          options[:requested_hosted_runs] << value
         end
         opts.on("--method METHOD", METHODS, "Direct method; merge queue configuration controls queued merges") do |value|
           options[:method] = value
@@ -257,6 +260,7 @@ module PrMergeSubmit
         opts.separator "        --subject SUBJECT  Direct merge commit subject"
         opts.separator "        --body BODY        Direct merge commit body"
         opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v1 receipt"
+        opts.separator "        --requested-hosted-run RUN_ID  Trusted requested run ID; repeatable"
       end
     end
 
@@ -275,6 +279,10 @@ module PrMergeSubmit
       raise Error, "--method is required" unless METHODS.include?(options[:method])
       raise Error, "--merge-assurance-receipt is required" if options[:merge_assurance_receipt].to_s.empty?
 
+      options[:requested_hosted_runs] = MergeAssurance.canonical_requested_hosted_run_ids(
+        options[:requested_hosted_runs]
+      )
+
       reject_leading_at!(options, :subject)
       reject_leading_at!(options, :body)
     end
@@ -284,7 +292,7 @@ module PrMergeSubmit
       freshness issued_at verdict version
     ].freeze
     RECEIPT_BINDING_KEYS = %w[
-      authority base diff_base_sha diff_identity head_sha host pr repo
+      authority base diff_base_sha diff_identity head_sha host pr repo requested_hosted_run_ids
     ].freeze
     RECEIPT_EVIDENCE_KEYS = %w[
       authenticated_tracker_reads autonomous_result ci_result context
@@ -379,7 +387,8 @@ module PrMergeSubmit
         ci_result: refreshed_ci_result,
         autonomous_result: evidence["autonomous_result"],
         context: evidence["context"],
-        trusted_ci_policy:
+        trusted_ci_policy:,
+        requested_hosted_runs: options[:requested_hosted_runs]
       )
       unless reassessed["eligible"] == true
         raise Error, "current CI evidence does not currently qualify: " \
@@ -395,10 +404,9 @@ module PrMergeSubmit
       return ci_result if trusted_ci_policy.nil?
 
       requested_hosted = ci_result["requested_hosted"] if ci_result.is_a?(Hash)
-      requested_run_ids = requested_hosted["run_ids"] if requested_hosted.is_a?(Hash)
+      requested_run_ids = options[:requested_hosted_runs]
       unless requested_hosted.is_a?(Hash) && requested_run_ids.is_a?(Array) &&
-             requested_run_ids.all? { |run_id| run_id.is_a?(String) && run_id.match?(/\A[1-9]\d*\z/) } &&
-             requested_run_ids.uniq == requested_run_ids
+             requested_hosted["run_ids"] == requested_run_ids
         raise Error, "current CI requested hosted-run bindings are malformed"
       end
 
@@ -603,6 +611,8 @@ module PrMergeSubmit
         bindings["head_sha"].to_s.casecmp?(options[:expected_head])
       raise Error, "merge-assurance receipt base ref mismatch" unless
         bindings.dig("base", "ref") == options[:expected_base]
+      raise Error, "merge-assurance receipt requested hosted-run authorization mismatch" unless
+        bindings["requested_hosted_run_ids"] == options[:requested_hosted_runs]
     end
 
     def load_merge_submission_policy!
@@ -1136,6 +1146,9 @@ module PrMergeSubmit
         "--method", policy.fetch("method"),
         "--merge-assurance-receipt", File.expand_path(options[:merge_assurance_receipt])
       ]
+      Array(options[:requested_hosted_runs]).each do |run_id|
+        args.concat(["--requested-hosted-run", run_id])
+      end
       args.concat(["--subject", options[:subject]]) if options[:subject]
       args.concat(["--body", options[:body]]) if options[:body]
       directory = Dir.mktmpdir("pr-merge-submit-guard")

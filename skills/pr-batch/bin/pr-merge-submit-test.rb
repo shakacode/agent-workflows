@@ -1343,7 +1343,8 @@ class PrMergeSubmitTest < Minitest::Test
     result, log = run_cli(
       mode: "direct",
       receipt_mode: :optional_held_requested,
-      merge_submission: { "mode" => "direct" }
+      merge_submission: { "mode" => "direct" },
+      requested_hosted_runs: %w[42 43]
     )
 
     assert result.fetch(:status).success?, "#{result.fetch(:stderr)}\n#{log}"
@@ -1361,6 +1362,57 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal 1, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "requested hosted-run bindings are invalid"
     assert_empty log
+  end
+
+  def test_caller_cannot_clear_reorder_or_subset_requested_run_authorization_on_any_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    tampered_receipts = %i[
+      optional_held_requested_cleared
+      optional_held_requested_reversed
+      optional_held_requested_subset
+    ]
+    routes.each do |mode, (merge_submission, mutation)|
+      tampered_receipts.each do |receipt_mode|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode:, merge_submission:,
+          requested_hosted_runs: %w[42 43]
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{receipt_mode}"
+        assert_includes result.fetch(:stderr), "trusted invocation authorization", "#{mode}/#{receipt_mode}"
+        refute_includes log, mutation, "#{mode}/#{receipt_mode}"
+        assert_empty guard_log, "#{mode}/#{receipt_mode}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_exact_requested_run_authorization_continues_on_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held_requested,
+        merge_submission:, requested_hosted_runs: %w[42 43]
+      )
+
+      assert result.fetch(:status).success?, "#{mode}: #{result.fetch(:stderr)}"
+      assert_operator log.index("actions/runs/42"), :<, log.index("actions/runs/43"), mode
+      if mutation == "GUARD_EXECUTION"
+        assert_includes guard_log, "--requested-hosted-run\n42\n--requested-hosted-run\n43", mode
+      else
+        assert_includes log, mutation, mode
+        assert_ci_refresh_immediately_precedes_mutation(log, mutation)
+      end
+    end
   end
 
   def test_guarded_queue_refreshes_optional_held_ci_after_its_final_pr_read
@@ -1583,6 +1635,34 @@ class PrMergeSubmitTest < Minitest::Test
       assert_includes failure_log, "filter=latest", mode
       refute_includes failure_log, mutation, mode
       assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
+    end
+  end
+
+  def test_cross_suite_chronology_uses_later_suite_even_when_its_run_id_is_lower
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      success, success_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        ci_transition: :later_lower_id_success
+      )
+      assert success.fetch(:status).success?, "#{mode}: #{success.fetch(:stderr)}"
+      assert_ci_refresh_immediately_precedes_mutation(success_log, mutation)
+
+      %i[later_lower_id_failure missing_suite_chronology tied_suite_chronology].each do |transition|
+        failure, failure_log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+          ci_transition: transition
+        )
+        assert_equal 1, failure.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes failure.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        refute_includes failure_log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
     end
   end
 
@@ -1976,7 +2056,8 @@ class PrMergeSubmitTest < Minitest::Test
     bash_env_attack: false,
     guard_timeout_seconds: nil,
     interrupt_guard: false,
-    ci_transition: :held
+    ci_transition: :held,
+    requested_hosted_runs: []
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
@@ -2035,7 +2116,8 @@ class PrMergeSubmitTest < Minitest::Test
           receipt_path, mode: receipt_mode, repo:, head: expected_head,
                         base_ref: expected_base, base_sha: receipt_base_sha || base_sha,
                         diff_base_sha: receipt_diff_base_sha,
-                        host: HOST, pr_number: 42, gh_dir: dir, repo_root:
+                        host: HOST, pr_number: 42, gh_dir: dir, repo_root:,
+                        requested_hosted_runs:
         )
       end
       environment = cli_environment(
@@ -2047,7 +2129,8 @@ class PrMergeSubmitTest < Minitest::Test
       )
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
-        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:
+        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:,
+        requested_hosted_runs:
       )
       result = if interrupt_guard
                  capture_with_interrupt(
@@ -2263,7 +2346,7 @@ class PrMergeSubmitTest < Minitest::Test
     gh_path:,
     expected_base: "main",
     subject: "Fix the thing (#42)", body: nil,
-    include_merge_assurance_receipt: true, receipt_path: nil
+    include_merge_assurance_receipt: true, receipt_path: nil, requested_hosted_runs: []
   )
     runner = <<~RUBY
       load #{SCRIPT.inspect}
@@ -2280,12 +2363,13 @@ class PrMergeSubmitTest < Minitest::Test
     args.concat(["--expected-head", expected_head]) if include_expected_head
     args.concat(["--expected-base", expected_base]) if include_expected_base
     args.concat(["--merge-assurance-receipt", receipt_path]) if include_merge_assurance_receipt
+    requested_hosted_runs.each { |run_id| args.concat(["--requested-hosted-run", run_id]) }
     args
   end
 
   def write_merge_assurance_receipt(
     path, mode:, repo:, head:, base_ref:, base_sha:, host:, pr_number:, gh_dir:,
-    repo_root:, diff_base_sha: nil
+    repo_root:, diff_base_sha: nil, requested_hosted_runs: []
   )
     diff_base_sha ||= base_sha
     now = Time.now.utc
@@ -2328,7 +2412,7 @@ class PrMergeSubmitTest < Minitest::Test
         "other" => scope.call("other", [])
       }
     }
-    if mode == :optional_held_requested
+    if mode.to_s.start_with?("optional_held_requested")
       ci_result.fetch("requested_hosted")["run_ids"] = %w[42 43]
     end
     trusted_ci_policy = nil
@@ -2448,6 +2532,15 @@ class PrMergeSubmitTest < Minitest::Test
     raise "test receipt did not qualify: #{receipt.inspect}" unless receipt["eligible"]
 
     case mode
+    when :optional_held_requested_cleared
+      receipt.dig("evidence", "ci_result", "requested_hosted")["run_ids"] = []
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :optional_held_requested_reversed
+      receipt.dig("evidence", "ci_result", "requested_hosted")["run_ids"] = %w[43 42]
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :optional_held_requested_subset
+      receipt.dig("evidence", "ci_result", "requested_hosted")["run_ids"] = ["43"]
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :requested_hosted_missing
       receipt.dig("evidence", "ci_result").delete("requested_hosted")
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
@@ -2932,6 +3025,16 @@ class PrMergeSubmitTest < Minitest::Test
           started_at: "2026-08-25T12:00:00Z", name: "unrelated-check",
           app_slug: "unrelated-app"
         )
+        earlier_higher_id_success = build_check_run.call(
+          id: 200, status: "completed", conclusion: "success",
+          started_at: "2026-08-25T10:00:00Z"
+        ).merge("fixture_suite_id" => 803, "fixture_suite_created_at" => "2026-08-25T10:00:00Z")
+        earlier_higher_id_failure = earlier_higher_id_success.merge("conclusion" => "failure")
+        later_lower_id_success = build_check_run.call(
+          id: 100, status: "completed", conclusion: "success",
+          started_at: "2026-08-25T12:00:00Z"
+        ).merge("fixture_suite_id" => 804, "fixture_suite_created_at" => "2026-08-25T12:00:00Z")
+        later_lower_id_failure = later_lower_id_success.merge("conclusion" => "failure")
         if transition == :missing_inventory
           warn "inventory unavailable"
           exit 1
@@ -2969,6 +3072,23 @@ class PrMergeSubmitTest < Minitest::Test
                                     else
                                       [[held, failed_replacement], 2]
                                     end
+                                  when :later_lower_id_success
+                                    [[earlier_higher_id_failure, later_lower_id_success], 2]
+                                  when :later_lower_id_failure
+                                    [[earlier_higher_id_success, later_lower_id_failure], 2]
+                                  when :missing_suite_chronology
+                                    [[held.merge("fixture_suite_created_at" => nil)], 1]
+                                  when :tied_suite_chronology
+                                    [[
+                                      held.merge(
+                                        "fixture_suite_id" => 803,
+                                        "fixture_suite_created_at" => "2026-08-25T10:00:00Z"
+                                      ),
+                                      successful_replacement.merge(
+                                        "fixture_suite_id" => 804,
+                                        "fixture_suite_created_at" => "2026-08-25T10:00:00Z"
+                                      )
+                                    ], 2]
                                   when :missing_disposed
                                     [[], 0]
                                   when :pagination_success
@@ -3003,12 +3123,20 @@ class PrMergeSubmitTest < Minitest::Test
                                   else
                                     [[held], 1]
                                   end
-        suite_for_slug = lambda do |slug|
-          { "id" => slug == "circleci-checks" ? 801 : 802,
+        suite_for_row = lambda do |row|
+          slug = row.dig("app", "slug")
+          default_id = slug == "circleci-checks" ? 801 : 802
+          created_at = if row.key?("fixture_suite_created_at")
+                         row["fixture_suite_created_at"]
+                       else
+                         "2026-08-25T10:00:00Z"
+                       end
+          { "id" => row.fetch("fixture_suite_id", default_id),
+            "created_at" => created_at,
             "head_sha" => #{current_check_head.inspect},
             "app" => { "id" => slug == "circleci-checks" ? 901 : 902, "slug" => slug } }
         end
-        suites = check_runs.map { |row| suite_for_slug.call(row.dig("app", "slug")) }.uniq
+        suites = check_runs.map { |row| suite_for_row.call(row) }.uniq
         if suite_inventory_endpoint
           puts JSON.generate("total_count" => suites.length, "check_suites" => suites)
           exit 0
@@ -3016,7 +3144,7 @@ class PrMergeSubmitTest < Minitest::Test
         if suite_runs_endpoint
           suite_id = suite_runs_endpoint[%r{/check-suites/(\\d+)/}, 1].to_i
           suite_runs = check_runs.filter_map do |row|
-            suite = suite_for_slug.call(row.dig("app", "slug"))
+            suite = suite_for_row.call(row)
             next unless suite.fetch("id") == suite_id
 
             row.merge("check_suite" => { "id" => suite_id }, "app" => suite.fetch("app"))
