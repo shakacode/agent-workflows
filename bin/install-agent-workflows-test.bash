@@ -201,10 +201,16 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/skills/pr-batch/agents/openai.yaml"
   assert_file "$target/workflows/pr-processing.md"
   assert_file "$target/docs/coordination-backend.md"
+  assert_file "$target/docs/execution-provenance-schema.md"
   assert_file "$target/docs/review-finding-schema.md"
   assert_file "$target/docs/agent-workflows-model-routing.md"
+  assert_file "$target/docs/user-facing-coordination.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
+  assert_file "$target/bin/validate-execution-provenance"
+  "$target/bin/validate-execution-provenance" >"$tmp/validate-execution-provenance.out"
+  grep -Fqx 'PASS execution provenance schema' "$tmp/validate-execution-provenance.out" || \
+    fail "Codex copy install could not validate its installed provenance schema guide"
   assert_file "$target/bin/agent-workflows-status"
   assert_file "$target/bin/agent-workflows-doctor"
   assert_file "$target/bin/agent_doctor/process_runner.rb"
@@ -224,7 +230,14 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata is source-pack metadata, not installer-managed install metadata"
-  ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    provenance_fingerprint = metadata.fetch("managed_pack_doc_copy_fingerprints")["execution-provenance-schema.md"]
+    abort metadata.inspect unless metadata["host"] == "codex" &&
+                                  metadata["mode"] == "copy" &&
+                                  metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
+                                  provenance_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/)
+  ' "$target/.agent-workflows-install.json"
 }
 
 test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision() {
@@ -868,6 +881,629 @@ test_repeat_install_replays_recorded_companion_delivery_mode() {
   ' "$target/.agent-workflows-install.json"
 }
 
+test_repeat_flat_install_accepts_installer_created_uncommitted_skill() {
+  local tmp source target mode marker
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/uncommitted-local"
+  printf '%s\n' '---' 'name: uncommitted-local' \
+    'description: Exercise repeat installs from a dirty development checkout.' \
+    '---' '' '# Uncommitted Local' > "$source/skills/uncommitted-local/SKILL.md"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-home-$mode"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" --delivery-mode flat >"$tmp/first-$mode.out"
+    marker="source-edit-after-$mode-install"
+    printf '\n%s\n' "$marker" >> "$source/skills/uncommitted-local/SKILL.md"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" --delivery-mode flat >"$tmp/repeat-$mode.out"
+
+    if [[ "$mode" = copy ]]; then
+      cmp -s "$source/skills/uncommitted-local/SKILL.md" \
+        "$target/skills/uncommitted-local/SKILL.md" || \
+        fail "repeat copy install did not update the installer-created uncommitted skill"
+    else
+      [[ "$(readlink "$target/skills/uncommitted-local")" = \
+         "$source/skills/uncommitted-local" ]] || \
+        fail "repeat symlink install changed the installer-created uncommitted skill link"
+    fi
+    grep -qxF "$marker" "$target/skills/uncommitted-local/SKILL.md" || \
+      fail "repeat $mode install lost the uncommitted source edit"
+  done
+}
+
+test_repeat_flat_copy_install_blocks_modified_installer_created_uncommitted_skill() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/uncommitted-local"
+  printf '%s\n' '---' 'name: uncommitted-local' \
+    'description: Exercise target-modification fencing.' \
+    '---' '' '# Uncommitted Local' > "$source/skills/uncommitted-local/SKILL.md"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+  printf '\npersonal installed-copy edit\n' >> \
+    "$target/skills/uncommitted-local/SKILL.md"
+  printf '\nnew source edit\n' >> "$source/skills/uncommitted-local/SKILL.md"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified uncommitted skill target"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal installed-copy edit' \
+    "$target/skills/uncommitted-local/SKILL.md" || \
+    fail "repeat copy install changed the modified uncommitted skill target"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "blocked uncommitted skill replay changed install metadata"
+}
+
+test_repeat_flat_copy_install_blocks_modified_recorded_targets() {
+  local tmp source skill_target empty_target symlink_target doc_target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  skill_target="$tmp/skill-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$skill_target" \
+    --mode copy --delivery-mode flat >"$tmp/skill-first.out"
+  cp "$skill_target/.agent-workflows-install.json" "$tmp/skill-metadata.before"
+  metadata_before="$tmp/skill-metadata.before"
+  printf '\npersonal recorded-skill edit\n' >> "$skill_target/skills/pr-batch/SKILL.md"
+  printf 'nested personal file\n' > "$skill_target/skills/pr-batch/personal-notes.txt"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$skill_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified recorded skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal recorded-skill edit' "$skill_target/skills/pr-batch/SKILL.md" || \
+    fail "blocked repeat install changed the modified recorded skill"
+  grep -qxF 'nested personal file' "$skill_target/skills/pr-batch/personal-notes.txt" || \
+    fail "blocked repeat install removed a nested personal skill file"
+  cmp -s "$metadata_before" "$skill_target/.agent-workflows-install.json" || \
+    fail "blocked recorded-skill replay changed install metadata"
+
+  empty_target="$tmp/empty-directory-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$empty_target" \
+    --mode copy --delivery-mode flat >"$tmp/empty-first.out"
+  cp "$empty_target/.agent-workflows-install.json" "$tmp/empty-metadata.before"
+  mkdir -p "$empty_target/skills/pr-batch/personal-empty/nested-empty"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$empty_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install removed a personal empty skill directory"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  [[ -d "$empty_target/skills/pr-batch/personal-empty/nested-empty" ]] || \
+    fail "blocked repeat install removed the personal empty skill directory"
+  cmp -s "$tmp/empty-metadata.before" "$empty_target/.agent-workflows-install.json" || \
+    fail "blocked empty-directory replay changed install metadata"
+
+  symlink_target="$tmp/symlink-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$symlink_target" \
+    --mode copy --delivery-mode flat >"$tmp/symlink-first.out"
+  mkdir -p "$tmp/personal-pr-batch"
+  printf 'personal symlink target\n' > "$tmp/personal-pr-batch/SKILL.md"
+  mv "$symlink_target/skills/pr-batch" "$tmp/installed-pr-batch.before-symlink"
+  ln -s "$tmp/personal-pr-batch" "$symlink_target/skills/pr-batch"
+  cp "$symlink_target/.agent-workflows-install.json" "$tmp/symlink-metadata.before"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$symlink_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced an arbitrary recorded-skill symlink"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  [[ -L "$symlink_target/skills/pr-batch" && \
+     "$(readlink "$symlink_target/skills/pr-batch")" = "$tmp/personal-pr-batch" ]] || \
+    fail "blocked repeat install changed the recorded-skill symlink"
+  cmp -s "$tmp/symlink-metadata.before" "$symlink_target/.agent-workflows-install.json" || \
+    fail "blocked recorded-skill symlink replay changed install metadata"
+
+  doc_target="$tmp/doc-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$doc_target" \
+    --mode copy --delivery-mode flat >"$tmp/doc-first.out"
+  cp "$doc_target/.agent-workflows-install.json" "$tmp/doc-metadata.before"
+  printf 'personal recorded-doc edit\n' > "$doc_target/docs/coordination-backend.md"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$doc_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified recorded pack document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  grep -qxF 'personal recorded-doc edit' "$doc_target/docs/coordination-backend.md" || \
+    fail "blocked repeat install changed the modified recorded pack document"
+  cmp -s "$tmp/doc-metadata.before" "$doc_target/.agent-workflows-install.json" || \
+    fail "blocked recorded-document replay changed install metadata"
+}
+
+test_repeat_flat_copy_install_uses_fingerprints_without_git_history() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  mv "$source/.git" "$tmp/source.git"
+  printf '\nnon-git managed-v2\n' >> "$source/skills/pr-batch/SKILL.md"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/non-git-upgrade.out"
+  grep -qxF 'non-git managed-v2' "$target/skills/pr-batch/SKILL.md" || \
+    fail "recorded fingerprint did not authorize an untouched non-git copy upgrade"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  printf '\npersonal non-git target edit\n' >> "$target/skills/pr-batch/SKILL.md"
+  printf '\nnon-git managed-v3\n' >> "$source/skills/pr-batch/SKILL.md"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "non-git copy upgrade replaced a modified installed skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal non-git target edit' "$target/skills/pr-batch/SKILL.md" || \
+    fail "blocked non-git upgrade changed the modified installed skill"
+  cmp -s "$tmp/metadata.before" "$target/.agent-workflows-install.json" || \
+    fail "blocked non-git upgrade changed install metadata"
+}
+
+test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history() {
+  local tmp source target modified_target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mv "$source/.git" "$tmp/source.git"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/flat.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints")
+    abort metadata.inspect unless metadata["source_revision"] == "unknown" && !fingerprints.empty?
+  ' "$target/.agent-workflows-install.json"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion >"$tmp/companion.out"
+
+  [[ ! -e "$target/skills/pr-batch" ]] || \
+    fail "fingerprint-authorized companion migration retained a managed flat skill"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+  ' "$target/.agent-workflows-install.json"
+
+  modified_target="$tmp/modified-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$modified_target" \
+    --mode copy --delivery-mode flat >"$tmp/modified-flat.out"
+  printf '\npersonal non-git migration edit\n' >> "$modified_target/skills/pr-batch/SKILL.md"
+  write_native_scw_state codex "$modified_target"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$modified_target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "fingerprints authorized migration of a modified flat skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal non-git migration edit' "$modified_target/skills/pr-batch/SKILL.md" || \
+    fail "blocked fingerprint migration changed the modified flat skill"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$modified_target/.agent-workflows-install.json"
+}
+
+test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
+  local tmp source target recorded_fingerprint verified_fingerprint
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  mkdir -p "$source/skills/fingerprint-fixture/bin"
+  mkdir -p "$source/skills/fingerprint-fixture/empty/nested"
+  printf '%s\n' '---' 'name: fingerprint-fixture' 'description: Fingerprint fixture.' '---' > \
+    "$source/skills/fingerprint-fixture/SKILL.md"
+  printf '#!/bin/sh\nexit 0\n' > "$source/skills/fingerprint-fixture/bin/run"
+  chmod +x "$source/skills/fingerprint-fixture/bin/run"
+  ln -s SKILL.md "$source/skills/fingerprint-fixture/skill-link"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+
+  recorded_fingerprint="$(jq -r '.managed_skill_copy_fingerprints["fingerprint-fixture"]' \
+    "$target/.agent-workflows-install.json")"
+  verified_fingerprint="$(ruby -e \
+    'load ARGV.shift; puts AgentWorkflowsDeliveryState.directory_fingerprint(ARGV.fetch(0))' \
+    "$source/bin/agent-workflows-delivery-state" "$target/skills/fingerprint-fixture")"
+
+  [[ "$recorded_fingerprint" != "null" && -n "$recorded_fingerprint" ]] || \
+    fail "installer metadata omitted the fixture skill fingerprint"
+  [[ "$recorded_fingerprint" = "$verified_fingerprint" ]] || \
+    fail "installer and delivery-state directory fingerprints drifted"
+}
+
+test_installation_docs_describe_managed_coordination_doc_fingerprints() {
+  local docs changelog
+  docs="$(cat "$ROOT/docs/installation-and-upgrades.md")"
+  changelog="$(cat "$ROOT/CHANGELOG.md")"
+
+  assert_contains "$docs" '<target>/docs/user-facing-coordination.md'
+  assert_contains "$docs" '<target>/docs/execution-provenance-schema.md'
+  assert_contains "$docs" '<target>/bin/validate-execution-provenance'
+  assert_contains "$docs" 'managed_skill_copy_fingerprints'
+  assert_contains "$docs" 'managed_pack_doc_copy_fingerprints'
+  assert_contains "$docs" 'including every installed'
+  assert_contains "$docs" '<target>/docs/solutions/*'
+  assert_contains "$docs" 'installer refuses to'
+  assert_contains "$docs" 'replace a modified'
+  assert_contains "$changelog" 'Copy-install fingerprints'
+}
+
+test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc() {
+  local tmp source target personal_target output status metadata_before doc_name
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  personal_target="$tmp/personal-codex-home"
+  doc_name="uncommitted-pack-doc.md"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.read(path)
+    insertion = "  user-facing-coordination.md\n  uncommitted-pack-doc.md\n)"
+    abort "missing pack_docs insertion point" unless text.sub!("  user-facing-coordination.md\n)", insertion)
+    File.write(path, text)
+  ' "$source/bin/install-agent-workflows"
+  printf 'managed-v1\n' > "$source/docs/$doc_name"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  printf 'managed-v2\n' > "$source/docs/$doc_name"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/repeat.out"
+  grep -qxF 'managed-v2' "$target/docs/$doc_name" || \
+    fail "repeat copy install did not update the installer-created uncommitted pack document"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+  printf 'personal installed-doc edit\n' > "$target/docs/$doc_name"
+  printf 'managed-v3\n' > "$source/docs/$doc_name"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified uncommitted pack document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  grep -qxF 'personal installed-doc edit' "$target/docs/$doc_name" || \
+    fail "repeat copy install changed the modified uncommitted pack document"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "blocked uncommitted document replay changed install metadata"
+
+  mkdir -p "$personal_target/docs"
+  printf 'personal-predating-first-install\n' > "$personal_target/docs/$doc_name"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$personal_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "first copy install replaced a personal uncommitted pack document collision"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  grep -qxF 'personal-predating-first-install' "$personal_target/docs/$doc_name" || \
+    fail "first copy install changed the personal uncommitted pack document"
+  [[ ! -e "$personal_target/.agent-workflows-install.json" ]] || \
+    fail "blocked first install committed metadata"
+}
+
+test_repeat_copy_install_blocks_modified_solution_document() {
+  local tmp source target output status metadata_before solution_name
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  solution_name="coordination-unknown-state.md"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_pack_doc_copy_fingerprints")
+    abort fingerprints.inspect unless fingerprints.key?(ARGV.fetch(1))
+  ' "$target/.agent-workflows-install.json" "solutions/$solution_name"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+  printf 'personal installed-solution edit\n' > "$target/docs/solutions/$solution_name"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified solution document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  assert_contains "$output" "$target/docs/solutions/$solution_name"
+  grep -qxF 'personal installed-solution edit' "$target/docs/solutions/$solution_name" || \
+    fail "repeat copy install changed the modified solution document"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "blocked solution document replay changed install metadata"
+}
+
+test_flat_upgrade_refuses_newly_packaged_skill_collision() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  git -C "$source" rm -r --quiet skills/close-session
+  git -C "$source" commit --quiet -m "simulate source before close-session"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/legacy-install.out"
+
+  mkdir -p "$target/skills/close-session"
+  printf 'personal close-session sentinel\n' > "$target/skills/close-session/SKILL.md"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  rsync -a "$ROOT/skills/close-session" "$source/skills/"
+  git -C "$source" add skills/close-session
+  git -C "$source" commit --quiet -m "add packaged close-session"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat upgrade replaced a newly colliding personal skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "$target/skills/close-session"
+  grep -qxF 'personal close-session sentinel' "$target/skills/close-session/SKILL.md" || \
+    fail "flat upgrade changed the personal close-session skill"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "flat collision changed install metadata"
+}
+
+test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  git -C "$source" rm -r --quiet skills/close-session
+  git -C "$source" commit --quiet -m "simulate source before close-session"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/legacy-install.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  rsync -a "$ROOT/skills/close-session" "$source/skills/"
+  git -C "$source" add skills/close-session
+  git -C "$source" commit --quiet -m "add packaged close-session"
+  mv "$target/bin/agent-workflows-status" "$tmp/agent-workflows-status"
+  mkdir "$target/bin/agent-workflows-status"
+  printf 'personal helper collision\n' > "$target/bin/agent-workflows-status/sentinel"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat upgrade accepted a late helper collision"
+  assert_contains "$output" "Refusing to replace non-file path"
+  [[ ! -e "$target/skills/close-session" ]] || \
+    fail "failed flat upgrade stranded a newly packaged skill"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "failed flat upgrade changed install metadata"
+
+  mv "$target/bin/agent-workflows-status" "$tmp/personal-helper-collision"
+  mv "$tmp/agent-workflows-status" "$target/bin/agent-workflows-status"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/retry.out"
+  assert_file "$target/skills/close-session/SKILL.md"
+}
+
+test_flat_copy_upgrade_refuses_newly_packaged_doc_collision() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  git -C "$source" rm --quiet docs/user-facing-coordination.md
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.read(path)
+    abort "missing pack doc entry" unless text.sub!("  user-facing-coordination.md\n", "")
+    File.write(path, text)
+  ' "$source/bin/install-agent-workflows"
+  git -C "$source" add bin/install-agent-workflows
+  git -C "$source" commit --quiet -m "simulate source before coordination doc"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/legacy-install.out"
+
+  printf 'personal coordination sentinel\n' > "$target/docs/user-facing-coordination.md"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  install -m 0644 "$ROOT/docs/user-facing-coordination.md" "$source/docs/user-facing-coordination.md"
+  install -m 0755 "$ROOT/bin/install-agent-workflows" "$source/bin/install-agent-workflows"
+  printf '\nupgrade-managed-doc-marker\n' >> "$source/docs/coordination-backend.md"
+  git -C "$source" add docs/user-facing-coordination.md docs/coordination-backend.md bin/install-agent-workflows
+  git -C "$source" commit --quiet -m "add coordination doc"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat copy upgrade replaced a newly colliding personal document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  assert_contains "$output" "$target/docs/user-facing-coordination.md"
+  grep -qxF 'personal coordination sentinel' "$target/docs/user-facing-coordination.md" || \
+    fail "flat copy upgrade changed the personal coordination document"
+  assert_not_contains "$(cat "$target/docs/coordination-backend.md")" "upgrade-managed-doc-marker"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "flat document collision changed install metadata"
+
+  mv "$target/docs/user-facing-coordination.md" "$tmp/personal-coordination.md"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/successful-upgrade.out"
+  cmp -s "$target/docs/user-facing-coordination.md" "$source/docs/user-facing-coordination.md" || \
+    fail "flat copy upgrade did not install an absent coordination document"
+  cmp -s "$target/docs/coordination-backend.md" "$source/docs/coordination-backend.md" || \
+    fail "flat copy upgrade did not update a previously managed document"
+}
+
+test_flat_copy_upgrade_refuses_pack_doc_directory_before_mutation() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/initial-install.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  mv "$target/docs/coordination-backend.md" "$tmp/coordination-backend.md"
+  mkdir "$target/docs/coordination-backend.md"
+  printf 'personal directory sentinel\n' > "$target/docs/coordination-backend.md/sentinel"
+  printf '\nlate-preflight-workflow-marker\n' >> "$source/workflows/pr-processing.md"
+  git -C "$source" add workflows/pr-processing.md
+  git -C "$source" commit --quiet -m "update managed workflow"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat upgrade replaced a pack document directory"
+  assert_contains "$output" "Refusing to replace non-file path"
+  assert_contains "$output" "$target/docs/coordination-backend.md"
+  assert_not_contains "$(cat "$target/workflows/pr-processing.md")" "late-preflight-workflow-marker"
+  assert_file "$target/docs/coordination-backend.md/sentinel"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "pack document directory collision changed install metadata"
+
+  mv "$target/docs/coordination-backend.md" "$tmp/personal-coordination-directory"
+  mv "$tmp/coordination-backend.md" "$target/docs/coordination-backend.md"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/retry.out"
+  assert_contains "$(cat "$target/workflows/pr-processing.md")" "late-preflight-workflow-marker"
+}
+
+test_symlink_upgrade_refuses_newly_packaged_doc_collisions_before_mutation() {
+  local tmp source legacy_source target destination output status metadata_before
+  local workflow_before license_before skill_before coordination_before variant
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  legacy_source="$tmp/legacy-source"
+  mkdir -p "$source" "$legacy_source"
+  new_source_repo "$source"
+  new_source_repo "$legacy_source"
+
+  git -C "$legacy_source" rm --quiet docs/user-facing-coordination.md
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.read(path)
+    abort "missing pack doc entry" unless text.sub!("  user-facing-coordination.md\n", "")
+    File.write(path, text)
+  ' "$legacy_source/bin/install-agent-workflows"
+  git -C "$legacy_source" add bin/install-agent-workflows
+  git -C "$legacy_source" commit --quiet -m "simulate source before coordination doc"
+
+  for variant in symlink file; do
+    target="$tmp/codex-home-$variant"
+    "$legacy_source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode symlink --delivery-mode flat >"$tmp/legacy-$variant.out"
+    destination="$target/docs/user-facing-coordination.md"
+    if [[ "$variant" = symlink ]]; then
+      printf 'personal coordination sentinel\n' > "$tmp/personal-coordination.md"
+      ln -s "$tmp/personal-coordination.md" "$destination"
+    else
+      printf 'personal coordination sentinel\n' > "$destination"
+    fi
+
+    workflow_before="$(readlink "$target/workflows")"
+    license_before="$(readlink "$target/LICENSE")"
+    skill_before="$(readlink "$target/skills/pr-batch")"
+    coordination_before="$(readlink "$target/docs/coordination-backend.md")"
+    metadata_before="$tmp/metadata-$variant.before"
+    cp "$target/.agent-workflows-install.json" "$metadata_before"
+
+    set +e
+    output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode symlink --delivery-mode flat 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "symlink upgrade replaced a newly colliding personal $variant"
+    assert_contains "$output" "Refusing to replace unowned pack document"
+    assert_contains "$output" "$destination"
+    if [[ "$variant" = symlink ]]; then
+      [[ "$(readlink "$destination")" = "$tmp/personal-coordination.md" ]] || \
+        fail "symlink upgrade changed the personal coordination symlink"
+    else
+      grep -qxF 'personal coordination sentinel' "$destination" || \
+        fail "symlink upgrade changed the personal coordination file"
+    fi
+    [[ "$(readlink "$target/workflows")" = "$workflow_before" ]] || \
+      fail "symlink document collision partially changed workflows"
+    [[ "$(readlink "$target/LICENSE")" = "$license_before" ]] || \
+      fail "symlink document collision partially changed LICENSE"
+    [[ "$(readlink "$target/skills/pr-batch")" = "$skill_before" ]] || \
+      fail "symlink document collision partially changed skills"
+    [[ "$(readlink "$target/docs/coordination-backend.md")" = "$coordination_before" ]] || \
+      fail "symlink document collision partially changed an earlier pack document"
+    cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+      fail "symlink document collision changed install metadata"
+  done
+}
+
 test_repeat_companion_install_blocks_new_current_native_skill_collision() {
   local tmp source target plugin_root metadata_before output status
   tmp="$(mktemp -d)"
@@ -1348,11 +1984,14 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/workflows"
   assert_file "$target/docs/personal.md"
   assert_symlink "$target/docs/coordination-backend.md"
+  assert_symlink "$target/docs/execution-provenance-schema.md"
   assert_symlink "$target/docs/review-finding-schema.md"
   assert_symlink "$target/docs/agent-workflows-model-routing.md"
+  assert_symlink "$target/docs/user-facing-coordination.md"
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
+  assert_symlink "$target/bin/validate-execution-provenance"
   assert_symlink "$target/bin/agent_doctor"
   assert_symlink "$target/bin/agent-workflows-trust-audit"
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not symlink stack-specific helper"
@@ -1376,6 +2015,64 @@ test_symlink_mode_replaces_docs_directory_symlink() {
   [[ ! -e "$external_docs/coordination-backend.md" ]] || fail "should not write through pre-existing docs symlink"
   [[ ! -e "$external_docs/review-finding-schema.md" ]] || fail "should not write through pre-existing docs symlink"
   [[ ! -e "$external_docs/agent-workflows-model-routing.md" ]] || fail "should not write through pre-existing docs symlink"
+}
+
+test_install_replaces_docs_directory_symlink_without_following_pack_named_children() {
+  local tmp target external_docs mode
+  tmp="$(mktemp -d)"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-home-$mode"
+    external_docs="$tmp/external-docs-$mode"
+    mkdir -p "$target" "$external_docs"
+    printf 'personal external coordination sentinel\n' > \
+      "$external_docs/user-facing-coordination.md"
+    ln -s "$external_docs" "$target/docs"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" >"$tmp/install-$mode.out"
+
+    [[ -d "$target/docs" && ! -L "$target/docs" ]] || \
+      fail "$mode install did not replace the docs parent symlink"
+    grep -qxF 'personal external coordination sentinel' \
+      "$external_docs/user-facing-coordination.md" || \
+      fail "$mode install changed the external pack-named document"
+    if [[ "$mode" = copy ]]; then
+      [[ -f "$target/docs/user-facing-coordination.md" && \
+         ! -L "$target/docs/user-facing-coordination.md" ]] || \
+        fail "copy install did not create a real coordination document"
+    else
+      assert_symlink "$target/docs/user-facing-coordination.md"
+    fi
+  done
+}
+
+test_install_replaces_solutions_directory_symlink_without_following_pack_named_children() {
+  local tmp target external_solutions solution_name mode
+  tmp="$(mktemp -d)"
+  solution_name="coordination-unknown-state.md"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-home-$mode"
+    external_solutions="$tmp/external-solutions-$mode"
+    mkdir -p "$target/docs" "$external_solutions"
+    printf 'personal external solution sentinel\n' > "$external_solutions/$solution_name"
+    ln -s "$external_solutions" "$target/docs/solutions"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" >"$tmp/install-$mode.out"
+
+    [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || \
+      fail "$mode install did not replace the solutions directory symlink"
+    grep -qxF 'personal external solution sentinel' "$external_solutions/$solution_name" || \
+      fail "$mode install changed the external solution document"
+    if [[ "$mode" = copy ]]; then
+      cmp -s "$target/docs/solutions/$solution_name" "$ROOT/docs/solutions/$solution_name" || \
+        fail "copy install did not install the managed solution document"
+    else
+      assert_symlink "$target/docs/solutions/$solution_name"
+    fi
+  done
 }
 
 test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
@@ -1827,6 +2524,20 @@ main() {
     test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
+    test_repeat_flat_install_accepts_installer_created_uncommitted_skill
+    test_repeat_flat_copy_install_blocks_modified_installer_created_uncommitted_skill
+    test_repeat_flat_copy_install_blocks_modified_recorded_targets
+    test_repeat_flat_copy_install_uses_fingerprints_without_git_history
+    test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history
+    test_copy_metadata_fingerprint_matches_delivery_state_verifier
+    test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
+    test_repeat_copy_install_blocks_modified_solution_document
+    test_installation_docs_describe_managed_coordination_doc_fingerprints
+    test_flat_upgrade_refuses_newly_packaged_skill_collision
+    test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill
+    test_flat_copy_upgrade_refuses_newly_packaged_doc_collision
+    test_flat_copy_upgrade_refuses_pack_doc_directory_before_mutation
+    test_symlink_upgrade_refuses_newly_packaged_doc_collisions_before_mutation
     test_repeat_companion_install_blocks_new_current_native_skill_collision
     test_repeat_companion_install_blocks_native_skill_removed_from_current_source
     test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots
@@ -1849,6 +2560,8 @@ main() {
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers
     test_symlink_mode_replaces_docs_directory_symlink
+    test_install_replaces_docs_directory_symlink_without_following_pack_named_children
+    test_install_replaces_solutions_directory_symlink_without_following_pack_named_children
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
     test_symlink_mode_refuses_unmanaged_live_and_dangling_doctor_links_before_mutation
     test_symlink_mode_replaces_recorded_prior_source_doctor_link

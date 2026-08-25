@@ -2620,7 +2620,10 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       workflow_config = environment.fetch("FAKE_WORKFLOW_CONFIG", WORKFLOW_CONFIG)
       command.concat(["--workflow-config", workflow_config])
     end
-    Open3.capture3(*command)
+    stdout, stderr, status = Open3.capture3(*command)
+    # The receipt CLI emits UTF-8 JSON, but Open3 labels captured output with
+    # Encoding.default_external, which can be US-ASCII under an unset locale.
+    [stdout.force_encoding(Encoding::UTF_8), stderr.force_encoding(Encoding::UTF_8), status]
   end
 
   def publication_preflight(head_sha: "a" * 40, waived: false, coordination_backend: "n/a")
