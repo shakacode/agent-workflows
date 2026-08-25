@@ -366,7 +366,10 @@ module CompletedBatchAuditReceipt
       expected_batch_id:,
       targets:,
       reference:,
-      expected_verdict: "follow-ups-remain"
+      expected_verdict: "follow-ups-remain",
+      trusted_applicability:,
+      trusted_applicability_digest:,
+      publication_preflight:
     )
     publish(
       expected_batch_id:,
@@ -395,7 +398,14 @@ module CompletedBatchAuditReceipt
     parsed = parse_reference(reference)
     target = parsed.fetch("target")
     deterministic = deterministic_targets(targets)
-    verified = verified_reference_receipt(expected_batch_id:, targets: deterministic, reference:)
+    verified = verified_reference_receipt(
+      expected_batch_id:,
+      targets: deterministic,
+      reference:,
+      trusted_applicability:,
+      trusted_applicability_digest:,
+      publication_preflight:
+    )
 
     remote = replay_marker(
       verified.fetch("marker"),
@@ -430,7 +440,15 @@ module CompletedBatchAuditReceipt
     raise Error, e.message
   end
 
-  def verified_reference_receipt(expected_batch_id:, targets:, reference:, expected_verdict: nil)
+  def verified_reference_receipt(
+    expected_batch_id:,
+    targets:,
+    reference:,
+    expected_verdict: nil,
+    trusted_applicability: nil,
+    trusted_applicability_digest: nil,
+    publication_preflight: nil
+  )
     parsed = parse_reference(reference)
     target = parsed.fetch("target")
     manifest_target = deterministic_targets(targets).first
@@ -442,6 +460,14 @@ module CompletedBatchAuditReceipt
                   manifest_target.fetch("number") == target.fetch("number")
     raise Error, "receipt target is not the deterministic batch anchor" unless same_target
     raise Error, "receipt verdict is not eligible for this operation" if expected_verdict && parsed["verdict"] != expected_verdict
+
+    validate_trusted_applicability_artifact!(
+      trusted_applicability,
+      trusted_applicability_digest,
+      expected_batch_id:,
+      expected_targets: deterministic_targets(targets),
+      publication_preflight:
+    )
 
     comment = begin
       gh_api(target.fetch("host"), "repos/#{target.fetch('repo')}/issues/comments/#{parsed.fetch('comment_id')}")
@@ -705,6 +731,31 @@ module CompletedBatchAuditReceipt
     )
     raise PublicationPreflightError, "completed-batch publication preflight is missing or invalid" unless valid
     raise PublicationPreflightError, "completed-batch publication preflight is blocked" unless preflight.fetch("eligible")
+  end
+
+  def validate_trusted_applicability_artifact!(
+    proof,
+    proof_digest,
+    expected_batch_id:,
+    expected_targets:,
+    publication_preflight: nil
+  )
+    canonical = CompletedBatchPublicationPreflight.validated_applicability_proof(
+      proof,
+      expected_digest: proof_digest,
+      batch_id: expected_batch_id,
+      expected_targets:
+    )
+    valid = canonical && canonical == CompletedBatchPublicationPreflight.canonicalize(proof)
+    if valid && publication_preflight
+      valid = publication_preflight.is_a?(Hash) &&
+              proof_digest == publication_preflight["applicability_proof_digest"] &&
+              canonical == publication_preflight["applicability_proof"]
+    end
+    return true if valid
+
+    raise PublicationPreflightError,
+          "trusted coordination applicability proof is missing, invalid, tampered, or mismatched"
   end
 
   def bind_publication_snapshot(marker, preflight)

@@ -3469,6 +3469,56 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     refute(calls.any? { |_host, _endpoint, method, _input| method == "POST" })
   end
 
+  def test_replay_rejects_missing_tampered_or_mismatched_applicability_before_comment_readback
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    preflight = publication_preflight
+    proof = preflight.fetch("applicability_proof")
+    digest = preflight.fetch("applicability_proof_digest")
+    tampered = JSON.parse(JSON.generate(proof))
+    tampered["rationale"] = "tampered after the trusted decision"
+    mismatched = JSON.parse(JSON.generate(proof))
+    mismatched["verified_at"] = "2026-08-25T12:01:00Z"
+    body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{ready_marker}"
+    created_at = "2026-07-18T18:00:00Z"
+    reference = CompletedBatchAuditReceipt.compact_reference(
+      "clean",
+      {
+        "url" => "https://github.com/acme/widgets/pull/184#issuecomment-9001",
+        "sha256" => Digest::SHA256.hexdigest(body),
+        "author" => "justin808",
+        "created_at" => created_at,
+        "updated_at" => created_at
+      }
+    )
+    cases = {
+      "missing" => [nil, nil],
+      "tampered" => [tampered, digest],
+      "mismatched" => [mismatched, CompletedBatchPublicationPreflight.digest(mismatched)]
+    }
+    calls = []
+
+    with_stubbed_gh_api(lambda do |*arguments, **keywords|
+      calls << [arguments, keywords]
+      raise "unexpected authenticated call"
+    end) do
+      cases.each do |label, (candidate, candidate_digest)|
+        assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError, label) do
+          CompletedBatchAuditReceipt.replay_reference(
+            expected_batch_id: "batch-184",
+            targets: [target],
+            reference:,
+            publication_preflight: preflight,
+            coordination_backend: "n/a",
+            trusted_applicability: candidate,
+            trusted_applicability_digest: candidate_digest
+          )
+        end
+      end
+    end
+
+    assert_empty calls
+  end
+
   def test_replay_github_api_failure_has_a_distinct_typed_error
     target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
     body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{ready_marker}"
@@ -3490,12 +3540,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
 
     error = nil
+    preflight = publication_preflight
     with_stubbed_gh_api(failing_api) do
       error = assert_raises(CompletedBatchAuditReceipt::Error) do
         CompletedBatchAuditReceipt.replay_reference(
           expected_batch_id: "batch-184",
           targets: [target],
-          reference:
+          reference:,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -3541,11 +3593,12 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     head_sha: "a" * 40,
     waived: false,
     coordination_backend: "n/a",
-    coordination_applicability: nil
+    coordination_applicability: nil,
+    target_type: "pull_request"
   )
     coordination_applicability ||= coordination_backend == "n/a" ?
       "coordination_not_applicable" : "coordination_required"
-    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => target_type, "number" => 184 }
     waiver_url = "https://github.com/acme/widgets/pull/184#issuecomment-9184"
     evidence = <<~MARKER
       <!-- qa-evidence v1
@@ -4100,7 +4153,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         puts ENV.fetch("FAKE_COORDINATION_STATUS")
       RUBY
       FileUtils.chmod(0o755, agent_coord)
-      preflight = publication_preflight(coordination_backend:)
+      preflight = publication_preflight(coordination_backend:, target_type:)
       applicability_proof_path = File.join(directory, "applicability-proof.json")
       File.write(applicability_proof_path, JSON.generate(preflight.fetch("applicability_proof")))
       workflow_config = File.join(directory, "agent-workflow.yml")
