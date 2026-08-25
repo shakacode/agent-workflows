@@ -459,6 +459,27 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "full_history_before_window_filter", receipt.dig("window", "differencing")
   end
 
+  def test_malformed_token_counts_at_or_after_window_end_do_not_taint_an_earlier_receipt
+    control, = run_fixture(fixture: fixture_copy("descendants"))
+    fixture = fixture_copy("descendants")
+    records = fixture.fetch("rollouts").fetch("root.jsonl")
+    [fixture.dig("window", "to"), "2026-08-05T00:00:01Z"].each do |timestamp|
+      records << {
+        "timestamp" => timestamp,
+        "type" => "event_msg",
+        "payload" => { "type" => "token_count", "info" => {} }
+      }
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal control.dig("batch", "usage"), receipt.dig("batch", "usage")
+    assert_equal control.dig("accounting", "usage_samples"), receipt.dig("accounting", "usage_samples")
+    assert_equal "complete", receipt.dig("evidence", "status")
+    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    refute_includes unknown_codes, "missing_total_token_usage"
+  end
+
   def test_emitted_window_preserves_fractional_second_precision
     fixture = fixture_copy("replay")
     fixture["window"] = {

@@ -1355,6 +1355,68 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_idle_usage_window_advances_without_touching_an_active_reservation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "idle-window", lane_id: "lane-a", tokens: 100)
+      reserve(state_path, id: "idle-concurrent-lane", lane_id: "lane-b", tokens: 80)
+      reservations_before = JSON.parse(File.read(state_path)).fetch("reservations")
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      idle_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+
+      reconciled, stderr, status = reconcile_receipt(state_path, idle_receipt, "idle-window")
+
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      saved = JSON.parse(File.read(state_path))
+      assert_equal "2026-08-12T12:00:00Z", saved.fetch("usage_cursor")
+      assert_equal 1, saved.fetch("usage_receipts").length
+      assert_equal reservations_before, saved.fetch("reservations")
+      assert_equal 180, saved.dig("scopes", "aggregate", "reserved_tokens")
+
+      replayed, replay_stderr, replay_status = reconcile_receipt(state_path, idle_receipt, "idle-window")
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal saved, JSON.parse(File.read(state_path))
+    end
+  end
+
+  def test_zero_token_window_can_explicitly_complete_an_active_reservation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "zero-token-completion", lane_id: "lane-a", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      idle_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+
+      reconciled, stderr, status = reconcile_receipt(
+        state_path,
+        idle_receipt,
+        "zero-token-completion",
+        completed_reservation_ids: ["zero-token-completion"]
+      )
+
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      saved = JSON.parse(File.read(state_path))
+      assert_equal "reconciled", saved.dig("reservations", "zero-token-completion", "status")
+      assert_equal 0, saved.dig("reservations", "zero-token-completion", "observed_tokens")
+      assert_equal 100, saved.dig("reservations", "zero-token-completion", "released_tokens")
+      assert_equal 0, saved.dig("scopes", "aggregate", "reserved_tokens")
+    end
+  end
+
   def test_multiple_usage_windows_measure_cumulative_tokens_and_each_overshoot_boundary
     with_state do |state_path|
       initialize_budget(state_path)
