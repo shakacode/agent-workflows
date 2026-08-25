@@ -91,7 +91,8 @@ PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES = [
   PLANNING_PASS_ASSESSMENT_FIELD,
   "Planning-Pass Route Assessment",
   *PLANNING_PASS_ACCEPTANCE_CASES.map { |entry| entry.fetch(:classification) },
-  *PLANNING_PASS_DISPOSITION_CASES.map { |entry| entry.fetch(:case_id) }
+  *PLANNING_PASS_DISPOSITION_CASES.map { |entry| entry.fetch(:case_id) },
+  *PLANNING_PASS_DISPOSITION_CASES.map { |entry| entry.fetch(:disposition) }
 ].freeze
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
@@ -962,7 +963,7 @@ end
 
 {
   "renamed planning-pass field" => "#{prompt_template}\nPlanning recommendation: `affirmatively-simple`",
-  "disposition prose without the field label" => "#{prompt_template}\nObserved comparison: `weaker-current-host-supported`"
+  "disposition prose without the field label" => "#{prompt_template}\nRoute review outcome: `bounded-independent-review`"
 }.each do |label, mutant|
   abort_with_failure("compact-prompt mutation escaped detection: #{label}") unless planning_pass_compact_prompt_leaks?(mutant)
 end
