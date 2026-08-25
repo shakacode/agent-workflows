@@ -37,6 +37,23 @@ Run a Codex batch
 Run a Claude batch
 ```
 
+## User-Facing Coordination Contract
+
+The current task is the sole user-facing coordinator. Subagents, lane workers,
+reviewers, and QA agents are internal workers owned by the current task, never
+separate chats whose mechanics the user must coordinate. External tasks may
+send evidence or requests without gaining ownership, and automations only wake
+the current task. Apply authority decisions and separate-scope routing through
+the shared
+[user-facing coordination contract](../../docs/user-facing-coordination.md).
+
+For a heartbeat or monitor, a no-change wake produces no user-visible
+notification. Notify only for an HST-v1 actionable material state change: a
+decision or action is required, a target is ready for walkthrough or approval,
+a blocker exhausted its bounded retries and needs intervention, or
+closeout/archive completed; delete the heartbeat when its gate clears or
+becomes durably terminal. The automation never owns the task or next action.
+
 ## Single-Target Mode
 
 Use this mode for one direct-prompt task, GitHub issue, or pull request. It keeps
@@ -569,6 +586,7 @@ resolved `pr-processing.md`, including the review/audit gate
 paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
 `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
 Use this template when creating Codex goal text:
 
@@ -589,13 +607,14 @@ Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; e
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+HST-v1
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
   Original:trusted ad-hoc prompt|n/a
   Goal:one-line outcome
-  Notes:scope/branch/dependency
+  Notes:scope/branch/deps
   Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
@@ -922,6 +941,22 @@ coordinator/operator hard-escape path proceeds immediately to worker process
 termination and claim release, without waiting further on the drain event.
 
 ## Coordinator Closeout Lane
+
+The current task remains the sole user-facing coordinator through closeout. If
+ownership is ambiguous or the user asks who is working, emit only:
+
+```text
+Current task: <responsibility and scoped outcome>
+Internal workers: <owned implementation, review, QA, or audit roles; or none>
+External tasks: <request or evidence role only; ownership did not transfer; or none>
+Next: <current-task action or exact required decision>
+```
+
+Do not append raw cross-task messages, coordination backend events, heartbeat
+logs, worker transcripts, or claim telemetry. For an approval or readiness
+handoff, report `Technical readiness:`, `Ownership:`, `Repository submission
+policy:`, and `Merge authority:` separately. Act under existing authority; ask
+one exact question only when new authority or a product decision is required.
 
 Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
 

@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 require "fileutils"
 require "find"
 require "open3"
@@ -258,7 +259,8 @@ module AgentWorkflowsDeliveryState
 
   def read_metadata(target)
     path = File.join(target, ".agent-workflows-install.json")
-    return nil unless File.file?(path)
+    return nil unless File.exist?(path) || File.symlink?(path)
+    raise JSON::ParserError, "metadata path must be a regular non-symlink file" unless File.file?(path) && !File.symlink?(path)
 
     metadata = JSON.parse(File.binread(path))
     raise JSON::ParserError, "metadata root must be an object" unless metadata.is_a?(Hash)
@@ -308,11 +310,29 @@ module AgentWorkflowsDeliveryState
 
     entries = {}
     Find.find(root) do |path|
-      next if path == root || File.directory?(path) && !File.symlink?(path)
+      next if path == root
 
       entries[path.delete_prefix("#{root}/")] = path
     end
     entries
+  end
+
+  def directory_fingerprint(root)
+    entries = filesystem_entries(root)
+    return nil unless entries
+
+    payload = entries.sort.map do |relative, path|
+      if File.symlink?(path)
+        ["symlink", relative, File.readlink(path)]
+      elsif File.directory?(path)
+        ["directory", relative]
+      elsif File.file?(path)
+        ["file", relative, (File.stat(path).mode & 0o111).positive?, Digest::SHA256.file(path).hexdigest]
+      else
+        return nil
+      end
+    end
+    Digest::SHA256.hexdigest(JSON.generate(payload))
   end
 
   def matches_directory_snapshot?(installed, snapshot, skill_name)
@@ -328,6 +348,8 @@ module AgentWorkflowsDeliveryState
         other = expected.fetch(relative)
         if File.symlink?(path) || File.symlink?(other)
           File.symlink?(path) && File.symlink?(other) && File.readlink(path) == File.readlink(other)
+        elsif File.directory?(path) || File.directory?(other)
+          File.directory?(path) && File.directory?(other)
         else
           File.file?(path) && File.file?(other) && File.binread(path) == File.binread(other) &&
           (File.stat(path).mode & 0o111).positive? == (File.stat(other).mode & 0o111).positive?
@@ -336,28 +358,108 @@ module AgentWorkflowsDeliveryState
     end
 
     revision = snapshot.fetch(:revision)
-    output, status = Open3.capture2e("git", "-C", snapshot.fetch(:root), "ls-tree", "-r", revision, "--", "skills/#{skill_name}")
+    skill_root = "skills/#{skill_name}"
+    output, status = Open3.capture2e(
+      "git", "-C", snapshot.fetch(:root), "ls-tree", "-r", "-t", revision, "--", skill_root
+    )
     return false unless status.success?
 
-    expected = output.lines.to_h do |line|
+    expected = output.lines.filter_map do |line|
       metadata, path = line.chomp.split("\t", 2)
       mode, type, = metadata.split
-      [path.delete_prefix("skills/#{skill_name}/"), [mode, type, path]]
-    end
+      next unless path.start_with?("#{skill_root}/")
+
+      [path.delete_prefix("#{skill_root}/"), [mode, type, path]]
+    end.to_h
     return false unless actual.keys.sort == expected.keys.sort
 
     actual.all? do |relative, path|
       mode, type, git_path = expected.fetch(relative)
-      blob, blob_status = Open3.capture2("git", "-C", snapshot.fetch(:root), "show", "#{revision}:#{git_path}")
-      next false unless blob_status.success?
-
-      if mode == "120000"
-        File.symlink?(path) && File.readlink(path) == blob
+      if type == "tree"
+        File.directory?(path) && !File.symlink?(path)
       else
-        type == "blob" && File.file?(path) && !File.symlink?(path) && File.binread(path) == blob.b &&
-          (File.stat(path).mode & 0o111).positive? == (mode == "100755")
+        blob, blob_status = Open3.capture2(
+          "git", "-C", snapshot.fetch(:root), "show", "#{revision}:#{git_path}"
+        )
+        next false unless blob_status.success?
+
+        if mode == "120000"
+          File.symlink?(path) && File.readlink(path) == blob
+        else
+          type == "blob" && File.file?(path) && !File.symlink?(path) && File.binread(path) == blob.b &&
+            (File.stat(path).mode & 0o111).positive? == (mode == "100755")
+        end
       end
     end
+  end
+
+  def recorded_flat_skill_path?(path, snapshot, metadata)
+    return matches_directory_snapshot?(path, snapshot, File.basename(path)) unless File.symlink?(path)
+
+    recorded_source = metadata.fetch("source", nil)
+    return false unless recorded_source
+
+    recorded_target = File.expand_path(File.join(recorded_source, "skills", File.basename(path)))
+    File.expand_path(File.readlink(path), File.dirname(path)) == recorded_target
+  end
+
+  def current_source_skill_path?(path, source, skill_name)
+    expected = File.expand_path(File.join(source, "skills", skill_name))
+    if File.symlink?(path)
+      return File.expand_path(File.readlink(path), File.dirname(path)) == expected
+    end
+
+    matches_directory_snapshot?(path, { type: :directory, root: source }, skill_name)
+  end
+
+  def recorded_skill_copy_fingerprints(metadata)
+    return unless metadata&.fetch("mode", nil) == "copy"
+
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints", nil)
+    return unless fingerprints.is_a?(Hash) && !fingerprints.empty?
+    return unless fingerprints.all? do |name, digest|
+      valid_name = name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
+      valid_digest = digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/i)
+      valid_name && valid_digest
+    end
+
+    fingerprints
+  end
+
+  def recorded_skill_copy_fingerprint_matches?(path, metadata, skill_name)
+    fingerprints = recorded_skill_copy_fingerprints(metadata)
+    return false unless fingerprints
+
+    expected = fingerprints[skill_name]
+    expected.is_a?(String) && directory_fingerprint(path) == expected
+  end
+
+  def flat_skill_path_owned?(path:, source:, snapshot:, metadata:)
+    skill_name = File.basename(path)
+    recorded_skill_copy_fingerprint_matches?(path, metadata, skill_name) ||
+      recorded_flat_skill_path?(path, snapshot, metadata) ||
+      current_source_skill_path?(path, source, skill_name)
+  end
+
+  def flat_skill_ownership_conflict(source:, metadata:, present:, revision:)
+    _recorded_names, snapshot = skill_names(source, metadata)
+    unless snapshot
+      return {
+        "state" => "unknown", "paths" => present.sort,
+        "removable" => [], "blocking" => present.sort,
+        "reason" => "recorded source revision is unavailable: #{revision}"
+      }
+    end
+
+    blocking = present.reject do |path|
+      flat_skill_path_owned?(path:, source:, snapshot:, metadata:)
+    end
+    return if blocking.empty?
+
+    {
+      "state" => "ambiguous", "paths" => present.sort,
+      "removable" => [], "blocking" => blocking.sort
+    }
   end
 
   def managed_flat_inventory(target:, source:, delivery_mode:, collision_names: [])
@@ -373,22 +475,26 @@ module AgentWorkflowsDeliveryState
     metadata = read_metadata(target)
     prior_delivery_mode = metadata&.fetch("delivery_mode", nil) || "flat"
     revision = metadata&.fetch("source_revision", nil).to_s
+    recorded_fingerprints = recorded_skill_copy_fingerprints(metadata)
+    recorded_revision_unavailable = revision.empty? || revision == "unknown" ||
+                                    !git_snapshot_root([metadata&.fetch("source", nil), source], revision)
     skills_path = File.join(target, "skills")
+    if delivery_mode == "plugin-companion" &&
+       (File.symlink?(skills_path) || File.exist?(skills_path) && !File.directory?(skills_path))
+      return {
+        "state" => "ambiguous",
+        "removable" => [],
+        "blocking" => [skills_path],
+        "reason" => File.symlink?(skills_path) ? "skills parent is a symlink" : "skills parent is not a directory"
+      }
+    end
     flat_tree_present = if File.symlink?(skills_path) || File.exist?(skills_path) && !File.directory?(skills_path)
                           true
                         else
                           File.directory?(skills_path) && !Dir.empty?(skills_path)
                         end
-    if delivery_mode == "plugin-companion" && File.symlink?(skills_path)
-      return {
-        "state" => "ambiguous",
-        "removable" => [],
-        "blocking" => [skills_path],
-        "reason" => "skills parent is a symlink"
-      }
-    end
     if delivery_mode == "plugin-companion" && metadata && prior_delivery_mode == "flat" && flat_tree_present &&
-       (revision.empty? || revision == "unknown" || !git_snapshot_root([metadata["source"], source], revision))
+       recorded_revision_unavailable && !recorded_fingerprints
       return {
         "state" => "unknown",
         "removable" => [],
@@ -407,12 +513,25 @@ module AgentWorkflowsDeliveryState
         return { "state" => "ambiguous", "paths" => present.sort, "removable" => [], "blocking" => present.sort }
       end
 
+      if present.any? && metadata && prior_delivery_mode == "flat"
+        conflict = flat_skill_ownership_conflict(
+          source: source, metadata: metadata, present: present, revision: revision
+        )
+        return conflict if conflict
+      end
+
       return { "state" => present.empty? ? "absent" : "present", "paths" => present.sort, "removable" => [], "blocking" => [] }
     end
 
     removable = []
     legacy_flat = metadata && prior_delivery_mode == "flat"
-    names, snapshot = legacy_flat ? skill_names(source, metadata) : [collision_names, nil]
+    names, snapshot = if legacy_flat && recorded_revision_unavailable
+                        [recorded_fingerprints ? recorded_fingerprints.keys.sort : [], nil]
+                      elsif legacy_flat
+                        skill_names(source, metadata)
+                      else
+                        [collision_names, nil]
+                      end
     recorded_names = names.to_h { |name| [name, true] }
     blocking = if legacy_flat && File.directory?(skills_path) && !File.symlink?(skills_path)
                  Dir.children(skills_path).filter_map do |name|
@@ -425,7 +544,8 @@ module AgentWorkflowsDeliveryState
       path = File.join(target, "skills", name)
       next unless File.exist?(path) || File.symlink?(path)
 
-      unless legacy_flat && snapshot
+      fingerprint_owned = legacy_flat && recorded_skill_copy_fingerprint_matches?(path, metadata, name)
+      unless legacy_flat && (snapshot || fingerprint_owned)
         blocking << path
         next
       end
@@ -434,7 +554,7 @@ module AgentWorkflowsDeliveryState
         resolved = File.expand_path(File.readlink(path), File.dirname(path))
         allowed = [metadata["source"], source].compact.map { |root| File.expand_path(File.join(root, "skills", name)) }
         (allowed.include?(resolved) ? removable : blocking) << path
-      elsif matches_directory_snapshot?(path, snapshot, name)
+      elsif fingerprint_owned || matches_directory_snapshot?(path, snapshot, name)
         removable << path
       else
         blocking << path
