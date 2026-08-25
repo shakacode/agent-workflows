@@ -139,6 +139,11 @@ receipts to make review scope and limitations replayable without making another
 review engine a dependency. The `model`, `effort`, and `usage` provenance
 extensions are additive.
 
+This review invocation metadata does not replace a lane execution-provenance receipt.
+Use the
+[execution-provenance receipt](execution-provenance-schema.md) to record
+requested-versus-observed route evidence and influenced commits.
+
 Older receipts that omit all three fields remain valid.
 
 The receipt includes:

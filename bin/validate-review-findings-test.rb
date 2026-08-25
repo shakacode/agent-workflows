@@ -162,6 +162,36 @@ class ValidateReviewFindingsTest < Minitest::Test
     assert_includes failures, "report: review_receipt: provenance.usage must be an object or literal UNKNOWN"
   end
 
+  def test_receipt_provenance_rejects_nfkc_unknown_lookalikes
+    document = fixture_document("autoreview-receipt-valid.json")
+    provenance = document.fetch("review_receipt").fetch("provenance")
+    provenance["model"] = "ＵＮＫＮＯＷＮ"
+    provenance["effort"] = "UnKnOwN"
+
+    failures = ValidateReviewFindings.validate_document(document, "report")
+    assert_includes failures, "report: review_receipt: provenance.model must use literal UNKNOWN when unknown"
+    assert_includes failures, "report: review_receipt: provenance.effort must use literal UNKNOWN when unknown"
+  end
+
+  def test_receipt_provenance_rejects_unicode_whitespace_wrappers_but_preserves_nonblank_controls
+    ["\u00A0", "\u2003", "\u202F", "\u3000", "\u0085"].each do |wrapper|
+      document = fixture_document("autoreview-receipt-valid.json")
+      document.fetch("review_receipt").fetch("provenance")["model"] = "#{wrapper}UNKNOWN#{wrapper}"
+
+      assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                      "report: review_receipt: provenance.model must use literal UNKNOWN when unknown",
+                      "U+#{wrapper.ord.to_s(16).upcase}"
+    end
+
+    ["\u200B", "\u200C", "\u2060", "\uFEFF"].each do |control|
+      document = fixture_document("autoreview-receipt-valid.json")
+      document.fetch("review_receipt").fetch("provenance")["model"] = "#{control}UNKNOWN#{control}"
+
+      assert_empty ValidateReviewFindings.validate_document(document, "report"),
+                   "U+#{control.ord.to_s(16).upcase}"
+    end
+  end
+
   def test_receipt_provenance_usage_requires_all_stable_metric_fields
     document = fixture_document("autoreview-receipt-valid.json")
     document.fetch("review_receipt").fetch("provenance")["usage"] = {
