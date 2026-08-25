@@ -110,8 +110,11 @@ the selected model. A pinned high-risk boundary uses Sol/xhigh; other unknown or
 uncertainty uses Sol/high. If unavailable, use the closest available route or
 runtime default and record it honestly. Every
 worker stops without editing further and returns to the coordinator when evidence
-contradicts the diagnosis, scope or blast radius grows, a high-risk boundary
-appears, verification weakens, or consequential judgment is required. Sol/xhigh
+contradicts the diagnosis, material semantic scope growth or material blast-radius
+growth appears, a high-risk boundary appears, verification weakens, or
+consequential judgment is required. Evidence-backed discovery of a necessary
+in-repository path alone is not such growth; follow the [path-expansion
+contract](pr-batch-skills.md#implementation-batch-planning-flow). Sol/xhigh
 is the recommendation for high-risk or qualified escalated work, not a
 prerequisite.
 
@@ -175,9 +178,12 @@ regardless of the selected model. A present or disputed pinned high-risk
 boundary uses Opus 5/xhigh; other missing or disputed simplicity criteria use
 Opus 5/high. If unavailable, use the closest available route or runtime default
 and record it honestly. Every worker stops without editing further and returns
-to the coordinator when evidence contradicts the diagnosis, scope or blast
-radius grows, a high-risk boundary appears, verification weakens, or
-consequential judgment is required.
+to the coordinator when evidence contradicts the diagnosis, material semantic
+scope growth or material blast-radius growth appears, a high-risk boundary
+appears, verification weakens, or consequential judgment is required.
+Evidence-backed discovery of a necessary in-repository path alone is not such
+growth; follow the [path-expansion
+contract](pr-batch-skills.md#implementation-batch-planning-flow).
 
 Haiku 4.5 is outside this provisional profile.
 
@@ -374,47 +380,50 @@ binds. Git author identity, branch name, commit trailer, prompt text, an
 installed model roster, and a model's own self-report are not proof of the
 route that executed.
 
-When operator policy names an exact route, an unbound, unavailable,
-substituted, or `UNKNOWN` observed tuple stops the lane with
-`MODEL_ROUTE_MISMATCH` before any edit begins.
+A route mismatch, unavailability, inherited route, or `UNKNOWN` observed tuple
+must be recorded honestly and must exclude that execution from route-measurement
+evidence; it never alone stops otherwise valid work.
 
-A worker never inherits the coordinator's model/effort pair, and an inherited
-pair is a route mismatch even when the inherited route is stronger than the
-requested one. Collaboration, review-fix, and helper subagents spawned inside a
-lane are workers for this rule; inheritance through a nested spawn is the exact
-mechanism that silently defeated an exact requested implementation route in
-batch AW D.
+A worker records its own observed model/effort separately from the coordinator;
+an inherited pair is a route mismatch even when the inherited route is stronger
+than the requested one. Collaboration, review-fix, and helper subagents spawned
+inside a lane are workers for this rule; inheritance through a nested spawn is
+the exact mechanism that silently defeated an exact requested implementation
+route in batch AW D.
 
 ### Disposition Table
 
-Every lane launch resolves to exactly one case. Only `proceed` and
-`proceed-as-fallback` may be reported as a satisfied route, and both require
-observed host evidence:
+Every lane launch resolves to exactly one case. `proceed` is eligible for
+route-measurement evidence because the requested and observed tuples match.
+`proceed-unmeasured` and `proceed-as-fallback` continue the otherwise valid
+lane, but cannot be counted as evidence for the original requested route:
 
 | Case | Requested | Observed | Disposition |
 | --- | --- | --- | --- |
 | `bound-exact-match` | exact tuple | same exact tuple from host evidence | `proceed` |
-| `unbound-exact-route` | exact tuple | `UNKNOWN` | `MODEL_ROUTE_MISMATCH` |
-| `silent-substitution` | exact tuple | different tuple | `MODEL_ROUTE_MISMATCH` |
-| `coordinator-pair-inheritance` | exact worker tuple | coordinator tuple, inherited | `MODEL_ROUTE_MISMATCH` |
+| `unbound-exact-route` | exact tuple | `UNKNOWN` | `proceed-unmeasured` |
+| `silent-substitution` | exact tuple | different tuple | `proceed-unmeasured` |
+| `coordinator-pair-inheritance` | exact worker tuple | coordinator tuple, inherited | `proceed-unmeasured` |
 | `authorized-fallback` | exact tuple | authorized fallback tuple with recorded authority | `proceed-as-fallback` |
 
 An authorized fallback is explicit, recorded before launch, and names the
 authority that approved it. An unrecorded fallback is a silent substitution and
-takes that row's disposition.
+takes that row's disposition. An explicitly user-selected override remains a
+user override rather than an implicit fallback, and its requested and observed
+tuples are recorded separately.
 
 These dispositions are a normative contract for coordinators, handoffs, and
 execution receipts. They are not statuses any helper returns today:
 `dispatcher-capability-preflight` emits `selected`, `launch-pending`,
 `replay-already-active`, `blocked-user-input`, `blocked-replacement-fencing`,
 and `invalid-input`, and nothing yet observes an actual route at dispatch time. Do
-not read `MODEL_ROUTE_MISMATCH` as a value a script produces until the
-execution-provenance receipts land.
+not read these route-evidence dispositions as values a script produces until
+the execution-provenance receipts land.
 
-A lane that resolves to `MODEL_ROUTE_MISMATCH` stops for relaunch or an
-explicitly authorized fallback. It must not be reported as having run the
-requested route, and its results must not be compared against results from a
-lane whose route was observed.
+A lane that resolves to `proceed-unmeasured` or `proceed-as-fallback` continues
+unless an independent risk, scope, evidence, or authority gate blocks it. It
+must not be reported as having run the original requested route, and its results
+must not be used as route-measurement evidence for that route.
 
 ### Evidence Status
 
@@ -425,10 +434,11 @@ until observed receipts exist for it; do not cite a profile route as measured
 evidence, and do not compare a requested route that lacks an observed receipt
 against one that has one.
 
-No ten-batch measured promotion decision may be made before #398
-execution-provenance receipts exist. A promotion experiment must use matched
-task classes and context topology, record requested-versus-observed execution
-evidence, and publish its comparison results; this evidence is not complete.
+No ten-batch measured promotion decision may be made before #398 usage/cost
+receipts, #333 execution-provenance receipts, and #335 evaluation runner exist.
+A promotion experiment must use matched task classes and context topology,
+record requested-versus-observed execution evidence, and publish its comparison
+results; this evidence is not complete.
 
 | Scenario class | Risk | Recommended route | Samples | Evidence strength |
 | --- | --- | --- | --- | --- |

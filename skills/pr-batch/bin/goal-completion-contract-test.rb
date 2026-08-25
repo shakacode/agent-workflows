@@ -39,7 +39,7 @@ CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-forma
 DOCS_CANONICAL_READINESS_LINK = "../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
 COMPACT_CONTRACT_LINE = "GMCC-v4:CI@head/configured-reviewers " \
-                        "pending|missing|untriaged or threads unresolved|UNKNOWN=>" \
+                        "pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>" \
                         "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                         "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
                         "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;" \
@@ -73,7 +73,7 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when " \
                           "`merge_authority` does not allow merging. #{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
 COMPACT_CONTRACT_INVARIANTS = [
-  "CI@head/configured-reviewers pending|missing|untriaged",
+  "CI@head/configured-reviewers pending|missing|untriaged|failed",
   "threads unresolved",
   "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE",
   "poll/fix",
@@ -724,7 +724,7 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "CI@head/configured-reviewers pending|missing|untriaged or " \
+                           "CI@head/configured-reviewers pending|missing|untriaged|failed or " \
                            "threads unresolved",
                            "compact completion contract"
       refute_includes line, "CI/reviews/review agents",
