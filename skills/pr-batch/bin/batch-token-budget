@@ -825,9 +825,11 @@ module BatchTokenBudget
                     when "approve" then %w[approval]
                     when "override" then %w[override]
                     when "reconcile"
-                      return false unless %w[batch-usage-receipt-v1 batch-usage-receipt-v2].include?(
-                        command.dig("usage_receipt", "schema")
-                      )
+                      usage_receipt = command["usage_receipt"]
+                      return false unless usage_receipt.is_a?(Hash) &&
+                                          %w[batch-usage-receipt-v1 batch-usage-receipt-v2].include?(
+                                            usage_receipt["schema"]
+                                          )
 
                       fields = %w[
                         completed_reservation_ids usage_receipt usage_receipt_digest usage_receipt_ref
