@@ -305,6 +305,7 @@ This project is available under the MIT License.
 | `adversarial-pr-review` | Run a skeptical pre-merge or post-merge PR review. |
 | `autoreview` | Run a structured second-model local diff review. |
 | `benchmark-verification` | Verify performance-sensitive changes with benchmark evidence. |
+| `close-session` | Close active work with verified handoff and archive readiness. |
 | `continue` | Resume an in-progress task with a structured checkpoint. |
 | `evaluate-issue` | Decide whether an issue or proposed fix is worth doing. |
 | `manual-testing` | Verify changed behavior in a real running app or service. |

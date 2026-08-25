@@ -9,6 +9,7 @@ require "rbconfig"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflows-delivery-state", __dir__)
+load SCRIPT
 
 class AgentWorkflowsDeliveryStateTest < Minitest::Test
   def setup
@@ -112,6 +113,35 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
   def write_metadata(target, metadata)
     File.write(File.join(target, ".agent-workflows-install.json"), "#{JSON.pretty_generate(metadata)}\n")
+  end
+
+  def test_directory_snapshot_conflict_does_not_report_revision_unavailable
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      installed = File.join(tmp, "target/skills/alpha")
+      FileUtils.mkdir_p(source)
+      recorded_revision = create_source(source)
+      FileUtils.remove_entry(File.join(source, ".git"))
+      FileUtils.mkdir_p(installed)
+      FileUtils.cp(File.join(source, "skills/alpha/SKILL.md"), installed)
+      File.open(File.join(installed, "SKILL.md"), "a") { |file| file << "personal edit\n" }
+      metadata = {
+        "mode" => "copy",
+        "source" => source,
+        "source_revision" => recorded_revision
+      }
+
+      result = AgentWorkflowsDeliveryState.flat_skill_ownership_conflict(
+        source: source,
+        metadata: metadata,
+        present: [installed],
+        revision: recorded_revision
+      )
+
+      assert_equal "ambiguous", result.fetch("state")
+      assert_equal [installed], result.fetch("blocking")
+      refute result.key?("reason"), result.inspect
+    end
   end
 
   def test_detects_active_native_plugin_from_real_host_state_shapes
@@ -818,6 +848,41 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_symlinked_install_metadata_cannot_authorize_fingerprint_migration
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      installed = File.join(target, "skills/alpha")
+      external_metadata = File.join(tmp, "external-metadata.json")
+      FileUtils.mkdir_p(source)
+      create_source(source)
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.dirname(installed))
+      FileUtils.cp_r(File.join(source, "skills/alpha"), installed)
+      fingerprint = AgentWorkflowsDeliveryState.directory_fingerprint(installed)
+      File.write(external_metadata, "#{JSON.generate(
+        'mode' => 'copy',
+        'delivery_mode' => 'flat',
+        'source' => source,
+        'source_revision' => 'unknown',
+        'managed_skill_copy_fingerprints' => { 'alpha' => fingerprint }
+      )}\n")
+      metadata_path = File.join(target, ".agent-workflows-install.json")
+      File.symlink(external_metadata, metadata_path)
+
+      out, _err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      assert_equal "unknown", JSON.parse(out).dig("flat", "state")
+      assert_path_exists File.join(installed, "SKILL.md")
+      assert File.symlink?(metadata_path)
+      assert_path_exists external_metadata
+    end
+  end
+
   def test_mismatched_symlink_blocks_all_migration
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source = File.join(tmp, "source")
@@ -858,6 +923,37 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert_path_exists File.join(source, "skills/alpha/SKILL.md")
       assert_path_exists File.join(source, "skills/beta/SKILL.md")
       assert_equal [File.join(target, "skills")], JSON.parse(out).dig("flat", "blocking")
+    end
+  end
+
+  def test_non_directory_skills_parent_blocks_fingerprint_migration
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      create_source(source)
+      write_codex_native_state(target)
+      skills_path = File.join(target, "skills")
+      File.write(skills_path, "personal skills sentinel\n")
+      fingerprint = AgentWorkflowsDeliveryState.directory_fingerprint(File.join(source, "skills/alpha"))
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => "unknown",
+        "managed_skill_copy_fingerprints" => { "alpha" => fingerprint }
+      )
+
+      out, _err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      assert_equal [skills_path], JSON.parse(out).dig("flat", "blocking")
+      assert_equal "personal skills sentinel\n", File.read(skills_path)
     end
   end
 
