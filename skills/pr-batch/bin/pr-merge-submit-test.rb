@@ -1334,7 +1334,29 @@ class PrMergeSubmitTest < Minitest::Test
     )
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "repos/owner/repo/check-runs/31"
     assert_includes log, "mergePullRequest"
+  end
+
+  def test_optional_approval_held_receipt_blocks_when_the_check_changes_or_mismatches
+    {
+      running: "current CI evidence does not currently qualify",
+      failed: "current CI evidence does not currently qualify",
+      moved: "current CI check-run evidence is malformed or mismatched"
+    }.each do |transition, expected_error|
+      result, log = run_cli(
+        mode: "direct",
+        receipt_mode: :optional_held,
+        merge_submission: { "mode" => "direct" },
+        ci_transition: transition
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, transition
+      assert_includes result.fetch(:stderr), expected_error, transition
+      assert_includes log, "repos/owner/repo/check-runs/31", transition
+      refute_includes log, "mergePullRequest", transition
+      refute_includes log, "enqueuePullRequest", transition
+    end
   end
 
   def test_optional_approval_held_receipt_cannot_supply_missing_malformed_or_tampered_policy
@@ -1664,7 +1686,8 @@ class PrMergeSubmitTest < Minitest::Test
     interpreter_attack: false,
     bash_env_attack: false,
     guard_timeout_seconds: nil,
-    interrupt_guard: false
+    interrupt_guard: false,
+    ci_transition: :held
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
@@ -1711,7 +1734,7 @@ class PrMergeSubmitTest < Minitest::Test
         gh_path,
         fake_gh(
           mode:, head:, base:, base_sha: receipt_base_sha || base_sha,
-          url_host:, repo:, merge_commit_oid:, head_ref_name:
+          url_host:, repo:, merge_commit_oid:, head_ref_name:, ci_transition:
         )
       )
       FileUtils.chmod(0o755, gh_path)
@@ -2426,8 +2449,9 @@ class PrMergeSubmitTest < Minitest::Test
 
   def fake_gh(
     mode:, head:, base:, base_sha:, url_host:, repo:, head_ref_name: "feature/test",
-    merge_commit_oid: MERGE_COMMIT_SHA
+    merge_commit_oid: MERGE_COMMIT_SHA, ci_transition: :held
   )
+    current_check_head = ci_transition == :moved ? MOVED_SHA : head
     head_ref_entry = if head_ref_name == :missing
                        ""
                      else
@@ -2456,6 +2480,23 @@ class PrMergeSubmitTest < Minitest::Test
       require "json"
       File.open(ENV.fetch("GH_LOG"), "a") do |file|
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
+      end
+      if ARGV.include?("repos/owner/repo/check-runs/31")
+        phase = case #{ci_transition.inspect}
+                when :running
+                  { "status" => "in_progress", "conclusion" => nil,
+                    "started_at" => "2026-08-25T12:00:00Z" }
+                when :failed
+                  { "status" => "completed", "conclusion" => "failure",
+                    "started_at" => "2026-08-25T12:00:00Z" }
+                else
+                  { "status" => "in_progress", "conclusion" => nil, "started_at" => nil }
+                end
+        puts JSON.generate(
+          { "id" => 31, "name" => "storybook-review-app", "head_sha" => #{current_check_head.inspect},
+            "app" => { "slug" => "circleci-checks" } }.merge(phase)
+        )
+        exit 0
       end
       if ARGV.include?("repos/owner/repo/issues/1")
         puts #{JSON.generate(semantic_issue).inspect}

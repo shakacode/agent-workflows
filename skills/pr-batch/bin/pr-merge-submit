@@ -178,6 +178,7 @@ module PrMergeSubmit
                else
                  validate_receipt_live_bindings!(pull_request, options)
                  validate_pr!(pull_request, options)
+                 validate_current_ci_for_submission!(options)
                  submit(pull_request, options)
                end
 
@@ -367,6 +368,105 @@ module PrMergeSubmit
       )
     rescue PrCiReadiness::Error => e
       raise Error, "trusted-base ci_readiness policy could not be authenticated: #{e.message}"
+    end
+
+    def validate_current_ci_for_submission!(options)
+      evidence = @merge_assurance_receipt.fetch("evidence")
+      refreshed_ci_result = refresh_policy_disposed_ci_result!(evidence.fetch("ci_result"), options)
+      trusted_ci_policy = trusted_ci_policy_for_receipt!(evidence)
+      reassessed = MergeAssurance.assess(
+        ci_result: refreshed_ci_result,
+        autonomous_result: evidence["autonomous_result"],
+        context: evidence["context"],
+        trusted_ci_policy:
+      )
+      unless reassessed["eligible"] == true
+        raise Error, "current CI evidence does not currently qualify: " \
+                     "#{Array(reassessed['failures']).join('; ')}"
+      end
+      return if @merge_assurance_receipt["bindings"] == reassessed["bindings"] &&
+                @merge_assurance_receipt["follow_up_accounting"] == reassessed["follow_up_accounting"]
+
+      raise Error, "current CI reassessment changed merge-assurance bindings or accounting"
+    end
+
+    def refresh_policy_disposed_ci_result!(ci_result, options)
+      dispositions = ci_result.dig("scopes", "other", "policy_dispositions") if ci_result.is_a?(Hash)
+      return ci_result if dispositions.nil?
+      raise Error, "current CI policy dispositions are malformed" unless dispositions.is_a?(Array)
+      return ci_result if dispositions.empty?
+
+      refreshed = JSON.parse(JSON.generate(ci_result))
+      rows = refreshed.dig("scopes", "other", "rows")
+      raise Error, "current CI policy-disposed rows are malformed" unless rows.is_a?(Array)
+
+      dispositions.each do |disposition|
+        unless disposition.is_a?(Hash) && disposition["kind"] == "check_run" &&
+               disposition["id"].is_a?(Integer) && disposition["id"].positive?
+          raise Error, "current CI policy disposition cannot be refreshed"
+        end
+
+        matching_indexes = rows.each_index.select do |index|
+          PrCiReadiness.disposition_matches_row?(disposition, rows[index])
+        end
+        unless matching_indexes.length == 1
+          raise Error, "current CI policy disposition does not identify exactly one receipt row"
+        end
+
+        current = fetch_current_check_run!(
+          options, disposition:, expected_head: @merge_assurance_receipt.dig("bindings", "head_sha")
+        )
+        rows[matching_indexes.first].merge!(current)
+      end
+
+      checked_at = Time.now.utc.iso8601
+      refreshed["checked_at"] = checked_at
+      refreshed.dig("scopes", "other")["checked_at"] = checked_at
+      refreshed
+    rescue JSON::GeneratorError, JSON::ParserError => e
+      raise Error, "current CI evidence could not be copied safely: #{e.message}"
+    end
+
+    def fetch_current_check_run!(options, disposition:, expected_head:)
+      endpoint = "repos/#{options[:repo]}/check-runs/#{disposition.fetch('id')}"
+      stdout, stderr, status = run_gh(
+        "api", endpoint, "-H", "Accept: application/vnd.github+json",
+        host: options[:host]
+      )
+      unless status.success?
+        raise Error, "current CI check-run evidence is unavailable: #{failure_output(stdout, stderr)}"
+      end
+
+      check_run = PrMergeSubmit.parse_json!(stdout, "current CI check-run evidence")
+      started_at = check_run["started_at"]
+      app_slug = check_run["app"]["slug"] if check_run["app"].is_a?(Hash)
+      valid_started_at = started_at.nil? || started_at.is_a?(String) && valid_rfc3339?(started_at)
+      valid = check_run["id"] == disposition["id"] &&
+              check_run["name"] == disposition["name"] &&
+              app_slug == disposition["app_slug"] &&
+              check_run["head_sha"] == expected_head &&
+              check_run["status"].is_a?(String) && !check_run["status"].empty? &&
+              check_run.key?("conclusion") &&
+              (check_run["conclusion"].nil? || check_run["conclusion"].is_a?(String)) &&
+              check_run.key?("started_at") && valid_started_at
+      raise Error, "current CI check-run evidence is malformed or mismatched" unless valid
+
+      {
+        "id" => check_run["id"],
+        "name" => check_run["name"],
+        "head_sha" => check_run["head_sha"],
+        "status" => check_run["status"],
+        "conclusion" => check_run["conclusion"],
+        "started_at" => started_at,
+        "app_slug" => app_slug
+      }
+    end
+
+    def valid_rfc3339?(value)
+      Time.iso8601(value)
+      true
+    rescue ArgumentError
+      false
     end
 
     def validate_receipt_evidence!(receipt, evidence)
