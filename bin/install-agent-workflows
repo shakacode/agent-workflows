@@ -422,7 +422,8 @@ capture_bound_recovery_metadata() {
         expected_original.split("|", 2).fetch(1),
         snapshot_attestation.split("|", 2).fetch(0),
         backup_attestation.split("|", 2).fetch(0),
-        sentinel_attestation.split("|", 2).fetch(0)
+        sentinel_attestation.split("|", 2).fetch(0),
+        identity.call(target_stat)
       ].join("|")
       completed = true
     rescue BindingChanged, Errno::ELOOP, Errno::ENOTDIR
@@ -509,7 +510,7 @@ capture_bound_recovery_metadata() {
 
 capture_installed_metadata_for_recovery() {
   local original_attestation original_identity capture_protocol capture_status
-  local snapshot_identity backup_identity sentinel_identity
+  local snapshot_identity backup_identity sentinel_identity target_identity
   local metadata_absent_under_lock="${1:-false}"
   recovery_metadata_path="$target/$metadata_name"
   recovery_metadata_quarantine=""
@@ -519,6 +520,7 @@ capture_installed_metadata_for_recovery() {
   recovery_metadata_snapshot_identity=""
   recovery_metadata_backup_identity=""
   recovery_metadata_quarantine_identity=""
+  recovery_metadata_target_identity=""
   recovery_metadata_cleanup_receipt=""
   recovery_metadata_digest=""
   recovery_metadata_captured=false
@@ -567,14 +569,15 @@ capture_installed_metadata_for_recovery() {
     return 70
   }
   IFS='|' read -r original_identity recovery_metadata_digest snapshot_identity \
-    backup_identity sentinel_identity <<< "$capture_protocol"
+    backup_identity sentinel_identity target_identity <<< "$capture_protocol"
   if [[ -z "$original_identity" || -z "$recovery_metadata_digest" || -z "$snapshot_identity" ||
-        -z "$backup_identity" || -z "$sentinel_identity" ]]; then
+        -z "$backup_identity" || -z "$sentinel_identity" || -z "$target_identity" ]]; then
     return 1
   fi
   recovery_metadata_sentinel_identity="$sentinel_identity"
   recovery_metadata_snapshot_identity="$snapshot_identity"
   recovery_metadata_backup_identity="$backup_identity"
+  recovery_metadata_target_identity="$target_identity"
   recovery_metadata_captured=true
   if ! recovery_metadata_binding_intact; then
     return 1
@@ -628,19 +631,50 @@ recovery_metadata_cleanup_receipt_valid() {
 }
 
 write_recovery_metadata_cleanup_receipt() {
-  ruby -e '
+  ruby -rfiddle/import -e '
+    module RecoveryReceiptSyscalls
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int fchdir(int)"
+    end
+
     file = nil
+    target_file = nil
     begin
-      path = File.expand_path(ARGV.fetch(0))
-      identity = ARGV.fetch(1)
-      file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
-      file.write(identity)
+      target = File.expand_path(ARGV.fetch(0))
+      receipt_name = ARGV.fetch(1)
+      expected_target_identity = ARGV.fetch(2)
+      quarantine_identity = ARGV.fetch(3)
+      abort unless receipt_name.match?(/\A\.agent-workflows-install\.json\.cleanup-complete-[A-Za-z0-9]+\z/) &&
+                   File.const_defined?(:NOFOLLOW)
+
+      target_path_stat = File.lstat(target)
+      abort unless target_path_stat.directory? && !target_path_stat.symlink?
+      target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      target_stat = target_file.stat
+      target_identity = "#{target_stat.dev}:#{target_stat.ino}"
+      named_target_stat = File.lstat(target)
+      abort unless target_stat.directory? && target_identity == expected_target_identity &&
+                   named_target_stat.directory? && !named_target_stat.symlink? &&
+                   named_target_stat.dev == target_stat.dev && named_target_stat.ino == target_stat.ino
+
+      raise SystemCallError.new("fchdir cleanup receipt", Fiddle.last_error) if
+        RecoveryReceiptSyscalls.fchdir(target_file.fileno) == -1
+      file = File.open(
+        receipt_name,
+        File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+        0o600
+      )
+      abort unless file.stat.file?
+      file.write(quarantine_identity)
       file.flush
       file.fsync
     ensure
       file&.close
+      target_file&.close
     end
-  ' "$recovery_metadata_cleanup_receipt" "$recovery_metadata_quarantine_identity" 2>/dev/null
+  ' "$target" "${recovery_metadata_cleanup_receipt##*/}" "$recovery_metadata_target_identity" \
+    "$recovery_metadata_quarantine_identity" 2>/dev/null
 }
 
 regular_file_attestation() {
@@ -1378,16 +1412,16 @@ move_bound_recovery_path() {
       RecoveryMoveHook.call(:after_rename_before_verify, source_parent, source_name,
                             destination_parent, destination_name) if defined?(RecoveryMoveHook)
       moved_fd = open_entry.call(destination_parent_file.fileno, destination_name)
-      exit 67 if moved_fd == -1
+      exit 68 if moved_fd == -1
       moved_file = IO.for_fd(moved_fd, autoclose: true)
       moved_stat = moved_file.stat
-      exit 67 unless moved_stat.dev == source_stat.dev && moved_stat.ino == source_stat.ino
+      exit 68 unless moved_stat.dev == source_stat.dev && moved_stat.ino == source_stat.ino
       stale_source_fd = open_entry.call(source_parent_file.fileno, source_name)
       if stale_source_fd != -1
         IO.for_fd(stale_source_fd, autoclose: true).close
-        exit 67
+        exit 68
       end
-      exit 67 unless Fiddle.last_error == Errno::ENOENT::Errno
+      exit 68 unless Fiddle.last_error == Errno::ENOENT::Errno
     rescue Fiddle::DLError, SystemCallError, StandardError
       exit renamed ? 68 : 67
     ensure
@@ -1665,6 +1699,18 @@ cleanup_recovery_staging() {
   move_bound_recovery_path "$staging" "$cleanup_staging" "$target" "$target_identity" \
     "$cleanup_root" "$cleanup_root_identity" "$staging_identity" || move_status=$?
   if [[ "$move_status" -ne 0 ]]; then
+    if [[ "$move_status" -eq 68 ]]; then
+      restore_status=0
+      move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_root" "$cleanup_root_identity" \
+        "$target" "$target_identity" "$staging_identity" || restore_status=$?
+      if [[ "$restore_status" -eq 0 ]]; then
+        rmdir "$cleanup_root" 2>/dev/null || true
+        echo "RECOVERY_CLEANUP_COMMITTED_UNVERIFIED: restored receipted recovery staging at $staging after post-rename verification failed." >&2
+      else
+        echo "RECOVERY_CLEANUP_COMMITTED_UNVERIFIED: preserved recoverable staging under $cleanup_root and retained its recovery receipt after post-rename verification failed." >&2
+      fi
+      return 67
+    fi
     rmdir "$cleanup_root" 2>/dev/null || true
     if [[ "$move_status" -eq 67 ]]; then
       if [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then

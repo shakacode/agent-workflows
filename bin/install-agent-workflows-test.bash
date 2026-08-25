@@ -1548,6 +1548,55 @@ RUBY
   assert_file "$receipt"
 }
 
+test_recovery_post_move_open_failure_reverses_committed_move() {
+  local tmp target staging receipt injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-post-move-open"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/fail-post-move-open.rb"
+  marker="$tmp/post-move-open-failed"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'staged skill\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+require "fiddle"
+Fiddle::Function.prepend(Module.new do
+  def call(*args)
+    if Thread.current[:qa_fail_next_recovery_open]
+      Thread.current[:qa_fail_next_recovery_open] = false
+      Fiddle.last_error = Errno::EIO::Errno
+      return -1
+    end
+    super
+  end
+end)
+module RecoveryMoveHook
+  def self.call(phase, _source_parent, source_name, _destination_parent, _destination_name)
+    return unless phase == :after_rename_before_verify && source_name == "user-owned-skill"
+    return if File.exist?(ENV.fetch("QA_RACE_MARKER"))
+    File.write(ENV.fetch("QA_RACE_MARKER"), "reached\n")
+    Thread.current[:qa_fail_next_recovery_open] = true
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "post-move open failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_PATH_BINDING_CHANGED"
+  assert_file "$marker"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  assert_contains "$(cat "$staging/user-owned-skill/SKILL.md")" "staged skill"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "committed recovery move was not reversed"
+  assert_file "$receipt"
+}
+
 test_companion_cleanup_post_move_replacement_has_named_retry_failure() {
   local tmp target staging preserved receipt injection marker output retry_output status retry_status
   tmp="$(mktemp -d)"
@@ -1597,6 +1646,52 @@ RUBY
   assert_contains "$retry_output" "RECOVERY_FAILED: unsafe migration staging receipt"
   assert_not_contains "$retry_output" "Errno::ENOENT"
   assert_file "$receipt"
+}
+
+test_companion_cleanup_post_move_exception_restores_receipted_staging() {
+  local tmp target staging receipt injection marker output status cleanup_root
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-post-move-exception"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/fail-cleanup-post-move-verify.rb"
+  marker="$tmp/cleanup-post-move-exception"
+  mkdir -p "$staging/old-flat-skill"
+  write_native_scw_state codex "$target"
+  printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryMoveHook
+  def self.call(phase, source_parent, _source_name, destination_parent, _destination_name)
+    return unless phase == :after_rename_before_verify
+    return unless source_parent == ENV.fetch("QA_TARGET")
+    return unless File.basename(destination_parent).start_with?(".agent-workflows-recovery-cleanup-")
+    marker = ENV.fetch("QA_RACE_MARKER")
+    return if File.exist?(marker)
+    File.write(marker, "reached\n")
+    raise "injected cleanup post-move verification failure"
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "cleanup post-move exception exited $status: $output"
+  assert_contains "$output" "RECOVERY_CLEANUP_COMMITTED_UNVERIFIED"
+  assert_contains "$output" "$staging"
+  assert_contains "$output" "RECOVERY_FAILED: recovery paths changed during the operation"
+  assert_file "$marker"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  assert_contains "$(cat "$staging/old-flat-skill/SKILL.md")" "original staged skill"
+  assert_file "$receipt"
+  [[ "$(cat "$receipt")" = "$staging" ]] || fail "cleanup post-move exception left a stale receipt: $(cat "$receipt")"
+  cleanup_root="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-recovery-cleanup-*' -print -quit)"
+  [[ -z "$cleanup_root" ]] || fail "cleanup post-move exception hid preserved staging under $cleanup_root"
 }
 
 test_companion_cleanup_root_replacement_cannot_move_staging_outside_target() {
@@ -2049,7 +2144,10 @@ SH
   [[ "$status" -eq 0 ]] || fail "system Ruby recovery exited $status: $output"
   assert_file "$marker"
   assert_contains "$(cat "$marker")" "system-ruby-2.6"
+  assert_not_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
   [[ ! -e "$receipt" ]] || fail "system Ruby recovery left receipt"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "system Ruby recovery left metadata quarantine"
   assert_file "$target/skills/user-owned-skill/SKILL.md"
 }
 
@@ -4191,8 +4289,10 @@ test_cleanup_receipt_write_failure_is_pending_without_corrupt_guidance() {
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
   printf '%s\n' "$staging" > "$receipt"
   cat > "$injection" <<'RUBY'
-raise Errno::EIO, ARGV.fetch(0) if ARGV.length == 2 &&
-                                     File.basename(ARGV.fetch(0)).start_with?(".agent-workflows-install.json.cleanup-complete-")
+cleanup_receipt = ARGV.find do |argument|
+  File.basename(argument).start_with?(".agent-workflows-install.json.cleanup-complete-")
+end
+raise Errno::EIO, cleanup_receipt if cleanup_receipt
 RUBY
 
   set +e
@@ -4212,6 +4312,54 @@ RUBY
   quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
   [[ -n "$quarantine" ]] || fail "cleanup receipt write failure did not preserve recovery evidence"
   assert_file "$quarantine/original-backup"
+}
+
+test_cleanup_receipt_ancestor_rebind_does_not_write_outside_target() {
+  local tmp parent preserved_parent outside_parent target preserved_target outside_target staging receipt metadata
+  local injection marker output status quarantine outside_receipt
+  tmp="$(mktemp -d)"
+  parent="$tmp/home-parent"
+  preserved_parent="$tmp/home-parent-preserved"
+  outside_parent="$tmp/outside-parent"
+  target="$parent/codex-home"
+  preserved_target="$preserved_parent/codex-home"
+  outside_target="$outside_parent/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-receipt-ancestor-rebind"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/rebind-target-ancestor-before-cleanup-receipt.rb"
+  marker="$tmp/cleanup-receipt-ancestor-rebound"
+  mkdir -p "$staging/user-owned-skill" "$outside_target"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+receipt_argument = ARGV.find do |argument|
+  File.basename(argument).start_with?(".agent-workflows-install.json.cleanup-complete-")
+end
+if receipt_argument && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  File.rename(ENV.fetch("QA_TARGET_PARENT"), ENV.fetch("QA_PRESERVED_PARENT"))
+  File.symlink(ENV.fetch("QA_OUTSIDE_PARENT"), ENV.fetch("QA_TARGET_PARENT"))
+  File.write(ENV.fetch("QA_RACE_MARKER"), "rebound\n")
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET_PARENT="$parent" QA_PRESERVED_PARENT="$preserved_parent" \
+    QA_OUTSIDE_PARENT="$outside_parent" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || fail "cleanup receipt ancestor rebind exited $status: $output"
+  assert_file "$marker"
+  assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  outside_receipt="$(find "$outside_target" -maxdepth 1 -type f -name '.agent-workflows-install.json.cleanup-complete-*' -print -quit)"
+  [[ -z "$outside_receipt" ]] || fail "cleanup receipt ancestor rebind wrote outside target: $outside_receipt"
+  quarantine="$(find "$preserved_target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "cleanup receipt ancestor rebind did not preserve recovery evidence: $output"
+  assert_file "$quarantine/original-backup"
+  assert_file "$preserved_target/.agent-workflows-install.json"
 }
 
 test_recovery_restore_destination_symlink_does_not_write_outside_target() {
@@ -5257,7 +5405,9 @@ main() {
     test_recovery_source_replacement_after_inventory_is_not_moved
     test_recovery_identity_failure_reverses_earlier_moves
     test_recovery_post_move_verification_failure_reverses_committed_move
+    test_recovery_post_move_open_failure_reverses_committed_move
     test_companion_cleanup_post_move_replacement_has_named_retry_failure
+    test_companion_cleanup_post_move_exception_restores_receipted_staging
     test_companion_cleanup_root_replacement_cannot_move_staging_outside_target
     test_companion_cleanup_root_swap_during_deletion_preserves_all_entries
     test_missing_metadata_backup_reports_restore_failure_without_corrupt_guidance
@@ -5320,6 +5470,7 @@ main() {
     test_recovery_restore_directory_race_preserves_backup
     test_partial_restore_undo_restores_guard_to_target
     test_cleanup_receipt_write_failure_is_pending_without_corrupt_guidance
+    test_cleanup_receipt_ancestor_rebind_does_not_write_outside_target
     test_recovery_restore_destination_symlink_does_not_write_outside_target
     test_recovery_keeps_parseable_metadata_visible_during_capture
     test_recovery_unsupported_string_between_reads_preserves_receipt
