@@ -90,11 +90,14 @@ class PushDownstreamAuditWorkflowTest < Minitest::Test
     assert_equal false, checkout.dig("with", "persist-credentials")
     assert_includes audit.fetch("run"), 'ruby bin/push-downstream --audit | tee "$AUDIT_REPORT"'
     assert_includes audit.fetch("run"), 'audit_exit=${PIPESTATUS[0]}'
-    assert_includes audit.fetch("run"), 'JSON.parse(File.binread(ENV.fetch("AUDIT_REPORT")))'
+    assert_includes audit.fetch("run"), 'report_json = File.binread(ENV.fetch("AUDIT_REPORT"))'
+    assert_includes audit.fetch("run"), 'JSON.parse(report_json)'
     assert_includes audit.fetch("run"), 'source.fetch("sha") == ENV.fetch("GITHUB_SHA")'
     assert_includes audit.fetch("run"), 'consumer.fetch("status") == "blocked"'
     assert_includes audit.fetch("run"), 'value == "UNKNOWN"'
     assert_includes audit.fetch("run"), 'expected_exit == Integer(ENV.fetch("AUDIT_EXIT"), 10)'
+    assert_includes audit.fetch("run"), 'CGI.escapeHTML(report_json)'
+    assert_includes audit.fetch("run"), 'ENV.fetch("GITHUB_STEP_SUMMARY")'
     assert_nil upload, "audit reports must not depend on an untrusted artifact action"
     assert_equal "always()", enforce.fetch("if")
     assert_includes enforce.fetch("run"), 'exit "$AUDIT_EXIT_CODE"'

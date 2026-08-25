@@ -47,9 +47,11 @@ jobs:
           audit_exit=${PIPESTATUS[0]}
           set -e
           AUDIT_EXIT="$audit_exit" ruby <<'RUBY'
+          require "cgi"
           require "json"
 
-          report = JSON.parse(File.binread(ENV.fetch("AUDIT_REPORT")))
+          report_json = File.binread(ENV.fetch("AUDIT_REPORT"))
+          report = JSON.parse(report_json)
           abort "unexpected audit schema" unless report["schema"] == "agent-workflows/downstream-seam-audit/v1"
 
           source = report.fetch("source")
@@ -87,6 +89,15 @@ jobs:
 
           File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
             output.puts "exit_code=#{expected_exit}"
+          end
+          File.open(ENV.fetch("GITHUB_STEP_SUMMARY"), "a") do |summary|
+            summary.puts "## Downstream seam audit report"
+            summary.puts
+            summary.puts "<details>"
+            summary.puts "<summary>Machine-readable JSON</summary>"
+            summary.puts
+            summary.puts "<pre>#{CGI.escapeHTML(report_json)}</pre>"
+            summary.puts "</details>"
           end
           RUBY
           exit 0
