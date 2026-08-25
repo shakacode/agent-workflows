@@ -71,6 +71,7 @@ class PushDownstreamAuditWorkflowTest < Minitest::Test
       "bin/agent-workflow-seam-doctor",
       "bin/agent-workflow-seam-doctor-test.rb",
       "bin/agent_doctor/**",
+      "skills/secure-github-actions/lib/**",
       "downstream.yml",
       "seam-presets.yml"
     ], push.fetch("paths")
