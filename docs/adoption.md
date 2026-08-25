@@ -84,6 +84,26 @@ notes.
    override the deterministic repository-name abbreviation used in batch titles
    and thread handles. The initializer does not add this optional key.
 
+   Writing style is the one policy with a user-global fallback. Resolution is
+   repo → user-global → portable default, and one complete guide wins without
+   merging prose. Put a personal preference in
+   `~/.agents/agent-workflow.yml`:
+
+   ```yaml
+   writing_style:
+     guide: |
+       Lead with the outcome and explain why.
+       Use plain language and keep detail proportional.
+   ```
+
+   Add the same closed mapping to the repository seam only when the team wants
+   a shared house style. The initializer and example do not enable it because a
+   seeded repository value would mask the user-global fallback. The global file
+   supplies no other policy: base branch, merge, CI, trust, and coordination
+   values remain repository-owned. A malformed repository mapping blocks seam
+   validation; a malformed or unreadable global style warns and uses the
+   packaged default.
+
    Repositories that use repository-based GitHub Actions and reusable workflows
    must also add a closed, exact `trusted_actions` allowlist. Its entries are
    case-insensitive `owner/repository` identities, with no refs, subpaths, or

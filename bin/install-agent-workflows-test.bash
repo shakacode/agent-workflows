@@ -207,6 +207,12 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/docs/user-facing-coordination.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
+  assert_file "$target/bin/agent-workflow-writing-style"
+  mkdir -p "$tmp/.agents"
+  printf 'writing_style:\n  guide: Installed resolver smoke.\n' > "$tmp/.agents/agent-workflow.yml"
+  writing_style_output="$(ruby "$target/bin/agent-workflow-writing-style" --repo-root "$tmp" --format json)"
+  ruby -rjson -e 'result = JSON.parse(ARGV.fetch(0)); abort result.inspect unless result["provenance"] == "repo"' \
+    "$writing_style_output" || fail "installed writing-style resolver did not resolve the repository smoke guide"
   assert_file "$target/bin/validate-execution-provenance"
   "$target/bin/validate-execution-provenance" >"$tmp/validate-execution-provenance.out"
   grep -Fqx 'PASS execution provenance schema' "$tmp/validate-execution-provenance.out" || \

@@ -1,0 +1,141 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require "yaml"
+
+module AgentWorkflowWritingStyle
+  PORTABLE_DEFAULT = <<~GUIDE.strip.freeze
+    Lead with the outcome, decision, or request.
+    Explain why and intent; do not narrate obvious file changes.
+    Use plain, direct language and short paragraphs or bullets.
+    Remove filler, repeated context, excessive headings, and decorative emphasis.
+    Keep detail proportional to the change while preserving required evidence.
+  GUIDE
+
+  Result = Struct.new(:guide, :provenance, :warnings, keyword_init: true) do
+    def to_h
+      { "guide" => guide, "provenance" => provenance, "warnings" => warnings }
+    end
+  end
+  class ConfigurationError < StandardError; end
+
+  module_function
+
+  def resolve(repo_root:, home: Dir.home)
+    repo_path = File.join(repo_root, ".agents", "agent-workflow.yml")
+    if File.exist?(repo_path)
+      config = load_mapping(repo_path, label: "repository")
+      guide = extract_guide(config, label: "repository")
+      if guide
+        return Result.new(guide:, provenance: "repo", warnings: [])
+      end
+    end
+
+    user_path = File.join(home, ".agents", "agent-workflow.yml")
+    if File.exist?(user_path)
+      begin
+        config = load_mapping(user_path, label: "user-global")
+        guide = extract_guide(config, label: "user-global")
+        return Result.new(guide:, provenance: "user-global", warnings: []) if guide
+      rescue ConfigurationError => e
+        warning = "WARNING: #{e.message} at #{user_path}. Fix or remove writing_style; using portable default."
+        return Result.new(guide: PORTABLE_DEFAULT, provenance: "portable-default", warnings: [warning])
+      end
+    end
+
+    Result.new(guide: PORTABLE_DEFAULT, provenance: "portable-default", warnings: [])
+  end
+
+  def load_mapping(path, label:)
+    unless File.file?(path)
+      raise ConfigurationError, "invalid #{label} writing_style configuration: expected a readable regular file"
+    end
+
+    yaml = File.read(path, encoding: "UTF-8")
+    structure_error = writing_style_structure_error(yaml)
+    raise ConfigurationError, "invalid #{label} writing_style: #{structure_error}" if structure_error
+
+    YAML.safe_load(yaml, aliases: false) || {}
+  rescue Psych::Exception, EncodingError, SystemCallError => e
+    raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
+  end
+
+  def writing_style_structure_error(yaml)
+    documents = Psych.parse_stream(yaml).children
+    return "expected one YAML document" if documents.length > 1
+
+    root = documents.first&.root
+    return unless root.is_a?(Psych::Nodes::Mapping)
+
+    style_pairs = root.children.each_slice(2).select do |key, _value|
+      key.is_a?(Psych::Nodes::Scalar) && key.value == "writing_style"
+    end
+    return 'duplicate key "writing_style"' if style_pairs.length > 1
+
+    style = style_pairs.first&.last
+    return unless style.is_a?(Psych::Nodes::Mapping)
+
+    keys = style.children.each_slice(2).filter_map do |key, _value|
+      key.value if key.is_a?(Psych::Nodes::Scalar)
+    end
+    duplicate = keys.group_by(&:itself).find { |_key, values| values.length > 1 }&.first
+    %(duplicate key #{duplicate.inspect}) if duplicate
+  end
+
+  def extract_guide(config, label:)
+    unless config.is_a?(Hash)
+      raise ConfigurationError, "invalid #{label} writing_style configuration: expected a top-level mapping"
+    end
+    return unless config.key?("writing_style")
+
+    style = config.fetch("writing_style")
+    unless style.is_a?(Hash) && style.keys == ["guide"]
+      raise ConfigurationError,
+            "invalid #{label} writing_style: expected a closed mapping containing only a nonblank string guide"
+    end
+
+    guide = style.fetch("guide")
+    unless guide.is_a?(String) && !guide.strip.empty?
+      raise ConfigurationError,
+            "invalid #{label} writing_style: expected a closed mapping containing only a nonblank string guide"
+    end
+
+    guide.strip
+  end
+
+  def run(argv)
+    options = { format: "text" }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: agent-workflow-writing-style --repo-root DIR [--format text|json]"
+      opts.on("--repo-root DIR", "Repository root containing .agents/agent-workflow.yml") do |value|
+        options[:repo_root] = value
+      end
+      opts.on("--format FORMAT", %w[text json], "Output format: text or json") do |value|
+        options[:format] = value
+      end
+    end
+    parser.parse!(argv)
+    raise OptionParser::MissingArgument, "--repo-root" unless options[:repo_root]
+
+    result = resolve(repo_root: File.expand_path(options.fetch(:repo_root)))
+    result.warnings.each { |warning| warn warning }
+    if options.fetch(:format) == "json"
+      puts JSON.generate(result.to_h)
+    else
+      puts "provenance: #{result.provenance}"
+      puts result.guide
+    end
+    0
+  rescue ConfigurationError => e
+    warn e.message
+    2
+  rescue OptionParser::ParseError => e
+    warn e.message
+    warn parser
+    64
+  end
+end
+
+exit AgentWorkflowWritingStyle.run(ARGV) if $PROGRAM_NAME == __FILE__

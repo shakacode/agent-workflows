@@ -2,6 +2,12 @@
 
 Use these prompts with `.agents/skills/post-merge-audit/SKILL.md` when auditing merged agent batch work, comparing Codex and Claude findings, or turning audit findings into GitHub issues.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under `pr-processing.md` → **Writing Style Resolution** before drafting audit
+issues, comments, PR-description prose, or final handoffs. Preserve every
+required receipt, marker, protocol block, and evidence field unchanged.
+
 For a verified Codex GPT-5.6 batch, use this recommended advisory route
 profile:
 

@@ -6,6 +6,12 @@ base_branch: main
 # titles and thread handles. Use 1-6 uppercase ASCII letters or digits. Omit
 # repo_prefix when unset; this optional key does not accept the "n/a" sentinel.
 # repo_prefix: "APP"
+# Optional repository house style. Keep this commented when unset so the
+# user-global ~/.agents/agent-workflow.yml guide can apply.
+# writing_style:
+#   guide: |
+#     Lead with the outcome and explain why.
+#     Use plain language and keep detail proportional while preserving evidence.
 follow_up_prefix: "Follow-up:"
 review_gate: "n/a"
 approval_exempt: "n/a"

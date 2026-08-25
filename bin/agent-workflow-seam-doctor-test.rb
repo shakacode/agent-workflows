@@ -431,14 +431,16 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
           Dir.mktmpdir("agent-workflow-seam-doctor-installed") do |installed_root|
             Dir.mktmpdir("agent-workflow-seam-doctor-shared") do |shared_root|
               installed_script = File.join(installed_root, "bin/agent-workflow-seam-doctor")
+              installed_resolver = File.join(installed_root, "bin/agent-workflow-writing-style")
               companion_scanner = File.join(installed_root, "lib/agent-workflows/secure_github_actions_scanner.rb")
               shared_scanner = File.join(shared_root, layout.fetch(:scanner))
               shared_skill = File.join(shared_root, layout.fetch(:skill))
-              [installed_script, companion_scanner, shared_scanner, shared_skill].each do |path|
+              [installed_script, installed_resolver, companion_scanner, shared_scanner, shared_skill].each do |path|
                 FileUtils.mkdir_p(File.dirname(path))
               end
               FileUtils.cp_r(File.join(__dir__, "agent_doctor"), File.dirname(installed_script))
               FileUtils.cp(SCRIPT, installed_script)
+              FileUtils.cp(File.join(__dir__, "agent-workflow-writing-style"), installed_resolver)
               File.write(companion_scanner, fake_scanner_source([]))
               File.write(shared_scanner, fake_scanner_source([scanner_finding("explicit-shared-scanner")]))
               File.write(shared_skill, "# Secure GitHub Actions\n")
@@ -468,6 +470,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
         Dir.mktmpdir("agent-workflow-seam-doctor-shared-first") do |first_root|
           Dir.mktmpdir("agent-workflow-seam-doctor-shared-second") do |second_root|
             installed_script = File.join(installed_root, "bin/agent-workflow-seam-doctor")
+            installed_resolver = File.join(installed_root, "bin/agent-workflow-writing-style")
             companion_scanner = File.join(installed_root, "lib/agent-workflows/secure_github_actions_scanner.rb")
             first_scanner = File.join(first_root, "lib/secure_github_actions_scanner.rb")
             second_scanner = File.join(
@@ -475,11 +478,12 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
             )
             skill_paths = [File.join(first_root, "SKILL.md"),
                            File.join(second_root, "skills/secure-github-actions/SKILL.md")]
-            [installed_script, companion_scanner, first_scanner, second_scanner, *skill_paths].each do |path|
+            [installed_script, installed_resolver, companion_scanner, first_scanner, second_scanner, *skill_paths].each do |path|
               FileUtils.mkdir_p(File.dirname(path))
             end
             FileUtils.cp_r(File.join(__dir__, "agent_doctor"), File.dirname(installed_script))
             FileUtils.cp(SCRIPT, installed_script)
+            FileUtils.cp(File.join(__dir__, "agent-workflow-writing-style"), installed_resolver)
             File.write(companion_scanner, fake_scanner_source([]))
             File.write(first_scanner, fake_scanner_source([scanner_finding("first-explicit-scanner")]))
             File.write(second_scanner, fake_scanner_source([scanner_finding("second-explicit-scanner")]))
@@ -588,6 +592,28 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_writing_style_rejects_malformed_explicit_repository_value
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "writing_style" => {
+            "guide" => "Lead with the outcome.",
+            "extra" => "not part of the closed mapping"
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid writing_style policy"
+      assert_includes out, "closed mapping containing only a nonblank string guide"
+    end
+  end
+
   def test_selected_hosted_ci_receipts_rejects_unknown_mapping_keys
     with_repo do |root|
       write_valid_binstub_contract(root)
@@ -675,6 +701,22 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       write_policy(
         root,
         POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_writing_style_accepts_the_complete_closed_mapping
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("writing_style" => { "guide" => "Lead with the outcome.\nPreserve evidence." })
       )
       write_skill(root, "No commands here.\n")
 
@@ -830,6 +872,23 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
                         "#{fixture.fetch(:diagnostic)}",
                         label
       end
+    end
+  end
+
+  def test_writing_style_rejects_duplicate_yaml_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.merge("writing_style" => { "guide" => "First." }).to_yaml.sub(
+        "  guide: First.\n",
+        "  guide: First.\n  guide: Last.\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid writing_style policy: duplicate key \"guide\""
     end
   end
 
@@ -2617,6 +2676,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")))
       assert_equal "main", policy.fetch("base_branch")
       assert_equal({ "mode" => "direct" }, policy.fetch("merge_submission"))
+      refute policy.key?("writing_style"), "initializer must not mask the user-global writing style fallback"
       trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")))
       assert_equal [], trust.fetch("trusted_users")
       assert_equal [], trust.fetch("trusted_bots")

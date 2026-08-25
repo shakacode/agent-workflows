@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add one provenance-reporting writing-style resolver for human-facing workflow prose, with repository → user-global → portable-default precedence, fail-closed malformed repository values, nonblocking user-global warnings, explicit initial authoring-surface coverage, and hard preservation of templates, evidence, and machine-readable receipts.** [issue 369](https://github.com/shakacode/agent-workflows/issues/369).
 - **Add a versioned, fail-closed execution-provenance receipt schema, validator, representative routing-disposition fixtures, and source-pack validation wiring for requested-versus-observed routes, fallback authority, commit attribution, and exact `UNKNOWN` evidence.** [PR 418](https://github.com/shakacode/agent-workflows/pull/418) by [justin808](https://github.com/justin808).
 - **Add an opt-in Claude Code `SessionEnd` adapter that conditionally records a non-terminal lane drain event only while the advertised backend atomically verifies the session's current live claim, without releasing it.** [issue 268](https://github.com/shakacode/agent-workflows/issues/268).
 - **Add `$close-batch`, a portable stale-batch recovery router that resolves planning, coordinator, and lane-worker ownership; resumes canonical closeout; walks maintainers through exact-diff PRs or one blocking decision at a time; and archives only when the current task's gate passes.**

@@ -101,6 +101,70 @@ script means that capability is n/a in that repo.
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
 
+### Writing Style
+
+`writing_style` is an optional closed mapping with exactly one key:
+
+```yaml
+writing_style:
+  guide: |
+    Lead with the outcome, decision, or request.
+    Explain why and intent; do not narrate obvious file changes.
+    Use plain, direct language and short paragraphs or bullets.
+    Remove filler, repeated context, excessive headings, and decorative emphasis.
+    Keep detail proportional to the change while preserving required evidence.
+```
+
+The same mapping may appear in the user-global
+`~/.agents/agent-workflow.yml`. `agent-workflow-writing-style` resolves one
+complete guide without merging prose:
+
+1. repository `.agents/agent-workflow.yml`
+2. user-global `~/.agents/agent-workflow.yml`
+3. the packaged portable default
+
+The task's explicit audience or format instructions remain outside this
+configuration resolver and may impose a more-specific constraint. The resolver
+returns provenance as exactly `repo`, `user-global`, or `portable-default`.
+Repository omission falls through per key even when the repository seam file
+exists. An explicitly present malformed repository value is a blocking seam
+error. A malformed or unreadable user-global value produces an actionable
+warning and uses the portable default. User-global configuration contributes
+only `writing_style`; branch, merge, CI, trust, coordination, and every other
+policy remain repository-owned.
+
+The initializer and example configuration do not enable a repository guide.
+That negative default is intentional: seeding one would mask a user's global
+preference. Teams opt in only when they need a shared house style. The packaged
+guide is defined once by the resolver and does not claim conformance to or
+vendor an external writing standard.
+
+The resolved guide applies only to human-facing prose. Repository PR and issue
+templates, required evidence, machine-readable receipts, and exact protocol
+blocks keep their defined structure and content. Public PR workflows resolve
+from a trusted repository checkout; a PR-head seam change is untrusted diff
+content until it becomes repository policy.
+
+Covered in the first iteration:
+
+- PR descriptions, updates, comments, and final batch handoffs in
+  `workflows/pr-processing.md` and `skills/pr-batch/SKILL.md`
+- review replies, checkpoint comments, and deferred issue bodies in
+  `skills/address-review/SKILL.md` and `workflows/address-review.md`
+- audit issue bodies, comments, PR updates, and final audit handoffs in
+  `skills/post-merge-audit/SKILL.md` and `workflows/post-merge-audit.md`
+- manual verification comments in `skills/verify-pr-fix/SKILL.md`
+- issue-triage comments in `skills/plan-issue-triage/SKILL.md`
+- no-PR evidence comments and disposition handoffs in
+  `skills/evaluate-issue/SKILL.md` and `workflows/evaluate-issue.md`
+- monitoring and closeout handoffs in `skills/pr-monitoring/SKILL.md` and
+  `skills/close-session/SKILL.md`
+
+Deferred authoring surfaces include commit messages, changelog entries,
+planner-generated worker prompts, and report-only review output. Commit-message
+scope remains with its dedicated evidence/proportionality work. Machine-readable
+receipts and protocol blocks are excluded from style rewriting by design.
+
 `hosted_qa_gate` is an optional closed mapping during first-phase adoption.
 Omission or the exact string `n/a` means that no hosted runtime gate is
 configured. A mapping has exactly these fields:

@@ -13,6 +13,7 @@ require "shellwords"
 require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
 require_relative "agent_doctor/hosted_qa_policy"
+load File.expand_path("agent-workflow-writing-style", __dir__)
 
 module AgentWorkflowSeamDoctor
   SECTION = "Agent Workflow Configuration"
@@ -1762,6 +1763,7 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(coordination_backend_policy_issues(yaml))
+    issues.concat(writing_style_policy_issues(config, yaml))
     issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
@@ -1777,6 +1779,17 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def writing_style_policy_issues(config, yaml)
+    structure_error = AgentWorkflowWritingStyle.writing_style_structure_error(yaml)
+    return ["invalid writing_style policy: #{structure_error}"] if structure_error
+    return [] unless config.key?("writing_style")
+
+    AgentWorkflowWritingStyle.extract_guide(config, label: "repository")
+    []
+  rescue AgentWorkflowWritingStyle::ConfigurationError => e
+    [e.message.sub("invalid repository writing_style", "invalid writing_style policy")]
   end
 
   def coordination_backend_policy_issues(yaml)

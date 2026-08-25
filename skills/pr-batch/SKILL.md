@@ -9,6 +9,14 @@ argument-hint: '[task, exact issue/PR numbers, or filters]'
 Run one or more PR work lanes through one canonical process. A single target is
 a batch of one, not a separate workflow.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+using the resolution, provenance, warning, trusted-base, and evidence-preserving
+contract in `workflows/pr-processing.md` → **Writing Style Resolution**. Apply
+the guide to PR descriptions and updates, issue or PR comments, review-facing
+explanations, and final handoffs. Never let style remove repository template
+sections, required evidence, or machine-readable receipts.
+
 Use `docs/coordination-backend.md` as the canonical vocabulary for private
 backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 

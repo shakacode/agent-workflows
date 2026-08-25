@@ -32,6 +32,19 @@ Claude:
 | --- | --- |
 | `codex` | `${CODEX_HOME:-$HOME/.codex}` |
 | `claude` | `${CLAUDE_HOME:-$HOME/.claude}` |
+
+The installer also supplies `agent-workflow-writing-style`. Shared authoring
+workflows run it with the trusted repository root before composing human-facing
+prose. It resolves repository `.agents/agent-workflow.yml`, then the personal
+`~/.agents/agent-workflow.yml`, then its packaged default, and reports the
+selected provenance. The user-global file contributes only `writing_style`;
+all other workflow policy remains repository-owned.
+
+After upgrading, malformed repository style remains a blocking seam error.
+Malformed or unreadable user-global style is nonblocking: the resolver prints
+an actionable warning and uses its packaged default. Existing repositories need
+no configuration change, and install/upgrade never writes the user-global file
+or seeds a repository style.
 | `auto` | An existing Codex or Claude home, only when exactly one is detectable |
 
 Use `--target DIR` for custom homes such as `~/.agents`. The host name controls
@@ -406,6 +419,7 @@ The installer writes:
 - `<target>/docs/user-facing-coordination.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
+- `<target>/bin/agent-workflow-writing-style`
 - `<target>/bin/validate-execution-provenance`
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
