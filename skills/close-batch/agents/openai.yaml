@@ -1,0 +1,4 @@
+interface:
+  display_name: "Close Batch"
+  short_description: "Finish stale batches and archive clean tasks"
+  default_prompt: "Use $close-batch to finish this stale batch, walk me through any decision I need to make, and archive the task when clean."
