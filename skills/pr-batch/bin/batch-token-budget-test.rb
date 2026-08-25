@@ -3295,4 +3295,34 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "command-time-rollback", JSON.parse(fractional_stderr).fetch("reason")
     end
   end
+
+  def test_command_timestamp_requires_a_complete_datetime_with_an_explicit_offset
+    Dir.mktmpdir("batch-token-budget-timestamps") do |directory|
+      ["12:30", "2026-08-12", "2026-08-12T12:30:00"].each_with_index do |timestamp, index|
+        state_path = File.join(directory, "invalid-#{index}.json")
+        output, stderr, status = run_helper(
+          state_path,
+          command("initialize", "evaluated_at" => timestamp, "budget" => budget(state_path: state_path))
+        )
+
+        refute status.success?, timestamp
+        assert_nil output, timestamp
+        assert_equal "invalid-evaluated-at", JSON.parse(stderr).fetch("reason"), timestamp
+      end
+
+      valid_state_path = File.join(directory, "valid.json")
+      initialized, stderr, status = run_helper(
+        valid_state_path,
+        command(
+          "initialize",
+          "evaluated_at" => "2026-08-12T17:30:00.123456+05:30",
+          "budget" => budget(state_path: valid_state_path)
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "initialized", initialized.fetch("status")
+      assert_equal "2026-08-12T17:30:00.123456+05:30", JSON.parse(File.read(valid_state_path)).fetch("last_evaluated_at")
+    end
+  end
 end

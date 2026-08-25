@@ -305,9 +305,21 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
+  def persist_token_budget(budget)
+    artifact = Tempfile.new(["batch-token-budget-plan", ".json"])
+    artifact.write(JSON.generate(canonicalize(budget)))
+    artifact.flush
+    (@trusted_plan_artifacts ||= []) << artifact
+    artifact.path
+  end
+
+  def teardown
+    Array(@trusted_plan_artifacts).each(&:close!)
+  end
+
   def token_budget_anchor(budget)
     {
-      "trusted_plan_path" => "/var/tmp/batch-plan-1-token-budget-plan.json",
+      "trusted_plan_path" => persist_token_budget(budget),
       "trusted_plan_id" => budget.fetch("batch_id"),
       "trusted_plan_digest" => "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(budget)))}"
     }
@@ -951,6 +963,78 @@ class BatchPlanPreflightTest < Minitest::Test
       assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
                       "token-budget-anchor-invalid", name
     end
+  end
+
+  def test_token_budget_requires_a_readable_persisted_trusted_plan
+    Dir.mktmpdir("batch-plan-missing-trusted-budget") do |directory|
+      input = input_for
+      candidate = token_budget
+      input.fetch("plan")["token_budget"] = candidate
+      input.fetch("plan")["token_budget_anchor"] = token_budget_anchor(candidate).merge(
+        "trusted_plan_path" => File.join(directory, "missing.json")
+      )
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-trusted-plan-unreadable"
+    end
+  end
+
+  def test_token_budget_rejects_malformed_or_duplicate_key_trusted_plan_artifacts
+    candidate = token_budget
+    duplicate_key_json = JSON.generate(candidate).sub(
+      '"batch_id":"batch-plan-1"',
+      '"batch_id":"batch-plan-1","batch_id":"shadow-batch"'
+    )
+    outcomes = ["{", duplicate_key_json].map do |artifact_json|
+      input = input_for
+      enable_token_budget(input, candidate)
+      File.write(input.dig("plan", "token_budget_anchor", "trusted_plan_path"), artifact_json)
+
+      result, _stderr, status = evaluate(input)
+      [status.success?, result.fetch("violations").map { |violation| violation.fetch("code") }]
+    end
+
+    assert_equal(
+      Array.new(2) { [false, ["token-budget-trusted-plan-malformed"]] },
+      outcomes
+    )
+  end
+
+  def test_token_budget_rejects_a_stale_trusted_plan_artifact
+    input = input_for
+    candidate = token_budget
+    enable_token_budget(input, candidate)
+    stale_budget = JSON.parse(JSON.generate(candidate))
+    stale_budget.dig("scopes", "aggregate")["limit_tokens"] += 1
+    File.write(
+      input.dig("plan", "token_budget_anchor", "trusted_plan_path"),
+      JSON.generate(canonicalize(stale_budget))
+    )
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-trusted-plan-mismatch"
+  end
+
+  def test_token_budget_rejects_a_non_object_trusted_plan_artifact
+    outcomes = %w[null false].map do |artifact_json|
+      input = input_for
+      enable_token_budget(input)
+      File.write(input.dig("plan", "token_budget_anchor", "trusted_plan_path"), artifact_json)
+
+      result, _stderr, status = evaluate(input)
+      [status.success?, result.fetch("violations").map { |violation| violation.fetch("code") }]
+    end
+
+    assert_equal(
+      Array.new(2) { [false, ["token-budget-trusted-plan-mismatch"]] },
+      outcomes
+    )
   end
 
   def test_token_budget_rejects_same_aliased_or_ancestor_trusted_plan_and_state_artifacts
