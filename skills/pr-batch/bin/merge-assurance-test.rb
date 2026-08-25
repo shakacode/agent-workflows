@@ -17,7 +17,7 @@ load SCRIPT
 class MergeAssuranceTest < Minitest::Test
   HEAD_SHA = "a" * 40
   BASE_SHA = "b" * 40
-  DIFF_IDENTITY = "c" * 64
+  DIFF_IDENTITY = DiffIdentity.derive(base_ref: "main", base_sha: BASE_SHA, head_sha: HEAD_SHA)
   NOW = Time.iso8601("2026-07-30T12:00:00Z")
   BATCH_OBJECT_ID = "d" * 40
   SYSTEM_GIT = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |directory|
@@ -2369,6 +2369,11 @@ class MergeAssuranceTest < Minitest::Test
     autonomous, base_sha = eligibility_artifact
     merge_context = context("auto_merge_when_gates_pass")
     merge_context.fetch("base")["sha"] = base_sha
+    merge_context["diff_identity"] = DiffIdentity.derive(
+      base_ref: merge_context.dig("base", "ref"),
+      base_sha:,
+      head_sha: merge_context.fetch("head_sha")
+    )
 
     result = MergeAssurance.assess(
       ci_result: ready_ci,

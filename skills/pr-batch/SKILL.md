@@ -674,7 +674,9 @@ Run:
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --trusted-repo-root "$(git rev-parse --show-toplevel)" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 `merge-assurance` alone owns merge-authority, follow-up accounting, and

@@ -598,6 +598,35 @@ dataset covers submitted-review history, the distribution and sampled near
 misses have been reviewed, and a threshold decision is recorded. The
 calibration helper emits no merge decisions.
 
+Consumers that intentionally leave non-required, approval-gated third-party
+checks held may adopt the exact trusted-base policy seam after upgrading the
+pack:
+
+```yaml
+ci_readiness:
+  version: 1
+  optional_approval_held_checks:
+    - id: storybook-review-app
+      app_slug: circleci-checks
+      name: storybook-review-app
+```
+
+Land and review that policy change separately before relying on it. The merge
+path reads `.agents/agent-workflow.yml` from the live base commit's Git object,
+not candidate worktree bytes, and callers pass the consumer root through
+`--trusted-repo-root` to both `pr-ci-readiness` and `merge-assurance`. Existing
+repositories that omit `ci_readiness` or set it to exact `n/a` retain the prior
+fail-closed behavior; no pending row becomes optional. After adoption, raw rows
+remain in the v2 result, while only exact configured check-run identities that
+are still approval-held and not required receive authenticated dispositions.
+
+The upgraded pack also supplies `skills/pr-batch/bin/diff-identity`. Replace
+opaque or locally invented digests with this helper before creating new
+walkthrough, approval, or merge-context evidence. Existing evidence made for an
+arbitrary digest is not migrated: recompute the identity from the exact base
+ref, resolved base/effective merge-base full lowercase SHA, and full lowercase
+head SHA, then repeat any evidence gate bound to the old identity.
+
 Then dry-run one installed workflow, such as `$plan-pr-batch` or
 `$address-review`, until it resolves base branch, validation, hosted CI,
 review-gate, changelog, and follow-up values from the repo seam without making

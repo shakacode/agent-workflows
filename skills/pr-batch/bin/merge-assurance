@@ -276,13 +276,24 @@ module MergeAssurance
     failures << "context PR is invalid" unless context["pr"].is_a?(Integer) && context["pr"].positive?
     base = context["base"]
     unless base.is_a?(Hash) && base.keys.sort == %w[ref sha] &&
-           valid_ref?(base["ref"]) && full_sha?(base["sha"])
+           valid_ref?(base["ref"]) && canonical_full_sha?(base["sha"])
       failures << "context base binding is invalid"
     end
-    failures << "context head_sha is invalid" unless full_sha?(context["head_sha"])
+    failures << "context head_sha is invalid" unless canonical_full_sha?(context["head_sha"])
     failures << "context authority is invalid" unless AUTHORITIES.include?(context["authority"])
     failures << "context diff_identity must be a lowercase SHA-256" unless
       context["diff_identity"].to_s.match?(/\A[0-9a-f]{64}\z/)
+    if base.is_a?(Hash) && valid_ref?(base["ref"]) && canonical_full_sha?(base["sha"]) &&
+       canonical_full_sha?(context["head_sha"])
+      expected_diff_identity = DiffIdentity.derive(
+        base_ref: base["ref"],
+        base_sha: base["sha"],
+        head_sha: context["head_sha"]
+      )
+      unless context["diff_identity"] == expected_diff_identity
+        failures << "context diff_identity does not match canonical base/head derivation"
+      end
+    end
     failures << "context operations must be an array" unless context["operations"].is_a?(Array)
     failures << "context semantic_github_actions_change must be boolean" unless
       [true, false].include?(context["semantic_github_actions_change"])
@@ -296,7 +307,7 @@ module MergeAssurance
     end
   end
 
-  def validate_ci(ci_result, context, now, failures)
+  def validate_ci(ci_result, context, trusted_ci_policy, now, failures)
     unless ci_result.is_a?(Hash)
       failures << "ci_result must be an object"
       return
@@ -313,6 +324,9 @@ module MergeAssurance
       failures << "ci_result scopes are missing or unknown"
       return
     end
+    ci_policy = ci_result["ci_policy"]
+    authenticated_policy = authenticate_ci_policy(ci_policy, trusted_ci_policy, context, failures)
+    required_rows = scopes.dig("required_status_check_rollup", "rows")
     scopes.each do |name, scope|
       unless scope.is_a?(Hash) && SCOPE_STATES.include?(scope["state"])
         failures << "ci_result scope #{name} has invalid state"
@@ -322,7 +336,17 @@ module MergeAssurance
       failures << "ci_result scope #{name} is not ready" unless %w[READY NOT_APPLICABLE].include?(scope["state"])
       failures << "ci_result scope #{name} head mismatch" unless scope["head_sha"] == context["head_sha"]
       failures << "ci_result scope #{name} rows are invalid" unless scope["rows"].is_a?(Array)
-      recomputed_state = recompute_ci_scope_state(scope)
+      policy_dispositions = if name == "other"
+                              validated_ci_policy_dispositions(
+                                scope,
+                                required_rows:,
+                                authenticated_policy:,
+                                failures:
+                              )
+                            else
+                              []
+                            end
+      recomputed_state = recompute_ci_scope_state(scope, policy_dispositions:)
       unless scope["state"] == recomputed_state
         failures << "ci_result scope #{name} declared #{scope['state']} but recomputed #{recomputed_state}"
       end
@@ -440,7 +464,10 @@ module MergeAssurance
   def recompute_ci_scope_state(scope)
     rows = scope["rows"]
     normalized_rows = rows.is_a?(Array) ? rows : []
-    row_states = normalized_rows.map { |row| ci_evidence_row_state(row) }
+    blocking_rows = normalized_rows.reject do |row|
+      policy_dispositions.any? { |disposition| PrCiReadiness.disposition_matches_row?(disposition, row) }
+    end
+    row_states = blocking_rows.map { |row| ci_evidence_row_state(row) }
     if scope["complete"] != true
       "UNKNOWN"
     elsif !rows.is_a?(Array) || row_states.include?("UNKNOWN")
@@ -452,6 +479,96 @@ module MergeAssurance
     else
       "READY"
     end
+  end
+
+  def authenticate_ci_policy(ci_policy, trusted_ci_policy, context, failures)
+    return nil if ci_policy.nil? && trusted_ci_policy.nil?
+
+    unless trusted_ci_policy_envelope?(trusted_ci_policy, context)
+      failures << "ci policy disposition is not authenticated from trusted base"
+      return nil
+    end
+    unless ci_policy == trusted_ci_policy
+      failures << "ci policy evidence does not match authenticated trusted-base policy"
+      return nil
+    end
+
+    trusted_ci_policy
+  end
+
+  def trusted_ci_policy_envelope?(policy, context)
+    return false unless exact_keys?(
+      policy,
+      %w[base optional_approval_held_checks provenance version]
+    )
+    return false unless policy["version"] == 1
+    return false unless policy["base"] == context["base"]
+
+    expected_prefix = "git:#{context.dig('base', 'sha')}:.agents/agent-workflow.yml@"
+    return false unless policy["provenance"].to_s.match?(
+      /\A#{Regexp.escape(expected_prefix)}[0-9a-f]{40}\z/
+    )
+
+    inner = {
+      "version" => policy["version"],
+      "optional_approval_held_checks" => policy["optional_approval_held_checks"]
+    }
+    PrCiReadiness.validate_optional_approval_held_policy!(inner)
+    true
+  rescue PrCiReadiness::Error
+    false
+  end
+
+  def validated_ci_policy_dispositions(scope, required_rows:, authenticated_policy:, failures:)
+    dispositions = scope["policy_dispositions"]
+    return [] if dispositions.nil?
+
+    unless dispositions.is_a?(Array)
+      failures << "ci_result scope other policy dispositions are invalid"
+      return []
+    end
+    if dispositions.any? && authenticated_policy.nil?
+      failures << "ci policy disposition is not authenticated from trusted base"
+      return []
+    end
+
+    expected_keys = %w[app_slug disposition id kind name rule_id]
+    rules = authenticated_policy&.fetch("optional_approval_held_checks", []) || []
+    valid = []
+    seen_rows = {}
+    dispositions.each do |disposition|
+      unless exact_keys?(disposition, expected_keys) &&
+             disposition["disposition"] == "optional_approval_held" &&
+             disposition["kind"] == "check_run"
+        failures << "ci_result scope other policy disposition shape is invalid"
+        next
+      end
+      identity = disposition.values_at("kind", "id")
+      if seen_rows[identity]
+        failures << "ci_result scope other policy disposition repeats a row"
+        next
+      end
+      seen_rows[identity] = true
+      row = scope.fetch("rows", []).find do |candidate|
+        PrCiReadiness.disposition_matches_row?(disposition, candidate)
+      end
+      rule = rules.find do |candidate|
+        candidate["id"] == disposition["rule_id"] &&
+          candidate["app_slug"] == disposition["app_slug"] &&
+          candidate["name"] == disposition["name"]
+      end
+      unless row && rule && PrCiReadiness.optional_approval_held_row?(row)
+        failures << "ci_result scope other policy disposition does not match a held row and trusted rule"
+        next
+      end
+      if Array(required_rows).any? { |required| PrCiReadiness.required_matches_optional_row?(required, row) }
+        failures << "ci_result scope other policy disposition was reclassified as required"
+        next
+      end
+
+      valid << disposition
+    end
+    valid
   end
 
   def ci_evidence_row_state(row)
@@ -1204,6 +1321,10 @@ module MergeAssurance
 
   def full_sha?(value)
     value.to_s.match?(/\A[0-9a-f]{40}\z/i)
+  end
+
+  def canonical_full_sha?(value)
+    value.is_a?(String) && value.match?(/\A[0-9a-f]{40}\z/)
   end
 
   def valid_ref?(value)
@@ -2135,10 +2256,11 @@ module MergeAssurance
     def parse_options(argv)
       options = {}
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE"
+        opts.banner = "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE [--trusted-repo-root DIR]"
         opts.on("--ci-result FILE") { |value| options[:ci_result] = value }
         opts.on("--autonomous-result FILE") { |value| options[:autonomous_result] = value }
         opts.on("--context FILE") { |value| options[:context] = value }
+        opts.on("--trusted-repo-root DIR") { |value| options[:trusted_repo_root] = value }
         opts.on("-h", "--help") { options[:help] = true }
       end
       remaining = parser.parse(argv)
@@ -2167,7 +2289,7 @@ module MergeAssurance
     end
 
     def help
-      puts "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE"
+      puts "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE [--trusted-repo-root DIR]"
       0
     end
   end

@@ -352,6 +352,155 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal [22], other_ids
   end
 
+  def test_trusted_policy_keeps_optional_approval_held_rows_but_removes_them_from_blocking_state
+    head = "a" * 40
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+    held = {
+      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal [held], scopes.dig("other", "rows")
+    assert_equal "READY", scopes.dig("other", "state")
+    assert_equal(
+      [
+        {
+          "disposition" => "optional_approval_held",
+          "rule_id" => "circleci-storybook",
+          "kind" => "check_run",
+          "id" => 31,
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ],
+      scopes.dig("other", "policy_dispositions")
+    )
+  end
+
+  def test_required_reclassification_prevents_optional_approval_held_disposition
+    head = "a" * 40
+    held = {
+      "kind" => "check_run", "id" => 32, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [
+        { "workflow" => "circleci-checks", "name" => "storybook-review-app", "bucket" => "pending" }
+      ],
+      required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("required_status_check_rollup", "state")
+    assert_equal "NOT_APPLICABLE", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+  end
+
+  def test_trusted_ci_policy_is_loaded_from_the_exact_base_commit_not_worktree_bytes
+    Dir.mktmpdir("pr-ci-policy") do |root|
+      run_fixture_git(root, "init", "-q")
+      run_fixture_git(root, "config", "user.name", "Test User")
+      run_fixture_git(root, "config", "user.email", "test@example.test")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        {
+          "ci_readiness" => {
+            "version" => 1,
+            "optional_approval_held_checks" => [
+              {
+                "id" => "circleci-storybook",
+                "app_slug" => "circleci-checks",
+                "name" => "storybook-review-app"
+              }
+            ]
+          }
+        }.to_yaml
+      )
+      run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+      run_fixture_git(root, "commit", "-q", "-m", "policy")
+      base_sha = run_fixture_git(root, "rev-parse", "HEAD").strip
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), "ci_readiness: UNKNOWN\n")
+
+      policy = PrCiReadiness.trusted_ci_policy_at(
+        repo_root: root, base_ref: "main", base_sha:
+      )
+
+      assert_equal base_sha, policy.dig("base", "sha")
+      assert_equal "storybook-review-app", policy.dig("optional_approval_held_checks", 0, "name")
+      assert_match(
+        %r{\Agit:#{base_sha}:\.agents/agent-workflow\.yml@[0-9a-f]{40}\z},
+        policy.fetch("provenance")
+      )
+    end
+  end
+
+  def test_unknown_trusted_base_ci_policy_fails_closed
+    Dir.mktmpdir("pr-ci-policy-unknown") do |root|
+      run_fixture_git(root, "init", "-q")
+      run_fixture_git(root, "config", "user.name", "Test User")
+      run_fixture_git(root, "config", "user.email", "test@example.test")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), "ci_readiness: UNKNOWN\n")
+      run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+      run_fixture_git(root, "commit", "-q", "-m", "unknown policy")
+      base_sha = run_fixture_git(root, "rev-parse", "HEAD").strip
+
+      error = assert_raises(PrCiReadiness::Error) do
+        PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
+      end
+
+      assert_match(/closed version 1 mapping/, error.message)
+    end
+  end
+
+  def run_fixture_git(root, *arguments)
+    output, status = Open3.capture2e(
+      { "GIT_CONFIG_NOSYSTEM" => "1", "GIT_CONFIG_GLOBAL" => File::NULL },
+      "git", *arguments, chdir: root
+    )
+    raise "fixture git failed: #{output}" unless status.success?
+
+    output
+  end
+
   def test_required_rows_without_positive_producer_do_not_hide_failing_same_name_evidence
     head = "a" * 40
     checked_at = "2026-07-30T12:00:00Z"

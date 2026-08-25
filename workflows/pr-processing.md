@@ -3564,7 +3564,9 @@ current tool's timeout or a shell timeout when available:
 ```bash
 # Resolve PR_BATCH_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
 PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO>
+"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
+  --repo <OWNER/REPO> \
+  --trusted-repo-root "$(git rev-parse --show-toplevel)"
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
 
@@ -3846,13 +3848,37 @@ Before saying a PR is ready to merge:
 gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels,latestReviews,reviews,comments,mergedAt
 # Resolve PR_BATCH_SKILL_DIR, then capture the machine-owned exact-head CI result.
 "${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
-  --repo <OWNER/REPO> > "${CI_RESULT_PATH}"
+  --repo <OWNER/REPO> \
+  --trusted-repo-root "$(git rev-parse --show-toplevel)" \
+  > "${CI_RESULT_PATH}"
 ```
 
 The resulting `pr-ci-readiness` v2 contract owns complete, scoped exact-head
 evidence for required status checks, GitHub Actions, Dependabot, and other
 checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
 must migrate to the scoped v2 result.
+
+The optional trusted-base `ci_readiness` seam is a closed version 1 mapping:
+
+```yaml
+ci_readiness:
+  version: 1
+  optional_approval_held_checks:
+    - id: storybook-review-app
+      app_slug: circleci-checks
+      name: storybook-review-app
+```
+
+Each rule identifies one exact third-party check run. The helper reads the
+policy blob from the live PR base SHA in the explicitly supplied trusted Git
+repository, records base ref/SHA and blob provenance, keeps every raw row in
+`scopes.other.rows`, and adds a `policy_dispositions` entry only while a matching
+non-required row is approval-held. A configured required row with the same
+producer/context, any requested GitHub Actions run, failures, completed unknown
+conclusions, malformed or incomplete inventory, and every unmatched pending or
+`UNKNOWN` row remain blocking. Omission or exact `n/a` grants no disposition;
+malformed or literal/nested `UNKNOWN` policy fails closed. Candidate-branch
+policy edits do not apply until merged into the trusted base.
 
 Then run the repo's merge ledger (see `merge_ledger` in
 `.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
@@ -3900,6 +3926,27 @@ commits. Complexity, cross-cutting behavior, security, migrations,
 architecture, or difficult rollback may require full mode below those limits.
 Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
+
+Derive the identity with the trusted pack helper; do not invent or hand-edit a
+digest:
+
+```bash
+DIFF_IDENTITY="$("${TRUSTED_PR_BATCH_SKILL_DIR}/bin/diff-identity" \
+  --base-ref "${BASE_REF}" \
+  --base-sha "${DIFF_BASE_SHA}" \
+  --head-sha "${HEAD_SHA}")"
+```
+
+`DIFF_BASE_SHA` is the resolved full lowercase base commit used for the diff,
+or its effective merge-base commit when that is the workflow's reviewed diff
+boundary. Version 1 hashes this exact byte sequence with SHA-256: the ASCII
+literal `diff-identity-v1`, then the ordered fields `base_ref`, `base_sha`, and
+`head_sha`; every token is NUL-separated, each value is preceded by its decimal
+UTF-8 byte length, and one final NUL terminates the record. Refs must be
+canonical nonempty Git refs and both SHAs must be exactly 40 lowercase hex
+characters. Changing the base ref, resolved base/effective merge-base SHA, or
+head SHA changes the identity and invalidates walkthrough, decision, CI, and
+merge-receipt evidence.
 
 After it completes or is skipped, refresh the diff identity and ordinary
 readiness. If the diff identity changed, invalidate the walkthrough and
@@ -4232,7 +4279,9 @@ not gate.
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --trusted-repo-root "$(git rev-parse --show-toplevel)" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`

@@ -1944,7 +1944,7 @@ class PrMergeSubmitTest < Minitest::Test
       "base" => { "ref" => base_ref, "sha" => base_sha },
       "head_sha" => head,
       "authority" => "auto_merge_when_gates_pass",
-      "diff_identity" => "e" * 64,
+      "diff_identity" => DiffIdentity.derive(base_ref:, base_sha:, head_sha: head),
       "human_merge_decision" => nil,
       "walkthrough" => nil,
       "semantic_github_actions_change" => semantic,
@@ -2038,8 +2038,9 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def semantic_issue_payload(host:, repo:, pr_number:, head:)
+  def semantic_issue_payload(host:, repo:, pr_number:, base_ref:, base_sha:, head:)
     tracker = semantic_tracker(host:, repo:, pr_number:)
+    diff_identity = DiffIdentity.derive(base_ref:, base_sha:, head_sha: head)
     {
       "id" => 101,
       "node_id" => "I_kwDOExample",
@@ -2052,7 +2053,7 @@ class PrMergeSubmitTest < Minitest::Test
         "Verify the semantic workflow behavior after merge.",
         "semantic-tracker-source-pr: #{tracker['source_pr']}",
         "semantic-tracker-head-sha: #{head}",
-        "semantic-tracker-diff-identity: #{'e' * 64}",
+        "semantic-tracker-diff-identity: #{diff_identity}",
         "semantic-tracker-operation-digest: " \
           "#{MergeAssurance.semantic_tracker_operation_digest(tracker)}"
       ].join("\n"),
@@ -2250,7 +2251,8 @@ class PrMergeSubmitTest < Minitest::Test
                        %("headRefName" => #{head_ref_name.inspect},)
                      end
     semantic_issue = semantic_issue_payload(
-      host: HOST, repo: "owner/repo", pr_number: 42, head:
+      host: HOST, repo: "owner/repo", pr_number: 42,
+      base_ref: base, base_sha:, head:
     )
     queue_payload = if mode == "queue_missing_entry"
                       { "data" => { "enqueuePullRequest" => { "mergeQueueEntry" => nil } } }

@@ -28,6 +28,7 @@
 require "json"
 require "open3"
 require "time"
+require "yaml"
 
 # Pure verdict logic (no I/O) plus the gh-backed runner. The pure methods take
 # the raw `gh pr checks --json` output string (or parsed rows) so they can be
@@ -144,6 +145,14 @@ module PrCiReadiness
 
   EVIDENCE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
   SUCCESSFUL_CONCLUSIONS = %w[success neutral skipped].freeze
+  POLICY_PATH = ".agents/agent-workflow.yml"
+  POLICY_KEYS = %w[optional_approval_held_checks version].freeze
+  OPTIONAL_CHECK_KEYS = %w[app_slug id name].freeze
+  POLICY_RULE_ID = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
+  APPROVAL_HELD_STATUSES = %w[in_progress pending queued requested waiting].freeze
+  SYSTEM_GIT = %w[/opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git /bin/git].find do |path|
+    File.file?(path) && File.executable?(path)
+  end
 
   def evidence_row_state(row)
     return "UNKNOWN" unless row.is_a?(Hash)
@@ -167,9 +176,19 @@ module PrCiReadiness
     "UNKNOWN"
   end
 
-  def evidence_scope(source:, head_sha:, complete:, rows:, checked_at:, error: nil)
+  def evidence_scope(
+    source:, head_sha:, complete:, rows:, checked_at:, error: nil,
+    policy_dispositions: nil
+  )
     normalized_rows = rows.is_a?(Array) ? rows : []
-    row_states = normalized_rows.map { |row| evidence_row_state(row) }
+    blocking_rows = if policy_dispositions.nil?
+                      normalized_rows
+                    else
+                      normalized_rows.reject do |row|
+                        policy_dispositions.any? { |disposition| disposition_matches_row?(disposition, row) }
+                      end
+                    end
+    row_states = blocking_rows.map { |row| evidence_row_state(row) }
     state =
       if complete != true
         "UNKNOWN"
@@ -190,6 +209,7 @@ module PrCiReadiness
       "rows" => normalized_rows,
       "checked_at" => checked_at
     }
+    result["policy_dispositions"] = policy_dispositions unless policy_dispositions.nil?
     result["error"] = error.to_s unless error.to_s.empty?
     result["error"] ||= "one or more rows had an unknown state" if state == "UNKNOWN" && complete == true
     result
@@ -220,7 +240,7 @@ module PrCiReadiness
   def inventory_scopes(
     head_sha:, checked_at:, required_rows:, required_complete:, actions_rows:,
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
-    statuses_complete:, errors: {}
+    statuses_complete:, errors: {}, optional_approval_held_policy: nil
   )
     # required_rows may still contain a non-Hash entry that survived
     # readiness classification upstream (kept, not dropped, so it remains
@@ -243,6 +263,15 @@ module PrCiReadiness
         row["app_slug"].to_s == "github-actions" ||
         row["dependabot"] == true
     end
+    policy_dispositions = if optional_approval_held_policy.nil?
+                            nil
+                          else
+                            optional_approval_held_dispositions(
+                              other_rows,
+                              required_rows:,
+                              policy: optional_approval_held_policy
+                            )
+                          end
 
     {
       "required_status_check_rollup" => evidence_scope(
@@ -263,7 +292,8 @@ module PrCiReadiness
       "other" => evidence_scope(
         source: "github.checks_and_statuses.exact_head.non_required",
         head_sha:, complete: check_runs_complete && statuses_complete,
-        rows: other_rows, checked_at:, error: errors["other"]
+        rows: other_rows, checked_at:, error: errors["other"],
+        policy_dispositions:
       )
     }
   end
@@ -365,6 +395,8 @@ module PrCiReadiness
                                               Repeat for multiple maintainer-requested runs.
                                               With no usable required checks, requested runs replace
                                               the full advisory-list fallback gate.
+          --trusted-repo-root DIR             Load ci_readiness policy from the live base SHA's
+                                              .agents/agent-workflow.yml Git blob in this repository.
           --json                              Print JSON (default).
           --text                              Print a human-readable verdict instead of JSON.
           --self-check                        Run parser checks plus a read-only gh smoke check.
@@ -419,7 +451,12 @@ module PrCiReadiness
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      result = assess(repo, pr_number, requested_hosted_runs: opts[:requested_hosted_runs])
+      result = assess(
+        repo,
+        pr_number,
+        requested_hosted_runs: opts[:requested_hosted_runs],
+        trusted_repo_root: opts[:trusted_repo_root]
+      )
       result["context"] = { "host" => host }
       print_result(result, opts[:format])
       0
@@ -447,6 +484,7 @@ module PrCiReadiness
         when "--host" then opts[:host] = take_value!(args, "--host")
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
         when "--requested-hosted-run" then opts[:requested_hosted_runs] << take_value!(args, "--requested-hosted-run")
+        when "--trusted-repo-root" then opts[:trusted_repo_root] = take_value!(args, "--trusted-repo-root")
         when "--json" then opts[:format] = "json"
         when "--text" then opts[:format] = "text"
         when "--self-check" then opts[:self_check] = true
@@ -529,15 +567,22 @@ module PrCiReadiness
 
     # Fetch the required-check list first; fall back to the full list when the
     # required form yields no current rows. required_used flips false on fallback.
-    def assess(repo, pr_number, requested_hosted_runs:)
+    def assess(repo, pr_number, requested_hosted_runs:, trusted_repo_root: nil)
       checked_at = Time.now.utc.iso8601
       target_pr =
         begin
-          fetch_target_pr_identity(repo, pr_number)
+          fetch_target_pr_identity(repo, pr_number, require_base: !trusted_repo_root.nil?)
         rescue StandardError => e
           return unavailable_target_pr_result(repo, pr_number, checked_at, e)
         end
       exact_head_sha = target_pr.fetch(:head_sha)
+      trusted_ci_policy = if trusted_repo_root
+                            PrCiReadiness.trusted_ci_policy_at(
+                              repo_root: trusted_repo_root,
+                              base_ref: target_pr.fetch(:base_ref),
+                              base_sha: target_pr.fetch(:base_sha)
+                            )
+                          end
       required_fetch = fetch_checks(repo, pr_number, required: true)
       required_raw = required_fetch.fetch(:raw)
       required_query_known = required_fetch.fetch(:known_good)
@@ -602,7 +647,7 @@ module PrCiReadiness
       inventory = exact_head_inventory(repo, target_pr)
       target_identity_error =
         begin
-          final_target_pr = fetch_target_pr_identity(repo, pr_number)
+          final_target_pr = fetch_target_pr_identity(repo, pr_number, require_base: !trusted_repo_root.nil?)
           unless same_target_pr_identity?(target_pr, final_target_pr)
             "target PR identity moved during exact-head inventory: " \
               "#{target_pr_identity_description(target_pr)} -> " \
@@ -631,7 +676,11 @@ module PrCiReadiness
         check_runs_complete: inventory.fetch(:check_runs_complete),
         statuses: inventory.fetch(:statuses),
         statuses_complete: inventory.fetch(:statuses_complete),
-        errors: inventory.fetch(:errors)
+        errors: inventory.fetch(:errors),
+        optional_approval_held_policy: trusted_ci_policy && {
+          "version" => trusted_ci_policy.fetch("version"),
+          "optional_approval_held_checks" => trusted_ci_policy.fetch("optional_approval_held_checks")
+        }
       )
       contract = PrCiReadiness.evidence_contract(
         repo:, pr_number:, head_sha: exact_head_sha, checked_at:, scopes:
@@ -645,11 +694,13 @@ module PrCiReadiness
         else
           "READY"
         end
-      contract.merge(result).merge(
+      merged = contract.merge(result).merge(
         "verdict" => overall_verdict,
         "ordinary_verdict" => ordinary_verdict,
         "scopes" => scopes
       )
+      merged["ci_policy"] = trusted_ci_policy if trusted_ci_policy
+      merged
     end
 
     def unavailable_target_pr_result(repo, pr_number, checked_at, error)
@@ -1269,7 +1320,7 @@ module PrCiReadiness
       head
     end
 
-    def fetch_target_pr_identity(repo, pr_number)
+    def fetch_target_pr_identity(repo, pr_number, require_base: false)
       data = capture_json!("gh", "api", "repos/#{repo}/pulls/#{pr_number}")
       raise Error, "target PR response was not an object" unless data.is_a?(Hash)
 
@@ -1302,14 +1353,35 @@ module PrCiReadiness
         raise Error, "target PR head repo id was not a positive integer"
       end
 
+      base = data["base"]
+      if require_base || !base.nil?
+        raise Error, "target PR base was not an object" unless base.is_a?(Hash)
+
+        base_sha = base["sha"]
+        unless base_sha.is_a?(String) && base_sha.match?(/\A[0-9a-f]{40}\z/)
+          raise Error, "target PR base SHA was not a lowercase full hexadecimal commit SHA"
+        end
+
+        base_ref = base["ref"]
+        PrCiReadiness.validate_trusted_policy_binding!(base_ref:, base_sha:)
+        base_repo = base["repo"]
+        raise Error, "target PR base repo was not an object" unless base_repo.is_a?(Hash)
+
+        base_repo_name = base_repo["full_name"].to_s
+        unless base_repo_name.casecmp?(repo)
+          raise Error, "target PR base repo did not exactly match #{repo}"
+        end
+      end
+
       {
         id:, number:, head_sha:, head_ref:, head_repo_id:,
-        head_repo_full_name: head_repo["full_name"].to_s
+        head_repo_full_name: head_repo["full_name"].to_s,
+        base_sha:, base_ref:, base_repo_full_name: base_repo_name
       }
     end
 
     def same_target_pr_identity?(left, right)
-      keys = %i[id number head_sha head_ref head_repo_id]
+      keys = %i[id number head_sha head_ref head_repo_id base_sha base_ref base_repo_full_name]
       left.values_at(*keys) == right.values_at(*keys)
     end
 
