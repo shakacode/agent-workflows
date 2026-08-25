@@ -1559,6 +1559,58 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_lane_approval_does_not_authorize_an_aggregate_only_approval_threshold
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      candidate["scopes"]["lanes"].transform_values! { { "limit_tokens" => 1_000 } }
+      run_helper(state_path, command("initialize", "budget" => candidate))
+      reserve(state_path, id: "aggregate-base", lane_id: "lane-b", tokens: 500, target_id: "base")
+      lane_approval = approval(state_path, id: "lane-approval")
+      run_helper(state_path, command("approve", "approval" => lane_approval))
+
+      blocked, stderr, status = reserve(
+        state_path,
+        id: "aggregate-only-with-lane-approval",
+        lane_id: "lane-a",
+        tokens: 300,
+        target_id: "aggregate-target",
+        overrides: { "approval_id" => "lane-approval" }
+      )
+
+      assert status.success?, stderr
+      assert_equal "approval-required", blocked.fetch("status")
+      assert_equal "projected-approval-threshold", blocked.fetch("reason")
+      decision = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.last
+      assert_equal ["aggregate"], decision.fetch("blocking_scope_ids")
+    end
+  end
+
+  def test_lane_approval_does_not_authorize_combined_lane_and_aggregate_approval_thresholds
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      candidate["scopes"]["lanes"]["lane-b"]["limit_tokens"] = 1_000
+      run_helper(state_path, command("initialize", "budget" => candidate))
+      reserve(state_path, id: "combined-base", lane_id: "lane-b", tokens: 400, target_id: "base")
+      lane_approval = approval(state_path, id: "lane-approval")
+      run_helper(state_path, command("approve", "approval" => lane_approval))
+
+      blocked, stderr, status = reserve(
+        state_path,
+        id: "combined-with-lane-approval",
+        lane_id: "lane-a",
+        tokens: 480,
+        target_id: "combined-target",
+        overrides: { "approval_id" => "lane-approval" }
+      )
+
+      assert status.success?, stderr
+      assert_equal "approval-required", blocked.fetch("status")
+      assert_equal "projected-approval-threshold", blocked.fetch("reason")
+      decision = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.last
+      assert_equal %w[aggregate lane-a], decision.fetch("blocking_scope_ids").sort
+    end
+  end
+
   def test_aggregate_attestation_resolves_aggregate_only_and_combined_approval_stops
     Dir.mktmpdir("batch-token-budget-aggregate-approval") do |directory|
       aggregate_only_path = File.join(directory, "aggregate-only.json")

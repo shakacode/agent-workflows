@@ -1112,11 +1112,15 @@ module BatchTokenBudget
     blocking_scope_ids.include?("aggregate") || blocking_scope_ids.include?(reservation.fetch("scope_id"))
   end
 
-  def approval_covers_decision?(approval, decision)
+  def approval_covers_scope_ids?(approval, scope_ids)
     return false unless approval
     return true if approval["scope_id"] == "aggregate"
 
-    decision.fetch("blocking_scope_ids").all? { |scope_id| scope_id == approval["scope_id"] }
+    scope_ids.all? { |scope_id| scope_id == approval["scope_id"] }
+  end
+
+  def approval_covers_decision?(approval, decision)
+    approval_covers_scope_ids?(approval, decision.fetch("blocking_scope_ids"))
   end
 
   def decision_headroom_improved?(state, decision)
@@ -1435,6 +1439,10 @@ module BatchTokenBudget
     selected_threshold_state = threshold_state(scope_record, reservation.fetch("tokens"), thresholds)
     aggregate_threshold_state = threshold_state(aggregate_record, reservation.fetch("tokens"), thresholds)
     state_name = strongest_threshold(selected_threshold_state, aggregate_threshold_state)
+    approval_scope_ids = [
+      (reservation.fetch("scope_id") if selected_threshold_state == "approval"),
+      ("aggregate" if aggregate_threshold_state == "approval")
+    ].compact
     delegation_approval_required = reservation["admission_kind"] == "cross-task-delegation" &&
                                    reservation["tokens"] >= original_state.dig(
                                      "budget", "delegation", "approval_threshold_tokens"
@@ -1464,7 +1472,8 @@ module BatchTokenBudget
         [reservation.fetch("scope_id")]
       )
     end
-    if state_name == "approval" && !valid_approval
+    if state_name == "approval" &&
+       !(valid_approval && approval_covers_scope_ids?(approval, approval_scope_ids))
       return persist_admission_decision(
         original_state,
         reservation,
@@ -1472,10 +1481,7 @@ module BatchTokenBudget
         "approval-required",
         "projected-approval-threshold",
         %w[read-only-discovery checkpoint approve],
-        [
-          (reservation.fetch("scope_id") if selected_threshold_state == "approval"),
-          ("aggregate" if aggregate_threshold_state == "approval")
-        ].compact
+        approval_scope_ids
       )
     end
 
