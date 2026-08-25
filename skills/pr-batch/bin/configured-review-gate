@@ -361,7 +361,8 @@ module ConfiguredReviewGate
         end
 
         unsettled = ConfiguredReviewGate.evaluate(
-          policy: @policy, policy_source: @policy_source, snapshot:, settled: false, now:
+          policy: @policy, policy_source: @policy_source, snapshot:, settled: false, now:,
+          trusted_live: true
         )
         blocker_codes = unsettled.fetch("blockers").map { |item| item["code"] }
         return unsettled if terminal_without_wait?(blocker_codes)
@@ -371,7 +372,8 @@ module ConfiguredReviewGate
           quiet_seconds = @policy == "n/a" ? 0 : @policy.dig("artifact_settlement", "quiet_period_seconds")
           if now - baseline_at >= quiet_seconds
             return ConfiguredReviewGate.evaluate(
-              policy: @policy, policy_source: @policy_source, snapshot:, settled: true, now:
+              policy: @policy, policy_source: @policy_source, snapshot:, settled: true, now:,
+              trusted_live: true
             )
           end
         else
@@ -456,19 +458,19 @@ module ConfiguredReviewGate
     end
   end
 
-  def evaluate(policy:, policy_source:, snapshot:, settled:, now: Time.now.utc)
+  # Only live collector call paths opt into trusted_live. Snapshot provenance is
+  # evidence to cross-check, never authority by itself.
+  def evaluate(policy:, policy_source:, snapshot:, settled:, now: Time.now.utc, trusted_live: false)
     validate_snapshot!(snapshot)
     policy_digest = "sha256:#{Digest::SHA256.hexdigest(policy_source)}"
-    evidence_digest = evidence_digest(snapshot)
     snapshot_digest = semantic_snapshot_digest(snapshot)
 
     if policy == "n/a"
       receipt = build_receipt(
         snapshot:,
         policy: { "not_applicable" => true, "digest" => policy_digest },
-        evidence_digest:,
         snapshot_digest:,
-        mutation_eligible: snapshot["provenance"] == "gh-api",
+        mutation_eligible: trusted_live == true && snapshot["provenance"] == "gh-api",
         now:
       )
       return {
@@ -535,9 +537,8 @@ module ConfiguredReviewGate
         "fallback" => policy.fetch("fallback"),
         "override" => override
       },
-      evidence_digest:,
       snapshot_digest:,
-      mutation_eligible: snapshot["provenance"] == "gh-api",
+      mutation_eligible: trusted_live == true && snapshot["provenance"] == "gh-api",
       quiet_period_seconds: policy.dig("artifact_settlement", "quiet_period_seconds"),
       now:
     )
@@ -551,10 +552,10 @@ module ConfiguredReviewGate
   end
 
   def build_receipt(
-    snapshot:, policy:, evidence_digest:, snapshot_digest:, mutation_eligible:, now:,
+    snapshot:, policy:, snapshot_digest:, mutation_eligible:, now:,
     quiet_period_seconds: 0
   )
-    {
+    receipt = {
       "contract" => RECEIPT_CONTRACT,
       "version" => VERSION,
       "verdict" => "READY",
@@ -568,20 +569,21 @@ module ConfiguredReviewGate
         "settled" => true
       },
       "evidence" => snapshot,
-      "evidence_digest" => evidence_digest,
       "mutation_eligible" => mutation_eligible
     }
+    receipt["evidence_digest"] = receipt_evidence_digest(receipt)
+    receipt
   end
 
-  def replay(receipt:, policy:, policy_source:, snapshot:, now: Time.now.utc)
+  def replay(receipt:, policy:, policy_source:, snapshot:, now: Time.now.utc, trusted_live: false)
     validate_snapshot!(snapshot)
-    receipt_error = receipt_validation_error(receipt, policy_source, now)
+    receipt_error = receipt_validation_error(receipt, policy, policy_source, now, trusted_live:)
     return replay_blocked("UNKNOWN", receipt_error) if receipt_error
     unless receipt.fetch("bindings") == snapshot.fetch("bindings")
       return replay_blocked("NOT_READY", "configured-review-receipt-binding-mismatch")
     end
 
-    current = evaluate(policy:, policy_source:, snapshot:, settled: true, now:)
+    current = evaluate(policy:, policy_source:, snapshot:, settled: true, now:, trusted_live:)
     return current unless current["verdict"] == "READY"
     unless receipt.dig("artifact_settlement", "snapshot_digest") == semantic_snapshot_digest(snapshot)
       return replay_blocked("NOT_READY", "configured-review-receipt-artifact-snapshot-moved")
@@ -601,16 +603,29 @@ module ConfiguredReviewGate
     }
   end
 
-  def receipt_validation_error(receipt, policy_source, now)
-    return "configured-review-receipt-malformed" unless receipt.is_a?(Hash) &&
-                                                        receipt["contract"] == RECEIPT_CONTRACT &&
-                                                        receipt["version"] == VERSION &&
-                                                        receipt["verdict"] == "READY" &&
-                                                        receipt["evidence"].is_a?(Hash)
-    return "configured-review-receipt-evidence-digest-mismatch" unless
-      receipt["evidence_digest"] == evidence_digest(receipt["evidence"])
+  def receipt_validation_error(receipt, policy, policy_source, now, trusted_live:)
+    envelope_error = receipt_envelope_validation_error(receipt, trusted_live:)
+    return envelope_error if envelope_error
+
+    settlement = receipt.fetch("artifact_settlement")
     return "configured-review-receipt-policy-mismatch" unless
       receipt.dig("policy", "digest") == "sha256:#{Digest::SHA256.hexdigest(policy_source)}"
+    policy_not_applicable = policy == "n/a"
+    return "configured-review-receipt-policy-mismatch" unless
+      receipt.dig("policy", "not_applicable") == policy_not_applicable
+    unless policy_not_applicable
+      return "configured-review-receipt-policy-mismatch" unless policy.is_a?(Hash)
+      return "configured-review-receipt-policy-mismatch" unless
+        receipt.dig("policy", "reviewers") == policy["reviewers"] &&
+        receipt.dig("policy", "fallback") == policy["fallback"]
+    end
+    expected_quiet_period = if policy_not_applicable
+                              0
+                            else
+                              policy.dig("artifact_settlement", "quiet_period_seconds")
+                            end
+    return "configured-review-receipt-projection-mismatch" unless
+      settlement["quiet_period_seconds"] == expected_quiet_period
 
     issued_at = Time.iso8601(receipt["issued_at"].to_s)
     age = now - issued_at
@@ -618,7 +633,35 @@ module ConfiguredReviewGate
     return "configured-review-receipt-future-dated" if age < -MAX_FUTURE_SKEW_SECONDS
 
     nil
-  rescue ArgumentError
+  rescue ArgumentError, KeyError, TypeError
+    "configured-review-receipt-malformed"
+  end
+
+  def receipt_envelope_validation_error(receipt, trusted_live:)
+    return "configured-review-receipt-malformed" unless receipt.is_a?(Hash) &&
+                                                        receipt["contract"] == RECEIPT_CONTRACT &&
+                                                        receipt["version"] == VERSION &&
+                                                        receipt["verdict"] == "READY" &&
+                                                        receipt["evidence"].is_a?(Hash) &&
+                                                        receipt["policy"].is_a?(Hash) &&
+                                                        receipt["artifact_settlement"].is_a?(Hash)
+    evidence = receipt.fetch("evidence")
+    settlement = receipt.fetch("artifact_settlement")
+    validate_snapshot!(evidence)
+    return "configured-review-receipt-projection-mismatch" unless
+      receipt["bindings"] == evidence["bindings"]
+    return "configured-review-receipt-evidence-digest-mismatch" unless
+      receipt["evidence_digest"] == receipt_evidence_digest(receipt)
+    return "configured-review-receipt-projection-mismatch" unless
+      settlement["snapshot_digest"] == semantic_snapshot_digest(evidence) &&
+      settlement["collected_at"] == evidence["collected_at"] &&
+      settlement["settled"] == true
+    expected_mutation_eligibility = trusted_live == true && evidence["provenance"] == "gh-api"
+    return "configured-review-receipt-non-live" unless
+      receipt["mutation_eligible"] == expected_mutation_eligibility
+
+    nil
+  rescue ArgumentError, KeyError, TypeError
     "configured-review-receipt-malformed"
   end
 
@@ -636,9 +679,38 @@ module ConfiguredReviewGate
     "sha256:#{Digest::SHA256.hexdigest(canonical_json(snapshot))}"
   end
 
+  def receipt_evidence_digest(receipt)
+    evidence_digest(
+      "evidence" => receipt["evidence"],
+      "issued_at" => receipt["issued_at"],
+      "mutation_eligible" => receipt["mutation_eligible"]
+    )
+  end
+
   def semantic_snapshot_digest(snapshot)
     semantic = snapshot.reject { |key, _value| key == "collected_at" }
     "sha256:#{Digest::SHA256.hexdigest(canonical_json(semantic))}"
+  end
+
+  def validated_receipt_base_sha!(receipt)
+    evidence_bindings = receipt.dig("evidence", "bindings") if receipt.is_a?(Hash)
+    unless evidence_bindings.is_a?(Hash) && receipt["bindings"] == evidence_bindings
+      raise ArgumentError, "configured review receipt bindings do not match embedded evidence"
+    end
+    envelope_error = receipt_envelope_validation_error(receipt, trusted_live: true)
+    if envelope_error
+      raise ArgumentError, "configured review receipt preflight failed: #{envelope_error}"
+    end
+    unless receipt["mutation_eligible"] == true && receipt.dig("evidence", "provenance") == "gh-api"
+      raise ArgumentError, "configured review receipt is not live"
+    end
+
+    base_sha = evidence_bindings["base_sha"]
+    unless base_sha.to_s.match?(/\A[0-9a-f]{40}\z/i)
+      raise ArgumentError, "configured review receipt embedded base SHA is invalid"
+    end
+
+    base_sha.downcase
   end
 
   def validate_snapshot!(snapshot)
@@ -880,6 +952,9 @@ module ConfiguredReviewGate
       raise ArgumentError, "policy document must be a mapping" unless policy_document.is_a?(Hash)
 
       snapshot = JSON.parse(File.read(options.fetch(:snapshot), encoding: "UTF-8"))
+      raise ArgumentError, "snapshot document must be a mapping" unless snapshot.is_a?(Hash)
+
+      snapshot = snapshot.merge("provenance" => "fixture")
       result = ConfiguredReviewGate.evaluate(
         policy: policy_document["review_gate"],
         policy_source:,
@@ -913,13 +988,15 @@ module ConfiguredReviewGate
     def run_live_replay(argv)
       options = parse_live_options(argv, evaluate: false)
       receipt = JSON.parse(File.read(options.fetch(:receipt), encoding: "UTF-8"))
-      base_sha = receipt.dig("bindings", "base_sha")
+      base_sha = ConfiguredReviewGate.validated_receipt_base_sha!(receipt)
       policy, policy_source = TrustedPolicy.load(repo_root: options.fetch(:repo_root), base_sha:)
       client = GitHubClient.new(
         host: options.fetch(:host), repo: options.fetch(:repo), pr: options.fetch(:pr), policy:
       )
       snapshot = client.collect
-      result = ConfiguredReviewGate.replay(receipt:, policy:, policy_source:, snapshot:)
+      result = ConfiguredReviewGate.replay(
+        receipt:, policy:, policy_source:, snapshot:, trusted_live: true
+      )
       emit_result(result)
     end
 

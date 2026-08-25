@@ -340,14 +340,16 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy_source: JSON.generate(policy),
       snapshot: initial,
       settled: true,
-      now: NOW
+      now: NOW,
+      trusted_live: true
     ).fetch("receipt")
     replay = ConfiguredReviewGate.replay(
       receipt: receipt,
       policy: policy,
       policy_source: JSON.generate(policy),
       snapshot: current.merge("collected_at" => (NOW + 20).iso8601),
-      now: NOW + 20
+      now: NOW + 20,
+      trusted_live: true
     )
 
     assert_equal "NOT_READY", replay.fetch("verdict")
@@ -746,7 +748,8 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy_source: JSON.generate(policy),
       snapshot: initial,
       settled: true,
-      now: NOW
+      now: NOW,
+      trusted_live: true
     ).fetch("receipt")
     replay_snapshot = Marshal.load(Marshal.dump(initial))
     replay_snapshot["collected_at"] = (NOW + 20).iso8601
@@ -756,7 +759,8 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy: policy,
       policy_source: JSON.generate(policy),
       snapshot: replay_snapshot,
-      now: NOW + 20
+      now: NOW + 20,
+      trusted_live: true
     )
 
     assert_equal "READY", result.fetch("verdict")
@@ -769,10 +773,134 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy: policy,
       policy_source: JSON.generate(policy),
       snapshot: moved,
-      now: NOW + 20
+      now: NOW + 20,
+      trusted_live: true
     )
     assert_equal "NOT_READY", moved_result.fetch("verdict")
     assert_equal "configured-review-receipt-binding-mismatch", moved_result.dig("blockers", 0, "code")
+  end
+
+  def test_replay_rejects_inconsistent_receipt_security_projections_before_live_evaluation
+    initial = live_snapshot("checks" => [check], "artifacts" => [artifact])
+    receipt = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: initial,
+      settled: true,
+      now: NOW,
+      trusted_live: true
+    ).fetch("receipt")
+    pending_snapshot = Marshal.load(Marshal.dump(initial))
+    pending_snapshot["checks"] << check(status: "queued", conclusion: nil)
+    pending_snapshot["collected_at"] = (NOW + 20).iso8601
+    cases = {
+      "bindings" => lambda do |candidate|
+        candidate["bindings"] = candidate.fetch("bindings").merge("head_sha" => "c" * 40)
+      end,
+      "snapshot digest" => lambda do |candidate|
+        candidate["artifact_settlement"]["snapshot_digest"] = "sha256:#{'0' * 64}"
+      end,
+      "settlement collected_at" => lambda do |candidate|
+        candidate["artifact_settlement"]["collected_at"] = (NOW - 60).iso8601
+      end,
+      "settled flag" => lambda do |candidate|
+        candidate["artifact_settlement"]["settled"] = false
+      end,
+      "quiet period" => lambda do |candidate|
+        candidate["artifact_settlement"]["quiet_period_seconds"] = 29
+      end
+    }
+
+    cases.each do |label, tamper|
+      candidate = Marshal.load(Marshal.dump(receipt))
+      tamper.call(candidate)
+      result = ConfiguredReviewGate.replay(
+        receipt: candidate,
+        policy: policy,
+        policy_source: JSON.generate(policy),
+        snapshot: pending_snapshot,
+        now: NOW + 20,
+        trusted_live: true
+      )
+
+      assert_equal "UNKNOWN", result.fetch("verdict"), label
+      assert_equal "configured-review-receipt-projection-mismatch",
+                   result.dig("blockers", 0, "code"), label
+    end
+  end
+
+  def test_replay_rejects_receipt_provenance_or_mutation_authority_tampering
+    initial = live_snapshot("checks" => [check], "artifacts" => [artifact])
+    receipt = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: initial,
+      settled: true,
+      now: NOW,
+      trusted_live: true
+    ).fetch("receipt")
+    cases = {
+      "mutation eligibility" => [
+        lambda { |candidate| candidate["mutation_eligible"] = false },
+        "configured-review-receipt-evidence-digest-mismatch"
+      ],
+      "evidence provenance" => [
+        lambda do |candidate|
+          candidate["evidence"]["provenance"] = "fixture"
+          candidate["evidence_digest"] = ConfiguredReviewGate.receipt_evidence_digest(candidate)
+          candidate["artifact_settlement"]["snapshot_digest"] =
+            ConfiguredReviewGate.semantic_snapshot_digest(candidate["evidence"])
+        end,
+        "configured-review-receipt-non-live"
+      ]
+    }
+
+    cases.each do |label, (tamper, blocker_code)|
+      candidate = Marshal.load(Marshal.dump(receipt))
+      tamper.call(candidate)
+      result = ConfiguredReviewGate.replay(
+        receipt: candidate,
+        policy: policy,
+        policy_source: JSON.generate(policy),
+        snapshot: initial.merge("collected_at" => (NOW + 20).iso8601),
+        now: NOW + 20,
+        trusted_live: true
+      )
+
+      assert_equal "UNKNOWN", result.fetch("verdict"), label
+      assert_equal blocker_code, result.dig("blockers", 0, "code"), label
+    end
+  end
+
+  def test_replay_rejects_a_refreshed_top_level_issued_at
+    initial = live_snapshot("checks" => [check], "artifacts" => [artifact])
+    receipt = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: initial,
+      settled: true,
+      now: NOW,
+      trusted_live: true
+    ).fetch("receipt")
+    replay_now = NOW + 301
+    receipt["issued_at"] = replay_now.iso8601
+
+    result = ConfiguredReviewGate.replay(
+      receipt: receipt,
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: live_snapshot(
+        "collected_at" => replay_now.iso8601,
+        "checks" => [check],
+        "artifacts" => [artifact]
+      ),
+      now: replay_now,
+      trusted_live: true
+    )
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_equal "configured-review-receipt-evidence-digest-mismatch",
+                 result.dig("blockers", 0, "code")
   end
 
   def test_replay_rejects_new_pending_or_untriaged_current_head_evidence
@@ -782,7 +910,8 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy_source: JSON.generate(policy),
       snapshot: initial,
       settled: true,
-      now: NOW
+      now: NOW,
+      trusted_live: true
     ).fetch("receipt")
     pending = Marshal.load(Marshal.dump(initial))
     pending["checks"] << check(status: "in_progress", conclusion: nil).merge(
@@ -794,7 +923,8 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy: policy,
       policy_source: JSON.generate(policy),
       snapshot: pending,
-      now: NOW + 20
+      now: NOW + 20,
+      trusted_live: true
     )
     assert_equal "configured-review-pending", pending_result.dig("blockers", 0, "code")
 
@@ -806,7 +936,8 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy: policy,
       policy_source: JSON.generate(policy),
       snapshot: untriaged,
-      now: NOW + 20
+      now: NOW + 20,
+      trusted_live: true
     )
     assert_equal "configured-review-thread-untriaged", thread_result.dig("blockers", 0, "code")
   end
@@ -829,6 +960,99 @@ class ConfiguredReviewGateTest < Minitest::Test
       assert_equal "NOT_READY", result.fetch("verdict")
       assert_equal 5, result.fetch("blockers").count
       refute File.exist?(receipt_path)
+    end
+  end
+
+  def test_fixture_cli_cannot_forge_live_mutation_authority
+    Dir.mktmpdir("configured-review-gate-test") do |directory|
+      policy_path = File.join(directory, "policy.yml")
+      snapshot_path = File.join(directory, "snapshot.json")
+      receipt_path = File.join(directory, "receipt.json")
+      File.write(policy_path, { "review_gate" => policy }.to_yaml)
+      File.write(
+        snapshot_path,
+        JSON.pretty_generate(live_snapshot("checks" => [check], "artifacts" => [artifact]))
+      )
+
+      stdout, stderr, status = Open3.capture3(
+        SCRIPT, "fixture",
+        "--policy", policy_path,
+        "--snapshot", snapshot_path,
+        "--receipt", receipt_path
+      )
+
+      assert_equal 0, status.exitstatus, stderr
+      result = JSON.parse(stdout)
+      receipt = result.fetch("receipt")
+      assert_equal "READY", result.fetch("verdict")
+      assert_equal false, receipt.fetch("mutation_eligible")
+      assert_equal "fixture", receipt.dig("evidence", "provenance")
+      assert_equal receipt, JSON.parse(File.read(receipt_path))
+
+      promoted = Marshal.load(Marshal.dump(receipt))
+      promoted["mutation_eligible"] = true
+      promoted["artifact_settlement"]["snapshot_digest"] =
+        ConfiguredReviewGate.semantic_snapshot_digest(
+          live_snapshot("checks" => [check], "artifacts" => [artifact])
+        )
+      replay = ConfiguredReviewGate.replay(
+        receipt: promoted,
+        policy: policy,
+        policy_source: File.read(policy_path),
+        snapshot: live_snapshot("checks" => [check], "artifacts" => [artifact]),
+        now: Time.iso8601(receipt.fetch("issued_at")),
+        trusted_live: true
+      )
+      assert_equal "UNKNOWN", replay.fetch("verdict")
+      assert_equal "configured-review-receipt-evidence-digest-mismatch",
+                   replay.dig("blockers", 0, "code")
+    end
+  end
+
+  def test_replay_cli_rejects_cross_bound_base_before_trusted_policy_selection
+    Dir.mktmpdir("configured-review-gate-test") do |directory|
+      receipt_path = File.join(directory, "receipt.json")
+      initial = live_snapshot("checks" => [check], "artifacts" => [artifact])
+      receipt = ConfiguredReviewGate.evaluate(
+        policy: policy,
+        policy_source: JSON.generate(policy),
+        snapshot: initial,
+        settled: true,
+        now: NOW,
+        trusted_live: true
+      ).fetch("receipt")
+      receipt = JSON.parse(JSON.generate(receipt))
+      cases = {
+        "cross-bound top-level base" => [
+          lambda do |candidate|
+            candidate["bindings"] = candidate.fetch("bindings").merge("base_sha" => "c" * 40)
+          end,
+          "receipt bindings do not match embedded evidence"
+        ],
+        "unverified embedded base" => [
+          lambda do |candidate|
+            candidate["bindings"] = candidate.fetch("bindings").merge("base_sha" => "c" * 40)
+            candidate["evidence"]["bindings"]["base_sha"] = "c" * 40
+          end,
+          "configured-review-receipt-evidence-digest-mismatch"
+        ]
+      }
+
+      cases.each do |label, (tamper, diagnostic)|
+        candidate = Marshal.load(Marshal.dump(receipt))
+        tamper.call(candidate)
+        File.write(receipt_path, JSON.pretty_generate(candidate))
+        status = nil
+        _stdout, stderr = capture_io do
+          status = ConfiguredReviewGate::CLI.new.run([
+            "replay", "--repo", REPO, "--pr", PR.to_s, "--host", HOST,
+            "--repo-root", directory, "--receipt", receipt_path
+          ])
+        end
+
+        assert_equal 2, status, label
+        assert_includes stderr, diagnostic, label
+      end
     end
   end
 

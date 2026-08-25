@@ -1500,7 +1500,9 @@ module PrMergeSubmit
       client = ConfiguredReviewGate::GitHubClient.new(
         host: options.fetch(:host), repo: options.fetch(:repo), pr: options.fetch(:pr).to_i, policy:
       )
-      ConfiguredReviewGate.replay(receipt:, policy:, policy_source:, snapshot: client.collect)
+      ConfiguredReviewGate.replay(
+        receipt:, policy:, policy_source:, snapshot: client.collect, trusted_live: true
+      )
     end
 
     def valid_merge_commit_oid?(oid)
