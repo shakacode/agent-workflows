@@ -254,6 +254,37 @@ class CloseLaneOnSessionEndTest < Minitest::Test
     end
   end
 
+  def test_emitter_stdin_is_dev_null_instead_of_the_hook_input
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      File.write(emitter, <<~RUBY)
+        #!/usr/bin/env ruby
+        File.binwrite(#{calls.inspect}, STDIN.read)
+      RUBY
+      harness = File.join(repo, "run-bounded-harness")
+      support = File.expand_path("lib/hook_support", __dir__)
+      File.write(harness, <<~RUBY)
+        #!/usr/bin/env ruby
+        require #{support.inspect}
+        result = HookSupport.run_bounded([#{emitter.inspect}], timeout_seconds: 1, chdir: #{repo.inspect})
+        exit(result[:ok] ? 0 : 1)
+      RUBY
+      FileUtils.chmod(0o755, harness)
+
+      input_reader, input_writer = IO.pipe
+      pid = Process.spawn(harness, in: input_reader, out: File::NULL, err: File::NULL)
+      input_reader.close
+      input_writer.write("hook payload bytes must not reach the emitter")
+      input_writer.close
+      _waited_pid, status = Process.wait2(pid)
+
+      assert status.success?
+      assert_equal "", File.binread(calls), "the emitter must observe immediate EOF from File::NULL"
+    ensure
+      input_reader&.close unless input_reader&.closed?
+      input_writer&.close unless input_writer&.closed?
+    end
+  end
+
   def test_records_unknown_when_the_emitter_exceeds_its_deadline
     with_repo(backend: "private-http", emitter_sleep: 10) do |repo, emitter, _calls|
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -430,6 +461,70 @@ class CloseLaneOnSessionEndTest < Minitest::Test
       assert_includes stderr, "UNKNOWN: drain event write timed out"
       assert_operator elapsed, :<, 5,
                       "took #{elapsed.round(1)}s; must finish inside the registered 5s SessionEnd timeout"
+    end
+  end
+
+  def test_term_resistant_emitter_is_killed_with_host_timeout_margin_remaining
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      File.write(emitter, <<~RUBY)
+        #!/usr/bin/env ruby
+        trap("TERM") { nil }
+        File.write(#{calls.inspect}, Process.pid)
+        sleep 30
+      RUBY
+      hook_env = {
+        "AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV" => [emitter].to_json,
+        "AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS" => "30"
+      }
+      input_reader, input_writer = IO.pipe
+      err_reader, err_writer = IO.pipe
+      hook_pid = nil
+      emitter_pid = nil
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      hook_pid = Process.spawn(
+        hook_env,
+        SESSION_END_HOOK,
+        "--project-dir",
+        repo,
+        in: input_reader,
+        out: File::NULL,
+        err: err_writer
+      )
+      input_reader.close
+      err_writer.close
+      input_writer.write({ "hook_event_name" => "SessionEnd", "reason" => "clear", "cwd" => repo }.to_json)
+      sleep 0.4
+      input_writer.close
+
+      Timeout.timeout(2) do
+        sleep 0.01 until File.file?(calls)
+      end
+      emitter_pid = Integer(File.read(calls))
+      _waited_pid, status = Timeout.timeout(4.5) { Process.wait2(hook_pid) }
+      hook_pid = nil
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+      stderr = err_reader.read
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "UNKNOWN: drain event write timed out"
+      assert_operator elapsed, :<, 3.5,
+                      "took #{elapsed.round(2)}s; cleanup must leave 1.5s of the host's 5s budget"
+      assert_raises(Errno::ESRCH) { Process.kill(0, emitter_pid) }
+    ensure
+      input_writer&.close unless input_writer&.closed?
+      input_reader&.close unless input_reader&.closed?
+      err_writer&.close unless err_writer&.closed?
+      err_reader&.close unless err_reader&.closed?
+      if hook_pid
+        Process.kill("KILL", hook_pid)
+        Process.wait(hook_pid)
+      end
+      begin
+        Process.kill("KILL", emitter_pid) if emitter_pid
+      rescue Errno::ESRCH
+        nil
+      end
     end
   end
 

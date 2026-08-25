@@ -124,10 +124,10 @@ module CloseLaneOnSessionEnd
 
   # Clamped because hooks.json registers a 5s SessionEnd timeout, and an
   # operator-set value above that would let the host kill this hook mid-write
-  # instead of letting it finish and record its own outcome. The cap leaves room
-  # for the termination grace period too.
+  # instead of letting it finish and record its own outcome.
   # `hooks-install-contract-test.rb` asserts the margin against hooks.json.
-  MAX_TIMEOUT_SECONDS = 3.0
+  MAX_TIMEOUT_SECONDS = 2.0
+  HOST_STARTUP_DISPATCH_MARGIN_SECONDS = 1.5
 
   def timeout_seconds(env)
     [positive_float(env, TIMEOUT_ENV, DEFAULT_TIMEOUT_SECONDS), MAX_TIMEOUT_SECONDS].min

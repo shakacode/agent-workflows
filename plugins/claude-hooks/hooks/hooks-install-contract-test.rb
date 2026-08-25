@@ -55,10 +55,14 @@ class HooksInstallContractTest < Minitest::Test
     load File.expand_path("close-lane-on-session-end", __dir__)
     registered = @hooks.fetch("SessionEnd").fetch(0).fetch("hooks").fetch(0).fetch("timeout")
     cap = CloseLaneOnSessionEnd::MAX_TIMEOUT_SECONDS
+    grace = HookSupport::PROCESS_GROUP_TERMINATION_GRACE_SECONDS
+    fixed_budget = HookSupport::PAYLOAD_READ_TIMEOUT_SECONDS + cap + (2 * grace)
+    startup_dispatch_margin = CloseLaneOnSessionEnd::HOST_STARTUP_DISPATCH_MARGIN_SECONDS
 
     assert_operator cap, :<, registered,
                     "emission cap #{cap}s must be below the registered #{registered}s timeout"
-    assert_operator registered - cap, :>=, 1.5, "leave room for termination grace and hook startup"
+    assert_operator fixed_budget + startup_dispatch_margin, :<=, registered,
+                    "payload read, emission, double process-group grace, and startup/dispatch margin must fit"
   end
 
   def test_every_adapter_has_a_finite_timeout
@@ -94,6 +98,11 @@ class HooksInstallContractTest < Minitest::Test
     assert_includes documentation, "Exit 3 means no current live claim"
     assert_includes documentation, "append-only `agent-coord record-event` is unsupported"
     assert_includes documentation, "The hook payload's `cwd` is not trusted"
+    assert_includes documentation, "clamped to 2"
+    assert_includes documentation, "Emitter stdin is bound"
+    assert_includes documentation, "null device and stdout is discarded"
+    assert_includes documentation, "structurally accounts for the payload read"
+    assert_includes documentation, "both process-group termination grace periods"
     refute_includes documentation, "AGENT_WORKFLOWS_DRAIN_EVENT_ARGV"
     refute_includes documentation, "AGENT_WORKFLOWS_DRAIN_EVENT_CLAIM_MARKER"
     assert_includes documentation, "Codex"

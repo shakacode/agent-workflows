@@ -81,7 +81,7 @@ substitutes its stable session-start project root for `${CLAUDE_PROJECT_DIR}`.
 | --- | --- |
 | `AGENT_WORKFLOWS_HOOKS` | Set to `off` to disable the adapter |
 | `AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV` | The backend-advertised conditional drain executable and opaque argv, as a JSON array of strings |
-| `AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS` | Emission deadline; defaults to 1 and is clamped to 3, below the registered 5s timeout |
+| `AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS` | Emission deadline; defaults to 1 and is clamped to 2, below the registered 5s timeout |
 
 `AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV` is a capability advertisement, not a
 plain event command. The launcher bakes the expected batch, lane, holder,
@@ -110,9 +110,15 @@ uses it for both seam lookup and the conditional operation's working directory.
 Only an operator can reach the capability variable. The adapter reads a bounded
 JSON payload under a short finite read deadline, rejects NUL-containing
 executable arguments, invokes no shell, and terminates the entire advertised
-process group when the finite deadline expires. Emitter stdout is discarded;
-stderr is drained continuously while only its first 4 KiB is retained for a
-useful failure detail.
+process group when the finite deadline expires. Emitter stdin is bound to the
+null device and stdout is discarded; stderr is drained continuously while only
+its first 4 KiB is retained for a useful failure detail.
+
+The 5-second host budget structurally accounts for the payload read, emission
+deadline, and both process-group termination grace periods: 0.5 seconds for the
+read, 2 seconds for emission, and 0.5 seconds for each grace. This leaves 1.5
+seconds for Ruby startup and host dispatch before the host could interrupt
+cleanup.
 
 ## Codex parity
 

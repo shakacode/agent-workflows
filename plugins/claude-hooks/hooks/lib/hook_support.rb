@@ -18,6 +18,10 @@ module HookSupport
   # keeping hook memory fixed even when an emitter is noisy or continuous.
   MAX_CAPTURED_STDERR_BYTES = 4096
 
+  # Process-group cleanup can spend this grace once after TERM and once after
+  # KILL. Keep it explicit so the outer hook budget accounts for both waits.
+  PROCESS_GROUP_TERMINATION_GRACE_SECONDS = 0.5
+
   SEAM_RELATIVE_PATH = ".agents/agent-workflow.yml"
 
   # Values that mean "this repository has no coordination backend".
@@ -116,14 +120,14 @@ module HookSupport
     value.is_a?(String) && !value.include?(NUL)
   end
 
-  # Run `argv` with a finite deadline in its own process group, with no shell
-  # evaluation of any argument. On expiry the whole group gets TERM, then KILL
-  # after a finite grace period.
+  # Run `argv` with a finite deadline in its own process group, with stdin bound
+  # to the null device and no shell evaluation of any argument. On expiry the
+  # whole group gets TERM, then KILL after a finite grace period.
   #
   # Returns a hash with :ok (the command exited 0 within the deadline), :status,
   # :stdout, :stderr, and :failure -- nil, "spawn_error", "unsafe_argument", or
   # "timeout".
-  def run_bounded(argv, timeout_seconds:, grace_seconds: 0.5, chdir: nil)
+  def run_bounded(argv, timeout_seconds:, grace_seconds: PROCESS_GROUP_TERMINATION_GRACE_SECONDS, chdir: nil)
     return { ok: false, status: nil, stdout: "", stderr: "", failure: "spawn_error" } if argv.nil? || argv.empty?
 
     # Reject unspawnable values before Process.spawn can raise on them.
@@ -145,7 +149,7 @@ module HookSupport
       nil
     end
 
-    options = { out: File::NULL, err: err_writer, pgroup: true }
+    options = { in: File::NULL, out: File::NULL, err: err_writer, pgroup: true }
     options[:chdir] = chdir if chdir
     begin
       # The [command, argv0] form guarantees exec without a shell even when the
