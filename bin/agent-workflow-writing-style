@@ -25,7 +25,7 @@ module AgentWorkflowWritingStyle
 
   def resolve(repo_root:, home: Dir.home)
     repo_path = File.join(repo_root, ".agents", "agent-workflow.yml")
-    if File.exist?(repo_path)
+    if File.exist?(repo_path) || File.symlink?(repo_path)
       config = load_mapping(repo_path, label: "repository")
       guide = extract_guide(config, label: "repository")
       if guide
@@ -34,7 +34,7 @@ module AgentWorkflowWritingStyle
     end
 
     user_path = File.join(home, ".agents", "agent-workflow.yml")
-    if File.exist?(user_path)
+    if File.exist?(user_path) || File.symlink?(user_path)
       begin
         config = load_mapping(user_path, label: "user-global")
         guide = extract_guide(config, label: "user-global")

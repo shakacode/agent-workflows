@@ -157,6 +157,29 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
     end
   end
 
+  def test_dangling_repository_symlink_blocks_instead_of_falling_back
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      repo_path = File.join(repo_root, ".agents", "agent-workflow.yml")
+      FileUtils.mkdir_p(File.dirname(repo_path))
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.symlink(File.join(directory, "missing-repository-config.yml"), repo_path)
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style:\n  guide: User fallback must not be used.\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style configuration"
+      assert_includes stderr, "expected a readable regular file"
+      refute_includes stderr, "User fallback must not be used"
+    end
+  end
+
   def test_malformed_user_global_value_warns_and_falls_back_to_default
     Dir.mktmpdir do |directory|
       repo_root = File.join(directory, "repo")
@@ -246,6 +269,26 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       user_path = File.join(home, ".agents", "agent-workflow.yml")
       Dir.mkdir(repo_root)
       FileUtils.mkdir_p(user_path)
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "portable-default", result.fetch("provenance")
+      assert_equal 1, result.fetch("warnings").length
+      assert_includes stderr, "expected a readable regular file"
+      assert_includes stderr, "using portable default"
+    end
+  end
+
+  def test_dangling_user_global_symlink_warns_and_uses_default
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      user_path = File.join(home, ".agents", "agent-workflow.yml")
+      Dir.mkdir(repo_root)
+      FileUtils.mkdir_p(File.dirname(user_path))
+      File.symlink(File.join(directory, "missing-user-config.yml"), user_path)
 
       stdout, stderr, status = run_resolver(repo_root:, home:)
 
