@@ -256,6 +256,48 @@ class BatchTokenBudgetTest < Minitest::Test
     projected
   end
 
+  def lane_component_usage_window(
+    state_path, lane_tokens:, lane_turns:, worker_tokens:, worker_turns:,
+    unattributed_tokens:, unattributed_turns:,
+    worker_self_tokens: worker_tokens, worker_self_turns: worker_turns
+  )
+    base_receipt, = real_descendants_usage_receipt(state_path)
+    receipt = usage_window(
+      base_receipt,
+      from: "2026-08-12T11:00:00Z",
+      to: "2026-08-12T12:00:00Z",
+      coordinator_tokens: 0,
+      lane_tokens: { "lane-a" => lane_tokens, "lane-b" => 0 },
+      lane_turns: { "lane-a" => lane_turns, "lane-b" => 0 }
+    )
+    lane = receipt.fetch("lanes").find { |candidate| candidate.fetch("id") == "lane-a" }
+    worker = lane.fetch("workers").first
+    set_usage_total(lane.dig("usage", "self_only"), 0)
+    set_usage_total(lane.dig("usage", "unattributed"), unattributed_tokens)
+    lane.fetch("turns").merge!("self_only" => 0, "unattributed" => unattributed_turns)
+    set_usage_total(worker.dig("usage", "self_only"), worker_self_tokens)
+    set_usage_total(worker.dig("usage", "descendant_inclusive"), worker_tokens)
+    worker.fetch("turns").merge!(
+      "self_only" => worker_self_turns,
+      "descendant_inclusive" => worker_turns
+    )
+    receipt
+  end
+
+  def reconcile_receipt(state_path, receipt, name, completed_reservation_ids: [])
+    receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, name)
+    run_helper(
+      state_path,
+      command(
+        "reconcile",
+        "usage_receipt" => receipt,
+        "usage_receipt_ref" => receipt_ref,
+        "usage_receipt_digest" => receipt_digest,
+        "completed_reservation_ids" => completed_reservation_ids
+      )
+    )
+  end
+
   def set_usage_total(usage, tokens)
     usage.merge!(
       "input_tokens" => tokens,
@@ -1371,6 +1413,92 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
       assert_equal 200, blocked.dig("totals", "aggregate", "reserved_tokens")
       assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts")
+    end
+  end
+
+  def test_positive_named_worker_self_tokens_require_positive_self_turns
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "worker-self-turn-evidence", tokens: 100)
+      receipt = lane_component_usage_window(
+        state_path,
+        lane_tokens: 500, lane_turns: 1,
+        worker_tokens: 500, worker_turns: 1,
+        worker_self_tokens: 500, worker_self_turns: 0,
+        unattributed_tokens: 0, unattributed_turns: 0
+      )
+      blocked, stderr, status = reconcile_receipt(
+        state_path,
+        receipt,
+        "worker-self-zero-turns",
+        completed_reservation_ids: ["worker-self-turn-evidence"]
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens")
+      assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts")
+    end
+  end
+
+  def test_positive_unattributed_tokens_require_positive_turns_in_a_mixed_lane
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "unattributed-turn-evidence", tokens: 100)
+      receipt = lane_component_usage_window(
+        state_path,
+        lane_tokens: 500, lane_turns: 1,
+        worker_tokens: 100, worker_turns: 1,
+        unattributed_tokens: 400, unattributed_turns: 0
+      )
+      blocked, stderr, status = reconcile_receipt(
+        state_path,
+        receipt,
+        "unattributed-zero-turns",
+        completed_reservation_ids: ["unattributed-turn-evidence"]
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal 100, blocked.dig("totals", "aggregate", "reserved_tokens")
+      assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts")
+    end
+  end
+
+  def test_lane_component_turns_require_zero_zero_compatibility_and_token_upper_bounds
+    scenarios = {
+      "zero-worker-tokens-with-a-turn" => {
+        "lane_turns" => 2, "worker_tokens" => 0, "worker_turns" => 1,
+        "unattributed_tokens" => 10, "unattributed_turns" => 1
+      },
+      "unattributed-turns-above-tokens" => {
+        "lane_turns" => 3, "worker_tokens" => 9, "worker_turns" => 1,
+        "unattributed_tokens" => 1, "unattributed_turns" => 2
+      }
+    }
+    scenarios.each do |name, scenario|
+      with_state do |state_path|
+        initialize_budget(state_path)
+        receipt = lane_component_usage_window(
+          state_path,
+          lane_tokens: 10,
+          lane_turns: scenario.fetch("lane_turns"),
+          worker_tokens: scenario.fetch("worker_tokens"),
+          worker_turns: scenario.fetch("worker_turns"),
+          worker_self_tokens: scenario.fetch("worker_tokens"),
+          worker_self_turns: scenario.fetch("worker_tokens").positive? ? scenario.fetch("worker_turns") : 0,
+          unattributed_tokens: scenario.fetch("unattributed_tokens"),
+          unattributed_turns: scenario.fetch("unattributed_turns")
+        )
+        blocked, stderr, status = reconcile_receipt(state_path, receipt, name)
+
+        assert status.success?, stderr
+        assert_equal "blocked", blocked.fetch("status"), name
+        assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason"), name
+        assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts"), name
+      end
     end
   end
 
