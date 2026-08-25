@@ -95,6 +95,7 @@ class PushDownstreamAuditWorkflowTest < Minitest::Test
     assert_includes audit.fetch("run"), 'source.fetch("sha") == ENV.fetch("GITHUB_SHA")'
     assert_includes audit.fetch("run"), 'consumer.fetch("status") == "blocked"'
     assert_includes audit.fetch("run"), 'value == "UNKNOWN"'
+    assert_includes audit.fetch("run"), 'abort "audit consumers are empty" if consumers.empty?'
     assert_includes audit.fetch("run"), 'expected_exit == Integer(ENV.fetch("AUDIT_EXIT"), 10)'
     assert_includes audit.fetch("run"), "CGI.escapeHTML(report_json)"
     assert_includes audit.fetch("run"), 'ENV.fetch("GITHUB_STEP_SUMMARY")'
@@ -104,6 +105,38 @@ class PushDownstreamAuditWorkflowTest < Minitest::Test
 
     refute_match(/DOWNSTREAM_SEAM_PUBLISH_TOKEN|--apply|--confirm-publish|--publish-report/, text)
     refute_match(/\bgh\s+pr\s+create\b|\bgit\s+push\b|contents:\s*write/, text)
+  end
+
+  def test_workflow_validator_rejects_an_empty_consumer_report
+    workflow = YAML.safe_load_file(WORKFLOW, aliases: true)
+    run = workflow.dig("jobs", "audit", "steps").find { |step| step["id"] == "audit" }.fetch("run")
+    validator = run.match(/AUDIT_EXIT="\$audit_exit" ruby <<'RUBY'\n(.*?)\nRUBY/m)&.captures&.fetch(0)
+    refute_nil validator, "expected to extract the embedded audit validator"
+
+    Dir.mktmpdir("downstream-seam-audit-validator") do |dir|
+      sha = "a" * 40
+      report = {
+        "schema" => PushDownstream::AUDIT_SCHEMA,
+        "source" => { "sha" => sha, "worktree_clean" => true },
+        "summary" => { "total" => 0, "clean" => 0, "drifted" => 0, "blocked" => 0 },
+        "consumers" => []
+      }
+      report_path = File.join(dir, "report.json")
+      File.write(report_path, JSON.generate(report))
+      environment = {
+        "AUDIT_REPORT" => report_path,
+        "AUDIT_EXIT" => "0",
+        "GITHUB_SHA" => sha,
+        "GITHUB_OUTPUT" => File.join(dir, "output"),
+        "GITHUB_STEP_SUMMARY" => File.join(dir, "summary")
+      }
+
+      _stdout, stderr, status = Open3.capture3(environment, RbConfig.ruby, stdin_data: validator)
+
+      refute status.success?
+      assert_includes stderr, "audit consumers are empty"
+      refute_path_exists environment.fetch("GITHUB_OUTPUT")
+    end
   end
 end
 
@@ -1549,6 +1582,32 @@ class PushDownstreamAuditTest < Minitest::Test
     end
   end
 
+  def test_run_audit_fails_when_no_consumers_are_selected
+    Dir.mktmpdir("push-downstream-empty-audit") do |dir|
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        defaults:
+          owner: local
+          base_branch: main
+          pr_branch: agent-workflows/seam-sync
+        repos:
+          - { repo: disabled, enabled: false }
+      YAML
+
+      output, = capture_io do
+        @status = PushDownstream.run_audit(
+          config, File.join(dir, "missing-presets.yml"), only: nil, include_disabled: false
+        )
+      end
+
+      report = JSON.parse(output)
+      assert_equal 1, @status
+      assert_equal [], report.fetch("consumers")
+      assert_equal({ "total" => 0, "clean" => 0, "drifted" => 0, "blocked" => 0 },
+                   report.fetch("summary"))
+    end
+  end
+
   def test_audit_reports_drifted_consumer_with_exact_changed_managed_paths
     Dir.mktmpdir("push-downstream-audit") do |dir|
       remote, = seed_bare_consumer(dir)
@@ -1590,6 +1649,33 @@ class PushDownstreamAuditTest < Minitest::Test
       assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("changed_managed_paths")
       assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("follow_ups")
       assert_equal "unchanged\n", File.binread(external_target)
+    end
+  end
+
+  def test_audit_blocks_discovered_markdown_symlink_before_running_the_doctor
+    Dir.mktmpdir("push-downstream-audit-markdown-symlink") do |dir|
+      remote, seed = seed_bare_consumer(dir)
+      skill_dir = File.join(seed, ".agents/skills/hostile")
+      FileUtils.mkdir_p(skill_dir)
+      File.symlink("/dev/zero", File.join(skill_dir, "SKILL.md"))
+      system("git", "-C", seed, "add", ".agents/skills/hostile/SKILL.md")
+      system("git", "-C", seed, "commit", "-m", "add hostile Markdown symlink", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+
+      doctor_called = false
+      entry = with_module_stub(AgentWorkflowSeamDoctor, :check, lambda { |_root, **_kwargs|
+        doctor_called = true
+        []
+      }) do
+        audit(remote)
+      end
+
+      refute doctor_called, "the audit must reject unsafe doctor inputs before reading them"
+      assert_equal "blocked", entry.fetch("status")
+      assert_includes entry.fetch("reason"), "audit read path contains a symlink"
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("seam_doctor_issues")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("changed_managed_paths")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("follow_ups")
     end
   end
 

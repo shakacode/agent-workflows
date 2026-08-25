@@ -60,6 +60,7 @@ jobs:
 
           consumers = report.fetch("consumers")
           abort "audit consumers are not an array" unless consumers.is_a?(Array)
+          abort "audit consumers are empty" if consumers.empty?
           statuses = %w[clean drifted blocked]
           fields = %w[seam_doctor_issues changed_managed_paths follow_ups]
           consumers.each do |consumer|

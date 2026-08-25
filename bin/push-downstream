@@ -56,6 +56,7 @@ module PushDownstream
   AUDIT_UNKNOWN = "UNKNOWN"
   AUDIT_CLEAN = "clean"
   AUDIT_STATUSES = [AUDIT_CLEAN, "drifted", "blocked"].freeze
+  AUDIT_DOCTOR_READ_TREES = %w[.agents/skills .agents/workflows].freeze
   # The audit covers repo-local seam drift only. Shared skills and workflows are
   # installed per host and are intentionally never copied into consumer repos,
   # so a drifted consumer must not be read as "every upstream commit needs a
@@ -830,6 +831,8 @@ module PushDownstream
     presets = File.file?(presets_path) ? load_presets(presets_path) : {}
     consumers = repos.map { |repo| audit_repo(repo, presets) }
     puts JSON.pretty_generate(audit_report(consumers))
+    return 1 if consumers.empty?
+
     consumers.all? { |consumer| consumer.fetch("status") == AUDIT_CLEAN } ? 0 : 1
   end
 
@@ -917,6 +920,36 @@ module PushDownstream
     raise "managed scaffold path could not be safely inspected: #{e.message}"
   end
 
+  # The seam doctor discovers repo-local Markdown below these trees. Reject
+  # symlinks before discovery so a consumer cannot make the read-only audit
+  # follow an unbounded device or any other target outside the disposable clone.
+  def validate_audit_read_paths!(root)
+    validate_managed_scaffold_paths!(root)
+    clone_root = File.expand_path(root)
+
+    AUDIT_DOCTOR_READ_TREES.each do |relative_path|
+      pending = [File.join(clone_root, relative_path)]
+      until pending.empty?
+        current = pending.pop
+        begin
+          stat = File.lstat(current)
+        rescue Errno::ENOENT
+          next
+        end
+        if stat.symlink?
+          displayed = current.delete_prefix("#{clone_root}#{File::SEPARATOR}")
+          raise "audit read path contains a symlink: #{displayed}"
+        end
+        next unless stat.directory?
+
+        Dir.each_child(current) { |entry| pending << File.join(current, entry) }
+      end
+    end
+    true
+  rescue Errno::EACCES, Errno::ENOTDIR => e
+    raise "audit read path could not be safely inspected: #{e.message}"
+  end
+
   def audit_repo(repo, presets)
     begin
       contract = resolve_contract(repo, presets)
@@ -952,7 +985,7 @@ module PushDownstream
       end
 
       begin
-        validate_managed_scaffold_paths!(clone)
+        validate_audit_read_paths!(clone)
         issues = AgentWorkflowSeamDoctor.check(clone)
       rescue RuntimeError, SystemCallError => e
         # The doctor reads consumer files and shells out (bash -n), so a single
