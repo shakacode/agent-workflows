@@ -2063,10 +2063,11 @@ module BatchTokenBudget
     batch_unattributed_turns = batch.dig("turns", "unattributed")
     coordinator_self_turns = coordinator.dig("turns", "self_only")
     coordinator_inclusive_turns = coordinator.dig("turns", "descendant_inclusive")
-    return unless [
-      batch_tokens, batch_unattributed, coordinator_self, batch_turns, batch_unattributed_turns,
-      coordinator_self_turns, coordinator_inclusive_turns
-    ].all? { |value| nonnegative_integer?(value) }
+    return unless [batch_tokens, batch_turns, coordinator_inclusive_turns].all? do |value|
+      nonnegative_integer?(value)
+    end
+    return unless valid_usage_turn_pair?(coordinator_self, coordinator_self_turns) &&
+                  valid_usage_turn_pair?(batch_unattributed, batch_unattributed_turns)
 
     lane_tokens = lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("tokens")] }
     lane_turns = lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("turns")] }
