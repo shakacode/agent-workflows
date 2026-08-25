@@ -397,6 +397,40 @@ class PrCiReadinessTest < Minitest::Test
     )
   end
 
+  def test_optional_policy_does_not_disposition_duplicate_conflicting_check_run_identity
+    head = "a" * 40
+    held = {
+      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    failed = held.merge("status" => "completed", "conclusion" => "failure")
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held, failed], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+    assert_equal [held, failed], scopes.dig("other", "rows")
+  end
+
   def test_required_reclassification_prevents_optional_approval_held_disposition
     head = "a" * 40
     held = {
@@ -472,6 +506,79 @@ class PrCiReadinessTest < Minitest::Test
     end
   end
 
+  def test_trusted_ci_policy_ignores_repository_replacement_refs
+    Dir.mktmpdir("pr-ci-policy-replace") do |root|
+      run_fixture_git(root, "init", "-q")
+      run_fixture_git(root, "config", "user.name", "Test User")
+      run_fixture_git(root, "config", "user.email", "test@example.test")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        optional_policy_yaml("trusted-check")
+      )
+      run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+      run_fixture_git(root, "commit", "-q", "-m", "trusted policy")
+      base_sha = run_fixture_git(root, "rev-parse", "HEAD").strip
+      trusted_blob_sha = run_fixture_git(
+        root, "rev-parse", "#{base_sha}:.agents/agent-workflow.yml"
+      ).strip
+
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        optional_policy_yaml("forged-check")
+      )
+      run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+      run_fixture_git(root, "commit", "-q", "-m", "forged policy")
+      forged_sha = run_fixture_git(root, "rev-parse", "HEAD").strip
+      forged_blob_sha = run_fixture_git(
+        root, "rev-parse", "#{forged_sha}:.agents/agent-workflow.yml"
+      ).strip
+      run_fixture_git(root, "replace", base_sha, forged_sha)
+
+      policy = PrCiReadiness.trusted_ci_policy_at(
+        repo_root: root, base_ref: "main", base_sha:
+      )
+
+      assert_equal "trusted-check", policy.dig("optional_approval_held_checks", 0, "name")
+      assert_equal(
+        "git:#{base_sha}:.agents/agent-workflow.yml@#{trusted_blob_sha}",
+        policy.fetch("provenance")
+      )
+      refute_includes policy.fetch("provenance"), forged_blob_sha
+    end
+  end
+
+  def test_trusted_ci_policy_does_not_inherit_git_dir
+    Dir.mktmpdir("pr-ci-policy-root") do |root|
+      Dir.mktmpdir("pr-ci-policy-attacker") do |attacker|
+        [root, attacker].each do |repo|
+          run_fixture_git(repo, "init", "-q")
+          run_fixture_git(repo, "config", "user.name", "Test User")
+          run_fixture_git(repo, "config", "user.email", "test@example.test")
+          FileUtils.mkdir_p(File.join(repo, ".agents"))
+        end
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), optional_policy_yaml("trusted-check"))
+        run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+        run_fixture_git(root, "commit", "-q", "-m", "trusted policy")
+        File.write(File.join(attacker, ".agents", "agent-workflow.yml"), optional_policy_yaml("forged-check"))
+        run_fixture_git(attacker, "add", ".agents/agent-workflow.yml")
+        run_fixture_git(attacker, "commit", "-q", "-m", "forged policy")
+        attacker_sha = run_fixture_git(attacker, "rev-parse", "HEAD").strip
+
+        original_git_dir = ENV["GIT_DIR"]
+        ENV["GIT_DIR"] = File.join(attacker, ".git")
+        error = assert_raises(PrCiReadiness::Error) do
+          PrCiReadiness.trusted_ci_policy_at(
+            repo_root: root, base_ref: "main", base_sha: attacker_sha
+          )
+        end
+        assert_match(/does not resolve the exact base SHA/, error.message)
+      ensure
+        original_git_dir.nil? ? ENV.delete("GIT_DIR") : ENV["GIT_DIR"] = original_git_dir
+      end
+    end
+  end
+
   def test_unknown_trusted_base_ci_policy_fails_closed
     Dir.mktmpdir("pr-ci-policy-unknown") do |root|
       run_fixture_git(root, "init", "-q")
@@ -499,6 +606,21 @@ class PrCiReadinessTest < Minitest::Test
     raise "fixture git failed: #{output}" unless status.success?
 
     output
+  end
+
+  def optional_policy_yaml(name)
+    {
+      "ci_readiness" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [
+          {
+            "id" => "circleci-storybook",
+            "app_slug" => "circleci-checks",
+            "name" => name
+          }
+        ]
+      }
+    }.to_yaml
   end
 
   def test_required_rows_without_positive_producer_do_not_hide_failing_same_name_evidence

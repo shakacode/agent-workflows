@@ -54,4 +54,21 @@ class DiffIdentityTest < Minitest::Test
       assert_match(/Error:/, err, arguments.inspect)
     end
   end
+
+  def test_rejects_noncanonical_git_ref_inputs
+    invalid_refs = [
+      "foo//bar",
+      "foo/",
+      ".",
+      "foo.lock",
+      "foo\0bar",
+      "\xFF".b
+    ]
+
+    invalid_refs.each do |base_ref|
+      assert_raises(DiffIdentity::Error, base_ref.inspect) do
+        DiffIdentity.derive(base_ref:, base_sha: BASE_SHA, head_sha: HEAD_SHA)
+      end
+    end
+  end
 end

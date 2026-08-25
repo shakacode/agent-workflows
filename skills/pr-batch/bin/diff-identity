@@ -12,6 +12,7 @@ module DiffIdentity
   CONTRACT = "diff-identity"
   VERSION = 1
   SHA_PATTERN = /\A[0-9a-f]{40}\z/
+  REF_FORBIDDEN_CHARACTERS = ["~", "^", ":", "?", "*", "[", "\\"].freeze
 
   module_function
 
@@ -31,9 +32,23 @@ module DiffIdentity
     fields.join("\0").b
   end
 
+  def canonical_ref?(value)
+    return false unless value.is_a?(String)
+    return false unless value.encoding == Encoding::UTF_8 && value.valid_encoding?
+    return false if value.empty? || value == "@"
+    return false if value.start_with?("-", "/") || value.end_with?("/", ".")
+    return false if value.include?("..") || value.include?("@{") || value.include?("//")
+    return false if value.each_char.any? do |character|
+      REF_FORBIDDEN_CHARACTERS.include?(character) || character.match?(/[[:cntrl:][:space:]]/)
+    end
+
+    value.split("/", -1).all? do |component|
+      !component.empty? && !component.start_with?(".") && !component.end_with?(".lock")
+    end
+  end
+
   def validate!(base_ref:, base_sha:, head_sha:)
-    unless base_ref.is_a?(String) && base_ref.valid_encoding? && !base_ref.empty? &&
-           base_ref.match?(/\A[^\s~^:?*\[\\]+\z/) && !base_ref.include?("..")
+    unless canonical_ref?(base_ref)
       raise Error, "base ref must be a canonical nonempty Git ref name"
     end
     raise Error, "base SHA must be exactly 40 lowercase hexadecimal characters" unless

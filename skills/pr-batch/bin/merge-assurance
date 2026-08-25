@@ -285,13 +285,17 @@ module MergeAssurance
       context["diff_identity"].to_s.match?(/\A[0-9a-f]{64}\z/)
     if base.is_a?(Hash) && valid_ref?(base["ref"]) && canonical_full_sha?(base["sha"]) &&
        canonical_full_sha?(context["head_sha"])
-      expected_diff_identity = DiffIdentity.derive(
-        base_ref: base["ref"],
-        base_sha: base["sha"],
-        head_sha: context["head_sha"]
-      )
-      unless context["diff_identity"] == expected_diff_identity
-        failures << "context diff_identity does not match canonical base/head derivation"
+      begin
+        expected_diff_identity = DiffIdentity.derive(
+          base_ref: base["ref"],
+          base_sha: base["sha"],
+          head_sha: context["head_sha"]
+        )
+        unless context["diff_identity"] == expected_diff_identity
+          failures << "context diff_identity does not match canonical base/head derivation"
+        end
+      rescue DiffIdentity::Error
+        failures << "context base binding is invalid"
       end
     end
     failures << "context operations must be an array" unless context["operations"].is_a?(Array)
@@ -549,9 +553,14 @@ module MergeAssurance
         next
       end
       seen_rows[identity] = true
-      row = scope.fetch("rows", []).find do |candidate|
+      matching_rows = scope.fetch("rows", []).select do |candidate|
         PrCiReadiness.disposition_matches_row?(disposition, candidate)
       end
+      if matching_rows.length > 1
+        failures << "ci_result scope other policy disposition matches duplicate check-run identity"
+        next
+      end
+      row = matching_rows.first
       rule = rules.find do |candidate|
         candidate["id"] == disposition["rule_id"] &&
           candidate["app_slug"] == disposition["app_slug"] &&
@@ -1328,7 +1337,7 @@ module MergeAssurance
   end
 
   def valid_ref?(value)
-    value.to_s.match?(/\A[^\s~^:?*\[\\]+\z/) && !value.to_s.include?("..")
+    DiffIdentity.canonical_ref?(value)
   end
 
   def valid_host?(value)

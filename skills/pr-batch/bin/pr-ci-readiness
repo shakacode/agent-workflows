@@ -29,6 +29,7 @@ require "json"
 require "open3"
 require "time"
 require "yaml"
+load File.expand_path("diff-identity", __dir__) unless defined?(DiffIdentity)
 
 # Pure verdict logic (no I/O) plus the gh-backed runner. The pure methods take
 # the raw `gh pr checks --json` output string (or parsed rows) so they can be
@@ -153,6 +154,14 @@ module PrCiReadiness
   SYSTEM_GIT = %w[/opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git /bin/git].find do |path|
     File.file?(path) && File.executable?(path)
   end
+  TRUSTED_GIT_ENV = {
+    "GIT_CONFIG_NOSYSTEM" => "1",
+    "GIT_CONFIG_SYSTEM" => File::NULL,
+    "GIT_CONFIG_GLOBAL" => File::NULL,
+    "GIT_NO_REPLACE_OBJECTS" => "1",
+    "GIT_TERMINAL_PROMPT" => "0",
+    "LC_ALL" => "C"
+  }.freeze
 
   def evidence_row_state(row)
     return "UNKNOWN" unless row.is_a?(Hash)
