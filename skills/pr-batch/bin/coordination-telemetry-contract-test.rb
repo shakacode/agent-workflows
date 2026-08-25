@@ -21,6 +21,9 @@ MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                        "UNKNOWN=field;no guesses"
 APPLICABILITY_PROMPT_LINE =
   "coordination_not_applicable=>no calls;coordination_required+n/a=>stop"
+LANE_CARD_PROMPT_LINE =
+  "Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;" \
+  "observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN"
 MERGE_RELEASE_GATE_PROMPT_FRAGMENT = "release+gates pass"
 PATH_RESERVATION_WORKERS_PROMPT_LINE =
   "Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/" \
@@ -511,6 +514,16 @@ class CoordinationTelemetryContractTest < Minitest::Test
       assert_includes prompt_surface, APPLICABILITY_PROMPT_LINE, path
       assert_includes prompt_surface, PATH_RESERVATION_WORKERS_PROMPT_LINE, path
       assert_includes prompt_surface, MERGE_RELEASE_GATE_PROMPT_FRAGMENT, path
+    end
+  end
+
+  def test_generated_goal_prompts_keep_the_exact_lane_card_lifecycle_enum_aligned
+    [PR_BATCH_SKILL_PATH, PLAN_PR_BATCH_SKILL_PATH, WORKFLOW_PATH].each do |path|
+      lane_card_lines = read_repo_file(path).each_line.filter_map do |line|
+        line.strip if line.start_with?("Lane Card:")
+      end
+
+      assert_equal [LANE_CARD_PROMPT_LINE], lane_card_lines, path
     end
   end
 

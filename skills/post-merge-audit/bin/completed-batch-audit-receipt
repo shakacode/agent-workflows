@@ -248,6 +248,12 @@ module CompletedBatchAuditReceipt
     raise Error, "local completed-batch audit receipt is invalid" unless comment_body
 
     deterministic = deterministic_targets(targets)
+    validate_trusted_applicability_artifact!(
+      trusted_applicability,
+      trusted_applicability_digest,
+      expected_batch_id:,
+      expected_targets: deterministic
+    )
     marker = comment_marker(comment_body)
     if accepted_deferral_input
       marker = terminalize_accepted_deferral(

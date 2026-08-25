@@ -53,6 +53,18 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     }
   end
 
+  def unknown_marker
+    marker(<<~BODY)
+      batch_id: batch-184
+      audit_status: UNKNOWN
+      verdict: UNKNOWN
+      scope_evidence: UNKNOWN
+      checker_evidence: UNKNOWN
+      findings: UNKNOWN
+      followups_dispositions: none
+    BODY
+  end
+
   def process_alive?(pid)
     Process.kill(0, pid)
     true
@@ -1396,6 +1408,94 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
 
     assert_empty coordination_calls
+  end
+
+  def test_noncomplete_publish_rejects_untrusted_applicability_before_any_authenticated_call
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    preflight = publication_preflight
+    proof = preflight.fetch("applicability_proof")
+    digest = preflight.fetch("applicability_proof_digest")
+    tampered = JSON.parse(JSON.generate(proof))
+    tampered["rationale"] = "tampered after the trusted decision"
+    wrong_batch = JSON.parse(JSON.generate(proof))
+    wrong_batch["batch_id"] = "batch-other"
+    candidates = {
+      "missing" => [nil, nil],
+      "tampered" => [tampered, digest],
+      "wrong batch" => [wrong_batch, CompletedBatchPublicationPreflight.digest(wrong_batch)]
+    }
+    receipts = { "blocked" => followup_marker, "UNKNOWN" => unknown_marker }
+    github_calls = []
+    anchor_verifier_calls = []
+    coordination_calls = []
+
+    with_stubbed_anchor_verifier(lambda do |targets|
+      anchor_verifier_calls << targets
+      raise CompletedBatchAuditReceipt::AnchorVerificationError, "unexpected anchor verifier call"
+    end) do
+      with_stubbed_gh_api(lambda do |*arguments, **keywords|
+        github_calls << [arguments, keywords]
+        raise CompletedBatchAuditReceipt::Error, "unexpected authenticated GitHub call"
+      end) do
+        with_stubbed_coordination_status(lambda do |**arguments|
+          coordination_calls << arguments
+          raise "unexpected coordination verifier call"
+        end) do
+          receipts.each do |status, receipt|
+            candidates.each do |label, (candidate, candidate_digest)|
+              assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError, "#{status}: #{label}") do
+                CompletedBatchAuditReceipt.publish(
+                  expected_batch_id: "batch-184",
+                  targets: [target],
+                  receipt:,
+                  coordination_backend: "n/a",
+                  trusted_applicability: candidate,
+                  trusted_applicability_digest: candidate_digest
+                )
+              end
+            end
+          end
+        end
+      end
+    end
+
+    assert_empty github_calls
+    assert_empty anchor_verifier_calls
+    assert_empty coordination_calls
+  end
+
+  def test_unknown_publish_preserves_behavior_with_valid_applicability_proof
+    with_fake_gh do |env, directory|
+      env.delete("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT")
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, unknown_marker)
+
+      out, err, status = capture_receipt_cli(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+
+      assert status.success?, err
+      result = JSON.parse(out)
+      assert result.fetch("well_formed")
+      refute result.fetch("ready")
+      assert_equal "UNKNOWN", result.dig("fields", "audit_status")
+      assert_includes result.fetch("chat_reference"), "Completed-batch audit: UNKNOWN"
+      assert File.exist?(env.fetch("FAKE_GH_LOG")), "valid proof must preserve non-complete publication"
+    end
   end
 
   def test_publish_binds_snapshot_and_replay_blocks_a_refreshed_snapshot_mismatch
@@ -3989,6 +4089,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     with_stubbed_gh_api(callable) do
       with_stubbed_coordination_status(coordination, &block)
     end
+  end
+
+  def with_stubbed_anchor_verifier(callable)
+    original = CompletedBatchAuditReceipt.method(:select_verified_anchor)
+    CompletedBatchAuditReceipt.define_singleton_method(:select_verified_anchor, callable)
+    yield
+  ensure
+    CompletedBatchAuditReceipt.define_singleton_method(:select_verified_anchor, original)
   end
 
   def with_stubbed_coordination_status(callable)
