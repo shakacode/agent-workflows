@@ -1,0 +1,12 @@
+name: Shakapacker security replay
+on: workflow_dispatch
+
+jobs:
+  setup-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "representative replay"
+          fi
+      - uses: actions/checkout@v4

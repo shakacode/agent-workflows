@@ -1,20 +1,17 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require "base64"
 require "digest"
-require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
-require "openssl"
 require "rbconfig"
 require "tempfile"
-require "tmpdir"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
 STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
 REPLAY_FIXTURE = File.expand_path("../fixtures/ror-wave-a-plan-replay.json", __dir__)
+UNSIGNED_LIFECYCLE_FIXTURE = File.expand_path("../fixtures/unsigned-lifecycle-smoke.json", __dir__)
 
 class BatchPlanPreflightTest < Minitest::Test
   RISK_SURFACES = %w[
@@ -25,6 +22,14 @@ class BatchPlanPreflightTest < Minitest::Test
     release_behavior
     broad_runtime
   ].freeze
+
+  def test_clean_install_fixture_accepts_without_trust_material
+    result, stderr, status = evaluate(JSON.parse(File.read(UNSIGNED_LIFECYCLE_FIXTURE)))
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_equal ["install-smoke"], result.dig("launch", "eligible_lane_ids")
+  end
 
   def lane(id = "lane-a", wave: "wave-a", purpose: "implementation", surfaces: [])
     {
@@ -63,35 +68,52 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
-  def lane_lifecycle_receipt(lane_id: "lane-a", wave: "wave-a",
-                             batch_plan_id: "batch-plan-1",
-                             stage_dependency_plan_id: "trusted-plan-1",
-                             completed_at: "2026-07-30T00:00:00Z",
-                             recorded_at: "2026-07-30T00:00:01Z",
-                             key_id: "test-workflow-control-key",
-                             signing_key: workflow_control_signing_key)
-    receipt = {
-      "type" => "workflow-control-lane-lifecycle-receipt",
+  def lane_lifecycle_state(lane_id: "lane-a", wave: "wave-a", state: "completed",
+                           batch_plan_id: "batch-plan-1",
+                           stage_dependency_plan_id: "trusted-plan-1")
+    {
+      "type" => "lane-lifecycle-state",
       "version" => 1,
-      "producer" => "pr-batch-workflow-control",
-      "receipt_ref" => "workflow-control-state://#{batch_plan_id}/stage-dependency-plans/" \
-                       "#{stage_dependency_plan_id}/waves/#{wave}/lanes/#{lane_id}/completed",
       "batch_plan_id" => batch_plan_id,
       "stage_dependency_plan_id" => stage_dependency_plan_id,
       "lane_id" => lane_id,
       "wave" => wave,
-      "state" => "completed",
-      "completed_at" => completed_at,
-      "recorded_at" => recorded_at,
-      "key_id" => key_id
+      "state" => state,
+      "state_ref" => "coordination-state://#{batch_plan_id}/lanes/#{lane_id}"
     }
-    payload = JSON.generate(canonicalize(receipt))
-    signature = signing_key.sign(OpenSSL::Digest.new("SHA256"), payload)
-    receipt.merge("signature" => Base64.strict_encode64(signature))
   end
 
-  def workflow_control_signing_key
-    @workflow_control_signing_key ||= OpenSSL::PKey::RSA.generate(1024)
+  def expansion_path_reservation(lane_id: "lane-a", wave: "wave-a", path: "lib/expanded.rb",
+                                 reason: "Required by the authorized implementation.",
+                                 batch_plan_id: "batch-plan-1",
+                                 stage_dependency_plan_id: "trusted-plan-1")
+    {
+      "type" => "expansion-path-reservation",
+      "version" => 1,
+      "batch_plan_id" => batch_plan_id,
+      "stage_dependency_plan_id" => stage_dependency_plan_id,
+      "lane_id" => lane_id,
+      "wave" => wave,
+      "path" => path,
+      "reason" => reason,
+      "evidence_ref" => "coordination-state://#{batch_plan_id}/lanes/#{lane_id}/path-expansions/1"
+    }
+  end
+
+  def expansion_rename_reservation(lane_id: "lane-a", wave: "wave-a", old_path: "lib/old",
+                                   new_path: "lib/new", batch_plan_id: "batch-plan-1",
+                                   stage_dependency_plan_id: "trusted-plan-1")
+    {
+      "type" => "expansion-rename-reservation",
+      "version" => 1,
+      "batch_plan_id" => batch_plan_id,
+      "stage_dependency_plan_id" => stage_dependency_plan_id,
+      "lane_id" => lane_id,
+      "wave" => wave,
+      "rename" => { "old" => old_path, "new" => new_path },
+      "reason" => "A directory rename is required by the authorized implementation.",
+      "evidence_ref" => "coordination-state://#{batch_plan_id}/lanes/#{lane_id}/rename-expansions/1"
+    }
   end
 
   def canonicalize(value)
@@ -121,56 +143,6 @@ class BatchPlanPreflightTest < Minitest::Test
     "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(payload)))}"
   end
 
-  def installed_workflow_control_helper(key_id: "test-workflow-control-key",
-                                        key: workflow_control_signing_key,
-                                        config_mode: 0o600, agents_mode: 0o700,
-                                        root_mode: 0o700, config_symlink: false,
-                                        agents_symlink: false)
-    root = Dir.mktmpdir("workflow-control-trust-install")
-    File.chmod(root_mode, root)
-    (@workflow_control_install_roots ||= []) << root
-    helper = File.join(root, "skills/plan-pr-batch/bin/batch-plan-preflight")
-    agents_dir = File.join(root, ".agents")
-    config_path = File.join(agents_dir, "workflow-control-lifecycle-trust.json")
-    FileUtils.mkdir_p(File.dirname(helper))
-    FileUtils.cp(HELPER, helper)
-    File.chmod(0o755, helper)
-    if agents_symlink
-      actual_agents_dir = File.join(root, "caller-substitutable-agents")
-      FileUtils.mkdir_p(actual_agents_dir)
-      File.chmod(agents_mode, actual_agents_dir)
-      File.symlink(actual_agents_dir, agents_dir)
-    else
-      FileUtils.mkdir_p(agents_dir)
-      File.chmod(agents_mode, agents_dir)
-    end
-    trust_record = {
-      "type" => "agent-workflow-control-lifecycle-trust-anchor",
-      "version" => 1,
-      "agent_workflow_control_lifecycle_trusted_key_id" => key_id,
-      "agent_workflow_control_lifecycle_trusted_public_key_pem" => key.public_to_pem
-    }
-    if config_symlink
-      target = File.join(root, "caller-substitutable-workflow-control-trust.json")
-      File.write(target, JSON.generate(trust_record))
-      File.symlink(target, config_path)
-    else
-      File.write(config_path, JSON.generate(trust_record))
-      File.chmod(config_mode, config_path)
-    end
-    [helper, config_path]
-  end
-
-  def workflow_control_helper
-    @workflow_control_helper ||= installed_workflow_control_helper.first
-  end
-
-  def teardown
-    Array(@workflow_control_install_roots).each do |root|
-      FileUtils.remove_entry(root) if File.exist?(root)
-    end
-  end
-
   def gate_lane(id, patch_edit: true)
     permissions = {
       "read_only_discovery" => true,
@@ -193,7 +165,7 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def input_for(lanes: [lane], maps: nil, edges: [], groups: [], premises: [], gate_lanes: nil,
                 backend: "generic", active_wave: "wave-a", batch_plan_id: "batch-plan-1",
-                lifecycle_receipts: [])
+                lifecycle_states: [], reservations: nil)
     maps ||= lanes.each_with_index.to_h { |record, index| [record.fetch("id"), touch_map(index + 1, ["lib/#{record.fetch('id')}.rb"])] }
     gate_lanes ||= lanes.map { |record| gate_lane(record.fetch("id")) }
     plan_id = "trusted-plan-1"
@@ -209,7 +181,7 @@ class BatchPlanPreflightTest < Minitest::Test
         "external_api_premises" => premises
       },
       "file_touch_map" => maps,
-      "lane_lifecycle_receipts" => lifecycle_receipts,
+      "lane_lifecycle_states" => lifecycle_states,
       "stage_dependency_plan" => {
         "contract" => "stage-dependency-plan",
         "version" => 1,
@@ -237,7 +209,31 @@ class BatchPlanPreflightTest < Minitest::Test
     }
     input.fetch("stage_dependency_gate")["trusted_plan_binding"] =
       stage_dependency_plan_binding(input.fetch("stage_dependency_plan"))
+    input["expansion_path_reservations"] = reservations unless reservations.nil?
     input
+  end
+
+  def test_ordinary_durable_lane_state_advances_serialized_work_without_trust_material
+    lanes = [lane("lane-b"), lane("lane-a")]
+    lanes.each { |record| record["serialization_group"] = "changelog-writers" }
+    maps = {
+      "lane-a" => touch_map(1, ["CHANGELOG.md"]),
+      "lane-b" => touch_map(2, ["CHANGELOG.md"])
+    }
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+    input = input_for(
+      lanes: lanes,
+      maps: maps,
+      groups: groups,
+      lifecycle_states: [lane_lifecycle_state]
+    )
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_equal ["lane-a"], result.dig("launch", "completed_lane_ids")
+    assert_equal ["lane-b"], result.dig("launch", "eligible_lane_ids")
   end
 
   def external_premise(lane_ids:, support: "supported")
@@ -476,6 +472,359 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_includes collision.fetch("message"), "CHANGELOG.md"
   end
 
+  def test_expansion_path_reservations_are_optional_and_disjoint_reservations_are_accepted
+    without_reservations = input_for
+    refute_includes without_reservations.keys, "expansion_path_reservations"
+    result, stderr, status = evaluate(without_reservations)
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+
+    result, stderr, status = evaluate(input_for(reservations: [expansion_path_reservation]))
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+  end
+
+  def test_same_wave_reservation_overlap_collides_unless_explicitly_serialized_at_max_one
+    lanes = [lane("lane-a"), lane("lane-b")]
+    reservations = [
+      expansion_path_reservation(lane_id: "lane-a"),
+      expansion_path_reservation(lane_id: "lane-b")
+    ]
+
+    result, _stderr, status = evaluate(input_for(lanes: lanes, reservations: reservations))
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
+    assert_includes collision.fetch("message"), "lib/expanded.rb"
+
+    lanes.each { |record| record["serialization_group"] = "expanded-path-writers" }
+    groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
+    result, stderr, status = evaluate(input_for(lanes: lanes, groups: groups, reservations: reservations))
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+  end
+
+  def test_typed_edit_edge_does_not_replace_max_one_serialization_for_reserved_paths
+    lanes = [lane("lane-a"), lane("lane-b")]
+    reservations = [
+      expansion_path_reservation(lane_id: "lane-a"),
+      expansion_path_reservation(lane_id: "lane-b")
+    ]
+    edges = [{ "id" => "lane-a-before-lane-b", "from" => "lane-a", "to" => "lane-b", "type" => "edit" }]
+    gate_lanes = [gate_lane("lane-a"), gate_lane("lane-b", patch_edit: false)]
+    input = input_for(lanes: lanes, reservations: reservations, edges: edges, gate_lanes: gate_lanes)
+    input.fetch("stage_dependency_gate")["status"] = "gated"
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
+  end
+
+  def test_mixed_verified_and_reserved_overlap_requires_pair_level_max_one_serialization
+    lanes = [lane("lane-a"), lane("lane-b")]
+    maps = {
+      "lane-a" => touch_map(1, ["lib/shared.rb"]),
+      "lane-b" => touch_map(2, ["lib/shared.rb", "lib/expanded.rb"])
+    }
+    reservation = expansion_path_reservation(lane_id: "lane-a")
+    edges = [{ "id" => "lane-a-before-lane-b", "from" => "lane-a", "to" => "lane-b", "type" => "edit" }]
+    gate_lanes = [gate_lane("lane-a"), gate_lane("lane-b", patch_edit: false)]
+    input = input_for(
+      lanes: lanes,
+      maps: maps,
+      reservations: [reservation],
+      edges: edges,
+      gate_lanes: gate_lanes
+    )
+    input.fetch("stage_dependency_gate")["status"] = "gated"
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
+    assert_includes collision.fetch("message"), "max-1 serialization"
+    assert_includes collision.fetch("message"), "lib/expanded.rb"
+    assert_includes collision.fetch("message"), "lib/shared.rb"
+
+    lanes.each { |record| record["serialization_group"] = "expanded-path-writers" }
+    groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
+    result, stderr, status = evaluate(
+      input_for(
+        lanes: lanes,
+        maps: maps,
+        groups: groups,
+        reservations: [reservation],
+        edges: edges,
+        gate_lanes: gate_lanes
+      )
+    )
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+  end
+
+  def test_reserved_path_collides_with_another_lanes_verified_file_touch_path
+    lanes = [lane("lane-a"), lane("lane-b")]
+    maps = {
+      "lane-a" => touch_map(1, ["lib/lane-a.rb"]),
+      "lane-b" => touch_map(2, ["lib/expanded.rb"])
+    }
+
+    result, _stderr, status = evaluate(
+      input_for(lanes: lanes, maps: maps, reservations: [expansion_path_reservation])
+    )
+
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
+    assert_includes collision.fetch("message"), "lib/expanded.rb"
+  end
+
+  def test_sole_editor_reservation_protects_path_when_another_lane_later_joins
+    reservation = expansion_path_reservation(lane_id: "lane-a")
+    result, stderr, status = evaluate(input_for(reservations: [reservation]))
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+
+    lanes = [lane("lane-a"), lane("lane-b")]
+    maps = {
+      "lane-a" => touch_map(1, ["lib/lane-a.rb"]),
+      "lane-b" => touch_map(2, ["lib/expanded.rb"])
+    }
+    result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps, reservations: [reservation]))
+
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
+    assert_includes collision.fetch("message"), "lib/expanded.rb"
+  end
+
+  def test_blocked_requester_remains_held_until_max_one_holder_completes_and_requester_transitions
+    holder = lane("lane-holder").merge("serialization_group" => "expanded-path-writers")
+    requester = lane("lane-requester").merge("serialization_group" => "expanded-path-writers")
+    lanes = [holder, requester]
+    groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
+    reservation = expansion_path_reservation(lane_id: "lane-requester")
+    active_and_blocked = [
+      lane_lifecycle_state(lane_id: "lane-holder", state: "active"),
+      lane_lifecycle_state(lane_id: "lane-requester", state: "blocked")
+    ]
+
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, groups: groups, lifecycle_states: active_and_blocked, reservations: [reservation])
+    )
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_includes result.dig("launch", "held_lane_ids"), "lane-requester"
+    refute_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
+
+    holder_done_requester_blocked = [
+      lane_lifecycle_state(lane_id: "lane-holder"),
+      lane_lifecycle_state(lane_id: "lane-requester", state: "blocked")
+    ]
+    result, stderr, status = evaluate(
+      input_for(
+        lanes: lanes,
+        groups: groups,
+        lifecycle_states: holder_done_requester_blocked,
+        reservations: [reservation]
+      )
+    )
+    assert status.success?, stderr
+    assert_includes result.dig("launch", "completed_lane_ids"), "lane-holder"
+    assert_includes result.dig("launch", "held_lane_ids"), "lane-requester"
+    refute_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
+
+    holder_done_requester_planned = [
+      lane_lifecycle_state(lane_id: "lane-holder"),
+      lane_lifecycle_state(lane_id: "lane-requester", state: "planned")
+    ]
+    result, stderr, status = evaluate(
+      input_for(
+        lanes: lanes,
+        groups: groups,
+        lifecycle_states: holder_done_requester_planned,
+        reservations: [reservation]
+      )
+    )
+    assert status.success?, stderr
+    assert_includes result.dig("launch", "completed_lane_ids"), "lane-holder"
+    assert_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
+    refute_includes result.dig("launch", "held_lane_ids"), "lane-requester"
+  end
+
+  def test_blocked_disjoint_requester_remains_held_until_requester_transitions
+    lanes = [lane("lane-holder"), lane("lane-requester")]
+    reservation = expansion_path_reservation(lane_id: "lane-requester")
+    blocked = [lane_lifecycle_state(lane_id: "lane-requester", state: "blocked")]
+
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, lifecycle_states: blocked, reservations: [reservation])
+    )
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_includes result.dig("launch", "held_lane_ids"), "lane-requester"
+    refute_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
+
+    planned = [lane_lifecycle_state(lane_id: "lane-requester", state: "planned")]
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, lifecycle_states: planned, reservations: [reservation])
+    )
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_includes result.dig("launch", "eligible_lane_ids"), "lane-requester"
+    refute_includes result.dig("launch", "held_lane_ids"), "lane-requester"
+  end
+
+  def test_expansion_path_reservations_fail_closed_on_invalid_identity_shape_or_evidence
+    valid = expansion_path_reservation
+    cases = {
+      "not an array" => "UNKNOWN",
+      "malformed record" => [valid.merge("extra" => true)],
+      "UNKNOWN reason" => [valid.merge("reason" => "UNKNOWN")],
+      "multiline reason" => [valid.merge("reason" => "Required\nfor another file")],
+      "UNKNOWN evidence" => [valid.merge("evidence_ref" => "UNKNOWN")],
+      "noncanonical path" => [valid.merge("path" => "../outside.rb")],
+      "unknown lane" => [valid.merge("lane_id" => "lane-z")],
+      "foreign batch" => [valid.merge("batch_plan_id" => "other-batch")],
+      "foreign dependency plan" => [valid.merge("stage_dependency_plan_id" => "other-plan")],
+      "wrong wave" => [valid.merge("wave" => "wave-z")]
+    }
+
+    cases.each do |label, reservations|
+      result, _stderr, status = evaluate(input_for(reservations: reservations))
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "expansion-path-reservations-invalid", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+  end
+
+  def test_expansion_rename_reservations_require_exact_distinct_canonical_endpoints
+    valid = expansion_rename_reservation
+    cases = {
+      "malformed record" => valid.merge("extra" => true),
+      "malformed rename" => valid.merge("rename" => { "old" => "lib/old" }),
+      "noncanonical old endpoint" => valid.merge("rename" => { "old" => "../old", "new" => "lib/new" }),
+      "noncanonical new endpoint" => valid.merge("rename" => { "old" => "lib/old", "new" => "/new" }),
+      "identical endpoints" => valid.merge("rename" => { "old" => "lib/same", "new" => "lib/same" })
+    }
+
+    cases.each do |label, reservation|
+      result, _stderr, status = evaluate(input_for(reservations: [reservation]))
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "expansion-path-reservations-invalid", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+  end
+
+  def test_duplicate_completed_or_reflected_expansion_path_reservations_are_stale
+    reservation = expansion_path_reservation
+
+    duplicate = input_for(reservations: [reservation, reservation.dup])
+    result, _stderr, status = evaluate(duplicate)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-duplicate"
+
+    completed = input_for(
+      reservations: [reservation],
+      lifecycle_states: [lane_lifecycle_state]
+    )
+    result, _stderr, status = evaluate(completed)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-stale"
+
+    reflected = input_for(
+      maps: { "lane-a" => touch_map(1, ["lib/lane-a.rb", "lib/expanded.rb"]) },
+      reservations: [reservation]
+    )
+    result, _stderr, status = evaluate(reflected)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-stale"
+  end
+
+  def test_duplicate_completed_or_reflected_expansion_rename_reservations_are_stale
+    reservation = expansion_rename_reservation
+
+    duplicate = input_for(reservations: [reservation, reservation.dup])
+    result, _stderr, status = evaluate(duplicate)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-duplicate"
+
+    completed = input_for(
+      reservations: [reservation],
+      lifecycle_states: [lane_lifecycle_state]
+    )
+    result, _stderr, status = evaluate(completed)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-stale"
+
+    reflected_map = touch_map(1, %w[lib/lane-a.rb lib/old lib/new])
+    reflected_map["renames"] = [{ "old" => "lib/old", "new" => "lib/new" }]
+    reflected = input_for(maps: { "lane-a" => reflected_map }, reservations: [reservation])
+    result, _stderr, status = evaluate(reflected)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-stale"
+  end
+
+  def test_planned_path_evidence_does_not_make_matching_expansion_path_reservation_stale
+    input = input_for(
+      maps: { "lane-a" => planned_path_evidence(%w[lib/lane-a.rb lib/expanded.rb]) },
+      reservations: [expansion_path_reservation]
+    )
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    refute_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-stale"
+  end
+
+  def test_planned_path_evidence_does_not_make_matching_expansion_rename_reservation_stale
+    rename = { "old" => "lib/old", "new" => "lib/new" }
+    input = input_for(
+      maps: { "lane-a" => planned_path_evidence(%w[lib/lane-a.rb lib/old lib/new], renames: [rename]) },
+      reservations: [expansion_rename_reservation]
+    )
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    refute_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "expansion-path-reservation-stale"
+  end
+
+  def test_backend_risky_capacity_uses_verified_paths_union_active_reservations
+    lanes = Array.new(4) do |index|
+      lane("lane-#{index}").merge("serialization_group" => "expanded-path-writers")
+    end
+    groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
+    reservations = [
+      expansion_path_reservation(lane_id: "lane-0", path: "lib/shared-expanded.rb"),
+      expansion_path_reservation(lane_id: "lane-1", path: "lib/shared-expanded.rb")
+    ]
+
+    result, _stderr, status = evaluate(
+      input_for(lanes: lanes, groups: groups, reservations: reservations, backend: "generic")
+    )
+
+    refute status.success?
+    cap = result.fetch("violations").find { |item| item.fetch("code") == "backend-risky-cap-exceeded" }
+    assert_equal lanes.map { |record| record.fetch("id") }, cap.fetch("lane_ids")
+  end
+
   def test_directory_rename_endpoints_collide_with_descendant_touches
     %w[old new].each do |endpoint|
       lanes = [lane("lane-a"), lane("lane-b")]
@@ -494,6 +843,41 @@ class BatchPlanPreflightTest < Minitest::Test
       assert_equal %w[lane-a lane-b], collision.fetch("lane_ids"), endpoint
       assert_includes collision.fetch("message"), descendant, endpoint
     end
+  end
+
+  def test_reserved_directory_rename_endpoints_collide_with_descendant_touches
+    %w[old new].each do |endpoint|
+      lanes = [lane("lane-a"), lane("lane-b")]
+      descendant = "lib/#{endpoint}/nested.rb"
+      maps = {
+        "lane-a" => touch_map(1, ["lib/lane-a.rb"]),
+        "lane-b" => touch_map(2, [descendant])
+      }
+
+      result, _stderr, status = evaluate(
+        input_for(lanes: lanes, maps: maps, reservations: [expansion_rename_reservation])
+      )
+
+      refute status.success?, endpoint
+      collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+      assert_equal %w[lane-a lane-b], collision.fetch("lane_ids"), endpoint
+      assert_includes collision.fetch("message"), descendant, endpoint
+    end
+  end
+
+  def test_scalar_path_reservation_preserves_exact_path_collision_semantics
+    lanes = [lane("lane-a"), lane("lane-b")]
+    maps = {
+      "lane-a" => touch_map(1, ["lib/lane-a.rb"]),
+      "lane-b" => touch_map(2, ["lib/expanded.rb/nested.rb"])
+    }
+
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, maps: maps, reservations: [expansion_path_reservation])
+    )
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
   end
 
   def test_shared_path_is_safe_in_different_waves
@@ -526,7 +910,7 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["lane-b"], result.dig("launch", "held_lane_ids")
   end
 
-  def test_max_one_serialization_advances_after_trusted_lane_completion
+  def test_max_one_serialization_advances_after_durable_lane_completion
     lanes = [lane("lane-b"), lane("lane-a")]
     lanes.each { |record| record["serialization_group"] = "changelog-writers" }
     maps = {
@@ -541,15 +925,82 @@ class BatchPlanPreflightTest < Minitest::Test
     assert first_status.success?, first_stderr
     assert_equal ["lane-a"], first_result.dig("launch", "eligible_lane_ids")
 
-    receipt = lane_lifecycle_receipt(lane_id: "lane-a")
+    state = lane_lifecycle_state(lane_id: "lane-a")
     second_result, second_stderr, second_status = evaluate(
-      input_for(lanes: lanes, maps: maps, groups: groups, lifecycle_receipts: [receipt]),
-      helper: workflow_control_helper
+      input_for(lanes: lanes, maps: maps, groups: groups, lifecycle_states: [state])
     )
     assert second_status.success?, second_stderr
     assert_equal ["lane-b"], second_result.dig("launch", "eligible_lane_ids")
     assert_equal [], second_result.dig("launch", "held_lane_ids")
     assert_equal ["lane-a"], second_result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_active_lane_occupies_max_one_group_and_never_reenters_launch_partition
+    active_lane = lane("lane-active").merge("serialization_group" => "changelog-writers")
+    planned_lane = lane("lane-planned").merge("serialization_group" => "changelog-writers")
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+    state = lane_lifecycle_state(lane_id: "lane-active", state: "active")
+
+    [[planned_lane, active_lane], [active_lane, planned_lane], [planned_lane, active_lane]].each do |lanes|
+      result, stderr, status = evaluate(
+        input_for(lanes: lanes, groups: groups, lifecycle_states: [state])
+      )
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.dig("launch", "eligible_lane_ids")
+      assert_equal ["lane-planned"], result.dig("launch", "held_lane_ids")
+      assert_empty result.dig("launch", "completed_lane_ids")
+    end
+  end
+
+  def test_blocked_lane_is_held_and_never_reenters_launch_partition
+    state = lane_lifecycle_state(state: "blocked")
+
+    result, stderr, status = evaluate(input_for(lifecycle_states: [state]))
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_empty result.dig("launch", "eligible_lane_ids")
+    assert_equal ["lane-a"], result.dig("launch", "held_lane_ids")
+    assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_blocked_lane_occupies_max_one_group_until_its_state_changes
+    blocked_lane = lane("lane-a").merge("serialization_group" => "changelog-writers")
+    sibling_lane = lane("lane-b").merge("serialization_group" => "changelog-writers")
+    lanes = [sibling_lane, blocked_lane]
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+
+    blocked_result, blocked_stderr, blocked_status = evaluate(
+      input_for(
+        lanes: lanes,
+        groups: groups,
+        lifecycle_states: [lane_lifecycle_state(lane_id: "lane-a", state: "blocked")]
+      )
+    )
+    assert blocked_status.success?, blocked_stderr
+    assert_empty blocked_result.dig("launch", "eligible_lane_ids")
+    assert_equal %w[lane-a lane-b], blocked_result.dig("launch", "held_lane_ids")
+
+    completed_result, completed_stderr, completed_status = evaluate(
+      input_for(lanes: lanes, groups: groups, lifecycle_states: [lane_lifecycle_state(lane_id: "lane-a")])
+    )
+    assert completed_status.success?, completed_stderr
+    assert_equal ["lane-b"], completed_result.dig("launch", "eligible_lane_ids")
+    assert_empty completed_result.dig("launch", "held_lane_ids")
+  end
+
+  def test_planned_and_claimed_lanes_remain_launch_eligible
+    %w[planned claimed].each do |lifecycle_state|
+      result, stderr, status = evaluate(
+        input_for(lifecycle_states: [lane_lifecycle_state(state: lifecycle_state)])
+      )
+
+      assert status.success?, stderr
+      assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids"), lifecycle_state
+      assert_empty result.dig("launch", "held_lane_ids"), lifecycle_state
+    end
   end
 
   def test_inline_lane_completion_claim_is_rejected
@@ -567,151 +1018,56 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.dig("launch", "completed_lane_ids")
   end
 
-  def test_untrusted_unknown_or_malformed_lifecycle_receipts_are_rejected
-    valid_receipt = lane_lifecycle_receipt
+  def test_unknown_or_malformed_durable_lifecycle_states_are_rejected
+    valid_state = lane_lifecycle_state
     cases = {
-      "unidentified producer" => lambda { |receipt|
-        receipt["producer"] = "caller-authored"
+      "unknown state" => lambda { |state|
+        state["state"] = "UNKNOWN"
       },
-      "unknown state" => lambda { |receipt|
-        receipt["state"] = "UNKNOWN"
+      "missing durable reference" => lambda { |state|
+        state.delete("state_ref")
       },
-      "missing durable reference" => lambda { |receipt|
-        receipt.delete("receipt_ref")
+      "relative durable reference" => lambda { |state|
+        state["state_ref"] = "state/lane-a"
       },
-      "foreign batch" => lambda { |receipt|
-        receipt["batch_plan_id"] = "other-batch"
+      "foreign batch" => lambda { |state|
+        state["batch_plan_id"] = "other-batch"
       },
-      "foreign dependency plan" => lambda { |receipt|
-        receipt["stage_dependency_plan_id"] = "other-plan"
+      "foreign dependency plan" => lambda { |state|
+        state["stage_dependency_plan_id"] = "other-plan"
       },
-      "unknown lane" => lambda { |receipt|
-        receipt["lane_id"] = "lane-z"
+      "unknown lane" => lambda { |state|
+        state["lane_id"] = "lane-z"
       },
-      "wrong wave" => lambda { |receipt|
-        receipt["wave"] = "wave-z"
+      "wrong wave" => lambda { |state|
+        state["wave"] = "wave-z"
       },
-      "impossible chronology" => lambda { |receipt|
-        receipt["completed_at"] = "2026-07-30T00:00:02Z"
-      },
-      "noncanonical reference" => lambda { |receipt|
-        receipt["receipt_ref"] = "https://example.test/completed"
-      },
-      "caller source label" => lambda { |receipt|
-        receipt["source_kind"] = "durable-coordinator"
+      "obsolete signature field" => lambda { |state|
+        state["signature"] = "not-supported"
       }
     }
 
     cases.each do |label, mutation|
-      receipt = JSON.parse(JSON.generate(valid_receipt))
-      mutation.call(receipt)
-      result, _stderr, status = evaluate(
-        input_for(lifecycle_receipts: [receipt]),
-        helper: workflow_control_helper
-      )
+      state = JSON.parse(JSON.generate(valid_state))
+      mutation.call(state)
+      result, _stderr, status = evaluate(input_for(lifecycle_states: [state]))
 
       refute status.success?, label
       assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                      "lane-lifecycle-receipt-invalid", label
+                      "lane-lifecycle-state-invalid", label
       assert_empty result.dig("launch", "eligible_lane_ids"), label
       assert_empty result.dig("launch", "completed_lane_ids"), label
     end
   end
 
-  def test_future_dated_lifecycle_receipt_is_rejected
-    receipt = lane_lifecycle_receipt(
-      completed_at: "2099-01-01T00:00:00Z",
-      recorded_at: "2099-01-01T00:00:01Z"
+  def test_nonterminal_durable_state_is_accepted_but_does_not_mark_a_lane_completed
+    result, stderr, status = evaluate(
+      input_for(lifecycle_states: [lane_lifecycle_state(state: "active")])
     )
 
-    result, _stderr, status = evaluate(
-      input_for(lifecycle_receipts: [receipt]),
-      helper: workflow_control_helper
-    )
-
-    refute status.success?
-    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                    "lane-lifecycle-receipt-invalid"
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
     assert_empty result.dig("launch", "completed_lane_ids")
-  end
-
-  def test_caller_forged_producer_and_uri_cannot_advance_with_caller_trust
-    attacker_key = OpenSSL::PKey::RSA.generate(1024)
-    forged_receipt = lane_lifecycle_receipt(signing_key: attacker_key)
-    caller_trust = {
-      "AGENT_WORKFLOW_CONTROL_LIFECYCLE_TRUSTED_KEY_ID" => "test-workflow-control-key",
-      "AGENT_WORKFLOW_CONTROL_LIFECYCLE_TRUSTED_PUBLIC_KEY_PEM" => attacker_key.public_to_pem
-    }
-    assert_equal "pr-batch-workflow-control", forged_receipt.fetch("producer")
-    assert_equal(
-      "workflow-control-state://batch-plan-1/stage-dependency-plans/" \
-      "trusted-plan-1/waves/wave-a/lanes/lane-a/completed",
-      forged_receipt.fetch("receipt_ref")
-    )
-
-    result, _stderr, status = evaluate(
-      input_for(lifecycle_receipts: [forged_receipt]),
-      helper: workflow_control_helper,
-      env: caller_trust
-    )
-
-    refute status.success?
-    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                    "lane-lifecycle-receipt-invalid"
-    assert_empty result.dig("launch", "completed_lane_ids")
-  end
-
-  def test_lifecycle_signature_covers_timestamp_and_requires_known_key_identity
-    tampered = lane_lifecycle_receipt
-    tampered["recorded_at"] = "2026-07-30T00:00:02Z"
-    result, _stderr, status = evaluate(
-      input_for(lifecycle_receipts: [tampered]),
-      helper: workflow_control_helper
-    )
-
-    refute status.success?
-    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                    "lane-lifecycle-receipt-invalid"
-
-    unknown_key = lane_lifecycle_receipt(key_id: "UNKNOWN")
-    result, _stderr, status = evaluate(
-      input_for(lifecycle_receipts: [unknown_key]),
-      helper: workflow_control_helper
-    )
-
-    refute status.success?
-    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                    "lane-lifecycle-receipt-invalid"
-  end
-
-  def test_lifecycle_receipt_rejects_missing_or_unsafe_fixed_trust
-    receipt = lane_lifecycle_receipt
-    input = input_for(lifecycle_receipts: [receipt])
-    missing_helper, missing_config = installed_workflow_control_helper
-    File.unlink(missing_config)
-    wrong_namespace_helper, wrong_namespace_config = installed_workflow_control_helper
-    wrong_namespace_record = JSON.parse(File.read(wrong_namespace_config, encoding: "UTF-8"))
-    wrong_namespace_record["type"] = "agent-workflow-dispatcher-trust-anchor"
-    File.write(wrong_namespace_config, JSON.generate(wrong_namespace_record))
-    File.chmod(0o600, wrong_namespace_config)
-    unsafe_helpers = {
-      "missing trust config" => missing_helper,
-      "wrong trust namespace" => wrong_namespace_helper,
-      "symlinked trust config" => installed_workflow_control_helper(config_symlink: true).first,
-      "symlinked trust directory" => installed_workflow_control_helper(agents_symlink: true).first,
-      "writable trust config" => installed_workflow_control_helper(config_mode: 0o666).first,
-      "writable trust directory" => installed_workflow_control_helper(agents_mode: 0o777).first,
-      "writable installation root" => installed_workflow_control_helper(root_mode: 0o777).first
-    }
-
-    unsafe_helpers.each do |label, helper|
-      result, _stderr, status = evaluate(input, helper: helper)
-
-      refute status.success?, label
-      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                      "lane-lifecycle-receipt-invalid", label
-      assert_empty result.dig("launch", "completed_lane_ids"), label
-    end
   end
 
   def test_completed_lanes_never_relaunch_and_exhausted_group_has_none_eligible
@@ -722,14 +1078,13 @@ class BatchPlanPreflightTest < Minitest::Test
       "lane-b" => touch_map(2, ["CHANGELOG.md"])
     }
     groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
-    receipts = [
-      lane_lifecycle_receipt(lane_id: "lane-a"),
-      lane_lifecycle_receipt(lane_id: "lane-b")
+    states = [
+      lane_lifecycle_state(lane_id: "lane-a"),
+      lane_lifecycle_state(lane_id: "lane-b")
     ]
 
     result, stderr, status = evaluate(
-      input_for(lanes: lanes, maps: maps, groups: groups, lifecycle_receipts: receipts),
-      helper: workflow_control_helper
+      input_for(lanes: lanes, maps: maps, groups: groups, lifecycle_states: states)
     )
 
     assert status.success?, stderr
@@ -739,24 +1094,33 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal %w[lane-a lane-b], result.dig("launch", "completed_lane_ids")
   end
 
-  def test_lifecycle_receipt_collection_is_required_and_rejects_duplicate_lane_receipts
+  def test_lifecycle_state_collection_is_required_and_rejects_duplicate_lane_states
     missing = input_for
-    missing.delete("lane_lifecycle_receipts")
+    missing.delete("lane_lifecycle_states")
     result, _stderr, status = evaluate(missing)
 
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                    "lane-lifecycle-receipts-array-required"
+                    "lane-lifecycle-states-array-required"
 
-    receipt = lane_lifecycle_receipt
-    duplicate = input_for(lifecycle_receipts: [receipt, receipt.dup])
-    result, _stderr, status = evaluate(duplicate, helper: workflow_control_helper)
+    state = lane_lifecycle_state
+    duplicate = input_for(lifecycle_states: [state, state.dup])
+    result, _stderr, status = evaluate(duplicate)
 
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                    "lane-lifecycle-receipt-duplicate"
+                    "lane-lifecycle-state-duplicate"
     assert_empty result.dig("launch", "eligible_lane_ids")
     assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_helper_has_no_project_lifecycle_signing_or_fixed_trust_contract
+    source = File.read(HELPER, encoding: "UTF-8")
+
+    refute_includes source, "workflow-control-lifecycle-trust"
+    refute_includes source, "OpenSSL"
+    refute_includes source, "signature"
+    refute_includes source, "lane_lifecycle_receipts"
   end
 
   def test_typed_edit_edge_serializes_shared_path_and_gate_holds_consumer
@@ -796,7 +1160,7 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.dig("launch", "eligible_lane_ids")
   end
 
-  def test_edit_edge_overlap_is_safe_after_trusted_predecessor_completion
+  def test_edit_edge_overlap_is_safe_after_durable_predecessor_completion
     lanes = [lane("foundation"), lane("consumer")]
     maps = {
       "foundation" => touch_map(1, ["CHANGELOG.md"]),
@@ -808,10 +1172,9 @@ class BatchPlanPreflightTest < Minitest::Test
       "to" => "consumer",
       "type" => "edit"
     }]
-    receipt = lane_lifecycle_receipt(lane_id: "foundation")
+    state = lane_lifecycle_state(lane_id: "foundation")
     result, stderr, status = evaluate(
-      input_for(lanes: lanes, maps: maps, edges: edges, lifecycle_receipts: [receipt]),
-      helper: workflow_control_helper
+      input_for(lanes: lanes, maps: maps, edges: edges, lifecycle_states: [state])
     )
 
     assert status.success?, stderr
@@ -995,7 +1358,7 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal "batch-ror-a-17-1-wave-a-20260729", fixture.dig("input", "plan", "id")
     assert_equal "claude", fixture.dig("input", "plan", "backend")
     assert_equal "wave-a", fixture.dig("input", "plan", "active_wave")
-    assert_empty fixture.dig("input", "lane_lifecycle_receipts")
+    assert_empty fixture.dig("input", "lane_lifecycle_states")
     assert_empty fixture.dig("input", "stage_dependency_plan", "edges")
     assert(fixture.dig("input", "plan", "lanes").all? { |record| record["purpose"] == "implementation" })
     assert(fixture.dig("input", "plan", "lanes").all? { |record| record.dig("qa", "disposition") == "not-required" })
@@ -1057,6 +1420,63 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_includes codes, "lane-record-invalid"
     refute_includes codes, "invalid-envelope"
     assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_missing_lane_id_with_reservations_preserves_lane_identity_violations
+    input = input_for(reservations: [expansion_path_reservation])
+    input.dig("plan", "lanes", 0).delete("id")
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    codes = result.fetch("violations").map { |item| item.fetch("code") }
+    assert_includes codes, "lane-id-invalid-or-duplicate"
+    assert_includes codes, "lane-record-invalid"
+    refute_includes codes, "invalid-envelope"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_invalid_lane_ids_gate_reservations_and_preserve_invalid_stage_plan_violations
+    {
+      "missing stage plan" => ->(input) { input.delete("stage_dependency_plan") },
+      "malformed stage plan" => ->(input) { input["stage_dependency_plan"] = { "contract" => "UNKNOWN" } }
+    }.each do |label, invalidate_stage_plan|
+      input = input_for(reservations: [expansion_path_reservation])
+      input.dig("plan", "lanes", 0).delete("id")
+      invalidate_stage_plan.call(input)
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, label
+      codes = result.fetch("violations").map { |item| item.fetch("code") }
+      assert_includes codes, "lane-id-invalid-or-duplicate", label
+      assert_includes codes, "lane-record-invalid", label
+      assert_includes codes, "stage-dependency-plan-invalid", label
+      refute_includes codes, "expansion-path-reservations-invalid", label
+      refute_includes codes, "invalid-envelope", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+  end
+
+  def test_valid_lane_ids_preserve_structured_violations_when_stage_plan_is_invalid_with_reservations
+    {
+      "missing stage plan" => ->(input) { input.delete("stage_dependency_plan") },
+      "malformed stage plan" => ->(input) { input["stage_dependency_plan"] = { "contract" => "UNKNOWN" } }
+    }.each do |label, invalidate_stage_plan|
+      input = input_for(reservations: [expansion_path_reservation])
+      input.dig("file_touch_map", "lane-a")["source"] = "local-diff"
+      invalidate_stage_plan.call(input)
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, label
+      codes = result.fetch("violations").map { |item| item.fetch("code") }
+      assert_includes codes, "file-touch-map-unverified", label
+      assert_includes codes, "expansion-path-reservations-invalid", label
+      assert_includes codes, "stage-dependency-plan-invalid", label
+      refute_includes codes, "invalid-envelope", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
   end
 
   def test_multiple_malformed_lane_ids_preserve_the_structured_lane_identity_violation
