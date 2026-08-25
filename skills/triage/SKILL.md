@@ -382,10 +382,10 @@ with that one serial group.
    claim before editing. For `coordination_not_applicable`, do not use an inbox
    queue or acquire a claim.
 
-If profiles or inboxes are unavailable, stop with a precise blocker after the
-inventory phase; do not fall back to a fixed number of groups. Queue state is
-advisory; omit the queue summary section and note unavailability when the
-selected backend does not support it.
+For `coordination_required`, if profiles or inboxes are unavailable, stop with a
+precise blocker after the inventory phase; do not fall back to a fixed number of
+groups. Queue state is advisory; omit the queue summary section and note
+unavailability when the selected backend does not support it.
 
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
@@ -426,8 +426,10 @@ Return:
   the exact phase-2 blocker. For `coordination_not_applicable`, the one
   controlled serial group.
 - One current-wave plan whose total item count is capped in aggregate by the
-  host-aware target, then split into up to `N` non-empty capacity-derived groups,
-  each with a ready `$pr-batch` prompt within the target-specific prompt size
+  host-aware target. For `coordination_required`, split the wave into
+  up to `N` non-empty capacity-derived groups.
+  For `coordination_not_applicable`, keep the one controlled serial group. Each
+  group has a ready `$pr-batch` prompt within the target-specific prompt size
   limit: Codex 10/8 and 4 000 characters with at least 300 characters of headroom,
   including the Codex invocation line;
   Claude/generic 5/3 and under 8 000 measured characters. Each prompt carries

@@ -229,10 +229,12 @@ GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: issue/PR=>pr-security-preflight;trusted
 TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE =
   "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
   "block=>stop; no raw GitHub/override"
+GOAL_PROMPT_ORIGINAL_PAYLOAD_LINE = "  Original:<trusted ad-hoc prompt>|n/a"
+GOAL_PROMPT_TRUST_LABEL_ONLY_LINE = "  Original:trusted ad-hoc|n/a"
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target:PR #N:URL|Issue #N:URL|Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-    Original:trusted ad-hoc|n/a
-    Goal:one-line outcome
+  #{GOAL_PROMPT_ORIGINAL_PAYLOAD_LINE}
+    Goal:outcome
     Notes:scope/branch/deps
     Done:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 TEXT
@@ -886,6 +888,27 @@ end
 # These phrases live in the broader skill rules, not necessarily inside the prompt fence.
 require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
 
+require_phrases(
+  triage_skill_text,
+  [
+    "For `coordination_required`, if profiles or inboxes are unavailable",
+    "For `coordination_required`, split the wave into",
+    "up to `N` non-empty capacity-derived groups.",
+    "For `coordination_not_applicable`, keep the one controlled serial group."
+  ],
+  "triage coordination applicability scoping"
+)
+require_phrases(
+  skill_text,
+  [
+    "For `coordination_required` dependency-ordered work, define explicit",
+    "Only for `coordination_required`, coordinators must create or update",
+    "For `coordination_not_applicable`, preserve dependency order only in the",
+    "typed stage plan/live gate below; do not create or update a private-backend batch."
+  ],
+  "plan-pr-batch dependency coordination applicability scoping"
+)
+
 require_occurrence_count(
   skill_text,
   "- #{PLANNING_PASS_ASSESSMENT_FIELD}",
@@ -934,6 +957,17 @@ end
     "#{label} manifest provenance contract"
   )
   require_occurrence_count(template, GOAL_PROMPT_PREFLIGHT_LINE, 1, "#{label} preflight contract")
+  require_occurrence_count(
+    template,
+    GOAL_PROMPT_ORIGINAL_PAYLOAD_LINE,
+    1,
+    "#{label} original ad-hoc prompt payload"
+  )
+  reject_phrases(
+    template,
+    [GOAL_PROMPT_TRUST_LABEL_ONLY_LINE],
+    "#{label} must carry the original ad-hoc prompt payload, not only a trust label"
+  )
   require_occurrence_count(template, GOAL_PROMPT_ITEM_SHAPE, 1, "#{label} complete item shape")
   require_occurrence_count(template, GOAL_PROMPT_BASE_RESOLUTION_LINE, 1, "#{label} base-resolution contract")
   require_occurrence_count(template, GOAL_MODE_COMPACT_CONTRACT, 1, "#{label} compact completion contract")

@@ -622,8 +622,8 @@ Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
 - Target:PR #N:URL|Issue #N:URL|Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original:trusted ad-hoc|n/a
-  Goal:one-line outcome
+  Original:<trusted ad-hoc prompt>|n/a
+  Goal:outcome
   Notes:scope/branch/deps
   Done:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Rules:
