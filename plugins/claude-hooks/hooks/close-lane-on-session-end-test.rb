@@ -6,6 +6,8 @@ require "json"
 require "minitest/autorun"
 require "open3"
 require "tmpdir"
+require "timeout"
+require_relative "lib/hook_support"
 
 SESSION_END_HOOK = File.expand_path("close-lane-on-session-end", __dir__)
 
@@ -105,6 +107,30 @@ class CloseLaneOnSessionEndTest < Minitest::Test
     end
   end
 
+  def test_verbose_emitter_output_is_drained_and_bounded
+    with_repo(backend: "private-http") do |repo, emitter, _calls|
+      File.write(emitter, <<~RUBY)
+        #!/usr/bin/env ruby
+        STDOUT.write("unused stdout" * 400_000)
+        STDERR.write("first useful line\n")
+        256.times { STDERR.write("x" * 16_384) }
+        exit 3
+      RUBY
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      result = HookSupport.run_bounded([emitter], timeout_seconds: 3, chdir: repo)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      refute result[:ok]
+      assert_equal 3, result[:status].exitstatus
+      assert_nil result[:failure]
+      assert_equal "", result[:stdout], "unused stdout must be discarded"
+      assert_operator result[:stderr].bytesize, :<=, 4096
+      assert result[:stderr].start_with?("first useful line\n")
+      assert_operator elapsed, :<, 3, "draining verbose stderr must not block the emitter"
+    end
+  end
+
   def test_records_unknown_when_the_emitter_exceeds_its_deadline
     with_repo(backend: "private-http", emitter_sleep: 10) do |repo, emitter, _calls|
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -115,6 +141,43 @@ class CloseLaneOnSessionEndTest < Minitest::Test
       assert_equal 0, status.exitstatus
       assert_includes stderr, "UNKNOWN: drain event write timed out"
       assert_operator elapsed, :<, 5, "a slow backend must not delay session shutdown"
+    end
+  end
+
+  def test_timeout_kills_a_term_ignoring_descendant_after_the_leader_exits
+    with_repo(backend: "private-http") do |repo, emitter, _calls|
+      child_pid = nil
+      begin
+        marker = File.join(repo, "late-marker")
+        child_pid_path = File.join(repo, "child.pid")
+        File.write(emitter, <<~RUBY)
+          #!/usr/bin/env ruby
+          child_pid = fork do
+            trap("TERM") { }
+            sleep 1.3
+            File.write(#{marker.inspect}, "late mutation")
+          end
+          File.write(#{child_pid_path.inspect}, child_pid.to_s)
+          trap("TERM") { exit 0 }
+          sleep 30
+        RUBY
+
+        status, stderr = run_hook(repo, advertisement: [emitter, "event"],
+                                        env: { "AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS" => "0.5" })
+        child_pid = Integer(File.read(child_pid_path))
+        sleep 0.9
+
+        assert_equal 0, status.exitstatus
+        assert_includes stderr, "UNKNOWN: drain event write timed out"
+        refute File.exist?(marker), "a TERM-ignoring descendant must not mutate after the hook returns"
+        assert_raises(Errno::ESRCH) { Process.kill(0, child_pid) }
+      ensure
+        begin
+          Process.kill("KILL", child_pid) if child_pid
+        rescue Errno::ESRCH
+          nil
+        end
+      end
     end
   end
 
@@ -139,6 +202,41 @@ class CloseLaneOnSessionEndTest < Minitest::Test
 
     assert_equal 0, status.exitstatus
     assert_includes stderr, "skipped: unreadable SessionEnd payload"
+  end
+
+  def test_stops_reading_a_payload_when_stdin_is_held_open
+    with_repo(backend: "private-http") do |repo, _emitter, _calls|
+      input_reader, input_writer = IO.pipe
+      err_reader, err_writer = IO.pipe
+      pid = Process.spawn(
+        SESSION_END_HOOK,
+        in: input_reader,
+        out: File::NULL,
+        err: err_writer
+      )
+      input_reader.close
+      err_writer.close
+      input_writer.write({ "hook_event_name" => "SessionEnd", "reason" => "clear", "cwd" => repo }.to_json)
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      _waited_pid, status = Timeout.timeout(2) { Process.wait2(pid) }
+      pid = nil
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+      stderr = err_reader.read
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "skipped: SessionEnd payload read timed out"
+      assert_operator elapsed, :<, 2, "a held-open stdin must finish well inside the host's 5s timeout"
+    ensure
+      input_writer&.close unless input_writer&.closed?
+      input_reader&.close unless input_reader&.closed?
+      err_writer&.close unless err_writer&.closed?
+      err_reader&.close unless err_reader&.closed?
+      if pid
+        Process.kill("KILL", pid)
+        Process.wait(pid)
+      end
+    end
   end
 
   private

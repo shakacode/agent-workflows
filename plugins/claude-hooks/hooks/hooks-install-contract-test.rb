@@ -88,6 +88,7 @@ class HooksInstallContractTest < Minitest::Test
     assert_includes documentation, "close-lane-on-session-end"
     refute_includes documentation, "block-merge-without-ci-readiness"
     refute_includes documentation, "bypass_permissions_disabled"
+    assert_includes documentation, '"args": []'
     assert_includes documentation, "Codex"
   end
 
@@ -95,6 +96,7 @@ class HooksInstallContractTest < Minitest::Test
 
   def assert_adapter(hook, basename)
     assert_equal "command", hook.fetch("type")
+    assert_equal [], hook.fetch("args"), "command hooks must use the host's exec form"
     command = hook.fetch("command")
 
     assert_includes command, "${CLAUDE_PLUGIN_ROOT}/"

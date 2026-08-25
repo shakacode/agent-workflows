@@ -2,7 +2,6 @@
 
 require "date"
 require "json"
-require "tempfile"
 require "yaml"
 
 # Shared plumbing for the Claude Code SessionEnd adapter in this directory.
@@ -10,6 +9,14 @@ module HookSupport
   # A hook payload is a small JSON object. Cap the read so a malformed or
   # hostile stream cannot make a hook hang or exhaust memory.
   MAX_PAYLOAD_BYTES = 1024 * 1024
+
+  # A SessionEnd writer is expected to close stdin after one small JSON value.
+  # Bound real IO reads so a held-open pipe cannot consume the host's 5s budget.
+  PAYLOAD_READ_TIMEOUT_SECONDS = 0.5
+
+  # Preserve enough stderr to retain a useful first-line diagnostic while
+  # keeping hook memory fixed even when an emitter is noisy or continuous.
+  MAX_CAPTURED_STDERR_BYTES = 4096
 
   SEAM_RELATIVE_PATH = ".agents/agent-workflow.yml"
 
@@ -32,19 +39,38 @@ module HookSupport
   end
 
   # Parse the hook payload from stdin. Returns the payload Hash, :oversized when
-  # the stream is larger than the read cap, or nil when it is absent or
-  # unparseable.
+  # the stream is larger than the read cap, :timed_out when real IO is not
+  # closed before the read deadline, or nil when it is absent or unparseable.
   #
   # The distinct oversized result lets the adapter report why it skipped the
   # event without retaining an unbounded input in memory.
   def read_payload(input = $stdin)
-    raw = input.read(MAX_PAYLOAD_BYTES + 1)
+    raw = input.is_a?(IO) ? read_io_payload(input) : input.read(MAX_PAYLOAD_BYTES + 1)
+    return raw if %i[oversized timed_out].include?(raw)
     return :oversized if raw && raw.bytesize > MAX_PAYLOAD_BYTES
 
     payload = JSON.parse(decodable(raw))
     payload.is_a?(Hash) ? payload : nil
   rescue JSON::ParserError, EncodingError, IOError, SystemCallError
     nil
+  end
+
+  def read_io_payload(input)
+    raw = +"".b
+    deadline = monotonic_now + PAYLOAD_READ_TIMEOUT_SECONDS
+
+    loop do
+      remaining_time = deadline - monotonic_now
+      return :timed_out unless remaining_time.positive?
+      return :timed_out unless IO.select([input], nil, nil, remaining_time)
+
+      chunk = input.read_nonblock(MAX_PAYLOAD_BYTES + 1 - raw.bytesize, exception: false)
+      next if chunk == :wait_readable
+      return raw if chunk.nil?
+
+      raw << chunk
+      return :oversized if raw.bytesize > MAX_PAYLOAD_BYTES
+    end
   end
 
   # Best-effort UTF-8 view of arbitrary bytes for JSON parsing.
@@ -105,28 +131,53 @@ module HookSupport
       return { ok: false, status: nil, stdout: "", stderr: "argument contains a NUL byte", failure: "unsafe_argument" }
     end
 
-    out_file = Tempfile.new("agent-workflows-hook-out")
-    err_file = Tempfile.new("agent-workflows-hook-err")
-    options = { out: out_file.path, err: err_file.path, pgroup: true }
+    err_reader, err_writer = IO.pipe
+    captured_stderr = +"".b
+    stderr_drainer = Thread.new do
+      loop do
+        chunk = err_reader.readpartial(16 * 1024)
+        remaining = MAX_CAPTURED_STDERR_BYTES - captured_stderr.bytesize
+        captured_stderr << chunk.byteslice(0, remaining) if remaining.positive?
+      end
+    rescue EOFError
+      nil
+    rescue IOError
+      nil
+    end
+
+    options = { out: File::NULL, err: err_writer, pgroup: true }
     options[:chdir] = chdir if chdir
     begin
       # The [command, argv0] form guarantees exec without a shell even when the
       # command is a single element or contains shell metacharacters.
       pid = Process.spawn([argv.first, argv.first], *argv.drop(1), **options)
+      err_writer.close
       status, timed_out = await(pid, timeout_seconds, grace_seconds)
+      finish_stderr_capture(err_reader, err_writer, stderr_drainer)
       {
         ok: !timed_out && status&.success? || false,
         status: status,
-        stdout: File.read(out_file.path),
-        stderr: File.read(err_file.path),
+        stdout: "",
+        stderr: decodable(captured_stderr),
         failure: timed_out ? "timeout" : nil
       }
     rescue SystemCallError, ArgumentError => e
       { ok: false, status: nil, stdout: "", stderr: e.message, failure: "spawn_error" }
     ensure
-      out_file.close!
-      err_file.close!
+      finish_stderr_capture(err_reader, err_writer, stderr_drainer)
     end
+  end
+
+  def finish_stderr_capture(reader, writer, drainer)
+    writer.close unless writer.closed?
+    return if drainer.join(0.25)
+
+    reader.close unless reader.closed?
+    drainer.join(0.25)
+  rescue IOError
+    nil
+  ensure
+    reader.close unless reader.closed?
   end
 
   def await(pid, timeout_seconds, grace_seconds)
@@ -149,14 +200,39 @@ module HookSupport
     signal_group(pid, "TERM")
     deadline = monotonic_now + grace_seconds
     while monotonic_now < deadline
-      return if Process.waitpid2(pid, Process::WNOHANG)
+      reap_leader(pid)
+      return unless process_group_alive?(pid)
 
       sleep 0.02
     end
-    signal_group(pid, "KILL")
+
+    if process_group_alive?(pid)
+      signal_group(pid, "KILL")
+      kill_deadline = monotonic_now + grace_seconds
+      while monotonic_now < kill_deadline
+        reap_leader(pid)
+        return unless process_group_alive?(pid)
+
+        sleep 0.02
+      end
+    end
+
+    reap_leader(pid)
+  end
+
+  def reap_leader(pid)
     Process.waitpid2(pid, Process::WNOHANG)
   rescue Errno::ECHILD
     nil
+  end
+
+  def process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
   end
 
   def signal_group(pid, signal)

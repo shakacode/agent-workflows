@@ -15,10 +15,9 @@ canonical non-terminal signal `human_intervention` with `kind: drain`, following
 the typed-event rules in
 [coordination-backend.md](../coordination-backend.md#operational-signal-events):
 
-- Backend `n/a`, or no readable seam, skips silently. This source repository
-  sets `coordination_backend: "n/a"`, so the adapter no-ops here.
-- No advertised transport records `typed event transport: unavailable` and
-  skips.
+- Backend `n/a`, or no readable seam, skips silently.
+- An active backend continues to the advertised transport. If no transport is
+  advertised, the adapter records `typed event transport: unavailable` and skips.
 - A missing, malformed, or unsafe advertisement is an attempted-write failure.
 - An advertised write runs the exact executable and ordered opaque argv with no
   shell evaluation, under a finite deadline, in its own process group.
@@ -56,6 +55,7 @@ form and is the copy source:
           {
             "type": "command",
             "command": "AGENT_WORKFLOWS_CHECKOUT/plugins/claude-hooks/hooks/close-lane-on-session-end",
+            "args": [],
             "timeout": 5
           }
         ]
@@ -66,6 +66,8 @@ form and is the copy source:
 ```
 
 Restart Claude Code, or re-read settings, for the change to take effect.
+The explicit empty `args` array selects the host's exec form, so spaces or shell
+metacharacters in the checkout path are not parsed as shell syntax.
 
 ## Configuration
 
@@ -86,8 +88,10 @@ export AGENT_WORKFLOWS_DRAIN_EVENT_ARGV='["agent-coord","event","--type","human_
 ```
 
 Only an operator can reach these variables. The adapter reads a bounded JSON
-payload, rejects NUL-containing executable arguments, invokes no shell, and
-terminates the entire advertised process group when the finite deadline expires.
+payload under a short finite read deadline, rejects NUL-containing executable
+arguments, invokes no shell, and terminates the entire advertised process group
+when the finite deadline expires. Emitter stdout is discarded; stderr is drained
+continuously while only its first 4 KiB is retained for a useful failure detail.
 
 ## Codex parity
 

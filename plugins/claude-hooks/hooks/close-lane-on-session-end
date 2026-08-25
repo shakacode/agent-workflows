@@ -65,6 +65,7 @@ module CloseLaneOnSessionEnd
 
     payload = HookSupport.read_payload(input)
     return "skipped: SessionEnd payload too large to read" if payload == :oversized
+    return "skipped: SessionEnd payload read timed out" if payload == :timed_out
     return "skipped: unreadable SessionEnd payload" unless payload.is_a?(Hash)
     return "skipped: session end reason is #{payload['reason']}" if SKIPPED_REASONS.include?(payload["reason"].to_s)
 
