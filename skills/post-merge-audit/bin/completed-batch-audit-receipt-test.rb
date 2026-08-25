@@ -233,6 +233,71 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_rejects_multiple_allowed_preflight_blockers
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(
+      target,
+      unattributed_lane_names: %w[ror-d-issue-4731 ror-d-issue-4732]
+    )
+
+    assert_equal 2, preflight.fetch("blockers").length
+    assert(preflight.fetch("blockers").all? { |blocker| blocker.match?(/target is absent or ambiguous\z/) })
+
+    api = accepted_deferral_api(preflight, unpublished_predecessor_marker: blocked)
+    with_accepted_deferral_api(preflight, api) do
+      assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
+  def test_accepted_deferral_derives_the_sole_blocker_from_a_nonready_disposition
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    ).sub(
+      "findings: OUTSTANDING https://github.com/shakacode/agent-workflows/issues/320",
+      "findings: none"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+
+    api = accepted_deferral_api(preflight, unpublished_predecessor_marker: blocked)
+    with_accepted_deferral_api(preflight, api) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+
+      assert CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: [target],
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: preflight
+      ).fetch("ready")
+    end
+  end
+
   def test_post_publication_accepted_deferral_reauthenticates_the_append_only_predecessor
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"),
@@ -277,6 +342,60 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       refute replay.fetch("ready")
       assert_equal ["completed-batch-audit accepted deferral mismatch or stale"], replay.fetch("blockers")
+    end
+  end
+
+  def test_post_publication_accepted_deferral_replay_allows_the_authenticated_tracking_issue_to_close
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    targets = [target]
+    preflight = accepted_deferral_publication_preflight(target)
+    predecessor = accepted_deferral_predecessor_receipt(blocked)
+    terminal = nil
+
+    closed_api = accepted_deferral_api(preflight, predecessor:, tracking_issue_state: "closed")
+    with_accepted_deferral_api(preflight, closed_api) do
+      assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets:,
+          publication_preflight: preflight,
+          predecessor_receipt: predecessor,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight, predecessor:)) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets:,
+        publication_preflight: preflight,
+        predecessor_receipt: predecessor,
+        coordination_backend: REAL_BACKEND
+      )
+    end
+
+    with_accepted_deferral_api(preflight, closed_api) do
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: targets,
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: preflight
+      )
+
+      assert replay.fetch("ready")
+      assert_empty replay.fetch("blockers")
     end
   end
 
@@ -3077,7 +3196,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     }
   end
 
-  def accepted_deferral_publication_preflight(target, blockers: nil)
+  def accepted_deferral_publication_preflight(
+    target,
+    blockers: nil,
+    unattributed_lane_names: ["ror-d-issue-4731"]
+  )
     head_sha = "4" * 40
     coordination_status = {
       "scope" => { "kind" => "batch", "batch_id" => "ror-d-issue-4731-20260817" },
@@ -3098,12 +3221,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             "pr_url" => "https://github.com/shakacode/react_on_rails/pull/4918",
             "evidence_url" => "https://github.com/shakacode/react_on_rails/pull/4918"
           },
-          {
-            "name" => "ror-d-issue-4731",
-            "status" => "done",
-            "terminal" => "done",
-            "closed_at" => "2026-08-17T20:00:00Z"
-          }
+          *unattributed_lane_names.map do |lane_name|
+            {
+              "name" => lane_name,
+              "status" => "done",
+              "terminal" => "done",
+              "closed_at" => "2026-08-17T20:00:00Z"
+            }
+          end
         ]
       }]
     }
@@ -3179,7 +3304,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     }
   end
 
-  def accepted_deferral_api(preflight, predecessor: nil, mutate_decision: nil, corrupt_predecessor: false)
+  def accepted_deferral_api(
+    preflight,
+    predecessor: nil,
+    mutate_decision: nil,
+    corrupt_predecessor: false,
+    tracking_issue_state: "open",
+    unpublished_predecessor_marker: nil
+  )
     lambda do |_host, endpoint, **_options|
       case endpoint
       when "repos/shakacode/react_on_rails/issues/comments/5400000000"
@@ -3196,7 +3328,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
               mechanism: publication-preflight-target-resolution
               tracking_issue: https://github.com/shakacode/agent-workflows/issues/320
               owner: agent-workflows-maintainer
-              original_receipt_sha256: #{predecessor ? "sha256:#{predecessor.fetch('sha256')}" : "sha256:#{Digest::SHA256.hexdigest(File.read(File.join(FIXTURES, 'completed-batch-accepted-deferral-ror-blocked.txt'), encoding: 'UTF-8'))}"}
+              original_receipt_sha256: #{predecessor ? "sha256:#{predecessor.fetch('sha256')}" : "sha256:#{Digest::SHA256.hexdigest(unpublished_predecessor_marker || File.read(File.join(FIXTURES, 'completed-batch-accepted-deferral-ror-blocked.txt'), encoding: 'UTF-8'))}"}
               original_receipt_url: #{predecessor&.fetch('url') || 'not-published'}
               original_receipt_author: #{predecessor&.fetch('author') || 'not-applicable'}
               original_receipt_created_at: #{predecessor&.fetch('created_at') || 'not-applicable'}
@@ -3218,7 +3350,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         {
           "number" => 320,
           "html_url" => "https://github.com/shakacode/agent-workflows/issues/320",
-          "state" => "open"
+          "state" => tracking_issue_state
         }
       when "repos/shakacode/react_on_rails/issues/4918"
         {

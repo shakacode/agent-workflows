@@ -740,7 +740,8 @@ module CompletedBatchAuditReceipt
     expected_batch_id:,
     targets:,
     publication_preflight:,
-    coordination_backend:
+    coordination_backend:,
+    accepted_tracking_issue: nil
   )
     return unless input.is_a?(Hash) && input.keys.sort == %w[contract decision_url version]
     return unless input["contract"] == ACCEPTED_DEFERRAL_INPUT_CONTRACT && input["version"] == 1
@@ -768,8 +769,17 @@ module CompletedBatchAuditReceipt
     return unless safe_canonical_ref?(blocker_ref)
     return unless accepted_deferral_predecessor_blocker?(predecessor_marker, blocker_ref)
 
-    tracking_issue = authenticated_tracking_issue(decision.fetch("tracking_issue"))
+    tracking_issue = authenticated_tracking_issue(
+      decision.fetch("tracking_issue"),
+      allow_closed: !accepted_tracking_issue.nil?
+    )
     return unless tracking_issue && tracking_issue.fetch("url") == blocker_ref.canonical_display
+
+    if accepted_tracking_issue
+      return unless accepted_tracking_issue == tracking_issue.merge("state" => "open")
+
+      tracking_issue = accepted_tracking_issue
+    end
 
     CompletedBatchPublicationPreflight.canonicalize(
       "contract" => ACCEPTED_DEFERRAL_CONTRACT,
@@ -820,7 +830,8 @@ module CompletedBatchAuditReceipt
       expected_batch_id:,
       targets: deterministic_targets(expected_targets),
       publication_preflight:,
-      coordination_backend:
+      coordination_backend:,
+      accepted_tracking_issue: snapshot["tracking_issue"]
     )
     refreshed == snapshot
   rescue Error, KeyError, TypeError, ArgumentError
@@ -864,7 +875,7 @@ module CompletedBatchAuditReceipt
     return false unless state.records.one? && state.records.first.non_ready?
     return false if state.fields.values.any? { |value| unknown_value?(value) }
 
-    finding_refs(state.fields.fetch("findings"), records: state.records)&.one?
+    accepted_deferral_predecessor_refs(state)&.one?
   end
 
   def accepted_deferral_predecessor_blocker?(marker, blocker_ref)
@@ -872,8 +883,18 @@ module CompletedBatchAuditReceipt
     return false unless state&.records&.one?
 
     record = state.records.first
-    findings = finding_refs(state.fields.fetch("findings"), records: state.records)
-    record.ref_identity == blocker_ref.identity && findings&.one? && findings.first.identity == blocker_ref.identity
+    blocker_refs = accepted_deferral_predecessor_refs(state)
+    record.ref_identity == blocker_ref.identity && blocker_refs&.one? &&
+      blocker_refs.first.identity == blocker_ref.identity
+  end
+
+  def accepted_deferral_predecessor_refs(state)
+    findings = state.fields.fetch("findings")
+    return finding_refs(findings, records: state.records) unless findings == "none"
+
+    state.records.select(&:non_ready?).map do |record|
+      CanonicalRef.new(canonical_display: record.ref, identity: record.ref_identity)
+    end
   end
 
   def accepted_deferral_predecessor_snapshot(marker, receipt)
@@ -921,7 +942,7 @@ module CompletedBatchAuditReceipt
     return false unless preflight["eligible"] == false && preflight["verdict"] == "BLOCKED"
 
     blockers = preflight["blockers"]
-    return false unless blockers.is_a?(Array) && !blockers.empty?
+    return false unless blockers.is_a?(Array) && blockers.one?
     return false unless blockers.all? do |blocker|
       blocker.is_a?(String) && !unknown_value?(blocker) &&
       ACCEPTED_DEFERRAL_BLOCKER_PATTERNS.any? { |pattern| blocker.match?(pattern) }
@@ -1162,7 +1183,7 @@ module CompletedBatchAuditReceipt
     nil
   end
 
-  def authenticated_tracking_issue(value)
+  def authenticated_tracking_issue(value, allow_closed: false)
     target = parse_target_url(value)
     return unless target && target.fetch("type") == "issue"
 
@@ -1172,9 +1193,11 @@ module CompletedBatchAuditReceipt
     )
     return if payload.key?("pull_request")
     return unless payload["number"] == target.fetch("number") && payload["html_url"] == value
-    return unless payload["state"] == "open"
 
-    target.merge("url" => value, "state" => "open")
+    allowed_states = allow_closed ? %w[open closed] : ["open"]
+    return unless allowed_states.include?(payload["state"])
+
+    target.merge("url" => value, "state" => payload.fetch("state"))
   rescue Error, KeyError, TypeError, ArgumentError
     nil
   end
