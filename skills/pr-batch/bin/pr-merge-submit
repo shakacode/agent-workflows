@@ -407,6 +407,9 @@ module PrMergeSubmit
 
       expected_head = @merge_assurance_receipt.dig("bindings", "head_sha")
       current_check_runs = fetch_current_exact_head_check_runs!(options, expected_head:)
+      validate_complete_check_run_inventory!(
+        refreshed, current_check_runs, dispositions:, trusted_ci_policy:
+      )
       resolved_disposition_indexes = []
       trusted_ci_policy.fetch("optional_approval_held_checks").each do |rule|
         matching_current = current_check_runs.select do |check_run|
@@ -468,6 +471,70 @@ module PrMergeSubmit
       refreshed
     rescue JSON::GeneratorError, JSON::ParserError => e
       raise Error, "current CI evidence could not be copied safely: #{e.message}"
+    end
+
+    def validate_complete_check_run_inventory!(ci_result, current_rows, dispositions:, trusted_ci_policy:)
+      current_identity_groups = current_rows.group_by { |row| row.values_at("app_slug", "name") }
+      if current_identity_groups.any? { |_identity, rows| rows.length > 1 }
+        raise Error, "current CI exact-head inventory repeats a check-run app/name identity"
+      end
+
+      scopes = ci_result["scopes"]
+      raise Error, "current CI evidence scopes are malformed" unless scopes.is_a?(Hash)
+
+      receipt_check_runs = scopes.flat_map do |scope_name, scope|
+        raise Error, "current CI evidence scope #{scope_name} is malformed" unless scope.is_a?(Hash)
+
+        scope_rows = scope["rows"]
+        raise Error, "current CI evidence scope #{scope_name} rows are malformed" unless scope_rows.is_a?(Array)
+
+        scope_rows.filter_map do |row|
+          next unless row.is_a?(Hash) && row["kind"] == "check_run"
+          unless row["id"].is_a?(Integer) && row["id"].positive? &&
+                 row["app_slug"].is_a?(String) && !row["app_slug"].empty? &&
+                 row["name"].is_a?(String) && !row["name"].empty?
+            raise Error, "current CI evidence contains a malformed check-run identity"
+          end
+
+          [scope_name, row]
+        end
+      end
+      receipt_ids = receipt_check_runs.group_by { |_scope_name, row| row["id"] }
+      receipt_names = receipt_check_runs.group_by { |_scope_name, row| row.values_at("app_slug", "name") }
+      if receipt_ids.any? { |_identity, rows| rows.length > 1 } ||
+         receipt_names.any? { |_identity, rows| rows.length > 1 }
+        raise Error, "current CI evidence repeats a check-run identity across scopes or rows"
+      end
+
+      required_rows = scopes.dig("required_status_check_rollup", "rows")
+      current_rows.each do |row|
+        next if PrCiReadiness.evidence_row_state(row) == "READY"
+        next if authenticated_policy_disposition?(
+          row, dispositions:, trusted_ci_policy:, required_rows:
+        )
+
+        raise Error, "current CI exact-head inventory contains a blocking check #{row['app_slug']}/#{row['name']}"
+      end
+    end
+
+    # An exact authenticated disposition may proceed to the ordinary refresh
+    # and reassessment below. That reassessment independently rejects it unless
+    # the refreshed row is still genuinely approval-held (or has become READY).
+    def authenticated_policy_disposition?(row, dispositions:, trusted_ci_policy:, required_rows:)
+      return false if Array(required_rows).any? do |required|
+        PrCiReadiness.required_matches_optional_row?(required, row)
+      end
+
+      matching_dispositions = dispositions.select do |disposition|
+        PrCiReadiness.disposition_matches_row?(disposition, row)
+      end
+      return false unless matching_dispositions.length == 1
+
+      disposition = matching_dispositions.first
+      trusted_ci_policy.fetch("optional_approval_held_checks").one? do |rule|
+        rule["id"] == disposition["rule_id"] &&
+          rule["app_slug"] == disposition["app_slug"] && rule["name"] == disposition["name"]
+      end
     end
 
     def merge_newly_observed_policy_row!(rows, current, rule:)

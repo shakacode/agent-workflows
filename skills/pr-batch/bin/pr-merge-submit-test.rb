@@ -1432,6 +1432,51 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  def test_new_unrelated_blocking_check_run_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[unrelated_failure unrelated_pending unrelated_held].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s,
+          receipt_mode: :optional_held,
+          merge_submission:,
+          ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_new_unrelated_success_remains_compatible_with_direct_submission
+    result, log = run_cli(
+      mode: "direct", receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" }, ci_transition: :unrelated_success
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
+  end
+
+  def test_cross_scope_check_run_identity_stops_before_direct_mutation
+    result, log = run_cli(
+      mode: "direct", receipt_mode: :optional_held_cross_scope,
+      merge_submission: { "mode" => "direct" }, ci_transition: :cross_scope_success
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "current CI"
+    refute_includes log, "mergePullRequest"
+  end
+
   def test_sole_successful_replacement_is_accepted_with_final_ordering_on_every_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
@@ -1543,7 +1588,7 @@ class PrMergeSubmitTest < Minitest::Test
         :refresh_policy_disposed_ci_result!, duplicated, {}, trusted_ci_policy:
       )
     end
-    assert_equal "current CI policy disposition does not identify exactly one receipt row", error.message
+    assert_equal "current CI evidence repeats a check-run identity across scopes or rows", error.message
   end
 
   def test_optional_approval_held_receipt_cannot_supply_missing_malformed_or_tampered_policy
@@ -2271,6 +2316,16 @@ class PrMergeSubmitTest < Minitest::Test
         ]
       )
       ci_result["ci_policy"] = trusted_ci_policy
+      if mode == :optional_held_cross_scope
+        duplicate = {
+          "kind" => "check_run", "id" => 99, "name" => "unrelated-check",
+          "status" => "completed", "conclusion" => "success",
+          "started_at" => "2026-08-25T12:00:00Z", "head_sha" => head,
+          "app_slug" => "unrelated-app", "dependabot" => false
+        }
+        ci_result.dig("scopes", "github_actions", "rows") << duplicate
+        ci_result.dig("scopes", "other", "rows") << duplicate.dup
+      end
     end
     autonomous_result = {
       "verdict" => "autonomous-merge-eligible",
@@ -2712,6 +2767,25 @@ class PrMergeSubmitTest < Minitest::Test
           id: 32, status: "completed", conclusion: "success",
           started_at: "2026-08-25T12:00:00Z"
         )
+        unrelated_failure = build_check_run.call(
+          id: 99, status: "completed", conclusion: "failure",
+          started_at: "2026-08-25T12:00:00Z", name: "unrelated-check",
+          app_slug: "unrelated-app"
+        )
+        unrelated_pending = build_check_run.call(
+          id: 99, status: "in_progress", conclusion: nil,
+          started_at: "2026-08-25T12:00:00Z", name: "unrelated-check",
+          app_slug: "unrelated-app"
+        )
+        unrelated_held = build_check_run.call(
+          id: 99, status: "in_progress", conclusion: nil, started_at: nil,
+          name: "unrelated-check", app_slug: "unrelated-app"
+        )
+        unrelated_success = build_check_run.call(
+          id: 99, status: "completed", conclusion: "success",
+          started_at: "2026-08-25T12:00:00Z", name: "unrelated-check",
+          app_slug: "unrelated-app"
+        )
         transition = #{ci_transition.inspect}
         if transition == :missing_inventory
           warn "inventory unavailable"
@@ -2730,6 +2804,16 @@ class PrMergeSubmitTest < Minitest::Test
                                     [[successful_replacement], 1]
                                   when :additional_running
                                     [[held, running_replacement], 2]
+                                  when :unrelated_failure
+                                    [[held, unrelated_failure], 2]
+                                  when :unrelated_pending
+                                    [[held, unrelated_pending], 2]
+                                  when :unrelated_held
+                                    [[held, unrelated_held], 2]
+                                  when :unrelated_success
+                                    [[held, unrelated_success], 2]
+                                  when :cross_scope_success
+                                    [[held, unrelated_success], 2]
                                   when :pagination_success
                                     if page == 1
                                       unrelated = Array.new(100) do |index|
