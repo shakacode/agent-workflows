@@ -164,10 +164,26 @@ metadata_value() {
 
 read_installed_metadata_value() {
   local key="$1"
-  local metadata_path="${2:-$target/$metadata_name}"
-  local protocol encoded_value decoded_value sentinel=$'\036'
+  local metadata_path protocol encoded_value decoded_value sentinel=$'\036'
+  local uses_bound_snapshot=false
   installed_metadata_state="corrupt"
   installed_metadata_value=""
+
+  if [[ "$#" -ge 2 ]]; then
+    metadata_path="$2"
+  elif [[ "${install_metadata_binding_state:-}" = "present" ]]; then
+    metadata_path="$install_metadata_snapshot_path"
+    uses_bound_snapshot=true
+  elif [[ "${install_metadata_binding_state:-}" = "absent" ]]; then
+    metadata_path="$install_metadata_snapshot_path"
+    uses_bound_snapshot=true
+  else
+    metadata_path="$target/$metadata_name"
+  fi
+
+  if [[ "$uses_bound_snapshot" = "true" ]]; then
+    require_install_metadata_binding
+  fi
 
   if ! protocol="$(ruby -rjson -e '
     begin
@@ -251,6 +267,9 @@ read_installed_metadata_value() {
     key_absent) installed_metadata_state="key_absent" ;;
     corrupt) ;;
   esac
+  if [[ "$uses_bound_snapshot" = "true" ]]; then
+    require_install_metadata_binding
+  fi
   return 0
 }
 
@@ -703,11 +722,52 @@ regular_file_attestation() {
   ' "$1" 2>/dev/null
 }
 
+capture_regular_file_snapshot() {
+  ruby -rdigest -e '
+    source_file = nil
+    snapshot_file = nil
+    begin
+      source, snapshot, expected = ARGV
+      source_path_stat = File.lstat(source)
+      abort unless source_path_stat.file? && !source_path_stat.symlink? && File.const_defined?(:NOFOLLOW)
+      source_file = File.open(source, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      source_stat = source_file.stat
+      abort unless source_stat.file? && source_stat.dev == source_path_stat.dev && source_stat.ino == source_path_stat.ino
+      content = source_file.read
+      final_source_stat = source_file.stat
+      named_source_stat = File.lstat(source)
+      digest = Digest::SHA256.hexdigest(content)
+      attestation = "#{source_stat.dev}:#{source_stat.ino}|#{digest}"
+      abort unless attestation == expected &&
+                   final_source_stat.file? && final_source_stat.dev == source_stat.dev && final_source_stat.ino == source_stat.ino &&
+                   named_source_stat.file? && !named_source_stat.symlink? &&
+                   named_source_stat.dev == source_stat.dev && named_source_stat.ino == source_stat.ino
+
+      snapshot_file = File.open(
+        snapshot,
+        File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+        0o600
+      )
+      snapshot_file.write(content)
+      snapshot_file.flush
+      snapshot_file.fsync
+      snapshot_stat = snapshot_file.stat
+      abort unless snapshot_stat.file?
+      print "#{snapshot_stat.dev}:#{snapshot_stat.ino}|#{digest}"
+    ensure
+      snapshot_file&.close
+      source_file&.close
+    end
+  ' "$1" "$2" "$3" 2>/dev/null
+}
+
 capture_install_metadata_binding() {
   local metadata_path="$target/$metadata_name"
-  local first_state first_value first_attestation second_attestation
+  local first_state first_value first_attestation second_attestation snapshot_attestation
   install_metadata_binding_state=""
   install_metadata_binding_attestation=""
+  install_metadata_snapshot_path="$install_lock/install-metadata.snapshot"
+  install_metadata_snapshot_attestation=""
 
   if [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]; then
     install_metadata_binding_state="absent"
@@ -742,8 +802,20 @@ capture_install_metadata_binding() {
     return 65
   fi
 
+  snapshot_attestation="$(capture_regular_file_snapshot \
+    "$metadata_path" "$install_metadata_snapshot_path" "$first_attestation")" || {
+    report_install_metadata_binding_changed
+    return 65
+  }
+  if [[ "$(regular_file_attestation "$metadata_path" 2>/dev/null || true)" != "$first_attestation" ||
+        "$(regular_file_attestation "$install_metadata_snapshot_path" 2>/dev/null || true)" != "$snapshot_attestation" ]]; then
+    report_install_metadata_binding_changed
+    return 65
+  fi
+
   install_metadata_binding_state="present"
   install_metadata_binding_attestation="$first_attestation"
+  install_metadata_snapshot_attestation="$snapshot_attestation"
 }
 
 verify_install_metadata_binding() {
@@ -758,6 +830,19 @@ verify_install_metadata_binding() {
       ;;
     *) return 1 ;;
   esac
+}
+
+require_install_metadata_binding() {
+  if ! verify_install_metadata_binding; then
+    report_install_metadata_binding_changed
+    exit 65
+  fi
+  if [[ "$install_metadata_binding_state" = "present" ]] &&
+     [[ "$(regular_file_attestation "$install_metadata_snapshot_path" 2>/dev/null || true)" != \
+        "$install_metadata_snapshot_attestation" ]]; then
+    report_install_metadata_binding_changed
+    exit 65
+  fi
 }
 
 report_install_metadata_binding_changed() {
@@ -1362,14 +1447,162 @@ prepare_metadata() {
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints
     }
-    File.write(path, JSON.pretty_generate(metadata) + "\n")
+    abort unless File.const_defined?(:NOFOLLOW)
+    file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
+    begin
+      file.write(JSON.pretty_generate(metadata) + "\n")
+      file.flush
+      file.fsync
+    ensure
+      file.close
+    end
   ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}"
 }
 
 commit_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
-  mv "$metadata_tmp" "$metadata_path"
+  local commit_status=0
+
+  ruby -rdigest -rfiddle/import -e '
+    module AtomicMetadataRename
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"
+      extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x4)
+        end
+        def self.exchange(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x2)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x1)
+        end
+        def self.exchange(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x2)
+        end
+      end
+    end
+
+    class MetadataBindingChanged < StandardError; end
+
+    target, metadata_name, state, expected = ARGV
+    temporary_name = "#{metadata_name}.tmp"
+    directory = nil
+    temporary = nil
+    destination = nil
+    exchanged = false
+    completed = false
+    open_at = lambda do |name|
+      fd = AtomicMetadataRename.openat(
+        directory.fileno,
+        name,
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      File.for_fd(fd)
+    end
+    attestation = lambda do |file|
+      stat = file.stat
+      raise MetadataBindingChanged unless stat.file?
+      file.rewind
+      digest = Digest::SHA256.new
+      while (chunk = file.read(64 * 1024))
+        digest.update(chunk)
+      end
+      final_stat = file.stat
+      raise MetadataBindingChanged unless final_stat.file? &&
+                                          final_stat.dev == stat.dev && final_stat.ino == stat.ino
+      "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}"
+    end
+
+    begin
+      abort unless metadata_name == ".agent-workflows-install.json" && File.const_defined?(:NOFOLLOW)
+      target_path_stat = File.lstat(target)
+      raise MetadataBindingChanged unless target_path_stat.directory? && !target_path_stat.symlink?
+      directory = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      directory_stat = directory.stat
+      named_target_stat = File.lstat(target)
+      raise MetadataBindingChanged unless directory_stat.directory? &&
+                                          named_target_stat.directory? && !named_target_stat.symlink? &&
+                                          named_target_stat.dev == directory_stat.dev && named_target_stat.ino == directory_stat.ino
+
+      temporary = open_at.call(temporary_name)
+      prepared_attestation = attestation.call(temporary)
+
+      case state
+      when "absent"
+        begin
+          destination = open_at.call(metadata_name)
+          raise MetadataBindingChanged
+        rescue Errno::ENOENT
+          nil
+        ensure
+          destination&.close
+          destination = nil
+        end
+        raise MetadataBindingChanged unless AtomicMetadataRename.no_replace(
+          directory.fileno,
+          temporary_name,
+          metadata_name
+        ) == 0
+      when "present"
+        destination = open_at.call(metadata_name)
+        raise MetadataBindingChanged unless attestation.call(destination) == expected
+        destination.close
+        destination = nil
+        raise MetadataBindingChanged unless AtomicMetadataRename.exchange(
+          directory.fileno,
+          temporary_name,
+          metadata_name
+        ) == 0
+        exchanged = true
+      else
+        raise MetadataBindingChanged
+      end
+
+      destination = open_at.call(metadata_name)
+      raise MetadataBindingChanged unless attestation.call(destination) == prepared_attestation
+      destination.close
+      destination = nil
+
+      if exchanged
+        temporary.close
+        temporary = open_at.call(temporary_name)
+        raise MetadataBindingChanged unless attestation.call(temporary) == expected
+        temporary.close
+        temporary = nil
+        raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(
+          directory.fileno,
+          temporary_name,
+          0
+        ) == 0
+        exchanged = false
+      end
+      completed = true
+    rescue StandardError
+      nil
+    ensure
+      destination&.close
+      temporary&.close
+      if exchanged && directory
+        AtomicMetadataRename.exchange(directory.fileno, temporary_name, metadata_name)
+      end
+      directory&.close
+    end
+    exit 1 unless completed
+  ' "$target" "$metadata_name" "$install_metadata_binding_state" \
+    "$install_metadata_binding_attestation" 2>/dev/null || commit_status=$?
+
+  if [[ "$commit_status" -ne 0 ]]; then
+    report_install_metadata_binding_changed
+    return 65
+  fi
 }
 
 recovery_directory_identity() {
@@ -2095,10 +2328,17 @@ recorded_pack_doc_copy_fingerprint_matches() {
   local doc_name="$1"
   local destination="$2"
   local metadata_path="$target/$metadata_name"
+  local matches=false
+  if [[ "${install_metadata_binding_state:-}" = "present" ]]; then
+    require_install_metadata_binding
+    metadata_path="$install_metadata_snapshot_path"
+  elif [[ "${install_metadata_binding_state:-}" = "absent" ]]; then
+    return 1
+  fi
   [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || return 1
   [[ -f "$destination" && ! -L "$destination" ]] || return 1
 
-  ruby -rjson -rdigest -e '
+  if ruby -rjson -rdigest -e '
     metadata_path, doc_name, destination = ARGV
     metadata = JSON.parse(File.binread(metadata_path))
     exit 1 unless metadata.is_a?(Hash) && metadata["mode"] == "copy"
@@ -2107,7 +2347,13 @@ recorded_pack_doc_copy_fingerprint_matches() {
     expected = fingerprints[doc_name]
     exit 1 unless expected.is_a?(String) && expected.match?(/\A[0-9a-f]{64}\z/i)
     exit(Digest::SHA256.file(destination).hexdigest == expected ? 0 : 1)
-  ' "$metadata_path" "$doc_name" "$destination"
+  ' "$metadata_path" "$doc_name" "$destination"; then
+    matches=true
+  fi
+  if [[ "${install_metadata_binding_state:-}" = "present" ]]; then
+    require_install_metadata_binding
+  fi
+  [[ "$matches" = "true" ]]
 }
 
 verify_pack_doc_destinations() {
@@ -2358,6 +2604,7 @@ release_install_lock() {
     report_recovery_metadata_restore_failure
     status=65
   fi
+  rm -f "${install_metadata_snapshot_path:-}" 2>/dev/null || true
   rmdir "$install_lock" 2>/dev/null || true
   exit "$status"
 }
@@ -2369,6 +2616,8 @@ recovery_metadata_restore_reported=false
 recovery_staging_identity=""
 install_metadata_binding_state=""
 install_metadata_binding_attestation=""
+install_metadata_snapshot_path=""
+install_metadata_snapshot_attestation=""
 metadata_absent_under_lock=false
 if [[ ! -e "$target/$metadata_name" && ! -L "$target/$metadata_name" ]]; then
   metadata_absent_under_lock=true
@@ -2511,6 +2760,7 @@ release_install_transaction() {
   if [[ "$metadata_committed" != "true" && -f "$target/$metadata_name.tmp" ]]; then
     rm -f "$target/$metadata_name.tmp"
   fi
+  rm -f "${install_metadata_snapshot_path:-}" 2>/dev/null || true
   rmdir "$install_lock" 2>/dev/null || true
   exit "$status"
 }

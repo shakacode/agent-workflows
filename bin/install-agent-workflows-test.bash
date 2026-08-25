@@ -855,11 +855,13 @@ test_metadata_change_after_locked_preflight_fails_before_managed_file_mutation()
 
   cat > "$injection" <<'RUBY'
 module CorruptMetadataAfterTempWrite
-  def write(path, *args, **kwargs)
+  def open(path, *args, **kwargs, &block)
     result = super
     if path == "#{ENV.fetch("QA_INSTALL_METADATA")}.tmp" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
-      File.write(ENV.fetch("QA_INSTALL_METADATA"), "{\"delivery_mode\":")
-      File.write(ENV.fetch("QA_RACE_MARKER"), "changed\n")
+      at_exit do
+        File.write(ENV.fetch("QA_INSTALL_METADATA"), "{\"delivery_mode\":")
+        File.write(ENV.fetch("QA_RACE_MARKER"), "changed\n")
+      end
     end
     result
   end
@@ -883,6 +885,175 @@ RUBY
     fail "post-preflight metadata change was overwritten"
   [[ ! -e "$metadata.tmp" ]] || fail "post-preflight metadata change left prepared metadata"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "post-preflight metadata change leaked install lock"
+}
+
+test_bound_metadata_change_cannot_grant_symlink_ownership() {
+  local tmp target metadata outside injection marker helper initial_helper_identity output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  outside="$tmp/unmanaged-source"
+  injection="$tmp/change-metadata-after-binding-check.rb"
+  marker="$tmp/metadata-changed-after-binding-check"
+  helper="$target/bin/agent-workflows-status"
+  mkdir -p "$outside/bin"
+  printf '#!/usr/bin/env bash\necho unmanaged\n' > "$outside/bin/agent_doctor"
+  chmod +x "$outside/bin/agent_doctor"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  rm -f "$target/bin/agent_doctor"
+  ln -s "$outside/bin/agent_doctor" "$target/bin/agent_doctor"
+  initial_helper_identity="$(ruby -e 'stat = File.lstat(ARGV.fetch(0)); print "#{stat.dev}:#{stat.ino}"' "$helper")"
+
+  cat > "$injection" <<'RUBY'
+require "json"
+metadata = ENV.fetch("QA_INSTALL_METADATA")
+helper = ENV.fetch("QA_MANAGED_HELPER")
+initial_helper_identity = ENV.fetch("QA_INITIAL_HELPER_IDENTITY")
+if ARGV.length == 1 && ARGV.first == metadata && File.exist?("#{metadata}.tmp") &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  current_helper_identity = begin
+    stat = File.lstat(helper)
+    "#{stat.dev}:#{stat.ino}"
+  rescue Errno::ENOENT
+    "missing"
+  end
+  if current_helper_identity == initial_helper_identity
+    at_exit do
+      value = JSON.parse(File.binread(metadata))
+      value["mode"] = "symlink"
+      value["source"] = ENV.fetch("QA_UNMANAGED_SOURCE")
+      File.write(metadata, JSON.generate(value) + "\n")
+      File.write(ENV.fetch("QA_RACE_MARKER"), "changed\n")
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_MANAGED_HELPER="$helper" \
+    QA_INITIAL_HELPER_IDENTITY="$initial_helper_identity" QA_UNMANAGED_SOURCE="$outside" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "bound metadata ownership race exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$(readlink "$target/bin/agent_doctor")" = "$outside/bin/agent_doctor" ]] || \
+    fail "changed live metadata granted ownership of an unmanaged doctor symlink"
+  [[ ! -e "$metadata.tmp" ]] || fail "bound metadata ownership race left prepared metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "bound metadata ownership race leaked install lock"
+}
+
+test_metadata_commit_rejects_destination_directory_race() {
+  local tmp target metadata preserved injection marker helper initial_helper_identity output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/preserved-install-metadata.json"
+  injection="$tmp/replace-metadata-after-final-binding-check.rb"
+  marker="$tmp/metadata-replaced-after-final-binding-check"
+  helper="$target/bin/agent-workflows-status"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  initial_helper_identity="$(ruby -e 'stat = File.lstat(ARGV.fetch(0)); print "#{stat.dev}:#{stat.ino}"' "$helper")"
+
+  cat > "$injection" <<'RUBY'
+metadata = ENV.fetch("QA_INSTALL_METADATA")
+helper = ENV.fetch("QA_MANAGED_HELPER")
+initial_helper_identity = ENV.fetch("QA_INITIAL_HELPER_IDENTITY")
+if ARGV.length == 1 && ARGV.first == metadata && File.exist?("#{metadata}.tmp") &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  current_helper_identity = begin
+    stat = File.lstat(helper)
+    "#{stat.dev}:#{stat.ino}"
+  rescue Errno::ENOENT
+    "missing"
+  end
+  if current_helper_identity != initial_helper_identity
+    at_exit do
+      File.rename(metadata, ENV.fetch("QA_PRESERVED_METADATA"))
+      Dir.mkdir(metadata)
+      File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_PRESERVED_METADATA="$preserved" \
+    QA_MANAGED_HELPER="$helper" QA_INITIAL_HELPER_IDENTITY="$initial_helper_identity" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "metadata destination directory race exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ -d "$metadata" && ! -L "$metadata" ]] || fail "metadata destination directory race replaced the competing directory"
+  assert_file "$preserved"
+  [[ ! -e "$metadata/.agent-workflows-install.json.tmp" ]] || \
+    fail "metadata commit moved prepared metadata inside the competing directory"
+  [[ ! -e "$metadata.tmp" ]] || fail "metadata destination directory race left prepared metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "metadata destination directory race leaked install lock"
+}
+
+test_metadata_commit_rolls_back_failed_present_compare_and_swap() {
+  local tmp target metadata preserved injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/preserved-install-metadata.json"
+  injection="$tmp/replace-metadata-inside-present-commit.rb"
+  marker="$tmp/metadata-replaced-inside-present-commit"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 4 && ARGV[0] == ENV.fetch("QA_TARGET") &&
+   ARGV[1] == ".agent-workflows-install.json" && ARGV[2] == "present"
+  module ReplaceMetadataInsidePresentCommit
+    def close(*args)
+      opened_stat = stat unless closed?
+      result = super
+      metadata = ENV.fetch("QA_INSTALL_METADATA")
+      unless File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        named_stat = File.lstat(metadata)
+        if opened_stat&.file? && named_stat.file? &&
+           opened_stat.dev == named_stat.dev && opened_stat.ino == named_stat.ino
+          File.rename(metadata, ENV.fetch("QA_PRESERVED_METADATA"))
+          File.write(metadata, "competing metadata\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+        end
+      end
+      result
+    end
+  end
+  IO.prepend(ReplaceMetadataInsidePresentCommit)
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" QA_INSTALL_METADATA="$metadata" \
+    QA_PRESERVED_METADATA="$preserved" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "present metadata compare-and-swap race exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$(cat "$metadata")" = "competing metadata" ]] || \
+    fail "failed metadata compare-and-swap did not restore the competing destination"
+  assert_file "$preserved"
+  [[ ! -e "$metadata.tmp" ]] || fail "failed metadata compare-and-swap left prepared metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "failed metadata compare-and-swap leaked install lock"
 }
 
 test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat() {
@@ -5432,6 +5603,9 @@ main() {
     test_metadata_appearing_before_lock_is_not_treated_as_absent_recovery
     test_metadata_disappearing_before_lock_is_not_treated_as_still_present
     test_metadata_change_after_locked_preflight_fails_before_managed_file_mutation
+    test_bound_metadata_change_cannot_grant_symlink_ownership
+    test_metadata_commit_rejects_destination_directory_race
+    test_metadata_commit_rolls_back_failed_present_compare_and_swap
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
     test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data
     test_flat_crash_recovery_rejects_symlink_skills_root_before_move
