@@ -283,9 +283,11 @@ class ConfiguredReviewGateTest < Minitest::Test
     source = File.read(CLAUDE_REVIEW_WORKFLOW)
     workflow = YAML.safe_load(source, aliases: false)
     steps = workflow.dig("jobs", "claude-review", "steps")
+    checkout = steps.find { |step| step["name"] == "Checkout repository" }
     verification = steps.find { |step| step["name"] == "Verify review completed (fail on invalid/expired token)" }
     publisher = steps.find { |step| step["name"] == "Publish exact-head review artifact" }
 
+    assert_equal false, checkout.dig("with", "persist-credentials")
     assert_equal "verify-review", verification.fetch("id")
     assert_includes verification.fetch("run"), 'echo "completed=true" >> "$GITHUB_OUTPUT"'
     assert_equal "steps.verify-review.outputs.completed == 'true'", publisher.fetch("if")

@@ -19,6 +19,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Run Claude Code Review
         id: claude-review
