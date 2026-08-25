@@ -134,8 +134,9 @@ input = if options[:repo] || options[:pr] || options[:semantic_assessment]
         else
           begin
             JSON.parse($stdin.read)
-          rescue JSON::ParserError => e
-            emit_unknown("malformed autonomous-merge evaluation JSON: #{e.message.lines.first.to_s.strip}")
+          rescue JSON::ParserError, EncodingError => e
+            error_message = e.message.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+            emit_unknown("malformed autonomous-merge evaluation JSON: #{error_message.lines.first.to_s.strip}")
           end
           emit_unknown("stdin objective evidence is unverified and cannot establish a passing verdict")
         end

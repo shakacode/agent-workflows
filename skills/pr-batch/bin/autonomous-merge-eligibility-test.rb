@@ -1200,6 +1200,20 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
   end
 
+  def test_invalid_utf8_stdin_returns_structured_unknown
+    Dir.mktmpdir("autonomous-merge-invalid-stdin-test") do |root|
+      calibration_path = write_calibration(root)
+      initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      invalid_json = "{\"x\":".b + "\xFF}".b
+
+      result = invoke(root:, calibration_path:, stdin_data: invalid_json)
+
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert_match(/malformed autonomous-merge evaluation JSON/, result.fetch("evidence_failures").first)
+      assert_predicate result.fetch("evidence_failures").first, :valid_encoding?
+    end
+  end
+
   def test_risk_marker_never_converts_unknown_evidence_into_approval
     url = "https://github.com/example/repo/pull/1#issuecomment-1"
     result = evaluate do |base_sha|
