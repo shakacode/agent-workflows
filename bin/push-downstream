@@ -12,6 +12,7 @@ require "tmpdir"
 require "yaml"
 
 load File.expand_path("agent-workflow-seam-doctor", __dir__)
+require_relative "../skills/secure-github-actions/lib/secure_github_actions_scanner"
 
 module PushDownstream
   module_function
@@ -20,7 +21,28 @@ module PushDownstream
   POLICY_COMMIT_TITLE = "Configure agent workflow repo policy"
   POLICY_PR_LIST_LIMIT = 100
   POLICY_KEY_PATTERN = /\A[A-Za-z][A-Za-z0-9_]*\z/
+  SECURITY_AUDIT_ROLLOUT = {
+    "mode" => "coordinator-owned-targeted-pr",
+    "trusted_actions" => "maintainer-decision-required",
+    "dependabot" => "explicit-repository-decision-required",
+    "gate_activation" => "after-remediation-and-validation"
+  }.freeze
   DISABLED_HOOKS_PATH = File::NULL
+  AUDIT_GIT_ENVIRONMENT = {
+    "GIT_CONFIG_NOSYSTEM" => "1",
+    "GIT_CONFIG_SYSTEM" => File::NULL,
+    "GIT_CONFIG_GLOBAL" => File::NULL,
+    "GIT_CONFIG_PARAMETERS" => nil,
+    "GIT_CONFIG_COUNT" => "0",
+    "GIT_CONFIG_KEY_0" => nil,
+    "GIT_CONFIG_VALUE_0" => nil,
+    "GIT_ALLOW_PROTOCOL" => nil,
+    "GIT_PROTOCOL_FROM_USER" => nil
+  }.freeze
+  AUDIT_GIT_PREFIX = [
+    "git", "-c", "protocol.ext.allow=never", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}"
+  ].freeze
+  AUDIT_GIT_CLONE_ARGUMENTS = ["clone", "--depth", "1", "--no-tags"].freeze
   FALLBACK_GIT_USER_NAME = "Agent Workflows"
   FALLBACK_GIT_USER_EMAIL = "agent-workflows@users.noreply.github.com"
   NEW_AGENTS_HEADER = "# AGENTS.md\n"
@@ -191,6 +213,70 @@ module PushDownstream
     { name: fleet_name, policy_keys: keys, repos: repos }
   rescue KeyError => e
     raise "policy fleet #{fleet_name} is missing #{e.key}"
+  end
+
+  def load_security_audit_fleet(config_path, fleet_name)
+    data = YAML.safe_load(File.read(config_path), aliases: false)
+    unless data.is_a?(Hash)
+      raise "invalid downstream registry: top level must be a mapping"
+    end
+
+    fleets = data["security_audit_fleets"]
+    raise "missing security_audit_fleets registry" unless fleets.is_a?(Hash)
+
+    fleet = fleets[fleet_name]
+    raise "unknown security audit fleet: #{fleet_name}" unless fleet.is_a?(Hash)
+
+    entries = fleet["repos"]
+    raise "security audit fleet #{fleet_name} must declare repos" unless entries.is_a?(Array) && !entries.empty?
+
+    repos = entries.map do |entry|
+      raise "security audit fleet #{fleet_name} repo entry must be a mapping" unless entry.is_a?(Hash)
+
+      owner = entry["owner"]
+      repo = entry["repo"]
+      base_branch = entry["base_branch"]
+      remote_url = entry["remote_url"]
+      unless base_branch.is_a?(String) && !base_branch.empty? && !base_branch.match?(/[\0\r\n]/)
+        raise "invalid security audit fleet entry"
+      end
+      raise "invalid security audit fleet owner" unless valid_github_owner?(owner)
+      raise "invalid security audit fleet repo" unless valid_github_repo?(repo)
+      if !remote_url.nil? && !valid_security_audit_remote_url?(remote_url)
+        raise "invalid security audit fleet remote_url for #{owner}/#{repo}"
+      end
+
+      {
+        owner: owner,
+        repo: repo,
+        nwo: "#{owner}/#{repo}",
+        base_branch: base_branch,
+        remote_url: remote_url
+      }
+    end
+    duplicates = repos.group_by { |repo| repo.fetch(:nwo) }.select { |_nwo, matches| matches.length > 1 }.keys
+    raise "security audit fleet #{fleet_name} has duplicate repos: #{duplicates.join(', ')}" unless duplicates.empty?
+
+    { name: fleet_name, repos: repos }
+  rescue Psych::Exception => e
+    raise "invalid downstream registry: #{e.message.lines.first.to_s.strip}"
+  end
+
+  def valid_security_audit_remote_url?(remote_url)
+    remote_url.is_a?(String) &&
+      remote_url.match?(/\A[^\s\0]+\z/) &&
+      !remote_url.start_with?("-") &&
+      !remote_url.match?(/\A[A-Za-z][A-Za-z0-9+.-]*::/)
+  end
+
+  def valid_github_owner?(owner)
+    owner.is_a?(String) && owner.bytesize <= 39 &&
+      owner.match?(/\A(?!.*--)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\z/)
+  end
+
+  def valid_github_repo?(repo)
+    repo.is_a?(String) && repo.bytesize <= 100 &&
+      repo.match?(/\A(?!-)[A-Za-z0-9_.-]+\z/) && !%w[. ..].include?(repo)
   end
 
   def validate_policy_fleet_values!(fleet_name, repos, keys)
@@ -773,14 +859,16 @@ module PushDownstream
   end
 
   def audit_source_sha(root)
-    sha, status = Open3.capture2("git", "-C", root, "rev-parse", "HEAD")
+    sha, status = Open3.capture2(AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", root, "rev-parse", "HEAD")
     status.success? && !sha.strip.empty? ? sha.strip : AUDIT_UNKNOWN
   rescue RuntimeError, SystemCallError
     AUDIT_UNKNOWN
   end
 
   def audit_source_worktree_clean(root)
-    porcelain, status = Open3.capture2("git", "-C", root, "status", "--porcelain")
+    porcelain, status = Open3.capture2(
+      AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", root, "status", "--porcelain"
+    )
     status.success? ? porcelain.strip.empty? : AUDIT_UNKNOWN
   rescue RuntimeError, SystemCallError
     AUDIT_UNKNOWN
@@ -802,9 +890,11 @@ module PushDownstream
       # forked child, but still raises when fork itself fails (Errno::EAGAIN,
       # Errno::ENOMEM), so it needs the same guard under resource pressure.
       begin
-        cloned = system("git", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}",
-                        "clone", "--depth", "1", "--branch", repo.fetch(:base_branch),
-                        repo_url(repo), clone, out: File::NULL, err: File::NULL)
+        cloned = system(
+          AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, *AUDIT_GIT_CLONE_ARGUMENTS,
+          "--branch", repo.fetch(:base_branch), repo_url(repo), clone,
+          out: File::NULL, err: File::NULL
+        )
       rescue RuntimeError, SystemCallError => e
         return audit_blocked(repo, "clone of #{repo.fetch(:base_branch)} could not be started: #{e.message}")
       end
@@ -813,7 +903,7 @@ module PushDownstream
       end
 
       begin
-        base_sha = local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
+        base_sha = audit_local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
       rescue RuntimeError, SystemCallError => e
         return audit_blocked(repo, "consumer base commit could not be resolved: #{e.message}")
       end
@@ -884,9 +974,17 @@ module PushDownstream
     entry
   end
 
+  def audit_local_ref_head(clone, ref)
+    output, status = Open3.capture2(
+      AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", clone, "rev-parse", "--verify", ref
+    )
+    status.success? ? output.strip : nil
+  end
+
   def audit_changed_paths(clone)
     output, status = Open3.capture2(
-      "git", "-C", clone, "status", "--porcelain=v1", "--untracked-files=all", "-z"
+      AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", clone,
+      "status", "--porcelain=v1", "--untracked-files=all", "-z"
     )
     return nil unless status.success?
 
@@ -942,6 +1040,101 @@ module PushDownstream
   rescue RuntimeError => e
     warn "FAIL policy fleet #{fleet_name}: #{e.message}"
     1
+  end
+
+  def run_security_audit_fleet(config_path, fleet_name:, only:)
+    fleet = load_security_audit_fleet(config_path, fleet_name)
+    repos = select_security_audit_repos(fleet.fetch(:repos), only: only)
+    reports = repos.map { |repo| audit_security_repo(repo) }
+    document = {
+      "contract" => "github-actions-fleet-audit",
+      "version" => 1,
+      "fleet" => fleet.fetch(:name),
+      "read_only" => true,
+      "repositories" => reports
+    }
+    puts JSON.pretty_generate(document)
+    reports.all? { |report| report.fetch("status") == "clean" } ? 0 : 1
+  rescue RuntimeError => e
+    warn "FAIL security audit fleet #{fleet_name}: #{e.message}"
+    1
+  end
+
+  def select_security_audit_repos(repos, only:)
+    return repos if only.nil?
+
+    normalized = only.map(&:strip)
+    raise "security audit fleet selection must not be empty" if normalized.empty? || normalized.any?(&:empty?)
+
+    available = repos.flat_map { |repo| [repo.fetch(:repo), repo.fetch(:nwo)] }
+    missing = normalized - available
+    raise "unknown security audit fleet selection: #{missing.join(', ')}" unless missing.empty?
+
+    repos.select { |repo| normalized.include?(repo.fetch(:repo)) || normalized.include?(repo.fetch(:nwo)) }
+  end
+
+  def audit_security_repo(repo)
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      clone = File.join(dir, repo.fetch(:repo))
+      cloned = system(
+        AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, *AUDIT_GIT_CLONE_ARGUMENTS,
+        "--branch", repo.fetch(:base_branch), repo_url(repo), clone,
+        out: File::NULL, err: File::NULL
+      )
+      return unknown_security_audit(repo, "clone-or-base-resolution-failed") unless cloned
+
+      head, head_status = Open3.capture2(
+        AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", clone, "rev-parse", "HEAD"
+      )
+      return unknown_security_audit(repo, "head-resolution-failed") unless head_status.success?
+
+      base_ref = "refs/remotes/origin/#{repo.fetch(:base_branch)}"
+      base_head, _base_err, base_status = Open3.capture3(
+        AUDIT_GIT_ENVIRONMENT, *AUDIT_GIT_PREFIX, "-C", clone,
+        "rev-parse", "--verify", "#{base_ref}^{commit}"
+      )
+      unless base_status.success? && base_head.strip == head.strip
+        return unknown_security_audit(repo, "base-branch-ref-missing-or-head-mismatch")
+      end
+
+      result = SecureGitHubActions::Scanner.new(clone).scan
+      findings = result.findings.map do |finding|
+        location = finding.fetch("location")
+        {
+          "rule_id" => finding.fetch("rule_id"),
+          "file" => location.fetch("file"),
+          "line" => location.fetch("line"),
+          "symbol" => location.fetch("symbol"),
+          "title" => finding.fetch("title")
+        }
+      end
+      {
+        "repository" => repo.fetch(:nwo),
+        "base_branch" => repo.fetch(:base_branch),
+        "head_sha" => head.strip,
+        "status" => findings.empty? ? "clean" : "noncompliant",
+        "files_scanned" => result.files,
+        "rule_ids" => findings.map { |finding| finding.fetch("rule_id") }.uniq.sort,
+        "findings" => findings,
+        "rollout" => SECURITY_AUDIT_ROLLOUT
+      }
+    end
+  rescue ArgumentError, SystemCallError
+    unknown_security_audit(repo, "local-audit-failed")
+  end
+
+  def unknown_security_audit(repo, reason)
+    {
+      "repository" => repo.fetch(:nwo),
+      "base_branch" => repo.fetch(:base_branch),
+      "head_sha" => "UNKNOWN",
+      "status" => "UNKNOWN",
+      "reason" => reason,
+      "files_scanned" => [],
+      "rule_ids" => [],
+      "findings" => [],
+      "rollout" => SECURITY_AUDIT_ROLLOUT
+    }
   end
 
   def sync_repo(repo, contract)
@@ -2282,6 +2475,7 @@ if $PROGRAM_NAME == __FILE__
     presets: File.expand_path("../seam-presets.yml", __dir__),
     root: nil,
     policy_fleet: nil,
+    security_audit_fleet: nil,
     only: nil,
     include_disabled: false,
     apply: false,
@@ -2291,9 +2485,12 @@ if $PROGRAM_NAME == __FILE__
   }
 
   OptionParser.new do |opts|
-    opts.banner = "Usage: push-downstream [--root DIR | --policy-fleet NAME | --config FILE] [--only a,b] [--all] [--apply] [--trusted-user LOGIN]"
+    opts.banner = "Usage: push-downstream [--root DIR | --policy-fleet NAME | --security-audit-fleet NAME | --config FILE] [--only a,b] [--all] [--apply] [--trusted-user LOGIN]"
     opts.on("--root DIR", "Reconcile one local checkout instead of the registry") { |value| options[:root] = value }
     opts.on("--policy-fleet NAME", "Apply only explicitly registered policy keys for a named fleet") { |value| options[:policy_fleet] = value }
+    opts.on("--security-audit-fleet NAME", "Read-only GitHub Actions audit for a named fleet") do |value|
+      options[:security_audit_fleet] = value
+    end
     opts.on("--config FILE", "Downstream registry YAML (default: downstream.yml)") { |value| options[:config] = value }
     opts.on("--presets FILE", "Seam preset YAML (default: seam-presets.yml)") { |value| options[:presets] = value }
     opts.on("--only a,b", Array, "Restrict to these repo names") { |value| options[:only] = value }
@@ -2331,6 +2528,9 @@ if $PROGRAM_NAME == __FILE__
       if options[:root] || options[:policy_fleet]
         warn "--audit cannot be combined with --root or --policy-fleet"
         1
+      elsif options[:security_audit_fleet]
+        warn "--audit cannot be combined with --security-audit-fleet"
+        1
       elsif options[:apply]
         warn "--audit is read-only and cannot be combined with --apply"
         1
@@ -2346,8 +2546,8 @@ if $PROGRAM_NAME == __FILE__
         )
       end
     elsif options[:root]
-      if options[:policy_fleet]
-        warn "--policy-fleet cannot be combined with --root"
+      if options[:policy_fleet] || options[:security_audit_fleet]
+        warn "--policy-fleet and --security-audit-fleet cannot be combined with --root"
         1
       else
         PushDownstream.run_local(
@@ -2355,6 +2555,26 @@ if $PROGRAM_NAME == __FILE__
           base_branch: options[:base_branch],
           trust: options[:trust],
           apply: options[:apply]
+        )
+      end
+    elsif options[:security_audit_fleet]
+      if options[:apply]
+        warn "--apply cannot be combined with --security-audit-fleet"
+        1
+      elsif options[:policy_fleet]
+        warn "--policy-fleet cannot be combined with --security-audit-fleet"
+        1
+      elsif options[:include_disabled]
+        warn "--all cannot be combined with --security-audit-fleet; fleet membership is explicit"
+        1
+      elsif !PushDownstream.trust_config_empty?(options[:trust])
+        warn "--trusted-* flags cannot be combined with --security-audit-fleet"
+        1
+      else
+        PushDownstream.run_security_audit_fleet(
+          options[:config],
+          fleet_name: options[:security_audit_fleet],
+          only: options[:only]
         )
       end
     elsif options[:policy_fleet]

@@ -342,6 +342,7 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/bin/agent-workflows-doctor"
     assert_file "$target/bin/agent_doctor/process_runner.rb"
     assert_file "$target/bin/agent-workflows-delivery-state"
+    assert_file "$target/lib/agent-workflows/secure_github_actions_scanner.rb"
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
       abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
@@ -355,6 +356,59 @@ autonomous_merge:
 YAML
     output="$("$target/bin/agent-workflow-seam-doctor" --root "$consumer" 2>&1)"
     assert_contains "$output" "PASS agent workflow seam is complete"
+  done
+}
+
+test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation() {
+  local tmp target outside output status mode variant unsafe_ancestor outside_scanner
+
+  for mode in copy symlink; do
+    for variant in lib-symlink companion-symlink lib-file companion-file; do
+      tmp="$(mktemp -d)"
+      target="$tmp/claude-home"
+      outside="$tmp/outside"
+      write_native_scw_state claude "$target"
+      mkdir -p "$outside"
+      case "$variant" in
+        lib-symlink)
+          unsafe_ancestor="$target/lib"
+          outside_scanner="$outside/agent-workflows/secure_github_actions_scanner.rb"
+          ln -s "$outside" "$unsafe_ancestor"
+          ;;
+        companion-symlink)
+          mkdir -p "$target/lib"
+          unsafe_ancestor="$target/lib/agent-workflows"
+          outside_scanner="$outside/secure_github_actions_scanner.rb"
+          ln -s "$outside" "$unsafe_ancestor"
+          ;;
+        lib-file)
+          unsafe_ancestor="$target/lib"
+          outside_scanner="$outside/unused"
+          printf 'owned file\n' > "$unsafe_ancestor"
+          ;;
+        companion-file)
+          mkdir -p "$target/lib"
+          unsafe_ancestor="$target/lib/agent-workflows"
+          outside_scanner="$outside/unused"
+          printf 'owned file\n' > "$unsafe_ancestor"
+          ;;
+      esac
+
+      set +e
+      output="$("$ROOT/bin/install-agent-workflows" --host claude --target "$target" --mode "$mode" \
+        --delivery-mode plugin-companion 2>&1)"
+      status=$?
+      set -e
+
+      [[ "$status" -ne 0 ]] || fail "$mode companion install accepted unsafe ancestor variant $variant"
+      assert_contains "$output" "Refusing unsafe scanner companion ancestor: $unsafe_ancestor"
+      [[ -L "$unsafe_ancestor" || -f "$unsafe_ancestor" ]] || \
+        fail "$mode companion install replaced unsafe ancestor variant $variant"
+      [[ ! -e "$outside_scanner" ]] || \
+        fail "$mode companion install wrote the scanner outside the selected agent home"
+      [[ ! -e "$target/LICENSE" ]] || fail "$mode companion path preflight ran after install mutation"
+      [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "$mode companion path preflight wrote metadata"
+    done
   done
 }
 
@@ -2438,6 +2492,7 @@ main() {
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_plugin_companion_installs_non_skill_assets_and_records_mode
+    test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass
     test_metadata_temp_failure_preserves_flat_tree_and_prior_mode

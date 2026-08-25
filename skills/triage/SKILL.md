@@ -15,22 +15,22 @@ group counts, inbox names, or model or tool names as portable defaults.
 Capacity and routing come from the selected backend and operator config. When
 the verified target is Codex GPT-5.6, use this informative recommended binding:
 
-- Multi-lane coordinator: Sol/xhigh
+- Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
-- High-risk or escalated work: Sol/xhigh
+- Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
-When the verified target is Claude, use this informative provisional
-recommended binding (`claude-profile v0`):
+When the verified target is Claude, use this informative provisional recommended binding
+(`claude-profile v1`):
 
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
 
 Use `docs/coordination-backend.md` as the canonical vocabulary for private
 backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
@@ -100,6 +100,21 @@ Build a complete current-state inventory for the requested repo or repos:
   and list it as reserved; owned means skip for agents as for humans.
 - Links and edges: issue to PR, PR to PR, issue to issue, shared files, external
   blockers, release gates, and cross-repo dependencies.
+- Native GitHub issue dependencies are first-class graph input, not a hint to be
+  re-derived from prose. Read each issue's `blockedBy` and `blocking` edges
+  directly and treat them as authoritative declared edges, including cross-repo
+  ones. Edges inferred from links or text supplement the native set and never
+  silently override it; when the two disagree, report the conflict instead of
+  picking one. Record each edge's provenance as native or inferred so a later
+  reader knows what the graph relied on.
+- Bucket an issue as blocked when its `blockedBy` set is nonempty and any blocker
+  is still open, regardless of labels. When every blocker is closed, the issue is
+  actionable, and a stale blocked-work label on it is reported as a correction to
+  make — labels follow the edges, not the reverse. See
+  [Deferred-Until-Unblocked Recommendations](../../workflows/pr-processing.md#deferred-until-unblocked-recommendations)
+  for how these edges are created at posting time.
+- If the host cannot query native dependency edges, say so and mark that
+  provenance `UNKNOWN`; do not report an inferred-only graph as complete.
 - Live coordination state from the selected backend: active claims, live/stale/dead
   heartbeats, blocked lanes, done-but-unmerged work, and dependency
   `blocked_on` refs.
@@ -200,10 +215,56 @@ precise blocker.
    intent, risk, or readiness verdict when the checker role, independence,
    scope, current-head evidence, and evidence quality qualify. Every lane whose
    risk or bounded delegation requires an execution envelope receives the
-   canonical coordinator-role-approved envelope regardless of route and returns
-   control before further edits on contradictory evidence,
-   ambiguous criteria, scope or risk growth, weakened verification, or
-   consequential judgment.
+   canonical coordinator-role-approved envelope regardless of route.
+   Necessary in-repository path expansion defaults to allowed when repository
+   evidence shows an added path is reasonably necessary to complete the
+   already-authorized goal or its required validation. Treat owned paths and
+   the execution envelope as coordination and collision controls, not as a
+   user-permission boundary. Before editing, record each added path and reason
+   in the lane envelope when one is present; otherwise use a durable
+   coordinator-owned lane record or Lane Card that the coordinator can read.
+   Every added path not yet reflected in its verified file-touch map must have
+   an active typed `expansion-path-reservation` before edit. When a lane is the
+   sole active editor, the coordinator durably records the reservation,
+   refreshes authoritative file-touch maps, lane lifecycle state, and
+   active-lane claim and collision checks, and reruns `batch-plan-preflight`;
+   the worker continues without user approval or a blocked lifecycle only
+   after the preflight accepts.
+   Before a worker in a multi-editor wave changes an added path, it persists a
+   typed expansion request, marks its durable lane lifecycle blocked, refreshes
+   its heartbeat, emits a Lane Card with the path, reason, and request evidence
+   reference, and pauses at a safe checkpoint. The coordinator processes
+   expansion requests serially, records an active
+   `expansion_path_reservations` entry, refreshes authoritative file-touch maps
+   and lane lifecycle state, and reruns `batch-plan-preflight`. For every
+   multi-editor request, acceptance alone does not authorize resume: the
+   requester must durably transition out of `blocked`, a fresh preflight must
+   accept, and the requester must be absent from `launch.held_lane_ids`; when
+   launch or relaunch is needed, it must also be present in
+   `launch.eligible_lane_ids`. Under maximum-concurrency-one serialization, the
+   current holder must also release the slot before resume. The reservation persists until the
+   verified PR file-touch map contains the path or the request is cancelled,
+   and it is removed once reflected or cancelled. A collision or `UNKNOWN`
+   collision state remains stopped until then. A missing path alone is not
+   material scope growth and must not produce `blocked-user-input`.
+   Directory renames use a distinct `expansion-rename-reservation` v1 record
+   with canonical, distinct `old` and `new` endpoints; only this typed rename
+   form adds ancestor/descendant collision checks, while scalar path
+   reservations remain exact-path collision controls.
+   Necessary additions can include contract or type files, tests or fixtures,
+   offline demo stubs, and build or generated integration surfaces when
+   repository evidence makes them necessary.
+   Contradictory evidence remains an immediate stop. Stop and return control
+   when any of the following applies: the approved goal, accepted behavior, or
+   acceptance criteria changes; the work adds unrelated work; it crosses a
+   repository or trust boundary; it requires a destructive or
+   difficult-to-reverse action; it introduces secrets, permissions,
+   deployments, billing, or other external effects; it requires consequential
+   architecture, performance, compatibility, or product judgment; it
+   materially changes security, privacy, compliance, or release policy; it
+   collides with another active lane and cannot be safely coordinated; it
+   exposes consequential ambiguity; or it weakens verification. An omitted
+   path alone is not such a condition.
    The current-wave item cap applies across all generated groups in aggregate;
    never multiply it by `N`, registered profiles, inboxes, or machines. If
    actionable work exceeds the capped current wave, report the remaining
@@ -250,9 +311,9 @@ precise blocker.
    ``- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.``
    Each prompt must include this exact `ask` authority line:
    ``- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
-   GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+   GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+   `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
    HST-v1
-   `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
    Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
    Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
    `ready-human-review-required` carries the exact current head SHA, every triggered gate, rollback status, and the exact durable human decision needed.
@@ -278,12 +339,12 @@ precise blocker.
    ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
    deterministically from the repository name: use the basename of the `origin`
    remote after stripping `.git`, or the repository root basename when `origin`
-   is unavailable; for a multi-segment name take the first letter of each of the
-   first six `-`, `_`, or space-separated segments, and for a single-segment
-   name take its first 4 letters or the whole name when shorter, then uppercase
-   the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
-   `shakapacker` -> `SHAK`, `go` -> `GO`). An invalid configured `repo_prefix`
-   is a blocker; do not silently fall back.
+   is unavailable; for a multi-segment name take the first character of each of
+   the first six `-`, `_`, or space-separated segments, and for a single-segment
+   name take its first 4 characters or the whole name when shorter, then
+   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
+   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
+   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
    Use A/B/C group letters
    only when multiple prompts are created, and get `MM-DD HH:MM` from
    `date +'%m-%d %H:%M'` in the local shell.

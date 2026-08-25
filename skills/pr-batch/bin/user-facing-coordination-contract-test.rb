@@ -12,13 +12,14 @@ class UserFacingCoordinationContractTest < Minitest::Test
   TRIAGE = "skills/triage/SKILL.md"
   CLOSE_SESSION = "skills/close-session/SKILL.md"
   README = "README.md"
-  GMCC_V3 = "GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or " \
-            "threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; " \
-            "auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; " \
-            "no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; " \
-            "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
-            "durable-decision(proven-human+merge-authority); else ready-human-review-required|" \
-            "autonomous-merge-evidence-unknown; merge+close PR/target/issue."
+  GMCC_V4 = "GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or " \
+            "threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
+            "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
+            "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact " \
+            "verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR " \
+            "human-approved-for-current-head+durable-decision(proven-human+merge-authority);" \
+            "else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close " \
+            "PR/target/issue."
   HST_ACTIONABLE_SUMMARY = "HST-v1 actionable material state change: a decision or action is required, " \
                            "a target is ready for walkthrough or approval, a blocker exhausted its bounded " \
                            "retries and needs intervention, or closeout/archive completed"
@@ -145,11 +146,11 @@ class UserFacingCoordinationContractTest < Minitest::Test
                     "merge without asking the user to perform the authorized mechanical action"
   end
 
-  def test_coordination_changes_preserve_exact_gmcc_v3_merge_authority_clauses
+  def test_coordination_changes_preserve_exact_gmcc_v4_merge_authority_clauses
     [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
-      assert_includes text, GMCC_V3, path
-      refute_includes text, "GMCC-v4:", path
+      assert_includes text, GMCC_V4, path
+      refute_includes text, "GMCC-v3:", path
     end
   end
 

@@ -1,0 +1,340 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Validates the mandatory Batch Coordination Declaration on a final batch handoff.
+#
+# A batch used to be able to run to completion with zero coordination-backend
+# writes while still producing a clean-looking final handoff. The declaration
+# closes that hole: a handoff must say what it did about coordination, and
+# silence is a hard blocker rather than an implicit success.
+#
+# This is the runtime gate. `coordination-declaration-contract-test.rb` loads
+# this file, so the shipped script and the documented contract cannot drift.
+#
+# Usage:
+#   coordination-declaration --handoff PATH
+#   coordination-declaration --handoff -     # read the handoff from stdin
+#
+# Writes a JSON report to stdout. Exit status is 0 when the declaration is
+# acceptable, 1 when it is blocked, and 64 on a usage or input error.
+
+require "json"
+require "optparse"
+
+module CoordinationDeclaration
+  EM_DASH = "—"
+
+  MISSING_DECLARATION_BLOCKER = "final handoff is missing the mandatory `coordination:` declaration; " \
+                                "declare `coordination: registered <batch-id>` or " \
+                                "`coordination: unavailable #{EM_DASH} <reason>`".freeze
+
+  # Accepts an optional list marker so a declaration reads naturally inside a
+  # bulleted Lane Card or handoff section.
+  BARE_DECLARATION_LINE = /\A {0,3}coordination:[[:space:]]*(.*?)[[:space:]]*\z/
+  BULLETED_DECLARATION_LINE = /\A( {0,3})[-*+]([ \t]+)coordination:[[:space:]]*(.*?)[[:space:]]*\z/
+  NEAR_MISS_LINE = /^ {0,3}(?:[-*+][[:space:]]+)?(?:`coordination:.*`|\*\*coordination:\*\*.*|Coordination:.*|coordination[[:blank:]]+[-–][[:blank:]]+.*)[[:blank:]]*$/
+  FENCE_OPENING = /\A(?:(`{3,})[^`\r\n]*|(~{3,})[^\r\n]*)\r?\n?\z/
+  INDENTED_FENCE_OPENING = /\A( *)(?:(`{3,})[^`\r\n]*|(~{3,})[^\r\n]*)\r?\n?\z/
+  LIST_ITEM = /\A( *)([-+*]|\d{1,9}[.)])([ \t]+)(.*)/
+
+  module_function
+
+  def unknown_sentinel?(value)
+    value.strip.casecmp("UNKNOWN").zero?
+  end
+
+  def column_after_padding(column, padding)
+    padding.each_char.reduce(column) do |current_column, character|
+      character == "\t" ? current_column + 4 - (current_column % 4) : current_column + 1
+    end
+  end
+
+  def expand_leading_whitespace(line)
+    leading_whitespace = line[/\A[ \t]*/]
+    expanded_width = column_after_padding(0, leading_whitespace)
+    (" " * expanded_width) + line.delete_prefix(leading_whitespace)
+  end
+
+  def visible_lines(handoff_text)
+    fence = nil
+    # Content columns for the currently open list-item ancestry. They let an
+    # indented child bullet remain a declaration while the same indentation
+    # without a parent list item remains an indented code block.
+    list_content_indents = []
+
+    handoff_text.to_s.lines.filter_map do |raw_line|
+      line = expand_leading_whitespace(raw_line)
+
+      if fence
+        line_indent = line[/\A */].length
+        if !line.strip.empty? && fence[:minimum_indent].positive? && line_indent < fence[:minimum_indent]
+          fence = nil
+        else
+          closing_indent = " {#{fence[:minimum_indent]},#{fence[:maximum_indent]}}"
+          marker = Regexp.escape(fence[:character])
+          fence = nil if line.match?(/\A#{closing_indent}#{marker}{#{fence[:length]},}[[:blank:]]*$/)
+          next
+        end
+      end
+
+      normalized_line = line
+      column_offset = 0
+      valid_list_item = false
+      visible_list_continuation = false
+      if (list_item = line.match(LIST_ITEM))
+        item_indent = list_item[1].length
+        marker_end_column = item_indent + list_item[2].length
+        content_start_column = column_after_padding(marker_end_column, list_item[3])
+        padding_width = content_start_column - marker_end_column
+        parent_index = list_content_indents.rindex do |content_indent|
+          item_indent.between?(content_indent, content_indent + 3)
+        end
+        valid_list_item = padding_width.between?(1, 4) && (item_indent <= 3 || !parent_index.nil?)
+
+        if valid_list_item
+          parent_content_indent = parent_index.nil? ? 0 : list_content_indents[parent_index]
+          list_content_indents = parent_index.nil? ? [] : list_content_indents[0..parent_index]
+          list_content_indents << content_start_column
+          normalized_line = line.delete_prefix(" " * parent_content_indent)
+          column_offset = parent_content_indent
+        end
+      elsif !line.strip.empty? && list_content_indents.any?
+        line_indent = line[/\A */].length
+        list_index = list_content_indents.rindex do |content_indent|
+          line_indent.between?(content_indent, content_indent + 3)
+        end
+        if list_index
+          list_content_indents = list_content_indents[0..list_index]
+          list_indent = list_content_indents.last
+          visible_list_continuation = true
+          normalized_line = line.delete_prefix(" " * list_indent)
+          column_offset = list_indent
+        elsif line_indent < list_content_indents.first
+          list_content_indents.clear
+        end
+      end
+
+      marker = nil
+      fence_indent = nil
+      if valid_list_item && (opening = list_item[4].match(FENCE_OPENING))
+        marker = opening[1] || opening[2]
+        fence_indent = list_content_indents.last
+      elsif (opening = line.match(INDENTED_FENCE_OPENING))
+        opening_indent = opening[1].length
+        list_indent = list_content_indents.reverse.find do |content_indent|
+          opening_indent.between?(content_indent, content_indent + 3)
+        end
+        if opening_indent <= 3 || list_indent
+          marker = opening[2] || opening[3]
+          fence_indent = list_indent || 0
+        end
+      end
+
+      if marker
+        fence = {
+          character: marker[0],
+          length: marker.length,
+          minimum_indent: fence_indent,
+          maximum_indent: fence_indent + 3
+        }
+        next
+      end
+
+      next if line.start_with?("    ", "\t") && !valid_list_item && !visible_list_continuation
+
+      { text: normalized_line, column_offset: column_offset }
+    end
+  end
+
+  def declared_values(handoff_text)
+    visible_lines(handoff_text).filter_map do |line|
+      declaration_value(line[:text], column_offset: line[:column_offset])
+    end
+  end
+
+  def declaration_value(line, column_offset: 0)
+    bare_declaration = line.match(BARE_DECLARATION_LINE)
+    return bare_declaration[1] if bare_declaration
+
+    bulleted_declaration = line.match(BULLETED_DECLARATION_LINE)
+    return unless bulleted_declaration
+
+    column = column_offset + bulleted_declaration[1].length + 1
+    content_start_column = column_after_padding(column, bulleted_declaration[2])
+    padding_width = content_start_column - column
+    return unless padding_width.between?(1, 4)
+
+    bulleted_declaration[3]
+  end
+
+  def near_miss_lines(handoff_text)
+    visible_lines(handoff_text).filter_map do |line|
+      line[:text].strip if line[:text].match?(NEAR_MISS_LINE)
+    end
+  end
+
+  # The gate itself. Returns the list of blockers for a candidate final handoff;
+  # an empty list means the handoff declared its coordination state acceptably.
+  def blockers(handoff_text)
+    values = declared_values(handoff_text)
+
+    if values.empty?
+      near_misses = near_miss_lines(handoff_text)
+      unless near_misses.empty?
+        return ["final handoff contains a near-miss coordination declaration #{near_misses.first.inspect}; " \
+                "use exact `coordination: registered <batch-id>` or " \
+                "`coordination: unavailable #{EM_DASH} <reason>` syntax"]
+      end
+
+      return [MISSING_DECLARATION_BLOCKER]
+    end
+
+    if values.length > 1
+      return ["final handoff declares `coordination:` #{values.length} times; exactly one declaration is allowed"]
+    end
+
+    declared_value_blockers(values.first)
+  end
+
+  def declared_value_blockers(value)
+    # Require whitespace (or end of value) after the keyword. `\b` is a zero-width
+    # boundary, so `registered-aw-1` would otherwise parse as a valid declaration.
+    case value
+    when /\Aregistered(?:[[:space:]]+(.*))?\z/m
+      registered_blockers(Regexp.last_match(1).to_s.strip)
+    when /\Aunavailable(?:[[:space:]]+(.*))?\z/m
+      unavailable_blockers(Regexp.last_match(1).to_s)
+    else
+      ["unrecognized `coordination:` declaration #{value.inspect}; " \
+       "use `registered <batch-id>` or `unavailable #{EM_DASH} <reason>`"]
+    end
+  end
+
+  def registered_blockers(batch_id)
+    return ["`coordination: registered` is missing its exact backend batch id"] if batch_id.empty?
+
+    if unknown_sentinel?(batch_id)
+      return ["`coordination: registered` batch id is `UNKNOWN`; an unregistered batch must " \
+              "declare `unavailable #{EM_DASH} <reason>`"]
+    end
+
+    # A batch id is a single opaque token. Without this, one line carrying both
+    # forms -- `registered aw-1 unavailable #{EM_DASH} backend flaky` -- would be
+    # swallowed whole into the batch id and pass as a clean declaration.
+    if batch_id.match?(/[[:space:]]/)
+      tail = batch_id.split(/[[:space:]]+/, 2).last.to_s
+      hint = if tail.start_with?("unavailable")
+               "declare exactly one form, never both on one line"
+             else
+               "drop the trailing text after the batch id"
+             end
+      return ["`coordination: registered` batch id must be a single token, got #{batch_id.inspect}; #{hint}"]
+    end
+
+    []
+  end
+
+  def unavailable_blockers(remainder)
+    trimmed = remainder.strip
+    # Report a bare `unavailable` as a missing reason rather than blaming the
+    # separator, which is the more direct diagnosis for that input.
+    return ["`coordination: unavailable` is missing its exact nonempty reason"] if trimmed.empty?
+
+    unless trimmed.start_with?(EM_DASH)
+      return ["`coordination: unavailable` must separate its reason with an em dash (#{EM_DASH})"]
+    end
+
+    reason = trimmed.delete_prefix(EM_DASH).strip
+    return ["`coordination: unavailable` is missing its exact nonempty reason"] if reason.empty?
+
+    if unknown_sentinel?(reason)
+      return ["`coordination: unavailable` reason is `UNKNOWN`; the declaration must state the exact " \
+              "reason coordination did not happen"]
+    end
+
+    []
+  end
+
+  # Only report a parsed form for a declaration that actually passed the gate, so
+  # a blocked handoff can never be read as carrying usable coordination facts.
+  def parsed_declaration(handoff_text)
+    values = declared_values(handoff_text)
+    return {} unless values.length == 1
+
+    case values.first
+    when /\Aregistered(?:[[:space:]]+(.*))?\z/m
+      { "form" => "registered", "batch_id" => Regexp.last_match(1).to_s.strip }
+    when /\Aunavailable(?:[[:space:]]+(.*))?\z/m
+      { "form" => "unavailable",
+        "reason" => Regexp.last_match(1).to_s.strip.delete_prefix(EM_DASH).strip }
+    else
+      {}
+    end
+  end
+
+  def report(handoff_text)
+    found = declared_values(handoff_text)
+    blocking = blockers(handoff_text)
+    parsed = blocking.empty? ? parsed_declaration(handoff_text) : {}
+
+    {
+      "ok" => blocking.empty?,
+      "declaration_count" => found.length,
+      "form" => parsed["form"],
+      "batch_id" => parsed["batch_id"],
+      "reason" => parsed["reason"],
+      "blockers" => blocking
+    }
+  end
+
+  # Read both sources as UTF-8 explicitly. The `unavailable` form requires an em
+  # dash, so a default US-ASCII external encoding would crash the gate on exactly
+  # the declaration it exists to validate.
+  def read_handoff(source)
+    text = if source == "-"
+             $stdin.set_encoding(Encoding::UTF_8).read
+           else
+             File.read(source, encoding: "UTF-8")
+           end
+    raise Encoding::InvalidByteSequenceError, "handoff input is invalid UTF-8" unless text.valid_encoding?
+
+    text
+  end
+
+  def usage
+    "Usage: coordination-declaration --handoff PATH|-"
+  end
+
+  def run(argv)
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = usage
+      opts.on("--handoff PATH", "Final handoff text to validate; use - to read stdin") do |value|
+        options[:handoff] = value
+      end
+      opts.on("-h", "--help", "Show this help") do
+        puts opts
+        exit 0
+      end
+    end
+    parser.parse!(argv)
+
+    raise OptionParser::MissingArgument, "--handoff" unless options[:handoff]
+
+    result = report(read_handoff(options[:handoff]))
+    puts JSON.pretty_generate(result)
+    result["ok"] ? 0 : 1
+  rescue OptionParser::ParseError => e
+    warn "Error: #{e.message}"
+    warn usage
+    64
+  rescue SystemCallError => e
+    warn "Error: #{e.message}"
+    64
+  rescue EncodingError => e
+    warn "Error: #{e.message}"
+    64
+  end
+end
+
+exit(CoordinationDeclaration.run(ARGV)) if $PROGRAM_NAME == __FILE__

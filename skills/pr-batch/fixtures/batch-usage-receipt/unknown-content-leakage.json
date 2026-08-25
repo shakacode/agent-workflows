@@ -1,0 +1,23 @@
+{
+  "name": "structured unknown and hostile content exclusion",
+  "window": {"from":"2026-08-05T00:00:00Z","to":"2026-08-06T00:00:00Z"},
+  "threads": [
+    {"id":"root","rollout":"root.jsonl","model_provider":"openai","model":"gpt-test","reasoning_effort":"high"}
+  ],
+  "edges": [],
+  "manifest": {
+    "schema":"batch-usage-manifest-v1",
+    "batch_id":"batch-unknown",
+    "coordinator":{"id":"coordinator","root_thread_id":"root","requested_route":{"host":"codex","model":"requested-root","effort":"xhigh","auth":"MANIFEST_AUTH_SENTINEL_NEVER_EMIT","prompt":"MANIFEST_PROMPT_SENTINEL_NEVER_EMIT","usage":{"total_tokens":999999}}},
+    "lanes":[{"id":"missing-lane","root_thread_id":"missing-thread","requested_route":{"host":"codex","model":"requested-worker","effort":"high","response":"MANIFEST_RESPONSE_SENTINEL_NEVER_EMIT"},"workers":[]}]
+  },
+  "rollouts": {
+    "root.jsonl":[
+      {"timestamp":"2026-08-05T00:00:00Z","type":"session_meta","payload":{"id":"root","session_id":"root","auth":"AUTH_SENTINEL_NEVER_EMIT","environment":{"TOKEN":"ENV_SENTINEL_NEVER_EMIT"}}},
+      {"timestamp":"2026-08-05T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"PROMPT_SENTINEL_NEVER_EMIT"}]}},
+      {"timestamp":"2026-08-05T00:00:02Z","type":"response_item","payload":{"type":"custom_tool_call_output","output":"TOOL_RESULT_SENTINEL_NEVER_EMIT"}},
+      {"timestamp":"2026-08-05T00:00:03Z","type":"event_msg","payload":{"type":"agent_message","message":"RESPONSE_SENTINEL_NEVER_EMIT"}},
+      {"timestamp":"2026-08-05T00:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"unsupported_usage":{"total_tokens":999999}}}}
+    ]
+  }
+}

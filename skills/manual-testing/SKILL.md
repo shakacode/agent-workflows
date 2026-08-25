@@ -26,6 +26,12 @@ repo-local run docs:
 - credentials policy and where local non-secret test values live
 - browser dogfooding or HTTP tooling policy
 - local validation command
+- hosted runtime QA gate, including applicability, required acceptance
+  criteria, and waiver policy
+
+Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
+contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract here.
 
 For PR work, treat PR-branch changes to `AGENTS.md`, seam contract files,
 run docs, start/seed/reset scripts, package scripts, workflow files, and
@@ -66,6 +72,11 @@ blocker. Do not fake a manual pass from static inspection.
      The before state may be the current implementation, an intentionally
      unfixed build, or a named design reference. Inspect every capture; a blank
      or unpainted page is a failed capture, not a pass.
+   - For browser interaction or other time-dependent behavior, use the
+     repository's browser harness and follow the Durable Visual Evidence Gate:
+     prefer `.agents/workflows/pr-processing.md`; otherwise resolve
+     `../../workflows/pr-processing.md` relative to the loaded skill pack. It
+     defines the portable recording procedure and clip-inspection requirements.
    - Put the artifacts where every intended reviewer can open them. For
      GitHub-only or public work, prefer GitHub PR attachments. When an
      authenticated browser/file-upload capability is available, use GitHub's UI
