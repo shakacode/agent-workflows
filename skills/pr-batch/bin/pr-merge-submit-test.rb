@@ -106,7 +106,9 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_selected_hosted_ci_success_receipt_replays_for_queue_and_guarded_direct
     queue_result, queue_log = run_cli(
-      mode: "queue", receipt_mode: :selected_hosted_success
+      mode: "queue",
+      merge_submission: merge_queue_policy,
+      receipt_mode: :selected_hosted_success
     )
     guard_result, guard_log, guard_command_log = run_cli(
       mode: "guard_success",
