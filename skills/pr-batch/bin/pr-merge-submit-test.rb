@@ -279,17 +279,16 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "enqueuePullRequest"
     refute_includes log, "mergePullRequest"
     argv = guard_log.lines.map(&:chomp)
+    merge_assurance_receipt = argv.fetch(15)
+    assert_equal File.absolute_path(merge_assurance_receipt), merge_assurance_receipt
     assert_equal [
       "--repo", "owner/repo", "--host", HOST, "--pr", "42",
       "--expected-head", fixture_head, "--expected-base", "main",
       "--expected-base-sha", payload.dig("guard", "trusted_base_sha"),
-      "--method", "squash"
-    ], argv.first(14)
-    assert_equal "--merge-assurance-receipt", argv[14]
-    assert_equal File.absolute_path(argv[15]), argv[15]
-    assert_equal [
+      "--method", "squash",
+      "--merge-assurance-receipt", merge_assurance_receipt,
       "--subject", "Fix the thing (#42)", "--body", "Detailed merge body"
-    ], argv.last(4)
+    ], argv
   end
 
   def test_guard_executes_identity_bound_bytes_when_live_path_is_swapped_after_validation

@@ -991,8 +991,7 @@ module PrMergeSubmit
         "--expected-base", options[:expected_base],
         "--expected-base-sha", @merge_assurance_receipt.dig("bindings", "base", "sha"),
         "--method", policy.fetch("method"),
-        "--merge-assurance-receipt", File.expand_path(options[:merge_assurance_receipt]),
-        "--configured-review-receipt", File.expand_path(options[:configured_review_receipt])
+        "--merge-assurance-receipt", File.expand_path(options[:merge_assurance_receipt])
       ]
       args.concat(["--subject", options[:subject]]) if options[:subject]
       args.concat(["--body", options[:body]]) if options[:body]
