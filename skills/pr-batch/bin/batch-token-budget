@@ -2267,6 +2267,9 @@ module BatchTokenBudget
       end
 
       reservation_id = active.dig("request", "id")
+      completed = completed_ids.include?(reservation_id)
+      next if interval_tokens.zero? && !completed
+
       reservation_tokens[reservation_id] = interval_tokens
       record = state.dig("reservations", reservation_id)
       prior_observed = record.fetch("observed_tokens", 0)
@@ -2277,7 +2280,6 @@ module BatchTokenBudget
       remaining_tokens = [record.fetch("reserved_tokens") - observed_tokens, 0].max
       usage_receipt_digests = Array(record["usage_receipt_digests"]) + [receipt_digest]
 
-      completed = completed_ids.include?(reservation_id)
       released_tokens = completed ? remaining_tokens : 0
       if completed
         [selected_scope, aggregate].each do |scope_record|
