@@ -47,10 +47,11 @@ _Avoid_: status (overloaded), phase by itself when release phase is in scope
 ### Batch lifecycle
 
 **Batch**:
-A coordinator-scoped unit of work: objective, instructions, targets, named
-waves, and lanes. Depending on repo policy and dependency risk, it may be
-recorded in the private backend, mirrored through public claim comments, or
-carried only in the coordinator handoff.
+A coordinator-scoped unit of work: objective, instructions, targets, and lanes.
+When wave scheduling is used, a batch organizes its lanes into named waves.
+Depending on repo policy and dependency risk, it may be recorded in the private
+backend, mirrored through public claim comments, or carried only in the
+coordinator handoff.
 _Avoid_: run, job
 
 **Lane**:
@@ -221,16 +222,19 @@ _Avoid_: force kill (without the cleanup steps it names)
 
 ## Relationships
 
-- **Batch → Wave → Lane → Instance**: a batch contains named scheduling
-  waves; a wave contains lanes; an **Instance** executes one lane. For
-  example, `docs-batch → wave-1 → lane-glossary → instance A`. A direct
+- **Batch → Wave → Lane → Instance**: when wave scheduling is used, a
+  batch contains named scheduling waves; a wave contains lanes; an **Instance**
+  executes one lane. For example,
+  `docs-batch → wave-1 → lane-glossary → instance A`. A direct
   PR task can also be one standalone **Lane** without batch planning or worker
   split machinery. A **Lane** has exactly one owner identity at a time.
 - An **Active wave** is the scheduling cohort considered now. Lanes in later
   **Waves** are deferred, and that deferral does not establish a dependency.
   A **Serialization group** with `max_concurrency: 1` admits one member at a
   time; a member retains its slot through `active` ↔ `blocked` transitions and
-  releases it only after leaving both states.
+  releases it only after leaving both states. Neither wave nor serialization-
+  group membership supplies dependency evidence; use a **Stage-typed
+  dependency** for ordering.
 - A **Stage-typed dependency** connects predecessor and dependent **Lanes**;
   backend dependency state supplies facts, while `stage-dependency-gate` decides
   which lifecycle actions remain gated. Its **Stage dependency critical path**
