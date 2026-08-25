@@ -703,6 +703,68 @@ regular_file_attestation() {
   ' "$1" 2>/dev/null
 }
 
+capture_install_metadata_binding() {
+  local metadata_path="$target/$metadata_name"
+  local first_state first_value first_attestation second_attestation
+  install_metadata_binding_state=""
+  install_metadata_binding_attestation=""
+
+  if [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]; then
+    install_metadata_binding_state="absent"
+    return 0
+  fi
+
+  read_installed_metadata_value delivery_mode
+  first_state="$installed_metadata_state"
+  first_value="$installed_metadata_value"
+  case "$first_state" in
+    valid|key_absent) ;;
+    invalid)
+      report_invalid_install_delivery_mode
+      return 64
+      ;;
+    *)
+      report_corrupt_install_metadata
+      return 65
+      ;;
+  esac
+  first_attestation="$(regular_file_attestation "$metadata_path")" || {
+    report_corrupt_install_metadata
+    return 65
+  }
+
+  read_installed_metadata_value delivery_mode
+  second_attestation="$(regular_file_attestation "$metadata_path")" || true
+  if [[ "$installed_metadata_state" != "$first_state" ||
+        "$installed_metadata_value" != "$first_value" ||
+        "$second_attestation" != "$first_attestation" ]]; then
+    report_install_metadata_binding_changed
+    return 65
+  fi
+
+  install_metadata_binding_state="present"
+  install_metadata_binding_attestation="$first_attestation"
+}
+
+verify_install_metadata_binding() {
+  local metadata_path="$target/$metadata_name"
+  case "$install_metadata_binding_state" in
+    absent)
+      [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]
+      ;;
+    present)
+      [[ "$(regular_file_attestation "$metadata_path" 2>/dev/null || true)" = \
+         "$install_metadata_binding_attestation" ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+report_install_metadata_binding_changed() {
+  echo "CORRUPT_INSTALL_METADATA: install metadata changed after locked validation; preserved $target/$metadata_name without overwriting it." >&2
+  echo "Restore a valid backup of that file. If none exists, preserve the target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
+}
+
 recovery_metadata_binding_intact() {
   local sentinel_attestation snapshot_attestation backup_attestation
   [[ "$recovery_metadata_captured" = "true" ]] || return 1
@@ -2305,6 +2367,8 @@ migration_receipt="$target/.agent-workflows-migration-staging"
 recovery_metadata_captured=false
 recovery_metadata_restore_reported=false
 recovery_staging_identity=""
+install_metadata_binding_state=""
+install_metadata_binding_attestation=""
 metadata_absent_under_lock=false
 if [[ ! -e "$target/$metadata_name" && ! -L "$target/$metadata_name" ]]; then
   metadata_absent_under_lock=true
@@ -2426,6 +2490,9 @@ if [[ -f "$migration_receipt" ]]; then
   fi
   rm -f "$migration_receipt"
 fi
+binding_status=0
+capture_install_metadata_binding || binding_status=$?
+[[ "$binding_status" -eq 0 ]] || exit "$binding_status"
 metadata_committed=false
 release_install_transaction() {
   local status=$?
@@ -2466,6 +2533,10 @@ fi
 verify_pack_doc_destinations
 verify_install_destinations
 prepare_metadata
+if ! verify_install_metadata_binding; then
+  report_install_metadata_binding_changed
+  exit 65
+fi
 
 if [[ "$mode" = "copy" ]]; then
   ensure_real_directory "$target/bin"
@@ -2585,6 +2656,10 @@ if [[ "$delivery_mode" = "plugin-companion" ]]; then
   fi
 fi
 
+if ! verify_install_metadata_binding; then
+  report_install_metadata_binding_changed
+  exit 65
+fi
 commit_metadata
 metadata_committed=true
 if [[ -n "$migration_staging" ]]; then

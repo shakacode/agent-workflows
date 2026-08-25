@@ -842,6 +842,49 @@ SH
   assert_file "$metadata"
 }
 
+test_metadata_change_after_locked_preflight_fails_before_managed_file_mutation() {
+  local tmp target metadata injection marker output status license_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/corrupt-metadata-after-temp-write.rb"
+  marker="$tmp/metadata-corrupted-after-temp-write"
+  "$ROOT/bin/install-agent-workflows" --host claude --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  license_before="$(shasum "$target/LICENSE")"
+
+  cat > "$injection" <<'RUBY'
+module CorruptMetadataAfterTempWrite
+  def write(path, *args, **kwargs)
+    result = super
+    if path == "#{ENV.fetch("QA_INSTALL_METADATA")}.tmp" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_INSTALL_METADATA"), "{\"delivery_mode\":")
+      File.write(ENV.fetch("QA_RACE_MARKER"), "changed\n")
+    end
+    result
+  end
+end
+File.singleton_class.prepend(CorruptMetadataAfterTempWrite)
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host claude --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "post-preflight metadata change exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "post-preflight metadata change mutated a managed file"
+  [[ "$(cat "$metadata")" = '{"delivery_mode":' ]] || \
+    fail "post-preflight metadata change was overwritten"
+  [[ ! -e "$metadata.tmp" ]] || fail "post-preflight metadata change left prepared metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "post-preflight metadata change leaked install lock"
+}
+
 test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat() {
   local tmp target staging
   tmp="$(mktemp -d)"
@@ -5388,6 +5431,7 @@ main() {
     test_first_install_crash_with_absent_metadata_recovers_as_flat
     test_metadata_appearing_before_lock_is_not_treated_as_absent_recovery
     test_metadata_disappearing_before_lock_is_not_treated_as_still_present
+    test_metadata_change_after_locked_preflight_fails_before_managed_file_mutation
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
     test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data
     test_flat_crash_recovery_rejects_symlink_skills_root_before_move
