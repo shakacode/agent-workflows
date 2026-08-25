@@ -128,8 +128,11 @@ The coordinator-role-approved bounded contract used when lane risk or bounded
 delegation requires it, regardless of the worker route:
 goal and non-goals, owned paths, supported diagnosis, invariants, acceptance
 criteria, verification, and stop conditions. Contradictory evidence, ambiguity,
-scope growth, high-risk judgment, or weakened verification returns control to
-the coordinator instead of authorizing worker re-planning.
+material semantic scope growth, high-risk judgment, or weakened verification
+returns control to the coordinator instead of authorizing worker re-planning.
+Evidence-backed discovery of a necessary in-repository path alone is not such
+growth; follow the [path-expansion
+contract](docs/pr-batch-skills.md#implementation-batch-planning-flow).
 _Avoid_: task prompt, broad plan
 
 **Active worker assignment**:

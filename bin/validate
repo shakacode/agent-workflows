@@ -91,6 +91,11 @@ ruby bin/agent-workflows-trust-audit-test.rb
 echo "== repository security policy =="
 ruby bin/repository-security-policy-test.rb
 
+echo "== secure GitHub Actions gate =="
+ruby skills/secure-github-actions/bin/secure-github-actions-scan-test.rb
+ruby skills/secure-github-actions/bin/secure-github-actions-review-lens-test.rb
+ruby skills/secure-github-actions/bin/secure-github-actions-contract-test.rb
+
 echo "== push-downstream unit tests =="
 ruby bin/push-downstream-test.rb
 
@@ -143,7 +148,9 @@ ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/batch-status/bin/batch-status-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
+ruby skills/pr-batch/bin/file-expansion-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
+ruby skills/pr-batch/bin/autonomous-merge-closeout-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-eligibility-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-evidence-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-calibrate-test.rb
@@ -152,6 +159,9 @@ ruby skills/pr-batch/bin/review-wave-contract-test.rb
 ruby skills/pr-batch/bin/assignee-exclusion-contract-test.rb
 ruby skills/pr-batch/bin/agent-claimed-mirror-contract-test.rb
 ruby skills/pr-batch/bin/coordination-declaration-contract-test.rb
+echo "== json_schemer =="
+JSON_SCHEMER_VERSION=$(tr -d '[:space:]' < .json-schemer-version)
+JSON_SCHEMER_VERSION="${JSON_SCHEMER_VERSION}" ruby skills/pr-batch/bin/batch-usage-receipt-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/pr-batch/bin/model-routing-contract-test.rb
 ruby skills/pr-batch/bin/dispatcher-capability-preflight-test.rb
 ruby skills/pr-batch/bin/single_target_entrypoint_test.rb
