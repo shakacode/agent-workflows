@@ -17,10 +17,56 @@ pause procedure, see
 for cancellation, see
 [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch).
 
-For a verified Codex GPT-5.6 host, the recommended exact routing profile is:
+## Planning-Pass Route Assessment
 
-- Default single-target planner: Sol/high
-- Affirmatively simple single-target planner: Terra/high
+Assess the current `$plan-pr-batch` planning pass separately from the future
+batch coordinator, worker, and checker routes. Named routes are advisory; use
+the provider-neutral route when the active host or roster is not verified.
+
+| Classification | Provider-neutral | Codex GPT-5.6 | Claude profile |
+| --- | --- | --- | --- |
+| `affirmatively-simple` | `balanced/medium` | `Terra/medium` | `Sonnet 5/medium` |
+| `routine-multi-lane` | `balanced/high` | `Terra/high` | `Sonnet 5/high` |
+| `default-or-uncertain-single-target` | `strongest/high` | `Sol/high` | `Opus 5/high` |
+| `pinned-high-risk-or-escalation` | `strongest/xhigh` | `Sol/xhigh` | `Opus 5/xhigh` |
+
+Use `affirmatively-simple` only after verified scope establishes explicit
+acceptance criteria, a known bounded file surface, no unresolved design or
+dependency question, no security, authorization, concurrency, persistence,
+lifecycle, routing, release, public-contract, or other high-consequence
+boundary, easy failure detection and rollback, and a strong deterministic
+verification oracle. Any missing or disputed simplicity criterion keeps a
+single target in `default-or-uncertain-single-target`; a present or disputed
+pinned high-risk trigger uses `pinned-high-risk-or-escalation`. Multiple
+verified routine targets use `routine-multi-lane` unless a high-risk trigger
+applies. This classification describes only the current planning pass and does
+not select the future batch coordinator.
+
+| Observed comparison | Disposition | Maximum routed reviews | Compare routes? | Restart advice? |
+| --- | --- | --- | --- | --- |
+| `stronger-current` | `future-cost-advisory` | `0` | `yes` | `no` |
+| `weaker-current-host-supported` | `bounded-independent-review` | `1` | `yes` | `no` |
+| `any-observed-field-UNKNOWN` | `non-blocking-advisory` | `0` | `no` | `no` |
+
+When the fully observed current route is stronger than recommended, report the
+cheaper recommendation for a future planning run only. Do not spawn another
+planner merely to save cost after a stronger route is already active.
+When it is materially weaker, the host may run at most one bounded independent
+plan review at the recommended route, but only when explicit route-specific
+execution is supported and the review can finish without user interaction.
+Keep the reviewer distinct from the plan maker and disclose the review route.
+Unavailable, inherited, substituted, or unverifiable route-specific execution
+gets a non-blocking advisory instead; never require a restart.
+Record observed host, model, and effort field by field only from host-exposed
+runtime evidence. If any field needed for comparison is `UNKNOWN`, make no
+stronger/weaker comparison, launch no route-correct review, and give no restart
+advice. Requested preferences, prompt text, and model self-report are not
+observations.
+
+For a verified Codex GPT-5.6 host, the recommended future execution profile is:
+
+- Default single-target future coordinator: Sol/high
+- Affirmatively simple single-target future coordinator: Terra/high
 - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -28,11 +74,11 @@ For a verified Codex GPT-5.6 host, the recommended exact routing profile is:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
-For a verified Claude host, the provisional recommended exact routing profile
+For a verified Claude host, the provisional recommended future execution profile
 (`claude-profile v1`) is:
 
-- Default single-target planner: Opus 5/high
-- Affirmatively simple single-target planner: Sonnet 5/high
+- Default single-target future coordinator: Opus 5/high
+- Affirmatively simple single-target future coordinator: Sonnet 5/high
 - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 5/high
@@ -164,7 +210,8 @@ omit the queue summary and note that queue state is unavailable.
    start with `$spec` to produce requirements, design, and executable tasks.
 2. If the target scope is a filter, label, milestone, pasted list, or ambiguous bare number for implementation planning, start with `$plan-pr-batch`.
 3. If exact candidate issues are already known and may be hypothetical, AI/code-analysis-only, over-scoped, or better handled with a no-PR evidence comment, start with `$evaluate-issue` directly.
-4. Record coordinator, worker, and checker model/effort preferences separately.
+4. Record the current planning-pass assessment and future coordinator, worker,
+   and checker model/effort preferences separately.
    Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
    Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
    Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
@@ -173,22 +220,17 @@ omit the queue summary and note that queue state is unavailable.
    When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
    Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
    Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
-   Treat one issue or PR as a single-target plan even when `$pr-batch` will use
-   bounded implementation, review, or QA subagents. On Codex, default
-   single-target `$plan-pr-batch` work to Sol/high. Use Terra/high only after an
-   affirmative simple classification, and reserve Sol/xhigh for a
-   present/disputed high-risk boundary or another listed exception. Multiple
-   targets use the routine multi-lane balanced/high route unless an
-   exception applies.
-   On Claude, use Opus 5/high by default, Sonnet 5/high only after the same
-   affirmative simple classification, and Opus 5/xhigh for the corresponding
-   high-risk or escalation exceptions.
+   Classify the current planning pass with the Planning-Pass Route Assessment
+   above. Treat one issue or PR as a single target even when `$pr-batch` will
+   use bounded implementation, review, or QA subagents. Multiple verified
+   routine targets use the routine multi-lane route unless an exception applies.
    A straightforward exact target may go directly to `$pr-batch` when no
    selection, shaping, dependency, or planning decision remains.
-   If the host exposes a materially different current planner route,
-   `$plan-pr-batch` reports one concise advisory with the current and recommended
-   routes plus its risk or cost rationale. The advisory never blocks, requests a
-   restart, or repeats; `UNKNOWN` route observations produce no advisory.
+   A fully observed stronger current route produces future-cost advice only. A
+   fully observed weaker route may receive at most one independent bounded
+   review only when the host supports explicit route-specific execution. Any
+   observed `UNKNOWN` field prevents comparison and review. Never recommend a
+   restart for a planning-route mismatch.
    Before worker launch, resolve `PR_BATCH_SKILL_DIR` through the explicit
    env-var / loaded-skill / repo-local pinned-copy chain, then use
    `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`: a

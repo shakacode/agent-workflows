@@ -734,10 +734,56 @@ escalation assignment, its evidence gate, and a maximum escalation count.
   one; otherwise use the closest available route or runtime default and record
   the requested and observed fields honestly.
 
+#### Planning-Pass Route Assessment
+
+Assess the current planning pass separately from the future batch coordinator,
+worker, and checker routes. Named routes are advisory; use the provider-neutral
+route when the active host or roster is not verified.
+
+| Classification | Provider-neutral | Codex GPT-5.6 | Claude profile |
+| --- | --- | --- | --- |
+| `affirmatively-simple` | `balanced/medium` | `Terra/medium` | `Sonnet 5/medium` |
+| `routine-multi-lane` | `balanced/high` | `Terra/high` | `Sonnet 5/high` |
+| `default-or-uncertain-single-target` | `strongest/high` | `Sol/high` | `Opus 5/high` |
+| `pinned-high-risk-or-escalation` | `strongest/xhigh` | `Sol/xhigh` | `Opus 5/xhigh` |
+
+Use `affirmatively-simple` only after verified scope establishes explicit
+acceptance criteria, a known bounded file surface, no unresolved design or
+dependency question, no security, authorization, concurrency, persistence,
+lifecycle, routing, release, public-contract, or other high-consequence
+boundary, easy failure detection and rollback, and a strong deterministic
+verification oracle. Any missing or disputed simplicity criterion keeps a
+single target in `default-or-uncertain-single-target`; a present or disputed
+pinned high-risk trigger uses `pinned-high-risk-or-escalation`. Multiple
+verified routine targets use `routine-multi-lane` unless a high-risk trigger
+applies. This classification describes only the current planning pass and does
+not select the future batch coordinator.
+
+| Observed comparison | Disposition | Maximum routed reviews | Compare routes? | Restart advice? |
+| --- | --- | --- | --- | --- |
+| `stronger-current` | `future-cost-advisory` | `0` | `yes` | `no` |
+| `weaker-current-host-supported` | `bounded-independent-review` | `1` | `yes` | `no` |
+| `any-observed-field-UNKNOWN` | `non-blocking-advisory` | `0` | `no` | `no` |
+
+When the fully observed current route is stronger than recommended, report the
+cheaper recommendation for a future planning run only. Do not spawn another
+planner merely to save cost after a stronger route is already active.
+When it is materially weaker, the host may run at most one bounded independent
+plan review at the recommended route, but only when explicit route-specific
+execution is supported and the review can finish without user interaction.
+Keep the reviewer distinct from the plan maker and disclose the review route.
+Unavailable, inherited, substituted, or unverifiable route-specific execution
+gets a non-blocking advisory instead; never require a restart.
+Record observed host, model, and effort field by field only from host-exposed
+runtime evidence. If any field needed for comparison is `UNKNOWN`, make no
+stronger/weaker comparison, launch no route-correct review, and give no restart
+advice. Requested preferences, prompt text, and model self-report are not
+observations.
+
 For a Codex GPT-5.6 host, use this recommended advisory profile:
 
-- Default single-target planner: Sol/high
-- Affirmatively simple single-target planner: Terra/high
+- Default single-target future coordinator: Sol/high
+- Affirmatively simple single-target future coordinator: Terra/high
 - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -759,24 +805,22 @@ coordinator or worker, with the actual route recorded honestly. Luna remains
 outside this profile's recommended worker roster. Shared workflow text remains
 portable for other providers and model generations.
 
-For planning, one issue or PR remains single-target even when its coordinator
-delegates bounded implementation, review, or QA lanes. Default to Sol/high
-because one issue may still require difficult diagnosis, design, or verification
-planning. Prefer Terra/high only after an affirmative simple classification,
-and Sol/xhigh only for a present or disputed pinned high-risk boundary or
-another listed exception. Multiple targets use the routine
-multi-lane balanced/high route unless an exception applies; subagents alone do
-not require that route. When the host exposes a materially different current planner route,
-report one concise non-blocking current-versus-recommended advisory with the
-risk or cost reason; do not infer it from `UNKNOWN`, repeat it, stop, or request
-a restart.
+For the future batch coordinator, one issue or PR remains single-target even
+when it delegates bounded implementation, review, or QA lanes. Default to
+Sol/high because one issue may still require difficult diagnosis, design, or
+verification. Prefer Terra/high only after an affirmative simple
+classification, and Sol/xhigh only for a present or disputed pinned high-risk
+boundary or another listed exception. Multiple targets use the routine
+multi-lane balanced/high coordinator route unless an exception applies;
+subagents alone do not require that route. The current planning pass instead
+uses the separate assessment above.
 
 For a Claude host, use this provisional recommended advisory profile
 (`claude-profile v1`; see the Conservative Claude Profile in
 `docs/agent-workflows-model-routing.md`):
 
-- Default single-target planner: Opus 5/high
-- Affirmatively simple single-target planner: Sonnet 5/high
+- Default single-target future coordinator: Opus 5/high
+- Affirmatively simple single-target future coordinator: Sonnet 5/high
 - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 5/high
@@ -784,16 +828,14 @@ For a Claude host, use this provisional recommended advisory profile
 - Independent adversarial QA: Opus 5/xhigh
 - Routine deterministic QA: Opus 5/high
 
-For Claude planning, one issue or PR remains single-target even when its
-coordinator delegates bounded implementation, review, or QA lanes. Default to
+For the future Claude batch coordinator, one issue or PR remains single-target
+even when it delegates bounded implementation, review, or QA lanes. Default to
 Opus 5/high, use Sonnet 5/high only after the affirmative simple
 classification, and use Opus 5/xhigh only for a present or disputed pinned
-high-risk boundary or another listed exception. Multiple targets
-use the routine multi-lane balanced/high route unless an exception applies;
-delegation by itself does not require that route. When the host exposes a materially
-different current planner route, report one concise non-blocking
-current-versus-recommended advisory with the risk or cost reason; do not infer
-it from `UNKNOWN`, repeat it, stop, or request a restart.
+high-risk boundary or another listed exception. Multiple targets use the
+routine multi-lane balanced/high coordinator route unless an exception
+applies; delegation by itself does not require that route. The current planning
+pass instead uses the separate assessment above.
 
 Sonnet 5/high is recommended for the same affirmative simple-task
 classification. When lane risk or bounded delegation requires an execution
@@ -1600,6 +1642,12 @@ Keep the expanded Batch Plan file-touch key as shown here; the compact goal
 owner/serial decision without repeating the expanded map:
 
 > Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`
+
+The Batch Plan always records `Planning-pass model/effort assessment:` with the
+verified-scope classification, requested recommendation, concise evidence,
+field-granular host-observed host/model/effort, comparison disposition, and any
+independent review route or `none`. Keep it separate from the future
+`Coordinator model/effort preference:` and outside the compact goal prompt.
 
 Use this goal prompt shape:
 Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
