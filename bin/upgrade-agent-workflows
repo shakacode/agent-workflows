@@ -332,16 +332,20 @@ trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit 
 
 install_args=(--host "$host" --target "$target" --mode "$mode" --delivery-mode "$delivery_mode")
 if [[ "$channel" = "stable" ]]; then
-  install_args+=(--release "$release_ref")
-  AGENT_WORKFLOWS_RELEASE_SOURCE_ROOT="$source" "$install_script" "${install_args[@]}"
+  install_args+=(--source "$source" --release "$release_ref")
+  "$install_script" "${install_args[@]}"
 else
   install_args+=(--channel development)
   "$install_script" "${install_args[@]}"
 fi
 
 if [[ "${#consumer_roots[@]}" -gt 0 ]]; then
+  validation_shared_root="$source"
+  if [[ "$channel" = "stable" ]]; then
+    validation_shared_root="$target"
+  fi
   for consumer_root in "${consumer_roots[@]}"; do
-    "$target/bin/agent-workflow-seam-doctor" --root "$consumer_root" --shared "$source"
+    "$target/bin/agent-workflow-seam-doctor" --root "$consumer_root" --shared "$validation_shared_root"
   done
 fi
 

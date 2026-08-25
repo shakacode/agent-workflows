@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] (--release vX.Y.Z | --channel development)
+Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] (--release vX.Y.Z | --channel development)
 
 Installs this shared workflow pack into an agent home.
 
@@ -44,15 +44,16 @@ USAGE
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source_root="${AGENT_WORKFLOWS_RELEASE_SOURCE_ROOT:-$repo_root}"
+source_root="$repo_root"
+materialized_temp_root=""
 host="codex"
 target=""
 mode="copy"
 delivery_mode=""
 channel="${AGENT_WORKFLOWS_CHANNEL:-}"
 release_ref="${AGENT_WORKFLOWS_RELEASE_REF:-}"
-release_commit="${AGENT_WORKFLOWS_RELEASE_COMMIT:-}"
-tag_object="${AGENT_WORKFLOWS_TAG_OBJECT:-}"
+release_commit=""
+tag_object=""
 metadata_name=".agent-workflows-install.json"
 doctor_managed_marker=".agent-workflows-managed"
 doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
@@ -3806,14 +3807,13 @@ report_delivery_state_conflict() {
 }
 
 materialize_stable_release() {
-  local tag_ref materialized_root status discovered_tag_object discovered_commit
-  local -a install_args
+  local tag_ref materialized_root receipt_path receipt_url discovered_tag_object discovered_commit
 
   [[ "$release_ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
     echo "--release must be an exact vX.Y.Z tag, got: $release_ref" >&2
     exit 64
   }
-  [[ -d "$source_root/.git" ]] || {
+  git -C "$source_root" rev-parse --git-dir >/dev/null 2>&1 || {
     echo "Stable installation requires a Git source clone: $source_root" >&2
     exit 64
   }
@@ -3831,27 +3831,15 @@ materialize_stable_release() {
     exit 64
   }
 
-  if [[ "${AGENT_WORKFLOWS_MATERIALIZED_RELEASE:-}" = "$release_ref" ]]; then
-    [[ "$discovered_tag_object" = "$tag_object" ]] || {
-      echo "Stable release tag moved during installation: expected $tag_object, found $discovered_tag_object" >&2
-      exit 1
-    }
-    [[ "$discovered_commit" = "$release_commit" ]] || {
-      echo "Stable release commit changed during installation: expected $release_commit, found $discovered_commit" >&2
-      exit 1
-    }
-    ruby "$repo_root/bin/agent-workflows-release" verify-tag \
-      --root "$source_root" --release "$release_ref" \
-      --approved-commit "$release_commit" --expected-tag-object "$tag_object" >/dev/null
-    return
-  fi
-
   tag_object="$discovered_tag_object"
   release_commit="$discovered_commit"
 
-  materialized_root="$(mktemp -d)"
+  materialized_temp_root="$(mktemp -d)"
+  materialized_root="$materialized_temp_root/pack"
+  mkdir -p "$materialized_root"
   if ! git -C "$source_root" archive "$release_commit" | tar -x -C "$materialized_root"; then
-    rm -rf "$materialized_root"
+    rm -rf "$materialized_temp_root"
+    materialized_temp_root=""
     echo "Unable to materialize stable release: $release_ref" >&2
     exit 1
   fi
@@ -3859,24 +3847,35 @@ materialize_stable_release() {
     --root "$source_root" --release "$release_ref" \
     --approved-commit "$release_commit" --expected-tag-object "$tag_object" >/dev/null || {
       status=$?
-      rm -rf "$materialized_root"
+      rm -rf "$materialized_temp_root"
+      materialized_temp_root=""
+      exit "$status"
+    }
+  receipt_path="$materialized_temp_root/agent-workflows-release-receipt.json"
+  receipt_url="https://github.com/shakacode/agent-workflows/releases/download/$release_ref/agent-workflows-release-receipt.json"
+  if ! curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+    --output "$receipt_path" "$receipt_url"; then
+    rm -rf "$materialized_temp_root"
+    materialized_temp_root=""
+    echo "Stable installation requires the protected release receipt: $receipt_url" >&2
+    exit 1
+  fi
+  ruby "$materialized_root/bin/agent-workflows-release" verify-receipt \
+    --root "$source_root" --receipt "$receipt_path" >/dev/null || {
+      status=$?
+      rm -rf "$materialized_temp_root"
+      materialized_temp_root=""
       exit "$status"
     }
 
-  install_args=(--host "$host" --mode "$mode" --channel stable --release "$release_ref")
-  [[ -z "$target" ]] || install_args+=(--target "$target")
-  [[ -z "$delivery_mode" ]] || install_args+=(--delivery-mode "$delivery_mode")
-  set +e
-  AGENT_WORKFLOWS_MATERIALIZED_RELEASE="$release_ref" \
-    AGENT_WORKFLOWS_RELEASE_SOURCE_ROOT="$source_root" \
-    AGENT_WORKFLOWS_RELEASE_REF="$release_ref" \
-    AGENT_WORKFLOWS_RELEASE_COMMIT="$release_commit" \
-    AGENT_WORKFLOWS_TAG_OBJECT="$tag_object" \
-    "$materialized_root/bin/install-agent-workflows" "${install_args[@]}"
-  status=$?
-  set -e
-  rm -rf "$materialized_root"
-  exit "$status"
+  repo_root="$materialized_root"
+  doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
+  delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
+  trap cleanup_materialized_release EXIT
+}
+
+cleanup_materialized_release() {
+  [[ -z "$materialized_temp_root" ]] || rm -rf "$materialized_temp_root"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -3887,6 +3886,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --target)
       target="${2:?--target requires a directory}"
+      shift 2
+      ;;
+    --source)
+      source_root="${2:?--source requires a directory}"
       shift 2
       ;;
     --mode)
@@ -4033,6 +4036,7 @@ release_install_lock() {
     report_metadata_cleanup_pending "${cleanup_path:-$install_lock}"
     [[ "$status" -ne 0 ]] || status=1
   fi
+  cleanup_materialized_release
   exit "$status"
 }
 trap release_install_lock EXIT
@@ -4242,6 +4246,7 @@ release_install_transaction() {
     report_metadata_cleanup_pending "${cleanup_path:-$install_lock}"
     [[ "$status" -ne 0 ]] || status=1
   fi
+  cleanup_materialized_release
   exit "$status"
 }
 trap release_install_transaction EXIT
@@ -4382,6 +4387,11 @@ if [[ -n "$migration_staging" ]]; then
   fi
 fi
 
+guidance_shared_root="$repo_root"
+if [[ "$channel" = "stable" ]]; then
+  guidance_shared_root="$target"
+fi
+
 printf '%s\n' \
   "Installed ShakaCode agent workflows into:" \
   "  $target" \
@@ -4393,10 +4403,10 @@ printf '%s\n' \
   "  export PATH=\"$target/bin:\$PATH\"" \
   "" \
   "Initialize a consumer repo with:" \
-  "  agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared \"$repo_root\"" \
+  "  agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared \"$guidance_shared_root\"" \
   "" \
   "Validate a consumer repo with:" \
-  "  agent-workflow-seam-doctor --shared \"$repo_root\"" \
+  "  agent-workflow-seam-doctor --shared \"$guidance_shared_root\"" \
   "" \
   "Check for updates with:" \
   "  agent-workflows-status --host \"$host\""

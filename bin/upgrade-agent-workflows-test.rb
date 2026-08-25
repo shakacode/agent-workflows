@@ -66,6 +66,30 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
     end
   end
 
+  def test_stable_upgrade_validates_consumers_with_installed_release_content
+    with_release_repository do |source, target, _commits|
+      install_stable(source, target, "v0.1.0")
+      sentinel = File.join(File.dirname(target), "mutable-scanner-executed")
+      scanner = File.join(source, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb")
+      File.write(
+        scanner,
+        "File.write(#{sentinel.inspect}, \"executed\\n\")\nraise \"mutable source scanner executed\"\n"
+      )
+
+      output, status = run_command(
+        File.join(target, "bin/upgrade-agent-workflows"),
+        "--target", target,
+        "--source", source,
+        "--release", "v0.1.1",
+        "--consumer-root", ROOT,
+        "--no-fetch"
+      )
+
+      assert status.success?, output
+      refute_path_exists sentinel, "stable seam validation executed the mutable source scanner"
+    end
+  end
+
   private
 
   def with_release_repository
@@ -91,8 +115,60 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
       commit_two = git(source, "rev-parse", "HEAD")
       git(source, "tag", "-a", "v0.1.1", "-m", "Agent Workflows v0.1.1")
 
+      @release_receipt_dir = File.join(tmp, "release-receipts")
+      @fake_bin = File.join(tmp, "fake-bin")
+      FileUtils.mkdir_p([@release_receipt_dir, @fake_bin])
+      write_release_receipt(source, "v0.1.0")
+      write_release_receipt(source, "v0.1.1")
+      write_fake_curl
+
       yield source, target, { "v0.1.0" => commit_one, "v0.1.1" => commit_two }
+    ensure
+      @release_receipt_dir = nil
+      @fake_bin = nil
     end
+  end
+
+  def write_release_receipt(source, release)
+    commit = git(source, "rev-parse", "#{release}^{commit}")
+    tag_object = git(source, "rev-parse", "refs/tags/#{release}")
+    receipt = File.join(@release_receipt_dir, "#{release}.json")
+    output, status = Open3.capture2e(
+      File.join(source, "bin/agent-workflows-release"), "record-receipt",
+      "--root", source,
+      "--release", release,
+      "--approved-commit", commit,
+      "--expected-tag-object", tag_object,
+      "--environment", "stable-release",
+      "--change-author", "release-author",
+      "--release-actor", "release-actor",
+      "--approval-reviewer", "release-reviewer",
+      "--workflow-run-url", "https://github.com/shakacode/agent-workflows/actions/runs/12345",
+      "--recorded-at", "2026-08-25T00:00:00Z",
+      "--receipt", receipt
+    )
+    raise output unless status.success?
+  end
+
+  def write_fake_curl
+    path = File.join(@fake_bin, "curl")
+    File.write(path, <<~'BASH')
+      #!/usr/bin/env bash
+      set -euo pipefail
+      output=""
+      url=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --output) output="${2:?}"; shift 2 ;;
+          --*) shift ;;
+          *) url="$1"; shift ;;
+        esac
+      done
+      release="${url#*/releases/download/}"
+      release="${release%%/*}"
+      install -m 0600 "${QA_RELEASE_RECEIPT_DIR:?}/$release.json" "$output"
+    BASH
+    FileUtils.chmod(0o755, path)
   end
 
   def write_version(source, version)
@@ -121,7 +197,12 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
   end
 
   def run_command(*command)
-    Open3.capture2e({ "AGENT_WORKFLOWS_CHANNEL" => nil }, *command)
+    env = { "AGENT_WORKFLOWS_CHANNEL" => nil }
+    if @fake_bin
+      env["PATH"] = "#{@fake_bin}:#{ENV.fetch('PATH')}"
+      env["QA_RELEASE_RECEIPT_DIR"] = @release_receipt_dir
+    end
+    Open3.capture2e(env, *command)
   end
 
   def git(root, *args)

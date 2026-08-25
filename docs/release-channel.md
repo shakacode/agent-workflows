@@ -49,17 +49,27 @@ the workflow run and release asset are the durable release evidence.
 
 ## Install, Update, And Roll Back
 
-Use an exact release for either host:
+Bootstrap copy mode from the exact stable ref before executing any installer:
 
 ```bash
-bin/install-agent-workflows --host codex --release vX.Y.Z
-bin/install-agent-workflows --host claude --release vX.Y.Z
+release=vX.Y.Z
+source="$HOME/src/agent-workflows"
+git clone --no-checkout --filter=blob:none https://github.com/shakacode/agent-workflows "$source"
+git -C "$source" fetch --force origin "refs/tags/$release:refs/tags/$release"
+git -C "$source" checkout --detach "$release"
+"$source/bin/install-agent-workflows" --host codex --source "$source" --release "$release"
 ```
 
-The stable bootstrap verifies the annotated tag, materializes the tagged tree,
-and executes that tagged installer. It never installs files from the current
-branch. Install metadata records `channel`, `release_ref`, `tag_object`, and the
-full peeled `source_revision`.
+Use `--host claude` for Claude Code. The stable bootstrap verifies the annotated
+tag, downloads and verifies the protected GitHub Release receipt, and
+materializes the tagged tree before copying from it. It never installs files
+from the current branch. A local tag without the exact receipt fails closed.
+Install metadata records `channel`, `release_ref`, `tag_object`, and the full
+peeled `source_revision`.
+
+Successful stable install guidance uses the installed agent home as the
+`--shared` root. The temporary exact-release materialization is removed after
+installation and is never presented as a reusable validation path.
 
 Updates and rollbacks use the same explicit operation:
 

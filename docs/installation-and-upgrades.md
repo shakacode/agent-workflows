@@ -207,29 +207,34 @@ ruby bin/codex-plugin-manifest-check
 
 ## Install
 
-Clone the source pack once:
+Bootstrap copy mode from the exact stable ref before the first installer
+execution:
 
 ```bash
-git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
-cd "$HOME/src/agent-workflows"
+release=vX.Y.Z
+source="$HOME/src/agent-workflows"
+git clone --no-checkout --filter=blob:none https://github.com/shakacode/agent-workflows "$source"
+git -C "$source" fetch --force origin "refs/tags/$release:refs/tags/$release"
+git -C "$source" checkout --detach "$release"
+"$source/bin/install-agent-workflows" --host codex --source "$source" --release "$release"
 ```
 
-Install for Codex:
+The stable installer retrieves the fixed
+`agent-workflows-release-receipt.json` asset for the exact release from GitHub
+and verifies its tag object, peeled commit, protected environment, independent
+reviewer, and workflow evidence before copying anything. A local annotated tag
+without that durable receipt fails closed.
+
+Install another host from the already verified exact checkout. For Claude Code:
 
 ```bash
-bin/install-agent-workflows --host codex --release vX.Y.Z
-```
-
-Install for Claude Code:
-
-```bash
-bin/install-agent-workflows --host claude --release vX.Y.Z
+"$source/bin/install-agent-workflows" --host claude --source "$source" --release "$release"
 ```
 
 Install into an explicit shared agent home:
 
 ```bash
-bin/install-agent-workflows --host codex --target "$HOME/.agents" --release vX.Y.Z
+"$source/bin/install-agent-workflows" --host codex --target "$HOME/.agents" --source "$source" --release "$release"
 ```
 
 A clean Codex or Claude installation can plan and launch ordinary batches as
@@ -630,8 +635,10 @@ Upgrade behavior:
    branch unless `--no-fetch` is set.
 3. Back up the target install.
 4. Reinstall with the recorded or requested artifact and delivery modes.
-5. Run `agent-workflow-seam-doctor --root <consumer> --shared <source>` for
-   every `--consumer-root`.
+5. Run `agent-workflow-seam-doctor --root <consumer> --shared <target>` for
+   every stable `--consumer-root`, using only installed exact-release content.
+   Development-channel upgrades continue to validate against their explicit
+   mutable `<source>`.
 6. Restore the previous install if reinstall or seam validation fails.
 
 The command prints `UPGRADE_COMPLETE` for a newer stable version and
@@ -642,19 +649,23 @@ native plugin itself and never silently changes channels.
 
 ## Verification After Upgrade
 
-For the shared pack itself:
+For a stable installed pack itself:
 
 ```bash
-cd "$HOME/src/agent-workflows"
-bin/validate
+agent-workflows-status --host codex --release vX.Y.Z
 ```
 
 For each active consumer repo:
 
 ```bash
 cd /path/to/consumer/repo
-agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
+agent-workflow-seam-doctor --shared "$HOME/.codex"
 ```
+
+These stable checks use the installed exact-release helper, scanner, skills,
+workflows, and documentation. Do not point stable post-install validation back
+at the mutable source checkout. Development-channel contributors may instead
+run the source checkout's `bin/validate` and pass that checkout to `--shared`.
 
 Consumers that intentionally leave named, non-required CircleCI workflows on
 their provider approval hold may opt into the closed trusted-base policy:

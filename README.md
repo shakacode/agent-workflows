@@ -86,16 +86,21 @@ default.
 
 ## Quick Start
 
-Clone the workflow pack and install it into the agent host you use:
+Bootstrap copy mode from the exact stable release before executing any installer:
 
 ```bash
-git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
-cd "$HOME/src/agent-workflows"
-bin/install-agent-workflows --host codex --release vX.Y.Z
+release=vX.Y.Z
+source="$HOME/src/agent-workflows"
+git clone --no-checkout --filter=blob:none https://github.com/shakacode/agent-workflows "$source"
+git -C "$source" fetch --force origin "refs/tags/$release:refs/tags/$release"
+git -C "$source" checkout --detach "$release"
+"$source/bin/install-agent-workflows" --host codex --source "$source" --release "$release"
 ```
 
 Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
-explicit shared agent home.
+explicit shared agent home. Stable installation also downloads the protected
+GitHub Release receipt for that exact ref and fails closed if its tag object,
+peeled commit, or required approval facts do not match.
 
 New to the pack? Follow [Getting Started](docs/getting-started.md) for
 prerequisites with versions, one host install, one repo adoption, and a first
