@@ -168,26 +168,46 @@ module AgentWorkflowsStatus
       "guidance" => delivery_state&.fetch("guidance", nil),
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
       "native" => delivery_state&.fetch("native", nil),
+      "superpowers" => delivery_state&.fetch("superpowers", nil),
       "flat" => delivery_state&.fetch("flat", nil)
     }
   end
 
   def text_for(payload)
-    case payload.fetch("status")
-    when "UP_TO_DATE"
-      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
-    when "UPGRADE_AVAILABLE"
-      installed = "#{payload['installed_version']}@#{short_revision(payload['installed_revision'])}"
-      available = "#{payload['available_version']}@#{short_revision(payload['available_revision'])}"
-      "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
-    when "NOT_INSTALLED"
-      "NOT_INSTALLED target=#{payload['target']}\n"
-    when "CHECK_FAILED"
-      guidance = payload["guidance"] ? " #{payload['guidance']}" : ""
-      "CHECK_FAILED #{payload['reason']}#{guidance}\n"
-    else
-      raise "unknown status: #{payload.fetch('status')}"
+    line = case payload.fetch("status")
+           when "UP_TO_DATE"
+             "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}"
+           when "UPGRADE_AVAILABLE"
+             installed = "#{payload['installed_version']}@#{short_revision(payload['installed_revision'])}"
+             available = "#{payload['available_version']}@#{short_revision(payload['available_revision'])}"
+             "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}"
+           when "NOT_INSTALLED"
+             "NOT_INSTALLED target=#{payload['target']}"
+           when "CHECK_FAILED"
+             guidance = payload["guidance"] ? " #{payload['guidance']}" : ""
+             "CHECK_FAILED #{payload['reason']}#{guidance}"
+           else
+             raise "unknown status: #{payload.fetch('status')}"
+           end
+
+    superpowers_state = payload.dig("superpowers", "state")
+    line = "#{line} superpowers=#{superpowers_state}" if superpowers_state
+    if superpowers_state
+      catalog_versions = Array(payload.dig("superpowers", "catalog_entries"))
+                         .filter_map { |entry| entry["catalog_version"] }
+                         .uniq
+                         .sort
+      catalog_versions_text = catalog_versions.empty? ? "UNKNOWN" : catalog_versions.join(",")
+      upstream_version = payload.dig("superpowers", "upstream_version") ||
+                         payload.dig("superpowers", "upstream_version_source") || "UNKNOWN"
+      line = "#{line} superpowers_catalog_versions=#{catalog_versions_text} superpowers_upstream_version=#{upstream_version}"
     end
+    warning = if superpowers_state == "active"
+                "WARNING Agent Workflows remains the sole delivery orchestrator; do not run Superpowers as a peer orchestrator.\n"
+              else
+                ""
+              end
+    "#{line}\n#{warning}"
   end
 
   def build_payload(options)

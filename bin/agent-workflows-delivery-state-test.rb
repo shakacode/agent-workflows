@@ -15,10 +15,42 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
   def setup
     @fake_codex_dir = Dir.mktmpdir("fake-codex-plugin-list")
     @fake_codex = File.join(@fake_codex_dir, "codex")
+    @superpowers_catalog_root = File.join(@fake_codex_dir, "superpowers-catalog")
+    FileUtils.mkdir_p(File.join(@superpowers_catalog_root, ".codex-plugin"))
+    File.write(
+      File.join(@superpowers_catalog_root, ".codex-plugin/plugin.json"),
+      "#{JSON.generate('name' => 'superpowers', 'version' => '5.1.3', 'repository' => 'https://github.com/obra/superpowers')}\n"
+    )
     File.write(@fake_codex, <<~RUBY)
       #!#{RbConfig.ruby}
+      abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV[0, 3] == %w[plugin list --marketplace] && ARGV.length == 4
+      marketplace = ARGV.fetch(3)
+      if marketplace != "agent-workflows"
+        state = ENV.fetch("QA_SUPERPOWERS_STATE", "installed-disabled")
+        catalog_root = ENV.fetch("QA_SUPERPOWERS_CATALOG_ROOT")
+        plugin_id = "superpowers@\#{marketplace}"
+        if marketplace == ENV.fetch("QA_SUPERPOWERS_MARKETPLACE", "openai-curated")
+          puts "PLUGIN STATUS VERSION PATH"
+          case state
+          when "active"
+            puts "\#{plugin_id}  installed, enabled   catalog-rev  \#{catalog_root}"
+          when "installed-disabled"
+            puts "\#{plugin_id}  installed, disabled  catalog-rev  \#{catalog_root}"
+          when "available-not-installed"
+            puts "\#{plugin_id}  not installed                     \#{catalog_root}"
+          when "UNKNOWN"
+            warn "catalog unavailable"
+            exit 2
+          else
+            abort "unknown Superpowers state: \#{state}"
+          end
+        else
+          puts "No plugins found in marketplace `\#{marketplace}`."
+        end
+        exit
+      end
+
       state = ENV.fetch("QA_CODEX_PLUGIN_STATE", "enabled")
-      abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
       case state
       when "enabled"
         version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", "0.1.0")
@@ -60,7 +92,8 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
   )
     env = {
       "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => codex_executable,
-      "QA_CODEX_PLUGIN_STATE" => codex_state
+      "QA_CODEX_PLUGIN_STATE" => codex_state,
+      "QA_SUPERPOWERS_CATALOG_ROOT" => @superpowers_catalog_root
     }
     env["QA_CODEX_PLUGIN_VERSION"] = codex_version if codex_version
     env["QA_CODEX_PLUGIN_SOURCE"] = codex_source if codex_source
@@ -70,7 +103,8 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
   def run_state_with_env(env, *args)
     defaults = {
       "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex,
-      "QA_CODEX_PLUGIN_STATE" => "enabled"
+      "QA_CODEX_PLUGIN_STATE" => "enabled",
+      "QA_SUPERPOWERS_CATALOG_ROOT" => @superpowers_catalog_root
     }
     Open3.capture3(defaults.merge(env), "ruby", SCRIPT, *args)
   end
@@ -171,6 +205,73 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
         assert status.success?, "#{host}: #{out}#{err}"
         assert_equal "active", JSON.parse(out).dig("native", "state")
       end
+    end
+  end
+
+  def test_reports_active_superpowers_as_advisory_coexistence_state
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      write_codex_native_state(target)
+
+      out, err, status = run_state_with_env(
+        { "QA_SUPERPOWERS_STATE" => "active", "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev" },
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert payload.fetch("compatible"), "Superpowers detection must remain advisory"
+      assert_equal "active", payload.dig("superpowers", "state")
+      assert_equal "superpowers@superpowers-dev", payload.dig("superpowers", "catalog_entries", 0, "plugin_id")
+      assert_equal "5.1.3", payload.dig("superpowers", "catalog_entries", 0, "catalog_version")
+      assert_equal "catalog-rev", payload.dig("superpowers", "catalog_entries", 0, "marketplace_revision")
+      assert_equal "https://github.com/obra/superpowers", payload.dig("superpowers", "catalog_entries", 0, "upstream_repository")
+      assert_nil payload.dig("superpowers", "upstream_version")
+      assert_equal "not-queried", payload.dig("superpowers", "upstream_version_source")
+    end
+  end
+
+  def test_reports_each_non_active_superpowers_state_without_mutation
+    expected_states = {
+      "installed-disabled" => "installed-disabled",
+      "available-not-installed" => "available-not-installed",
+      "UNKNOWN" => "UNKNOWN"
+    }
+
+    expected_states.each do |fixture_state, expected_state|
+      Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+        target = File.join(tmp, "codex")
+        write_codex_native_state(target)
+        config_path = File.join(target, "config.toml")
+        config_before = File.binread(config_path)
+
+        out, err, status = run_state_with_env(
+          { "QA_SUPERPOWERS_STATE" => fixture_state },
+          "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+          "--delivery-mode", "plugin-companion", "--json"
+        )
+        payload = JSON.parse(out)
+
+        assert status.success?, "#{fixture_state}: #{out}#{err}"
+        assert payload.fetch("compatible"), fixture_state
+        assert_equal expected_state, payload.dig("superpowers", "state"), fixture_state
+        assert_equal config_before, File.binread(config_path), fixture_state
+      end
+    end
+  end
+
+  def test_non_codex_superpowers_state_is_unknown_without_guessing
+    Dir.mktmpdir("agent-workflows-delivery-state") do |target|
+      out, err, status = run_state(
+        "check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "flat", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "UNKNOWN", payload.dig("superpowers", "state")
+      assert_includes payload.dig("superpowers", "reason"), "only for Codex"
     end
   end
 

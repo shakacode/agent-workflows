@@ -209,6 +209,13 @@ the marketplace, and reinstall it as `scw`; keeping both would
 create two names for the same skill tree. The repository, source pack, helper
 commands, marketplace name, and install metadata remain `agent-workflows`.
 
+When Superpowers is also present, Agent Workflows remains the sole delivery
+orchestrator. `agent-workflows-status --host codex --json` reports the advisory
+Superpowers state as `active`, `installed-disabled`,
+`available-not-installed`, or `UNKNOWN` without changing plugin configuration.
+Keep the complete Superpowers plugin disabled in the normal profile; use the
+[pinned disposable pilot](docs/superpowers.md) to evaluate one bounded technique.
+
 Use a native plugin path for a host-qualified skill surface. Pair it with
 `--delivery-mode plugin-companion` when you also need installer-managed helper
 binaries, workflows, docs, metadata, status, or upgrades. The installer fails
