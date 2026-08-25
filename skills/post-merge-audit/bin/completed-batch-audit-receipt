@@ -18,8 +18,6 @@ module CompletedBatchAuditReceipt
   REPLAY_GITHUB_API_BLOCKER = "completed-batch-audit replay GitHub API request failed"
   POST_OUTCOME_BLOCKER = "completed-batch-audit comment POST outcome unknown"
   POST_READBACK_BLOCKER = "completed-batch-audit comment readback verification failed"
-  UPDATE_OUTCOME_BLOCKER = "completed-batch-audit comment update outcome unknown"
-  UPDATE_READBACK_BLOCKER = "completed-batch-audit comment update readback verification failed"
   PUBLICATION_PREFLIGHT_BLOCKER = "completed-batch-audit publication preflight failed"
   PUBLICATION_REFRESH_BLOCKER = "completed-batch-audit publication snapshot refresh required"
   PUBLICATION_MISMATCH_BLOCKER = "completed-batch-audit publication snapshot mismatch or stale"
@@ -32,36 +30,11 @@ module CompletedBatchAuditReceipt
   SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
   WRITE_PERMISSIONS = %w[admin maintain write].freeze
   DEFAULT_GH_TIMEOUT_SECONDS = 60
-  COMMENT_EDIT_HISTORY_QUERY = <<~GRAPHQL
-    query($commentId: ID!) {
-      node(id: $commentId) {
-        ... on IssueComment {
-          id
-          databaseId
-          body
-          createdAt
-          updatedAt
-          lastEditedAt
-          includesCreatedEdit
-          userContentEdits(first: 3) {
-            nodes {
-              diff
-              editedAt
-              deletedAt
-              editor { type: __typename login }
-            }
-            pageInfo { hasNextPage endCursor }
-          }
-        }
-      }
-    }
-  GRAPHQL
   LEGACY_FIELDS = %w[
     batch_id audit_status verdict scope_evidence checker_evidence findings followups_dispositions
   ].freeze
   PUBLICATION_FIELDS = (LEGACY_FIELDS + ["publication_snapshot"]).freeze
-  UPDATED_PUBLICATION_FIELDS = (PUBLICATION_FIELDS + ["prior_receipt_sha256"]).freeze
-  FIELDS = UPDATED_PUBLICATION_FIELDS
+  FIELDS = PUBLICATION_FIELDS
   CURRENT_STATUSES = %w[open unresolved pending UNKNOWN terminal].freeze
   TERMINAL_DISPOSITIONS = %w[resolved accepted-waiver accepted-deferral not-applicable].freeze
   NONTERMINAL_ACTIONS = %w[investigate fix await-input retry replay track].freeze
@@ -108,7 +81,6 @@ module CompletedBatchAuditReceipt
   class ReplayGitHubApiError < Error; end
   class SuccessfulApiResponseError < Error; end
   class PostOutcomeUnknownError < Error; end
-  class UpdateOutcomeUnknownError < Error; end
   class PublicationPreflightError < Error; end
 
   class PostReadbackError < Error
@@ -121,8 +93,6 @@ module CompletedBatchAuditReceipt
       super(message)
     end
   end
-
-  class UpdateReadbackError < PostReadbackError; end
 
   def replay_marker(
     marker,
@@ -258,125 +228,8 @@ module CompletedBatchAuditReceipt
     )
   end
 
-  def update(
-    expected_batch_id:,
-    targets:,
-    reference:,
-    receipt:,
-    other_blockers: [],
-    publication_preflight: nil,
-    coordination_backend: nil
-  )
-    comment_body, marker = unterminalized_comment_input(receipt)
-    parsed = parse_reference(reference)
-    deterministic = deterministic_targets(targets)
-    target, actor = select_verified_anchor(deterministic)
-    parsed_target = parsed.fetch("target")
-    same_target = target.fetch("host") == parsed_target.fetch("host") &&
-                  target.fetch("repo").casecmp?(parsed_target.fetch("repo")) &&
-                  target.fetch("type") == parsed_target.fetch("type") &&
-                  target.fetch("number") == parsed_target.fetch("number")
-    raise Error, "receipt target is not the deterministic batch anchor" unless same_target
-    raise Error, "authenticated GitHub actor is not the receipt author" unless actor.casecmp?(parsed.fetch("author"))
-
-    comment = gh_api(
-      target.fetch("host"),
-      "repos/#{target.fetch('repo')}/issues/comments/#{parsed.fetch('comment_id')}"
-    )
-    current = verify_comment(
-      comment,
-      target:,
-      expected_comment_id: parsed.fetch("comment_id"),
-      expected_author: parsed.fetch("author"),
-      expected_batch_id:
-    )
-    raise Error, "receipt comment timestamp binding mismatch" unless
-      current.fetch("created_at") == parsed.fetch("created_at") &&
-      current.fetch("updated_at") == parsed.fetch("updated_at")
-    raise Error, "receipt comment SHA-256 mismatch" unless current.fetch("sha256") == parsed.fetch("sha256")
-
-    current_state = marker_state(current.fetch("marker"))
-    raise Error, "only an original blocked receipt can be terminalized" unless
-      current_state&.fields&.fetch("audit_status") == "blocked" &&
-      !current_state.fields.key?("prior_receipt_sha256")
-
-    verify_compact_reference!(reference, parsed:, verified: current, fields: current_state.fields)
-    unless state_blockers(current_state).one?
-      raise Error, "only a blocked receipt with exactly one follow-up can be terminalized"
-    end
-
-    state = marker_state(marker)
-    raise Error, "updated completed-batch receipt must be complete and clean" unless state_ready?(state)
-
-    validate_publication_preflight!(
-      publication_preflight,
-      expected_batch_id:,
-      targets: deterministic,
-      coordination_backend:
-    )
-    marker = bind_publication_snapshot(marker, publication_preflight)
-    marker = bind_prior_receipt_sha256(marker, current.fetch("sha256"))
-    comment_body = "#{COMMENT_HEADER}\n\n#{marker}"
-    local = replay_marker(
-      marker,
-      expected_batch_id:,
-      other_blockers:,
-      publication_preflight:,
-      expected_targets: deterministic,
-      coordination_backend:
-    )
-    raise Error, "updated completed-batch receipt is not archive-ready" unless local.fetch("ready")
-
-    endpoint = "repos/#{target.fetch('repo')}/issues/comments/#{parsed.fetch('comment_id')}"
-    begin
-      gh_api(target.fetch("host"), endpoint, method: "PATCH", input: JSON.generate("body" => comment_body))
-    rescue Error, KeyError => e
-      raise UpdateOutcomeUnknownError, "comment update outcome is unknown: #{e.message}"
-    end
-
-    begin
-      readback = gh_api(target.fetch("host"), endpoint)
-      verified = verify_comment(
-        readback,
-        target:,
-        expected_comment_id: parsed.fetch("comment_id"),
-        expected_author: actor,
-        expected_batch_id:,
-        expected_body: comment_body
-      )
-      prior = marker_state(verified.fetch("marker")).fields.fetch("prior_receipt_sha256")
-      raise Error, "updated receipt prior hash mismatch" unless prior == "sha256:#{current.fetch('sha256')}"
-    rescue Error, KeyError => e
-      raise UpdateReadbackError.new(
-        "comment was updated but readback verification failed: #{e.message}",
-        comment_id: parsed.fetch("comment_id")
-      )
-    end
-    remote = replay_marker(
-      verified.fetch("marker"),
-      expected_batch_id:,
-      other_blockers:,
-      publication_preflight:,
-      expected_targets: deterministic,
-      coordination_backend:
-    )
-    raise Error, "readback updated completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
-
-    remote.merge(
-      "publication_snapshot_digest" => publication_snapshot_digest(remote.fetch("fields")),
-      "final_status" => final_status(remote),
-      "receipt" => verified.reject { |key, _value| key == "marker" },
-      "pr_description_summary" => pr_description_summary(
-        target:,
-        result: remote,
-        receipt_url: verified.fetch("url")
-      ),
-      "chat_reference" => compact_reference(remote.fetch("fields").fetch("verdict"), verified),
-      "mutation_state" => "updated",
-      "errors" => []
-    )
-  rescue ArgumentError => e
-    raise Error, e.message
+  def update(**)
+    raise Error, "in-place receipt update is unsupported; publish a new immutable receipt"
   end
 
   def replay_reference(
@@ -594,23 +447,9 @@ module CompletedBatchAuditReceipt
     local = replay_marker(marker, expected_batch_id:)
     raise Error, "comment receipt batch or grammar mismatch" unless local.fetch("well_formed")
 
-    prior_receipt_sha256 = local.dig("fields", "prior_receipt_sha256")
-    if prior_receipt_sha256
-      parsed_created_at = parse_comment_timestamp(created_at)
-      parsed_updated_at = parse_comment_timestamp(updated_at)
-      raise Error, "updated receipt timestamp is before creation" unless parsed_updated_at >= parsed_created_at
-
-      verify_terminalization_history!(
-        comment,
-        host: target.fetch("host"),
-        expected_comment_id:,
-        expected_author: author,
-        expected_batch_id:,
-        prior_receipt_sha256:
-      )
-    else
-      raise Error, "comment was edited before verification" unless created_at == updated_at
-    end
+    parse_comment_timestamp(created_at)
+    parse_comment_timestamp(updated_at)
+    raise Error, "comment was edited after publication" unless created_at == updated_at
 
     {
       "host" => target.fetch("host"),
@@ -632,84 +471,6 @@ module CompletedBatchAuditReceipt
     Time.iso8601(value)
   rescue ArgumentError
     raise Error, "comment timestamps are malformed"
-  end
-
-  def verify_terminalization_history!(
-    comment,
-    host:,
-    expected_comment_id:,
-    expected_author:,
-    expected_batch_id:,
-    prior_receipt_sha256:
-  )
-    node_id = comment.fetch("node_id", "").to_s
-    raise Error, "comment edit history node id is missing" if node_id.empty?
-
-    payload = gh_graphql(
-      host,
-      query: COMMENT_EDIT_HISTORY_QUERY,
-      variables: { "commentId" => node_id }
-    )
-    node = payload&.dig("data", "node")
-    raise Error, "comment edit history is unavailable" unless node.is_a?(Hash)
-
-    same_comment = node.fetch("id", "").to_s == node_id &&
-                   Integer(node.fetch("databaseId", nil), exception: false) == expected_comment_id &&
-                   node.fetch("body", "").to_s == comment.fetch("body", "").to_s &&
-                   node.fetch("createdAt", "").to_s == comment.fetch("created_at", "").to_s &&
-                   node.fetch("updatedAt", "").to_s == comment.fetch("updated_at", "").to_s &&
-                   node.fetch("lastEditedAt", "").to_s == comment.fetch("updated_at", "").to_s
-    raise Error, "comment edit history identity or version mismatch" unless same_comment
-    raise Error, "comment edit history does not include the created version" unless node["includesCreatedEdit"] == true
-
-    connection = node.fetch("userContentEdits", nil)
-    raise Error, "comment edit history is malformed" unless connection.is_a?(Hash)
-
-    page_info = connection.fetch("pageInfo", nil)
-    edits = connection.fetch("nodes", nil)
-    complete = page_info.is_a?(Hash) && page_info["hasNextPage"] == false && edits.is_a?(Array)
-    raise Error, "comment edit history is incomplete" unless complete
-    raise Error, "terminalized receipt must have exactly one authenticated edit" unless edits.length == 2
-
-    ordered = edits.sort_by do |edit|
-      raise Error, "comment edit history entry is malformed" unless edit.is_a?(Hash)
-
-      parse_comment_timestamp(edit.fetch("editedAt", "").to_s)
-    end
-    original_edit, terminal_edit = ordered
-    original_at = original_edit.fetch("editedAt", "").to_s
-    terminal_at = terminal_edit.fetch("editedAt", "").to_s
-    unless original_at == comment.fetch("created_at", "").to_s &&
-           terminal_at == comment.fetch("updated_at", "").to_s && original_at != terminal_at
-      raise Error, "comment edit history timestamps do not match the receipt transition"
-    end
-
-    ordered.each do |edit|
-      raise Error, "comment edit history contains a deleted version" if edit["deletedAt"]
-
-      verified_human_login!(
-        edit.fetch("editor", nil),
-        context: "comment edit history actor",
-        expected_login: expected_author
-      )
-    end
-
-    original_body = original_edit.fetch("diff", "").to_s
-    terminal_body = terminal_edit.fetch("diff", "").to_s
-    raise Error, "comment edit history current body mismatch" unless terminal_body == comment.fetch("body", "").to_s
-
-    expected_prior = "sha256:#{Digest::SHA256.hexdigest(original_body.encode(Encoding::UTF_8))}"
-    unless prior_receipt_sha256 == expected_prior
-      raise Error, "prior receipt SHA-256 does not match authenticated edit history"
-    end
-
-    original_marker = comment_marker(original_body)
-    original_state = marker_state(original_marker)
-    valid_original = original_state&.fields&.fetch("batch_id") == expected_batch_id &&
-                     original_state.fields.fetch("audit_status") == "blocked" &&
-                     !original_state.fields.key?("prior_receipt_sha256") &&
-                     state_blockers(original_state).one?
-    raise Error, "authenticated edit history is not an original single-follow-up blocked receipt" unless valid_original
   end
 
   def target_base_url(target)
@@ -776,15 +537,14 @@ module CompletedBatchAuditReceipt
   end
 
   def unterminalized_comment_input(receipt)
+    if receipt.to_s.each_line.any? { |line| line.start_with?("prior_receipt_sha256:") }
+      raise Error, "caller-supplied prior receipt SHA-256 is not allowed"
+    end
+
     comment_body = canonical_comment_body(receipt)
     raise Error, "local completed-batch audit receipt is invalid" unless comment_body
 
     marker = comment_marker(comment_body)
-    state = marker_state(marker)
-    if state.fields.key?("prior_receipt_sha256")
-      raise Error, "caller-supplied prior receipt SHA-256 is not allowed"
-    end
-
     [comment_body, marker]
   end
 
@@ -809,22 +569,6 @@ module CompletedBatchAuditReceipt
     body = body.sub(/^(scope_evidence:.*\n)/, "\\1#{line}")
     bound = "<!-- completed-batch-audit v1\n#{body.chomp}\n-->\n"
     raise Error, "bound completed-batch publication snapshot is invalid" unless marker_state(bound)
-
-    bound
-  end
-
-  def bind_prior_receipt_sha256(marker, prior_sha256)
-    raise Error, "prior receipt SHA-256 is invalid" unless prior_sha256.to_s.match?(/\A[0-9a-f]{64}\z/)
-
-    body = marker.delete_prefix("<!-- completed-batch-audit v1\n").delete_suffix("-->\n").delete_suffix("-->")
-    raise Error, "completed-batch receipt was already terminalized" if body.match?(/^prior_receipt_sha256:/)
-
-    line = "prior_receipt_sha256: sha256:#{prior_sha256}\n"
-    raise Error, "completed-batch audit publication snapshot is missing" unless body.match?(/^publication_snapshot:.*\n/)
-
-    body = body.sub(/^(publication_snapshot:.*\n)/, "\\1#{line}")
-    bound = "<!-- completed-batch-audit v1\n#{body.chomp}\n-->\n"
-    raise Error, "updated completed-batch receipt is invalid" unless marker_state(bound)
 
     bound
   end
@@ -1006,35 +750,6 @@ module CompletedBatchAuditReceipt
     raise Error, "GitHub API request could not be started"
   end
 
-  def gh_graphql(host, query:, variables:)
-    valid_variables = variables.is_a?(Hash) && variables.all? do |key, value|
-      key.to_s.match?(/\A[A-Za-z][A-Za-z0-9_]*\z/) && (value.is_a?(String) || value.is_a?(Integer))
-    end
-    raise Error, "GitHub GraphQL variables are invalid" unless query.is_a?(String) && !query.empty? && valid_variables
-
-    command = ["gh", "api", "--hostname", host, "graphql", "-f", "query=#{query}"]
-    variables.keys.sort.each do |key|
-      value = variables.fetch(key)
-      command.concat([value.is_a?(Integer) ? "-F" : "-f", "#{key}=#{value}"])
-    end
-    status = nil
-    stdout, _stderr, status = capture_process(command, input: "", timeout: gh_timeout_seconds)
-    raise Error, "GitHub GraphQL request failed" unless status.success?
-
-    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
-    raise SuccessfulApiResponseError, "GitHub GraphQL response must be a JSON object" unless payload.is_a?(Hash)
-    raise SuccessfulApiResponseError, "GitHub GraphQL response contains errors" if payload.key?("errors")
-
-    payload
-  rescue Timeout::Error
-    raise Error, "GitHub GraphQL request timed out"
-  rescue JSON::ParserError
-    error_class = status&.success? ? SuccessfulApiResponseError : Error
-    raise error_class, "GitHub GraphQL returned invalid JSON"
-  rescue SystemCallError
-    raise Error, "GitHub GraphQL request could not be started"
-  end
-
   def capture_process(command, input:, timeout:)
     CompletedBatchPublicationPreflight.capture_process(command, input:, timeout:)
   end
@@ -1104,7 +819,7 @@ module CompletedBatchAuditReceipt
       parsed[key] = match[2].strip
     end
 
-    accepted = [LEGACY_FIELDS.sort, PUBLICATION_FIELDS.sort, UPDATED_PUBLICATION_FIELDS.sort]
+    accepted = [LEGACY_FIELDS.sort, PUBLICATION_FIELDS.sort]
     fields if fields && accepted.include?(fields.keys.sort)
   end
 
@@ -1166,7 +881,6 @@ module CompletedBatchAuditReceipt
       structurally_valid_scalar?(fields["scope_evidence"]) &&
       structurally_valid_scalar?(fields["checker_evidence"]) &&
       (!fields.key?("publication_snapshot") || structurally_valid_scalar?(fields["publication_snapshot"])) &&
-      (!fields.key?("prior_receipt_sha256") || fields["prior_receipt_sha256"].match?(/\Asha256:[0-9a-f]{64}\z/)) &&
       structurally_valid_dispositions?(fields["followups_dispositions"]) &&
       well_formed_findings?(fields["findings"], records:)
   end
@@ -1203,9 +917,6 @@ module CompletedBatchAuditReceipt
     outstanding = findings.start_with?("OUTSTANDING ")
     unknown_marker = fields.fetch("audit_status") == "UNKNOWN" && verdict == "UNKNOWN" && findings == "UNKNOWN"
     clean_marker = fields.fetch("audit_status") == "complete" && verdict == "clean" && findings == "none"
-    return false if fields.key?("prior_receipt_sha256") &&
-                    (!fields.key?("publication_snapshot") || !ready_fields_and_records?(fields, records))
-
     return true if clean_marker && non_ready_records.empty?
     return true if unknown_marker
     return false unless %w[complete blocked].include?(fields.fetch("audit_status"))
@@ -1333,10 +1044,6 @@ module CompletedBatchAuditReceipt
 
   def failure_blocker(error)
     case error
-    when UpdateOutcomeUnknownError
-      UPDATE_OUTCOME_BLOCKER
-    when UpdateReadbackError
-      UPDATE_READBACK_BLOCKER
     when PostOutcomeUnknownError
       POST_OUTCOME_BLOCKER
     when PostReadbackError
@@ -1514,11 +1221,6 @@ module CompletedBatchAuditReceipt
       "errors" => [e.message]
     }
     case e
-    when UpdateOutcomeUnknownError
-      result["mutation_state"] = "comment-update-outcome-unknown"
-    when UpdateReadbackError
-      result["mutation_state"] = "comment-updated-readback-unknown"
-      result["comment_id"] = e.comment_id
     when PostOutcomeUnknownError
       result["mutation_state"] = "comment-post-outcome-unknown"
     when PostReadbackError

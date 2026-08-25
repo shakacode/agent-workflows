@@ -198,11 +198,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal "clean", result.dig("fields", "verdict")
   end
 
-  def test_prior_receipt_hash_is_valid_only_on_a_clean_publication_bound_terminalization
+  def test_prior_receipt_hash_is_never_valid_receipt_grammar
     preflight = publication_preflight
     prior_hash = "a" * 64
 
-    { "blocked" => followup_marker, "UNKNOWN" => unknown_marker }.each do |label, original|
+    { "blocked" => followup_marker, "UNKNOWN" => unknown_marker, "clean" => ready_marker }.each do |label, original|
       bound = CompletedBatchAuditReceipt.bind_publication_snapshot(original, preflight)
       forged = bound.sub(/^publication_snapshot:.*\n/) do |line|
         "#{line}prior_receipt_sha256: sha256:#{prior_hash}\n"
@@ -220,9 +220,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
-  def test_verify_comment_converts_malformed_terminalization_timestamps_to_typed_error
+  def test_verify_comment_converts_malformed_timestamps_to_typed_error
     bound = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, publication_preflight)
-    terminalized = CompletedBatchAuditReceipt.bind_prior_receipt_sha256(bound, "a" * 64)
     target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
     comment = {
       "id" => 9_001,
@@ -232,7 +231,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "author_association" => "MEMBER",
       "created_at" => "not-a-timestamp",
       "updated_at" => "2026-07-18T18:00:01Z",
-      "body" => "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{terminalized}"
+      "body" => "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{bound}"
     }
 
     error = assert_raises(CompletedBatchAuditReceipt::Error) do
@@ -248,9 +247,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal "comment timestamps are malformed", error.message
   end
 
-  def test_publish_and_update_reject_caller_supplied_prior_receipt_hash_before_external_work
+  def test_publish_rejects_caller_supplied_prior_receipt_hash_before_external_work
     bound = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, publication_preflight)
-    caller_terminalized = CompletedBatchAuditReceipt.bind_prior_receipt_sha256(bound, "a" * 64)
+    caller_terminalized = bound.sub(/^publication_snapshot:.*\n/) do |line|
+      "#{line}prior_receipt_sha256: sha256:#{'a' * 64}\n"
+    end
 
     publish_error = assert_raises(CompletedBatchAuditReceipt::Error) do
       CompletedBatchAuditReceipt.publish(
@@ -260,51 +261,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
     end
     assert_equal "caller-supplied prior receipt SHA-256 is not allowed", publish_error.message
-
-    update_error = assert_raises(CompletedBatchAuditReceipt::Error) do
-      CompletedBatchAuditReceipt.update(
-        expected_batch_id: "batch-184",
-        targets: [],
-        reference: "invalid reference",
-        receipt: caller_terminalized
-      )
-    end
-    assert_equal "caller-supplied prior receipt SHA-256 is not allowed", update_error.message
   end
 
-  def test_comment_history_graphql_uses_raw_string_variables
-    observed = {}
-    capture = lambda do |command, input:, timeout:|
-      observed[:command] = command
-      observed[:input] = input
-      observed[:timeout] = timeout
-      [JSON.generate("data" => {}), "", Struct.new(:success?).new(true)]
-    end
-    query = "query($commentId: ID!, $number: Int!) { node(id: $commentId) { id } }"
-
-    with_stubbed_preflight_capture_process(capture) do
-      payload = CompletedBatchAuditReceipt.gh_graphql(
-        "github.com",
-        query:,
-        variables: { "number" => 184, "commentId" => "@literal-comment-id" }
-      )
-      assert_equal({ "data" => {} }, payload)
-    end
-
-    assert_equal [
-      "gh", "api", "--hostname", "github.com", "graphql", "-f", "query=#{query}",
-      "-f", "commentId=@literal-comment-id", "-F", "number=184"
-    ], observed.fetch(:command)
-    assert_equal "", observed.fetch(:input)
-    assert_operator observed.fetch(:timeout), :>, 0
-  end
-
-  def test_verify_comment_rejects_prior_hash_that_does_not_match_authenticated_edit_history
-    preflight = publication_preflight
-    original_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{followup_marker}"
-    bound = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, preflight)
-    terminalized = CompletedBatchAuditReceipt.bind_prior_receipt_sha256(bound, "a" * 64)
-    current_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{terminalized}"
+  def test_verify_comment_rejects_edits_without_reconstructing_history_from_diff_summaries
+    bound = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, publication_preflight)
+    current_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{bound}"
     comment = {
       "id" => 9_001,
       "node_id" => "IC_kwDO9001",
@@ -316,125 +277,18 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "updated_at" => "2026-07-18T18:00:01Z",
       "body" => current_body
     }
-    history = authenticated_edit_history(comment:, original_body:, current_body:)
 
-    with_stubbed_authenticated_graphql(->(*_arguments, **_keywords) { history }) do
-      error = assert_raises(CompletedBatchAuditReceipt::Error) do
-        CompletedBatchAuditReceipt.verify_comment(
-          comment,
-          target: { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 },
-          expected_comment_id: 9_001,
-          expected_author: "justin808",
-          expected_batch_id: "batch-184"
-        )
-      end
-
-      assert_equal "prior receipt SHA-256 does not match authenticated edit history", error.message
-    end
-  end
-
-  def test_verify_comment_accepts_only_one_authenticated_single_followup_terminalization
-    preflight = publication_preflight
-    original_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{followup_marker}"
-    prior_hash = Digest::SHA256.hexdigest(original_body)
-    bound = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, preflight)
-    terminalized = CompletedBatchAuditReceipt.bind_prior_receipt_sha256(bound, prior_hash)
-    current_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{terminalized}"
-    comment = {
-      "id" => 9_001,
-      "node_id" => "IC_kwDO9001",
-      "html_url" => "https://github.com/acme/widgets/pull/184#issuecomment-9001",
-      "issue_url" => "https://api.github.com/repos/acme/widgets/issues/184",
-      "user" => { "login" => "justin808", "type" => "User" },
-      "author_association" => "MEMBER",
-      "created_at" => "2026-07-18T18:00:00Z",
-      "updated_at" => "2026-07-18T18:00:01Z",
-      "body" => current_body
-    }
-    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
-    valid_history = authenticated_edit_history(comment:, original_body:, current_body:)
-
-    with_stubbed_authenticated_graphql(->(*_arguments, **_keywords) { valid_history }) do
-      verified = CompletedBatchAuditReceipt.verify_comment(
+    error = assert_raises(CompletedBatchAuditReceipt::Error) do
+      CompletedBatchAuditReceipt.verify_comment(
         comment,
-        target:,
+        target: { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 },
         expected_comment_id: 9_001,
         expected_author: "justin808",
         expected_batch_id: "batch-184"
       )
-      assert_equal Digest::SHA256.hexdigest(current_body), verified.fetch("sha256")
     end
 
-    mismatched_original_body = original_body.sub("batch_id: batch-184", "batch_id: batch-other")
-    mismatched_hash = Digest::SHA256.hexdigest(mismatched_original_body)
-    mismatched_terminalized = CompletedBatchAuditReceipt.bind_prior_receipt_sha256(bound, mismatched_hash)
-    mismatched_current_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{mismatched_terminalized}"
-    mismatched_comment = comment.merge("body" => mismatched_current_body)
-    mismatched_history = authenticated_edit_history(
-      comment: mismatched_comment,
-      original_body: mismatched_original_body,
-      current_body: mismatched_current_body
-    )
-    with_stubbed_authenticated_graphql(->(*_arguments, **_keywords) { mismatched_history }) do
-      error = assert_raises(CompletedBatchAuditReceipt::Error) do
-        CompletedBatchAuditReceipt.verify_comment(
-          mismatched_comment,
-          target:,
-          expected_comment_id: 9_001,
-          expected_author: "justin808",
-          expected_batch_id: "batch-184"
-        )
-      end
-      assert_equal "authenticated edit history is not an original single-follow-up blocked receipt", error.message
-    end
-
-    extra_edit = {
-      "diff" => original_body.sub("open", "pending"),
-      "editedAt" => "2026-07-18T18:00:00.500Z",
-      "deletedAt" => nil,
-      "editor" => { "type" => "User", "login" => "justin808" }
-    }
-    extra_history = authenticated_edit_history(comment:, original_body:, current_body:, extra_edits: [extra_edit])
-    with_stubbed_authenticated_graphql(->(*_arguments, **_keywords) { extra_history }) do
-      error = assert_raises(CompletedBatchAuditReceipt::Error) do
-        CompletedBatchAuditReceipt.verify_comment(
-          comment,
-          target:,
-          expected_comment_id: 9_001,
-          expected_author: "justin808",
-          expected_batch_id: "batch-184"
-        )
-      end
-      assert_equal "terminalized receipt must have exactly one authenticated edit", error.message
-    end
-
-    multiple_followups = followup_marker.sub(
-      "evidence: issue #184\n",
-      "evidence: issue #184 | ref: #185; owner: maintainer; current status: pending; " \
-      "disposition: fix; evidence: issue #185\n"
-    )
-    multiple_original_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{multiple_followups}"
-    multiple_hash = Digest::SHA256.hexdigest(multiple_original_body)
-    multiple_terminalized = CompletedBatchAuditReceipt.bind_prior_receipt_sha256(bound, multiple_hash)
-    multiple_current_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{multiple_terminalized}"
-    multiple_comment = comment.merge("body" => multiple_current_body)
-    multiple_history = authenticated_edit_history(
-      comment: multiple_comment,
-      original_body: multiple_original_body,
-      current_body: multiple_current_body
-    )
-    with_stubbed_authenticated_graphql(->(*_arguments, **_keywords) { multiple_history }) do
-      error = assert_raises(CompletedBatchAuditReceipt::Error) do
-        CompletedBatchAuditReceipt.verify_comment(
-          multiple_comment,
-          target:,
-          expected_comment_id: 9_001,
-          expected_author: "justin808",
-          expected_batch_id: "batch-184"
-        )
-      end
-      assert_equal "authenticated edit history is not an original single-follow-up blocked receipt", error.message
-    end
+    assert_equal "comment was edited after publication", error.message
   end
 
   def test_real_premature_hichee_marker_replays_invalid_and_nonready
@@ -1888,60 +1742,19 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
-  def test_update_terminalizes_the_existing_blocked_receipt_without_a_second_post
+  def test_update_is_disabled_before_external_work
     with_fake_gh do |env, directory|
       targets_path = write_json(
         directory,
         "targets.json",
         [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
       )
-      blocked_path = File.join(directory, "blocked-receipt.txt")
-      File.write(blocked_path, followup_marker)
-      publish_out, publish_err, publish_status = capture_receipt_cli(
-        env,
-        "ruby",
-        SCRIPT,
-        "publish",
-        "--expected-batch-id",
-        "batch-184",
-        "--targets-json",
-        targets_path,
-        "--receipt",
-        blocked_path
-      )
-      assert publish_status.success?, publish_err
-      blocked = JSON.parse(publish_out)
-      refute blocked.fetch("ready")
-
       reference_path = File.join(directory, "reference.txt")
-      File.write(reference_path, blocked.fetch("chat_reference"))
-      complete_path = File.join(directory, "complete-receipt.txt")
-      File.write(complete_path, ready_marker)
+      File.write(reference_path, "not a compact reference")
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
 
-      tampered_reference_path = File.join(directory, "tampered-reference.txt")
-      File.write(
-        tampered_reference_path,
-        blocked.fetch("chat_reference").sub("Completed-batch audit: follow-ups-remain", "Completed-batch audit: clean")
-      )
-      tampered_out, _tampered_err, tampered_status = capture_receipt_cli(
-        env,
-        "ruby",
-        SCRIPT,
-        "update",
-        "--expected-batch-id",
-        "batch-184",
-        "--targets-json",
-        targets_path,
-        "--reference-file",
-        tampered_reference_path,
-        "--receipt",
-        complete_path
-      )
-      refute tampered_status.success?
-      assert_includes JSON.parse(tampered_out).fetch("errors"),
-                      "compact reference result does not match receipt verdict"
-
-      update_out, update_err, update_status = capture_receipt_cli(
+      update_out, _update_err, update_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1953,118 +1766,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--reference-file",
         reference_path,
         "--receipt",
-        complete_path
+        receipt_path
       )
 
-      assert update_status.success?, "#{update_err}\n#{update_out}"
-      updated = JSON.parse(update_out)
-      assert updated.fetch("ready")
-      assert_equal "updated", updated.fetch("mutation_state")
-      assert_equal blocked.dig("receipt", "url"), updated.dig("receipt", "url")
-      refute_equal blocked.fetch("chat_reference"), updated.fetch("chat_reference")
-      body = File.read(env.fetch("FAKE_GH_BODY"))
-      assert_includes body, "prior_receipt_sha256: sha256:#{blocked.dig('receipt', 'sha256')}"
-
-      updated_reference_path = File.join(directory, "updated-reference.txt")
-      File.write(updated_reference_path, updated.fetch("chat_reference"))
-      replay_out, replay_err, replay_status = capture_receipt_cli(
-        env,
-        "ruby",
-        SCRIPT,
-        "replay",
-        "--expected-batch-id",
-        "batch-184",
-        "--targets-json",
-        targets_path,
-        "--reference-file",
-        updated_reference_path
-      )
-      assert replay_status.success?, "#{replay_err}\n#{replay_out}"
-      assert JSON.parse(replay_out).fetch("ready")
-
-      second_out, _second_err, second_status = capture_receipt_cli(
-        env,
-        "ruby",
-        SCRIPT,
-        "update",
-        "--expected-batch-id",
-        "batch-184",
-        "--targets-json",
-        targets_path,
-        "--reference-file",
-        updated_reference_path,
-        "--receipt",
-        complete_path
-      )
-      refute second_status.success?
-      assert_includes JSON.parse(second_out).fetch("errors"), "only an original blocked receipt can be terminalized"
-
-      calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
-      assert_equal(1, calls.count { |call| call.include?("--method POST") })
-      assert_equal(1, calls.count { |call| call.include?("--method PATCH") })
-    end
-  end
-
-  def test_update_refuses_a_blocked_receipt_with_more_than_one_followup
-    multiple_records = followup_marker.sub(
-      "evidence: issue #184\n",
-      "evidence: issue #184 | ref: #185; owner: maintainer; current status: pending; " \
-      "disposition: fix; evidence: issue #185\n"
-    )
-    findings_only_extra = followup_marker.sub(
-      "findings: OUTSTANDING #184",
-      "findings: OUTSTANDING #184, #185"
-    )
-
-    { "multiple records" => multiple_records, "findings-only extra" => findings_only_extra }.each do |label, original|
-      with_fake_gh do |env, directory|
-        targets_path = write_json(
-          directory,
-          "targets.json",
-          [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
-        )
-        blocked_path = File.join(directory, "blocked-receipt.txt")
-        File.write(blocked_path, original)
-        publish_out, publish_err, publish_status = capture_receipt_cli(
-          env,
-          "ruby",
-          SCRIPT,
-          "publish",
-          "--expected-batch-id",
-          "batch-184",
-          "--targets-json",
-          targets_path,
-          "--receipt",
-          blocked_path
-        )
-        assert publish_status.success?, "#{label}: #{publish_err}"
-
-        reference_path = File.join(directory, "reference.txt")
-        File.write(reference_path, JSON.parse(publish_out).fetch("chat_reference"))
-        complete_path = File.join(directory, "complete-receipt.txt")
-        File.write(complete_path, ready_marker)
-        update_out, _update_err, update_status = capture_receipt_cli(
-          env,
-          "ruby",
-          SCRIPT,
-          "update",
-          "--expected-batch-id",
-          "batch-184",
-          "--targets-json",
-          targets_path,
-          "--reference-file",
-          reference_path,
-          "--receipt",
-          complete_path
-        )
-
-        refute update_status.success?, label
-        assert_includes JSON.parse(update_out).fetch("errors"),
-                        "only a blocked receipt with exactly one follow-up can be terminalized",
-                        label
-        calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
-        assert_equal(0, calls.count { |call| call.include?("--method PATCH") }, label)
-      end
+      refute update_status.success?
+      assert_includes JSON.parse(update_out).fetch("errors"),
+                      "in-place receipt update is unsupported; publish a new immutable receipt"
+      calls = File.exist?(env.fetch("FAKE_GH_LOG")) ? File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true) : []
+      assert_empty calls
     end
   end
 
@@ -3193,50 +2902,6 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, original)
   end
 
-  def with_stubbed_authenticated_graphql(callable)
-    original = CompletedBatchAuditReceipt.method(:gh_graphql)
-    CompletedBatchAuditReceipt.define_singleton_method(:gh_graphql, callable)
-    yield
-  ensure
-    CompletedBatchAuditReceipt.define_singleton_method(:gh_graphql, original)
-  end
-
-  def authenticated_edit_history(comment:, original_body:, current_body:, extra_edits: [])
-    editor = { "type" => "User", "login" => "justin808" }
-    edits = [
-      {
-        "diff" => current_body,
-        "editedAt" => comment.fetch("updated_at"),
-        "deletedAt" => nil,
-        "editor" => editor
-      },
-      *extra_edits,
-      {
-        "diff" => original_body,
-        "editedAt" => comment.fetch("created_at"),
-        "deletedAt" => nil,
-        "editor" => editor
-      }
-    ]
-    {
-      "data" => {
-        "node" => {
-          "id" => comment.fetch("node_id"),
-          "databaseId" => comment.fetch("id"),
-          "body" => current_body,
-          "createdAt" => comment.fetch("created_at"),
-          "updatedAt" => comment.fetch("updated_at"),
-          "lastEditedAt" => comment.fetch("updated_at"),
-          "includesCreatedEdit" => true,
-          "userContentEdits" => {
-            "nodes" => edits,
-            "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
-          }
-        }
-      }
-    }
-  end
-
   def with_fake_gh(mode: nil, target_type: "pull_request", coordination_backend: "n/a")
     Dir.mktmpdir("completed-batch-audit-receipt") do |directory|
       bin = File.join(directory, "bin")
@@ -3294,9 +2959,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           result["user"]["login"] = "other-maintainer" if ENV["FAKE_GH_MODE"] == "wrong-author"
           result["user"] = "not-an-object" if ENV["FAKE_GH_MODE"] == "invalid-user"
           result["author_association"] = "NONE" if ENV["FAKE_GH_MODE"] == "association-none"
-          if ENV["FAKE_GH_MODE"] == "edited" || body.include?("prior_receipt_sha256:")
-            result["updated_at"] = "2026-07-18T18:00:01Z"
-          end
+          result["updated_at"] = "2026-07-18T18:00:01Z" if ENV["FAKE_GH_MODE"] == "edited"
           result["html_url"] = result["html_url"].sub("issuecomment-9001", "issuecomment-9002") if ENV["FAKE_GH_MODE"] == "wrong-url"
           result["issue_url"] = result["issue_url"].sub("/issues/184", "/issues/185") if ENV["FAKE_GH_MODE"] == "wrong-issue-url"
           result
@@ -3352,44 +3015,6 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             exit
           end
           puts JSON.generate(comment.call(payload.fetch("body")))
-        when ["PATCH", "repos/#{canonical_repo}/issues/comments/9001"]
-          payload = JSON.parse($stdin.read)
-          File.write(ENV.fetch("FAKE_GH_PRIOR_BODY"), File.read(ENV.fetch("FAKE_GH_BODY")))
-          File.write(ENV.fetch("FAKE_GH_BODY"), payload.fetch("body"))
-          puts JSON.generate(comment.call(payload.fetch("body")))
-        when ["GET", "graphql"]
-          current_body = File.read(ENV.fetch("FAKE_GH_BODY"))
-          prior_body = File.read(ENV.fetch("FAKE_GH_PRIOR_BODY"))
-          puts JSON.generate(
-            "data" => {
-              "node" => {
-                "id" => "IC_kwDO9001",
-                "databaseId" => 9001,
-                "body" => current_body,
-                "createdAt" => "2026-07-18T18:00:00Z",
-                "updatedAt" => "2026-07-18T18:00:01Z",
-                "lastEditedAt" => "2026-07-18T18:00:01Z",
-                "includesCreatedEdit" => true,
-                "userContentEdits" => {
-                  "nodes" => [
-                    {
-                      "diff" => current_body,
-                      "editedAt" => "2026-07-18T18:00:01Z",
-                      "deletedAt" => nil,
-                      "editor" => { "type" => "User", "login" => durable_actor }
-                    },
-                    {
-                      "diff" => prior_body,
-                      "editedAt" => "2026-07-18T18:00:00Z",
-                      "deletedAt" => nil,
-                      "editor" => { "type" => "User", "login" => durable_actor }
-                    }
-                  ],
-                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
-                }
-              }
-            }
-          )
         when ["GET", "repos/#{canonical_repo}/issues/comments/9001"]
           exit 1 if ENV["FAKE_GH_MODE"] == "readback-failure"
           if ENV["FAKE_GH_MODE"] == "readback-invalid-json"
@@ -3425,7 +3050,6 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
         "FAKE_GH_LOG" => File.join(directory, "gh.log"),
         "FAKE_GH_BODY" => File.join(directory, "comment-body.txt"),
-        "FAKE_GH_PRIOR_BODY" => File.join(directory, "prior-comment-body.txt"),
         "FAKE_GH_PID" => File.join(directory, "gh.pid"),
         "FAKE_GH_LATE_SIDE_EFFECT" => File.join(directory, "gh-late-side-effect.txt"),
         "FAKE_GH_MODE" => mode.to_s,
