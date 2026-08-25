@@ -912,6 +912,12 @@ module CompletedBatchAuditReceipt
       targets:,
       coordination_backend:
     )
+    return false unless publication_preflight_reassessed?(
+      preflight,
+      expected_batch_id:,
+      expected_targets: targets,
+      coordination_backend:
+    )
     return false unless preflight["eligible"] == false && preflight["verdict"] == "BLOCKED"
 
     blockers = preflight["blockers"]

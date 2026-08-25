@@ -44,6 +44,15 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     BODY
   end
 
+  def accepted_deferral_target
+    {
+      "host" => "github.com",
+      "repo" => "shakacode/react_on_rails",
+      "type" => "pull_request",
+      "number" => 4918
+    }
+  end
+
   def process_alive?(pid)
     Process.kill(0, pid)
     true
@@ -194,13 +203,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     input = JSON.parse(
       File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
     )
-    targets = [{
-      "host" => "github.com",
-      "repo" => "shakacode/react_on_rails",
-      "type" => "issue",
-      "number" => 4731
-    }]
+    targets = [accepted_deferral_target]
     preflight = accepted_deferral_publication_preflight(targets.first)
+    assert_equal ["coordination lane ror-d-issue-4731 target is absent or ambiguous"], preflight.fetch("blockers")
 
     with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
       terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
@@ -236,12 +241,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     input = JSON.parse(
       File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
     )
-    targets = [{
-      "host" => "github.com",
-      "repo" => "shakacode/react_on_rails",
-      "type" => "issue",
-      "number" => 4731
-    }]
+    targets = [accepted_deferral_target]
     preflight = accepted_deferral_publication_preflight(targets.first)
     predecessor = accepted_deferral_predecessor_receipt(blocked)
     terminal = nil
@@ -287,9 +287,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     input = JSON.parse(
       File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
     )
-    target = {
-      "host" => "github.com", "repo" => "shakacode/react_on_rails", "type" => "issue", "number" => 4731
-    }
+    target = accepted_deferral_target
     preflight = accepted_deferral_publication_preflight(target)
     predecessor = accepted_deferral_predecessor_receipt(blocked)
     reference = CompletedBatchAuditReceipt.compact_reference("follow-ups-remain", predecessor)
@@ -319,9 +317,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     input = JSON.parse(
       File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
     )
-    target = {
-      "host" => "github.com", "repo" => "shakacode/react_on_rails", "type" => "issue", "number" => 4731
-    }
+    target = accepted_deferral_target
     preflight = accepted_deferral_publication_preflight(target)
     predecessor = accepted_deferral_predecessor_receipt(blocked)
     reference = CompletedBatchAuditReceipt.compact_reference("follow-ups-remain", predecessor)
@@ -353,9 +349,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     input = JSON.parse(
       File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
     )
-    target = {
-      "host" => "github.com", "repo" => "shakacode/react_on_rails", "type" => "issue", "number" => 4731
-    }
+    target = accepted_deferral_target
     preflight = accepted_deferral_publication_preflight(target)
     variants = {
       "decision" => ["decision: accepted-deferral", "decision: resolved"],
@@ -392,9 +386,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     input = JSON.parse(
       File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
     )
-    target = {
-      "host" => "github.com", "repo" => "shakacode/react_on_rails", "type" => "issue", "number" => 4731
-    }
+    target = accepted_deferral_target
 
     ["release gate failed", "coordination lane UNKNOWN target is absent or ambiguous"].each do |blocker|
       preflight = accepted_deferral_publication_preflight(target, blockers: [blocker])
@@ -438,11 +430,42 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     input = JSON.parse(
       File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
     )
-    target = {
-      "host" => "github.com", "repo" => "shakacode/react_on_rails", "type" => "issue", "number" => 4731
-    }
+    target = accepted_deferral_target
     preflight = accepted_deferral_publication_preflight(target)
     preflight.fetch("source_input")["batch_id"] = "other-batch"
+    preflight["source_input_digest"] = CompletedBatchPublicationPreflight.digest(preflight.fetch("source_input"))
+    unsigned = preflight.reject { |key, _value| key == "receipt_digest" }
+    preflight["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
+  def test_accepted_deferral_rejects_resealed_source_snapshot_divergence
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    preflight.fetch("source_input")["target_snapshots"] = [{
+      "target" => target,
+      "state" => "merged",
+      "head_sha" => "6" * 40,
+      "source" => "https://github.com/shakacode/react_on_rails/pull/4918"
+    }]
     preflight["source_input_digest"] = CompletedBatchPublicationPreflight.digest(preflight.fetch("source_input"))
     unsigned = preflight.reject { |key, _value| key == "receipt_digest" }
     preflight["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
@@ -468,9 +491,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     input = JSON.parse(
       File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
     )
-    target = {
-      "host" => "github.com", "repo" => "shakacode/react_on_rails", "type" => "issue", "number" => 4731
-    }
+    target = accepted_deferral_target
     preflight = accepted_deferral_publication_preflight(target)
 
     with_stubbed_gh_api(accepted_deferral_api(preflight)) do
@@ -3058,68 +3079,96 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
   def accepted_deferral_publication_preflight(target, blockers: nil)
     head_sha = "4" * 40
-    result = {
-      "contract" => "completed-batch-publication-preflight",
+    coordination_status = {
+      "scope" => { "kind" => "batch", "batch_id" => "ror-d-issue-4731-20260817" },
+      "batches" => [{
+        "batch_id" => "ror-d-issue-4731-20260817",
+        "repo" => "shakacode/react_on_rails",
+        "status" => "completed",
+        "updated_at" => "2026-08-17T20:00:00Z",
+        "completed_at" => "2026-08-17T20:00:00Z",
+        "lanes" => [
+          {
+            "name" => "ror-d-pr-4918",
+            "targets" => ["4918"],
+            "status" => "done",
+            "terminal" => "done",
+            "closed_at" => "2026-08-17T20:00:00Z",
+            "pr_state" => "merged",
+            "pr_url" => "https://github.com/shakacode/react_on_rails/pull/4918",
+            "evidence_url" => "https://github.com/shakacode/react_on_rails/pull/4918"
+          },
+          {
+            "name" => "ror-d-issue-4731",
+            "status" => "done",
+            "terminal" => "done",
+            "closed_at" => "2026-08-17T20:00:00Z"
+          }
+        ]
+      }]
+    }
+    qa_evidence = <<~MARKER
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR/head #{head_sha}
+      scope: PR #4918 exact head
+      automated_checks: focused tests
+      manual_checks: not applicable: no manual surface
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: script
+      -->
+    MARKER
+    source_input = {
+      "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
       "batch_id" => "ror-d-issue-4731-20260817",
-      "coordination_backend" => REAL_BACKEND,
-      "eligible" => false,
-      "verdict" => "BLOCKED",
-      "targets" => [target],
-      "blockers" => blockers || [
-        "coordination lane ror-d-issue-4731 target is absent or ambiguous",
-        "issue shakacode/react_on_rails#4731 is absent from resolved coordination scope"
-      ],
-      "source_input" => {
-        "contract" => "completed-batch-publication-preflight-input",
-        "version" => 1,
-        "batch_id" => "ror-d-issue-4731-20260817",
-        "expected_targets" => [target],
-        "coordination_status" => {},
-        "target_snapshots" => [],
-        "qa_evidence" => []
-      },
-      "snapshot" => {
-        "batch_id" => "ror-d-issue-4731-20260817",
-        "coordination_backend" => REAL_BACKEND,
-        "coordination" => {
-          "status" => "completed",
-          "updated_at" => "2026-08-17T20:00:00Z",
-          "completed_at" => "2026-08-17T20:00:00Z",
-          "lanes" => [],
-          "verification_source" => "authenticated agent-coord-bounded"
-        },
-        "targets" => [{
-          "target" => target,
-          "state" => "closed",
-          "head_sha" => head_sha,
-          "no_pr_evidence" => nil,
-          "source" => "https://github.com/shakacode/react_on_rails/pull/4918",
-          "verification_source" => "authenticated gh api"
-        }],
-        "qa" => [{
-          "target" => target,
-          "head_sha" => head_sha,
-          "verdict" => "SATISFIED",
-          "status" => "satisfied",
-          "user_visible_ui_change" => "no",
-          "evidence_sha256" => "sha256:#{'5' * 64}",
-          "maintainer_waiver" => nil
-        }]
-      }
+      "expected_targets" => [target],
+      "coordination_status" => coordination_status,
+      "target_snapshots" => [{
+        "target" => target,
+        "state" => "merged",
+        "head_sha" => head_sha,
+        "source" => "https://github.com/shakacode/react_on_rails/pull/4918"
+      }],
+      "qa_evidence" => [{
+        "target" => target,
+        "user_visible_ui_change" => "no",
+        "evidence" => qa_evidence
+      }]
     }
-    result["source_input"] = CompletedBatchPublicationPreflight.canonicalize(result.fetch("source_input"))
-    result["snapshot"] = CompletedBatchPublicationPreflight.canonicalize(result.fetch("snapshot"))
-    result["source_input_digest"] = CompletedBatchPublicationPreflight.digest(result.fetch("source_input"))
-    result["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(result.fetch("snapshot"))
-    result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(result)
+    result = CompletedBatchPublicationPreflight.assess(
+      source_input,
+      coordination_backend: REAL_BACKEND,
+      target_verifier: lambda do |target:|
+        {
+          "target" => target,
+          "state" => "merged",
+          "head_sha" => head_sha,
+          "completed_at" => "2026-08-17T20:00:00Z",
+          "verification_source" => "authenticated gh api"
+        }
+      end,
+      coordination_verifier: lambda do |backend:, batch_id:|
+        coordination_status if backend == REAL_BACKEND && batch_id == "ror-d-issue-4731-20260817"
+      end
+    )
+    if blockers
+      result["blockers"] = blockers
+      result["eligible"] = false
+      result["verdict"] = "BLOCKED"
+      unsigned = result.reject { |key, _value| key == "receipt_digest" }
+      result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+    end
     result
   end
 
   def accepted_deferral_predecessor_receipt(marker)
     body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{marker}"
     {
-      "url" => "https://github.com/shakacode/react_on_rails/issues/4731#issuecomment-5389270559",
+      "url" => "https://github.com/shakacode/react_on_rails/pull/4918#issuecomment-5389270559",
       "comment_id" => 5_389_270_559,
       "sha256" => Digest::SHA256.hexdigest(body),
       "author" => "maintainer",
@@ -3136,8 +3185,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       when "repos/shakacode/react_on_rails/issues/comments/5400000000"
         {
           "id" => 5_400_000_000,
-          "html_url" => "https://github.com/shakacode/react_on_rails/issues/4731#issuecomment-5400000000",
-          "issue_url" => "https://api.github.com/repos/shakacode/react_on_rails/issues/4731",
+          "html_url" => "https://github.com/shakacode/react_on_rails/pull/4918#issuecomment-5400000000",
+          "issue_url" => "https://api.github.com/repos/shakacode/react_on_rails/issues/4918",
           "body" => begin
             body = <<~BODY
               <!-- completed-batch-accepted-deferral-decision v1
@@ -3171,11 +3220,12 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           "html_url" => "https://github.com/shakacode/agent-workflows/issues/320",
           "state" => "open"
         }
-      when "repos/shakacode/react_on_rails/issues/4731"
+      when "repos/shakacode/react_on_rails/issues/4918"
         {
-          "number" => 4731,
-          "html_url" => "https://github.com/shakacode/react_on_rails/issues/4731",
-          "state" => "closed"
+          "number" => 4918,
+          "html_url" => "https://github.com/shakacode/react_on_rails/pull/4918",
+          "state" => "closed",
+          "pull_request" => {}
         }
       when "repos/shakacode/react_on_rails/pulls/4918"
         {
@@ -3191,7 +3241,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         {
           "id" => 5_389_270_559,
           "html_url" => predecessor.fetch("url"),
-          "issue_url" => "https://api.github.com/repos/shakacode/react_on_rails/issues/4731",
+          "issue_url" => "https://api.github.com/repos/shakacode/react_on_rails/issues/4918",
           "body" => body,
           "user" => { "login" => predecessor.fetch("author"), "type" => "User" },
           "author_association" => "MEMBER",
@@ -3214,7 +3264,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       case [method, endpoint]
       when %w[GET user]
         { "login" => "maintainer", "type" => "User" }
-      when ["POST", "repos/shakacode/react_on_rails/issues/4731/comments"]
+      when ["POST", "repos/shakacode/react_on_rails/issues/4918/comments"]
         posted_body = JSON.parse(input).fetch("body")
         successor.call(posted_body)
       when ["GET", "repos/shakacode/react_on_rails/issues/comments/5400000001"]
@@ -3229,8 +3279,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   def accepted_deferral_successor_comment(body)
     {
       "id" => 5_400_000_001,
-      "html_url" => "https://github.com/shakacode/react_on_rails/issues/4731#issuecomment-5400000001",
-      "issue_url" => "https://api.github.com/repos/shakacode/react_on_rails/issues/4731",
+      "html_url" => "https://github.com/shakacode/react_on_rails/pull/4918#issuecomment-5400000001",
+      "issue_url" => "https://api.github.com/repos/shakacode/react_on_rails/issues/4918",
       "body" => body,
       "user" => { "login" => "maintainer", "type" => "User" },
       "author_association" => "MEMBER",
