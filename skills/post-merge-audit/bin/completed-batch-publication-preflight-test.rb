@@ -168,6 +168,11 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     }
   end
 
+  def test_issue_projection_query_includes_closed_result_pull_requests
+    assert_includes CompletedBatchPublicationPreflight::TARGET_PROJECTION_QUERY,
+                    "closedByPullRequestsReferences(first: 100, after: $sourceCursor, includeClosedPrs: true)"
+  end
+
   def qa_v2_evidence(head_sha:, user_visible_ui_change:)
     ui_change = user_visible_ui_change == "yes"
     destination = ui_change ? "github_pr" : "not_applicable"
@@ -627,13 +632,14 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       payload = CompletedBatchPublicationPreflight.authenticated_gh_graphql(
         "github.com",
         query:,
-        variables: { "number" => 184 },
+        variables: { "number" => 184, "cursor" => "@literal-cursor" },
         repository_root: repository
       )
       assert_equal({ "authenticated" => true }, payload)
       assert_equal [
         File.realpath(external_gh),
-        "api", "--hostname", "github.com", "graphql", "-f", "query=#{query}", "-F", "number=184"
+        "api", "--hostname", "github.com", "graphql", "-f", "query=#{query}",
+        "-f", "cursor=@literal-cursor", "-F", "number=184"
       ], observed.fetch(:command)
       assert_equal expected_environment, observed.fetch(:environment)
       assert observed.fetch(:unsetenv_others)

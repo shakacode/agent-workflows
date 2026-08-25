@@ -2759,6 +2759,8 @@ Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper
 
 A raw issue lane may resolve to a different final PR only through the post-merge helper's authenticated same-repository symmetric closing-reference projection. Preserve and validate every repeated maker/checker/QA lane, and deduplicate only the final target set. If the one durable comment is an original blocked receipt whose sole follow-up clears, use the helper's one-time `update` path to PATCH that exact comment with a clean preflight-bound marker and `prior_receipt_sha256`; never publish a second receipt comment, update an already-terminalized receipt, or rewrite coordination history.
 
+The helper rejects caller-supplied `prior_receipt_sha256`; replay accepts an edited receipt only when authenticated GitHub edit history proves the original single-follow-up blocked body and exactly one same-author terminal edit whose original-body hash matches `prior_receipt_sha256`.
+
 Each `qa_evidence` row must carry a coordinator-owned
 `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's
 canonical target and publication snapshot; `yes` requires strict visual-evidence
@@ -2778,7 +2780,7 @@ terminal coordination contract it leaves completed-batch publication blocked as
 
 When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks.
 
-Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, reference-bound timestamps/body, SHA-256, batch ID, wrapper version, and result. An edited timestamp is accepted only for the one helper-terminalized form carrying a valid `prior_receipt_sha256` field.
+Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, reference-bound timestamps/body, SHA-256, batch ID, wrapper version, and result. An edited timestamp is accepted only when authenticated GitHub edit history proves the original single-follow-up blocked body and exactly one same-author terminal edit whose original-body hash matches `prior_receipt_sha256`.
 
 Immediately before the exact final `Conversation status` line, emit only:
 

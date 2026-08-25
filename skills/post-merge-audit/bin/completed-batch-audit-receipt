@@ -32,6 +32,30 @@ module CompletedBatchAuditReceipt
   SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
   WRITE_PERMISSIONS = %w[admin maintain write].freeze
   DEFAULT_GH_TIMEOUT_SECONDS = 60
+  COMMENT_EDIT_HISTORY_QUERY = <<~GRAPHQL
+    query($commentId: ID!) {
+      node(id: $commentId) {
+        ... on IssueComment {
+          id
+          databaseId
+          body
+          createdAt
+          updatedAt
+          lastEditedAt
+          includesCreatedEdit
+          userContentEdits(first: 3) {
+            nodes {
+              diff
+              editedAt
+              deletedAt
+              editor { type: __typename login }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }
+    }
+  GRAPHQL
   LEGACY_FIELDS = %w[
     batch_id audit_status verdict scope_evidence checker_evidence findings followups_dispositions
   ].freeze
@@ -152,11 +176,9 @@ module CompletedBatchAuditReceipt
     publication_preflight: nil,
     coordination_backend: nil
   )
-    comment_body = canonical_comment_body(receipt)
-    raise Error, "local completed-batch audit receipt is invalid" unless comment_body
+    comment_body, marker = unterminalized_comment_input(receipt)
 
     deterministic = deterministic_targets(targets)
-    marker = comment_marker(comment_body)
     state = marker_state(marker)
     if state&.fields&.fetch("audit_status") == "complete"
       validate_publication_preflight!(
@@ -245,6 +267,7 @@ module CompletedBatchAuditReceipt
     publication_preflight: nil,
     coordination_backend: nil
   )
+    comment_body, marker = unterminalized_comment_input(receipt)
     parsed = parse_reference(reference)
     deterministic = deterministic_targets(targets)
     target, actor = select_verified_anchor(deterministic)
@@ -282,10 +305,6 @@ module CompletedBatchAuditReceipt
       raise Error, "only a blocked receipt with exactly one follow-up can be terminalized"
     end
 
-    comment_body = canonical_comment_body(receipt)
-    raise Error, "local completed-batch audit receipt is invalid" unless comment_body
-
-    marker = comment_marker(comment_body)
     state = marker_state(marker)
     raise Error, "updated completed-batch receipt must be complete and clean" unless state_ready?(state)
 
@@ -577,7 +596,18 @@ module CompletedBatchAuditReceipt
 
     prior_receipt_sha256 = local.dig("fields", "prior_receipt_sha256")
     if prior_receipt_sha256
-      raise Error, "updated receipt timestamp is before creation" unless Time.iso8601(updated_at) >= Time.iso8601(created_at)
+      parsed_created_at = parse_comment_timestamp(created_at)
+      parsed_updated_at = parse_comment_timestamp(updated_at)
+      raise Error, "updated receipt timestamp is before creation" unless parsed_updated_at >= parsed_created_at
+
+      verify_terminalization_history!(
+        comment,
+        host: target.fetch("host"),
+        expected_comment_id:,
+        expected_author: author,
+        expected_batch_id:,
+        prior_receipt_sha256:
+      )
     else
       raise Error, "comment was edited before verification" unless created_at == updated_at
     end
@@ -596,6 +626,90 @@ module CompletedBatchAuditReceipt
       "sha256" => Digest::SHA256.hexdigest(body.encode(Encoding::UTF_8)),
       "marker" => marker
     }
+  end
+
+  def parse_comment_timestamp(value)
+    Time.iso8601(value)
+  rescue ArgumentError
+    raise Error, "comment timestamps are malformed"
+  end
+
+  def verify_terminalization_history!(
+    comment,
+    host:,
+    expected_comment_id:,
+    expected_author:,
+    expected_batch_id:,
+    prior_receipt_sha256:
+  )
+    node_id = comment.fetch("node_id", "").to_s
+    raise Error, "comment edit history node id is missing" if node_id.empty?
+
+    payload = gh_graphql(
+      host,
+      query: COMMENT_EDIT_HISTORY_QUERY,
+      variables: { "commentId" => node_id }
+    )
+    node = payload&.dig("data", "node")
+    raise Error, "comment edit history is unavailable" unless node.is_a?(Hash)
+
+    same_comment = node.fetch("id", "").to_s == node_id &&
+                   Integer(node.fetch("databaseId", nil), exception: false) == expected_comment_id &&
+                   node.fetch("body", "").to_s == comment.fetch("body", "").to_s &&
+                   node.fetch("createdAt", "").to_s == comment.fetch("created_at", "").to_s &&
+                   node.fetch("updatedAt", "").to_s == comment.fetch("updated_at", "").to_s &&
+                   node.fetch("lastEditedAt", "").to_s == comment.fetch("updated_at", "").to_s
+    raise Error, "comment edit history identity or version mismatch" unless same_comment
+    raise Error, "comment edit history does not include the created version" unless node["includesCreatedEdit"] == true
+
+    connection = node.fetch("userContentEdits", nil)
+    raise Error, "comment edit history is malformed" unless connection.is_a?(Hash)
+
+    page_info = connection.fetch("pageInfo", nil)
+    edits = connection.fetch("nodes", nil)
+    complete = page_info.is_a?(Hash) && page_info["hasNextPage"] == false && edits.is_a?(Array)
+    raise Error, "comment edit history is incomplete" unless complete
+    raise Error, "terminalized receipt must have exactly one authenticated edit" unless edits.length == 2
+
+    ordered = edits.sort_by do |edit|
+      raise Error, "comment edit history entry is malformed" unless edit.is_a?(Hash)
+
+      parse_comment_timestamp(edit.fetch("editedAt", "").to_s)
+    end
+    original_edit, terminal_edit = ordered
+    original_at = original_edit.fetch("editedAt", "").to_s
+    terminal_at = terminal_edit.fetch("editedAt", "").to_s
+    unless original_at == comment.fetch("created_at", "").to_s &&
+           terminal_at == comment.fetch("updated_at", "").to_s && original_at != terminal_at
+      raise Error, "comment edit history timestamps do not match the receipt transition"
+    end
+
+    ordered.each do |edit|
+      raise Error, "comment edit history contains a deleted version" if edit["deletedAt"]
+
+      verified_human_login!(
+        edit.fetch("editor", nil),
+        context: "comment edit history actor",
+        expected_login: expected_author
+      )
+    end
+
+    original_body = original_edit.fetch("diff", "").to_s
+    terminal_body = terminal_edit.fetch("diff", "").to_s
+    raise Error, "comment edit history current body mismatch" unless terminal_body == comment.fetch("body", "").to_s
+
+    expected_prior = "sha256:#{Digest::SHA256.hexdigest(original_body.encode(Encoding::UTF_8))}"
+    unless prior_receipt_sha256 == expected_prior
+      raise Error, "prior receipt SHA-256 does not match authenticated edit history"
+    end
+
+    original_marker = comment_marker(original_body)
+    original_state = marker_state(original_marker)
+    valid_original = original_state&.fields&.fetch("batch_id") == expected_batch_id &&
+                     original_state.fields.fetch("audit_status") == "blocked" &&
+                     !original_state.fields.key?("prior_receipt_sha256") &&
+                     state_blockers(original_state).one?
+    raise Error, "authenticated edit history is not an original single-follow-up blocked receipt" unless valid_original
   end
 
   def target_base_url(target)
@@ -659,6 +773,19 @@ module CompletedBatchAuditReceipt
     return unless marker
 
     "#{COMMENT_HEADER}\n\n#{marker}"
+  end
+
+  def unterminalized_comment_input(receipt)
+    comment_body = canonical_comment_body(receipt)
+    raise Error, "local completed-batch audit receipt is invalid" unless comment_body
+
+    marker = comment_marker(comment_body)
+    state = marker_state(marker)
+    if state.fields.key?("prior_receipt_sha256")
+      raise Error, "caller-supplied prior receipt SHA-256 is not allowed"
+    end
+
+    [comment_body, marker]
   end
 
   def validate_publication_preflight!(preflight, expected_batch_id:, targets:, coordination_backend: nil)
@@ -877,6 +1004,35 @@ module CompletedBatchAuditReceipt
     raise error_class, "GitHub API returned invalid JSON"
   rescue SystemCallError
     raise Error, "GitHub API request could not be started"
+  end
+
+  def gh_graphql(host, query:, variables:)
+    valid_variables = variables.is_a?(Hash) && variables.all? do |key, value|
+      key.to_s.match?(/\A[A-Za-z][A-Za-z0-9_]*\z/) && (value.is_a?(String) || value.is_a?(Integer))
+    end
+    raise Error, "GitHub GraphQL variables are invalid" unless query.is_a?(String) && !query.empty? && valid_variables
+
+    command = ["gh", "api", "--hostname", host, "graphql", "-f", "query=#{query}"]
+    variables.keys.sort.each do |key|
+      value = variables.fetch(key)
+      command.concat([value.is_a?(Integer) ? "-F" : "-f", "#{key}=#{value}"])
+    end
+    status = nil
+    stdout, _stderr, status = capture_process(command, input: "", timeout: gh_timeout_seconds)
+    raise Error, "GitHub GraphQL request failed" unless status.success?
+
+    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
+    raise SuccessfulApiResponseError, "GitHub GraphQL response must be a JSON object" unless payload.is_a?(Hash)
+    raise SuccessfulApiResponseError, "GitHub GraphQL response contains errors" if payload.key?("errors")
+
+    payload
+  rescue Timeout::Error
+    raise Error, "GitHub GraphQL request timed out"
+  rescue JSON::ParserError
+    error_class = status&.success? ? SuccessfulApiResponseError : Error
+    raise error_class, "GitHub GraphQL returned invalid JSON"
+  rescue SystemCallError
+    raise Error, "GitHub GraphQL request could not be started"
   end
 
   def capture_process(command, input:, timeout:)

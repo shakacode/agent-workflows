@@ -68,7 +68,7 @@ module CompletedBatchPublicationPreflight
           url
           state
           closedAt
-          closedByPullRequestsReferences(first: 100, after: $sourceCursor) {
+          closedByPullRequestsReferences(first: 100, after: $sourceCursor, includeClosedPrs: true) {
             nodes {
               number
               url
@@ -1428,7 +1428,8 @@ module CompletedBatchPublicationPreflight
     command = [executable, "api", "--hostname", host, "graphql", "-f", "query=#{query}"]
     variables.keys.sort.each do |key|
       value = variables.fetch(key)
-      command.concat(["-F", "#{key}=#{value}"])
+      flag = value.is_a?(Integer) ? "-F" : "-f"
+      command.concat([flag, "#{key}=#{value}"])
     end
     result = with_safe_gh_directory(repository_root) do |directory|
       capture_process(

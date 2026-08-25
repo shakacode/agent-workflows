@@ -450,13 +450,18 @@ Parse and bind the local receipt to the expected batch ID, choose only from the 
 
 When that one durable comment is an original blocked receipt and its sole
 follow-up later clears, `update` may terminalize that exact comment once without
-a second POST. It replays the old compact reference, requires the authenticated
-writer to be the original author with current write permission, requires a fresh
-eligible publication preflight and a complete clean replacement marker, PATCHes
-the exact comment ID, injects `prior_receipt_sha256` plus the publication
-snapshot, reads the edit back, and emits a new compact reference. Refuse an
-already-updated receipt, an author or target mismatch, or an unready replacement;
-never edit a clean receipt or use `update` to retry PR-description sync.
+a second POST. It rejects a caller-supplied `prior_receipt_sha256`, replays the
+old compact reference, requires the authenticated writer to be the original
+author with current write permission, requires a fresh eligible publication
+preflight and a complete clean replacement marker, PATCHes the exact comment ID,
+injects `prior_receipt_sha256` plus the publication snapshot, reads the edit
+back, and emits a new compact reference. Replay fetches authenticated GitHub
+comment edit history, requires exactly the created blocked version plus one
+terminal edit by the same human, re-hashes the original body to match
+`prior_receipt_sha256`, and replays the original as a single-follow-up blocked
+receipt. Refuse an already-updated receipt, an author or target mismatch, an
+unverifiable edit history, or an unready replacement; never edit a clean receipt
+or use `update` to retry PR-description sync.
 
 For `audit_status: complete`, that parse/bind step additionally requires the
 eligible publication preflight and exact manifest match. Pass the same refreshed
@@ -516,7 +521,7 @@ exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`,
 replay independently re-fetch and compare the bound waiver; a self-consistent
 preflight digest is not authentication.
 
-Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, reference-bound timestamps/body, SHA-256, batch ID, wrapper version, and result. An edited timestamp is accepted only for the one helper-terminalized form carrying a valid `prior_receipt_sha256` field.
+Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, reference-bound timestamps/body, SHA-256, batch ID, wrapper version, and result. An edited timestamp is accepted only when authenticated GitHub edit history proves the original single-follow-up blocked body and exactly one same-author terminal edit whose original-body hash matches `prior_receipt_sha256`.
 
 A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. New complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. New complete receipts also have exactly one helper-managed `publication_snapshot`; unrefreshed or snapshot-mismatched data fails closed. A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
 

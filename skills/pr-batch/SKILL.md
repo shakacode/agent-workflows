@@ -971,7 +971,9 @@ Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper
 
 A raw issue lane may resolve to a different final PR only through the post-merge helper's authenticated same-repository symmetric closing-reference projection. Preserve and validate every repeated maker/checker/QA lane, and deduplicate only the final target set. If the one durable comment is an original blocked receipt whose sole follow-up clears, use the helper's one-time `update` path to PATCH that exact comment with a clean preflight-bound marker and `prior_receipt_sha256`; never publish a second receipt comment, update an already-terminalized receipt, or rewrite coordination history.
 
-Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, reference-bound timestamps/body, SHA-256, batch ID, wrapper version, and result. An edited timestamp is accepted only for the one helper-terminalized form carrying a valid `prior_receipt_sha256` field.
+The helper rejects caller-supplied `prior_receipt_sha256`; replay accepts an edited receipt only when authenticated GitHub edit history proves the original single-follow-up blocked body and exactly one same-author terminal edit whose original-body hash matches `prior_receipt_sha256`.
+
+Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, reference-bound timestamps/body, SHA-256, batch ID, wrapper version, and result. An edited timestamp is accepted only when authenticated GitHub edit history proves the original single-follow-up blocked body and exactly one same-author terminal edit whose original-body hash matches `prior_receipt_sha256`.
 
 Immediately before the exact final `Conversation status` line, emit only:
 
