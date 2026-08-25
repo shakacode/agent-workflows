@@ -858,6 +858,25 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                     "shakacode/hichee#pull_request:10049 appears in multiple coordination lanes"
   end
 
+  def test_direct_lane_target_must_match_coordination_batch_repo
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/other",
+      "type" => "pull_request",
+      "number" => 7
+    }
+    lane = {
+      "pr_url" => "https://github.com/acme/other/pull/7",
+      "targets" => ["7"]
+    }
+
+    assert_empty CompletedBatchPublicationPreflight.targets_for_lane(
+      lane,
+      "acme/batch",
+      [target]
+    )
+  end
+
   def test_authenticated_projection_requires_symmetric_github_relationships
     input = issue_to_pr_with_qa_lane_input
     target = input.fetch("expected_targets").first

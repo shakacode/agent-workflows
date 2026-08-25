@@ -539,6 +539,8 @@ module CompletedBatchPublicationPreflight
     return [] unless url_targets.one? && raw_numbers.one?
 
     target = url_targets.first
+    return [] unless target["repo"].casecmp?(batch_repo)
+
     direct_target = expected_targets.find do |candidate|
       target_key(candidate) == target_key(target) && candidate["number"] == raw_numbers.first
     end
