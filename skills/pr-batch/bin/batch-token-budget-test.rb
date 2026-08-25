@@ -1159,6 +1159,40 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_reconcile_rejects_non_object_usage_receipts_with_a_structured_error
+    with_state do |state_path|
+      initialize_budget(state_path)
+      state_before = File.read(state_path)
+
+      {
+        "null" => nil,
+        "boolean" => true,
+        "integer" => 42,
+        "string" => "not-a-receipt",
+        "array" => []
+      }.each do |name, malformed_receipt|
+        output, stderr, status = run_helper(
+          state_path,
+          command(
+            "reconcile",
+            "usage_receipt" => malformed_receipt,
+            "usage_receipt_ref" => "https://example.invalid/receipt.json",
+            "usage_receipt_digest" => "sha256:#{'0' * 64}",
+            "completed_reservation_ids" => []
+          )
+        )
+
+        refute status.success?, name
+        assert_nil output, name
+        error = JSON.parse(stderr)
+        assert_equal "batch-token-budget-error", error.fetch("type"), name
+        assert_equal "invalid-input", error.fetch("status"), name
+        assert_equal "unsupported-command-contract", error.fetch("reason"), name
+        assert_equal state_before, File.read(state_path), name
+      end
+    end
+  end
+
   def test_legacy_per_target_usage_wrapper_is_not_an_alternate_reconciliation_contract
     with_state do |state_path|
       initialize_budget(state_path)
