@@ -1015,7 +1015,7 @@ test_metadata_commit_rolls_back_failed_present_compare_and_swap() {
     --delivery-mode flat >"$tmp/initial-install.out"
 
   cat > "$injection" <<'RUBY'
-if ARGV.length == 4 && ARGV[0] == ENV.fetch("QA_TARGET") &&
+if ARGV.length == 5 && ARGV[0] == ENV.fetch("QA_TARGET") &&
    ARGV[1] == ".agent-workflows-install.json" && ARGV[2] == "present"
   module ReplaceMetadataInsidePresentCommit
     def close(*args)
@@ -1054,6 +1054,43 @@ RUBY
   assert_file "$preserved"
   [[ ! -e "$metadata.tmp" ]] || fail "failed metadata compare-and-swap left prepared metadata"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "failed metadata compare-and-swap leaked install lock"
+}
+
+test_metadata_commit_rejects_replaced_prepared_file() {
+  local tmp target metadata injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/replace-prepared-install-metadata.rb"
+  marker="$tmp/prepared-install-metadata-replaced"
+
+  cat > "$injection" <<'RUBY'
+metadata = ENV.fetch("QA_INSTALL_METADATA")
+if ARGV.first == "#{metadata}.tmp" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  at_exit do
+    File.write(
+      "#{metadata}.tmp",
+      "{\"delivery_mode\":\"plugin-companion\",\"mode\":\"symlink\",\"source\":\"/tmp/attacker\"}\n"
+    )
+    File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "replaced prepared metadata exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ ! -e "$metadata" ]] || fail "replaced prepared metadata was committed"
+  assert_file "$target/skills/pr-batch/SKILL.md"
+  [[ ! -e "$metadata.tmp" ]] || fail "replaced prepared metadata was not cleaned"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "replaced prepared metadata leaked install lock"
 }
 
 test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat() {
@@ -5606,6 +5643,7 @@ main() {
     test_bound_metadata_change_cannot_grant_symlink_ownership
     test_metadata_commit_rejects_destination_directory_race
     test_metadata_commit_rolls_back_failed_present_compare_and_swap
+    test_metadata_commit_rejects_replaced_prepared_file
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
     test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data
     test_flat_crash_recovery_rejects_symlink_skills_root_before_move

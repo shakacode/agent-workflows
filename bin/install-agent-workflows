@@ -1388,13 +1388,14 @@ prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
   local version source_revision source_branch source_remote installed_at
+  prepared_metadata_attestation=""
   version="$(metadata_value version)"
   source_revision="$(metadata_value source_revision)"
   source_branch="$(metadata_value source_branch)"
   source_remote="$(metadata_value source_remote)"
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-  ruby -rjson -rdigest -rfind -e '
+  prepared_metadata_attestation="$(ruby -rjson -rdigest -rfind -e '
     path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, *pack_docs = ARGV
     directory_fingerprint = lambda do |root|
       entries = []
@@ -1447,16 +1448,20 @@ prepare_metadata() {
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints
     }
+    serialized_metadata = JSON.pretty_generate(metadata) + "\n"
     abort unless File.const_defined?(:NOFOLLOW)
     file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
     begin
-      file.write(JSON.pretty_generate(metadata) + "\n")
+      file.write(serialized_metadata)
       file.flush
       file.fsync
+      stat = file.stat
+      abort unless stat.file?
+      print "#{stat.dev}:#{stat.ino}|#{Digest::SHA256.hexdigest(serialized_metadata)}"
     ensure
       file.close
     end
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}"
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}")"
 }
 
 commit_metadata() {
@@ -1491,7 +1496,7 @@ commit_metadata() {
 
     class MetadataBindingChanged < StandardError; end
 
-    target, metadata_name, state, expected = ARGV
+    target, metadata_name, state, expected, expected_prepared = ARGV
     temporary_name = "#{metadata_name}.tmp"
     directory = nil
     temporary = nil
@@ -1534,6 +1539,7 @@ commit_metadata() {
 
       temporary = open_at.call(temporary_name)
       prepared_attestation = attestation.call(temporary)
+      raise MetadataBindingChanged unless prepared_attestation == expected_prepared
 
       case state
       when "absent"
@@ -1567,7 +1573,7 @@ commit_metadata() {
       end
 
       destination = open_at.call(metadata_name)
-      raise MetadataBindingChanged unless attestation.call(destination) == prepared_attestation
+      raise MetadataBindingChanged unless attestation.call(destination) == expected_prepared
       destination.close
       destination = nil
 
@@ -1597,7 +1603,8 @@ commit_metadata() {
     end
     exit 1 unless completed
   ' "$target" "$metadata_name" "$install_metadata_binding_state" \
-    "$install_metadata_binding_attestation" 2>/dev/null || commit_status=$?
+    "$install_metadata_binding_attestation" "$prepared_metadata_attestation" \
+    2>/dev/null || commit_status=$?
 
   if [[ "$commit_status" -ne 0 ]]; then
     report_install_metadata_binding_changed
