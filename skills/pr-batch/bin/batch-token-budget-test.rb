@@ -298,6 +298,63 @@ class BatchTokenBudgetTest < Minitest::Test
     )
   end
 
+  def assert_batch_component_turn_borrowing_rejected(
+    name:, coordinator_turns:, batch_unattributed_turns:
+  )
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reservation_id = "#{name}-reservation"
+      admitted, admitted_stderr, admitted_status = reserve(
+        state_path,
+        id: reservation_id,
+        lane_id: "coordinator",
+        tokens: 100
+      )
+      assert admitted_status.success?, admitted_stderr
+      assert_equal "admitted", admitted.fetch("status")
+
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 100,
+        coordinator_turns: coordinator_turns,
+        batch_unattributed_tokens: 400,
+        batch_unattributed_turns: batch_unattributed_turns,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      state_before = File.read(state_path)
+      blocked, stderr, status = reconcile_receipt(
+        state_path,
+        receipt,
+        name,
+        completed_reservation_ids: [reservation_id]
+      )
+
+      saved = JSON.parse(File.read(state_path))
+      assert_equal(
+        {
+          "consumed_tokens" => 0,
+          "receipt_count" => 0,
+          "reservation_status" => "active",
+          "usage_cursor" => nil
+        },
+        {
+          "consumed_tokens" => saved.dig("scopes", "aggregate", "consumed_tokens"),
+          "receipt_count" => saved.fetch("usage_receipts").length,
+          "reservation_status" => saved.dig("reservations", reservation_id, "status"),
+          "usage_cursor" => saved["usage_cursor"]
+        },
+        name
+      )
+      assert_equal state_before, File.read(state_path), name
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status"), name
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason"), name
+    end
+  end
+
   def set_usage_total(usage, tokens)
     usage.merge!(
       "input_tokens" => tokens,
@@ -1499,6 +1556,63 @@ class BatchTokenBudgetTest < Minitest::Test
         assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason"), name
         assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts"), name
       end
+    end
+  end
+
+  def test_batch_unattributed_tokens_cannot_borrow_the_coordinator_turn
+    assert_batch_component_turn_borrowing_rejected(
+      name: "batch-unattributed-borrows-coordinator-turn",
+      coordinator_turns: 1,
+      batch_unattributed_turns: 0
+    )
+  end
+
+  def test_coordinator_tokens_cannot_borrow_the_batch_unattributed_turn
+    assert_batch_component_turn_borrowing_rejected(
+      name: "coordinator-borrows-batch-unattributed-turn",
+      coordinator_turns: 0,
+      batch_unattributed_turns: 1
+    )
+  end
+
+  def test_valid_coordinator_and_batch_unattributed_turn_components_reconcile_and_replay
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "valid-batch-components", lane_id: "coordinator", tokens: 20)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 10,
+        coordinator_turns: 2,
+        batch_unattributed_tokens: 10,
+        batch_unattributed_turns: 1,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+
+      reconciled, stderr, status = reconcile_receipt(
+        state_path,
+        receipt,
+        "valid-batch-components",
+        completed_reservation_ids: ["valid-batch-components"]
+      )
+      replayed, replay_stderr, replay_status = reconcile_receipt(
+        state_path,
+        receipt,
+        "valid-batch-components",
+        completed_reservation_ids: ["valid-batch-components"]
+      )
+
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      assert_equal 20, reconciled.dig("totals", "aggregate", "consumed_tokens")
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      state = JSON.parse(File.read(state_path))
+      assert_equal 20, state.dig("scopes", "aggregate", "consumed_tokens")
+      assert_equal 1, state.fetch("usage_receipts").length
+      assert_equal 3, state.fetch("usage_receipts").values.first.dig("scope_turns", "coordinator")
     end
   end
 
