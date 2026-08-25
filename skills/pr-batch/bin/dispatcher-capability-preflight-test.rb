@@ -51,7 +51,11 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "lane_state" => {
         "claim" => "claim-a",
         "branch" => "codex/lane-a",
-        "worktree" => "/tmp/lane-a"
+        "worktree" => "/tmp/lane-a",
+        "status" => "in_progress",
+        "terminal" => nil,
+        "closed_at" => nil,
+        "pr_state" => "open"
       }
     }
   end
@@ -562,6 +566,141 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       )
     )
     assert_equal "blocked-replacement-fencing", consumed.fetch("status")
+  end
+
+  def test_terminal_superseded_lane_rejects_replacement_before_proof_consumption
+    original_input = input_for(lane_id: "hc-9972")
+    active = select(original_input).fetch("active_assignments").first.merge("lifecycle" => "active")
+    changed = input_for(lane_id: "hc-9972", candidates: [candidate(instance_id: "remote-2")])
+    terminal_lane_state = changed.fetch("lane_state").merge(
+      "status" => "superseded",
+      "terminal" => "superseded",
+      "closed_at" => "2026-07-24T13:20:04Z",
+      "pr_state" => "open"
+    )
+    fence = dispatch(changed.merge("active_assignments" => [active]))
+    replacement = fence.fetch("prospective_replacement_assignment")
+    proof = replacement_proof(active, replacement)
+
+    output = dispatch(
+      changed.merge(
+        "lane_state" => terminal_lane_state,
+        "active_assignments" => [active],
+        "replacement" => proof
+      )
+    )
+
+    assert_equal "blocked-replacement-terminal-state", output.fetch("status")
+    assert_equal "target-lane-already-terminal", output.fetch("reason")
+    assert_equal "do-not-replace-terminal-lane; reconcile-or-replan", output.fetch("required_action")
+    assert_equal terminal_lane_state, output.fetch("lane_state")
+    refute output.key?("dispatch")
+    refute output.key?("replacement_transition")
+    refute output.key?("replacement_proof_consumption")
+  end
+
+  def test_ready_no_merge_authority_lane_rejects_replacement_before_proof_consumption
+    original_input = input_for(lane_id: "lane-ready")
+    active = select(original_input).fetch("active_assignments").first.merge("lifecycle" => "active")
+    changed = input_for(lane_id: "lane-ready", candidates: [candidate(instance_id: "remote-2")])
+    replacement = dispatch(changed.merge("active_assignments" => [active]))
+                  .fetch("prospective_replacement_assignment")
+    proof = replacement_proof(active, replacement)
+    terminal_lane_state = changed.fetch("lane_state").merge(
+      "status" => "ready_no_merge_authority",
+      "terminal" => nil,
+      "closed_at" => nil,
+      "pr_state" => "open"
+    )
+
+    output = dispatch(
+      changed.merge(
+        "lane_state" => terminal_lane_state,
+        "active_assignments" => [active],
+        "replacement" => proof
+      )
+    )
+
+    assert_equal "blocked-replacement-terminal-state", output.fetch("status")
+    assert_equal "target-lane-already-terminal", output.fetch("reason")
+    refute output.key?("dispatch")
+    refute output.key?("replacement_transition")
+  end
+
+  def test_complete_terminal_lane_facts_block_fresh_dispatch_without_replacement_proof
+    terminal_lane_state = input_for.fetch("lane_state").merge(
+      "status" => "superseded",
+      "terminal" => "superseded",
+      "closed_at" => "2026-07-24T13:20:04Z",
+      "pr_state" => "open"
+    )
+
+    output = dispatch(input_for.merge("lane_state" => terminal_lane_state))
+
+    assert_equal "blocked-replacement-terminal-state", output.fetch("status")
+    assert_equal "target-lane-already-terminal", output.fetch("reason")
+    assert_equal false, output.fetch("resume_goal")
+    assert_empty output.fetch("active_assignments")
+    refute output.key?("dispatch")
+  end
+
+  def test_legacy_partial_terminal_status_blocks_fresh_dispatch_without_replacement_proof
+    terminal_lane_state = { "status" => "superseded" }
+
+    output = dispatch(input_for.merge("lane_state" => terminal_lane_state))
+
+    assert_equal "blocked-replacement-terminal-state", output.fetch("status")
+    assert_equal "target-lane-already-terminal", output.fetch("reason")
+    assert_equal false, output.fetch("resume_goal")
+    assert_empty output.fetch("active_assignments")
+    refute output.key?("dispatch")
+  end
+
+  def test_initial_launch_accepts_legacy_missing_or_partial_lane_state
+    cases = {
+      "missing lane_state" => input_for.tap { |input| input.delete("lane_state") },
+      "partial lane_state" => input_for.merge("lane_state" => { "claim" => "claim-a", "status" => "planned" })
+    }
+
+    cases.each do |label, input|
+      output = dispatch(input)
+
+      assert_equal "selected", output.fetch("status"), label
+      assert_equal true, output.fetch("resume_goal"), label
+    end
+  end
+
+  def test_replacement_fails_closed_when_terminal_facts_are_missing_or_unknown
+    original_input = input_for(lane_id: "hc-9972")
+    active = select(original_input).fetch("active_assignments").first.merge("lifecycle" => "active")
+    changed = input_for(lane_id: "hc-9972", candidates: [candidate(instance_id: "remote-2")])
+    replacement = dispatch(changed.merge("active_assignments" => [active]))
+                  .fetch("prospective_replacement_assignment")
+    proof = replacement_proof(active, replacement)
+    known_state = changed.fetch("lane_state")
+    cases = {
+      "missing terminal" => known_state.reject { |key, _value| key == "terminal" },
+      "unknown status" => known_state.merge("status" => "UNKNOWN"),
+      "unknown terminal" => known_state.merge("terminal" => "UNKNOWN"),
+      "unknown closed_at" => known_state.merge("closed_at" => "UNKNOWN"),
+      "unknown pr_state" => known_state.merge("pr_state" => "UNKNOWN")
+    }
+
+    cases.each do |label, lane_state|
+      output = dispatch(
+        changed.merge(
+          "lane_state" => lane_state,
+          "active_assignments" => [active],
+          "replacement" => proof
+        )
+      )
+
+      assert_equal "blocked-replacement-terminal-state", output.fetch("status"), label
+      assert_equal "target-lane-terminal-state-unknown", output.fetch("reason"), label
+      assert_equal "refresh-targeted-lane-state-before-replacement", output.fetch("required_action"), label
+      refute output.key?("dispatch"), label
+      refute output.key?("replacement_transition"), label
+    end
   end
 
   def test_replacement_proof_is_bound_to_exact_prior_and_replacement_identity

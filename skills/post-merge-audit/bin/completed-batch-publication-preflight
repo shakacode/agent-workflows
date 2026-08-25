@@ -33,7 +33,7 @@ module CompletedBatchPublicationPreflight
   QA_WAIVER_MARKER = "qa-maintainer-waiver v1"
   HOSTED_QA_WAIVER_MARKER = "hosted-qa-maintainer-waiver v1"
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
-  RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned superseded].freeze
+  RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
   DEFAULT_GH_TIMEOUT_SECONDS = 60
   COORDINATION_TIMEOUT_SECONDS = 20
@@ -593,9 +593,15 @@ module CompletedBatchPublicationPreflight
         "target" => target,
         "state" => state,
         "completed_at" => verified_shape ? verified.fetch("completed_at") : nil,
-        "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
+        "verification_source" => verified_shape ? verified.fetch("verification_source") : nil,
+        "no_pr_evidence" => no_pr_evidence
       }
       authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
+      if lane&.fetch("terminal", nil) == "superseded" &&
+         authenticated_terminal_completion?(verified_target_facts) &&
+         !typed_no_pr_issue_supersession?(lane, verified_target_facts)
+        blockers << "#{target_label(target)} premature terminal supersession / replacement protocol violation"
+      end
       if lane_state && state && lane_state != state && !authenticated_later_completion
         blockers << "#{target_label(target)} coordination and target state disagree"
       end
@@ -950,7 +956,33 @@ module CompletedBatchPublicationPreflight
 
   def authenticated_later_target_completion?(lane, target_snapshot)
     return false unless valid_terminal_lane?(lane)
-    return false unless RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"])
+    return false unless RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"]) ||
+                        typed_no_pr_issue_supersession?(lane, target_snapshot)
+
+    authenticated_target_completed_after_lane?(lane, target_snapshot)
+  end
+
+  def typed_no_pr_issue_supersession?(lane, target_snapshot)
+    target = validated_target(target_snapshot&.fetch("target", nil))
+    lane&.fetch("terminal", nil) == "superseded" &&
+      target&.fetch("type", nil) == "issue" &&
+      target_snapshot["no_pr_evidence"].is_a?(Hash)
+  end
+
+  def authenticated_terminal_completion?(target_snapshot)
+    return false unless target_snapshot.is_a?(Hash)
+
+    target = validated_target(target_snapshot["target"])
+    return false unless target
+
+    expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+    target_snapshot["state"] == expected_state &&
+      target_snapshot["verification_source"] == "authenticated gh api" &&
+      valid_timestamp?(target_snapshot["completed_at"])
+  end
+
+  def authenticated_target_completed_after_lane?(lane, target_snapshot)
+    return false unless valid_terminal_lane?(lane)
     return false unless target_snapshot.is_a?(Hash)
 
     target = validated_target(target_snapshot["target"])
