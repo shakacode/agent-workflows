@@ -57,7 +57,8 @@ module AgentWorkflowWritingStyle
     structure_error = writing_style_structure_error(yaml)
     raise ConfigurationError, "invalid #{label} writing_style: #{structure_error}" if structure_error
 
-    YAML.safe_load(yaml, aliases: false) || {}
+    config = YAML.safe_load(yaml, aliases: false)
+    config.nil? ? {} : config
   rescue Psych::Exception, EncodingError, SystemCallError => e
     raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
   end

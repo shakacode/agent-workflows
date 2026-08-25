@@ -87,6 +87,29 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
     end
   end
 
+  def test_empty_repository_document_still_falls_back_to_user_global_guide
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.write(File.join(repo_root, ".agents", "agent-workflow.yml"), "")
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style:\n  guide: Personal readable style.\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "user-global", result.fetch("provenance")
+      assert_equal "Personal readable style.", result.fetch("guide")
+      assert_equal [], result.fetch("warnings")
+      assert_empty stderr
+    end
+  end
+
   def test_malformed_explicit_repository_value_blocks_instead_of_falling_back
     Dir.mktmpdir do |directory|
       repo_root = File.join(directory, "repo")
@@ -108,6 +131,28 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       assert_empty stdout
       assert_includes stderr, "invalid repository writing_style"
       assert_includes stderr, "closed mapping containing only a nonblank string guide"
+      refute_includes stderr, "User fallback must not be used"
+    end
+  end
+
+  def test_top_level_false_repository_config_blocks_instead_of_falling_back
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.write(File.join(repo_root, ".agents", "agent-workflow.yml"), "false\n")
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style:\n  guide: User fallback must not be used.\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style configuration"
+      assert_includes stderr, "expected a top-level mapping"
       refute_includes stderr, "User fallback must not be used"
     end
   end
@@ -134,6 +179,27 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       assert_includes stderr, "WARNING: invalid user-global writing_style"
       assert_includes stderr, "Fix or remove"
       assert_includes stderr, File.join(home, ".agents", "agent-workflow.yml")
+    end
+  end
+
+  def test_top_level_false_user_global_config_warns_and_falls_back_to_default
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      Dir.mkdir(repo_root)
+      File.write(File.join(home, ".agents", "agent-workflow.yml"), "false\n")
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "portable-default", result.fetch("provenance")
+      assert_includes result.fetch("guide"), "Lead with the outcome"
+      assert_equal 1, result.fetch("warnings").length
+      assert_includes result.fetch("warnings").first, "expected a top-level mapping"
+      assert_includes stderr, "WARNING: invalid user-global writing_style configuration"
+      refute_includes stdout, "false"
     end
   end
 
