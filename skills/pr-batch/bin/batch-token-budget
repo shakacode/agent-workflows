@@ -33,6 +33,7 @@ module BatchTokenBudget
     (?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)
     \z
   /ix
+  TRUSTED_PLAN_MAX_BYTES = 1024 * 1024
 
   class InvalidInput < StandardError; end
   class DuplicateJSONKey < StandardError; end
@@ -230,7 +231,10 @@ module BatchTokenBudget
       raise InvalidInput, "trusted-plan-digest-invalid"
     end
 
-    budget = parse_json_strict(File.read(path, encoding: "UTF-8"))
+    trusted_plan_json = File.read(path, TRUSTED_PLAN_MAX_BYTES + 1, encoding: "UTF-8")
+    raise InvalidInput, "trusted-plan-oversized" if trusted_plan_json.bytesize > TRUSTED_PLAN_MAX_BYTES
+
+    budget = parse_json_strict(trusted_plan_json)
     raise InvalidInput, "trusted-plan-contract-invalid" unless valid_budget?(budget)
     raise InvalidInput, "trusted-plan-id-mismatch" unless budget["batch_id"] == expected_id
     raise InvalidInput, "trusted-plan-digest-mismatch" unless trusted_plan_digest(budget) == expected_digest
