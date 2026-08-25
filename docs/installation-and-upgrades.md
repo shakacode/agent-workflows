@@ -623,6 +623,11 @@ The held phase requires an `in_progress` check run with GitHub's `started_at`
 field explicitly present and null. A start timestamp, missing or malformed
 phase evidence, or another pending/queued state remains blocking.
 
+`--trusted-repo-root` requires the exact live base commit object locally even
+when `ci_readiness` is omitted or `n/a`. A shallow or PR-branch-only checkout
+must fetch that exact base commit (or unshallow the repository) first; an
+unavailable base object fails closed.
+
 The upgraded pack also supplies `skills/pr-batch/bin/diff-identity`. Replace
 opaque or locally invented digests with this helper before creating new
 walkthrough, approval, or merge-context evidence. Existing evidence made for an
