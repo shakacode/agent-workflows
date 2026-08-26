@@ -88,6 +88,8 @@ review_gate:
       artifact:
         actors: [claude, "claude[bot]"]
         kinds: [pull_request_review, review_thread]
+        completion:
+          mode: producer_check
   require_current_head: true
   artifact_settlement:
     required: true
@@ -108,7 +110,10 @@ hard-block alternate artifact kinds until a later acceptable formal review
 supersedes them. The configured check must come from the named producer: the
 check-run app and exact workflow run must match, the run must bind to the
 expected head and event, and the workflow file at that head must be
-byte-identical to its exact trusted-base version. The gate blocks missing,
+byte-identical to its exact trusted-base version. Optional
+`completion.mode: producer_check` treats that verified producer check as the
+completion artifact; unrelated reviews from its workflow bot never qualify.
+The gate blocks missing,
 stale, pending,
 failed, unsettled, or unknown evidence and unresolved current-head review
 threads. A fallback must instead use

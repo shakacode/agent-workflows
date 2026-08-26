@@ -28,7 +28,10 @@ module AgentWorkflowSeamDoctorTestHelpers
         },
         "artifact" => {
           "actors" => %w[claude claude[bot]],
-          "kinds" => %w[pull_request_review review_thread]
+          "kinds" => %w[pull_request_review review_thread],
+          "completion" => {
+            "mode" => "producer_check"
+          }
         }
       }
     ],
@@ -518,6 +521,9 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     fixtures = {
       "reviewers[0].producer" => ->(gate) { gate.dig("reviewers", 0, "producer")[1] = "bad" },
       "reviewers[0].artifact" => ->(gate) { gate.dig("reviewers", 0, "artifact")[1] = "bad" },
+      "reviewers[0].artifact.completion" => lambda do |gate|
+        gate.dig("reviewers", 0, "artifact", "completion")[1] = "bad"
+      end,
       "artifact_settlement" => ->(gate) { gate["artifact_settlement"][1] = "bad" },
       "thread_disposition" => ->(gate) { gate["thread_disposition"][1] = "bad" },
       "fallback" => ->(gate) { gate["fallback"][1] = "bad" }

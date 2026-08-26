@@ -3354,8 +3354,10 @@ that override explicit.
 
 The replayable receipt binds the canonical host, repository, PR number, base
 branch and SHA, head SHA, trusted policy digest, and semantic artifact-settlement
-snapshot. `pr-merge-submit` collects live state and replays the receipt
-immediately before every parent-owned direct merge or enqueue mutation. Any
+snapshot. `pr-merge-submit` collects at least two matching live observations
+across the trusted-base quiet period, then replays the receipt immediately
+before every parent-owned direct merge or enqueue mutation; a caller-supplied
+receipt or digest cannot assert settlement. Any
 moved base or head, newly pending review, changed settlement evidence, or newly
 untriaged current-head thread rejects the submission. A consumer-owned guard
 has no versioned mutation-adjacent replay protocol; the guarded-direct

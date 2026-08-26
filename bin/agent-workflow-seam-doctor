@@ -146,7 +146,9 @@ module AgentWorkflowSeamDoctor
   REVIEW_GATE_FALLBACK_MODES = %w[disabled named_attested_check].freeze
   REVIEW_GATE_REVIEWER_KEYS = %w[id check_name producer artifact].freeze
   REVIEW_GATE_PRODUCER_KEYS = %w[app_slug workflow_path event].freeze
-  REVIEW_GATE_ARTIFACT_KEYS = %w[actors kinds].freeze
+  REVIEW_GATE_ARTIFACT_KEYS = %w[actors kinds completion].freeze
+  REVIEW_GATE_ARTIFACT_REQUIRED_KEYS = %w[actors kinds].freeze
+  REVIEW_GATE_COMPLETION_KEYS = %w[mode].freeze
   REVIEW_GATE_ARTIFACT_KINDS = %w[pull_request_review review_thread].freeze
   REVIEW_GATE_SETTLEMENT_KEYS = %w[required quiet_period_seconds].freeze
   REVIEW_GATE_THREAD_DISPOSITION_KEYS = %w[required marker].freeze
@@ -1882,7 +1884,15 @@ module AgentWorkflowSeamDoctor
   def review_gate_artifact_errors(artifact, path)
     return ["#{path} must be a closed mapping"] unless artifact.is_a?(Hash)
 
-    errors = review_gate_mapping_key_errors(artifact, REVIEW_GATE_ARTIFACT_KEYS, path)
+    errors = []
+    if artifact.keys.all? { |key| key.is_a?(String) }
+      unknown_keys = artifact.keys - REVIEW_GATE_ARTIFACT_KEYS
+      missing_keys = REVIEW_GATE_ARTIFACT_REQUIRED_KEYS - artifact.keys
+      errors << "#{path} contains unknown keys: #{unknown_keys.sort.join(', ')}" unless unknown_keys.empty?
+      errors << "#{path} is missing keys: #{missing_keys.sort.join(', ')}" unless missing_keys.empty?
+    else
+      errors << "#{path} keys must be strings"
+    end
     actors = artifact["actors"]
     unless actors.is_a?(Array) && !actors.empty? && actors.all? do |actor|
              actor.is_a?(String) && actor.match?(REVIEW_GATE_ACTOR_PATTERN)
@@ -1893,6 +1903,13 @@ module AgentWorkflowSeamDoctor
     unless kinds.is_a?(Array) && !kinds.empty? &&
            kinds.all? { |kind| REVIEW_GATE_ARTIFACT_KINDS.include?(kind) }
       errors << "#{path}.kinds contains an invalid kind"
+    end
+    completion = artifact["completion"]
+    if completion.is_a?(Hash)
+      errors.concat(review_gate_mapping_key_errors(completion, REVIEW_GATE_COMPLETION_KEYS, "#{path}.completion"))
+      errors << "#{path}.completion.mode must be producer_check" unless completion["mode"] == "producer_check"
+    elsif artifact.key?("completion")
+      errors << "#{path}.completion must be a closed mapping"
     end
     errors
   end

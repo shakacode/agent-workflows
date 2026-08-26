@@ -1407,6 +1407,14 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "mergePullRequest"
   end
 
+  def test_default_configured_review_replay_requires_live_quiet_period_settlement
+    source = File.read(SCRIPT)
+
+    assert_includes source, "ConfiguredReviewGate::LiveEvaluator.new("
+    assert_includes source, 'snapshot: settled_result.fetch("receipt").fetch("evidence")'
+    refute_match(/ConfiguredReviewGate\.replay\([\s\S]*?snapshot: client\.collect/, source)
+  end
+
   def test_unavailable_merge_assurance_receipt_stops_before_any_gh_call
     result, log = run_cli(mode: "direct", receipt_mode: :missing)
 
@@ -1571,7 +1579,10 @@ class PrMergeSubmitTest < Minitest::Test
         },
         "artifact" => {
           "actors" => %w[claude claude[bot]],
-          "kinds" => %w[pull_request_review review_thread]
+          "kinds" => %w[pull_request_review review_thread],
+          "completion" => {
+            "mode" => "producer_check"
+          }
         }
       }],
       "require_current_head" => true,

@@ -109,7 +109,9 @@ settlement, required thread dispositions, `failure_policy: block`, and an
 explicit fallback mode. Producer identity binds a qualifying check to its
 GitHub App and exact Actions workflow run; the workflow file at the PR head
 must match the exact trusted-base blob. Actor values are exact GitHub logins.
-Only
+Optional artifact `completion.mode: producer_check` can use the independently
+verified producer check as the completion artifact without trusting generic
+workflow-bot reviews. Only
 `pull_request_review` and `review_thread` can be
 configured because issue comments have no exact-head attribution. For each
 actor, only its latest current-head pull-request review qualifies, and only in

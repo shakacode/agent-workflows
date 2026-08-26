@@ -22,6 +22,8 @@ review_gate: "n/a"
 #       artifact:
 #         actors: ["configured-reviewer[bot]"]
 #         kinds: [pull_request_review, review_thread]
+#         completion:
+#           mode: producer_check
 #   require_current_head: true
 #   artifact_settlement:
 #     required: true

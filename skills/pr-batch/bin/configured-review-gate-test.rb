@@ -149,6 +149,12 @@ class ConfiguredReviewGateTest < Minitest::Test
     }
   end
 
+  def policy_with_producer_completion
+    configured = Marshal.load(Marshal.dump(policy))
+    configured.dig("reviewers", 0, "artifact")["completion"] = { "mode" => "producer_check" }
+    configured
+  end
+
   def check(
     name: "claude-review", status: "completed", conclusion: "success",
     head_sha: HEAD_SHA, output: "review complete", producer: trusted_producer
@@ -182,7 +188,7 @@ class ConfiguredReviewGateTest < Minitest::Test
 
   def artifact(
     id: "1", kind: "pull_request_review", actor: "claude", head_sha: HEAD_SHA,
-    created_at: "2026-08-25T11:59:10Z", state: "COMMENTED"
+    created_at: "2026-08-25T11:59:10Z", state: "COMMENTED", body: nil
   )
     record = {
       "id" => id,
@@ -193,7 +199,29 @@ class ConfiguredReviewGateTest < Minitest::Test
       "head_sha" => head_sha
     }
     record["state"] = state if kind == "pull_request_review"
+    record["body"] = body if body
     record
+  end
+
+  def test_producer_bound_completion_artifact_qualifies_without_inline_review
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy_with_producer_completion, policy_source: JSON.generate(policy_with_producer_completion),
+      snapshot: snapshot("checks" => [check], "artifacts" => []),
+      settled: true, now: NOW
+    )
+
+    assert_equal "READY", result.fetch("verdict")
+  end
+
+  def test_unrelated_github_actions_review_does_not_qualify
+    unrelated = artifact(actor: "github-actions[bot]", body: "Looks good")
+    result = ConfiguredReviewGate.evaluate(
+      policy:, policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [unrelated]),
+      settled: true, now: NOW
+    )
+
+    assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code")
   end
 
   def thread(id:, resolved: false, head_sha: HEAD_SHA, comments: [])
@@ -508,6 +536,23 @@ class ConfiguredReviewGateTest < Minitest::Test
       end
     end
     client = client_class.new(policy: policy, threads: [])
+
+    collected = client.collect
+
+    assert_empty collected.fetch("artifacts")
+  end
+
+  def test_live_collector_rejects_generic_workflow_bot_completion_review
+    review = {
+      "id" => 99,
+      "user" => { "login" => "github-actions[bot]" },
+      "submitted_at" => "2026-08-25T11:59:10Z",
+      "html_url" => "https://github.com/example/widgets/pull/42#pullrequestreview-99",
+      "commit_id" => HEAD_SHA,
+      "state" => "COMMENTED",
+      "body" => "Claude review completed for exact head #{HEAD_SHA}."
+    }
+    client = FakeGitHubApiClient.new(policy: policy_with_producer_completion, threads: [], reviews: [review])
 
     collected = client.collect
 
@@ -938,6 +983,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy: policy,
       policy_source: JSON.generate(policy),
       snapshot: replay_snapshot,
+      settled: true,
       now: NOW + 20,
       trusted_live: true
     )
@@ -1051,7 +1097,7 @@ class ConfiguredReviewGateTest < Minitest::Test
     end
   end
 
-  def test_replay_rejects_a_refreshed_top_level_issued_at
+  def test_replay_rejects_a_self_minted_refreshed_receipt_without_live_settlement
     initial = live_snapshot("checks" => [check], "artifacts" => [artifact])
     receipt = ConfiguredReviewGate.evaluate(
       policy: policy,
@@ -1063,6 +1109,7 @@ class ConfiguredReviewGateTest < Minitest::Test
     ).fetch("receipt")
     replay_now = NOW + 301
     receipt["issued_at"] = replay_now.iso8601
+    receipt["evidence_digest"] = ConfiguredReviewGate.receipt_evidence_digest(receipt)
 
     result = ConfiguredReviewGate.replay(
       receipt: receipt,
@@ -1077,8 +1124,8 @@ class ConfiguredReviewGateTest < Minitest::Test
       trusted_live: true
     )
 
-    assert_equal "UNKNOWN", result.fetch("verdict")
-    assert_equal "configured-review-receipt-evidence-digest-mismatch",
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-artifact-unsettled",
                  result.dig("blockers", 0, "code")
   end
 
@@ -1102,6 +1149,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy: policy,
       policy_source: JSON.generate(policy),
       snapshot: pending,
+      settled: true,
       now: NOW + 20,
       trusted_live: true
     )
@@ -1115,6 +1163,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy: policy,
       policy_source: JSON.generate(policy),
       snapshot: untriaged,
+      settled: true,
       now: NOW + 20,
       trusted_live: true
     )

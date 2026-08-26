@@ -1502,8 +1502,19 @@ module PrMergeSubmit
         host: options.fetch(:host), repo: options.fetch(:repo),
         pull_request_number: options.fetch(:pr).to_i, policy:
       )
+      settled_result = ConfiguredReviewGate::LiveEvaluator.new(
+        client:, policy:, policy_source:,
+        expected_base_sha: base_sha,
+        expected_head_sha: options.fetch(:expected_head),
+        wait_seconds: 900,
+        poll_seconds: 10
+      ).run
+      return settled_result unless settled_result["verdict"] == "READY"
+
       ConfiguredReviewGate.replay(
-        receipt:, policy:, policy_source:, snapshot: client.collect, trusted_live: true
+        receipt:, policy:, policy_source:,
+        snapshot: settled_result.fetch("receipt").fetch("evidence"),
+        settled: true, trusted_live: true
       )
     end
 

@@ -375,8 +375,8 @@ module ConfiguredReviewGate
     def artifact_configured?(actor, kind)
       all_reviewers.any? do |reviewer|
         artifact = reviewer["artifact"]
-        Array(artifact&.fetch("actors", nil)).include?(actor) &&
-          Array(artifact&.fetch("kinds", nil)).include?(kind)
+        configured_actor = Array(artifact&.fetch("actors", nil)).include?(actor)
+        configured_actor && Array(artifact&.fetch("kinds", nil)).include?(kind)
       end
     end
 
@@ -652,7 +652,7 @@ module ConfiguredReviewGate
     receipt
   end
 
-  def replay(receipt:, policy:, policy_source:, snapshot:, now: Time.now.utc, trusted_live: false)
+  def replay(receipt:, policy:, policy_source:, snapshot:, settled: false, now: Time.now.utc, trusted_live: false)
     validate_snapshot!(snapshot)
     receipt_error = receipt_validation_error(receipt, policy, policy_source, now, trusted_live:)
     return replay_blocked("UNKNOWN", receipt_error) if receipt_error
@@ -660,7 +660,7 @@ module ConfiguredReviewGate
       return replay_blocked("NOT_READY", "configured-review-receipt-binding-mismatch")
     end
 
-    current = evaluate(policy:, policy_source:, snapshot:, settled: true, now:, trusted_live:)
+    current = evaluate(policy:, policy_source:, snapshot:, settled:, now:, trusted_live:)
     return current unless current["verdict"] == "READY"
     unless receipt.dig("artifact_settlement", "snapshot_digest") == semantic_snapshot_digest(snapshot)
       return replay_blocked("NOT_READY", "configured-review-receipt-artifact-snapshot-moved")
@@ -884,8 +884,15 @@ module ConfiguredReviewGate
           timestamp_at_or_after?(artifact["created_at"], check["started_at"]) &&
           qualifying_review_artifact?(artifact, latest_reviews)
       end
+      present ||= producer_check_completion?(artifact_policy, reviewer, check, head_sha)
       blocker("configured-review-artifact-missing", reviewer, check, "missing") unless present
     end
+  end
+
+  def producer_check_completion?(artifact_policy, reviewer, check, head_sha)
+    completion = artifact_policy["completion"]
+    completion.is_a?(Hash) && completion["mode"] == "producer_check" &&
+      classify_producer_blocker(reviewer, check, head_sha).nil?
   end
 
   def latest_current_head_reviews_by_actor(artifacts, head_sha)
@@ -1098,9 +1105,19 @@ module ConfiguredReviewGate
         host: options.fetch(:host), repo: options.fetch(:repo),
         pull_request_number: options.fetch(:pr), policy:
       )
-      snapshot = client.collect
+      binding = receipt.fetch("bindings")
+      settled_result = LiveEvaluator.new(
+        client:, policy:, policy_source:,
+        expected_base_sha: binding.fetch("base_sha"),
+        expected_head_sha: binding.fetch("head_sha"),
+        wait_seconds: options.fetch(:wait_seconds),
+        poll_seconds: options.fetch(:poll_seconds)
+      ).run
+      return emit_result(settled_result) unless settled_result["verdict"] == "READY"
+
+      snapshot = settled_result.fetch("receipt").fetch("evidence")
       result = ConfiguredReviewGate.replay(
-        receipt:, policy:, policy_source:, snapshot:, trusted_live: true
+        receipt:, policy:, policy_source:, snapshot:, settled: true, trusted_live: true
       )
       emit_result(result)
     end
@@ -1125,14 +1142,14 @@ module ConfiguredReviewGate
       raise ArgumentError, "--host is invalid" unless options[:host].to_s.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d+)?\z/)
       raise ArgumentError, "--repo-root is required" if options[:repo_root].to_s.empty?
       raise ArgumentError, "--receipt is required" if options[:receipt].to_s.empty?
+      raise ArgumentError, "--wait-seconds must be between 0 and 3600" unless options[:wait_seconds].between?(0, 3600)
+      raise ArgumentError, "--poll-seconds must be between 1 and 300" unless options[:poll_seconds].between?(1, 300)
 
       if evaluate
         %i[expected_base_sha expected_head_sha].each do |key|
           raise ArgumentError, "--#{key.to_s.tr('_', '-')} must be a full commit SHA" unless
             options[key].to_s.match?(/\A[0-9a-f]{40}\z/)
         end
-        raise ArgumentError, "--wait-seconds must be between 0 and 3600" unless options[:wait_seconds].between?(0, 3600)
-        raise ArgumentError, "--poll-seconds must be between 1 and 300" unless options[:poll_seconds].between?(1, 300)
       end
       options
     end
