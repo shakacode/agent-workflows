@@ -906,7 +906,8 @@ module PushDownstream
       end
 
       current = clone_root
-      relative_path.split(File::SEPARATOR).each do |component|
+      components = relative_path.split(File::SEPARATOR)
+      components.each_with_index do |component, index|
         current = File.join(current, component)
         begin
           stat = File.lstat(current)
@@ -914,6 +915,9 @@ module PushDownstream
           break
         end
         raise "managed scaffold path contains a symlink: #{relative_path}" if stat.symlink?
+        if index == components.length - 1 && !stat.file?
+          raise "managed scaffold path is not a regular file: #{relative_path}"
+        end
       end
     end
     true
@@ -945,7 +949,13 @@ module PushDownstream
           end
           next
         end
-        next unless stat.directory?
+        unless stat.directory?
+          if current.b.end_with?(".md".b) && !stat.file?
+            displayed = audit_display_path(current.delete_prefix("#{clone_root}#{File::SEPARATOR}"))
+            raise "audit read path is not a regular file: #{displayed}"
+          end
+          next
+        end
 
         Dir.each_child(current) { |entry| pending << File.join(current, entry) }
       end

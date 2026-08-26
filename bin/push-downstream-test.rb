@@ -1188,6 +1188,41 @@ class PushDownstreamScaffoldTest < Minitest::Test
     end
   end
 
+  def test_apply_scaffold_rejects_managed_path_fifo_before_writing
+    Dir.mktmpdir("push-downstream-apply-fifo") do |root|
+      agents_path = File.join(root, "AGENTS.md")
+      system("mkfifo", agents_path) || raise("mkfifo failed")
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.reconcile_scaffold(root, CONTRACT)
+      end
+
+      assert_includes error.message, "managed scaffold path is not a regular file"
+      refute Dir.exist?(File.join(root, ".agents")), "validation must run before the first managed write"
+    ensure
+      File.unlink(agents_path) if agents_path && File.exist?(agents_path)
+    end
+  end
+
+  def test_apply_scaffold_rejects_doctor_read_fifo_before_writing
+    Dir.mktmpdir("push-downstream-apply-doctor-fifo") do |root|
+      skill_dir = File.join(root, ".agents/skills/hostile")
+      FileUtils.mkdir_p(skill_dir)
+      skill_path = File.join(skill_dir, "SKILL.md")
+      system("mkfifo", skill_path) || raise("mkfifo failed")
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.reconcile_scaffold(root, CONTRACT)
+      end
+
+      assert_includes error.message, "audit read path is not a regular file"
+      refute_path_exists File.join(root, "AGENTS.md")
+      refute Dir.exist?(File.join(root, ".agents/bin")), "validation must run before the first managed write"
+    ensure
+      File.unlink(skill_path) if skill_path && File.exist?(skill_path)
+    end
+  end
+
   def test_apply_scaffold_allows_non_markdown_symlink_the_doctor_does_not_read
     Dir.mktmpdir("push-downstream-apply-helper-symlink") do |root|
       skill_dir = File.join(root, ".agents/skills/example")
