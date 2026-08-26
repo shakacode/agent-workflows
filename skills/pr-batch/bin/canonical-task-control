@@ -3,6 +3,8 @@
 
 require "json"
 require "digest"
+require "open3"
+require "rbconfig"
 require "time"
 require "yaml"
 
@@ -22,6 +24,7 @@ module CanonicalTaskControl
   MAX_CHECKPOINTS = 32
   MAX_CHILDREN = 16
   MAX_CHILD_RECEIPT_BYTES = 65_536
+  BATCH_TOKEN_BUDGET_HELPER = File.expand_path("batch-token-budget", __dir__)
   PRESERVED_GATES = %w[security review qa exact-head ownership merge].freeze
   FRESH_EVIDENCE_CONTRACTS = %w[
     authority-evidence adhoc-authority-evidence budget-evidence typed-gate-evidence
@@ -170,10 +173,11 @@ module CanonicalTaskControl
     ValidateReviewFindings
   end
 
-  def run(input, capabilities:, trusted_users:, bundle_window:, review_validator:)
+  def run(input, capabilities:, trusted_users:, bundle_window:, review_validator:, trusted_root:)
     @trusted_users = trusted_users
     @bundle_window = bundle_window.map { |value| parse_time!(value, "bundle validity") }
     @review_validator = review_validator
+    @trusted_root = trusted_root
     raise InvalidInput, "top-level JSON must be an object" unless input.is_a?(Hash)
 
     operation = input["operation"]
@@ -1528,15 +1532,45 @@ module CanonicalTaskControl
       contract: "authority-evidence", action: "authorize_multi_target_supervision",
       allowed_roles: %w[maintainer]
     )
-    validate_hierarchical_budget_plan!(exception["budget_plan"], task)
     anchor = exception["budget_plan_anchor"]
     require_exact_keys!(anchor, %w[trusted_plan_path trusted_plan_id trusted_plan_digest])
-    unless anchor["trusted_plan_path"].to_s.start_with?("/") && anchor["trusted_plan_id"] == exception.dig("budget_plan", "batch_id")
-      raise InvalidInput, "budget plan anchor binding mismatch"
+    trusted_plan = load_trusted_budget_plan!(anchor)
+    unless canonicalize(exception["budget_plan"]) == trusted_plan
+      raise InvalidInput, "embedded budget plan does not match trusted external plan"
     end
-    return if anchor["trusted_plan_digest"] == canonical_digest(exception["budget_plan"])
 
-    raise InvalidInput, "budget plan digest mismatch"
+    validate_hierarchical_budget_plan!(trusted_plan, task)
+  end
+
+  def load_trusted_budget_plan!(anchor)
+    real_path = secure_file_under_root!(anchor["trusted_plan_path"], @trusted_root, "trusted budget plan")
+    stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby, BATCH_TOKEN_BUDGET_HELPER,
+      "--state", real_path,
+      "--trusted-plan", real_path,
+      "--trusted-plan-id", anchor["trusted_plan_id"].to_s,
+      "--trusted-plan-digest", anchor["trusted_plan_digest"].to_s,
+      stdin_data: "{}"
+    )
+    production_error = begin
+      JSON.parse(stderr).fetch("reason")
+    rescue JSON::ParserError, KeyError
+      "invalid-production-helper-result"
+    end
+    unless !status.success? && stdout.empty? && production_error == "state-path-mismatch"
+      raise InvalidInput, "trusted budget plan rejected: #{production_error}"
+    end
+
+    plan = JSON.parse(File.read(real_path, encoding: "UTF-8"))
+    canonical_plan = canonicalize(plan)
+    unless anchor["trusted_plan_id"] == canonical_plan["batch_id"] &&
+           anchor["trusted_plan_digest"] == canonical_digest(canonical_plan)
+      raise InvalidInput, "trusted budget plan binding changed during validation"
+    end
+
+    canonical_plan
+  rescue JSON::ParserError
+    raise InvalidInput, "trusted budget plan malformed after validation"
   end
 
   def validate_hierarchical_budget_plan!(budget, task)
@@ -1758,7 +1792,8 @@ begin
   materialized, trusted_binding, capabilities = CanonicalTaskControl.materialize_request(input, trusted, trusted_id)
   decision = CanonicalTaskControl.run(
     materialized, capabilities: capabilities, trusted_users: trusted_users,
-                  bundle_window: trusted.values_at("issued_at", "expires_at"), review_validator: review_validator
+                  bundle_window: trusted.values_at("issued_at", "expires_at"), review_validator: review_validator,
+                  trusted_root: trusted_root
   )
   decision["trusted_evidence_id"] = trusted_id
   decision["trusted_evidence_binding"] = trusted_binding

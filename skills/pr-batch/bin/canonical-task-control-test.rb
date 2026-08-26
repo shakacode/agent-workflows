@@ -6,6 +6,7 @@ require "digest"
 require "fileutils"
 require "minitest/autorun"
 require "open3"
+require "openssl"
 require "tempfile"
 require "time"
 
@@ -14,8 +15,18 @@ REPO_ROOT = File.expand_path("../../..", __dir__)
 REVIEW_VALIDATOR = File.join(REPO_ROOT, "bin", "validate-review-findings")
 TEST_TMP_ROOT = File.join(REPO_ROOT, ".tmp", "canonical-task-control-tests")
 FileUtils.mkdir_p(TEST_TMP_ROOT)
+TEST_BUDGET_VERIFIER_KEY = OpenSSL::PKey::RSA.generate(2048)
 
 class CanonicalTaskControlTest < Minitest::Test
+  def setup
+    @trusted_plan_paths = []
+    @trusted_plan_sequence = 0
+  end
+
+  def teardown
+    @trusted_plan_paths.each { |path| FileUtils.rm_f(path) }
+  end
+
   def test_launch_rejects_a_bare_task_without_composite_gate_evidence
     _result, stderr, status = run_helper(base_input, trusted: false)
 
@@ -245,7 +256,82 @@ class CanonicalTaskControlTest < Minitest::Test
     _result, stderr, status = run_helper(launch_input(task))
 
     refute status.success?, "mismatched hierarchical budget digest unexpectedly allowed multi-target launch"
-    assert_includes stderr, "budget plan digest mismatch"
+    assert_includes stderr, "trusted-plan-digest-mismatch"
+  end
+
+  def test_multi_target_exception_requires_the_external_coordinator_budget_plan
+    task = multi_target_task
+    FileUtils.rm_f(task.dig("exception", "budget_plan_anchor", "trusted_plan_path"))
+
+    _result, stderr, status = run_helper(launch_input(task))
+
+    refute status.success?, "nonexistent external budget plan unexpectedly allowed multi-target launch"
+    assert_includes stderr, "trusted budget plan unreadable"
+
+    task = multi_target_task
+    task["exception"]["budget_plan"]["scopes"]["aggregate"]["limit_tokens"] += 1
+    task["exception"]["budget_plan_anchor"]["trusted_plan_digest"] = findings_digest(
+      task["exception"]["budget_plan"]
+    )
+
+    _result, stderr, status = run_helper(launch_input(task))
+
+    refute status.success?, "caller-substituted embedded budget plan unexpectedly allowed multi-target launch"
+    assert_includes stderr, "trusted budget plan rejected"
+
+    task = multi_target_task
+    Tempfile.create(["substituted-budget-plan", ".json"]) do |outside|
+      outside.write(JSON.generate(canonicalize(task.dig("exception", "budget_plan"))))
+      outside.flush
+      task["exception"]["budget_plan_anchor"]["trusted_plan_path"] = outside.path
+
+      _result, stderr, status = run_helper(launch_input(task))
+
+      refute status.success?, "outside-root substituted plan path unexpectedly allowed multi-target launch"
+      assert_includes stderr, "inside trusted evidence root"
+    end
+
+    task = multi_target_task
+    trusted_path = task.dig("exception", "budget_plan_anchor", "trusted_plan_path")
+    symlink_path = File.join(TEST_TMP_ROOT, "budget-plan-#{Process.pid}-symlink.json")
+    File.symlink(trusted_path, symlink_path)
+    @trusted_plan_paths << symlink_path
+    task["exception"]["budget_plan_anchor"]["trusted_plan_path"] = symlink_path
+
+    _result, stderr, status = run_helper(launch_input(task))
+
+    refute status.success?, "symlink-substituted plan path unexpectedly allowed multi-target launch"
+    assert_includes stderr, "may not be a symlink"
+  end
+
+  def test_multi_target_exception_rejects_invalid_external_verifier_contracts
+    mutations = {
+      "malformed-key" => proc { |records| records[0]["public_key_pem"] = "not-a-public-key" },
+      "undersized-key" => proc do |records|
+        records[0]["public_key_pem"] = OpenSSL::PKey::RSA.generate(1024).public_key.to_pem
+      end,
+      "noncanonical-key" => proc { |records| records[0]["public_key_pem"] += "\n" },
+      "duplicate-id" => proc { |records| records << records[0].dup },
+      "duplicate-key" => proc { |records| records << records[0].merge("id" => "other-budget-verifier") },
+      "signature-field" => proc { |records| records[0]["signature"] = "caller-asserted-signature" }
+    }
+
+    mutations.each do |name, mutate|
+      task = multi_target_task
+      plan = task.dig("exception", "budget_plan")
+      mutate.call(plan.fetch("trusted_verifiers"))
+      path = install_budget_plan(plan, label: name)
+      task["exception"]["budget_plan_anchor"] = {
+        "trusted_plan_path" => path,
+        "trusted_plan_id" => plan.fetch("batch_id"),
+        "trusted_plan_digest" => findings_digest(plan)
+      }
+
+      _result, stderr, status = run_helper(launch_input(task))
+
+      refute status.success?, "#{name} external verifier contract unexpectedly allowed multi-target launch"
+      assert_includes stderr, "trusted budget plan rejected", name
+    end
   end
 
   def test_case_variant_repository_duplicates_fail_closed
@@ -853,8 +939,9 @@ class CanonicalTaskControlTest < Minitest::Test
       )
     end
     task["exception"]["budget_plan"] = budget_plan(task)
+    trusted_plan_path = install_budget_plan(task["exception"]["budget_plan"])
     task["exception"]["budget_plan_anchor"] = {
-      "trusted_plan_path" => "/coordinator/plans/#{task.fetch('id')}-budget.json",
+      "trusted_plan_path" => trusted_plan_path,
       "trusted_plan_id" => task.fetch("id"),
       "trusted_plan_digest" => findings_digest(task["exception"]["budget_plan"])
     }
@@ -882,7 +969,7 @@ class CanonicalTaskControlTest < Minitest::Test
     lanes = task.fetch("lanes").to_h { |lane| [lane.fetch("id"), { "limit_tokens" => 50_000 }] }
     {
       "type" => "batch-token-budget", "version" => 1, "batch_id" => task.fetch("id"),
-      "state_path" => "/coordinator/state/#{task.fetch('id')}-budget.json",
+      "state_path" => File.join(TEST_TMP_ROOT, "#{task.fetch('id')}-budget-state.json"),
       "scopes" => {
         "aggregate" => { "limit_tokens" => 50_000 * lanes.length },
         "coordinator" => { "limit_tokens" => 10_000 }, "lanes" => lanes
@@ -892,9 +979,17 @@ class CanonicalTaskControlTest < Minitest::Test
       "delegation" => { "approval_threshold_tokens" => 25_000 },
       "trusted_verifiers" => [{
         "id" => "budget-verifier", "algorithm" => "rsa-pss-sha256",
-        "public_key_pem" => "HOST_REPORTED_PUBLIC_KEY"
+        "public_key_pem" => TEST_BUDGET_VERIFIER_KEY.public_key.to_pem
       }]
     }
+  end
+
+  def install_budget_plan(plan, label: "trusted")
+    @trusted_plan_sequence += 1
+    path = File.join(TEST_TMP_ROOT, "budget-plan-#{Process.pid}-#{@trusted_plan_sequence}-#{label}.json")
+    File.write(path, JSON.generate(canonicalize(plan)), mode: "w", perm: 0o600)
+    @trusted_plan_paths << path
+    path
   end
 
   def budget_manifest_binding(task = base_input.fetch("task"), results: nil)
