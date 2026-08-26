@@ -1789,9 +1789,10 @@ module AgentWorkflowSeamDoctor
   end
 
   def writing_style_policy_issues(config, yaml)
+    return [] unless config.key?("writing_style")
+
     structure_error = AgentWorkflowWritingStyle.writing_style_structure_error(yaml)
     return ["invalid writing_style policy: #{structure_error}"] if structure_error
-    return [] unless config.key?("writing_style")
 
     AgentWorkflowWritingStyle.extract_guide(config, label: "repository")
     []

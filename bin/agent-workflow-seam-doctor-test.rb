@@ -1829,7 +1829,9 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   def test_trailing_policy_document_without_trusted_actions_fails_without_actions
     policy_text = "#{POLICY.to_yaml}---\nmetadata: trailing\n"
 
-    assert_trusted_actions_policy_text_fails(policy_text)
+    out = assert_trusted_actions_policy_text_fails(policy_text)
+
+    refute_includes out, "invalid writing_style policy"
   end
 
   def test_duplicate_trusted_actions_keys_fail_without_actions
@@ -1928,6 +1930,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       refute status.success?, out
       assert_match(/trusted[_-]actions|invalid policy config/i, out)
+      out
     end
   end
 
