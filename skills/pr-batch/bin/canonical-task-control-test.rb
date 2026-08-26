@@ -80,6 +80,44 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "trusted evidence task digest mismatch"
   end
 
+  def test_trusted_payload_cannot_override_envelope_operation_or_task_authorization
+    input = usage_reconciliation_input
+    bundle = trusted_bundle_for(input)
+    bundle["payload"]["operation"] = "launch"
+    bundle["payload_digest"] = findings_digest(bundle.fetch("payload"))
+
+    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+
+    refute status.success?
+    assert_includes stderr, "trusted evidence payload may not override envelope fields"
+
+    input = usage_reconciliation_input
+    bundle = trusted_bundle_for(input)
+    bundle["payload"]["task"] = multi_target_task
+    bundle["payload_digest"] = findings_digest(bundle.fetch("payload"))
+
+    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+
+    refute status.success?
+    assert_includes stderr, "trusted evidence payload may not override envelope fields"
+  end
+
+  def test_malformed_task_lane_entries_fail_as_deterministic_invalid_input
+    input = launch_input
+    bundle = trusted_bundle_for(input)
+    request = input.slice("contract", "version", "operation", "task").merge(
+      "trusted_evidence_refs" => [bundle.fetch("id")]
+    )
+    request["task"]["lanes"] = [nil]
+    bundle["task_digest"] = findings_digest(request.fetch("task"))
+
+    _result, stderr, status = run_request_with_bundle(request, bundle)
+
+    refute status.success?
+    assert_match(/\AINVALID_INPUT: /, stderr)
+    refute_includes stderr, "NoMethodError"
+  end
+
   def test_expired_unknown_or_payload_tampered_trusted_evidence_fails_closed
     input = launch_input
     bundle = trusted_bundle_for(input)
@@ -727,6 +765,27 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "usage receipt token equation mismatch"
   end
 
+  def test_usage_reconciliation_rejects_invalid_production_counters_completion_revision_and_window
+    mutations = {
+      "negative interval" => proc { |record, _result| record["interval_tokens"] = -999 },
+      "incomplete reservation" => proc { |record, _result| record["completed"] = false },
+      "impossible released tokens" => proc { |record, _result| record["released_tokens"] = 1 },
+      "future receipt revision" => proc { |record, result| record["state_revision"] = result["state_revision"] + 1 },
+      "mismatched usage window" => proc { |record, _result| record["from_inclusive"] = "2026-08-11T00:00:00Z" },
+      "malformed receipt record" => proc { |_record, result| result["receipts"] = [nil] }
+    }
+    mutations.each do |label, mutate|
+      input = usage_reconciliation_input
+      result = input.dig("usage_reconciliation", "budget_result")
+      mutate.call(result.fetch("receipts").first, result)
+
+      _decision, stderr, status = run_helper(input)
+
+      refute status.success?, label
+      assert_includes stderr, "reconciliation receipts", label
+    end
+  end
+
   def test_usage_reconciliation_requires_the_referenced_trusted_artifact
     input = usage_reconciliation_input
     FileUtils.rm_f(input.dig("usage_reconciliation", "usage_receipt_path")) if input.dig("usage_reconciliation", "usage_receipt_path")
@@ -1100,8 +1159,7 @@ class CanonicalTaskControlTest < Minitest::Test
 
     assert status.success?, stderr
     assert_equal "block", result.fetch("verdict")
-    refute_includes result.fetch("allowed_actions"), "worker_spawn"
-    assert_includes result.fetch("allowed_actions"), "record_budget_replay"
+    assert_equal ["record_budget_replay"], result.fetch("allowed_actions")
     assert_includes result.fetch("blockers"), "budget_admission_replayed_noop"
   end
 
@@ -1153,6 +1211,87 @@ class CanonicalTaskControlTest < Minitest::Test
       refute status.success?, label
       assert_includes stderr, "budget", label
     end
+  end
+
+  def test_budget_result_rejects_stale_request_telemetry_even_with_recomputed_digests
+    input = budget_action_input("retry")
+    gate = input.fetch("budget_gate")
+    request = canonicalize(gate.dig("decision_receipt", "request"))
+    request["telemetry"]["observed_at"] = "2000-01-01T00:00:00Z"
+    replace_budget_request!(gate, request)
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "telemetry"
+  end
+
+  def test_budget_result_rejects_receipt_token_and_admitted_totals_mismatches
+    input = budget_action_input("retry")
+    input["budget_gate"]["receipt"]["tokens"] = 1
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "reservation receipt binding mismatch"
+
+    input = budget_action_input("retry")
+    gate = input.fetch("budget_gate")
+    [gate.dig("totals", "aggregate"), gate.dig("totals", "lanes", "aw-i402")].each do |totals|
+      totals["allocated_tokens"] = 0
+      totals["reserved_tokens"] = 0
+    end
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "admitted totals"
+  end
+
+  def test_budget_result_overshoot_envelope_exactly_binds_descendant_targets
+    input = budget_action_input("retry")
+    gate = input.fetch("budget_gate")
+    request = canonicalize(gate.dig("decision_receipt", "request"))
+    request["telemetry"]["self_estimate_tokens"] = 9_000
+    request["telemetry"]["descendant_estimate_tokens"] = 1_000
+    request["telemetry"]["descendant_target_ids"] = ["child-task"]
+    replace_budget_request!(gate, request)
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "overshoot envelope"
+  end
+
+  def test_delegation_budget_request_binds_payload_source_and_target_state
+    input = delegation_input(
+      target_state: "idle", context: 10_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    gate = input.fetch("budget_gate")
+    request = canonicalize(gate.dig("decision_receipt", "request"))
+    request["source"]["task_id"] = "forged-source"
+    request["source"]["work_item"]["number"] = 400
+    replace_budget_request!(gate, request)
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "delegation source"
+
+    input = delegation_input(
+      target_state: "idle", context: 10_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    gate = input.fetch("budget_gate")
+    request = canonicalize(gate.dig("decision_receipt", "request"))
+    request["target_state"] = "paused"
+    replace_budget_request!(gate, request)
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "delegation target state"
   end
 
   def test_budget_action_rejects_arbitrary_string_evidence
@@ -1391,6 +1530,8 @@ class CanonicalTaskControlTest < Minitest::Test
       "resume" => "resume", "retry" => "retry", "review_wave" => "review-wave"
     }.fetch(action)
     request = budget_request(action: action, task: task, lane: lane)
+    request["target_state"] = "active" if status == "coalesced"
+    request["target_state"] = "paused" if status == "blocked"
     request_digest = budget_request_digest(request)
     receipt = {
       "type" => "batch-token-budget-reservation-receipt", "version" => 1,
@@ -1409,6 +1550,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "preserved_gates" => %w[security review qa exact-head ownership merge],
       "reservation_id" => receipt.fetch("reservation_id"),
       "request" => request, "request_digest" => request_digest, "status" => status,
+      "telemetry_max_age_seconds" => 900,
       "reason" => if status == "blocked"
                     "paused-target-requires-resume-approval"
                   else
@@ -1477,6 +1619,16 @@ class CanonicalTaskControlTest < Minitest::Test
 
   def budget_request_digest(request)
     Digest::SHA256.hexdigest(JSON.generate(canonicalize(request)))
+  end
+
+  def replace_budget_request!(gate, request)
+    digest = budget_request_digest(request)
+    gate.fetch("decision_receipt")["request"] = canonicalize(request)
+    gate.fetch("decision_receipt")["request_digest"] = digest
+    return unless gate["receipt"]
+
+    gate.fetch("receipt")["request"] = canonicalize(request)
+    gate.fetch("receipt")["request_digest"] = digest
   end
 
   def budget_scope_totals(status)
@@ -1711,12 +1863,17 @@ class CanonicalTaskControlTest < Minitest::Test
     }
   end
 
-  def budget_reconciliation_result(receipt_digest:, batch_id: "task-402", receipt_ref: "file:///coordinator/receipts/task-402-usage-v2.json")
+  def budget_reconciliation_result(receipt_digest:, batch_id: "task-402",
+                                   receipt_ref: "file:///coordinator/receipts/task-402-usage-v2.json", tokens: 35)
+    predicted_tokens = [10_000, tokens].max
+    released_tokens = predicted_tokens - tokens
     {
       "type" => "batch-token-budget-result", "version" => 1, "status" => "reconciled",
-      "batch_id" => batch_id, "state_revision" => 4,
-      "totals" => { "aggregate" => { "limit_tokens" => 50_000, "allocated_tokens" => 10_000,
-                                     "consumed_tokens" => 35, "reserved_tokens" => 0, "released_tokens" => 9_965,
+      "batch_id" => batch_id, "state_revision" => 3,
+      "totals" => { "aggregate" => { "limit_tokens" => [50_000, predicted_tokens].max,
+                                     "allocated_tokens" => predicted_tokens,
+                                     "consumed_tokens" => tokens, "reserved_tokens" => 0,
+                                     "released_tokens" => released_tokens,
                                      "unattributed_tokens" => 0 } },
       "preserved_gates" => %w[security review qa exact-head ownership merge],
       "usage_receipt_digest" => receipt_digest, "receipt_ref" => receipt_ref,
@@ -1726,8 +1883,8 @@ class CanonicalTaskControlTest < Minitest::Test
         "preserved_gates" => %w[security review qa exact-head ownership merge],
         "reservation_id" => "aw-i402-delegation-reservation", "usage_receipt_digest" => receipt_digest,
         "receipt_ref" => receipt_ref, "from_inclusive" => "2026-08-12T00:00:00Z",
-        "to_exclusive" => "2026-08-12T01:00:00Z", "predicted_tokens" => 10_000,
-        "interval_tokens" => 35, "actual_tokens" => 35, "released_tokens" => 9_965,
+        "to_exclusive" => "2026-08-12T01:00:00Z", "predicted_tokens" => predicted_tokens,
+        "interval_tokens" => tokens, "actual_tokens" => tokens, "released_tokens" => released_tokens,
         "overshoot_tokens" => 0, "overshoot_turn_count" => 0, "completed" => true
       }],
       "charge_backs" => [{
@@ -1784,7 +1941,8 @@ class CanonicalTaskControlTest < Minitest::Test
           "usage_receipt" => ordinary_receipt, "usage_receipt_ref" => ordinary_ref,
           "usage_receipt_digest" => findings_digest(ordinary_receipt),
           "budget_result" => budget_reconciliation_result(
-            receipt_digest: findings_digest(ordinary_receipt), batch_id: ordinary_batch, receipt_ref: ordinary_ref
+            receipt_digest: findings_digest(ordinary_receipt), batch_id: ordinary_batch, receipt_ref: ordinary_ref,
+            tokens: 70_000
           ),
           "metrics" => metrics
         },
@@ -1797,7 +1955,8 @@ class CanonicalTaskControlTest < Minitest::Test
           "usage_receipt" => multi_receipt, "usage_receipt_ref" => multi_ref,
           "usage_receipt_digest" => findings_digest(multi_receipt),
           "budget_result" => budget_reconciliation_result(
-            receipt_digest: findings_digest(multi_receipt), batch_id: multi_batch, receipt_ref: multi_ref
+            receipt_digest: findings_digest(multi_receipt), batch_id: multi_batch, receipt_ref: multi_ref,
+            tokens: 100_000
           ),
           "metrics" => metrics
         }

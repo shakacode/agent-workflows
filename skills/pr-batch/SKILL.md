@@ -81,6 +81,9 @@ SHA-256 binding. Stdin cannot grant itself policy, authority, stage, review,
 budget results, or usage-receipt trust. The helper realpaths coordinator-provided files
 under `ROOT`, rejecting symlinks, non-regular files, wrong ownership, and
 group/world writes. These procedural seams do not provide cryptographic trust.
+The trusted payload cannot override the envelope contract/version, operation,
+complete task authorization, or evidence reference; malformed task/lane arrays
+must fail as deterministic invalid input.
 Human authority actors must be in the trust config's `trusted_users`; closed
 nonhuman result roles remain contract-specific.
 
@@ -147,11 +150,14 @@ the mutating path. Bind every decision `evaluated_at` to the current trusted
 bundle window. Require the canonical production reservation request and digest
 in its decision receipt and, for admission, its reservation receipt; require
 portable ASCII for operational request/result/reservation IDs before normalized
-`UNKNOWN` checks. Preserve faithful replay semantics: admitted replays may retain
+`UNKNOWN` checks. Enforce the production receipt's telemetry max age and bind
+admitted receipt tokens, aggregate/lane allocation totals, and overshoot target
+set to the request. A delegation request also binds the payload's exact source
+identity and target state. Preserve faithful replay semantics: admitted replays may retain
 their original nil checkpoint, warning replays may not, and original receipt
 revisions may precede the current replay revision. A replayed admission permits
 only the idempotent `record_budget_replay` no-op and never repeats launch, wake,
-retry, or another side effect. Normalize case-insensitive
+retry, held-local launch work, or another side effect. Normalize case-insensitive
 control identities with Unicode NFKC plus full case folding and trimming, and
 apply that normalization before nested `UNKNOWN` rejection.
 Carry cross-target facts only in `canonical-task-foreign-target-packet` v1 with

@@ -1219,6 +1219,7 @@ module BatchTokenBudget
       "reservation_id" => reservation_id,
       "request" => canonicalize(reservation),
       "request_digest" => request_digest,
+      "telemetry_max_age_seconds" => original_state.dig("budget", "telemetry", "max_age_seconds"),
       "status" => status,
       "reason" => fields["reason"],
       "evaluated_at" => evaluated_at

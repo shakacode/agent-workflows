@@ -2799,6 +2799,7 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal digest, admitted.dig("receipt", "request_digest")
       assert_equal canonicalize(request), admitted.dig("decision_receipt", "request")
       assert_equal digest, admitted.dig("decision_receipt", "request_digest")
+      assert_equal 900, admitted.dig("decision_receipt", "telemetry_max_age_seconds")
       assert_operator admitted.dig("receipt", "state_revision"), :<,
                       admitted.dig("decision_receipt", "state_revision")
       assert_equal admitted.dig("decision_receipt", "state_revision"), admitted.fetch("state_revision")

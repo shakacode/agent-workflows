@@ -631,7 +631,9 @@ operation/action/scope, the canonical digest of the complete task authorization
 (including exception and approvals), targets, exact lane heads, capability state,
 issue/expiry times, and the canonical payload digest. The helper reports its
 SHA-256 binding. Missing, malformed, expired, `UNKNOWN`, mismatched, or
-payload-tampered trusted evidence fails closed.
+payload-tampered trusted evidence fails closed. Payload data cannot override the
+envelope's contract, version, operation, task authorization, or trusted-evidence
+reference; malformed task/lane arrays return deterministic invalid input.
 Realpath all three coordinator-provided files under `ROOT`; reject symlinks,
 non-regular files, an owner other than the effective user, and group/world
 writes. This is a procedural filesystem boundary, not a cryptographic trust
@@ -700,13 +702,15 @@ actual admitted `batch-token-budget-result` v1 and its bound reservation and
 decision receipts, explicit lane identity, exact nested checkpoint shape,
 portable ASCII operational identifiers, the complete canonical production
 reservation request and digest in the decision receipt and admitted reservation
-receipt, and evaluation time inside the current
+receipt, the production telemetry max age, and evaluation time inside the current
 trusted-bundle window. A faithful replay of an original `admitted` result keeps
 its original nil checkpoint; a replayed warning still requires the original
 well-formed checkpoint, and an original decision revision may precede the
 current replay revision. Replayed admission is an idempotent record-only outcome:
 permit only `record_budget_replay`, never a second launch, wake, retry, or other
-side effect. Caller-authored
+side effect or held-local launch action. For a fresh admission, bind receipt
+tokens, aggregate/lane allocation totals, and the overshoot target set to the
+request. Caller-authored
 amounts, units, URLs, nested `UNKNOWN`, or `status: passed` objects are not budget
 authority. Multi-target actions may select any declared lane, but never default
 silently to the first lane. Bind multi-lane result sets by canonical lane ID,
@@ -723,7 +727,9 @@ woken. Missing context or descendant-fanout estimates, a stale target, or an
 over-threshold estimate needs structured task-bound durable human approval
 before a new-evidence wake.
 The target must match one of the task's complete target set and the budget result
-must bind that target's corresponding lane.
+must bind that target's corresponding lane. Its production request source must
+match the delegation payload's source task and repository-qualified target, and
+its request target state must equal the payload target state and admission class.
 
 Cross-target information never expands the recipient task's mutation scope. Use
 `canonical-task-foreign-target-packet` v1 with distinct source and recipient
@@ -746,6 +752,11 @@ the physical total for a charge-back. Missing, `UNKNOWN`, unbalanced, rebound,
 or digest-mismatched evidence blocks reconciliation. Unavailable #398 reports
 `usage_telemetry` as `UNKNOWN`; unavailable #399 blocks context-amplifying
 actions without erasing independently permitted held-local stage work.
+Each #426 reconciliation receipt must be completed and bind the exact usage
+window, canonical digest/reference, a unique production revision ending at the
+result revision, nonnegative interval/actual/released/overshoot counters, and
+the production release/overshoot equations. Invalid or partial receipts are not
+recordable and cannot feed pilot metrics.
 Resolve the review-findings validator path through the repository's portable
 workflow seam; do not hardcode a root `bin` identity. Do not accept the schema
 result's `valid` string alone: require its validator identity to equal the

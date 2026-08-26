@@ -478,6 +478,8 @@ authorization digest, targets, exact heads, capability state, and payload digest
 are SHA-256 bound; stdin only
 references the ID and cannot self-assert route, authority, stage, #392 review,
 the #399 budget results, or #398 usage evidence.
+Reserved envelope fields cannot be overridden by trusted payload keys, and
+malformed task/lane arrays fail as deterministic invalid input.
 The trusted bundle, trust config, and review validator are owner/mode checked
 regular files realpathed beneath a coordinator root. This is procedural rather
 than cryptographic trust. Human authority actors resolve through
@@ -487,11 +489,14 @@ identity resolved through the repository's portable workflow seam.
 Budget decisions bind their evaluation time to that same current bundle window,
 retain faithful original checkpoint/revision semantics on production replay,
 bind the canonical production reservation request and digest through both
-decision and admission receipts, and validate external plans through the
+decision and admission receipts, and enforce the receipt-carried production
+telemetry max age. Admitted receipt tokens, aggregate/lane totals, and the exact
+overshoot target set must match that request; delegation additionally matches
+the payload source identity and target state. Validate external plans through the
 production verify-only collision fence. Multi-lane result sets bind by canonical
 lane ID, never array position. An admitted replay authorizes only the idempotent
 `record_budget_replay` no-op; it never launches, wakes, retries, or repeats another
-side effect.
+side effect, and a replayed launch exposes no held-local actions.
 Case-insensitive control identities use Unicode NFKC plus full case folding and
 trimming; nested `UNKNOWN` checks apply the same normalization. Operational
 request/result/reservation IDs first require portable ASCII syntax.

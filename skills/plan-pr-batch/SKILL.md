@@ -177,9 +177,12 @@ with metadata-only privacy, normalized distinct ownership actors, and
 Require verify-only to enforce the normal plan/state artifact-collision fence.
 Plan current trusted-bundle-window evidence for budget decision timestamps and
 canonical production request/digest binding across decision and admission
-receipts. Bind multi-lane result arrays by canonical lane ID, require portable
+receipts, including the production telemetry max age, admitted receipt tokens,
+aggregate/lane totals, exact overshoot targets, and delegation source/target-state
+binding. Bind multi-lane result arrays by canonical lane ID, require portable
 ASCII operational IDs before normalized `UNKNOWN` checks, and make admitted
-replays record-only no-ops that cannot repeat a side effect. Plan faithful replay
+replays record-only no-ops that cannot repeat a side effect or expose held-local
+launch actions. Plan faithful replay
 handling for original revisions/checkpoints. Canonicalize
 case-insensitive control identities with Unicode NFKC, full case folding, and
 trimming; normalize before rejecting nested `UNKNOWN` compatibility forms.
