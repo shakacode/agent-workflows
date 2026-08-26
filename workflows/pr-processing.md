@@ -3883,8 +3883,9 @@ repository, records base ref/SHA and blob provenance, keeps every raw row in
 non-required row is approval-held: its status is `in_progress` and GitHub's
 check-run `started_at` field is explicitly present and null. A non-null start
 timestamp means execution has begun. Missing, malformed, queued, or otherwise
-ambiguous phase evidence remains blocking. A configured required row with the same
-producer/context, any requested GitHub Actions run, failures, completed unknown
+ambiguous phase evidence remains blocking. A name match to any required evidence
+blocks optional disposition; workflow/producer metadata is not authenticated
+identity and cannot narrow that match. Any requested GitHub Actions run, failures, completed unknown
 conclusions, malformed or incomplete inventory, and every unmatched pending or
 `UNKNOWN` row remain blocking. Omission or exact `n/a` grants no disposition;
 malformed or literal/nested `UNKNOWN` policy fails closed. Candidate-branch
