@@ -682,7 +682,8 @@ module PrCiReadiness
     def exact_head_inventory(repo, target_pr)
       head_sha = target_pr.fetch(:head_sha)
       errors = {}
-      actions_rows, actions_complete, actions_error = fetch_exact_head_actions(repo, target_pr)
+      actions_rows, actions_complete, actions_error, observed_actions_run_ids =
+        fetch_exact_head_actions(repo, target_pr)
       errors["github_actions"] = actions_error if actions_error
       errors["dependabot"] = actions_error if actions_error
 
@@ -692,9 +693,12 @@ module PrCiReadiness
         errors["dependabot"] = [errors["dependabot"], check_runs_error].compact.join("; ")
         errors["other"] = check_runs_error
       end
-      actions_rows += check_runs.select do |row|
+      actions_check_runs = check_runs.select do |row|
         row["app_slug"] == "github-actions" || row["dependabot"] == true
       end
+      actions_rows += reconcile_actions_check_runs(
+        actions_rows, actions_check_runs, actions_complete:, observed_actions_run_ids:
+      )
 
       statuses, statuses_complete, statuses_error = fetch_exact_head_statuses(repo, head_sha)
       errors["other"] = [errors["other"], statuses_error].compact.join("; ") if statuses_error
@@ -704,6 +708,32 @@ module PrCiReadiness
         statuses:, statuses_complete:, errors:,
         required_complete: true
       }
+    end
+
+    def reconcile_actions_check_runs(actions_rows, check_runs, actions_complete:, observed_actions_run_ids:)
+      return check_runs unless actions_complete
+
+      selected_run_ids = actions_rows.filter_map { |row| row["id"] if row["kind"] == "run" }
+      selected_job_identities = actions_rows.filter_map do |row|
+        actions_job_identity(row["url"]) if row["kind"] == "job"
+      end
+      check_runs.select do |row|
+        next true unless row["app_slug"] == "github-actions"
+
+        identity = actions_job_identity(row["url"])
+        next true unless identity
+        next true unless observed_actions_run_ids.include?(identity.first)
+        next false unless selected_run_ids.include?(identity.first)
+
+        !selected_job_identities.include?(identity)
+      end
+    end
+
+    def actions_job_identity(url)
+      match = url.to_s.match(
+        %r{\Ahttps://[^/]+/[^/]+/[^/]+/actions/runs/([1-9]\d*)/job/([1-9]\d*)(?:[?#].*)?\z}
+      )
+      [Integer(match[1], 10), Integer(match[2], 10)] if match
     end
 
     def fetch_exact_head_actions(repo, target_pr)
@@ -729,9 +759,9 @@ module PrCiReadiness
           rows << normalize_actions_row(job, "job", dependabot:, head_sha:, head_branch:, pull_request_numbers:)
         end
       end
-      [rows, true, nil]
+      [rows, true, nil, runs.map { |run| run.fetch("id") }]
     rescue StandardError => e
-      [[], false, "exact-head Actions inventory failed: #{e.message}"]
+      [[], false, "exact-head Actions inventory failed: #{e.message}", []]
     end
 
     def fetch_exact_head_check_runs(repo, head_sha)

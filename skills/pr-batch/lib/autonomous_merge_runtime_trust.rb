@@ -14,6 +14,13 @@ module AutonomousMergeRuntimeTrust
         .agents/skills/pr-batch/bin/autonomous-merge-eligibility
       ]
     },
+    "closeout-helper" => {
+      path: File.expand_path("../bin/autonomous-merge-closeout", __dir__),
+      tree_paths: %w[
+        skills/pr-batch/bin/autonomous-merge-closeout
+        .agents/skills/pr-batch/bin/autonomous-merge-closeout
+      ]
+    },
     "decision-library" => {
       path: File.expand_path("autonomous_merge_decision.rb", __dir__),
       tree_paths: %w[

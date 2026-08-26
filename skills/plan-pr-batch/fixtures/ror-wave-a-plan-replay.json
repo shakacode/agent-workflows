@@ -103,7 +103,7 @@
         }
       ]
     },
-    "lane_lifecycle_receipts": [],
+    "lane_lifecycle_states": [],
     "file_touch_map": {
       "lane-4813-changelog-171": {
         "type": "planned-path-evidence",

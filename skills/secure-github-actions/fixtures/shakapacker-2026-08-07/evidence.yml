@@ -1,0 +1,10 @@
+repository: shakacode/shakapacker
+head_sha: cdd7397cc59a1bfca89d7941e70fa61631e1ad5f
+base_branch: main
+worktree_status: clean
+dependabot_github_actions: absent
+observed_at: "2026-08-07"
+source_locations:
+  - .github/workflows/ruby.yml:74
+  - .github/workflows/node.yml:82-83
+  - .github/workflows/generator.yml:37

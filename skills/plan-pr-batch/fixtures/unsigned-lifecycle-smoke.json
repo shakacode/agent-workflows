@@ -1,0 +1,88 @@
+{
+  "type": "batch-plan-preflight",
+  "version": 1,
+  "plan": {
+    "id": "install-smoke-batch",
+    "backend": "generic",
+    "active_wave": "wave-a",
+    "lanes": [
+      {
+        "id": "install-smoke",
+        "wave": "wave-a",
+        "purpose": "implementation",
+        "changed_surfaces": [],
+        "qa": {
+          "disposition": "not-required",
+          "rationale": "Unsigned install acceptance fixture."
+        }
+      }
+    ],
+    "serialization_groups": [],
+    "external_api_premises": []
+  },
+  "file_touch_map": {
+    "install-smoke": {
+      "pr": 1,
+      "repo": "owner/repo",
+      "source": "verified",
+      "changed_files": 1,
+      "paths": [
+        "lib/install_smoke.rb"
+      ],
+      "renames": []
+    }
+  },
+  "lane_lifecycle_states": [],
+  "stage_dependency_plan": {
+    "contract": "stage-dependency-plan",
+    "version": 1,
+    "id": "install-smoke-plan",
+    "edges": []
+  },
+  "stage_dependency_gate": {
+    "contract": "stage-dependency-gate",
+    "version": 1,
+    "status": "eligible",
+    "trusted_plan_id": "install-smoke-plan",
+    "trusted_plan_binding": "sha256:2e6637986973f4ea75f3c59d1189d60e2ba71a8e7138f095cfc8c28cbca1b8b8",
+    "lanes": [
+      {
+        "id": "install-smoke",
+        "permissions": {
+          "read_only_discovery": true,
+          "branch_worktree_create": true,
+          "patch_edit": true,
+          "commit": true,
+          "push": true,
+          "pr_open": true,
+          "final_validation": true,
+          "merge": true
+        },
+        "hosted_ci": "eligible-via-repo-seam",
+        "blockers": [],
+        "base_refresh": []
+      }
+    ],
+    "checker_verdict": {
+      "status": "eligible",
+      "blockers": []
+    },
+    "critical_path": {
+      "lane_ids": [
+        "install-smoke"
+      ],
+      "edge_count": 0,
+      "tie_breaker": "maximum-dependency-hops-then-lexicographic-lane-id-sequence",
+      "assignments": []
+    },
+    "downstream_requirements": {
+      "final_combined_tip_validation": "required-via-repo-seam",
+      "preserved_gates": [
+        "exact_head_ci",
+        "independent_review",
+        "unresolved_threads",
+        "merge_readiness"
+      ]
+    }
+  }
+}

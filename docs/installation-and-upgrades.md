@@ -149,6 +149,13 @@ Install into an explicit shared agent home:
 bin/install-agent-workflows --host codex --target "$HOME/.agents"
 ```
 
+A clean Codex or Claude installation can plan and launch ordinary batches as
+installed. Do not generate project signing keys or provision fixed launch trust
+anchors: assignment activation and lane progression use ordinary durable
+lifecycle state. Model/effort values are advisory preferences, while any
+host/model/effort observations are optional, host-exposed metadata with
+field-granular `UNKNOWN` for unavailable values.
+
 Install companion assets for an already-enabled native plugin:
 
 ```bash
@@ -158,10 +165,12 @@ bin/install-agent-workflows \
 ```
 
 When migrating a previous flat install, the installer inventories every known
-pack skill before deleting anything. It removes only managed symlinks or copies
-that still match the metadata-recorded source revision. Modified, mismatched,
-ambiguous, and unowned paths are preserved; the migration stops with exact
-manual cleanup guidance. Unrelated skill names are never removed.
+pack skill before deleting anything. It removes only managed symlinks that still
+match the metadata-recorded source revision or copies that match their recorded
+fingerprints (with the recorded revision as the backward-compatible fallback).
+Modified, mismatched, ambiguous, and unowned paths are preserved; the migration
+stops with exact manual cleanup guidance. Unrelated skill names are never
+removed.
 
 Then initialize and validate the seam from a consumer repository:
 
@@ -391,10 +400,13 @@ The installer writes:
 - `<target>/LICENSE`
 - `<target>/workflows/*`
 - `<target>/docs/coordination-backend.md`
+- `<target>/docs/execution-provenance-schema.md`
 - `<target>/docs/review-finding-schema.md`
 - `<target>/docs/agent-workflows-model-routing.md`
+- `<target>/docs/user-facing-coordination.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
+- `<target>/bin/validate-execution-provenance`
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-doctor`
@@ -410,9 +422,18 @@ the target agent home, including generic consumer-owned docs under
 `<target>/docs`.
 
 The metadata file records host, artifact mode, skill delivery mode, source
-clone, pack version, source revision, branch, remote, and install time. The
-status and upgrade helpers use that metadata so they can run from either the
-source clone or the installed host.
+clone, pack version, source revision, branch, remote, and install time. Copy
+installs also record `managed_skill_copy_fingerprints` and
+`managed_pack_doc_copy_fingerprints`, including every installed
+`<target>/docs/solutions/*` document. On repeat installation, these fingerprints
+prove that an installed managed copy has not been edited even when the recorded
+Git object is unavailable; an exact recorded-revision or current-source match is
+the backward-compatible fallback for older metadata. The installer refuses to
+replace a modified, symlinked-to-an-unowned-target, or otherwise ambiguous
+managed copy, including unexpected files nested inside a managed skill. Restore
+the original installed content or move personal content to a distinct path
+before retrying. The status and upgrade helpers use the metadata so they can run
+from either the source clone or the installed host.
 
 ## Status Checks
 
