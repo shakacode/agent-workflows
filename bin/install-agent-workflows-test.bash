@@ -1533,6 +1533,83 @@ RUBY
     fail "retry after partial metadata prebind failure did not install the source change"
 }
 
+test_metadata_prebind_cleanup_preserves_replacement_guard() {
+  local tmp source target injection marker output status lock foreign
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/swap-prebind-guard-during-cleanup.rb"
+  marker="$tmp/prebind-guard-cleanup-raced"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  printf '\nprebind cleanup race source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module SwapPrebindGuardDuringCleanup
+  def extern(signature, *arguments)
+    result = super
+    if name == "AtomicMetadataPrebind" && signature.include?("openat")
+      real_openat = method(:openat)
+      define_singleton_method(:openat) do |directory_fd, entry_name, flags|
+        if entry_name == "metadata-commit-old.guard" && !Thread.current[:qa_open_failed]
+          Thread.current[:qa_open_failed] = true
+          Fiddle.last_error = Errno::EIO::Errno
+          -1
+        else
+          real_openat.call(directory_fd, entry_name, flags)
+        end
+      end
+    elsif name == "AtomicMetadataPrebind" && signature.include?("unlinkat")
+      real_unlinkat = method(:unlinkat)
+      define_singleton_method(:unlinkat) do |directory_fd, entry_name, flags|
+        if entry_name == "metadata-commit-old.guard" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          guard = ENV.fetch("QA_GUARD")
+          File.rename(guard, "#{guard}.created")
+          File.write(guard, "foreign replacement guard\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+        end
+        real_unlinkat.call(directory_fd, entry_name, flags)
+      end
+    elsif name == "AtomicMetadataPrebind" &&
+          (signature.include?("renameat2") || signature.include?("renameatx_np"))
+      syscall_name = signature[/\b(renameat(?:2|x_np)?)\(/, 1]
+      real_syscall = method(syscall_name)
+      define_singleton_method(syscall_name) do |*syscall_arguments|
+        if syscall_arguments.fetch(1) == "metadata-commit-old.guard" &&
+           !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          guard = ENV.fetch("QA_GUARD")
+          File.rename(guard, "#{guard}.created")
+          File.write(guard, "foreign replacement guard\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+        end
+        real_syscall.call(*syscall_arguments)
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(SwapPrebindGuardDuringCleanup)
+RUBY
+
+  lock="$target/.agent-workflows-install.lock"
+  set +e
+  output="$(QA_GUARD="$lock/metadata-commit-old.guard" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "prebind cleanup replacement race unexpectedly succeeded"
+  assert_file "$lock/metadata-commit-old.guard.created"
+  foreign="$(find "$lock" -maxdepth 1 -type f -name 'metadata-commit-old.*' \
+    -exec grep -l 'foreign replacement guard' {} + 2>/dev/null | head -1 || true)"
+  [[ -n "$foreign" ]] || fail "prebind cleanup deleted the foreign replacement guard"
+}
+
 test_metadata_commit_link_capability_failure_stops_before_managed_mutation() {
   local tmp source target injection output status license_before metadata_before
   tmp="$(mktemp -d)"
@@ -3171,7 +3248,7 @@ RUBY
 }
 
 test_recovery_partial_backup_copy_failure_removes_quarantine() {
-  local tmp target staging receipt metadata injection output status
+  local tmp target staging receipt metadata injection output status quarantine
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-partial-copy"
@@ -3199,9 +3276,54 @@ RUBY
   [[ "$status" -ne 0 && "$status" -ne 65 ]] || fail "partial backup copy exited $status: $output"
   assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
   assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
-  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
-    fail "partial backup copy leaked recovery quarantine"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "partial backup copy did not preserve recovery quarantine"
+  assert_file "$quarantine/original-backup"
   assert_file "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_recovery_capture_cleanup_preserves_replaced_created_artifact() {
+  local tmp target staging receipt metadata injection marker output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/swap-created-recovery-artifact.rb"
+  marker="$tmp/recovery-created-artifact-swapped"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :after_backup_copy
+    quarantine = Dir.glob("#{ENV.fetch("QA_INSTALL_METADATA")}.recovery-*").fetch(0)
+    backup = File.join(quarantine, "original-backup")
+    File.rename(backup, File.join(quarantine, "original-backup.created"))
+    File.write(backup, "foreign replacement backup\n")
+    File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "recovery capture cleanup race unexpectedly succeeded"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "recovery capture cleanup race removed quarantine evidence"
+  assert_file "$quarantine/original-backup.created"
+  assert_file "$quarantine/original-backup"
+  assert_contains "$(cat "$quarantine/original-backup")" "foreign replacement backup"
   assert_file "$receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
 }
@@ -6455,6 +6577,7 @@ main() {
     test_metadata_commit_capability_failure_stops_before_managed_mutation
     test_metadata_actual_source_prebind_failure_stops_before_managed_mutation
     test_metadata_partial_prebind_failure_cleans_guard_and_allows_retry
+    test_metadata_prebind_cleanup_preserves_replacement_guard
     test_metadata_commit_link_capability_failure_stops_before_managed_mutation
     test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation
     test_atomic_rename_capability_failure_stops_before_recovery_mutation
@@ -6493,6 +6616,7 @@ main() {
     test_capture_undo_uses_original_guard_when_displaced_sentinel_changes
     test_recovery_capture_exchange_restores_competing_destination
     test_recovery_partial_backup_copy_failure_removes_quarantine
+    test_recovery_capture_cleanup_preserves_replaced_created_artifact
     test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance
     test_late_capture_restore_failure_does_not_blame_intact_metadata
     test_snapshot_only_corruption_restores_before_reporting

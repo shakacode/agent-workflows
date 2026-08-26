@@ -347,13 +347,6 @@ capture_bound_recovery_metadata() {
       raise BindingChanged unless stat.directory? && identity.call(stat) == expected
       directory
     end
-    remove_created = lambda do
-      created.reverse_each do |name|
-        next unless quarantine_file && !quarantine_file.closed?
-        raise BindingChanged unless RecoverySyscalls.unlinkat(quarantine_file.fileno, name, 0) == 0
-        created.delete(name)
-      end
-    end
     create_copy = lambda do |source, name, expected_digest, mode|
       quarantine_path = File.join(target, quarantine_name)
       named_quarantine_stat = File.lstat(quarantine_path)
@@ -500,13 +493,6 @@ capture_bound_recovery_metadata() {
           raise BindingChanged unless attestation.call(restored_original) == expected_original
           sentinel_installed = false
           binding_changed = true
-        rescue StandardError
-          binding_changed = true
-        end
-      end
-      unless completed || binding_changed
-        begin
-          remove_created.call
         rescue StandardError
           binding_changed = true
         end
@@ -850,13 +836,24 @@ capture_install_metadata_binding() {
 prebind_install_metadata_rollback_guard() {
   [[ "$install_metadata_binding_state" = "present" ]] || return 0
   install_metadata_rollback_guard="$install_lock/metadata-commit-old.guard"
-  if ! ruby -rdigest -rfiddle/import -e '
+  if ! ruby -rdigest -rfiddle/import -rsecurerandom -e '
     module AtomicMetadataPrebind
       extend Fiddle::Importer
       dlload Fiddle.dlopen(nil)
       extern "int openat(int, const char *, int)"
       extern "int linkat(int, const char *, int, const char *, int)"
       extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x4)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x1)
+        end
+      end
     end
     target, metadata_name, lock, expected = ARGV
     target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
@@ -900,9 +897,18 @@ prebind_install_metadata_rollback_guard() {
         cleanup_stat = cleanup_guard.stat
         abort unless attest.call(cleanup_guard) == expected &&
                      source_stat.dev == cleanup_stat.dev && source_stat.ino == cleanup_stat.ino
-        abort unless AtomicMetadataPrebind.unlinkat(
-          lock_file.fileno, "metadata-commit-old.guard", 0
+        cleanup_name = "metadata-commit-old.cleanup-#{Process.pid}-#{SecureRandom.hex(8)}"
+        abort unless AtomicMetadataPrebind.no_replace(
+          lock_file.fileno, "metadata-commit-old.guard", cleanup_name
         ) == 0
+        moved_guard = open_at.call(lock_file, cleanup_name)
+        moved_stat = moved_guard.stat
+        abort unless attest.call(moved_guard) == expected &&
+                     source_stat.dev == moved_stat.dev && source_stat.ino == moved_stat.ino
+        abort unless AtomicMetadataPrebind.unlinkat(
+          lock_file.fileno, cleanup_name, 0
+        ) == 0
+        moved_guard.close
         cleanup_guard.close
       end
       source&.close
