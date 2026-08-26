@@ -17,10 +17,13 @@ Installed paths:
   <target>/skills/* (flat delivery mode only)
   <target>/workflows/*
   <target>/docs/coordination-backend.md
+  <target>/docs/execution-provenance-schema.md
   <target>/docs/review-finding-schema.md
   <target>/docs/agent-workflows-model-routing.md
+  <target>/docs/user-facing-coordination.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
+  <target>/bin/validate-execution-provenance
   <target>/bin/agent-workflows-doctor
   <target>/bin/agent_doctor/*
   <target>/bin/agent-workflows-status
@@ -47,7 +50,19 @@ bin_helpers=(
   agent-workflows-trust-audit
   install-agent-workflows
   upgrade-agent-workflows
+  validate-execution-provenance
 )
+pack_docs=(
+  coordination-backend.md
+  execution-provenance-schema.md
+  review-finding-schema.md
+  agent-workflows-model-routing.md
+  user-facing-coordination.md
+)
+for solution_path in "$repo_root"/docs/solutions/*; do
+  [[ -f "$solution_path" && ! -L "$solution_path" ]] || continue
+  pack_docs+=("solutions/$(basename "$solution_path")")
+done
 
 default_target_for_host() {
   case "$1" in
@@ -181,8 +196,46 @@ prepare_metadata() {
   source_remote="$(metadata_value source_remote)"
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-  ruby -rjson -e '
-    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at = ARGV
+  ruby -rjson -rdigest -rfind -e '
+    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, *pack_docs = ARGV
+    directory_fingerprint = lambda do |root|
+      entries = []
+      Find.find(root) do |entry|
+        next if entry == root
+
+        relative = entry.delete_prefix("#{root}/")
+        if File.symlink?(entry)
+          entries << ["symlink", relative, File.readlink(entry)]
+        elsif File.directory?(entry)
+          entries << ["directory", relative]
+        elsif File.file?(entry)
+          entries << ["file", relative, (File.stat(entry).mode & 0o111).positive?, Digest::SHA256.file(entry).hexdigest]
+        else
+          abort "unsupported skill entry while preparing install metadata: #{entry}"
+        end
+      end
+      Digest::SHA256.hexdigest(JSON.generate(entries.sort_by { |fingerprint_entry| fingerprint_entry.fetch(1) }))
+    end
+    skill_fingerprints = if mode == "copy" && delivery_mode == "flat"
+                           Dir.children(File.join(source, "skills")).sort.filter_map do |name|
+                             root = File.join(source, "skills", name)
+                             next unless File.directory?(root) && !File.symlink?(root)
+
+                             [name, directory_fingerprint.call(root)]
+                           end.to_h
+                         else
+                           {}
+                         end
+    doc_fingerprints = if mode == "copy"
+                         pack_docs.to_h do |name|
+                           doc = File.join(source, "docs", name)
+                           abort "missing pack document while preparing install metadata: #{doc}" unless File.file?(doc) && !File.symlink?(doc)
+
+                           [name, Digest::SHA256.file(doc).hexdigest]
+                         end
+                       else
+                         {}
+                       end
     metadata = {
       "host" => host,
       "mode" => mode,
@@ -192,10 +245,12 @@ prepare_metadata() {
       "source_revision" => revision,
       "source_branch" => branch,
       "source_remote" => remote,
-      "installed_at" => installed_at
+      "installed_at" => installed_at,
+      "managed_skill_copy_fingerprints" => skill_fingerprints,
+      "managed_pack_doc_copy_fingerprints" => doc_fingerprints
     }
     File.write(path, JSON.pretty_generate(metadata) + "\n")
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}"
 }
 
 commit_metadata() {
@@ -407,6 +462,174 @@ remove_legacy_managed_model_routing_path() {
   fi
 }
 
+recorded_revision_pack_doc_matches() {
+  local doc_name="$1"
+  local destination="$2"
+  local previous_revision previous_source source_root
+  [[ -f "$destination" && ! -L "$destination" ]] || return 1
+  previous_revision="$(installed_metadata_value source_revision 2>/dev/null || true)"
+  [[ "$previous_revision" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+  previous_source="$(installed_metadata_value source 2>/dev/null || true)"
+
+  for source_root in "$repo_root" "$previous_source"; do
+    [[ -n "$source_root" && -d "$source_root" ]] || continue
+    if git -C "$source_root" cat-file -e "$previous_revision:docs/$doc_name" 2>/dev/null &&
+       cmp -s "$destination" <(git -C "$source_root" show "$previous_revision:docs/$doc_name"); then
+      return 0
+    fi
+  done
+  return 1
+}
+
+pack_doc_symlink_matches_recorded_source() {
+  local doc_name="$1"
+  local destination="$2"
+  local previous_source resolved source_root expected
+  [[ -L "$destination" ]] || return 1
+  resolved="$(ruby -e 'puts File.expand_path(File.readlink(ARGV.fetch(0)), File.dirname(ARGV.fetch(0)))' "$destination")"
+  previous_source="$(installed_metadata_value source 2>/dev/null || true)"
+
+  for source_root in "$repo_root" "$previous_source"; do
+    [[ -n "$source_root" ]] || continue
+    expected="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$source_root/docs/$doc_name")"
+    [[ "$resolved" = "$expected" ]] && return 0
+  done
+  return 1
+}
+
+pack_doc_destination_owned() {
+  local doc_name="$1"
+  local destination="$2"
+  local source_path="$3"
+
+  if [[ "$mode" = "copy" ]]; then
+    recorded_pack_doc_copy_fingerprint_matches "$doc_name" "$destination" ||
+      recorded_revision_pack_doc_matches "$doc_name" "$destination" ||
+      { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
+      pack_doc_symlink_matches_recorded_source "$doc_name" "$destination"
+  else
+    pack_doc_symlink_matches_recorded_source "$doc_name" "$destination"
+  fi
+}
+
+recorded_pack_doc_copy_fingerprint_matches() {
+  local doc_name="$1"
+  local destination="$2"
+  local metadata_path="$target/$metadata_name"
+  [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || return 1
+  [[ -f "$destination" && ! -L "$destination" ]] || return 1
+
+  ruby -rjson -rdigest -e '
+    metadata_path, doc_name, destination = ARGV
+    metadata = JSON.parse(File.binread(metadata_path))
+    exit 1 unless metadata.is_a?(Hash) && metadata["mode"] == "copy"
+    fingerprints = metadata["managed_pack_doc_copy_fingerprints"]
+    exit 1 unless fingerprints.is_a?(Hash)
+    expected = fingerprints[doc_name]
+    exit 1 unless expected.is_a?(String) && expected.match?(/\A[0-9a-f]{64}\z/i)
+    exit(Digest::SHA256.file(destination).hexdigest == expected ? 0 : 1)
+  ' "$metadata_path" "$doc_name" "$destination"
+}
+
+verify_pack_doc_destinations() {
+  local doc_name destination source_path
+  [[ ! -L "$target/docs" ]] || return 0
+
+  for doc_name in "${pack_docs[@]}"; do
+    # Both delivery modes replace a solutions-directory symlink without following it.
+    [[ "$doc_name" == solutions/* && -L "$target/docs/solutions" ]] && continue
+    destination="$target/docs/$doc_name"
+    source_path="$repo_root/docs/$doc_name"
+    [[ -e "$destination" || -L "$destination" ]] || continue
+    if [[ "$mode" = "copy" && ! -f "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-file path: $destination" >&2
+      exit 1
+    fi
+    pack_doc_destination_owned "$doc_name" "$destination" "$source_path" && continue
+
+    echo "Refusing to replace unowned pack document: $destination" >&2
+    exit 1
+  done
+}
+
+verify_install_destinations() {
+  local destination helper skill source_path
+
+  if [[ "$mode" = "copy" ]]; then
+    for destination in "$target/bin" "$target/workflows" "$target/docs" "$target/docs/solutions"; do
+      if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-directory path: $destination" >&2
+        exit 1
+      fi
+    done
+    if [[ "$delivery_mode" = "flat" ]]; then
+      destination="$target/skills"
+      if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-directory path: $destination" >&2
+        exit 1
+      fi
+    fi
+    destination="$target/LICENSE"
+    if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-file path: $destination" >&2
+      exit 1
+    fi
+    for helper in "${bin_helpers[@]}"; do
+      destination="$target/bin/$helper"
+      if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-file path: $destination" >&2
+        exit 1
+      fi
+    done
+  else
+    for destination in "$target/bin" "$target/skills"; do
+      if [[ ( -e "$destination" || -L "$destination" ) && ! -d "$destination" ]]; then
+        echo "Refusing to use non-directory path: $destination" >&2
+        exit 1
+      fi
+    done
+    for destination in "$target/docs" "$target/docs/solutions"; do
+      if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-directory path: $destination" >&2
+        exit 1
+      fi
+    done
+    for destination in "$target/LICENSE" "$target/workflows"; do
+      if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-symlink path: $destination" >&2
+        exit 1
+      fi
+    done
+    if [[ "$delivery_mode" = "flat" ]]; then
+      for skill in "$repo_root"/skills/*; do
+        [[ -d "$skill" ]] || continue
+        destination="$target/skills/$(basename "$skill")"
+        if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
+          echo "Refusing to replace non-symlink path: $destination" >&2
+          exit 1
+        fi
+      done
+    fi
+    if [[ ! -L "$target/docs/solutions" ]]; then
+      for source_path in "$repo_root"/docs/solutions/*; do
+        [[ -e "$source_path" ]] || continue
+        destination="$target/docs/solutions/$(basename "$source_path")"
+        if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
+          echo "Refusing to replace non-symlink path: $destination" >&2
+          exit 1
+        fi
+      done
+    fi
+    for helper in "${bin_helpers[@]}"; do
+      destination="$target/bin/$helper"
+      if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-symlink path: $destination" >&2
+        exit 1
+      fi
+    done
+  fi
+}
+
 copy_pack_docs() {
   local docs_target="$1"
   local doc_name destination
@@ -414,7 +637,7 @@ copy_pack_docs() {
   ensure_real_directory "$docs_target/solutions"
   remove_legacy_managed_model_routing_path "$docs_target"
 
-  for doc_name in coordination-backend.md review-finding-schema.md agent-workflows-model-routing.md; do
+  for doc_name in "${pack_docs[@]}"; do
     destination="$docs_target/$doc_name"
     if [[ -L "$destination" ]]; then
       rm -f "$destination"
@@ -425,34 +648,22 @@ copy_pack_docs() {
     fi
     install -m 0644 "$repo_root/docs/$doc_name" "$destination"
   done
-
-  copy_children_preserving_unrelated "$repo_root/docs/solutions" "$docs_target/solutions"
 }
 
 link_pack_docs() {
   local docs_target="$1"
-  local destination doc_name source_path
+  local destination doc_name
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
   remove_legacy_managed_model_routing_path "$docs_target"
 
-  for doc_name in coordination-backend.md review-finding-schema.md agent-workflows-model-routing.md; do
+  for doc_name in "${pack_docs[@]}"; do
     destination="$docs_target/$doc_name"
     if [[ -e "$destination" && ! -L "$destination" ]]; then
       echo "Refusing to replace non-symlink path: $destination" >&2
       exit 1
     fi
     ln -sfn "$repo_root/docs/$doc_name" "$destination"
-  done
-
-  for source_path in "$repo_root"/docs/solutions/*; do
-    [[ -e "$source_path" ]] || continue
-    destination="$docs_target/solutions/$(basename "$source_path")"
-    if [[ -e "$destination" && ! -L "$destination" ]]; then
-      echo "Refusing to replace non-symlink path: $destination" >&2
-      exit 1
-    fi
-    ln -sfn "$source_path" "$destination"
   done
 }
 
@@ -633,6 +844,8 @@ if [[ "$delivery_status" -ne 0 ]]; then
   '
   exit 1
 fi
+verify_pack_doc_destinations
+verify_install_destinations
 prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then

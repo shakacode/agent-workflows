@@ -1,0 +1,40 @@
+{
+  "schema": "execution-provenance-v0",
+  "execution_provenance": {
+    "batch": "aw-20260811-i333-plan-v1",
+    "lane": "aw-i333",
+    "target": "https://github.com/shakacode/agent-workflows/issues/333",
+    "scenario_class": "schema-and-validator",
+    "role": "implementation",
+    "route_policy": "exact-route",
+    "requested": {
+      "model": "gpt-5.6-sol",
+      "effort": "high"
+    },
+    "observed": {
+      "model": "gpt-5.6-sol",
+      "effort": "high"
+    },
+    "coordinator": {
+      "model": "UNKNOWN",
+      "effort": "UNKNOWN"
+    },
+    "dispatcher": "codex",
+    "binding_source": "host-session-metadata",
+    "host": {
+      "executable": "codex",
+      "version": "1.2.3"
+    },
+    "session_id": "019ff563-3cb2-76a1-ae51-101c843deaa2",
+    "thread_id": "UNKNOWN",
+    "started_at": "2026-08-11T10:00:00-10:00",
+    "ended_at": "2026-08-11T10:30:00-10:00",
+    "influenced_commits": [
+      "0123456789abcdef0123456789abcdef01234567"
+    ],
+    "attribution_confidence": "exact",
+    "mismatch_reason": "UNKNOWN",
+    "recorded_authority": "UNKNOWN",
+    "disposition": "bound-exact-match"
+  }
+}

@@ -37,6 +37,52 @@ validating the plan is the difficult part.
 Model choice never replaces tests, types, linting, review, functional or visual
 verification, migration safeguards, least privilege, or human approval.
 
+## Planning-Pass Route Assessment
+
+Assess the current `$plan-pr-batch` planning pass separately from the future
+batch coordinator, worker, and checker routes. Named routes are advisory; use
+the provider-neutral route when the active host or roster is not verified.
+
+| Classification | Provider-neutral | Codex GPT-5.6 | Claude profile |
+| --- | --- | --- | --- |
+| `affirmatively-simple` | `balanced/medium` | `Terra/medium` | `Sonnet 5/medium` |
+| `routine-multi-lane` | `balanced/high` | `Terra/high` | `Sonnet 5/high` |
+| `default-or-uncertain-single-target` | `strongest/high` | `Sol/high` | `Opus 5/high` |
+| `pinned-high-risk-or-escalation` | `strongest/xhigh` | `Sol/xhigh` | `Opus 5/xhigh` |
+
+Use `affirmatively-simple` only after verified scope establishes explicit
+acceptance criteria, a known bounded file surface, no unresolved design or
+dependency question, no security, authorization, concurrency, persistence,
+lifecycle, routing, release, public-contract, or other high-consequence
+boundary, easy failure detection and rollback, and a strong deterministic
+verification oracle. Any missing or disputed simplicity criterion keeps a
+single target in `default-or-uncertain-single-target`; a present or disputed
+pinned high-risk trigger uses `pinned-high-risk-or-escalation`. Multiple
+verified routine targets use `routine-multi-lane` unless a high-risk trigger
+applies. This classification describes only the current planning pass and does
+not select the future batch coordinator.
+
+| Observed comparison | Disposition | Maximum routed reviews | Compare routes? | Restart advice? |
+| --- | --- | --- | --- | --- |
+| `stronger-current` | `future-cost-advisory` | `0` | `yes` | `no` |
+| `weaker-current-host-supported` | `bounded-independent-review` | `1` | `yes` | `no` |
+| `any-observed-field-UNKNOWN` | `non-blocking-advisory` | `0` | `no` | `no` |
+
+When the fully observed current route is stronger than recommended, report the
+cheaper recommendation for a future planning run only. Do not spawn another
+planner merely to save cost after a stronger route is already active.
+When it is materially weaker, the host may run at most one bounded independent
+plan review at the recommended route, but only when explicit route-specific
+execution is supported and the review can finish without user interaction.
+Keep the reviewer distinct from the plan maker and disclose the review route.
+Unavailable, inherited, substituted, or unverifiable route-specific execution
+gets a non-blocking advisory instead; never require a restart.
+Record observed host, model, and effort field by field only from host-exposed
+runtime evidence. If any field needed for comparison is `UNKNOWN`, make no
+stronger/weaker comparison, launch no route-correct review, and give no restart
+advice. Requested preferences, prompt text, and model self-report are not
+observations.
+
 ## Conservative GPT-5.6 Profile
 
 Use this recommended advisory profile for Codex GPT-5.6 batches. It is an
@@ -45,8 +91,8 @@ expose these models. `Sol` means GPT-5.6 Sol, `Terra` means GPT-5.6 Terra, and
 `xhigh` is the extra-high reasoning-effort tier above `high`; verify that exact
 effort token on the selected runtime before launch:
 
-- Default single-target planner: Sol/high
-- Affirmatively simple single-target planner: Terra/high
+- Default single-target future coordinator: Sol/high
+- Affirmatively simple single-target future coordinator: Terra/high
 - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -54,9 +100,9 @@ effort token on the selected runtime before launch:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
-One issue or PR remains single-target even when its coordinator delegates
-bounded implementation, review, or QA lanes. Default to Sol/high because one
-issue may still require difficult diagnosis, design, or verification planning.
+For the future coordinator, one issue or PR remains single-target even when it
+delegates bounded implementation, review, or QA lanes. Default to Sol/high
+because one issue may still require difficult diagnosis, design, or verification.
 Check the high-risk exception first: a present or disputed pinned high-risk
 boundary uses Sol/xhigh. Otherwise use Terra/high only after positively
 establishing explicit acceptance criteria, a known bounded file surface, no
@@ -134,8 +180,8 @@ Opus 5 (`claude-opus-5`), Sonnet 5 (`claude-sonnet-5`), and Fable 5
 but that does not prove availability on the active host; record host-observed
 effort when exposed and otherwise use `UNKNOWN` without blocking launch:
 
-- Default single-target planner: Opus 5/high
-- Affirmatively simple single-target planner: Sonnet 5/high
+- Default single-target future coordinator: Opus 5/high
+- Affirmatively simple single-target future coordinator: Sonnet 5/high
 - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 5/high
@@ -143,11 +189,11 @@ effort when exposed and otherwise use `UNKNOWN` without blocking launch:
 - Independent adversarial QA: Opus 5/xhigh
 - Routine deterministic QA: Opus 5/high
 
-Opus 5/high is the default single-target route when the target is not
-affirmatively simple. Reserve Opus 5/xhigh for a present or disputed pinned
-high-risk boundary, bounded plan challenge, repeated credible failures, or an
-evidence-backed escalation. Routine multi-lane coordination uses the balanced
-class at high effort; topology alone does not justify xhigh.
+Opus 5/high is the default future single-target coordinator route when the
+target is not affirmatively simple. Reserve Opus 5/xhigh for a present or
+disputed pinned high-risk boundary, bounded plan challenge, repeated credible
+failures, or an evidence-backed escalation. Routine multi-lane coordination
+uses the balanced class at high effort; topology alone does not justify xhigh.
 
 Fable 5 is the leading candidate for long-horizon or highest-value
 coordination, but it stays experimental until the
@@ -370,6 +416,10 @@ session metadata for one lane showed a different tuple, so that batch produced
 no usable evidence for or against the routes it was meant to test. The rules
 below are what make route evidence trustworthy enough to evaluate.
 
+Record those facts with the versioned
+[execution-provenance receipt schema](execution-provenance-schema.md); its
+validator keeps receipt dispositions aligned with the table below.
+
 A requested route is an instruction; an observed route is host-reported
 evidence of what actually executed. The two are separate fields and never
 collapse into one.
@@ -413,12 +463,13 @@ user override rather than an implicit fallback, and its requested and observed
 tuples are recorded separately.
 
 These dispositions are a normative contract for coordinators, handoffs, and
-execution receipts. They are not statuses any helper returns today:
-`dispatcher-capability-preflight` emits `selected`, `launch-pending`,
+execution receipts, and the execution-provenance validator checks their
+receipt classifications. They are not statuses returned by
+`dispatcher-capability-preflight`, which emits `selected`, `launch-pending`,
 `replay-already-active`, `blocked-user-input`, `blocked-replacement-fencing`,
-and `invalid-input`, and nothing yet observes an actual route at dispatch time. Do
-not read these route-evidence dispositions as values a script produces until
-the execution-provenance receipts land.
+and `invalid-input`; that helper still does not observe the actual route at
+dispatch time. A route mismatch remains a disposition-table outcome, not a
+helper return value.
 
 A lane that resolves to `proceed-unmeasured` or `proceed-as-fallback` continues
 unless an independent risk, scope, evidence, or authority gate blocks it. It

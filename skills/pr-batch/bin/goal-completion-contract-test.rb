@@ -3,6 +3,7 @@
 
 require "minitest/autorun"
 require "fileutils"
+require "json"
 require "open3"
 require "tmpdir"
 
@@ -31,6 +32,7 @@ HOST_ADAPTER_CONTRACT_PATH = File.join(ROOT, "docs/host-adapter/contract.md")
 PR_BATCH_DOCS_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 BATCH_STATUS_SKILL_PATH = File.join(ROOT, "skills/batch-status/SKILL.md")
 CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
+HUMAN_STATUS_REPLAY_PATH = File.join(ROOT, "skills/pr-batch/fixtures/human-status-translation-replay.json")
 
 TEXT_FENCE = "```text\n"
 CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
@@ -89,6 +91,41 @@ COMPACT_CONTRACT_INVARIANTS = [
 ].freeze
 GMCC_ALIGNMENT_SENTENCE = "`GMCC-v4` is a version key that pins drift, not an external-only pointer; " \
                           "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
+HUMAN_STATUS_VERSION_KEY = "HST-v1"
+HUMAN_STATUS_HEADING = "### Human-Status Translation Contract"
+HUMAN_STATUS_SKILL_REFERENCE = "Use `HST-v1` from the canonical " \
+                               "[Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) " \
+                               "for every recurring wake or workflow-owned heartbeat."
+HUMAN_STATUS_STABLE_PAYLOAD = "DONT_NOTIFY: No user action is needed. Monitoring will continue."
+HUMAN_STATUS_ACTIONABLE_CATEGORY_RULE = "Send an actionable notification only when a decision or action is " \
+                                        "required, a target is ready for walkthrough or approval, a blocker " \
+                                        "exhausted its bounded retries and needs intervention, or closeout/archive completed."
+HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE = "Expand identifiers on first use, retain exact values, and mark unavailable " \
+                                       "meanings `UNKNOWN` rather than translating them speculatively."
+HUMAN_STATUS_AUTOMATION_CLEANUP_RULE = "After each refresh, automatically delete an obsolete heartbeat or monitor " \
+                                       "when its gate clears or becomes durably terminal; retain it on a no-change wake."
+HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE = "The current task remains the owner, and automation output must not imply " \
+                                         "that ownership changed."
+HUMAN_STATUS_BLOCKED_USER_INPUT_RULE = "For `blocked-user-input`, do not create or retain a heartbeat or monitor; " \
+                                       "preserve one exact question and manual resume instructions."
+HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE = "At closeout/archive completion, place the three labeled parts before, not " \
+                                       "instead of, the existing mandatory closeout handoff."
+HUMAN_STATUS_REQUIRED_PHRASES = [
+  "internal telemetry",
+  "routine successful, intermediate, repeated, or unchanged wake",
+  HUMAN_STATUS_ACTIONABLE_CATEGORY_RULE,
+  "What changed:",
+  "Action needed:",
+  "Next:",
+  "explicit technical or diagnostic status",
+  HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE,
+  HUMAN_STATUS_AUTOMATION_CLEANUP_RULE,
+  HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE,
+  HUMAN_STATUS_BLOCKED_USER_INPUT_RULE,
+  HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE,
+  "required handoff evidence and exact `Conversation status:` line",
+  "security, ownership, retry, scope, continuous integration (CI), review, or merge gates"
+].freeze
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 LANE_CARD_URLS_GRAMMAR = "holder/branch/PR/phase/URLs/UNKNOWN"
@@ -135,6 +172,9 @@ COMPLETED_BATCH_AUDIT_SINGLE_LINE_VALUE_RULE = "Every top-level scalar and recor
 COMPLETED_BATCH_AUDIT_STRUCTURAL_READINESS_RULE = "A marker has separate well-formed, archive-ready, and blocker-union outputs. Clean/none accepts only no records or fully evidenced terminal records; blocked/follow-ups/OUTSTANDING accepts non-ready records. `UNKNOWN` current status is never ready and cannot appear in a clean/none marker."
 COMPLETED_BATCH_AUDIT_WRAPPER_TOKEN_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
 COMPLETED_BATCH_AUDIT_FINAL_STATUS_REPLAY_RULE = "Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union."
+COMPLETED_BATCH_ACCEPTED_DEFERRAL_RULE = "Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it."
+COMPLETED_BATCH_ACCEPTED_DEFERRAL_GUARD = "This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed."
+COMPLETED_BATCH_ACCEPTED_DEFERRAL_DECISION = "The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number."
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER = "completed-batch-audit marker invalid"
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE = "If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line."
 PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. #{COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE} #{COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE} #{COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE} #{COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE} #{TERMINAL_FOLLOW_UP_EVIDENCE_RULE} #{UNRESOLVED_HANDOFF_NON_CLEAN_RULE} #{OUTSTANDING_MARKER_FINDINGS_RULE} The parent only reconciles this handoff; it never reruns or owns the audit.".freeze
@@ -338,6 +378,32 @@ def compact_contract_line(text)
   text.lines.grep(/^\s*GMCC-v4:/).first&.strip
 end
 
+def render_human_status(replay_case, stable_payload:)
+  input = replay_case.fetch("input")
+
+  case input.fetch("kind")
+  when "routine_success", "intermediate", "unchanged"
+    input.fetch("host_requires_payload") ? stable_payload : nil
+  when "action_required"
+    summary = "What changed: #{input.fetch('what_changed')} " \
+              "Action needed: #{input.fetch('action_needed')} Next: #{input.fetch('next')}"
+    if input["trigger"] == "closeout_or_archive_completed"
+      "#{summary}\n\n#{input.fetch('existing_closeout_handoff')}"
+    else
+      summary
+    end
+  when "blocked_user_input"
+    "What changed: #{input.fetch('what_changed')} " \
+      "Action needed: #{input.fetch('exact_question')} Next: #{input.fetch('manual_resume')}"
+  when "explicit_diagnostic"
+    "What changed: #{input.fetch('what_changed')} " \
+      "Action needed: #{input.fetch('action_needed')} Next: #{input.fetch('next')} " \
+      "Diagnostic details: #{input.fetch('expanded_telemetry').join('; ')}."
+  else
+    raise "unknown human-status replay kind: #{input.fetch('kind').inspect}"
+  end
+end
+
 def assert_text_includes(text, phrase, label)
   assert text.include?(phrase), "#{label} is missing required phrase: #{phrase}"
 end
@@ -349,6 +415,15 @@ end
 
 def assert_squished_includes(text, phrase, label)
   assert_text_includes(squish(text), squish(phrase), label)
+end
+
+def human_status_contract_drift_errors(text)
+  HUMAN_STATUS_REQUIRED_PHRASES.reject { |phrase| squish(text).include?(squish(phrase)) }
+end
+
+def delete_squished_phrase(text, phrase)
+  pattern = Regexp.new(squish(phrase).split.map { |token| Regexp.escape(token) }.join("\\s+"))
+  text.sub(pattern, "")
 end
 
 # The canonical rule is the only place `<PROJECT>` may be tied to the repository
@@ -480,7 +555,10 @@ class GoalCompletionContractTest < Minitest::Test
     @pr_batch_docs = read_repo_file(PR_BATCH_DOCS_PATH)
     @batch_status_skill = read_repo_file(BATCH_STATUS_SKILL_PATH)
     @changelog = read_repo_file(CHANGELOG_PATH)
+    @human_status_replay = JSON.parse(read_repo_file(HUMAN_STATUS_REPLAY_PATH))
     @workflow_contract_section = extract_markdown_section(@workflow, "### Goal Mode Completion Contract")
+    @human_status_contract_section = extract_markdown_section(@workflow, HUMAN_STATUS_HEADING)
+    @human_attention_section = extract_markdown_section(@workflow, "## Human Attention Notifications", end_heading: /^##\s+/)
     @workflow_goal_prompt = extract_goal_prompt_template(
       @workflow,
       "### Plan To Goal Handoff",
@@ -687,6 +765,172 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes continuation, "`blocked-user-input` does not start a watcher", "continuation prompt"
     assert_text_includes continuation, CANONICAL_AUTO_MERGE_EXPANSION, "continuation prompt"
     refute_includes continuation, LEGACY_AUTO_MERGE_EXPANSION, "continuation prompt"
+  end
+
+  def test_human_status_translation_replays_are_silent_actionable_or_explicit
+    assert_equal "human-status-translation-replay-v1", @human_status_replay.fetch("schema_version")
+    stable_payload = @human_status_replay.fetch("stable_dont_notify_payload")
+    assert_equal HUMAN_STATUS_STABLE_PAYLOAD, stable_payload
+    lifecycle = @human_status_replay.fetch("automation_lifecycle")
+    assert_equal "retain_without_user_notification", lifecycle.fetch("no_change")
+    assert_equal "delete_obsolete_automation", lifecycle.fetch("gate_cleared")
+    assert_equal "delete_obsolete_automation", lifecycle.fetch("durably_terminal")
+    assert_equal "no_automation_exact_question_manual_resume", lifecycle.fetch("blocked_user_input")
+    assert_equal "current_task", lifecycle.fetch("owner")
+
+    cases = @human_status_replay.fetch("cases")
+    assert_equal cases.length, cases.map { |replay_case| replay_case.fetch("id") }.uniq.length
+    cases.each do |replay_case|
+      expected = replay_case.fetch("expected_user_output")
+      actual = render_human_status(replay_case, stable_payload:)
+      if expected.nil?
+        assert_nil actual, "human-status replay failed: #{replay_case.fetch('id')}"
+      else
+        assert_equal expected, actual, "human-status replay failed: #{replay_case.fetch('id')}"
+      end
+    end
+
+    silent_cases = cases.select do |replay_case|
+      %w[routine_success intermediate unchanged].include?(replay_case.dig("input", "kind")) &&
+        !replay_case.dig("input", "host_requires_payload")
+    end
+    assert_operator silent_cases.length, :>=, 5
+    assert(silent_cases.all? { |replay_case| replay_case.fetch("expected_user_output").nil? })
+    repeated = cases.find { |replay_case| replay_case.fetch("id") == "repeated-unchanged" }
+    assert_operator repeated.dig("input", "repeat_count"), :>, 1
+
+    blocked_input = cases.find { |replay_case| replay_case.fetch("id") == "blocked-user-input-no-automation" }
+    assert_equal "none", blocked_input.dig("input", "automation_action")
+    assert_equal 1, blocked_input.fetch("expected_user_output").count("?")
+    assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "exact_question")
+    assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "manual_resume")
+
+    diagnostic = cases.find { |replay_case| replay_case.fetch("id") == "explicit-diagnostics" }
+    diagnostic_output = diagnostic.fetch("expected_user_output")
+    ["functional B2", "B3", "B+C", "c6", "raw load", "PID", "holder", "lease"].each do |term|
+      assert_includes diagnostic_output, term
+    end
+    assert_match(/PID \d+ \(process identifier \d+\)/, diagnostic_output)
+
+    actionable = cases.find { |replay_case| replay_case.fetch("id") == "actionable-decision" }
+    actionable_output = actionable.fetch("expected_user_output")
+    ["What changed:", "Action needed:", "Next:"].each { |label| assert_includes actionable_output, label }
+    refute_match(/functional B2|\bB3\b|B\+C|\bc6\b|raw load|\bPID\b|\bholder\b|\blease\b/,
+                 actionable_output)
+
+    actionable_triggers = cases.filter_map do |replay_case|
+      replay_case.dig("input", "trigger") if replay_case.dig("input", "kind") == "action_required"
+    end
+    assert_equal %w[
+      bounded_retries_exhausted
+      closeout_or_archive_completed
+      decision_or_action_required
+      walkthrough_or_approval_ready
+    ], actionable_triggers.sort
+
+    closeout = cases.find { |replay_case| replay_case.dig("input", "trigger") == "closeout_or_archive_completed" }
+    closeout_output = closeout.fetch("expected_user_output")
+    assert_includes closeout_output, closeout.dig("input", "existing_closeout_handoff")
+    assert_includes closeout_output, "PR:"
+    assert_includes closeout_output, "Validation:"
+    assert_includes closeout_output, "Blockers:"
+    assert_equal "Conversation status: Ready for archiving.", closeout_output.lines.last.chomp
+
+    unknown_diagnostic = cases.find do |replay_case|
+      replay_case.fetch("id") == "explicit-diagnostic-unknown-meaning"
+    end
+    assert_includes unknown_diagnostic.fetch("expected_user_output"), "meaning UNKNOWN"
+    refute_includes unknown_diagnostic.fetch("expected_user_output"), "meaning B3"
+  end
+
+  def test_human_status_contract_and_mirrored_surfaces_do_not_drift
+    assert_empty human_status_contract_drift_errors(@human_status_contract_section)
+    HUMAN_STATUS_REQUIRED_PHRASES.each do |phrase|
+      assert_squished_includes @human_status_contract_section, phrase, "canonical human-status contract"
+    end
+    assert_text_includes @human_status_contract_section, HUMAN_STATUS_STABLE_PAYLOAD,
+                         "canonical human-status contract"
+
+    surfaces = {
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }
+    surfaces.each do |label, text|
+      assert_equal 1, text.scan(HUMAN_STATUS_SKILL_REFERENCE).length,
+                   "#{label} human-status contract reference drifted"
+    end
+
+    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
+      assert_equal 1, text.lines.count { |line| line.strip == HUMAN_STATUS_VERSION_KEY },
+                   "generated prompt must reference #{HUMAN_STATUS_VERSION_KEY} exactly once"
+    end
+
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+    assert_equal 1, continuation.lines.count { |line| line.strip == HUMAN_STATUS_VERSION_KEY },
+                 "continuation monitor prompt must reference #{HUMAN_STATUS_VERSION_KEY} exactly once"
+    assert_text_includes @human_attention_section, "[`HST-v1`](#human-status-translation-contract)",
+                         "human-attention notification surface"
+  end
+
+  def test_human_status_contract_rejects_actionable_category_and_unknown_diagnostic_deletions
+    actionable_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_ACTIONABLE_CATEGORY_RULE
+    )
+    refute_equal @human_status_contract_section, actionable_deletion,
+                 "actionable-category mutation must delete the production sentence"
+    assert_includes human_status_contract_drift_errors(actionable_deletion),
+                    HUMAN_STATUS_ACTIONABLE_CATEGORY_RULE
+
+    unknown_diagnostic_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE
+    )
+    refute_equal @human_status_contract_section, unknown_diagnostic_deletion,
+                 "unknown-diagnostic mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(unknown_diagnostic_deletion),
+                    HUMAN_STATUS_UNKNOWN_DIAGNOSTIC_RULE
+
+    cleanup_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_AUTOMATION_CLEANUP_RULE
+    )
+    refute_equal @human_status_contract_section, cleanup_deletion,
+                 "automation-cleanup mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(cleanup_deletion),
+                    HUMAN_STATUS_AUTOMATION_CLEANUP_RULE
+
+    ownership_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE
+    )
+    refute_equal @human_status_contract_section, ownership_deletion,
+                 "automation-ownership mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(ownership_deletion),
+                    HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE
+
+    blocked_input_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_BLOCKED_USER_INPUT_RULE
+    )
+    refute_equal @human_status_contract_section, blocked_input_deletion,
+                 "blocked-user-input mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(blocked_input_deletion),
+                    HUMAN_STATUS_BLOCKED_USER_INPUT_RULE
+
+    closeout_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE
+    )
+    refute_equal @human_status_contract_section, closeout_deletion,
+                 "closeout-additive mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(closeout_deletion),
+                    HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE
   end
 
   def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces
@@ -1994,7 +2238,10 @@ class GoalCompletionContractTest < Minitest::Test
       [COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE,
        COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE,
        COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE,
-       COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE].each do |rule|
+       COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE,
+       COMPLETED_BATCH_ACCEPTED_DEFERRAL_RULE,
+       COMPLETED_BATCH_ACCEPTED_DEFERRAL_GUARD,
+       COMPLETED_BATCH_ACCEPTED_DEFERRAL_DECISION].each do |rule|
         assert_text_includes normalized_text, rule, label
       end
     end

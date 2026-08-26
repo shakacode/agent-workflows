@@ -1,0 +1,4 @@
+interface:
+  display_name: "Close Session"
+  short_description: "Close work cleanly and preserve durable context"
+  default_prompt: "Use $close-session to verify this task, capture durable outcomes, and decide whether it is ready to archive."

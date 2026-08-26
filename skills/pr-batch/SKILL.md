@@ -37,6 +37,23 @@ Run a Codex batch
 Run a Claude batch
 ```
 
+## User-Facing Coordination Contract
+
+The current task is the sole user-facing coordinator. Subagents, lane workers,
+reviewers, and QA agents are internal workers owned by the current task, never
+separate chats whose mechanics the user must coordinate. External tasks may
+send evidence or requests without gaining ownership, and automations only wake
+the current task. Apply authority decisions and separate-scope routing through
+the shared
+[user-facing coordination contract](../../docs/user-facing-coordination.md).
+
+For a heartbeat or monitor, a no-change wake produces no user-visible
+notification. Notify only for an HST-v1 actionable material state change: a
+decision or action is required, a target is ready for walkthrough or approval,
+a blocker exhausted its bounded retries and needs intervention, or
+closeout/archive completed; delete the heartbeat when its gate clears or
+becomes durably terminal. The automation never owns the task or next action.
+
 ## Single-Target Mode
 
 Use this mode for one direct-prompt task, GitHub issue, or pull request. It keeps
@@ -569,6 +586,7 @@ resolved `pr-processing.md`, including the review/audit gate
 paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
 `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
 Use this template when creating Codex goal text:
 
@@ -589,13 +607,14 @@ Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; e
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+HST-v1
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
   Original:trusted ad-hoc prompt|n/a
   Goal:one-line outcome
-  Notes:scope/branch/dependency
+  Notes:scope/branch/deps
   Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
@@ -923,6 +942,22 @@ termination and claim release, without waiting further on the drain event.
 
 ## Coordinator Closeout Lane
 
+The current task remains the sole user-facing coordinator through closeout. If
+ownership is ambiguous or the user asks who is working, emit only:
+
+```text
+Current task: <responsibility and scoped outcome>
+Internal workers: <owned implementation, review, QA, or audit roles; or none>
+External tasks: <request or evidence role only; ownership did not transfer; or none>
+Next: <current-task action or exact required decision>
+```
+
+Do not append raw cross-task messages, coordination backend events, heartbeat
+logs, worker transcripts, or claim telemetry. For an approval or readiness
+handoff, report `Technical readiness:`, `Ownership:`, `Repository submission
+policy:`, and `Merge authority:` separately. Act under existing authority; ask
+one exact question only when new authority or a product decision is required.
+
 Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
 
 For the complete numbered sequence, follow the canonical closeout lane in
@@ -969,7 +1004,7 @@ blocker>.` A completed-batch audit has separate well-formed, archive-ready, and 
 
 Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
-A raw issue lane may resolve to a different final PR only through the post-merge helper's authenticated same-repository symmetric closing-reference projection. Preserve and validate every repeated maker/checker/QA lane, and deduplicate only the final target set. Receipt comments are immutable: `update` fails before GitHub access, caller-supplied `prior_receipt_sha256` is invalid, and replay rejects every edited receipt because GitHub edit diffs are not documented historical bodies.
+A raw issue lane may resolve to a different final PR only through the post-merge helper's authenticated same-repository symmetric closing-reference projection. Preserve and validate every repeated maker/checker/QA lane, and deduplicate only the final target set. Receipt comments are immutable: no `update` command is accepted, caller-supplied `prior_receipt_sha256` is invalid, accepted deferral uses authenticated append-only `supersede`, and replay rejects every edited receipt because GitHub edit diffs are not documented historical bodies.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, reference-bound timestamps/body, SHA-256, batch ID, wrapper version, and result. Receipt comments are immutable: any edited timestamp is rejected, and GitHub `UserContentEdit.diff` is never treated as a historical body because its documented contract is only a change summary.
 
@@ -982,6 +1017,11 @@ A coordination-backed `batch_id` is an opaque nonempty single-line string and ma
 Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback.
 
 A marker has separate well-formed, archive-ready, and blocker-union outputs. Clean/none accepts only no records or fully evidenced terminal records; blocked/follow-ups/OUTSTANDING accepts non-ready records. `UNKNOWN` current status is never ready and cannot appear in a clean/none marker.
+
+Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it. This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed.
+
+The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number.
+Before publication, bind `original_receipt_sha256` to the exact local blocked marker and use `not-published` for its URL plus `not-applicable` for author and both timestamps. After publication, copy those five bindings from the verified compact predecessor reference; the decision timestamp must be later than the original receipt.
 
 Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union.
 

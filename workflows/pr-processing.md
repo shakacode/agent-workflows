@@ -22,6 +22,22 @@ For an interactive human-oriented explanation of a PR, use
 one conceptual change at a time, explains why it exists, and pauses for
 questions before continuing.
 
+## User-Facing Coordination Contract
+
+The current task is the sole user-facing coordinator. Its subagents and lane
+workers are internal workers, not separate chats the user must coordinate.
+External task messages supply evidence or requests without transferring
+ownership, and automations are wake-up mechanisms only. Use
+[User-Facing Coordination](../docs/user-facing-coordination.md) to route existing
+authority, new decisions, and materially separate scope.
+
+For a heartbeat or monitor, a no-change wake produces no user-visible
+notification. Notify only for an HST-v1 actionable material state change: a
+decision or action is required, a target is ready for walkthrough or approval,
+a blocker exhausted its bounded retries and needs intervention, or
+closeout/archive completed; delete the heartbeat when its gate clears or
+becomes durably terminal. The automation never owns the task or next action.
+
 ## Default Operating Model
 
 1. Resolve the work item:
@@ -718,10 +734,56 @@ escalation assignment, its evidence gate, and a maximum escalation count.
   one; otherwise use the closest available route or runtime default and record
   the requested and observed fields honestly.
 
+#### Planning-Pass Route Assessment
+
+Assess the current planning pass separately from the future batch coordinator,
+worker, and checker routes. Named routes are advisory; use the provider-neutral
+route when the active host or roster is not verified.
+
+| Classification | Provider-neutral | Codex GPT-5.6 | Claude profile |
+| --- | --- | --- | --- |
+| `affirmatively-simple` | `balanced/medium` | `Terra/medium` | `Sonnet 5/medium` |
+| `routine-multi-lane` | `balanced/high` | `Terra/high` | `Sonnet 5/high` |
+| `default-or-uncertain-single-target` | `strongest/high` | `Sol/high` | `Opus 5/high` |
+| `pinned-high-risk-or-escalation` | `strongest/xhigh` | `Sol/xhigh` | `Opus 5/xhigh` |
+
+Use `affirmatively-simple` only after verified scope establishes explicit
+acceptance criteria, a known bounded file surface, no unresolved design or
+dependency question, no security, authorization, concurrency, persistence,
+lifecycle, routing, release, public-contract, or other high-consequence
+boundary, easy failure detection and rollback, and a strong deterministic
+verification oracle. Any missing or disputed simplicity criterion keeps a
+single target in `default-or-uncertain-single-target`; a present or disputed
+pinned high-risk trigger uses `pinned-high-risk-or-escalation`. Multiple
+verified routine targets use `routine-multi-lane` unless a high-risk trigger
+applies. This classification describes only the current planning pass and does
+not select the future batch coordinator.
+
+| Observed comparison | Disposition | Maximum routed reviews | Compare routes? | Restart advice? |
+| --- | --- | --- | --- | --- |
+| `stronger-current` | `future-cost-advisory` | `0` | `yes` | `no` |
+| `weaker-current-host-supported` | `bounded-independent-review` | `1` | `yes` | `no` |
+| `any-observed-field-UNKNOWN` | `non-blocking-advisory` | `0` | `no` | `no` |
+
+When the fully observed current route is stronger than recommended, report the
+cheaper recommendation for a future planning run only. Do not spawn another
+planner merely to save cost after a stronger route is already active.
+When it is materially weaker, the host may run at most one bounded independent
+plan review at the recommended route, but only when explicit route-specific
+execution is supported and the review can finish without user interaction.
+Keep the reviewer distinct from the plan maker and disclose the review route.
+Unavailable, inherited, substituted, or unverifiable route-specific execution
+gets a non-blocking advisory instead; never require a restart.
+Record observed host, model, and effort field by field only from host-exposed
+runtime evidence. If any field needed for comparison is `UNKNOWN`, make no
+stronger/weaker comparison, launch no route-correct review, and give no restart
+advice. Requested preferences, prompt text, and model self-report are not
+observations.
+
 For a Codex GPT-5.6 host, use this recommended advisory profile:
 
-- Default single-target planner: Sol/high
-- Affirmatively simple single-target planner: Terra/high
+- Default single-target future coordinator: Sol/high
+- Affirmatively simple single-target future coordinator: Terra/high
 - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -743,24 +805,22 @@ coordinator or worker, with the actual route recorded honestly. Luna remains
 outside this profile's recommended worker roster. Shared workflow text remains
 portable for other providers and model generations.
 
-For planning, one issue or PR remains single-target even when its coordinator
-delegates bounded implementation, review, or QA lanes. Default to Sol/high
-because one issue may still require difficult diagnosis, design, or verification
-planning. Prefer Terra/high only after an affirmative simple classification,
-and Sol/xhigh only for a present or disputed pinned high-risk boundary or
-another listed exception. Multiple targets use the routine
-multi-lane balanced/high route unless an exception applies; subagents alone do
-not require that route. When the host exposes a materially different current planner route,
-report one concise non-blocking current-versus-recommended advisory with the
-risk or cost reason; do not infer it from `UNKNOWN`, repeat it, stop, or request
-a restart.
+For the future batch coordinator, one issue or PR remains single-target even
+when it delegates bounded implementation, review, or QA lanes. Default to
+Sol/high because one issue may still require difficult diagnosis, design, or
+verification. Prefer Terra/high only after an affirmative simple
+classification, and Sol/xhigh only for a present or disputed pinned high-risk
+boundary or another listed exception. Multiple targets use the routine
+multi-lane balanced/high coordinator route unless an exception applies;
+subagents alone do not require that route. The current planning pass instead
+uses the separate assessment above.
 
 For a Claude host, use this provisional recommended advisory profile
 (`claude-profile v1`; see the Conservative Claude Profile in
 `docs/agent-workflows-model-routing.md`):
 
-- Default single-target planner: Opus 5/high
-- Affirmatively simple single-target planner: Sonnet 5/high
+- Default single-target future coordinator: Opus 5/high
+- Affirmatively simple single-target future coordinator: Sonnet 5/high
 - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 5/high
@@ -768,16 +828,14 @@ For a Claude host, use this provisional recommended advisory profile
 - Independent adversarial QA: Opus 5/xhigh
 - Routine deterministic QA: Opus 5/high
 
-For Claude planning, one issue or PR remains single-target even when its
-coordinator delegates bounded implementation, review, or QA lanes. Default to
+For the future Claude batch coordinator, one issue or PR remains single-target
+even when it delegates bounded implementation, review, or QA lanes. Default to
 Opus 5/high, use Sonnet 5/high only after the affirmative simple
 classification, and use Opus 5/xhigh only for a present or disputed pinned
-high-risk boundary or another listed exception. Multiple targets
-use the routine multi-lane balanced/high route unless an exception applies;
-delegation by itself does not require that route. When the host exposes a materially
-different current planner route, report one concise non-blocking
-current-versus-recommended advisory with the risk or cost reason; do not infer
-it from `UNKNOWN`, repeat it, stop, or request a restart.
+high-risk boundary or another listed exception. Multiple targets use the
+routine multi-lane balanced/high coordinator route unless an exception
+applies; delegation by itself does not require that route. The current planning
+pass instead uses the separate assessment above.
 
 Sonnet 5/high is recommended for the same affirmative simple-task
 classification. When lane risk or bounded delegation requires an execution
@@ -1585,6 +1643,12 @@ owner/serial decision without repeating the expanded map:
 
 > Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`
 
+The Batch Plan always records `Planning-pass model/effort assessment:` with the
+verified-scope classification, requested recommendation, concise evidence,
+field-granular host-observed host/model/effort, comparison disposition, and any
+independent review route or `none`. Keep it separate from the future
+`Coordinator model/effort preference:` and outside the compact goal prompt.
+
 Use this goal prompt shape:
 Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
@@ -1622,13 +1686,14 @@ Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; e
 Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+HST-v1
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
   Original:trusted ad-hoc prompt|n/a
   Goal:one-line outcome
-  Notes:scope/branch/dependency
+  Notes:scope/branch/deps
   Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
@@ -1914,6 +1979,53 @@ Pressure checks:
 - A blocker that publishes an exact future reset time gets one same-thread heartbeat scheduled for that time, because neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that exact published time; use it as the single scheduled mechanism for that blocker and gate; do not start or retain either watcher mode for the same gate, and create or update its durable record before stopping or replacing any existing watcher so no wake is lost. Replay updates that one heartbeat instead of duplicating it, and a terminal state pauses or deletes it. An `UNKNOWN` retry time, a `blocked-user-input` blocker, or an unavailable scheduling capability creates no automation and keeps the exact manual resume instructions.
 - `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
+
+### Human-Status Translation Contract
+
+`HST-v1` is the canonical boundary between internal telemetry and text shown to
+the user. Recurring monitors, Goal-mode wakes, workflow-owned heartbeats, and
+their prompt generators must reference this contract instead of defining local
+notification wording.
+
+- Keep raw coordination phases and lane codes, load samples, process identifiers
+  (PIDs), holder identities, lease details, and other exact machine evidence in
+  lifecycle records. They are internal telemetry by default.
+- Classify the wake before rendering anything for the user. A routine
+  successful, intermediate, repeated, or unchanged wake is silent. If the host
+  requires a payload, return exactly:
+
+  ```text
+  DONT_NOTIFY: No user action is needed. Monitoring will continue.
+  ```
+
+  The payload is a stable transport response, not a user notification; do not
+  add phase names, queue movement, or other telemetry.
+- Send an actionable notification only when a decision or action is required,
+  a target is ready for walkthrough or approval, a blocker exhausted its bounded
+  retries and needs intervention, or closeout/archive completed. Write it in
+  plain English with exactly these labeled parts: `What changed:`, `Action needed:`
+  (use `none` when applicable), and `Next:`. Each part must answer its
+  label directly.
+- Include an internal identifier only when it is necessary for the requested
+  action, and expand it on first use. Never guess an expansion that the evidence
+  does not establish.
+- An explicit technical or diagnostic status request may return exact telemetry.
+  Expand identifiers on first use, retain exact values, and mark unavailable
+  meanings `UNKNOWN` rather than translating them speculatively.
+- At closeout/archive completion, place the three labeled parts before, not
+  instead of, the existing mandatory closeout handoff. Preserve every item of
+  required handoff evidence and exact `Conversation status:` line, which remains
+  the final user-visible line.
+- Treat automation lifecycle as separate from notification rendering. After
+  each refresh, automatically delete an obsolete heartbeat or monitor when its
+  gate clears or becomes durably terminal; retain it on a no-change wake.
+  Cleanup itself does not imply a user notification. The current task remains
+  the owner, and automation output must not imply that ownership changed.
+- For `blocked-user-input`, do not create or retain a heartbeat or monitor;
+  preserve one exact question and manual resume instructions.
+- This boundary changes presentation only. It does not alter machine evidence or
+  any security, ownership, retry, scope, continuous integration (CI), review, or
+  merge gates.
 
 ### Coordination State
 
@@ -2597,6 +2709,7 @@ Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule 
 ```text
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>.
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
+HST-v1
 
 First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
 
@@ -2757,7 +2870,7 @@ Batch coordinators execute their retained closeout through checklist+replay.
 
 Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`. Before publishing `audit_status: complete`, the coordinator runs `completed-batch-publication-preflight` with `--workflow-config <trusted repo workflow config>`, a fresh raw bounded targeted coordination status, the exact trusted target manifest, refreshed target terminal states/full heads, and one exact-head QA Evidence marker per target. The helper derives the full set from coordination lanes and refuses absent, ambiguous, nonterminal, unmerged/unclosed, or `UNKNOWN` state. QA must replay as `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED` with an authenticated replayable maintainer-waiver comment; `unknown`, `in_progress`, missing, stale, malformed, or blocked QA refuses completion. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync. For `audit_status: complete`, this additionally requires the eligible preflight and exact manifest match. Pass the refreshed preflight receipt to `publish` and `replay` with `--publication-preflight` and explicit `--workflow-config <trusted repo workflow config>`; replay blocks on a coordination, target/head, or QA snapshot mismatch/staleness.
 
-A raw issue lane may resolve to a different final PR only through the post-merge helper's authenticated same-repository symmetric closing-reference projection. Preserve and validate every repeated maker/checker/QA lane, and deduplicate only the final target set. Receipt comments are immutable: `update` fails before GitHub access, caller-supplied `prior_receipt_sha256` is invalid, and replay rejects every edited receipt because GitHub edit diffs are not documented historical bodies.
+A raw issue lane may resolve to a different final PR only through the post-merge helper's authenticated same-repository symmetric closing-reference projection. Preserve and validate every repeated maker/checker/QA lane, and deduplicate only the final target set. Receipt comments are immutable: no `update` command is accepted, caller-supplied `prior_receipt_sha256` is invalid, accepted deferral uses authenticated append-only `supersede`, and replay rejects every edited receipt because GitHub edit diffs are not documented historical bodies.
 
 Each `qa_evidence` row must carry a coordinator-owned
 `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's
@@ -2786,7 +2899,12 @@ Immediately before the exact final `Conversation status` line, emit only:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
-The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. New complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. New complete receipts also contain exactly one helper-managed `publication_snapshot`; unrefreshed or snapshot-mismatched data fails. A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
+The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Ordinary new complete receipts also contain exactly one helper-managed `publication_snapshot`; accepted-deferral receipts contain exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
+
+Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it. This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed.
+
+The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number.
+Before publication, bind `original_receipt_sha256` to the exact local blocked marker and use `not-published` for its URL plus `not-applicable` for author and both timestamps. After publication, copy those five bindings from the verified compact predecessor reference; the decision timestamp must be later than the original receipt.
 
 A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`. Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid. `UNKNOWN` validation is fail-closed: only literal ASCII exact `UNKNOWN` may use an exact-sentinel path; NFKC-normalize a copy of every scalar and record value before case-insensitive nested-`UNKNOWN` rejection, so compatibility forms cannot count as evidence. Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported. Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records. Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens. Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union. After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union.
 
@@ -2810,6 +2928,22 @@ Pressure checks:
 - Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the marker grammar above; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`
 
 ### Coordinator Closeout Lane
+
+The current task remains the sole user-facing coordinator through closeout. If
+ownership is ambiguous or the user asks who is working, emit only:
+
+```text
+Current task: <responsibility and scoped outcome>
+Internal workers: <owned implementation, review, QA, or audit roles; or none>
+External tasks: <request or evidence role only; ownership did not transfer; or none>
+Next: <current-task action or exact required decision>
+```
+
+Do not append raw cross-task messages, coordination backend events, heartbeat
+logs, worker transcripts, or claim telemetry. For an approval or readiness
+handoff, report `Technical readiness:`, `Ownership:`, `Repository submission
+policy:`, and `Merge authority:` separately. Act under existing authority; ask
+one exact question only when new authority or a product decision is required.
 
 After workers finish, the coordinator keeps working until each target has a live
 final state. Do not stop at PR creation unless the user explicitly requested
@@ -3100,12 +3234,14 @@ Do not create separate tracking issues for these metrics. Keep them in the PR ev
 
 ## Human Attention Notifications
 
-If the user provides a Slack channel and the Slack connector or app is available, send a concise
-message when the agent needs a maintainer decision, has merge-ready PRs, is blocked, or is about to
-stop a long batch. For private channels, the Slack app or bot must be invited first.
+Apply [`HST-v1`](#human-status-translation-contract) before sending any Slack
+or other user-facing workflow notification. Its actionable categories, message
+shape, identifier expansion, diagnostic exception, and routine-wake silence
+govern; this section adds only channel-specific transport rules.
 
-Notification messages should include only the exact decision or status needed, the PR/issue links,
-and the next action the agent will take after a response. Do not post routine progress noise.
+If the user provides a Slack channel and the Slack connector or app is
+available, send an actionable `HST-v1` notice there with the relevant PR/issue
+links. For private channels, the Slack app or bot must be invited first.
 
 ## Hosted CI Backpressure
 

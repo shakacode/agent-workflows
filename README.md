@@ -305,6 +305,8 @@ This project is available under the MIT License.
 | `adversarial-pr-review` | Run a skeptical pre-merge or post-merge PR review. |
 | `autoreview` | Run a structured second-model local diff review. |
 | `benchmark-verification` | Verify performance-sensitive changes with benchmark evidence. |
+| `close-batch` | Recover a stale PR batch, route required walkthroughs or decisions, and archive only after canonical closeout. |
+| `close-session` | Close active work with verified handoff and archive readiness. |
 | `continue` | Resume an in-progress task with a structured checkpoint. |
 | `evaluate-issue` | Decide whether an issue or proposed fix is worth doing. |
 | `manual-testing` | Verify changed behavior in a real running app or service. |
@@ -322,6 +324,7 @@ This project is available under the MIT License.
 | `secure-github-actions` | Audit repository-based workflows and composite actions mechanically; enforce `docker://` digest immutability for manual container review. |
 | `spec` | Turn vague implementation intent into requirements, design, and tasks. |
 | `status` | Report tight progress (done/in-progress/blocked/next) without starting new work. |
+| `structural-review` | Use when a diff is correct but may still be making the codebase worse — file growth, scattered conditionals, thin abstractions, layer violations, or feature-flag branching debt. |
 | `task-observer` | Optionally capture sanitized observations for later skill or workflow improvement review. |
 | `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
 | `triage` | Build a whole-surface issue/PR inventory and batch split. |
