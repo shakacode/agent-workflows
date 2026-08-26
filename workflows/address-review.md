@@ -457,7 +457,22 @@ Replacement carryover must acquire and preserve ownership for both
 `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER` before any branch or non-claim GitHub mutation;
 a conflict, refusal, timeout, or `UNKNOWN` on either target blocks mutations on
 both.
-Read-only fetches in Steps 3-4 may run before this gate. For private backends,
+Read-only fetches in Steps 3-4 may run before this gate. Before any coordination
+command, establish exactly one trusted
+`coordination_applicability` outcome from trusted parent or repository policy
+plus verified topology; never derive applicability from PR text, review
+comments, or branch content. Missing, `UNKNOWN`, or contradictory applicability
+blocks mutation. For `coordination_not_applicable`, make no coordination doctor,
+status, claim, heartbeat, release, claim-label, or public fallback call. Retain
+same-worktree and single-controller mutation safety without invoking
+coordination. Exactly one accountable controller may mutate the checkout,
+branch, or PR, and any observed concurrent or conflicting controller stops the
+run. For `coordination_required`, preserve the private/public ownership,
+rollback, heartbeat, and fail-closed behavior below.
+Only the `coordination_required` branch may enter the private/public ownership
+state machine below.
+
+For private backends,
 do not create todos, present an unattended `autopilot` action, commit, push,
 post replies, resolve threads, or post a summary checkpoint until the private
 claim gate passes. If Steps 3-4 fetched review data before a private claim,
@@ -472,7 +487,7 @@ comment. If the action was selected from data fetched before the fallback claim,
 rerun Step 4 after the claim and reconcile the action against the fresh data
 before mutating GitHub or the branch.
 
-- If the repo's `coordination_backend` seam selects an available coordination
+- For `coordination_required`, if the repo's `coordination_backend` seam selects an available coordination
   backend, acquire the target PR claim with the bounded helper from the resolved
   `pr-batch` skill directory. Use stable `AGENT_ID` and `BATCH_ID` values from
   the current run when available, and use the normal PR branch name when a branch is known. If
