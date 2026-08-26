@@ -104,7 +104,10 @@ module DiffIdentity
         opts.on("--json") { options[:json] = true }
         opts.on("-h", "--help") { options[:help] = true }
       end
-      remaining = parser.parse(argv)
+      # OptionParser applies inferred regular expressions before callbacks.
+      # Parse binary duplicates so malformed locale-tagged argv reaches our
+      # controlled UTF-8 validation instead of raising from Regexp#match.
+      remaining = parser.parse(argv.map(&:b))
       raise Error, "unexpected arguments: #{remaining.join(' ')}" unless remaining.empty?
 
       unless options[:help]

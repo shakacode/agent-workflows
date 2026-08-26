@@ -118,14 +118,21 @@ class DiffIdentityTest < Minitest::Test
   end
 
   def test_cli_rejects_invalid_utf8_sha_bytes_without_a_backtrace
-    %w[--base-sha --head-sha].each do |option|
+    environments = [{ "name" => "inherited", "variables" => {} }]
+    locales, locale_status = Open3.capture2e("locale", "-a")
+    if locale_status.success? && locales.lines.any? { |locale| locale.strip.casecmp?("C.UTF-8") }
+      environments << { "name" => "C.UTF-8", "variables" => { "LC_ALL" => "C.UTF-8" } }
+    end
+
+    environments.product(%w[--base-sha --head-sha]).each do |environment, option|
       arguments = ["--base-ref", "main", "--base-sha", BASE_SHA, "--head-sha", HEAD_SHA]
       arguments[arguments.index(option) + 1] = "\xFF".b
-      _out, err, status = Open3.capture3({ "LC_ALL" => "C" }, RbConfig.ruby, SCRIPT, *arguments)
+      _out, err, status = Open3.capture3(environment.fetch("variables"), RbConfig.ruby, SCRIPT, *arguments)
 
-      refute status.success?, option
-      assert_equal "Error: #{option} must contain valid UTF-8 bytes\n", err
-      refute_match(/diff-identity:\d+|ArgumentError/, err)
+      label = "#{environment.fetch('name')} #{option}"
+      refute status.success?, label
+      assert_equal "Error: #{option} must contain valid UTF-8 bytes\n", err, label
+      refute_match(/optparse\.rb|diff-identity:\d+|ArgumentError/, err, label)
     end
   end
 end
