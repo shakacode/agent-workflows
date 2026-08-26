@@ -1,0 +1,144 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# SessionEnd adapter: record that a lane stopped deliberately, so an abandoned
+# lane stops being indistinguishable from a running one.
+#
+# A lane goes quiet for two very different reasons -- it finished, or its agent
+# stopped -- and an expired heartbeat looks identical either way. This emits the
+# already-canonical non-terminal signal `human_intervention` with `kind: drain`
+# at the moment the agent stops, which is the only moment the difference is
+# cheap to observe.
+#
+# What this deliberately does NOT do: release the claim. `pr-processing.md`
+# forbids `agent-coord release` for a normal agent-runner restart, and a
+# SessionEnd cannot tell a restart from an abandonment. Releasing here would
+# break a lane that is about to be resumed. Recording a non-terminal event is
+# safe in both cases; releasing is not.
+#
+# Emission requires a backend-advertised conditional operation that atomically
+# proves this session's expected claim identity and current liveness while
+# appending the drain. Backend `n/a` and an unavailable capability skip; a
+# malformed advertisement or failed advertised operation becomes best-effort
+# UNKNOWN. The exact opaque argv runs without shell evaluation, with a finite
+# deadline in its own process group, and never blocks anything.
+
+require "json"
+require_relative "lib/hook_support"
+
+module CloseLaneOnSessionEnd
+  # SessionEnd output and exit status are ignored by the host; this hook is
+  # cleanup only and always exits 0.
+  DONE = 0
+
+  # One backend-advertised conditional drain operation and its ordered opaque
+  # argv, as a JSON array of strings. The operation must atomically verify the
+  # expected holder, generation/instance, and live lease or heartbeat before it
+  # appends the event. Static append-only event argv is not this capability.
+  ADVERTISEMENT_ENV = "AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV"
+  TIMEOUT_ENV = "AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS"
+  PROJECT_DIR_FLAG = "--project-dir"
+
+  # Claude Code budgets SessionEnd hooks tightly, so the default deadline is
+  # short. A slow backend records UNKNOWN rather than delaying shutdown.
+  DEFAULT_TIMEOUT_SECONDS = 1.0
+  NO_CURRENT_CLAIM_EXIT = 3
+
+  # `resume` is excluded by the installed matcher; re-checked here so a
+  # hand-edited install cannot drain a session that is merely being resumed.
+  SKIPPED_REASONS = %w[resume].freeze
+
+  module_function
+
+  def run(input: $stdin, err: $stderr, env: ENV, argv: ARGV)
+    err.puts("close-lane-on-session-end: #{outcome(input, env, trusted_project_directory(argv))}")
+    DONE
+  rescue StandardError => e
+    # This adapter can never block anything, so an unexpected error is reported
+    # and swallowed rather than dumping a backtrace into the session teardown.
+    err.puts("close-lane-on-session-end: UNKNOWN: #{e.class}: #{e.message}")
+    DONE
+  end
+
+  def outcome(input, env, directory)
+    return "skipped: adapter disabled" if HookSupport.disabled?(env)
+
+    payload = HookSupport.read_payload(input)
+    return "skipped: SessionEnd payload too large to read" if payload == :oversized
+    return "skipped: SessionEnd payload read timed out" if payload == :timed_out
+    return "skipped: unreadable SessionEnd payload" unless payload.is_a?(Hash)
+    return "skipped: session end reason is #{payload['reason']}" if SKIPPED_REASONS.include?(payload["reason"].to_s)
+
+    return "skipped: no trusted project directory" unless directory
+    return "skipped: no coordination backend" unless HookSupport.coordination_backend(directory)
+
+    emit(advertisement(env), directory, env)
+  end
+
+  def trusted_project_directory(argv)
+    return nil unless argv.length == 2 && argv.first == PROJECT_DIR_FLAG
+
+    path = argv.last.to_s
+    return nil unless HookSupport.safe_argument?(path)
+    return nil unless File.expand_path(path) == path
+    return nil unless File.directory?(path)
+
+    path
+  rescue SystemCallError, ArgumentError
+    nil
+  end
+
+  def emit(argv, directory, env)
+    return "skipped: conditional drain transport: unavailable" if argv.nil?
+    return "skipped: conditional drain transport: unsupported" if argv == :unsupported
+    return "attempted-write failure: malformed conditional drain advertisement" if argv == :malformed
+
+    result = HookSupport.run_bounded(argv, timeout_seconds: timeout_seconds(env), chdir: directory)
+    return "emitted human_intervention kind: drain" if result[:ok]
+    return "UNKNOWN: drain event write timed out" if result[:failure] == "timeout"
+    return "skipped: no current live lane claim" if result[:status]&.exitstatus == NO_CURRENT_CLAIM_EXIT
+
+    detail = result[:stderr].to_s.strip.lines.first.to_s.strip
+    "UNKNOWN: drain event write failed#{detail.empty? ? '' : ": #{detail}"}"
+  end
+
+  # nil when nothing is advertised, :unsupported for the known append-only
+  # record-event command, :malformed when the advertisement cannot be trusted,
+  # otherwise the opaque conditional-operation argv to run verbatim.
+  def advertisement(env)
+    raw = env[ADVERTISEMENT_ENV].to_s.strip
+    return nil if raw.empty?
+
+    parsed = JSON.parse(raw)
+    return :malformed unless parsed.is_a?(Array) && !parsed.empty?
+    # Arguments may contain spaces: they are separate argv elements and never
+    # reach a shell. A NUL byte cannot survive exec, so it is unsafe.
+    return :malformed unless parsed.all? { |value| HookSupport.safe_argument?(value) }
+    return :malformed if parsed.first.strip.empty?
+    return :unsupported if File.basename(parsed.first) == "agent-coord" && parsed[1] == "record-event"
+
+    parsed
+  rescue JSON::ParserError
+    :malformed
+  end
+
+  # Clamped because hooks.json registers a 5s SessionEnd timeout, and an
+  # operator-set value above that would let the host kill this hook mid-write
+  # instead of letting it finish and record its own outcome.
+  # `hooks-install-contract-test.rb` asserts the margin against hooks.json.
+  MAX_TIMEOUT_SECONDS = 2.0
+  HOST_STARTUP_DISPATCH_MARGIN_SECONDS = 1.5
+
+  def timeout_seconds(env)
+    [positive_float(env, TIMEOUT_ENV, DEFAULT_TIMEOUT_SECONDS), MAX_TIMEOUT_SECONDS].min
+  end
+
+  def positive_float(env, key, fallback)
+    value = Float(env[key].to_s)
+    value.positive? && value.finite? ? value : fallback
+  rescue ArgumentError
+    fallback
+  end
+end
+
+exit(CloseLaneOnSessionEnd.run) if $PROGRAM_NAME == __FILE__

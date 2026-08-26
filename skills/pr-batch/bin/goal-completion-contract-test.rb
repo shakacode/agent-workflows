@@ -149,8 +149,8 @@ SELF_LAUNCH_PLANNING_CHAT_ROLE = "Planning-chat role: not applicable after self-
 SELF_LAUNCH_CLOSEOUT_OWNER = "Archive/closeout owner: batch coordinator."
 SELF_LAUNCH_NO_RETAINED_RESPONSIBILITY = "Retained responsibilities: none (no cross-batch, dependency, release, or shared-follow-up responsibility is retained)."
 SELF_LAUNCH_NOT_A_THIRD_PLANNING_ROLE = "This is a transition out of planning, not a third planning role; neither `prompt-only` nor `parent-orchestrator` is selectable after the transition."
-PLAN_PR_BATCH_RESPONSE_ORDER = "Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
-TRIAGE_RESPONSE_ORDER = "Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
+PLAN_PR_BATCH_RESPONSE_ORDER = "Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
+TRIAGE_RESPONSE_ORDER = "Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
 PARENT_RECONCILIATION_RULE = "After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive."
 PARENT_RECONCILIATION_FORWARD_REFERENCE = "This reconciliation is the post-batch/pre-release-or-archive gate below."
 RELEASE_AUTHORITY_RECONCILIATION_RULE = "Coordinated release may pass this reconciliation gate only under separately established release authority; reconciliation never grants release or merge authority."
@@ -172,6 +172,9 @@ COMPLETED_BATCH_AUDIT_SINGLE_LINE_VALUE_RULE = "Every top-level scalar and recor
 COMPLETED_BATCH_AUDIT_STRUCTURAL_READINESS_RULE = "A marker has separate well-formed, archive-ready, and blocker-union outputs. Clean/none accepts only no records or fully evidenced terminal records; blocked/follow-ups/OUTSTANDING accepts non-ready records. `UNKNOWN` current status is never ready and cannot appear in a clean/none marker."
 COMPLETED_BATCH_AUDIT_WRAPPER_TOKEN_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
 COMPLETED_BATCH_AUDIT_FINAL_STATUS_REPLAY_RULE = "Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union."
+COMPLETED_BATCH_ACCEPTED_DEFERRAL_RULE = "Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it."
+COMPLETED_BATCH_ACCEPTED_DEFERRAL_GUARD = "This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed."
+COMPLETED_BATCH_ACCEPTED_DEFERRAL_DECISION = "The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number."
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER = "completed-batch-audit marker invalid"
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE = "If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line."
 PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. #{COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE} #{COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE} #{COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE} #{COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE} #{TERMINAL_FOLLOW_UP_EVIDENCE_RULE} #{UNRESOLVED_HANDOFF_NON_CLEAN_RULE} #{OUTSTANDING_MARKER_FINDINGS_RULE} The parent only reconciles this handoff; it never reruns or owns the audit.".freeze
@@ -776,8 +779,10 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal "current_task", lifecycle.fetch("owner")
 
     cases = @human_status_replay.fetch("cases")
-    assert_equal cases.length, cases.map { |replay_case| replay_case.fetch("id") }.uniq.length
-    cases.each do |replay_case|
+    variants = @human_status_replay.fetch("variants")
+    replay_cases = cases + variants
+    assert_equal replay_cases.length, replay_cases.map { |replay_case| replay_case.fetch("id") }.uniq.length
+    replay_cases.each do |replay_case|
       expected = replay_case.fetch("expected_user_output")
       actual = render_human_status(replay_case, stable_payload:)
       if expected.nil?
@@ -801,6 +806,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal 1, blocked_input.fetch("expected_user_output").count("?")
     assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "exact_question")
     assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "manual_resume")
+    assert_includes blocked_input.dig("input", "manual_resume"), "Reply here"
 
     diagnostic = cases.find { |replay_case| replay_case.fetch("id") == "explicit-diagnostics" }
     diagnostic_output = diagnostic.fetch("expected_user_output")
@@ -825,6 +831,16 @@ class GoalCompletionContractTest < Minitest::Test
       walkthrough_or_approval_ready
     ], actionable_triggers.sort
 
+    actionable_user_input = (cases + variants).select do |replay_case|
+      replay_case.dig("input", "kind") == "action_required" &&
+        replay_case.dig("input", "action_needed") != "none."
+    end
+    actionable_user_input.each do |replay_case|
+      next_step = replay_case.dig("input", "next")
+      assert_match(/Reply here|Start a new task/, next_step,
+                   "#{replay_case.fetch('id')} should name the response channel")
+    end
+
     closeout = cases.find { |replay_case| replay_case.dig("input", "trigger") == "closeout_or_archive_completed" }
     closeout_output = closeout.fetch("expected_user_output")
     assert_includes closeout_output, closeout.dig("input", "existing_closeout_handoff")
@@ -832,6 +848,14 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes closeout_output, "Validation:"
     assert_includes closeout_output, "Blockers:"
     assert_equal "Conversation status: Ready for archiving.", closeout_output.lines.last.chomp
+
+    followups = variants.find { |replay_case| replay_case.fetch("id") == "closeout-followups-remain" }
+    followups_output = followups.fetch("expected_user_output")
+    assert_equal followups_output, render_human_status(followups, stable_payload:)
+    assert_includes followups_output, "Action needed: Start a new task for issue #445."
+    assert_includes followups_output,
+                    "Next: Start a new task from issue #445; keep this task open until the handoff is created."
+    assert_includes followups_output, "Conversation status: Follow-ups remain — issue #445 (open): track."
 
     unknown_diagnostic = cases.find do |replay_case|
       replay_case.fetch("id") == "explicit-diagnostic-unknown-meaning"
@@ -1846,7 +1870,8 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes @plan_pr_batch_skill, PLAN_PR_BATCH_RESPONSE_ORDER
 
     ["Batch Plan", "generated goal prompt", "Goal prompt character count",
-     "selected exact", "actual final user-visible line"].each_cons(2) do |first, second|
+     "Action needed:", "Next:", "selected exact",
+     "actual final user-visible line"].each_cons(2) do |first, second|
       assert_operator PLAN_PR_BATCH_RESPONSE_ORDER.index(first), :<,
                       PLAN_PR_BATCH_RESPONSE_ORDER.index(second),
                       "plan-pr-batch response order must keep #{first.inspect} before #{second.inspect}"
@@ -1860,7 +1885,8 @@ class GoalCompletionContractTest < Minitest::Test
 
     ["scope/repositories/sources", "phase-1 counts/dependency graph", "coordination",
      "capacity", "wave plan/prompts", "lifecycle record", "queue summary if applicable",
-     "residual risks", "maintainer decisions", "selected exact", "actual final user-visible line"].each_cons(2) do |first, second|
+     "residual risks", "maintainer decisions", "Action needed:", "Next:",
+     "selected exact", "actual final user-visible line"].each_cons(2) do |first, second|
       assert_operator TRIAGE_RESPONSE_ORDER.index(first), :<,
                       TRIAGE_RESPONSE_ORDER.index(second),
                       "triage response order must keep #{first.inspect} before #{second.inspect}"
@@ -2235,7 +2261,10 @@ class GoalCompletionContractTest < Minitest::Test
       [COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE,
        COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE,
        COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE,
-       COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE].each do |rule|
+       COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE,
+       COMPLETED_BATCH_ACCEPTED_DEFERRAL_RULE,
+       COMPLETED_BATCH_ACCEPTED_DEFERRAL_GUARD,
+       COMPLETED_BATCH_ACCEPTED_DEFERRAL_DECISION].each do |rule|
         assert_text_includes normalized_text, rule, label
       end
     end

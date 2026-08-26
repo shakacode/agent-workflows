@@ -400,11 +400,13 @@ The installer writes:
 - `<target>/LICENSE`
 - `<target>/workflows/*`
 - `<target>/docs/coordination-backend.md`
+- `<target>/docs/execution-provenance-schema.md`
 - `<target>/docs/review-finding-schema.md`
 - `<target>/docs/agent-workflows-model-routing.md`
 - `<target>/docs/user-facing-coordination.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
+- `<target>/bin/validate-execution-provenance`
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-doctor`

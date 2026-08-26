@@ -17,11 +17,13 @@ Installed paths:
   <target>/skills/* (flat delivery mode only)
   <target>/workflows/*
   <target>/docs/coordination-backend.md
+  <target>/docs/execution-provenance-schema.md
   <target>/docs/review-finding-schema.md
   <target>/docs/agent-workflows-model-routing.md
   <target>/docs/user-facing-coordination.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
+  <target>/bin/validate-execution-provenance
   <target>/bin/agent-workflows-doctor
   <target>/bin/agent_doctor/*
   <target>/bin/agent-workflows-status
@@ -48,9 +50,11 @@ bin_helpers=(
   agent-workflows-trust-audit
   install-agent-workflows
   upgrade-agent-workflows
+  validate-execution-provenance
 )
 pack_docs=(
   coordination-backend.md
+  execution-provenance-schema.md
   review-finding-schema.md
   agent-workflows-model-routing.md
   user-facing-coordination.md

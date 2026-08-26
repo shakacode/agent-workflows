@@ -158,6 +158,13 @@ module AgentWorkflowSeamDoctorTestHelpers
     }
   end
 
+  def selected_hosted_ci_policy
+    {
+      "executable" => ".agents/bin/selected-hosted-ci-receipts",
+      "credential_env" => ["HOSTED_CI_TOKEN"]
+    }
+  end
+
   def coordination_backend_contract(*allowed_identifiers)
     {
       "version" => 1,
@@ -578,6 +585,251 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "invalid hosted_qa_gate policy: $.hosted_qa_gate contains duplicate key \"target\""
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_rejects_unknown_mapping_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      write_policy(
+        root,
+        POLICY.merge(
+          "selected_hosted_ci_receipts" => selected_hosted_ci_policy.merge("shell" => "bash")
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid selected_hosted_ci_receipts policy: keys must be exactly " \
+                      "credential_env, executable"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_rejects_lowercase_credential_names
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      write_policy(
+        root,
+        POLICY.merge(
+          "selected_hosted_ci_receipts" => selected_hosted_ci_policy.merge(
+            "credential_env" => ["hosted_ci_token"]
+          )
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid selected_hosted_ci_receipts policy: credential_env must contain " \
+                      "uppercase credential environment names"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_requires_an_existing_executable_helper
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid selected_hosted_ci_receipts policy: executable is missing or inaccessible"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_requires_an_executable_helper
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      helper = write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      File.chmod(0o644, helper)
+      write_policy(
+        root,
+        POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid selected_hosted_ci_receipts policy: executable is not executable"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_accepts_the_complete_closed_mapping
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      write_policy(
+        root,
+        POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_accepts_an_empty_credential_allowlist
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      write_policy(
+        root,
+        POLICY.merge(
+          "selected_hosted_ci_receipts" => selected_hosted_ci_policy.merge("credential_env" => [])
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_requires_a_tracked_executable_git_mode
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+      helper = write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      relative_helper = ".agents/bin/selected-hosted-ci-receipts"
+      run_git!(root, "init", "-q")
+
+      untracked_out, untracked_status = run_doctor(root)
+      refute untracked_status.success?
+      assert_includes untracked_out,
+                      "invalid selected_hosted_ci_receipts policy: executable is not tracked by git"
+
+      run_git!(root, "add", "--", relative_helper)
+      run_git!(root, "update-index", "--chmod=-x", "--", relative_helper)
+      File.chmod(0o755, helper)
+      mode_out, mode_status = run_doctor(root)
+      refute mode_status.success?
+      assert_includes mode_out,
+                      "invalid selected_hosted_ci_receipts policy: executable git mode must be 100755"
+
+      run_git!(root, "update-index", "--chmod=+x", "--", relative_helper)
+      valid_out, valid_status = run_doctor(root)
+      assert valid_status.success?, valid_out
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_requires_a_runtime_supported_shebang
+    cases = {
+      "missing" => "puts 'receipt'\n",
+      "env options" => "#!/usr/bin/env -S\nputs 'receipt'\n"
+    }
+
+    cases.each do |label, contents|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(
+          root,
+          POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+        )
+        write_skill(root, "No commands here.\n")
+        helper = File.join(root, ".agents/bin/selected-hosted-ci-receipts")
+        File.write(helper, contents)
+        File.chmod(0o755, helper)
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out,
+                        "invalid selected_hosted_ci_receipts policy: executable needs a " \
+                        "supported explicit shebang",
+                        label
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_requires_a_resolvable_external_interpreter
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+      helper = File.join(root, ".agents/bin/selected-hosted-ci-receipts")
+      local_interpreter = File.join(root, "local-interpreter")
+      File.write(local_interpreter, "#!/bin/sh\nexit 0\n")
+      File.chmod(0o755, local_interpreter)
+      cases = {
+        "missing absolute" => "#!/definitely/missing/interpreter\n",
+        "repo local absolute" => "#!#{local_interpreter}\n",
+        "missing env program" => "#!/usr/bin/env definitely-missing-interpreter\n"
+      }
+
+      cases.each do |label, shebang|
+        File.write(helper, "#{shebang}puts 'receipt'\n")
+        File.chmod(0o755, helper)
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out,
+                        "invalid selected_hosted_ci_receipts policy: executable interpreter",
+                        label
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_rejects_duplicate_and_noncredential_names
+    cases = {
+      "duplicate" => {
+        names: %w[HOSTED_CI_TOKEN HOSTED_CI_TOKEN],
+        diagnostic: "credential_env must not contain duplicates"
+      },
+      "noncredential" => {
+        names: ["ARBITRARY_NAME"],
+        diagnostic: "credential_env contains non-credential names: ARBITRARY_NAME"
+      }
+    }
+
+    cases.each do |label, fixture|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+        write_policy(
+          root,
+          POLICY.merge(
+            "selected_hosted_ci_receipts" => selected_hosted_ci_policy.merge(
+              "credential_env" => fixture.fetch(:names)
+            )
+          )
+        )
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out,
+                        "invalid selected_hosted_ci_receipts policy: " \
+                        "#{fixture.fetch(:diagnostic)}",
+                        label
+      end
     end
   end
 
