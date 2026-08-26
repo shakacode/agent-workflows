@@ -132,6 +132,10 @@ write_stable_release_receipt() {
     --change-author release-author \
     --release-actor release-actor \
     --approval-reviewer release-reviewer \
+    --repository shakacode/agent-workflows \
+    --workflow-run-id 12345 \
+    --workflow-run-attempt 1 \
+    --workflow-path .github/workflows/release.yml \
     --workflow-run-url https://github.com/shakacode/agent-workflows/actions/runs/12345 \
     --recorded-at 2026-08-25T00:00:00Z \
     --receipt "$receipt" >/dev/null
@@ -151,6 +155,9 @@ while [[ $# -gt 0 ]]; do
       output="${2:?--output requires a path}"
       shift 2
       ;;
+    --header)
+      shift 2
+      ;;
     --*)
       shift
       ;;
@@ -160,9 +167,74 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-expected="https://github.com/shakacode/agent-workflows/releases/download/${QA_RELEASE_REF:?}/agent-workflows-release-receipt.json"
-[[ "$url" = "$expected" ]]
-install -m 0600 "${QA_RELEASE_RECEIPT_FIXTURE:?}" "$output"
+release_ref="${QA_RELEASE_REF:?}"
+receipt="${QA_RELEASE_RECEIPT_FIXTURE:?}"
+case "$url" in
+  "https://github.com/shakacode/agent-workflows/releases/download/$release_ref/agent-workflows-release-receipt.json")
+    install -m 0600 "$receipt" "$output"
+    ;;
+  "https://api.github.com/repos/shakacode/agent-workflows/releases/tags/$release_ref")
+    ruby -rjson -rdigest -e '
+      receipt, output, release_ref = ARGV
+      data = JSON.parse(File.read(receipt))
+      actor = data.dig("workflow", "actor")
+      repository = data.dig("workflow", "repository")
+      asset_url = "https://github.com/#{repository}/releases/download/#{release_ref}/agent-workflows-release-receipt.json"
+      payload = {
+        "tag_name" => release_ref,
+        "draft" => false,
+        "prerelease" => false,
+        "html_url" => "https://github.com/#{repository}/releases/tag/#{release_ref}",
+        "author" => {"login" => "github-actions[bot]", "type" => "Bot"},
+        "assets" => [{
+          "name" => "agent-workflows-release-receipt.json",
+          "state" => "uploaded",
+          "size" => File.size(receipt),
+          "digest" => "sha256:#{Digest::SHA256.file(receipt).hexdigest}",
+          "browser_download_url" => asset_url,
+          "uploader" => {"login" => "github-actions[bot]", "type" => "Bot"}
+        }]
+      }
+      File.write(output, JSON.generate(payload))
+    ' "$receipt" "$output" "$release_ref"
+    ;;
+  "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345")
+    ruby -rjson -e '
+      receipt, output = ARGV
+      data = JSON.parse(File.read(receipt))
+      workflow = data.fetch("workflow")
+      payload = {
+        "id" => workflow.fetch("run_id"),
+        "run_attempt" => workflow.fetch("run_attempt"),
+        "path" => workflow.fetch("path"),
+        "event" => "workflow_dispatch",
+        "status" => "completed",
+        "conclusion" => "success",
+        "html_url" => workflow.fetch("run_url"),
+        "head_branch" => data.fetch("release_ref"),
+        "head_sha" => ENV.fetch("QA_WORKFLOW_HEAD_OVERRIDE", data.fetch("peeled_commit")),
+        "actor" => {"login" => workflow.fetch("actor"), "type" => "User"},
+        "repository" => {"full_name" => workflow.fetch("repository"), "private" => false}
+      }
+      File.write(output, JSON.generate(payload))
+    ' "$receipt" "$output"
+    ;;
+  "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345/approvals")
+    ruby -rjson -e '
+      receipt, output = ARGV
+      reviewer = JSON.parse(File.read(receipt)).dig("approval", "reviewer")
+      File.write(output, JSON.generate([{
+        "state" => "approved",
+        "environments" => [{"name" => "stable-release"}],
+        "user" => {"login" => reviewer, "type" => "User"}
+      }]))
+    ' "$receipt" "$output"
+    ;;
+  *)
+    echo "unexpected curl URL: $url" >&2
+    exit 1
+    ;;
+esac
 BASH
   chmod +x "$fake_bin/curl"
 }
@@ -8655,6 +8727,73 @@ test_stable_install_ignores_hostile_materialization_state_environment() {
     fail "hostile caller materialization state installed mutable source content"
 }
 
+test_stable_install_never_executes_the_candidate_release_verifier() {
+  local tmp source target candidate_commit receipt fake_bin sentinel trusted_commit
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  receipt="$tmp/release-receipt.json"
+  fake_bin="$tmp/fake-bin"
+  sentinel="$tmp/candidate-verifier-executed"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  trusted_commit="$(git -C "$source" rev-parse HEAD)"
+
+  cat > "$source/bin/agent-workflows-release" <<'RUBY'
+#!/usr/bin/env ruby
+File.write(ENV.fetch("QA_CANDIDATE_VERIFIER_SENTINEL"), "executed\n")
+exit 0
+RUBY
+  chmod +x "$source/bin/agent-workflows-release"
+  git -C "$source" add bin/agent-workflows-release
+  git -C "$source" commit --quiet -m "hostile candidate verifier"
+  candidate_commit="$(git -C "$source" rev-parse HEAD)"
+  git -C "$source" tag -a v0.1.0 -m "Agent Workflows v0.1.0"
+  git -C "$source" checkout --quiet --detach "$trusted_commit"
+  write_stable_release_receipt "$source" v0.1.0 "$receipt"
+  write_fake_release_receipt_curl "$fake_bin"
+
+  env -u AGENT_WORKFLOWS_CHANNEL \
+    PATH="$fake_bin:$PATH" \
+    QA_CANDIDATE_VERIFIER_SENTINEL="$sentinel" \
+    QA_RELEASE_REF=v0.1.0 \
+    QA_RELEASE_RECEIPT_FIXTURE="$receipt" \
+    "$source/bin/install-agent-workflows" \
+      --target "$target" --release v0.1.0 >"$tmp/install.out"
+
+  [[ ! -e "$sentinel" ]] || fail "stable install executed verifier bytes from candidate $candidate_commit"
+}
+
+test_stable_install_rejects_forged_github_workflow_provenance() {
+  local tmp source target receipt fake_bin output exit_code
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  receipt="$tmp/release-receipt.json"
+  fake_bin="$tmp/fake-bin"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  git -C "$source" tag -a v0.1.0 -m "Agent Workflows v0.1.0"
+  write_stable_release_receipt "$source" v0.1.0 "$receipt"
+  write_fake_release_receipt_curl "$fake_bin"
+
+  set +e
+  output="$(env -u AGENT_WORKFLOWS_CHANNEL \
+    PATH="$fake_bin:$PATH" \
+    QA_RELEASE_REF=v0.1.0 \
+    QA_RELEASE_RECEIPT_FIXTURE="$receipt" \
+    QA_WORKFLOW_HEAD_OVERRIDE="0000000000000000000000000000000000000000" \
+    "$source/bin/install-agent-workflows" \
+      --target "$target" --release v0.1.0 2>&1)"
+  exit_code=$?
+  set -e
+
+  [[ "$exit_code" -ne 0 ]] || fail "stable install accepted forged GitHub workflow provenance"
+  assert_contains "$output" "workflow run metadata"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || \
+    fail "forged workflow provenance wrote stable install metadata"
+}
+
 test_stable_install_rejects_local_annotated_tag_without_protected_release_receipt() {
   local tmp source target output status fake_bin
   tmp="$(mktemp -d)"
@@ -8724,7 +8863,7 @@ test_stable_copy_bootstrap_materializes_exact_ref_before_installer_execution() {
         abort "#{path}: missing source-qualified stable installer"
       abort "#{path}: mutable installer runs before exact release checkout" unless clone < checkout && checkout < install
     end
-  ' "$ROOT/README.md" "$ROOT/docs/installation-and-upgrades.md" "$ROOT/docs/release-channel.md" || \
+  ' "$ROOT/README.md" "$ROOT/docs/adoption.md" "$ROOT/docs/installation-and-upgrades.md" "$ROOT/docs/release-channel.md" || \
     fail "stable copy bootstrap does not lead with exact-ref materialization"
 }
 
@@ -8996,6 +9135,8 @@ main() {
     test_upgrade_validates_consumer_root_after_install
     test_stable_install_materializes_the_exact_annotated_release
     test_stable_install_ignores_hostile_materialization_state_environment
+    test_stable_install_never_executes_the_candidate_release_verifier
+    test_stable_install_rejects_forged_github_workflow_provenance
     test_stable_install_rejects_local_annotated_tag_without_protected_release_receipt
     test_stable_install_accepts_linked_worktree_and_rejects_non_git_source
     test_stable_copy_bootstrap_materializes_exact_ref_before_installer_execution

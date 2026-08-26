@@ -221,9 +221,14 @@ git -C "$source" checkout --detach "$release"
 
 The stable installer retrieves the fixed
 `agent-workflows-release-receipt.json` asset for the exact release from GitHub
-and verifies its tag object, peeled commit, protected environment, independent
-reviewer, and workflow evidence before copying anything. A local annotated tag
-without that durable receipt fails closed.
+and verifies it with bootstrap verifier bytes, never the candidate's archived
+release helper. Public GitHub release metadata binds the receipt's server-side
+SHA-256, size, GitHub Actions publisher, and exact tag; workflow-run and approval-history
+metadata bind the canonical repository, exact tagged head, release workflow,
+successful run ID/attempt, actor, protected environment, and independent
+reviewer. Candidate content is materialized only after these checks pass. The
+public API requires no installer credential; unavailable, rate-limited,
+malformed, or mismatched evidence and a local self-asserted receipt fail closed.
 
 Install another host from the already verified exact checkout. For Claude Code:
 

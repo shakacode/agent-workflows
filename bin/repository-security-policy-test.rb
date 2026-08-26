@@ -252,6 +252,10 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_includes workflow, "bin/agent-workflows-release record-receipt"
     assert_includes workflow, "--expected-tag-object"
     assert_includes workflow, "--approved-commit"
+    assert_includes workflow, "--repository \"$REPOSITORY\""
+    assert_includes workflow, "--workflow-run-id \"$RUN_ID\""
+    assert_includes workflow, "--workflow-run-attempt \"$RUN_ATTEMPT\""
+    assert_includes workflow, "--workflow-path \"$WORKFLOW_PATH\""
     assert_includes workflow, "gh release create"
     refute_match(/verify-(?:commit|tag).*signature|git verify-tag|git verify-commit/, workflow)
   end

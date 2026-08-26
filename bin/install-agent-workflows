@@ -45,6 +45,7 @@ USAGE
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_root="$repo_root"
+release_verifier="$repo_root/bin/agent-workflows-release"
 materialized_temp_root=""
 host="codex"
 target=""
@@ -3807,7 +3808,8 @@ report_delivery_state_conflict() {
 }
 
 materialize_stable_release() {
-  local tag_ref materialized_root receipt_path receipt_url discovered_tag_object discovered_commit
+  local approvals_path discovered_commit discovered_tag_object github_api_base materialized_root receipt_path
+  local receipt_url release_metadata_path release_metadata_url run_path run_url tag_ref workflow_run_id
 
   [[ "$release_ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
     echo "--release must be an exact vX.Y.Z tag, got: $release_ref" >&2
@@ -3834,23 +3836,16 @@ materialize_stable_release() {
   tag_object="$discovered_tag_object"
   release_commit="$discovered_commit"
 
-  materialized_temp_root="$(mktemp -d)"
-  materialized_root="$materialized_temp_root/pack"
-  mkdir -p "$materialized_root"
-  if ! git -C "$source_root" archive "$release_commit" | tar -x -C "$materialized_root"; then
-    rm -rf "$materialized_temp_root"
-    materialized_temp_root=""
-    echo "Unable to materialize stable release: $release_ref" >&2
+  if [[ ! -f "$release_verifier" || -L "$release_verifier" ]]; then
+    echo "Stable installation requires a trusted regular-file release verifier: $release_verifier" >&2
     exit 1
   fi
-  ruby "$materialized_root/bin/agent-workflows-release" verify-tag \
+  ruby "$release_verifier" verify-tag \
     --root "$source_root" --release "$release_ref" \
-    --approved-commit "$release_commit" --expected-tag-object "$tag_object" >/dev/null || {
-      status=$?
-      rm -rf "$materialized_temp_root"
-      materialized_temp_root=""
-      exit "$status"
-    }
+    --approved-commit "$release_commit" --expected-tag-object "$tag_object" >/dev/null || exit $?
+
+  materialized_temp_root="$(mktemp -d)"
+  github_api_base="https://api.github.com/repos/shakacode/agent-workflows"
   receipt_path="$materialized_temp_root/agent-workflows-release-receipt.json"
   receipt_url="https://github.com/shakacode/agent-workflows/releases/download/$release_ref/agent-workflows-release-receipt.json"
   if ! curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
@@ -3860,13 +3855,70 @@ materialize_stable_release() {
     echo "Stable installation requires the protected release receipt: $receipt_url" >&2
     exit 1
   fi
-  ruby "$materialized_root/bin/agent-workflows-release" verify-receipt \
-    --root "$source_root" --receipt "$receipt_path" >/dev/null || {
+  release_metadata_path="$materialized_temp_root/github-release.json"
+  release_metadata_url="$github_api_base/releases/tags/$release_ref"
+  if ! curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+    --header 'Accept: application/vnd.github+json' \
+    --header 'X-GitHub-Api-Version: 2022-11-28' \
+    --output "$release_metadata_path" "$release_metadata_url"; then
+    rm -rf "$materialized_temp_root"
+    materialized_temp_root=""
+    echo "Stable installation requires GitHub release provenance: $release_metadata_url" >&2
+    exit 1
+  fi
+  workflow_run_id="$(ruby -rjson -e '
+    receipt = JSON.parse(File.read(ARGV.fetch(0)))
+    run_id = receipt.dig("workflow", "run_id")
+    abort unless run_id.is_a?(Integer) && run_id.positive?
+    puts run_id
+  ' "$receipt_path" 2>/dev/null)" || {
+    rm -rf "$materialized_temp_root"
+    materialized_temp_root=""
+    echo "Stable release receipt lacks a valid workflow run ID" >&2
+    exit 1
+  }
+  run_path="$materialized_temp_root/github-workflow-run.json"
+  run_url="$github_api_base/actions/runs/$workflow_run_id"
+  approvals_path="$materialized_temp_root/github-workflow-approvals.json"
+  if ! curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+    --header 'Accept: application/vnd.github+json' \
+    --header 'X-GitHub-Api-Version: 2022-11-28' \
+    --output "$run_path" "$run_url"; then
+    rm -rf "$materialized_temp_root"
+    materialized_temp_root=""
+    echo "Stable installation requires GitHub workflow run provenance: $run_url" >&2
+    exit 1
+  fi
+  if ! curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+    --header 'Accept: application/vnd.github+json' \
+    --header 'X-GitHub-Api-Version: 2022-11-28' \
+    --output "$approvals_path" "$run_url/approvals"; then
+    rm -rf "$materialized_temp_root"
+    materialized_temp_root=""
+    echo "Stable installation requires GitHub protected-environment approval provenance: $run_url/approvals" >&2
+    exit 1
+  fi
+  ruby "$release_verifier" verify-receipt \
+    --root "$source_root" \
+    --receipt "$receipt_path" \
+    --repository shakacode/agent-workflows \
+    --github-release "$release_metadata_path" \
+    --github-workflow-run "$run_path" \
+    --github-workflow-approvals "$approvals_path" >/dev/null || {
       status=$?
       rm -rf "$materialized_temp_root"
       materialized_temp_root=""
       exit "$status"
     }
+
+  materialized_root="$materialized_temp_root/pack"
+  mkdir -p "$materialized_root"
+  if ! git -C "$source_root" archive "$release_commit" | tar -x -C "$materialized_root"; then
+    rm -rf "$materialized_temp_root"
+    materialized_temp_root=""
+    echo "Unable to materialize stable release: $release_ref" >&2
+    exit 1
+  fi
 
   repo_root="$materialized_root"
   doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"

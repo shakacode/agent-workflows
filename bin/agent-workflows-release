@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 require "open3"
 require "optparse"
 require "time"
@@ -11,6 +12,17 @@ class ReleaseError < StandardError; end
 def read_json(path)
   value = JSON.parse(File.read(path, encoding: "UTF-8"))
   raise ReleaseError, "#{path} must contain a JSON object" unless value.is_a?(Hash)
+
+  value
+rescue Errno::ENOENT
+  raise ReleaseError, "missing release metadata: #{path}"
+rescue JSON::ParserError => e
+  raise ReleaseError, "invalid JSON in #{path}: #{e.message}"
+end
+
+def read_json_array(path)
+  value = JSON.parse(File.read(path, encoding: "UTF-8"))
+  raise ReleaseError, "#{path} must contain a JSON array" unless value.is_a?(Array)
 
   value
 rescue Errno::ENOENT
@@ -129,10 +141,23 @@ def record_receipt(options)
     raise ReleaseError, "approval reviewer must be a non-author human who did not initiate the release"
   end
 
-  workflow_run_url = required_option(options, :workflow_run_url)
-  unless workflow_run_url.match?(%r{\Ahttps://github\.com/[^/]+/[^/]+/actions/runs/\d+\z})
-    raise ReleaseError, "workflow run URL must identify a GitHub Actions run"
+  repository = required_option(options, :repository)
+  unless repository.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z})
+    raise ReleaseError, "repository must use owner/name form"
   end
+
+  workflow_run_id = Integer(required_option(options, :workflow_run_id), 10)
+  workflow_run_attempt = Integer(required_option(options, :workflow_run_attempt), 10)
+  raise ReleaseError, "workflow run ID and attempt must be positive integers" unless workflow_run_id.positive? && workflow_run_attempt.positive?
+
+  workflow_path = required_option(options, :workflow_path)
+  unless workflow_path == ".github/workflows/release.yml"
+    raise ReleaseError, "workflow path must identify .github/workflows/release.yml"
+  end
+
+  workflow_run_url = required_option(options, :workflow_run_url)
+  expected_run_url = "https://github.com/#{repository}/actions/runs/#{workflow_run_id}"
+  raise ReleaseError, "workflow run URL must identify the bound GitHub Actions run" unless workflow_run_url == expected_run_url
 
   recorded_at = required_option(options, :recorded_at)
   Time.iso8601(recorded_at)
@@ -158,18 +183,29 @@ def record_receipt(options)
       "exact_commit" => verified.fetch("peeled_commit"),
       "human_non_author" => true
     },
-    "workflow" => { "actor" => release_actor, "run_url" => workflow_run_url }
+    "workflow" => {
+      "repository" => repository,
+      "path" => workflow_path,
+      "run_id" => workflow_run_id,
+      "run_attempt" => workflow_run_attempt,
+      "actor" => release_actor,
+      "run_url" => workflow_run_url
+    }
   }
   receipt_path = File.expand_path(required_option(options, :receipt))
   File.write(receipt_path, "#{JSON.pretty_generate(receipt)}\n", encoding: "UTF-8")
   { "status" => "RECEIPT_WRITTEN", "receipt" => receipt_path, "release" => receipt }
 rescue ArgumentError
-  raise ReleaseError, "--recorded-at must be an ISO 8601 timestamp"
+  raise ReleaseError, "release run identifiers and --recorded-at must be valid"
 end
 
 def verify_receipt(options)
   receipt_path = File.expand_path(required_option(options, :receipt))
   receipt = read_json(receipt_path)
+  raise ReleaseError, "GitHub release provenance is required" unless options[:github_release]
+
+  github_release = read_json(File.expand_path(options.fetch(:github_release)))
+
   unless receipt["schema"] == "agent-workflows-stable-release-v1" && receipt["channel"] == "stable"
     raise ReleaseError, "receipt must use the stable release receipt schema"
   end
@@ -208,6 +244,69 @@ def verify_receipt(options)
     raise ReleaseError, "receipt evidence does not bind the verified release"
   end
 
+  release_ref = verified.fetch("release_ref")
+  repository = workflow["repository"].to_s
+  expected_repository = required_option(options, :repository)
+  raise ReleaseError, "receipt provenance does not match the expected repository" unless repository == expected_repository
+
+  expected_asset_url = "https://github.com/#{repository}/releases/download/#{release_ref}/agent-workflows-release-receipt.json"
+  assets = github_release["assets"]
+  matching_assets = assets.is_a?(Array) ? assets.select { |asset| asset.is_a?(Hash) && asset["name"] == "agent-workflows-release-receipt.json" } : []
+  unless github_release["tag_name"] == release_ref && github_release["draft"] == false &&
+         github_release["prerelease"] == false && matching_assets.length == 1
+    raise ReleaseError, "GitHub release provenance does not identify one published receipt asset for #{release_ref}"
+  end
+
+  asset = matching_assets.fetch(0)
+  expected_digest = "sha256:#{Digest::SHA256.file(receipt_path).hexdigest}"
+  raise ReleaseError, "GitHub release asset digest does not match the downloaded receipt" unless asset["digest"] == expected_digest
+  unless asset["state"] == "uploaded" && asset["browser_download_url"] == expected_asset_url
+    raise ReleaseError, "GitHub release asset metadata does not bind the downloaded receipt"
+  end
+
+  expected_release_url = "https://github.com/#{repository}/releases/tag/#{release_ref}"
+  unless github_release["html_url"] == expected_release_url &&
+         github_release.dig("author", "type") == "Bot" &&
+         github_release.dig("author", "login") == "github-actions[bot]" &&
+         asset["size"] == File.size(receipt_path) &&
+         asset.dig("uploader", "type") == "Bot" &&
+         asset.dig("uploader", "login") == "github-actions[bot]"
+    raise ReleaseError, "GitHub release asset does not bind the GitHub Actions release publisher and exact size"
+  end
+
+  raise ReleaseError, "GitHub workflow run provenance is required" unless options[:github_workflow_run]
+
+  github_workflow_run = read_json(File.expand_path(options.fetch(:github_workflow_run)))
+  unless repository.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z}) &&
+         github_workflow_run["id"] == workflow["run_id"] &&
+         github_workflow_run["run_attempt"] == workflow["run_attempt"] &&
+         github_workflow_run["path"] == workflow.fetch("path") &&
+         github_workflow_run["event"] == "workflow_dispatch" &&
+         github_workflow_run["status"] == "completed" &&
+         github_workflow_run["conclusion"] == "success" &&
+         github_workflow_run["html_url"] == workflow["run_url"] &&
+         github_workflow_run["head_branch"] == release_ref &&
+         github_workflow_run["head_sha"] == verified.fetch("peeled_commit") &&
+         github_workflow_run.dig("actor", "login") == workflow["actor"] &&
+         github_workflow_run.dig("actor", "type") == "User" &&
+         github_workflow_run.dig("repository", "full_name") == repository &&
+         github_workflow_run.dig("repository", "private") == false
+    raise ReleaseError, "GitHub workflow run metadata does not bind the exact repository, release tag, workflow, and head"
+  end
+
+  raise ReleaseError, "GitHub approval provenance is required" unless options[:github_workflow_approvals]
+
+  github_workflow_approvals = read_json_array(File.expand_path(options.fetch(:github_workflow_approvals)))
+  matching_approval = github_workflow_approvals.any? do |review|
+    review.is_a?(Hash) &&
+      review["state"] == "approved" &&
+      review.dig("user", "type") == "User" &&
+      review.dig("user", "login") == approval["reviewer"] &&
+      review["environments"].is_a?(Array) &&
+      review["environments"].any? { |environment| environment.is_a?(Hash) && environment["name"] == "stable-release" }
+  end
+  raise ReleaseError, "GitHub review history lacks the receipt's protected-environment approval" unless matching_approval
+
   { "status" => "RECEIPT_VERIFIED", "receipt" => receipt_path, "release" => receipt }
 rescue KeyError => e
   raise ReleaseError, "receipt is incomplete: #{e.message}"
@@ -231,8 +330,21 @@ parser = OptionParser.new do |opts|
     options[:approval_reviewer] = value
   end
   opts.on("--workflow-run-url URL", "Durable GitHub Actions run URL") { |value| options[:workflow_run_url] = value }
+  opts.on("--repository OWNER/NAME", "Canonical GitHub repository") { |value| options[:repository] = value }
+  opts.on("--workflow-run-id ID", "GitHub Actions workflow run ID") { |value| options[:workflow_run_id] = value }
+  opts.on("--workflow-run-attempt N", "GitHub Actions workflow run attempt") do |value|
+    options[:workflow_run_attempt] = value
+  end
+  opts.on("--workflow-path PATH", "Repository-relative workflow path") { |value| options[:workflow_path] = value }
   opts.on("--recorded-at TIMESTAMP", "Receipt recording timestamp") { |value| options[:recorded_at] = value }
   opts.on("--receipt PATH", "Release receipt path") { |value| options[:receipt] = value }
+  opts.on("--github-release PATH", "GitHub release API metadata") { |value| options[:github_release] = value }
+  opts.on("--github-workflow-run PATH", "GitHub workflow run API metadata") do |value|
+    options[:github_workflow_run] = value
+  end
+  opts.on("--github-workflow-approvals PATH", "GitHub workflow approval API metadata") do |value|
+    options[:github_workflow_approvals] = value
+  end
 end
 
 begin

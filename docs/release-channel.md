@@ -44,8 +44,9 @@ tag. It does not inspect cryptographic signatures.
 Successful promotion publishes `agent-workflows-release-receipt.json`. The
 receipt binds the stable channel, release ref, annotated-tag object, peeled
 commit, protected environment, human reviewer, change author, workflow actor,
-receipt recording time, and workflow run URL. Keep the receipt as a GitHub Release asset;
-the workflow run and release asset are the durable release evidence.
+receipt recording time, canonical repository, workflow path, and exact workflow
+run ID, attempt, and URL. Keep the receipt as a GitHub Release asset; the
+workflow run and release asset are the durable release evidence.
 
 ## Install, Update, And Roll Back
 
@@ -60,10 +61,18 @@ git -C "$source" checkout --detach "$release"
 "$source/bin/install-agent-workflows" --host codex --source "$source" --release "$release"
 ```
 
-Use `--host claude` for Claude Code. The stable bootstrap verifies the annotated
-tag, downloads and verifies the protected GitHub Release receipt, and
-materializes the tagged tree before copying from it. It never installs files
-from the current branch. A local tag without the exact receipt fails closed.
+Use `--host claude` for Claude Code. Before materializing candidate content, the
+stable bootstrap uses its own regular-file verifier rather than executing the
+candidate's release helper. It verifies the annotated tag, downloads the fixed
+receipt asset, and reads the public GitHub REST metadata for the release,
+workflow run, and environment approval history. Verification binds the
+server-reported asset SHA-256 and GitHub Actions publisher, canonical repository, exact release
+tag and head, release workflow path, successful run ID and attempt, workflow
+actor, and independent `stable-release` reviewer. Public metadata needs no API
+credential; unavailable, malformed, rate-limited, or mismatched evidence fails
+closed. Candidate files are extracted and copied only after this trust binding
+succeeds. A local tag or self-asserted receipt without that evidence fails
+closed.
 Install metadata records `channel`, `release_ref`, `tag_object`, and the full
 peeled `source_revision`.
 

@@ -143,6 +143,10 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
       "--change-author", "release-author",
       "--release-actor", "release-actor",
       "--approval-reviewer", "release-reviewer",
+      "--repository", "shakacode/agent-workflows",
+      "--workflow-run-id", "12345",
+      "--workflow-run-attempt", "1",
+      "--workflow-path", ".github/workflows/release.yml",
       "--workflow-run-url", "https://github.com/shakacode/agent-workflows/actions/runs/12345",
       "--recorded-at", "2026-08-25T00:00:00Z",
       "--receipt", receipt
@@ -160,13 +164,78 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --output) output="${2:?}"; shift 2 ;;
+          --header) shift 2 ;;
           --*) shift ;;
           *) url="$1"; shift ;;
         esac
       done
-      release="${url#*/releases/download/}"
-      release="${release%%/*}"
-      install -m 0600 "${QA_RELEASE_RECEIPT_DIR:?}/$release.json" "$output"
+      release="${QA_RELEASE_REF:?}"
+      receipt="${QA_RELEASE_RECEIPT_DIR:?}/$release.json"
+      case "$url" in
+        "https://github.com/shakacode/agent-workflows/releases/download/$release/agent-workflows-release-receipt.json")
+          install -m 0600 "$receipt" "$output"
+          ;;
+        "https://api.github.com/repos/shakacode/agent-workflows/releases/tags/$release")
+          ruby -rjson -rdigest -e '
+            receipt, output, release_ref = ARGV
+            data = JSON.parse(File.read(receipt))
+            workflow = data.fetch("workflow")
+            repository = workflow.fetch("repository")
+            payload = {
+              "tag_name" => release_ref,
+              "draft" => false,
+              "prerelease" => false,
+              "html_url" => "https://github.com/#{repository}/releases/tag/#{release_ref}",
+              "author" => {"login" => "github-actions[bot]", "type" => "Bot"},
+              "assets" => [{
+                "name" => "agent-workflows-release-receipt.json",
+                "state" => "uploaded",
+                "size" => File.size(receipt),
+                "digest" => "sha256:#{Digest::SHA256.file(receipt).hexdigest}",
+                "browser_download_url" => "https://github.com/#{repository}/releases/download/#{release_ref}/agent-workflows-release-receipt.json",
+                "uploader" => {"login" => "github-actions[bot]", "type" => "Bot"}
+              }]
+            }
+            File.write(output, JSON.generate(payload))
+          ' "$receipt" "$output" "$release"
+          ;;
+        "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345")
+          ruby -rjson -e '
+            receipt, output = ARGV
+            data = JSON.parse(File.read(receipt))
+            workflow = data.fetch("workflow")
+            payload = {
+              "id" => workflow.fetch("run_id"),
+              "run_attempt" => workflow.fetch("run_attempt"),
+              "path" => workflow.fetch("path"),
+              "event" => "workflow_dispatch",
+              "status" => "completed",
+              "conclusion" => "success",
+              "html_url" => workflow.fetch("run_url"),
+              "head_branch" => data.fetch("release_ref"),
+              "head_sha" => data.fetch("peeled_commit"),
+              "actor" => {"login" => workflow.fetch("actor"), "type" => "User"},
+              "repository" => {"full_name" => workflow.fetch("repository"), "private" => false}
+            }
+            File.write(output, JSON.generate(payload))
+          ' "$receipt" "$output"
+          ;;
+        "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345/approvals")
+          ruby -rjson -e '
+            receipt, output = ARGV
+            reviewer = JSON.parse(File.read(receipt)).dig("approval", "reviewer")
+            File.write(output, JSON.generate([{
+              "state" => "approved",
+              "environments" => [{"name" => "stable-release"}],
+              "user" => {"login" => reviewer, "type" => "User"}
+            }]))
+          ' "$receipt" "$output"
+          ;;
+        *)
+          echo "unexpected curl URL: $url" >&2
+          exit 1
+          ;;
+      esac
     BASH
     FileUtils.chmod(0o755, path)
   end
@@ -201,6 +270,8 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
     if @fake_bin
       env["PATH"] = "#{@fake_bin}:#{ENV.fetch('PATH')}"
       env["QA_RELEASE_RECEIPT_DIR"] = @release_receipt_dir
+      release_index = command.index("--release")
+      env["QA_RELEASE_REF"] = command.fetch(release_index + 1) if release_index
     end
     Open3.capture2e(env, *command)
   end
