@@ -3697,6 +3697,60 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_same_suite_chronology_revalidates_selected_phase_matrix
+    head = "a" * 40
+    cases = {
+      later_success: ["completed", "success", "completed", "failure", "completed", "success", true],
+      later_failure: ["completed", "failure", "completed", "success", "completed", "failure", true],
+      later_pending: ["in_progress", nil, "completed", "failure", "in_progress", nil, true],
+      failure_suite_later_success: ["completed", "failure", "completed", "failure", "completed", "success", false],
+      success_suite_later_failure: ["completed", "success", "completed", "success", "completed", "failure", false],
+      completed_suite_later_pending: ["completed", "failure", "completed", "failure", "in_progress", nil, false],
+      running_suite_later_success: ["in_progress", nil, "completed", "failure", "completed", "success", false]
+    }
+
+    cases.each do |label, values|
+      suite_status, suite_conclusion, old_status, old_conclusion,
+        latest_status, latest_conclusion, expected_complete = values
+      suite = {
+        "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+        "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+        "status" => suite_status, "conclusion" => suite_conclusion, "latest_check_runs_count" => 2
+      }
+      runs = [
+        {
+          "id" => 100, "name" => "build", "head_sha" => head,
+          "status" => old_status, "conclusion" => old_conclusion,
+          "started_at" => "2026-08-25T10:00:00Z", "html_url" => "",
+          "app" => suite.fetch("app"), "check_suite" => { "id" => 10 }
+        },
+        {
+          "id" => 101, "name" => "build", "head_sha" => head,
+          "status" => latest_status, "conclusion" => latest_conclusion,
+          "started_at" => "2026-08-25T12:00:00Z", "html_url" => "",
+          "app" => suite.fetch("app"), "check_suite" => { "id" => 10 }
+        }
+      ]
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        key == "check_suites" ? [suite] : runs
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      if expected_complete
+        assert complete, "#{label}: #{error}"
+        assert_nil error, label
+        assert_equal [101], rows.map { |row| row.fetch("id") }, label
+      else
+        refute complete, label
+        assert_empty rows, label
+        assert_match(/contradicted|nonterminal/, error, label)
+      end
+    end
+  end
+
   def test_check_suite_inventory_does_not_treat_cross_suite_rerequest_as_retry_lineage
     head = "a" * 40
     {

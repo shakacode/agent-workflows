@@ -958,29 +958,37 @@ module PrCiReadiness
       rows_by_name = rows.group_by do |row, _created_at, _suite_id|
         row.values_at("app_slug", "name")
       end
-      rows = rows_by_name.map do |identity, attempts|
+      selected_rows = rows_by_name.map do |identity, attempts|
         suite_ids = attempts.map { |_row, _created_at, suite_id| suite_id }.uniq
         if suite_ids.length != 1
           raise Error, "latest check-run inventory repeated #{identity.join('/')} across distinct check suites"
         end
-        next attempts.first.first if attempts.length == 1
+        next attempts.first if attempts.length == 1
 
-        attempts_with_times = attempts.map do |row, _suite_created_at, _suite_id|
+        attempts_with_times = attempts.map do |attempt|
+          row, = attempt
           started_at = row["started_at"]
           if started_at.nil?
             raise Error, "latest check-run inventory lacked run attempt chronology for #{identity.join('/')}"
           end
 
-          [row, strict_rfc3339_time!(started_at, "check run started_at")]
+          [attempt, strict_rfc3339_time!(started_at, "check run started_at")]
         end
         latest_time = attempts_with_times.map(&:last).max
-        latest_attempts = attempts_with_times.select { |_row, started_at| started_at == latest_time }
+        latest_attempts = attempts_with_times.select { |_attempt, started_at| started_at == latest_time }
         if latest_attempts.length != 1
           raise Error, "latest check-run inventory had tied run attempt chronology for #{identity.join('/')}"
         end
 
         latest_attempts.first.first
       end
+
+      selected_rows_by_suite = selected_rows.group_by { |_row, _created_at, suite_id| suite_id }
+      validated_suites.each do |_suite, suite_id, _app, _created_at, status, conclusion, _latest_count|
+        suite_rows = selected_rows_by_suite.fetch(suite_id, []).map(&:first)
+        validate_check_suite_phase!(suite_rows, status:, conclusion:)
+      end
+      rows = selected_rows.map(&:first)
 
       [rows, true, nil]
     rescue StandardError => e
@@ -994,7 +1002,7 @@ module PrCiReadiness
     def materialize_check_suite_runs(repo, head_sha, validated_suites)
       suite_ids = {}
       validated_suites.flat_map do |validated_suite|
-        _suite, suite_id, suite_app, suite_created_at, suite_status, suite_conclusion, latest_count =
+        _suite, suite_id, suite_app, suite_created_at, _suite_status, _suite_conclusion, latest_count =
           validated_suite
         raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
 
@@ -1005,9 +1013,7 @@ module PrCiReadiness
         ).map do |row|
           normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
         end
-        validate_check_suite_materialization!(
-          suite_rows, latest_count:, status: suite_status, conclusion: suite_conclusion
-        )
+        validate_check_suite_materialization!(suite_rows, latest_count:)
         suite_rows.map { |row| [row, suite_created_at, suite_id] }
       end
     end
@@ -1057,14 +1063,16 @@ module PrCiReadiness
       [suite_id, app, created_at, status, conclusion, latest_count]
     end
 
-    def validate_check_suite_materialization!(rows, latest_count:, status:, conclusion:)
+    def validate_check_suite_materialization!(rows, latest_count:)
       if latest_count.zero?
         raise Error, "check suite latest-run inventory was empty and cannot prove readiness"
       end
-      unless rows.length == latest_count
-        raise Error, "check suite latest-run count did not match materialized rows"
-      end
+      return if rows.length == latest_count
 
+      raise Error, "check suite latest-run count did not match materialized rows"
+    end
+
+    def validate_check_suite_phase!(rows, status:, conclusion:)
       if status == "completed"
         raise Error, "completed check suite contained a nonterminal latest run" unless
           rows.all? { |row| row["status"] == "completed" }
