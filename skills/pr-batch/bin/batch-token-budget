@@ -9,6 +9,7 @@ require "json"
 require "optparse"
 require "openssl"
 require "pathname"
+require "uri"
 
 module BatchTokenBudget
   PRESERVED_GATES = %w[security review qa exact-head ownership merge].freeze
@@ -129,14 +130,32 @@ module BatchTokenBudget
   end
 
   def verifiable_usage_receipt_reference?(value)
-    durable_reference?(value) && value.start_with?("file://")
+    !usage_receipt_artifact_path(value).nil?
+  end
+
+  def usage_receipt_artifact_path(reference)
+    return unless durable_reference?(reference) && reference.match?(%r{\Afile:///(?!/)}i)
+
+    parsed = URI.parse(reference)
+    return unless parsed.scheme == "file" && parsed.host.to_s.empty? && parsed.query.nil? && parsed.fragment.nil?
+
+    encoded_path = parsed.path
+    return unless encoded_path.is_a?(String) && encoded_path.start_with?("/")
+    return if encoded_path.match?(/%(?:00|2f|5c)/i)
+
+    path = URI::DEFAULT_PARSER.unescape(encoded_path)
+    return if path.bytes.any? { |byte| byte < 0x20 || byte == 0x7f } || path.include?("\\")
+    return if path.split("/", -1).any? { |segment| %w[. ..].include?(segment) }
+    return unless Pathname.new(path).absolute?
+
+    path
+  rescue URI::InvalidURIError, ArgumentError
+    nil
   end
 
   def usage_receipt_artifact_matches?(reference, receipt_digest, inline_receipt = nil)
-    return false unless verifiable_usage_receipt_reference?(reference)
-
-    path = reference.delete_prefix("file://")
-    return false unless Pathname.new(path).absolute?
+    path = usage_receipt_artifact_path(reference)
+    return false unless path
 
     artifact_json = File.open(path, File::RDONLY | File::NONBLOCK, encoding: "UTF-8") do |file|
       artifact_stat = file.stat
@@ -1965,8 +1984,171 @@ module BatchTokenBudget
       (tokens.zero? ? turns.zero? : turns.between?(1, tokens))
   end
 
+  def exact_object_keys?(value, required, optional = [])
+    value.is_a?(Hash) && (required - value.keys).empty? && (value.keys - required - optional).empty?
+  end
+
+  def schema_nonempty_string?(value)
+    value.is_a?(String) && !value.empty?
+  end
+
+  def usage_counter_shape?(value)
+    exact_object_keys?(value, %w[cache_read_tokens input_tokens output_tokens reasoning_output_tokens total_tokens]) &&
+      value.values.all? { |counter| nonnegative_integer?(counter) || counter == "UNKNOWN" }
+  end
+
+  def requested_route_shape?(value)
+    exact_object_keys?(value, %w[effort host model]) &&
+      value.values.all? { |field| schema_nonempty_string?(field) }
+  end
+
+  def observed_route_shape?(value)
+    exact_object_keys?(value, %w[effort host model provider usage]) &&
+      value.values_at("effort", "host", "model", "provider").all? do |field|
+        schema_nonempty_string?(field)
+      end && usage_counter_shape?(value["usage"])
+  end
+
+  def scope_evidence_shape?(value)
+    required = %w[first_session_ids physical_rollout_ids status]
+    return false unless exact_object_keys?(value, required, ["first_session_id"])
+    return false unless %w[complete UNKNOWN].include?(value["status"])
+    return false unless value["first_session_ids"].is_a?(Array) &&
+                        value["first_session_ids"].all? { |item| item.is_a?(String) }
+    return false unless value["physical_rollout_ids"].is_a?(Array) &&
+                        value["physical_rollout_ids"].uniq.length == value["physical_rollout_ids"].length &&
+                        value["physical_rollout_ids"].all? do |item|
+                          item.is_a?(String) && item.match?(/\Asha256:[0-9a-f]{64}\z/)
+                        end
+
+    !value.key?("first_session_id") || value["first_session_id"].is_a?(String)
+  end
+
+  def execution_usage_shape?(value)
+    exact_object_keys?(value, %w[descendant_inclusive self_only]) &&
+      value.values.all? { |usage| usage_counter_shape?(usage) }
+  end
+
+  def lane_usage_shape?(value)
+    exact_object_keys?(value, %w[descendant_inclusive self_only unattributed]) &&
+      value.values.all? { |usage| usage_counter_shape?(usage) }
+  end
+
+  def batch_usage_shape?(value)
+    exact_object_keys?(value, %w[descendant_inclusive unattributed]) &&
+      value.values.all? { |usage| usage_counter_shape?(usage) }
+  end
+
+  def turns_shape?(value, keys)
+    exact_object_keys?(value, keys) &&
+      value.values.all? { |turns| nonnegative_integer?(turns) || turns == "UNKNOWN" }
+  end
+
+  def reconciliation_shape?(value)
+    exact_object_keys?(value, %w[equation status]) &&
+      %w[balanced UNKNOWN].include?(value["status"]) && value["equation"].is_a?(String)
+  end
+
+  def execution_scope_shape?(value, expected_scope)
+    required = %w[evidence id observed_routes requested_route root_thread_id scope turns usage]
+    exact_object_keys?(value, required) && value["scope"] == expected_scope &&
+      schema_nonempty_string?(value["id"]) && schema_nonempty_string?(value["root_thread_id"]) &&
+      requested_route_shape?(value["requested_route"]) && value["observed_routes"].is_a?(Array) &&
+      value["observed_routes"].all? { |route| observed_route_shape?(route) } &&
+      execution_usage_shape?(value["usage"]) &&
+      turns_shape?(value["turns"], %w[descendant_inclusive self_only]) &&
+      scope_evidence_shape?(value["evidence"])
+  end
+
+  def lane_scope_shape?(value)
+    required = %w[
+      evidence id observed_routes reconciliation requested_route root_thread_id scope turns usage workers
+    ]
+    exact_object_keys?(value, required) && value["scope"] == "lane" &&
+      schema_nonempty_string?(value["id"]) && schema_nonempty_string?(value["root_thread_id"]) &&
+      requested_route_shape?(value["requested_route"]) && value["observed_routes"].is_a?(Array) &&
+      value["observed_routes"].all? { |route| observed_route_shape?(route) } &&
+      lane_usage_shape?(value["usage"]) &&
+      turns_shape?(value["turns"], %w[descendant_inclusive self_only unattributed]) &&
+      scope_evidence_shape?(value["evidence"]) && value["workers"].is_a?(Array) &&
+      value["workers"].all? { |worker| execution_scope_shape?(worker, "worker") } &&
+      reconciliation_shape?(value["reconciliation"])
+  end
+
+  def batch_scope_shape?(value)
+    exact_object_keys?(value, %w[id reconciliation scope turns usage]) && value["scope"] == "batch" &&
+      schema_nonempty_string?(value["id"]) && batch_usage_shape?(value["usage"]) &&
+      turns_shape?(value["turns"], %w[descendant_inclusive unattributed]) &&
+      reconciliation_shape?(value["reconciliation"])
+  end
+
+  def credit_model_value_shape?(value)
+    case value.is_a?(Hash) && value["status"]
+    when "available"
+      exact_object_keys?(value, %w[credits host model status]) &&
+        value.values_at("host", "model").all? { |field| schema_nonempty_string?(field) } &&
+        value["credits"].is_a?(Numeric) && value["credits"].finite? && !value["credits"].negative?
+    when "UNKNOWN"
+      exact_object_keys?(value, %w[code host model status]) &&
+        value.values_at("code", "host", "model").all? { |field| schema_nonempty_string?(field) }
+    else
+      false
+    end
+  end
+
+  def schema_date?(value)
+    match = value.is_a?(String) && /\A(\d{4})-(\d{2})-(\d{2})\z/.match(value)
+    match && Date.valid_date?(*match.captures.map(&:to_i))
+  end
+
+  def credit_equivalents_shape?(value)
+    exact_object_keys?(value, %w[disclaimer effective_date model_values source status]) &&
+      %w[available UNKNOWN].include?(value["status"]) && schema_nonempty_string?(value["source"]) &&
+      schema_date?(value["effective_date"]) && value["model_values"].is_a?(Array) &&
+      value["model_values"].all? { |model_value| credit_model_value_shape?(model_value) } &&
+      value["disclaimer"].is_a?(String) && value["disclaimer"].include?("not a bill")
+  end
+
+  # Mirrors the closed shapes and value types in docs/schemas/batch-usage-receipt-v2.schema.json.
+  def v2_usage_receipt_shape?(usage_receipt)
+    required = %w[accounting batch coordinator evidence lanes privacy schema window]
+    return false unless exact_object_keys?(usage_receipt, required, ["credit_equivalents"])
+    return false unless usage_receipt["schema"] == "batch-usage-receipt-v2"
+    return false unless batch_scope_shape?(usage_receipt["batch"]) &&
+                        execution_scope_shape?(usage_receipt["coordinator"], "coordinator") &&
+                        usage_receipt["lanes"].is_a?(Array) &&
+                        usage_receipt["lanes"].all? { |lane| lane_scope_shape?(lane) }
+    window = usage_receipt["window"]
+    return false unless exact_object_keys?(window, %w[differencing from_inclusive to_exclusive]) &&
+                        window["differencing"] == "full_history_before_window_filter" &&
+                        timestamp?(window["from_inclusive"]) && timestamp?(window["to_exclusive"])
+    accounting = usage_receipt["accounting"]
+    return false unless exact_object_keys?(accounting, %w[
+      compactions counter_resets duplicate_samples_omitted inherited_seeds_omitted replay_records_omitted
+      session_rebind_attempts_ignored usage_samples
+    ]) && accounting.values.all? { |value| nonnegative_integer?(value) }
+    evidence = usage_receipt["evidence"]
+    return false unless exact_object_keys?(evidence, %w[sources status unknown]) &&
+                        %w[complete UNKNOWN].include?(evidence["status"]) &&
+                        evidence["sources"] == ["codex_rollout_jsonl", "state_5.sqlite"] &&
+                        evidence["unknown"].is_a?(Array) && evidence["unknown"].all? do |reason|
+                          reason.is_a?(Hash) &&
+                            %w[code status].all? { |key| reason.key?(key) } &&
+                            reason["status"] == "UNKNOWN" && schema_nonempty_string?(reason["code"])
+                        end
+    privacy = usage_receipt["privacy"]
+    return false unless exact_object_keys?(privacy, %w[emitted_or_persisted_content excluded mode]) &&
+                        privacy["mode"] == "metadata_only" &&
+                        privacy["emitted_or_persisted_content"] == false && privacy["excluded"].is_a?(Array) &&
+                        privacy["excluded"].all? { |item| item.is_a?(String) }
+
+    !usage_receipt.key?("credit_equivalents") || credit_equivalents_shape?(usage_receipt["credit_equivalents"])
+  end
+
   def lane_usage_projection(lane)
-    return unless lane.is_a?(Hash) && lane["scope"] == "lane" &&
+    return unless lane.is_a?(Hash) && lane.keys.sort == %w[
+      evidence id observed_routes reconciliation requested_route root_thread_id scope turns usage workers
+    ] && lane["scope"] == "lane" &&
                   nonempty_string?(lane["id"]) && nonempty_string?(lane["root_thread_id"]) &&
                   lane.dig("reconciliation", "status") == "balanced"
 
@@ -2014,7 +2196,7 @@ module BatchTokenBudget
   end
 
   def batch_usage_projection(usage_receipt, state)
-    return unless usage_receipt.is_a?(Hash) && usage_receipt["schema"] == "batch-usage-receipt-v2"
+    return unless v2_usage_receipt_shape?(usage_receipt)
 
     allowed_top_keys = %w[accounting batch coordinator evidence lanes privacy schema window]
     allowed_top_keys << "credit_equivalents" if usage_receipt.key?("credit_equivalents")
@@ -2409,6 +2591,11 @@ module BatchTokenBudget
     end
     if state && command["action"] == "initialize"
       return initialize_command(state, command, trusted_budget, trusted_plan_binding)
+    end
+    if state && command["action"] == "reconcile" &&
+       command.dig("usage_receipt", "schema") == "batch-usage-receipt-v2" &&
+       !v2_usage_receipt_shape?(command.fetch("usage_receipt"))
+      return blocked_usage_result(state, "usage-telemetry-malformed-or-unknown")
     end
 
     state = expire_overrides(state, command["evaluated_at"]) if state

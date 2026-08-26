@@ -218,6 +218,33 @@ class BatchTokenBudgetTest < Minitest::Test
     [receipt, "file://#{artifact_path}", "sha256:#{object_digest(receipt)}"]
   end
 
+  def available_credit_equivalents
+    {
+      "status" => "available",
+      "source" => "https://example.invalid/rate-card/2026-08-04",
+      "effective_date" => "2026-08-04",
+      "model_values" => [{
+        "host" => "codex",
+        "model" => "gpt-5.6",
+        "status" => "available",
+        "credits" => 1
+      }],
+      "disclaimer" => "Estimate only; not a bill"
+    }
+  end
+
+  def unknown_credit_equivalents
+    available_credit_equivalents.merge(
+      "status" => "UNKNOWN",
+      "model_values" => [{
+        "host" => "codex",
+        "model" => "UNKNOWN",
+        "status" => "UNKNOWN",
+        "code" => "route_identity_unknown"
+      }]
+    )
+  end
+
   def usage_window(
     receipt, from:, to:, coordinator_tokens:, lane_tokens:, batch_unattributed_tokens: 0,
     coordinator_turns: nil, lane_turns: nil, batch_unattributed_turns: nil
@@ -3358,6 +3385,106 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_batch_usage_receipt_accepts_a_percent_encoded_space_in_a_file_reference
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "encoded-space-window", tokens: 200)
+      receipt, = real_descendants_usage_receipt(state_path)
+      artifact_directory = File.join(File.dirname(state_path), "receipt artifacts")
+      Dir.mkdir(artifact_directory)
+      artifact_path = File.join(artifact_directory, "usage receipt.json")
+      File.write(artifact_path, JSON.generate(canonicalize(receipt)))
+      encoded_reference = "file://#{artifact_path.gsub(' ', '%20')}"
+
+      reconciled, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => encoded_reference,
+          "usage_receipt_digest" => "sha256:#{object_digest(receipt)}",
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      saved = JSON.parse(File.read(state_path))
+      assert_equal encoded_reference, saved.fetch("usage_receipts").values.first.fetch("reference")
+    end
+  end
+
+  def test_batch_usage_receipt_rejects_ambiguous_or_hostile_file_references_without_mutation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "hostile-reference-window", tokens: 200)
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
+      artifact_path = receipt_ref.delete_prefix("file://")
+      spaced_directory = File.join(File.dirname(state_path), "unescaped receipt artifacts")
+      Dir.mkdir(spaced_directory)
+      spaced_path = File.join(spaced_directory, "usage receipt.json")
+      File.write(spaced_path, JSON.generate(canonicalize(receipt)))
+      invalid_references = {
+        "unescaped-whitespace" => "file://#{spaced_path}",
+        "localhost-authority" => "file://localhost#{artifact_path}",
+        "remote-authority" => "file://evil.example#{artifact_path}",
+        "encoded-nul" => "#{receipt_ref}%00",
+        "encoded-newline" => "#{receipt_ref}%0A",
+        "encoded-tab" => "#{receipt_ref}%09",
+        "invalid-percent-escape" => "#{receipt_ref}%ZZ",
+        "encoded-separator" => "file:///tmp%2F#{File.basename(artifact_path)}",
+        "encoded-backslash" => "file:///tmp%5C#{File.basename(artifact_path)}",
+        "encoded-traversal" => "file:///tmp/%2e%2e/#{File.basename(artifact_path)}",
+        "literal-traversal" => "file:///tmp/../#{File.basename(artifact_path)}",
+        "query" => "#{receipt_ref}?download=1",
+        "fragment" => "#{receipt_ref}#receipt",
+        "ambiguous-root" => "file:////#{artifact_path.delete_prefix('/')}"
+      }
+
+      state_before = File.read(state_path)
+      invalid_references.each do |name, invalid_reference|
+        blocked, stderr, status = run_helper(
+          state_path,
+          command(
+            "reconcile",
+            "usage_receipt" => receipt,
+            "usage_receipt_ref" => invalid_reference,
+            "usage_receipt_digest" => receipt_digest,
+            "completed_reservation_ids" => []
+          )
+        )
+
+        assert status.success?, "#{name}: #{stderr}"
+        assert_equal "blocked", blocked.fetch("status"), name
+        assert_equal "usage-receipt-reference-invalid", blocked.fetch("reason"), name
+        assert_equal state_before, File.read(state_path), name
+      end
+    end
+  end
+
+  def test_batch_usage_receipt_accepts_schema_valid_optional_nested_shapes
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "valid-optional-shapes", tokens: 200)
+      receipt, = real_descendants_usage_receipt(state_path)
+      receipt["credit_equivalents"] = available_credit_equivalents
+      receipt.fetch("evidence").merge!(
+        "status" => "UNKNOWN",
+        "unknown" => [{
+          "status" => "UNKNOWN",
+          "code" => "route_metadata_missing",
+          "detail" => "schema permits evidence-specific extension fields"
+        }]
+      )
+
+      reconciled, stderr, status = reconcile_receipt(state_path, receipt, "valid-optional-shapes")
+
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      assert_equal 1, JSON.parse(File.read(state_path)).fetch("usage_receipts").length
+    end
+  end
+
   def test_batch_usage_receipt_rejects_a_fifo_even_when_it_serves_matching_json
     with_state do |state_path|
       initialize_budget(state_path)
@@ -3492,6 +3619,121 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
       assert_equal 200, blocked.dig("totals", "aggregate", "reserved_tokens")
       assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts")
+    end
+  end
+
+  def test_batch_usage_receipt_rejects_unlisted_lane_fields_without_mutation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "extra-lane-field", tokens: 200)
+      receipt, = real_descendants_usage_receipt(state_path)
+      receipt.fetch("lanes").first["unexpected_content"] = "secret-payload"
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "extra-lane-field")
+      state_before = File.read(state_path)
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:01:00Z",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      state_after = File.read(state_path)
+      assert_equal state_before, state_after
+      assert_equal JSON.parse(state_before).fetch("control_events").length,
+                   JSON.parse(state_after).fetch("control_events").length
+      refute_includes state_after, "secret-payload"
+    end
+  end
+
+  def test_batch_usage_receipt_rejects_extensions_in_schema_closed_nested_objects
+    closed_objects = {
+      "window" => ->(receipt) { receipt.fetch("window") },
+      "accounting" => ->(receipt) { receipt.fetch("accounting") },
+      "evidence" => ->(receipt) { receipt.fetch("evidence") },
+      "privacy" => ->(receipt) { receipt.fetch("privacy") },
+      "batch" => ->(receipt) { receipt.fetch("batch") },
+      "batch-usage" => ->(receipt) { receipt.dig("batch", "usage") },
+      "batch-usage-counter" => ->(receipt) { receipt.dig("batch", "usage", "descendant_inclusive") },
+      "batch-turns" => ->(receipt) { receipt.dig("batch", "turns") },
+      "batch-reconciliation" => ->(receipt) { receipt.dig("batch", "reconciliation") },
+      "coordinator" => ->(receipt) { receipt.fetch("coordinator") },
+      "coordinator-requested-route" => ->(receipt) { receipt.dig("coordinator", "requested_route") },
+      "coordinator-observed-route" => ->(receipt) { receipt.dig("coordinator", "observed_routes", 0) },
+      "coordinator-observed-usage" => ->(receipt) { receipt.dig("coordinator", "observed_routes", 0, "usage") },
+      "coordinator-usage" => ->(receipt) { receipt.dig("coordinator", "usage") },
+      "coordinator-usage-counter" => ->(receipt) { receipt.dig("coordinator", "usage", "self_only") },
+      "coordinator-turns" => ->(receipt) { receipt.dig("coordinator", "turns") },
+      "coordinator-evidence" => ->(receipt) { receipt.dig("coordinator", "evidence") },
+      "lane-requested-route" => ->(receipt) { receipt.dig("lanes", 0, "requested_route") },
+      "lane-observed-route" => ->(receipt) { receipt.dig("lanes", 0, "observed_routes", 0) },
+      "lane-observed-usage" => ->(receipt) { receipt.dig("lanes", 0, "observed_routes", 0, "usage") },
+      "lane-usage" => ->(receipt) { receipt.dig("lanes", 0, "usage") },
+      "lane-usage-counter" => ->(receipt) { receipt.dig("lanes", 0, "usage", "self_only") },
+      "lane-turns" => ->(receipt) { receipt.dig("lanes", 0, "turns") },
+      "lane-evidence" => ->(receipt) { receipt.dig("lanes", 0, "evidence") },
+      "lane-reconciliation" => ->(receipt) { receipt.dig("lanes", 0, "reconciliation") },
+      "worker" => ->(receipt) { receipt.dig("lanes", 0, "workers", 0) },
+      "worker-requested-route" => ->(receipt) { receipt.dig("lanes", 0, "workers", 0, "requested_route") },
+      "worker-observed-route" => ->(receipt) { receipt.dig("lanes", 0, "workers", 0, "observed_routes", 0) },
+      "worker-observed-usage" => lambda do |receipt|
+        receipt.dig("lanes", 0, "workers", 0, "observed_routes", 0, "usage")
+      end,
+      "worker-usage" => ->(receipt) { receipt.dig("lanes", 0, "workers", 0, "usage") },
+      "worker-usage-counter" => ->(receipt) { receipt.dig("lanes", 0, "workers", 0, "usage", "self_only") },
+      "worker-turns" => ->(receipt) { receipt.dig("lanes", 0, "workers", 0, "turns") },
+      "worker-evidence" => ->(receipt) { receipt.dig("lanes", 0, "workers", 0, "evidence") },
+      "credit-equivalents" => lambda do |receipt|
+        receipt["credit_equivalents"] = available_credit_equivalents
+      end,
+      "available-credit-model-value" => lambda do |receipt|
+        receipt["credit_equivalents"] = available_credit_equivalents
+        receipt.dig("credit_equivalents", "model_values", 0)
+      end,
+      "unknown-credit-model-value" => lambda do |receipt|
+        receipt["credit_equivalents"] = unknown_credit_equivalents
+        receipt.dig("credit_equivalents", "model_values", 0)
+      end
+    }
+
+    closed_objects.each do |name, target|
+      with_state do |state_path|
+        initialize_budget(state_path)
+        reserve(state_path, id: "extra-#{name}", tokens: 200)
+        receipt, = real_descendants_usage_receipt(state_path)
+        target.call(receipt)["unexpected_content"] = "secret-payload"
+        receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "extra-#{name}")
+        state_before = File.read(state_path)
+
+        blocked, stderr, status = run_helper(
+          state_path,
+          command(
+            "reconcile",
+            "evaluated_at" => "2026-08-12T12:01:00Z",
+            "usage_receipt" => receipt,
+            "usage_receipt_ref" => receipt_ref,
+            "usage_receipt_digest" => receipt_digest,
+            "completed_reservation_ids" => []
+          )
+        )
+
+        assert status.success?, "#{name}: #{stderr}"
+        assert_equal "blocked", blocked.fetch("status"), name
+        assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason"), name
+        state_after = File.read(state_path)
+        assert_equal state_before, state_after, name
+        assert_equal JSON.parse(state_before).fetch("control_events").length,
+                     JSON.parse(state_after).fetch("control_events").length, name
+        refute_includes state_after, "secret-payload", name
+      end
     end
   end
 
