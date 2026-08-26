@@ -386,6 +386,10 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal %w[created edited deleted], triggers.dig("pull_request_review_comment", "types")
     assert_equal ["Claude Code Review"], triggers.dig("workflow_run", "workflows")
     assert_equal ["completed"], triggers.dig("workflow_run", "types")
+    assert_equal(
+      { "actions" => "read", "checks" => "read", "contents" => "read", "pull-requests" => "read", "statuses" => "write" },
+      workflow.fetch("permissions")
+    )
     assert_equal "bindings", bindings.fetch("id")
     assert_includes bindings.fetch("run"), 'if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]'
     assert_includes bindings.fetch("run"), "length == 1"
