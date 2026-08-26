@@ -12,6 +12,8 @@ execution: code
 
 # Portable Dashboard Lifecycle - Plan
 
+> **Status:** Active implementation plan. This document supports the open implementation work tracked in [#159](https://github.com/shakacode/agent-workflows/issues/159). It is a technical implementation-plan record, not a live source of truth: it is not read by any executable test, and its prose must not be used as a normative test fixture. (#194)
+
 ## Goal Capsule
 
 - **Objective:** Give any macOS or Linux user a public, credential-safe way to install, start, stop, restart, inspect, and recover the agent coordination dashboard without private dotfiles or tmux.
