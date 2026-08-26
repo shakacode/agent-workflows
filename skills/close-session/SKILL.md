@@ -187,6 +187,17 @@ Then include the existing closeout handoff:
 - **Decisions needed**
 - **Archive verdict**
 
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. When the applicable archive gate passes and no unperformed
+downstream launch remains, use `Next: Archive this task.` When an archive-ready
+prompt-only task still requires the user to launch its fenced artifact, name
+that launch first and end the same ordered `Next:` instruction by telling the
+user to archive the planning task; a bare archive instruction may not strand
+the artifact. When user input blocks progress, state the smallest action that
+clears the blocker and whether to reply here or start a new task.
+When the current task will continue without input, state its exact next action.
+A durable issue, receipt, or blocker list is evidence, not a next step.
+
 End with exactly one of:
 
 ```text

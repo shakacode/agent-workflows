@@ -779,8 +779,10 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal "current_task", lifecycle.fetch("owner")
 
     cases = @human_status_replay.fetch("cases")
-    assert_equal cases.length, cases.map { |replay_case| replay_case.fetch("id") }.uniq.length
-    cases.each do |replay_case|
+    variants = @human_status_replay.fetch("variants")
+    replay_cases = cases + variants
+    assert_equal replay_cases.length, replay_cases.map { |replay_case| replay_case.fetch("id") }.uniq.length
+    replay_cases.each do |replay_case|
       expected = replay_case.fetch("expected_user_output")
       actual = render_human_status(replay_case, stable_payload:)
       if expected.nil?
@@ -804,6 +806,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal 1, blocked_input.fetch("expected_user_output").count("?")
     assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "exact_question")
     assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "manual_resume")
+    assert_includes blocked_input.dig("input", "manual_resume"), "Reply here"
 
     diagnostic = cases.find { |replay_case| replay_case.fetch("id") == "explicit-diagnostics" }
     diagnostic_output = diagnostic.fetch("expected_user_output")
@@ -828,6 +831,16 @@ class GoalCompletionContractTest < Minitest::Test
       walkthrough_or_approval_ready
     ], actionable_triggers.sort
 
+    actionable_user_input = cases.select do |replay_case|
+      replay_case.dig("input", "kind") == "action_required" &&
+        replay_case.dig("input", "action_needed") != "none."
+    end
+    actionable_user_input.each do |replay_case|
+      next_step = replay_case.dig("input", "next")
+      assert_match(/Reply here|Start a new task/, next_step,
+                   "#{replay_case.fetch('id')} should name the response channel")
+    end
+
     closeout = cases.find { |replay_case| replay_case.dig("input", "trigger") == "closeout_or_archive_completed" }
     closeout_output = closeout.fetch("expected_user_output")
     assert_includes closeout_output, closeout.dig("input", "existing_closeout_handoff")
@@ -835,6 +848,14 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes closeout_output, "Validation:"
     assert_includes closeout_output, "Blockers:"
     assert_equal "Conversation status: Ready for archiving.", closeout_output.lines.last.chomp
+
+    followups = variants.find { |replay_case| replay_case.fetch("id") == "closeout-followups-remain" }
+    followups_output = followups.fetch("expected_user_output")
+    assert_equal followups_output, render_human_status(followups, stable_payload:)
+    assert_includes followups_output, "Action needed: Start a new task for issue #445."
+    assert_includes followups_output,
+                    "Next: Start that task from issue #445; keep this task open until the handoff is created."
+    assert_includes followups_output, "Conversation status: Follow-ups remain — issue #445 (open): track."
 
     unknown_diagnostic = cases.find do |replay_case|
       replay_case.fetch("id") == "explicit-diagnostic-unknown-meaning"

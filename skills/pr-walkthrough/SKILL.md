@@ -146,6 +146,16 @@ identity and readiness and ask its one final merge decision separately.
 Walkthrough participation is not merge approval. A walkthrough response, `next`,
 or positive reaction is never merge approval.
 
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction and a separate `Action needed:` line. For a clean standalone
+walkthrough with no remaining question or decision, use `Action needed: none.`
+and `Next: Archive this task.` When invoked by an `ask` merge-authority workflow,
+use `Action needed: none.` and `Next: Return control to the current coordinator
+task for its refreshed merge decision.` If the walkthrough ends on a blocking
+question or stale/`UNKNOWN` evidence, name the exact required answer or repair
+and say whether to reply here or start a new task. The walkthrough summary and
+coverage ledger are evidence, not a next step.
+
 ## Boundaries
 
 - Remain read-only unless the user separately authorizes changes.

@@ -426,6 +426,7 @@ Return:
   queue state is unavailable.
 - Residual risks and maintainer decisions needed.
 - Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+- Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt.` and `Next: Paste the prompt into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
 
 ## Common Mistakes
 

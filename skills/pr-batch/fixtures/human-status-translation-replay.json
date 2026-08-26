@@ -71,9 +71,9 @@
         "automation_action": "none",
         "what_changed": "A current-scope decision requires your answer before work can continue.",
         "exact_question": "Do you approve the compatibility change for this exact diff?",
-        "manual_resume": "Reply with the decision and this task will resume from the preserved gate."
+        "manual_resume": "Reply here with the decision and this task will resume from the preserved gate."
       },
-      "expected_user_output": "What changed: A current-scope decision requires your answer before work can continue. Action needed: Do you approve the compatibility change for this exact diff? Next: Reply with the decision and this task will resume from the preserved gate."
+      "expected_user_output": "What changed: A current-scope decision requires your answer before work can continue. Action needed: Do you approve the compatibility change for this exact diff? Next: Reply here with the decision and this task will resume from the preserved gate."
     },
     {
       "id": "actionable-decision",
@@ -82,10 +82,10 @@
         "trigger": "decision_or_action_required",
         "what_changed": "The implementation reached a compatibility choice that cannot be made safely without you.",
         "action_needed": "Choose whether to preserve the legacy behavior.",
-        "next": "After you decide, implementation will resume with that choice.",
+        "next": "Reply here with your choice; implementation will resume with that decision.",
         "telemetry": "functional B2 stopped before B3; holder aw-runner-7"
       },
-      "expected_user_output": "What changed: The implementation reached a compatibility choice that cannot be made safely without you. Action needed: Choose whether to preserve the legacy behavior. Next: After you decide, implementation will resume with that choice."
+      "expected_user_output": "What changed: The implementation reached a compatibility choice that cannot be made safely without you. Action needed: Choose whether to preserve the legacy behavior. Next: Reply here with your choice; implementation will resume with that decision."
     },
     {
       "id": "actionable-walkthrough-or-approval-ready",
@@ -94,9 +94,9 @@
         "trigger": "walkthrough_or_approval_ready",
         "what_changed": "The target passed its gates and is ready for walkthrough or approval.",
         "action_needed": "Review the exact diff and approve it if it matches your intent.",
-        "next": "After approval, the coordinator will refresh the current head and continue closeout."
+        "next": "Reply here after approval; the coordinator will refresh the current head and continue closeout."
       },
-      "expected_user_output": "What changed: The target passed its gates and is ready for walkthrough or approval. Action needed: Review the exact diff and approve it if it matches your intent. Next: After approval, the coordinator will refresh the current head and continue closeout."
+      "expected_user_output": "What changed: The target passed its gates and is ready for walkthrough or approval. Action needed: Review the exact diff and approve it if it matches your intent. Next: Reply here after approval; the coordinator will refresh the current head and continue closeout."
     },
     {
       "id": "actionable-bounded-retries-exhausted",
@@ -105,9 +105,9 @@
         "trigger": "bounded_retries_exhausted",
         "what_changed": "The blocker remained after every bounded retry and now needs intervention.",
         "action_needed": "Resolve the external check failure or provide direction.",
-        "next": "After intervention, the coordinator will refresh the evidence and resume closeout."
+        "next": "Reply here after intervention or with direction; the coordinator will refresh the evidence and resume closeout."
       },
-      "expected_user_output": "What changed: The blocker remained after every bounded retry and now needs intervention. Action needed: Resolve the external check failure or provide direction. Next: After intervention, the coordinator will refresh the evidence and resume closeout."
+      "expected_user_output": "What changed: The blocker remained after every bounded retry and now needs intervention. Action needed: Resolve the external check failure or provide direction. Next: Reply here after intervention or with direction; the coordinator will refresh the evidence and resume closeout."
     },
     {
       "id": "actionable-closeout-archive-completed",
@@ -116,10 +116,10 @@
         "trigger": "closeout_or_archive_completed",
         "what_changed": "Closeout and archive preparation completed.",
         "action_needed": "none.",
-        "next": "You may archive this conversation.",
+        "next": "Archive this task.",
         "existing_closeout_handoff": "PR: https://github.com/acme/widgets/pull/42 at head 0123456789abcdef0123456789abcdef01234567.\nValidation: focused and full gates passed.\nBlockers: none.\nConversation status: Ready for archiving."
       },
-      "expected_user_output": "What changed: Closeout and archive preparation completed. Action needed: none. Next: You may archive this conversation.\n\nPR: https://github.com/acme/widgets/pull/42 at head 0123456789abcdef0123456789abcdef01234567.\nValidation: focused and full gates passed.\nBlockers: none.\nConversation status: Ready for archiving."
+      "expected_user_output": "What changed: Closeout and archive preparation completed. Action needed: none. Next: Archive this task.\n\nPR: https://github.com/acme/widgets/pull/42 at head 0123456789abcdef0123456789abcdef01234567.\nValidation: focused and full gates passed.\nBlockers: none.\nConversation status: Ready for archiving."
     },
     {
       "id": "explicit-diagnostics",
@@ -153,6 +153,20 @@
         ]
       },
       "expected_user_output": "What changed: You requested an internal phase whose meaning is unavailable in the evidence. Action needed: none. Next: The exact value will remain in diagnostics without a speculative translation. Diagnostic details: B3 (internal workflow phase code; meaning UNKNOWN)."
+    }
+  ],
+  "variants": [
+    {
+      "id": "closeout-followups-remain",
+      "input": {
+        "kind": "action_required",
+        "trigger": "closeout_or_archive_completed",
+        "what_changed": "The pull request merged, but one tracked follow-up still blocks this task's archive gate.",
+        "action_needed": "Start a new task for issue #445.",
+        "next": "Start that task from issue #445; keep this task open until the handoff is created.",
+        "existing_closeout_handoff": "Completed-batch audit: follow-ups-remain — durable receipt recorded.\nConversation status: Follow-ups remain — issue #445 (open): track."
+      },
+      "expected_user_output": "What changed: The pull request merged, but one tracked follow-up still blocks this task's archive gate. Action needed: Start a new task for issue #445. Next: Start that task from issue #445; keep this task open until the handoff is created.\n\nCompleted-batch audit: follow-ups-remain — durable receipt recorded.\nConversation status: Follow-ups remain — issue #445 (open): track."
     }
   ]
 }

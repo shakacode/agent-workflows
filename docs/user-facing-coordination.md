@@ -108,6 +108,24 @@ decision, or next action, and its output must not imply that ownership moved.
 For `blocked-user-input`, do not create or retain a heartbeat or monitor;
 preserve one exact question and manual resume instructions.
 
+## Terminal Next-Step Contract
+
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. When the applicable archive gate passes and no unperformed
+downstream launch remains, use `Next: Archive this task.` When an archive-ready
+prompt-only task still requires the user to launch its fenced artifact, name
+that launch first and end the same ordered `Next:` instruction by telling the
+user to archive the planning task; a bare archive instruction may not strand
+the artifact. When user input blocks progress, state the smallest action that
+clears the blocker and whether to reply here or start a new task.
+When the current task will continue without input, state its exact next action.
+A durable issue, receipt, or blocker list is evidence, not a next step.
+
+Keep `Action needed:` separate: name the exact user action, or use `none`. A
+handoff may not make the user infer an action from technical status, durable
+references, or a `Conversation status:` blocker union. Preserve any required
+receipt immediately before the final `Conversation status:` line.
+
 ## Ambiguity Guard
 
 When coordination language becomes ambiguous, or the user asks who is working

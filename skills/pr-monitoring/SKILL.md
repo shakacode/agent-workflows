@@ -236,6 +236,15 @@ Report:
   degraded-`UNKNOWN` evidence
 - final state
 
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. If the current task's archive gate passes, including a terminal
+`ready-no-merge-authority` state with no remaining follow-up or decision, use
+`Next: Archive this task.` Otherwise name the smallest action that advances or
+unblocks the PR and say whether to reply here or start a new task. Do not ask
+again for a merge decision already declined or durably settled. Keep `Action
+needed:` separate: name the exact user action or `none`. A PR URL, final state,
+or blocker list is evidence, not a next step.
+
 ## Boundaries
 
 - Use `pr-batch` for multi-PR launch or closeout, coordination state,
