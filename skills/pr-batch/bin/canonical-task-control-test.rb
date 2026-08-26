@@ -329,7 +329,7 @@ class CanonicalTaskControlTest < Minitest::Test
 
   def test_manifest_requires_one_active_maker_and_closed_independent_roles
     input = child_receipt_input
-    input["manifest"]["ownership"] = { "makers" => ["maker-a", "maker-b"], "checker" => "checker-402" }
+    input["manifest"]["ownership"] = { "makers" => %w[maker-a maker-b], "checker" => "checker-402" }
 
     _result, stderr, status = run_helper(input)
 
@@ -931,9 +931,12 @@ class CanonicalTaskControlTest < Minitest::Test
       "batch_id" => task.fetch("id"), "state_revision" => revision,
       "preserved_gates" => %w[security review qa exact-head ownership merge],
       "reservation_id" => receipt.fetch("reservation_id"),
-      "request_digest" => "#{'a' * 64}", "status" => status,
-      "reason" => status == "blocked" ? "paused-target-requires-resume-approval" :
-        (status == "coalesced" ? "target-already-active" : nil),
+      "request_digest" => ("a" * 64).to_s, "status" => status,
+      "reason" => if status == "blocked"
+                    "paused-target-requires-resume-approval"
+                  else
+                    (status == "coalesced" ? "target-already-active" : nil)
+                  end,
       "evaluated_at" => Time.now.utc.iso8601
     }
     result = {
@@ -1029,7 +1032,11 @@ class CanonicalTaskControlTest < Minitest::Test
       },
       "budget_gate" => budget_result(
         action: "delegation",
-        status: target_state == "active" ? "coalesced" : (target_state == "paused" ? "blocked" : "admitted")
+        status: if target_state == "active"
+                  "coalesced"
+                else
+                  (target_state == "paused" ? "blocked" : "admitted")
+                end
       ),
       "delegation" => {
         "source" => {
@@ -1145,7 +1152,7 @@ class CanonicalTaskControlTest < Minitest::Test
       },
       "evidence" => { "status" => "complete", "sources" => ["codex_rollout_jsonl", "state_5.sqlite"], "unknown" => [] },
       "privacy" => { "mode" => "metadata_only", "emitted_or_persisted_content" => false,
-                     "excluded" => ["prompts", "responses", "secrets"] },
+                     "excluded" => %w[prompts responses secrets] },
       "credit_equivalents" => {
         "status" => "available", "source" => "https://example.test/rates/2026-08-01",
         "effective_date" => "2026-08-01",
@@ -1160,8 +1167,8 @@ class CanonicalTaskControlTest < Minitest::Test
       "type" => "batch-token-budget-result", "version" => 1, "status" => "reconciled",
       "batch_id" => batch_id, "state_revision" => 4,
       "totals" => { "aggregate" => { "limit_tokens" => 50_000, "allocated_tokens" => 10_000,
-        "consumed_tokens" => 35, "reserved_tokens" => 0, "released_tokens" => 9_965,
-        "unattributed_tokens" => 0 } },
+                                     "consumed_tokens" => 35, "reserved_tokens" => 0, "released_tokens" => 9_965,
+                                     "unattributed_tokens" => 0 } },
       "preserved_gates" => %w[security review qa exact-head ownership merge],
       "usage_receipt_digest" => receipt_digest, "receipt_ref" => receipt_ref,
       "receipts" => [{
