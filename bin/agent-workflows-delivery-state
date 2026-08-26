@@ -153,9 +153,22 @@ module AgentWorkflowsDeliveryState
     timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", default_timeout))
     return [nil, "invalid Codex plugin state timeout"] unless timeout_seconds.positive?
 
+    filesystem_root = File.expand_path(target)
+    loop do
+      parent = File.dirname(filesystem_root)
+      break if parent == filesystem_root
+
+      filesystem_root = parent
+    end
+    environment = {
+      "CODEX_HOME" => target,
+      "TMPDIR" => filesystem_root,
+      "TMP" => filesystem_root,
+      "TEMP" => filesystem_root
+    }
     output = error = status = nil
     Open3.popen3(
-      { "CODEX_HOME" => target }, executable, "plugin", "list", "--marketplace", marketplace,
+      environment, executable, "plugin", "list", "--marketplace", marketplace,
       pgroup: true
     ) do |stdin, stdout, stderr, wait_thread|
       stdin.close

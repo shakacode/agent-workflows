@@ -23,7 +23,21 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     )
     File.write(@fake_codex, <<~RUBY)
       #!#{RbConfig.ruby}
+      require "fileutils"
+
       abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV[0, 3] == %w[plugin list --marketplace] && ARGV.length == 4
+      if ENV["QA_SIMULATE_ARG0_BOOTSTRAP"] == "1"
+        target = File.expand_path(ENV.fetch("CODEX_HOME"))
+        filesystem_root = target
+        loop do
+          parent = File.dirname(filesystem_root)
+          break if parent == filesystem_root
+
+          filesystem_root = parent
+        end
+        temp_roots = %w[TMPDIR TMP TEMP].map { |name| ENV[name] }
+        FileUtils.mkdir_p(File.join(target, "tmp", "arg0")) unless temp_roots.all? { |root| root == filesystem_root }
+      end
       marketplace = ARGV.fetch(3)
       if marketplace != "agent-workflows"
         sleep Float(ENV.fetch("QA_SUPERPOWERS_SLEEP_SECONDS", "0"))
@@ -160,6 +174,22 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     )
   end
 
+  def target_tree_snapshot(root)
+    Dir.glob(File.join(root, "**", "*"), File::FNM_DOTMATCH)
+       .reject { |path| [".", ".."].include?(File.basename(path)) }
+       .to_h do |path|
+      relative = path.delete_prefix("#{root}#{File::SEPARATOR}")
+      value = if File.symlink?(path)
+                [:symlink, File.readlink(path)]
+              elsif File.file?(path)
+                [:file, File.binread(path)]
+              else
+                [:directory]
+              end
+      [relative, value]
+    end
+  end
+
   def write_codex_native_state(target)
     plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
     FileUtils.mkdir_p(target)
@@ -267,6 +297,43 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert_equal "https://github.com/obra/superpowers", payload.dig("superpowers", "catalog_entries", 0, "upstream_repository")
       assert_nil payload.dig("superpowers", "upstream_version")
       assert_equal "not-queried", payload.dig("superpowers", "upstream_version_source")
+    end
+  end
+
+  def test_codex_marketplace_queries_do_not_mutate_the_inspected_target_tree
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      write_codex_native_state(target)
+      before = target_tree_snapshot(target)
+
+      out, err, status = run_state_with_env(
+        {
+          "QA_SIMULATE_ARG0_BOOTSTRAP" => "1",
+          "QA_SUPERPOWERS_STATE" => "active"
+        },
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", payload.dig("superpowers", "state")
+      assert_equal before, target_tree_snapshot(target)
+
+      failed_out, failed_err, failed_status = run_state_with_env(
+        {
+          "QA_SIMULATE_ARG0_BOOTSTRAP" => "1",
+          "QA_SUPERPOWERS_FAIL_MARKETPLACE" => "openai-curated"
+        },
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      failed_payload = JSON.parse(failed_out)
+
+      assert failed_status.success?, "#{failed_out}#{failed_err}"
+      assert_equal "UNKNOWN", failed_payload.dig("superpowers", "state")
+      assert_includes failed_payload.dig("superpowers", "warnings", 0), "catalog unavailable"
+      assert_equal before, target_tree_snapshot(target)
     end
   end
 

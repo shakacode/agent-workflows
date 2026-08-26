@@ -168,6 +168,31 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_wrong_shaped_metadata_preserves_active_superpowers_advisory_in_check_failed_output
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      File.write(File.join(target, ".agent-workflows-install.json"), "[]\n")
+      environment = {
+        "QA_SUPERPOWERS_STATE" => "active",
+        "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev"
+      }
+
+      json_out, json_status = run_status(environment, "--target", target, "--host", "codex", "--json")
+      payload = JSON.parse(json_out)
+
+      assert_equal 3, json_status.exitstatus, json_out
+      assert_equal "CHECK_FAILED", payload.fetch("status")
+      assert_includes payload.fetch("reason"), "invalid metadata"
+      assert_equal "active", payload.dig("superpowers", "state")
+
+      text_out, text_status = run_status(environment, "--target", target, "--host", "codex")
+
+      assert_equal 3, text_status.exitstatus, text_out
+      assert_includes text_out, "CHECK_FAILED"
+      assert_includes text_out, "superpowers=active"
+      assert_includes text_out, "WARNING Agent Workflows remains the sole delivery orchestrator"
+    end
+  end
+
   def test_claude_up_to_date_text_omits_superpowers_diagnostic
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|
