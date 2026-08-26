@@ -831,7 +831,7 @@ class GoalCompletionContractTest < Minitest::Test
       walkthrough_or_approval_ready
     ], actionable_triggers.sort
 
-    actionable_user_input = cases.select do |replay_case|
+    actionable_user_input = (cases + variants).select do |replay_case|
       replay_case.dig("input", "kind") == "action_required" &&
         replay_case.dig("input", "action_needed") != "none."
     end
@@ -854,7 +854,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal followups_output, render_human_status(followups, stable_payload:)
     assert_includes followups_output, "Action needed: Start a new task for issue #445."
     assert_includes followups_output,
-                    "Next: Start that task from issue #445; keep this task open until the handoff is created."
+                    "Next: Start a new task from issue #445; keep this task open until the handoff is created."
     assert_includes followups_output, "Conversation status: Follow-ups remain — issue #445 (open): track."
 
     unknown_diagnostic = cases.find do |replay_case|

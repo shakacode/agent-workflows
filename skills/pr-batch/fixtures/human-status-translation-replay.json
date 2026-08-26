@@ -163,10 +163,10 @@
         "trigger": "closeout_or_archive_completed",
         "what_changed": "The pull request merged, but one tracked follow-up still blocks this task's archive gate.",
         "action_needed": "Start a new task for issue #445.",
-        "next": "Start that task from issue #445; keep this task open until the handoff is created.",
+        "next": "Start a new task from issue #445; keep this task open until the handoff is created.",
         "existing_closeout_handoff": "Completed-batch audit: follow-ups-remain — durable receipt recorded.\nConversation status: Follow-ups remain — issue #445 (open): track."
       },
-      "expected_user_output": "What changed: The pull request merged, but one tracked follow-up still blocks this task's archive gate. Action needed: Start a new task for issue #445. Next: Start that task from issue #445; keep this task open until the handoff is created.\n\nCompleted-batch audit: follow-ups-remain — durable receipt recorded.\nConversation status: Follow-ups remain — issue #445 (open): track."
+      "expected_user_output": "What changed: The pull request merged, but one tracked follow-up still blocks this task's archive gate. Action needed: Start a new task for issue #445. Next: Start a new task from issue #445; keep this task open until the handoff is created.\n\nCompleted-batch audit: follow-ups-remain — durable receipt recorded.\nConversation status: Follow-ups remain — issue #445 (open): track."
     }
   ]
 }

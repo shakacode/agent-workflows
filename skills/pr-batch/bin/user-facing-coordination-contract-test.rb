@@ -18,6 +18,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   PR_WALKTHROUGH = "skills/pr-walkthrough/SKILL.md"
   SPEC = "skills/spec/SKILL.md"
   PLAN_ISSUE_TRIAGE = "skills/plan-issue-triage/SKILL.md"
+  QA_STRESS = "skills/qa-stress/SKILL.md"
   README = "README.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
   GMCC_V4 = "GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or " \
@@ -218,7 +219,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
                     "state the smallest action that clears the blocker and whether to reply here or start a new task"
 
     [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION,
-     PAUSE, PR_MONITORING, PR_WALKTHROUGH, SPEC, PLAN_ISSUE_TRIAGE].each do |path|
+     PAUSE, PR_MONITORING, PR_WALKTHROUGH, SPEC, PLAN_ISSUE_TRIAGE, QA_STRESS].each do |path|
       text = normalized(path)
       assert_includes text,
                       "Every final user-visible workflow handoff must include one unambiguous `Next:` instruction",
