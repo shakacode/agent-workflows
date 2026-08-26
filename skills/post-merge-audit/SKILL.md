@@ -450,7 +450,7 @@ preserves the original coordination terminal and records the later-target
 completion mode. Active/nonterminal lanes, open targets, unauthenticated target
 facts, and malformed terminal timestamps remain blocked.
 
-A terminal `done`/`no_pr_evidence` issue lane may reconcile only when authenticated issue closure occurred after lane closeout and the lane's exact same-issue `#issuecomment-<id>` evidence matches the typed no-PR target. A terminal `adhoc:` auxiliary lane may bind only to exactly one such primary issue lane with the identical evidence URL; preserve it with `publication_target: false`, exclude it from publication targets, and never let it authorize head-bound QA—issue-only no-PR QA remains explicit `NOT_APPLICABLE` with `head_sha: not_applicable`.
+A terminal `done`/`no_pr_evidence` issue lane may reconcile only when authenticated issue closure occurred after lane closeout and authenticated GitHub API evidence proves the lane's exact same-issue `#issuecomment-<id>` ID, HTML URL, and issue URL; replay re-authenticates the comment and API failure or any identity mismatch blocks. A terminal `adhoc:` auxiliary lane may bind only through a trusted `completed-batch-auxiliary-lane-map` v1 row whose exact coordination target, parent target, and `qa` role match exactly one such primary issue lane with the identical evidence URL; undeclared or mismatched `adhoc:` targets block. Preserve an accepted auxiliary lane with `publication_target: false`, exclude it from publication targets, and never let it authorize head-bound QA—issue-only no-PR QA remains explicit `NOT_APPLICABLE` with `head_sha: not_applicable`.
 
 A raw issue target may project to a different final PR only when the lane's
 exact PR URL is in the trusted final manifest and authenticated GitHub GraphQL
@@ -478,8 +478,10 @@ contract is `completed-batch-publication-preflight-input` v1 with `batch_id`,
 the same `expected_targets`, raw successful targeted `coordination_status`,
 `target_snapshots` (`target`, terminal `state`, full `head_sha`, `source`), and
 `qa_evidence` (`target`, marker text, plus `maintainer_waiver: {"url": "<exact
-same-target #issuecomment URL>"}` only for `WAIVED`). The CLI reads
-`coordination_backend` only from `--workflow-config`; do not
+same-target #issuecomment URL>"}` only for `WAIVED`). An optional
+`auxiliary_lane_map` may contain only the trusted versioned exact
+coordination-target, parent-target, and role bindings needed for auxiliary lanes.
+The CLI reads `coordination_backend` only from `--workflow-config`; do not
 replace the bounded coordination result with a caller-written lane summary.
 Each `qa_evidence` row must carry a coordinator-owned
 `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's

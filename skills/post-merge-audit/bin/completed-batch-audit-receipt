@@ -569,6 +569,7 @@ module CompletedBatchAuditReceipt
     created_at = comment.fetch("created_at", "").to_s
     updated_at = comment.fetch("updated_at", "").to_s
     raise Error, "comment timestamps are missing" if created_at.empty? || updated_at.empty?
+
     parse_comment_timestamp(created_at)
     parse_comment_timestamp(updated_at)
     raise Error, "comment was edited before verification" unless created_at == updated_at
@@ -1073,6 +1074,7 @@ module CompletedBatchAuditReceipt
     refreshed = CompletedBatchPublicationPreflight.assess(
       preflight.fetch("source_input"),
       coordination_backend:,
+      evidence_comment_verifier: method(:authenticated_publication_evidence_comment),
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
       coordination_verifier: method(:authenticated_publication_coordination_status)
@@ -1283,6 +1285,7 @@ module CompletedBatchAuditReceipt
     CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       preflight,
       coordination_backend: trusted_backend,
+      evidence_comment_verifier: method(:authenticated_publication_evidence_comment),
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
       coordination_verifier: method(:authenticated_publication_coordination_status),
@@ -1297,6 +1300,12 @@ module CompletedBatchAuditReceipt
 
     permission = gh_api(host, "repos/#{repo}/collaborators/#{author}/permission")
     comment if CompletedBatchPublicationPreflight.verified_waiver_author_permission?(comment, permission)
+  rescue Error
+    nil
+  end
+
+  def authenticated_publication_evidence_comment(host:, repo:, comment_id:)
+    gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
   rescue Error
     nil
   end

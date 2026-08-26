@@ -123,6 +123,17 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         "evidence_url" => evidence_url
       }
     ]
+    input["auxiliary_lane_map"] = {
+      "contract" => "completed-batch-auxiliary-lane-map",
+      "version" => 1,
+      "lanes" => [
+        {
+          "coordination_target" => "adhoc:hc-a06-issue10235-qa",
+          "parent_target" => JSON.parse(JSON.generate(target)),
+          "role" => "qa"
+        }
+      ]
+    }
     input
   end
 
@@ -263,6 +274,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
   def assess_input(
     input,
     backend: BACKEND,
+    evidence_comment_verifier: valid_evidence_comment_verifier(input),
     waiver_verifier: valid_waiver_verifier(input),
     target_verifier: valid_target_verifier(input),
     coordination_verifier: valid_coordination_verifier(input, backend)
@@ -270,10 +282,45 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     CompletedBatchPublicationPreflight.assess(
       input,
       coordination_backend: backend,
+      evidence_comment_verifier:,
       waiver_verifier:,
       target_verifier:,
       coordination_verifier:
     )
+  end
+
+  def valid_evidence_comment_verifier(input)
+    comments = input.dig("coordination_status", "batches", 0, "lanes").to_a.filter_map do |lane|
+      url = lane["evidence_url"].to_s
+      match = url.match(%r{\Ahttps://([^/]+)/([^/]+/[^/]+)/issues/(\d+)#issuecomment-(\d+)\z})
+      next unless match
+
+      comment_id = Integer(match[4], 10)
+      next if comment_id == 999_999_999_999_999_999
+
+      {
+        "host" => match[1],
+        "repo" => match[2],
+        "comment_id" => comment_id,
+        "payload" => {
+          "id" => comment_id,
+          "html_url" => url,
+          "issue_url" => "https://api.github.com/repos/#{match[2]}/issues/#{match[3]}",
+          "body" => "Authenticated no-PR closeout evidence.",
+          "created_at" => "2026-08-23T08:04:50Z",
+          "updated_at" => "2026-08-23T08:04:50Z"
+        }
+      }
+    end
+    comments.uniq! { |comment| [comment.fetch("host"), comment.fetch("repo"), comment.fetch("comment_id")] }
+
+    lambda do |host:, repo:, comment_id:|
+      comment = comments.find do |candidate|
+        candidate.fetch("host") == host && candidate.fetch("repo") == repo &&
+          candidate.fetch("comment_id") == comment_id
+      end
+      comment&.fetch("payload")
+    end
   end
 
   def valid_target_verifier(input)
@@ -293,8 +340,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
-  def valid_coordination_verifier(input, backend)
-    expected_backend = backend
+  def valid_coordination_verifier(input, configured_backend)
+    expected_backend = configured_backend
     lambda do |backend:, batch_id:|
       next unless backend == expected_backend && batch_id == input.fetch("batch_id")
 
@@ -866,7 +913,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       "type" => "issue",
       "number" => 9_521
     }
-    target = input.fetch("expected_targets").first
+    expected_target = input.fetch("expected_targets").first
     projection_verifier_calls = 0
     projection_verifier = lambda do |source:, target:|
       projection_verifier_calls += 1
@@ -886,10 +933,10 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
 
     assert result.fetch("eligible"), result.fetch("blockers").join("\n")
     assert_equal 1, projection_verifier_calls
-    assert_equal [target], result.fetch("targets")
+    assert_equal [expected_target], result.fetch("targets")
     lanes = result.dig("snapshot", "coordination", "lanes")
     assert_equal(%w[issue-9521 qa-issue-9521], lanes.map { |lane| lane.fetch("name") })
-    assert(lanes.all? { |lane| lane.fetch("target") == target })
+    assert(lanes.all? { |lane| lane.fetch("target") == expected_target })
     assert_equal([issue, issue], lanes.map { |lane| lane.dig("target_projection", "source_target") })
     assert_equal(%w[closes_issue closes_issue],
                  lanes.map { |lane| lane.dig("target_projection", "relationship") })
@@ -931,6 +978,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       result,
       coordination_backend: BACKEND,
+      evidence_comment_verifier: valid_evidence_comment_verifier(input),
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND)
@@ -970,6 +1018,138 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute result.fetch("eligible")
     assert_includes result.fetch("blockers"),
                     "coordination lane issue-10235-qa target is absent or ambiguous"
+  end
+
+  def test_unrelated_adhoc_lane_cannot_masquerade_as_auxiliary_qa_by_copying_evidence
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    unrelated_lane = input.dig("coordination_status", "batches", 0, "lanes", 1)
+    unrelated_lane["name"] = "unrelated-operations"
+    unrelated_lane["targets"] = ["adhoc:hc-a06-unrelated-operations"]
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane unrelated-operations target is absent or ambiguous"
+  end
+
+  def test_auxiliary_lane_requires_an_exact_trusted_mapping
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    input.delete("auxiliary_lane_map")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane issue-10235-qa target is absent or ambiguous"
+  end
+
+  def test_auxiliary_lane_rejects_mismatched_trusted_mapping_fields
+    mutations = {
+      "coordination target" => lambda do |mapping|
+        mapping["coordination_target"] = "adhoc:hc-a06-other-qa"
+      end,
+      "parent target" => lambda do |mapping|
+        mapping.fetch("parent_target")["number"] = 10_236
+      end,
+      "role" => lambda do |mapping|
+        mapping["role"] = "operations"
+      end
+    }
+
+    mutations.each do |label, mutate|
+      input = later_closed_no_pr_with_auxiliary_qa_lane_input
+      mutate.call(input.dig("auxiliary_lane_map", "lanes", 0))
+
+      result = assess_input(input)
+
+      refute result.fetch("eligible"), label
+      assert_includes result.fetch("blockers"),
+                      "coordination lane issue-10235-qa target is absent or ambiguous",
+                      label
+    end
+  end
+
+  def test_no_pr_lanes_require_authenticated_existing_evidence_comment
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    forged_url = "https://github.com/shakacode/hichee/issues/10235#issuecomment-999999999999999999"
+    input.dig("coordination_status", "batches", 0, "lanes").each do |lane|
+      lane["evidence_url"] = forged_url
+    end
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 coordination lane issue-10235 terminal evidence comment " \
+                    "is not authenticated or fresh"
+  end
+
+  def test_no_pr_evidence_comment_verification_fails_closed_when_comment_is_missing
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+
+    result = assess_input(input, evidence_comment_verifier: ->(**) {})
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 coordination lane issue-10235 terminal evidence comment " \
+                    "is not authenticated or fresh"
+  end
+
+  def test_no_pr_evidence_comment_requires_exact_authenticated_identity
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    valid_verifier = valid_evidence_comment_verifier(input)
+    mutations = {
+      "id" => ->(comment) { comment["id"] += 1 },
+      "html_url" => ->(comment) { comment["html_url"] = comment.fetch("html_url").sub("10235", "10236") },
+      "issue_url" => ->(comment) { comment["issue_url"] = comment.fetch("issue_url").sub("10235", "10236") }
+    }
+
+    mutations.each do |label, mutate|
+      verifier = lambda do |host:, repo:, comment_id:|
+        comment = JSON.parse(JSON.generate(valid_verifier.call(host:, repo:, comment_id:)))
+        mutate.call(comment)
+        comment
+      end
+
+      result = assess_input(input, evidence_comment_verifier: verifier)
+
+      refute result.fetch("eligible"), label
+      assert_includes result.fetch("blockers"),
+                      "shakacode/hichee#issue:10235 coordination lane issue-10235 terminal evidence comment " \
+                      "is not authenticated or fresh",
+                      label
+    end
+  end
+
+  def test_no_pr_evidence_comment_verification_is_memoized_per_comment
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    valid_verifier = valid_evidence_comment_verifier(input)
+    calls = 0
+    verifier = lambda do |**keywords|
+      calls += 1
+      valid_verifier.call(**keywords)
+    end
+
+    result = assess_input(input, evidence_comment_verifier: verifier)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal 1, calls
+  end
+
+  def test_no_pr_evidence_comment_is_reauthenticated_during_reassessment
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    receipt = assess_input(input)
+    assert receipt.fetch("eligible")
+
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      receipt,
+      coordination_backend: BACKEND,
+      evidence_comment_verifier: ->(**) {},
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
   end
 
   def test_auxiliary_qa_lane_rejects_public_url_fields_or_non_later_closure
@@ -1015,6 +1195,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       receipt,
       coordination_backend: BACKEND,
+      evidence_comment_verifier: valid_evidence_comment_verifier(input),
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier: valid_target_verifier(input),
       coordination_verifier: lambda do |backend:, batch_id:|
