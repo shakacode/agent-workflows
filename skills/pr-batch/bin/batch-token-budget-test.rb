@@ -2800,9 +2800,62 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal canonicalize(request), admitted.dig("decision_receipt", "request")
       assert_equal digest, admitted.dig("decision_receipt", "request_digest")
       assert_equal 900, admitted.dig("decision_receipt", "telemetry_max_age_seconds")
+      state = JSON.parse(File.read(state_path))
+      assert_equal state.dig("trusted_plan_binding", "path"),
+                   admitted.dig("decision_receipt", "trusted_plan_path")
+      assert_equal state.dig("trusted_plan_binding", "id"),
+                   admitted.dig("decision_receipt", "trusted_plan_id")
+      assert_equal state.dig("trusted_plan_binding", "digest"),
+                   admitted.dig("decision_receipt", "trusted_plan_digest")
       assert_operator admitted.dig("receipt", "state_revision"), :<,
                       admitted.dig("decision_receipt", "state_revision")
       assert_equal admitted.dig("decision_receipt", "state_revision"), admitted.fetch("state_revision")
+    end
+  end
+
+  def test_legacy_decision_receipts_replay_without_corrupting_persisted_state
+    with_state do |state_path|
+      initialize_budget(state_path)
+      request = reservation(id: "legacy-decision-receipt")
+      admitted, stderr, status = run_helper(state_path, command("reserve", "reservation" => request))
+      assert status.success?, stderr
+      assert_equal "admitted", admitted.fetch("status")
+
+      state = JSON.parse(File.read(state_path))
+      state.fetch("receipts").each do |receipt|
+        next unless receipt["type"] == "batch-token-budget-reservation-decision-receipt"
+
+        receipt.delete("telemetry_max_age_seconds")
+        receipt.delete("trusted_plan_path")
+        receipt.delete("trusted_plan_id")
+        receipt.delete("trusted_plan_digest")
+      end
+      state.fetch("reservation_decisions").each_value do |fence|
+        fence.fetch("outcomes").each do |outcome|
+          outcome.fetch("receipt").delete("telemetry_max_age_seconds")
+          outcome.fetch("receipt").delete("trusted_plan_path")
+          outcome.fetch("receipt").delete("trusted_plan_id")
+          outcome.fetch("receipt").delete("trusted_plan_digest")
+        end
+      end
+      rehash_control_tail(state)
+      File.write(state_path, JSON.generate(canonicalize(state)))
+
+      replayed, replay_stderr, replay_status = run_helper(
+        state_path,
+        command("reserve", "reservation" => request, "evaluated_at" => "2026-08-12T12:20:00Z")
+      )
+
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal 900, replayed.dig("decision_receipt", "telemetry_max_age_seconds")
+      assert_equal state.dig("trusted_plan_binding", "path"),
+                   replayed.dig("decision_receipt", "trusted_plan_path")
+      persisted = JSON.parse(File.read(state_path))
+      assert_equal 3, persisted.fetch("control_events").length
+      refute persisted.dig(
+        "reservation_decisions", "legacy-decision-receipt", "outcomes", 0, "receipt"
+      ).key?("telemetry_max_age_seconds")
     end
   end
 

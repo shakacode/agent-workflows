@@ -703,7 +703,10 @@ decision receipts, explicit lane identity, exact nested checkpoint shape,
 portable ASCII operational identifiers, the complete canonical production
 reservation request and digest in the decision receipt and admitted reservation
 receipt, the production telemetry max age, and evaluation time inside the current
-trusted-bundle window. A faithful replay of an original `admitted` result keeps
+trusted-bundle window. The decision receipt must anchor the externally verified
+production plan; require its telemetry max age and every aggregate/coordinator/lane
+limit to equal that plan, and require all hierarchical scope-counter equations.
+A faithful replay of an original `admitted` result keeps
 its original nil checkpoint; a replayed warning still requires the original
 well-formed checkpoint, and an original decision revision may precede the
 current replay revision. Replayed admission is an idempotent record-only outcome:
@@ -726,10 +729,15 @@ handoff that can be assembled deterministically. Terminal targets are not
 woken. Missing context or descendant-fanout estimates, a stale target, or an
 over-threshold estimate needs structured task-bound durable human approval
 before a new-evidence wake.
+Bind that approval to the exact selected repository-qualified target. Map an
+approved stale target explicitly to production reservation state `idle`; do not
+require a literal `stale` state that the production reservation contract cannot emit.
 The target must match one of the task's complete target set and the budget result
 must bind that target's corresponding lane. Its production request source must
 match the delegation payload's source task and repository-qualified target, and
 its request target state must equal the payload target state and admission class.
+For the stale classification only, that equality is the explicit `stale` to
+production `idle` mapping above.
 
 Cross-target information never expands the recipient task's mutation scope. Use
 `canonical-task-foreign-target-packet` v1 with distinct source and recipient
@@ -757,6 +765,11 @@ window, canonical digest/reference, a unique production revision ending at the
 result revision, nonnegative interval/actual/released/overshoot counters, and
 the production release/overshoot equations. Invalid or partial receipts are not
 recordable and cannot feed pilot metrics.
+Bind the budget result, every receipt, and every task-owned charge-back/nested
+target identity to the canonical task batch ID. Require portable reconciliation IDs, an exact
+coordinator plus task-lane hierarchy, valid aggregate/coordinator/lane counter
+equations, and an overshoot turn count that is zero exactly when overshoot tokens
+are zero and never exceeds the receipt's contributing turns.
 Resolve the review-findings validator path through the repository's portable
 workflow seam; do not hardcode a root `bin` identity. Do not accept the schema
 result's `valid` string alone: require its validator identity to equal the

@@ -490,16 +490,25 @@ Budget decisions bind their evaluation time to that same current bundle window,
 retain faithful original checkpoint/revision semantics on production replay,
 bind the canonical production reservation request and digest through both
 decision and admission receipts, and enforce the receipt-carried production
-telemetry max age. Admitted receipt tokens, aggregate/lane totals, and the exact
-overshoot target set must match that request; delegation additionally matches
-the payload source identity and target state. Validate external plans through the
-production verify-only collision fence. Multi-lane result sets bind by canonical
+telemetry max age. The decision receipt also anchors the externally verified
+production plan; its telemetry max age and every aggregate/coordinator/lane
+limit must equal that plan, while all scope counters satisfy the production
+hierarchical equations. Admitted receipt tokens and the exact overshoot target
+set must match that request; delegation additionally matches the payload source
+identity and target-state classification. An approved stale wake maps explicitly
+to production `idle`, and its approval binds the exact selected repository-qualified
+target. Validate external plans through the production verify-only collision fence.
+Multi-lane result sets bind by canonical
 lane ID, never array position. An admitted replay authorizes only the idempotent
 `record_budget_replay` no-op; it never launches, wakes, retries, or repeats another
 side effect, and a replayed launch exposes no held-local actions.
 Case-insensitive control identities use Unicode NFKC plus full case folding and
 trimming; nested `UNKNOWN` checks apply the same normalization. Operational
 request/result/reservation IDs first require portable ASCII syntax.
+Reconciliation binds every task-owned nested batch identity to the canonical task, requires
+the coordinator and exact task-lane hierarchy with valid counter equations, and
+requires portable reconciliation identities plus consistent overshoot-token and
+contributing-turn evidence.
 
 | Scenario class | Risk | Recommended route | Samples | Evidence strength |
 | --- | --- | --- | --- | --- |

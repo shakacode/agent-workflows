@@ -693,6 +693,46 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_equal ["wake_target_task"], result.fetch("allowed_actions")
   end
 
+  def test_multi_target_wake_approval_binds_the_exact_selected_target
+    task = multi_target_task
+    lane = task.fetch("lanes").last
+    target = task.fetch("targets").last
+    input = delegation_input(
+      target_state: "stale", context: 60_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: bound_evidence(
+        contract: "authority-evidence", task: task, action: "wake_target_task", role: "maintainer",
+        target: task.fetch("targets").first
+      )
+    )
+    input["task"] = task
+    input["manifest"] = compact_manifest(task)
+    input["lifecycle"]["checkpoints"] = task.fetch("targets").map do |candidate|
+      checkpoint("cross_task_handoff", task: task, target: candidate)
+    end
+    input["budget_gate"] = budget_result(action: "delegation", task: task, lane: lane)
+    input["delegation"]["target"] = {
+      "task_id" => task.fetch("id"), "repository" => target.fetch("repository"), "target" => target.fetch("target")
+    }
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "approval target binding mismatch"
+  end
+
+  def test_approved_stale_delegation_maps_to_idle_production_reservation
+    input = delegation_input(
+      target_state: "stale", context: 60_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: delegation_approval
+    )
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "allow", result.fetch("verdict")
+    assert_equal ["wake_target_task"], result.fetch("allowed_actions")
+  end
+
   def test_cross_task_wake_rejects_the_same_canonical_target_even_with_case_variants
     input = delegation_input(
       target_state: "idle", context: 40_000, threshold: 50_000,
@@ -831,6 +871,65 @@ class CanonicalTaskControlTest < Minitest::Test
 
     refute status.success?
     assert_includes stderr, "charge back binding or no-double-count invariant mismatch"
+  end
+
+  def test_usage_reconciliation_binds_task_batch_and_exact_lane_hierarchy
+    input = usage_reconciliation_input
+    reconciliation = input.fetch("usage_reconciliation")
+    reconciliation.fetch("budget_result")["batch_id"] = "foreign-batch"
+    reconciliation.fetch("budget_result").fetch("receipts").each { |record| record["batch_id"] = "foreign-batch" }
+    reconciliation.fetch("budget_result").fetch("charge_backs").each do |charge_back|
+      charge_back.fetch("target")["batch_id"] = "foreign-batch"
+    end
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "task batch binding mismatch"
+
+    input = usage_reconciliation_input
+    input.dig("usage_reconciliation", "budget_result", "receipts").first["batch_id"] = "foreign-batch"
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "reconciliation receipts"
+
+    input = usage_reconciliation_input
+    input.dig("usage_reconciliation", "budget_result", "charge_backs").first.fetch("target")["batch_id"] =
+      "foreign-batch"
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "charge back binding"
+
+    input = usage_reconciliation_input
+    reconciliation = input.fetch("usage_reconciliation")
+    reconciliation.fetch("usage_receipt").fetch("lanes").first["id"] = "forged-lane"
+    refresh_usage_artifact!(reconciliation)
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "lane hierarchy mismatch"
+  end
+
+  def test_usage_reconciliation_rejects_nonportable_ids_and_inconsistent_overshoot_turns
+    %w[UNKNOWN UNKNΟWN].each do |reservation_id|
+      input = usage_reconciliation_input
+      input.dig("usage_reconciliation", "budget_result", "receipts").first["reservation_id"] = reservation_id
+
+      _result, stderr, status = run_helper(input)
+
+      refute status.success?
+      assert_includes stderr, "portable ASCII"
+    end
+
+    input = usage_reconciliation_input
+    record = input.dig("usage_reconciliation", "budget_result", "receipts").first
+    record["overshoot_turn_count"] = 1
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "overshoot turn equation"
   end
 
   def test_cross_task_wake_rejects_an_arbitrary_approval_url
@@ -1226,6 +1325,34 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "telemetry"
   end
 
+  def test_budget_decision_telemetry_age_is_bound_to_the_verified_plan
+    input = budget_action_input("retry")
+    input.dig("budget_gate", "decision_receipt")["telemetry_max_age_seconds"] = 86_400
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "telemetry max age"
+  end
+
+  def test_budget_totals_enforce_hierarchical_counter_equations
+    input = budget_action_input("retry")
+    input.dig("budget_gate", "totals", "aggregate")["allocated_tokens"] += 1
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "hierarchical totals"
+
+    input = budget_action_input("retry")
+    input.dig("budget_gate", "totals", "aggregate")["limit_tokens"] += 1
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "trusted plan limits"
+  end
+
   def test_budget_result_rejects_receipt_token_and_admitted_totals_mismatches
     input = budget_action_input("retry")
     input["budget_gate"]["receipt"]["tokens"] = 1
@@ -1533,6 +1660,8 @@ class CanonicalTaskControlTest < Minitest::Test
     request["target_state"] = "active" if status == "coalesced"
     request["target_state"] = "paused" if status == "blocked"
     request_digest = budget_request_digest(request)
+    plan = budget_plan(task)
+    trusted_plan_path = install_budget_plan(plan, label: "admission")
     receipt = {
       "type" => "batch-token-budget-reservation-receipt", "version" => 1,
       "batch_id" => task.fetch("id"), "state_revision" => revision - 1,
@@ -1551,6 +1680,9 @@ class CanonicalTaskControlTest < Minitest::Test
       "reservation_id" => receipt.fetch("reservation_id"),
       "request" => request, "request_digest" => request_digest, "status" => status,
       "telemetry_max_age_seconds" => 900,
+      "trusted_plan_path" => trusted_plan_path,
+      "trusted_plan_id" => plan.fetch("batch_id"),
+      "trusted_plan_digest" => findings_digest(plan),
       "reason" => if status == "blocked"
                     "paused-target-requires-resume-approval"
                   else
@@ -1562,10 +1694,13 @@ class CanonicalTaskControlTest < Minitest::Test
       "type" => "batch-token-budget-result", "version" => 1, "status" => status,
       "batch_id" => task.fetch("id"), "state_revision" => revision,
       "totals" => {
-        "aggregate" => budget_scope_totals(status),
-        "coordinator" => budget_scope_totals("idle"),
+        "aggregate" => budget_scope_totals(status, limit_tokens: plan.dig("scopes", "aggregate", "limit_tokens")),
+        "coordinator" => budget_scope_totals("idle", limit_tokens: plan.dig("scopes", "coordinator", "limit_tokens")),
         "lanes" => task.fetch("lanes").to_h do |task_lane|
-          [task_lane.fetch("id"), budget_scope_totals(task_lane.fetch("id") == lane.fetch("id") ? status : "idle")]
+          [task_lane.fetch("id"), budget_scope_totals(
+            task_lane.fetch("id") == lane.fetch("id") ? status : "idle",
+            limit_tokens: plan.dig("scopes", "lanes", task_lane.fetch("id"), "limit_tokens")
+          )]
         end
       },
       "preserved_gates" => %w[security review qa exact-head ownership merge],
@@ -1631,10 +1766,10 @@ class CanonicalTaskControlTest < Minitest::Test
     gate.fetch("receipt")["request_digest"] = digest
   end
 
-  def budget_scope_totals(status)
+  def budget_scope_totals(status, limit_tokens: 50_000)
     allocated = %w[admitted admitted-with-warning].include?(status) ? 10_000 : 0
     {
-      "limit_tokens" => 50_000, "allocated_tokens" => allocated,
+      "limit_tokens" => limit_tokens, "allocated_tokens" => allocated,
       "consumed_tokens" => 0, "reserved_tokens" => allocated,
       "released_tokens" => 0, "unattributed_tokens" => 0
     }
@@ -1864,17 +1999,29 @@ class CanonicalTaskControlTest < Minitest::Test
   end
 
   def budget_reconciliation_result(receipt_digest:, batch_id: "task-402",
-                                   receipt_ref: "file:///coordinator/receipts/task-402-usage-v2.json", tokens: 35)
+                                   receipt_ref: "file:///coordinator/receipts/task-402-usage-v2.json", tokens: 35,
+                                   lane_id: "aw-i402", coordinator_tokens: 10, lane_tokens: 25)
     predicted_tokens = [10_000, tokens].max
     released_tokens = predicted_tokens - tokens
+    scope = lambda do |limit:, allocated:, consumed:, released:|
+      {
+        "limit_tokens" => limit, "allocated_tokens" => allocated,
+        "consumed_tokens" => consumed, "reserved_tokens" => 0,
+        "released_tokens" => released, "unattributed_tokens" => 0
+      }
+    end
     {
       "type" => "batch-token-budget-result", "version" => 1, "status" => "reconciled",
       "batch_id" => batch_id, "state_revision" => 3,
-      "totals" => { "aggregate" => { "limit_tokens" => [50_000, predicted_tokens].max,
-                                     "allocated_tokens" => predicted_tokens,
-                                     "consumed_tokens" => tokens, "reserved_tokens" => 0,
-                                     "released_tokens" => released_tokens,
-                                     "unattributed_tokens" => 0 } },
+      "totals" => {
+        "aggregate" => scope.call(limit: [50_000, predicted_tokens].max, allocated: predicted_tokens,
+                                  consumed: tokens, released: released_tokens),
+        "coordinator" => scope.call(limit: 10_000, allocated: 0, consumed: coordinator_tokens, released: 0),
+        "lanes" => {
+          lane_id => scope.call(limit: [50_000, predicted_tokens].max, allocated: predicted_tokens,
+                                consumed: lane_tokens, released: released_tokens)
+        }
+      },
       "preserved_gates" => %w[security review qa exact-head ownership merge],
       "usage_receipt_digest" => receipt_digest, "receipt_ref" => receipt_ref,
       "receipts" => [{
@@ -1942,7 +2089,8 @@ class CanonicalTaskControlTest < Minitest::Test
           "usage_receipt_digest" => findings_digest(ordinary_receipt),
           "budget_result" => budget_reconciliation_result(
             receipt_digest: findings_digest(ordinary_receipt), batch_id: ordinary_batch, receipt_ref: ordinary_ref,
-            tokens: 70_000
+            tokens: 70_000, lane_id: "ordinary-lane-#{ordinal}", coordinator_tokens: 10_000,
+            lane_tokens: 60_000
           ),
           "metrics" => metrics
         },
@@ -1956,7 +2104,8 @@ class CanonicalTaskControlTest < Minitest::Test
           "usage_receipt_digest" => findings_digest(multi_receipt),
           "budget_result" => budget_reconciliation_result(
             receipt_digest: findings_digest(multi_receipt), batch_id: multi_batch, receipt_ref: multi_ref,
-            tokens: 100_000
+            tokens: 100_000, lane_id: "multi-lane-#{ordinal}", coordinator_tokens: 20_000,
+            lane_tokens: 80_000
           ),
           "metrics" => metrics
         }

@@ -860,14 +860,16 @@ module CanonicalTaskControl
       raise InvalidInput, "budget result batch id must be a portable ASCII task id"
     end
     raise InvalidInput, "budget result state revision must be nonnegative" unless nonnegative_integer?(result["state_revision"])
-    unless valid_budget_totals?(result["totals"], task) && result["preserved_gates"] == PRESERVED_GATES
+    raise InvalidInput, "batch-token-budget hierarchical totals mismatch" unless valid_budget_totals?(result["totals"], task)
+    unless result["preserved_gates"] == PRESERVED_GATES
       raise InvalidInput, "batch-token-budget result must preserve ordinary gates"
     end
 
     decision = result["decision_receipt"]
     require_exact_keys!(decision, %w[
                           type version batch_id state_revision preserved_gates reservation_id request request_digest
-                          status reason evaluated_at telemetry_max_age_seconds
+                          status reason evaluated_at telemetry_max_age_seconds trusted_plan_path trusted_plan_id
+                          trusted_plan_digest
                         ])
     replayed = result["status"] == "replayed"
     unless portable_id?(decision["reservation_id"])
@@ -890,6 +892,16 @@ module CanonicalTaskControl
     end
 
     validate_budget_decision_time!(decision["evaluated_at"], context: context)
+    plan_anchor = decision.slice("trusted_plan_path", "trusted_plan_id", "trusted_plan_digest")
+    trusted_plan = load_trusted_budget_plan!(plan_anchor, context: context)
+    validate_hierarchical_budget_plan!(trusted_plan, task)
+    unless decision["telemetry_max_age_seconds"] == trusted_plan.dig("telemetry", "max_age_seconds")
+      raise InvalidInput, "budget decision telemetry max age must match trusted plan"
+    end
+    unless budget_total_limits_match_plan?(result["totals"], trusted_plan)
+      raise InvalidInput, "budget result totals must match trusted plan limits"
+    end
+
     validate_budget_request!(
       decision["request"], task: task, lane: lane, action: action, evaluated_at: decision["evaluated_at"],
                            max_age_seconds: decision["telemetry_max_age_seconds"], context: context
@@ -1008,7 +1020,9 @@ module CanonicalTaskControl
            source.dig("work_item", "type") == source_type && source.dig("work_item", "number") == source_number.to_i
       raise InvalidInput, "budget delegation source identity mismatch"
     end
-    unless request["target_state"] == delegation["target_state"]
+
+    production_target_state = delegation["target_state"] == "stale" ? "idle" : delegation["target_state"]
+    unless request["target_state"] == production_target_state
       raise InvalidInput, "budget delegation target state mismatch"
     end
     if %w[admitted admitted-with-warning].include?(status) && request["target_state"] != "idle"
@@ -1100,13 +1114,31 @@ module CanonicalTaskControl
     expected_lane_ids = task.fetch("lanes").map { |lane| canonical_identity(lane["id"]) }.sort
     return false unless lanes.is_a?(Hash) && lanes.keys.map { |id| canonical_identity(id) }.sort == expected_lane_ids
 
-    [totals["aggregate"], totals["coordinator"], *lanes.values].all? do |scope|
+    scopes_valid = [totals["aggregate"], totals["coordinator"], *lanes.values].all? do |scope|
       scope.is_a?(Hash) && scope.keys.sort == %w[
         allocated_tokens consumed_tokens limit_tokens released_tokens reserved_tokens unattributed_tokens
       ] && positive_integer?(scope["limit_tokens"]) &&
         %w[allocated_tokens consumed_tokens released_tokens reserved_tokens unattributed_tokens].all? do |counter|
           nonnegative_integer?(scope[counter])
         end
+    end
+    return false unless scopes_valid
+
+    descendants = [totals["coordinator"], *lanes.values]
+    %w[allocated_tokens consumed_tokens released_tokens reserved_tokens unattributed_tokens].all? do |counter|
+      totals.dig("aggregate", counter) == descendants.sum { |scope| scope[counter] }
+    end
+  end
+
+  def budget_total_limits_match_plan?(totals, plan)
+    return false unless totals.dig("aggregate", "limit_tokens") == plan.dig("scopes", "aggregate", "limit_tokens") &&
+                        totals.dig("coordinator", "limit_tokens") == plan.dig("scopes", "coordinator", "limit_tokens")
+
+    plan.fetch("scopes").fetch("lanes").all? do |lane_id, limit|
+      record = totals.fetch("lanes").find do |candidate_id, _candidate|
+        canonical_identity(candidate_id) == canonical_identity(lane_id)
+      end&.last
+      record && record["limit_tokens"] == limit["limit_tokens"]
     end
   end
 
@@ -1159,10 +1191,14 @@ module CanonicalTaskControl
 
     approval = false
     unless delegation["human_approval"] == "UNKNOWN"
-      validate_bound_evidence!(
+      approval_evidence = validate_bound_evidence!(
         delegation["human_approval"], contract: "authority-evidence", task: task,
                                       action: "wake_target_task", allowed_roles: %w[maintainer], context: context
       )
+      unless canonical_target_key(approval_evidence) == canonical_target_key(target)
+        raise InvalidInput, "human approval target binding mismatch"
+      end
+
       approval = true
     end
 
@@ -1272,14 +1308,22 @@ module CanonicalTaskControl
       raise InvalidInput, "usage reconciliation source and target must differ"
     end
 
+    budget_result = reconciliation["budget_result"]
+    unless budget_result.is_a?(Hash) && known_portable_id?(budget_result["batch_id"]) &&
+           canonical_identity(budget_result["batch_id"]) == canonical_identity(task["id"])
+      raise InvalidInput, "usage reconciliation task batch binding mismatch"
+    end
+
+    expected_lane_ids = task.fetch("lanes").map { |lane| lane.fetch("id") }
+
     projection = validate_usage_receipt!(
-      reconciliation["usage_receipt"], expected_batch_id: reconciliation.dig("budget_result", "batch_id")
+      reconciliation["usage_receipt"], expected_batch_id: task.fetch("id"), expected_lane_ids: expected_lane_ids
     )
     raise InvalidInput, "usage telemetry remains UNKNOWN" unless projection.fetch("unknowns").empty?
 
     validate_usage_receipt_binding!(
       reconciliation["usage_receipt"], reconciliation["usage_receipt_ref"],
-      reconciliation["usage_receipt_digest"], reconciliation["budget_result"], context: context
+      reconciliation["usage_receipt_digest"], budget_result, context: context
     )
     charge_backs = validate_charge_backs!(
       reconciliation["budget_result"].fetch("charge_backs", []), source: source, target: target,
@@ -1301,7 +1345,7 @@ module CanonicalTaskControl
 
     charge_backs.each do |charge_back|
       require_exact_keys!(charge_back, %w[id source target tokens physical_total_incremented])
-      next if known_string?(charge_back["id"]) && nonnegative_integer?(charge_back["tokens"]) &&
+      next if known_portable_id?(charge_back["id"]) && nonnegative_integer?(charge_back["tokens"]) &&
               charge_back["physical_total_incremented"] == false &&
               valid_budget_task_identity?(charge_back["source"], source) &&
               valid_budget_task_identity?(charge_back["target"], target, expected_batch_id: batch_id)
@@ -1317,7 +1361,7 @@ module CanonicalTaskControl
 
   def valid_budget_task_identity?(identity, canonical, expected_batch_id: nil)
     return false unless identity.is_a?(Hash) && identity.keys.sort == %w[batch_id lane_id root_id task_id work_item]
-    return false unless %w[batch_id lane_id root_id task_id].all? { |key| known_string?(identity[key]) }
+    return false unless %w[batch_id lane_id root_id task_id].all? { |key| known_portable_id?(identity[key]) }
     return false if expected_batch_id && identity["batch_id"] != expected_batch_id
     return false unless canonical_identity(identity["task_id"]) == canonical_identity(canonical["task_id"])
 
@@ -1360,6 +1404,20 @@ module CanonicalTaskControl
 
     receipts = budget_result["receipts"]
     receipt_window = receipt["window"]
+    total_contributing_turns = receipt.dig("batch", "turns", "descendant_inclusive")
+    unless receipts.is_a?(Array) && receipts.all? do |item|
+      item.is_a?(Hash) && known_portable_id?(item["batch_id"]) && known_portable_id?(item["reservation_id"])
+    end
+      raise InvalidInput, "batch-token-budget reconciliation receipts must use portable ASCII ids"
+    end
+    unless receipts.all? do |item|
+      nonnegative_integer?(item["overshoot_tokens"]) && nonnegative_integer?(item["overshoot_turn_count"]) &&
+      item["overshoot_turn_count"] <= total_contributing_turns &&
+      item["overshoot_tokens"].positive? == item["overshoot_turn_count"].positive?
+    end
+      raise InvalidInput, "reconciliation overshoot turn equation mismatch"
+    end
+
     receipts_valid = receipts.is_a?(Array) && !receipts.empty? && receipts.all? do |item|
       item.is_a?(Hash) && item.keys.sort == %w[
         actual_tokens batch_id completed from_inclusive interval_tokens overshoot_tokens
@@ -1367,6 +1425,7 @@ module CanonicalTaskControl
         reservation_id state_revision to_exclusive type usage_receipt_digest version
       ].sort && item["type"] == "batch-token-budget-reconciliation-receipt" &&
         item["version"] == 1 && item["batch_id"] == budget_result["batch_id"] &&
+        known_portable_id?(item["batch_id"]) && known_portable_id?(item["reservation_id"]) &&
         item["usage_receipt_digest"] == digest && item["receipt_ref"] == reference &&
         item["preserved_gates"] == PRESERVED_GATES && item["completed"] == true &&
         nonnegative_integer?(item["state_revision"]) && item["state_revision"] <= budget_result["state_revision"] &&
@@ -1380,17 +1439,14 @@ module CanonicalTaskControl
         item["released_tokens"] == [item["predicted_tokens"] - item["actual_tokens"], 0].max &&
         nonnegative_integer?(item["overshoot_tokens"]) &&
         item["overshoot_tokens"] == [item["actual_tokens"] - item["predicted_tokens"], 0].max &&
-        nonnegative_integer?(item["overshoot_turn_count"])
+        nonnegative_integer?(item["overshoot_turn_count"]) &&
+        item["overshoot_turn_count"] <= total_contributing_turns &&
+        item["overshoot_tokens"].positive? == item["overshoot_turn_count"].positive?
     end
     revisions = receipts.is_a?(Array) ? receipts.filter_map { |item| item["state_revision"] if item.is_a?(Hash) } : []
-    aggregate = budget_result.dig("totals", "aggregate")
     released_total = receipts_valid ? receipts.sum { |item| item["released_tokens"] } : nil
-    counters_valid = receipts_valid && aggregate.is_a?(Hash) &&
-                     %w[allocated_tokens consumed_tokens reserved_tokens released_tokens unattributed_tokens].all? do |field|
-                       nonnegative_integer?(aggregate[field])
-                     end && positive_integer?(aggregate["limit_tokens"]) &&
-                     aggregate["consumed_tokens"] >= receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens") &&
-                     aggregate["released_tokens"] >= released_total
+    counters_valid = receipts_valid && valid_reconciliation_totals?(budget_result["totals"], receipt) &&
+                     budget_result.dig("totals", "aggregate", "released_tokens") >= released_total
     unless receipts_valid && nonnegative_integer?(budget_result["state_revision"]) &&
            revisions.uniq.length == revisions.length && revisions.max == budget_result["state_revision"] && counters_valid
       raise InvalidInput, "batch-token-budget reconciliation receipts mismatch"
@@ -1399,7 +1455,43 @@ module CanonicalTaskControl
     raise InvalidInput, "usage receipt artifact malformed"
   end
 
-  def validate_usage_receipt!(receipt, expected_batch_id:)
+  def valid_reconciliation_totals?(totals, receipt)
+    return false unless totals.is_a?(Hash) && totals.keys.sort == %w[aggregate coordinator lanes]
+
+    lanes = totals["lanes"]
+    receipt_lanes = receipt.fetch("lanes")
+    expected_ids = receipt_lanes.map { |lane| canonical_identity(lane["id"]) }.sort
+    return false unless lanes.is_a?(Hash) && lanes.keys.map { |id| canonical_identity(id) }.sort == expected_ids
+
+    scope_records = [totals["aggregate"], totals["coordinator"], *lanes.values]
+    return false unless scope_records.all? do |record|
+      record.is_a?(Hash) && record.keys.sort == %w[
+        allocated_tokens consumed_tokens limit_tokens released_tokens reserved_tokens unattributed_tokens
+      ] && positive_integer?(record["limit_tokens"]) &&
+      %w[allocated_tokens consumed_tokens released_tokens reserved_tokens unattributed_tokens].all? do |counter|
+        nonnegative_integer?(record[counter])
+      end
+    end
+
+    descendants = [totals["coordinator"], *lanes.values]
+    equations_hold = %w[allocated_tokens consumed_tokens released_tokens reserved_tokens unattributed_tokens].all? do |counter|
+      totals.dig("aggregate", counter) == descendants.sum { |record| record[counter] }
+    end
+    return false unless equations_hold
+    return false unless totals.dig("aggregate", "consumed_tokens") >=
+                        receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    return false unless totals.dig("coordinator", "consumed_tokens") >=
+                        receipt.dig("coordinator", "usage", "self_only", "total_tokens")
+
+    receipt_lanes.all? do |receipt_lane|
+      totals_lane = lanes.find do |lane_id, _record|
+        canonical_identity(lane_id) == canonical_identity(receipt_lane["id"])
+      end&.last
+      totals_lane && totals_lane["consumed_tokens"] >= receipt_lane.dig("usage", "descendant_inclusive", "total_tokens")
+    end
+  end
+
+  def validate_usage_receipt!(receipt, expected_batch_id:, expected_lane_ids: nil)
     required = %w[schema batch coordinator lanes window accounting evidence privacy]
     allowed = required + %w[credit_equivalents]
     unless receipt.is_a?(Hash) && (required - receipt.keys).empty? && (receipt.keys - allowed).empty? &&
@@ -1410,13 +1502,24 @@ module CanonicalTaskControl
     batch = receipt["batch"]
     coordinator = receipt["coordinator"]
     lanes = receipt["lanes"]
-    unless batch.is_a?(Hash) && batch["scope"] == "batch" && batch["id"] == expected_batch_id &&
+    unless batch.is_a?(Hash) && batch["scope"] == "batch" && known_portable_id?(batch["id"]) &&
+           canonical_identity(batch["id"]) == canonical_identity(expected_batch_id) &&
            batch.dig("reconciliation", "status") == "balanced"
       raise InvalidInput, "usage receipt batch binding or reconciliation mismatch"
     end
     unless coordinator.is_a?(Hash) && coordinator["scope"] == "coordinator" &&
-           lanes.is_a?(Array) && !lanes.empty? && lanes.all? { |lane| lane.is_a?(Hash) && lane["scope"] == "lane" }
+           known_portable_id?(coordinator["id"]) && known_portable_id?(coordinator["root_thread_id"]) &&
+           lanes.is_a?(Array) && !lanes.empty? && lanes.all? do |lane|
+             lane.is_a?(Hash) && lane["scope"] == "lane" && known_portable_id?(lane["id"]) &&
+             known_portable_id?(lane["root_thread_id"])
+           end
       raise InvalidInput, "usage receipt scope structure mismatch"
+    end
+
+    normalized_lane_ids = lanes.map { |lane| canonical_identity(lane["id"]) }
+    if normalized_lane_ids.uniq.length != normalized_lane_ids.length ||
+       (expected_lane_ids && normalized_lane_ids.sort != expected_lane_ids.map { |id| canonical_identity(id) }.sort)
+      raise InvalidInput, "usage receipt lane hierarchy mismatch"
     end
     unless lanes.all? { |lane| lane.dig("reconciliation", "status") == "balanced" }
       raise InvalidInput, "usage receipt lane reconciliation mismatch"
@@ -2005,6 +2108,10 @@ module CanonicalTaskControl
 
   def portable_id?(value)
     value.is_a?(String) && value.match?(/\A[A-Za-z0-9][A-Za-z0-9_.:-]*\z/)
+  end
+
+  def known_portable_id?(value)
+    portable_id?(value) && canonical_identity(value) != "unknown"
   end
 
   def known_string_array?(value)

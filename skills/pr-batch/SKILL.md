@@ -127,7 +127,9 @@ target identities. Coalesce messages when the target is active and do not wake
 it again; do not wake terminal targets or wake for unchanged evidence,
 acknowledgement, or a deterministically assembled handoff. A stale target,
 missing estimate, or over-threshold context requires structured task-bound
-durable human approval.
+durable human approval bound to the exact selected repository-qualified target;
+after that approval, classify `stale` explicitly as production reservation state
+`idle` rather than requiring a reservation state the production helper cannot emit.
 An unknown descendant estimate is also missing. Delegation preflight performs
 admission only; it never accepts caller-authored usage deltas. Reconcile after
 execution through a separate operation that consumes the exact
@@ -150,9 +152,10 @@ the mutating path. Bind every decision `evaluated_at` to the current trusted
 bundle window. Require the canonical production reservation request and digest
 in its decision receipt and, for admission, its reservation receipt; require
 portable ASCII for operational request/result/reservation IDs before normalized
-`UNKNOWN` checks. Enforce the production receipt's telemetry max age and bind
-admitted receipt tokens, aggregate/lane allocation totals, and overshoot target
-set to the request. A delegation request also binds the payload's exact source
+`UNKNOWN` checks. Anchor the decision to the externally verified production plan,
+require its telemetry max age and every aggregate/coordinator/lane limit to equal
+that plan, enforce all hierarchical scope-counter equations, and bind admitted
+receipt tokens and the overshoot target set to the request. A delegation request also binds the payload's exact source
 identity and target state. Preserve faithful replay semantics: admitted replays may retain
 their original nil checkpoint, warning replays may not, and original receipt
 revisions may precede the current replay revision. A replayed admission permits
@@ -160,6 +163,10 @@ only the idempotent `record_budget_replay` no-op and never repeats launch, wake,
 retry, held-local launch work, or another side effect. Normalize case-insensitive
 control identities with Unicode NFKC plus full case folding and trimming, and
 apply that normalization before nested `UNKNOWN` rejection.
+Usage reconciliation binds top-level, receipt, charge-back target, and other
+task-owned nested batch IDs to the canonical task; requires portable IDs, the exact coordinator and
+task-lane hierarchy, valid scope-counter equations, and overshoot-turn evidence
+consistent with both overshoot tokens and contributing turns.
 Carry cross-target facts only in `canonical-task-foreign-target-packet` v1 with
 literal `evidence_only` disposition. Persist the emitted
 `foreign-target-evidence-receipt`; its only action is

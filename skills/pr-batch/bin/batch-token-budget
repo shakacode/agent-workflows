@@ -902,13 +902,37 @@ module BatchTokenBudget
 
       next_state, = apply_command(replayed_state, command, trusted_budget, trusted_plan_binding)
       return false if replayed_state && digest(control_projection(next_state)) == expected_pre_state_digest
-      return false unless event["post_state_digest"] == digest(control_projection(next_state))
+
+      unless event["post_state_digest"] == digest(control_projection(next_state))
+        legacy_state = legacy_decision_receipt_projection(next_state)
+        return false unless event["post_state_digest"] == digest(control_projection(legacy_state))
+
+        next_state = legacy_state
+      end
 
       replayed_state = deep_copy(next_state)
       replayed_state["control_events"] = deep_copy(events.first(index + 1))
       previous_digest = event["digest"]
     end
     control_projection(replayed_state) == control_projection(state)
+  end
+
+  def legacy_decision_receipt_projection(state)
+    projected = deep_copy(state)
+    projected.fetch("receipts", []).each { |receipt| remove_current_decision_receipt_fields!(receipt) }
+    projected.fetch("reservation_decisions", {}).each_value do |fence|
+      fence.fetch("outcomes", []).each { |outcome| remove_current_decision_receipt_fields!(outcome["receipt"]) }
+    end
+    projected
+  end
+
+  def remove_current_decision_receipt_fields!(receipt)
+    return unless receipt.is_a?(Hash) &&
+                  receipt["type"] == "batch-token-budget-reservation-decision-receipt"
+
+    %w[telemetry_max_age_seconds trusted_plan_path trusted_plan_id trusted_plan_digest].each do |field|
+      receipt.delete(field)
+    end
   end
 
   def valid_state?(state, trusted_budget, trusted_plan_binding)
@@ -1220,6 +1244,9 @@ module BatchTokenBudget
       "request" => canonicalize(reservation),
       "request_digest" => request_digest,
       "telemetry_max_age_seconds" => original_state.dig("budget", "telemetry", "max_age_seconds"),
+      "trusted_plan_path" => original_state.dig("trusted_plan_binding", "path"),
+      "trusted_plan_id" => original_state.dig("trusted_plan_binding", "id"),
+      "trusted_plan_digest" => original_state.dig("trusted_plan_binding", "digest"),
       "status" => status,
       "reason" => fields["reason"],
       "evaluated_at" => evaluated_at
@@ -1236,8 +1263,17 @@ module BatchTokenBudget
   def replay_reservation_decision(state, outcome)
     fields = deep_copy(outcome.fetch("result_fields"))
     fields["decision_status"] = outcome.fetch("status")
-    fields["decision_receipt"] = outcome.fetch("receipt")
+    fields["decision_receipt"] = current_decision_receipt(state, outcome.fetch("receipt"))
     [state, result(state, "replayed", fields)]
+  end
+
+  def current_decision_receipt(state, receipt)
+    deep_copy(receipt).merge(
+      "telemetry_max_age_seconds" => state.dig("budget", "telemetry", "max_age_seconds"),
+      "trusted_plan_path" => state.dig("trusted_plan_binding", "path"),
+      "trusted_plan_id" => state.dig("trusted_plan_binding", "id"),
+      "trusted_plan_digest" => state.dig("trusted_plan_binding", "digest")
+    )
   end
 
   def totals(state)
