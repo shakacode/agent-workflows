@@ -598,9 +598,13 @@ dataset covers submitted-review history, the distribution and sampled near
 misses have been reviewed, and a threshold decision is recorded. The
 calibration helper emits no merge decisions.
 
-Consumers that intentionally leave non-required, approval-gated third-party
-checks held may adopt the exact trusted-base policy seam after upgrading the
-pack:
+Every consumer upgrading to this pack must populate `context.diff_base_sha` and
+derive `diff_identity` with the trusted `diff-identity` helper as described
+below. That migration is required whether or not the repository configures
+optional approval-held CI.
+
+Separately, consumers that intentionally leave non-required, approval-gated
+third-party checks held may opt in to the exact trusted-base policy seam:
 
 ```yaml
 ci_readiness:
@@ -628,12 +632,13 @@ when `ci_readiness` is omitted or `n/a`. A shallow or PR-branch-only checkout
 must fetch that exact base commit (or unshallow the repository) first; an
 unavailable base object fails closed.
 
-The upgraded pack also supplies `skills/pr-batch/bin/diff-identity`. Replace
-opaque or locally invented digests with this helper before creating new
-walkthrough, approval, or merge-context evidence. Existing evidence made for an
-arbitrary digest is not migrated: recompute the identity from the exact base
-ref, resolved base/effective merge-base full lowercase SHA, and full lowercase
-head SHA, then repeat any evidence gate bound to the old identity.
+The upgraded pack supplies `skills/pr-batch/bin/diff-identity`. As part of the
+required upgrade migration, replace opaque or locally invented digests with
+this helper before creating new walkthrough, approval, or merge-context
+evidence. Existing evidence made for an arbitrary digest is not migrated:
+recompute the identity from the exact base ref, resolved base/effective
+merge-base full lowercase SHA, and full lowercase head SHA, then repeat any
+evidence gate bound to the old identity.
 Store that reviewed base/effective-merge-base SHA as `context.diff_base_sha`
 and bind the same value in walkthrough and human-decision evidence. Continue to
 store the live GitHub `baseRefOid` in `context.base.sha`; installed merge
