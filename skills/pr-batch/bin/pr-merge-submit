@@ -1295,6 +1295,7 @@ module PrMergeSubmit
         unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil?
           raise UnknownOutcome, "PR merge-queue membership became inconsistent or UNKNOWN before enqueue"
         end
+
         if refreshed["isMergeQueueEnabled"] == false
           if @merge_submission.fetch("mode") == "merge_queue_or_guarded_direct"
             return guarded_direct_result(options, refreshed: refreshed)
@@ -1498,7 +1499,8 @@ module PrMergeSubmit
       )
       policy, policy_source = ConfiguredReviewGate::TrustedPolicy.load(repo_root:, base_sha:)
       client = ConfiguredReviewGate::GitHubClient.new(
-        host: options.fetch(:host), repo: options.fetch(:repo), pr: options.fetch(:pr).to_i, policy:
+        host: options.fetch(:host), repo: options.fetch(:repo),
+        pull_request_number: options.fetch(:pr).to_i, policy:
       )
       ConfiguredReviewGate.replay(
         receipt:, policy:, policy_source:, snapshot: client.collect, trusted_live: true

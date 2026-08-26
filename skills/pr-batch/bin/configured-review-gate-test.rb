@@ -30,6 +30,8 @@ class ConfiguredReviewGateTest < Minitest::Test
   end
 
   class FakeGitHubApiClient < ConfiguredReviewGate::GitHubClient
+    # This API fixture deliberately bypasses the production initializer's system-tool resolution.
+    # rubocop:disable Lint/MissingSuper
     def initialize(policy:, threads:, reviews: [], checks: [])
       @host = HOST
       @repo = REPO
@@ -39,6 +41,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       @reviews = reviews
       @checks = checks
     end
+    # rubocop:enable Lint/MissingSuper
 
     private
 
@@ -293,7 +296,7 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "steps.verify-review.outputs.completed == 'true'", publisher.fetch("if")
     assert_equal "${{ github.event.pull_request.head.sha }}", publisher.dig("env", "EXPECTED_HEAD_SHA")
     refute_includes publisher.fetch("run"), "${{"
-    assert_includes publisher.fetch("run"), 'repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews'
+    assert_includes publisher.fetch("run"), "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews"
     assert_includes publisher.fetch("run"), "-f event=COMMENT"
     assert_includes publisher.fetch("run"), '-f commit_id="$EXPECTED_HEAD_SHA"'
 
@@ -637,8 +640,8 @@ class ConfiguredReviewGateTest < Minitest::Test
 
     assert_equal "NOT_READY", result.fetch("verdict")
     blockers = result.fetch("blockers")
-    assert_equal 5, blockers.count { |blocker| blocker.fetch("code") == "configured-review-thread-untriaged" }
-    assert_equal threads.map { |item| item.fetch("id") }, blockers.map { |blocker| blocker.fetch("thread_id") }
+    assert_equal(5, blockers.count { |blocker| blocker.fetch("code") == "configured-review-thread-untriaged" })
+    assert_equal(threads.map { |item| item.fetch("id") }, blockers.map { |blocker| blocker.fetch("thread_id") })
     refute result.key?("receipt")
   end
 
@@ -841,7 +844,7 @@ class ConfiguredReviewGateTest < Minitest::Test
     ).fetch("receipt")
     cases = {
       "mutation eligibility" => [
-        lambda { |candidate| candidate["mutation_eligible"] = false },
+        ->(candidate) { candidate["mutation_eligible"] = false },
         "configured-review-receipt-evidence-digest-mismatch"
       ],
       "evidence provenance" => [
@@ -1045,9 +1048,9 @@ class ConfiguredReviewGateTest < Minitest::Test
         status = nil
         _stdout, stderr = capture_io do
           status = ConfiguredReviewGate::CLI.new.run([
-            "replay", "--repo", REPO, "--pr", PR.to_s, "--host", HOST,
-            "--repo-root", directory, "--receipt", receipt_path
-          ])
+                                                       "replay", "--repo", REPO, "--pr", PR.to_s, "--host", HOST,
+                                                       "--repo-root", directory, "--receipt", receipt_path
+                                                     ])
         end
 
         assert_equal 2, status, label
@@ -1068,7 +1071,10 @@ class ConfiguredReviewGateTest < Minitest::Test
       wait_seconds: 60,
       poll_seconds: 30,
       clock: -> { current },
-      sleeper: ->(seconds) { sleeps << seconds; current += seconds }
+      sleeper: lambda { |seconds|
+        sleeps << seconds
+        current += seconds
+      }
     ).run
 
     assert_equal "READY", result.fetch("verdict")
@@ -1090,7 +1096,10 @@ class ConfiguredReviewGateTest < Minitest::Test
       wait_seconds: 60,
       poll_seconds: 30,
       clock: -> { current },
-      sleeper: ->(seconds) { sleeps << seconds; current += seconds }
+      sleeper: lambda { |seconds|
+        sleeps << seconds
+        current += seconds
+      }
     ).run
 
     assert_equal "NOT_READY", result.fetch("verdict")
@@ -1129,7 +1138,10 @@ class ConfiguredReviewGateTest < Minitest::Test
       wait_seconds: 90,
       poll_seconds: 30,
       clock: -> { current },
-      sleeper: ->(seconds) { sleeps << seconds; current += seconds }
+      sleeper: lambda { |seconds|
+        sleeps << seconds
+        current += seconds
+      }
     ).run
 
     assert_equal "READY", result.fetch("verdict")
@@ -1170,7 +1182,10 @@ class ConfiguredReviewGateTest < Minitest::Test
       wait_seconds: 90,
       poll_seconds: 30,
       clock: -> { current },
-      sleeper: ->(seconds) { sleeps << seconds; current += seconds }
+      sleeper: lambda { |seconds|
+        sleeps << seconds
+        current += seconds
+      }
     ).run
 
     assert_equal "READY", result.fetch("verdict")
@@ -1208,7 +1223,10 @@ class ConfiguredReviewGateTest < Minitest::Test
       wait_seconds: 90,
       poll_seconds: 30,
       clock: -> { current },
-      sleeper: ->(seconds) { sleeps << seconds; current += seconds }
+      sleeper: lambda { |seconds|
+        sleeps << seconds
+        current += seconds
+      }
     ).run
 
     assert_equal "NOT_READY", result.fetch("verdict")

@@ -1685,8 +1685,10 @@ class PrMergeSubmitTest < Minitest::Test
         }
       end
       if !source_repo_policy && review_gate.equal?(SOURCE_REVIEW_GATE)
-        review_gate = merge_submission.is_a?(Hash) &&
-                      merge_submission["mode"] == "merge_queue_or_guarded_direct" ? "n/a" : nil
+        review_gate = if merge_submission.is_a?(Hash) &&
+                         merge_submission["mode"] == "merge_queue_or_guarded_direct"
+                        "n/a"
+                      end
       end
       repo_root, base_sha, fixture_head = if source_repo_policy
                                             [File.expand_path("../../..", __dir__), BASE_SHA, HEAD_SHA]

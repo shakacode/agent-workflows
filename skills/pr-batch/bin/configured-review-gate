@@ -72,8 +72,16 @@ module ConfiguredReviewGate
         if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
           Process.kill("TERM", -pid)
           sleep 0.05
-          Process.kill("KILL", -pid) rescue Errno::ESRCH
-          Process.waitpid(pid) rescue Errno::ECHILD
+          begin
+            Process.kill("KILL", -pid)
+          rescue Errno::ESRCH
+            nil
+          end
+          begin
+            Process.waitpid(pid)
+          rescue Errno::ECHILD
+            nil
+          end
           raise Error, "external command timed out after #{timeout_seconds} seconds"
         end
         sleep 0.02
@@ -104,7 +112,7 @@ module ConfiguredReviewGate
         "GIT_NO_REPLACE_OBJECTS" => "1",
         "GIT_OPTIONAL_LOCKS" => "0"
       }
-      stdout, stderr, status = Command.capture(
+      stdout, _, status = Command.capture(
         environment, git, "-C", root, "show", "--no-textconv", "--no-ext-diff",
         "#{base_sha}:#{POLICY_PATH}", chdir: root
       )
@@ -149,10 +157,10 @@ module ConfiguredReviewGate
       }
     GRAPHQL
 
-    def initialize(host:, repo:, pr:, policy:)
+    def initialize(host:, repo:, pull_request_number:, policy:)
       @host = host
       @repo = repo
-      @pr = pr
+      @pr = pull_request_number
       @policy = policy
       @gh = ConfiguredReviewGate.resolve_system_tool!("gh", outside_root: Dir.pwd)
     end
@@ -193,7 +201,7 @@ module ConfiguredReviewGate
         "repos/#{@repo}/commits/#{head_sha}/check-runs?per_page=100",
         "-H", "Accept: application/vnd.github+json"
       )
-      Array(pages).flat_map { |page| Array(page["check_runs"]) }.map do |check|
+      checks = Array(pages).flat_map { |page| Array(page["check_runs"]) }.map do |check|
         {
           "name" => check["name"],
           "status" => check["status"],
@@ -204,12 +212,13 @@ module ConfiguredReviewGate
           "details_url" => check["details_url"],
           "output" => [check.dig("output", "title"), check.dig("output", "summary"), check.dig("output", "text")].compact.join("\n")
         }
-      end.sort_by { |check| [check["name"].to_s, check["started_at"].to_s] }
+      end
+      checks.sort_by { |check| [check["name"].to_s, check["started_at"].to_s] }
     end
 
     def collect_artifacts
       reviews = paginated_array("repos/#{@repo}/pulls/#{@pr}/reviews?per_page=100")
-      reviews.filter_map do |review|
+      artifacts = reviews.filter_map do |review|
         actor = review.dig("user", "login")
         next unless artifact_configured?(actor, "pull_request_review")
 
@@ -217,7 +226,8 @@ module ConfiguredReviewGate
           review["id"], "pull_request_review", actor, review["submitted_at"], review["html_url"], review["commit_id"],
           state: review["state"]
         )
-      end.sort_by { |artifact| [artifact["kind"], artifact["id"].to_s] }
+      end
+      artifacts.sort_by { |artifact| [artifact["kind"], artifact["id"].to_s] }
     end
 
     def collect_threads(head_sha)
@@ -229,12 +239,13 @@ module ConfiguredReviewGate
       )
       complete = true
       artifacts = []
-      threads = Array(pages).flat_map do |page|
+      thread_nodes = Array(pages).flat_map do |page|
         connection = page.dig("data", "repository", "pullRequest", "reviewThreads")
         raise Error, "review-thread query returned no pull request" unless connection.is_a?(Hash)
 
         Array(connection["nodes"])
-      end.map do |thread|
+      end
+      threads = thread_nodes.map do |thread|
         comments_connection = thread["comments"]
         complete = false if comments_connection.dig("pageInfo", "hasNextPage") == true
         comments = Array(comments_connection["nodes"]).map do |comment|
@@ -246,7 +257,7 @@ module ConfiguredReviewGate
             "id" => comment["id"],
             "actor" => comment.dig("author", "login"),
             "association" => comment["authorAssociation"],
-            "body_digest" => "sha256:#{Digest::SHA256.hexdigest(comment["body"].to_s)}",
+            "body_digest" => "sha256:#{Digest::SHA256.hexdigest(comment['body'].to_s)}",
             "disposition" => disposition,
             "created_at" => comment["createdAt"]
           }
@@ -404,7 +415,6 @@ module ConfiguredReviewGate
       end
     end
   end
-
 
   def resolve_system_tool!(name, outside_root:)
     candidate = SYSTEM_TOOL_DIRS
@@ -610,9 +620,11 @@ module ConfiguredReviewGate
     settlement = receipt.fetch("artifact_settlement")
     return "configured-review-receipt-policy-mismatch" unless
       receipt.dig("policy", "digest") == "sha256:#{Digest::SHA256.hexdigest(policy_source)}"
+
     policy_not_applicable = policy == "n/a"
     return "configured-review-receipt-policy-mismatch" unless
       receipt.dig("policy", "not_applicable") == policy_not_applicable
+
     unless policy_not_applicable
       return "configured-review-receipt-policy-mismatch" unless policy.is_a?(Hash)
       return "configured-review-receipt-policy-mismatch" unless
@@ -645,6 +657,7 @@ module ConfiguredReviewGate
                                                         receipt["evidence"].is_a?(Hash) &&
                                                         receipt["policy"].is_a?(Hash) &&
                                                         receipt["artifact_settlement"].is_a?(Hash)
+
     evidence = receipt.fetch("evidence")
     settlement = receipt.fetch("artifact_settlement")
     validate_snapshot!(evidence)
@@ -656,6 +669,7 @@ module ConfiguredReviewGate
       settlement["snapshot_digest"] == semantic_snapshot_digest(evidence) &&
       settlement["collected_at"] == evidence["collected_at"] &&
       settlement["settled"] == true
+
     expected_mutation_eligibility = trusted_live == true && evidence["provenance"] == "gh-api"
     return "configured-review-receipt-non-live" unless
       receipt["mutation_eligible"] == expected_mutation_eligibility
@@ -697,6 +711,7 @@ module ConfiguredReviewGate
     unless evidence_bindings.is_a?(Hash) && receipt["bindings"] == evidence_bindings
       raise ArgumentError, "configured review receipt bindings do not match embedded evidence"
     end
+
     envelope_error = receipt_envelope_validation_error(receipt, trusted_live: true)
     if envelope_error
       raise ArgumentError, "configured review receipt preflight failed: #{envelope_error}"
@@ -791,10 +806,12 @@ module ConfiguredReviewGate
   end
 
   def latest_current_head_reviews_by_actor(artifacts, head_sha)
-    artifacts.select do |artifact|
+    current_head_reviews = artifacts.select do |artifact|
       artifact["kind"] == "pull_request_review" &&
         artifact["head_sha"].to_s.casecmp?(head_sha.to_s)
-    end.group_by { |artifact| artifact["actor"] }.to_h do |actor, reviews|
+    end
+    reviews_by_actor = current_head_reviews.group_by { |artifact| artifact["actor"] }
+    reviews_by_actor.to_h do |actor, reviews|
       ordered = reviews.map do |review|
         [review, pull_request_review_order_key(review)]
       end
@@ -963,7 +980,11 @@ module ConfiguredReviewGate
       )
       write_receipt(options[:receipt], result["receipt"]) if result["verdict"] == "READY" && options[:receipt]
       puts JSON.pretty_generate(result)
-      result["verdict"] == "READY" ? 0 : result["verdict"] == "NOT_READY" ? 1 : 2
+      if result["verdict"] == "READY"
+        0
+      else
+        result["verdict"] == "NOT_READY" ? 1 : 2
+      end
     end
 
     def run_live_evaluate(argv)
@@ -972,7 +993,8 @@ module ConfiguredReviewGate
         repo_root: options.fetch(:repo_root), base_sha: options.fetch(:expected_base_sha)
       )
       client = GitHubClient.new(
-        host: options.fetch(:host), repo: options.fetch(:repo), pr: options.fetch(:pr), policy:
+        host: options.fetch(:host), repo: options.fetch(:repo),
+        pull_request_number: options.fetch(:pr), policy:
       )
       result = LiveEvaluator.new(
         client:, policy:, policy_source:,
@@ -991,7 +1013,8 @@ module ConfiguredReviewGate
       base_sha = ConfiguredReviewGate.validated_receipt_base_sha!(receipt)
       policy, policy_source = TrustedPolicy.load(repo_root: options.fetch(:repo_root), base_sha:)
       client = GitHubClient.new(
-        host: options.fetch(:host), repo: options.fetch(:repo), pr: options.fetch(:pr), policy:
+        host: options.fetch(:host), repo: options.fetch(:repo),
+        pull_request_number: options.fetch(:pr), policy:
       )
       snapshot = client.collect
       result = ConfiguredReviewGate.replay(
@@ -1020,6 +1043,7 @@ module ConfiguredReviewGate
       raise ArgumentError, "--host is invalid" unless options[:host].to_s.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d+)?\z/)
       raise ArgumentError, "--repo-root is required" if options[:repo_root].to_s.empty?
       raise ArgumentError, "--receipt is required" if options[:receipt].to_s.empty?
+
       if evaluate
         %i[expected_base_sha expected_head_sha].each do |key|
           raise ArgumentError, "--#{key.to_s.tr('_', '-')} must be a full commit SHA" unless
@@ -1033,7 +1057,11 @@ module ConfiguredReviewGate
 
     def emit_result(result)
       puts JSON.pretty_generate(result)
-      result["verdict"] == "READY" ? 0 : result["verdict"] == "NOT_READY" ? 1 : 2
+      if result["verdict"] == "READY"
+        0
+      else
+        result["verdict"] == "NOT_READY" ? 1 : 2
+      end
     end
 
     def parse_file_options(argv, receipt_required:)
