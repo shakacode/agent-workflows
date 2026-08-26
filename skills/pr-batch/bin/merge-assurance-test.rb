@@ -6,6 +6,8 @@ require "json"
 require "minitest/autorun"
 require "open3"
 require "rbconfig"
+require "stringio"
+require "timeout"
 require "tmpdir"
 require_relative "../lib/autonomous_merge_runtime_trust"
 
@@ -17,6 +19,7 @@ class MergeAssuranceTest < Minitest::Test
   BASE_SHA = "b" * 40
   DIFF_IDENTITY = "c" * 64
   NOW = Time.iso8601("2026-07-30T12:00:00Z")
+  BATCH_OBJECT_ID = "d" * 40
   SYSTEM_GIT = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |directory|
     candidate = File.join(directory, "git")
     candidate if File.file?(candidate) && File.executable?(candidate)
@@ -299,6 +302,484 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_selected_hosted_ci_materialization_streams_exact_committed_blobs
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-streamed-archive") do |repo_root|
+      executable = ".agents/bin/selected-hosted-ci-receipts"
+      materialized = File.join(repo_root, executable)
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.dirname(materialized))
+      File.write(
+        materialized,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          # $Format:%H$
+          require "json"
+          puts JSON.generate(
+            "streamed" => true,
+            "support_bytes" => File.binread("large-archive-member").bytesize
+          )
+        RUBY
+      )
+      FileUtils.chmod(0o755, materialized)
+      File.write(File.join(repo_root, "large-archive-member"), "x" * (2 * 1024 * 1024))
+      File.write(
+        File.join(repo_root, ".gitattributes"),
+        ".agents/bin/selected-hosted-ci-receipts export-subst\n" \
+        "large-archive-member export-ignore\n"
+      )
+      run_git!(repo_root, "add", "--all")
+      run_git!(repo_root, "commit", "-qm", "trusted base")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+      trusted_bytes = File.binread(materialized)
+
+      result = runner.send(
+        :run_selected_hosted_ci_seam!,
+        repo_root:,
+        base_sha:,
+        executable:,
+        trusted_bytes:,
+        request: {
+          "host" => "github.com",
+          "repository" => "owner/repo",
+          "pr" => 42,
+          "head_sha" => HEAD_SHA,
+          "selected_runs" => []
+        },
+        credential_env: []
+      )
+
+      assert_equal(
+        { "streamed" => true, "support_bytes" => 2 * 1024 * 1024 },
+        result
+      )
+    end
+  end
+
+  def test_selected_hosted_ci_materialization_reports_tree_listing_failure
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-archive-failure") do |repo_root|
+      snapshot_root = File.join(repo_root, "snapshot")
+      run_git!(repo_root, "init", "-q")
+      FileUtils.mkdir_p(snapshot_root)
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :materialize_trusted_base!, repo_root, "f" * 40, snapshot_root
+        )
+      end
+
+      assert_match(
+        /\Acould not materialize trusted-base selected hosted CI seam: /,
+        error.message
+      )
+      refute_empty error.message.delete_prefix(
+        "could not materialize trusted-base selected hosted CI seam: "
+      )
+    end
+  end
+
+  def test_selected_hosted_ci_materialization_has_an_overall_deadline
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-materialization-timeout") do |repo_root|
+      snapshot_root = File.join(repo_root, "snapshot")
+      fake_git = File.join(repo_root, "slow-git")
+      fake_git_pid = File.join(repo_root, "slow-git.pid")
+      File.write(
+        fake_git,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          Signal.trap("TERM", "IGNORE")
+          File.write(#{fake_git_pid.inspect}, Process.pid.to_s)
+          sleep 2
+        RUBY
+      )
+      FileUtils.chmod(0o755, fake_git)
+      FileUtils.mkdir_p(snapshot_root)
+      resolver = runner.method(:resolve_system_tool!)
+      runner.define_singleton_method(:resolve_system_tool!) do |name, outside_root:|
+        name == "git" ? fake_git : resolver.call(name, outside_root:)
+      end
+      original_timeout = ENV["MERGE_ASSURANCE_SELECTED_HOSTED_CI_MATERIALIZATION_TIMEOUT_SECONDS"]
+      ENV["MERGE_ASSURANCE_SELECTED_HOSTED_CI_MATERIALIZATION_TIMEOUT_SECONDS"] = "0.1"
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      error = Timeout.timeout(0.75) do
+        assert_raises(MergeAssurance::Error) do
+          runner.send(:materialize_trusted_base!, repo_root, "f" * 40, snapshot_root)
+        end
+      end
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert_equal(
+        "trusted-base selected hosted CI materialization timed out after 0.1 seconds " \
+        "and its process group was terminated",
+        error.message
+      )
+      assert_operator elapsed, :<, 0.75
+      process_pid = Integer(File.read(fake_git_pid)) if File.file?(fake_git_pid)
+      refute runner.send(:selected_hosted_ci_process_group_alive?, process_pid) if process_pid
+    ensure
+      if original_timeout
+        ENV["MERGE_ASSURANCE_SELECTED_HOSTED_CI_MATERIALIZATION_TIMEOUT_SECONDS"] = original_timeout
+      else
+        ENV.delete("MERGE_ASSURANCE_SELECTED_HOSTED_CI_MATERIALIZATION_TIMEOUT_SECONDS")
+      end
+      begin
+        Process.kill("KILL", process_pid) if process_pid
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_materialization_uses_one_persistent_blob_reader
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-batch-materialization") do |repo_root|
+      snapshot_root = File.join(repo_root, "snapshot")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      %w[one two three].each { |name| File.write(File.join(repo_root, name), name) }
+      run_git!(repo_root, "add", "one", "two", "three")
+      run_git!(repo_root, "commit", "-qm", "trusted base")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+      FileUtils.mkdir_p(snapshot_root)
+      original_spawn = Process.method(:spawn)
+      cat_file_calls = []
+      Process.define_singleton_method(:spawn) do |*arguments, **options|
+        cat_file_calls << arguments if arguments.include?("cat-file")
+        original_spawn.call(*arguments, **options)
+      end
+
+      runner.send(:materialize_trusted_base!, repo_root, base_sha, snapshot_root)
+
+      assert_equal 1, cat_file_calls.length
+      assert_includes cat_file_calls.first, "--batch"
+      assert_equal %w[one three two], Dir.children(snapshot_root).sort
+    ensure
+      Process.define_singleton_method(:spawn, original_spawn) if original_spawn
+    end
+  end
+
+  def test_selected_hosted_ci_blob_batch_requires_canonical_metadata
+    runner = MergeAssurance::Runner.new
+    malformed = {
+      "leading-zero size" => "#{BATCH_OBJECT_ID} blob 01\nx\n",
+      "mismatched object" => "#{'e' * 40} blob 1\nx\n",
+      "wrong type" => "#{BATCH_OBJECT_ID} tree 1\nx\n",
+      "missing object" => "#{BATCH_OBJECT_ID} missing\n",
+      "overlong header" => "#{BATCH_OBJECT_ID} blob #{'1' * 300}\n"
+    }
+
+    malformed.each do |label, response|
+      error = assert_raises(MergeAssurance::Error, label) do
+        stream_fake_blob_batch_response(runner, response)
+      end
+
+      assert_equal(
+        "could not extract trusted-base selected hosted CI seam: " \
+        "git returned malformed blob metadata",
+        error.message,
+        label
+      )
+    end
+
+    assert_equal(
+      "canonical",
+      stream_fake_blob_batch_response(
+        runner, "#{BATCH_OBJECT_ID} blob 9\ncanonical\n"
+      )
+    )
+  end
+
+  def test_selected_hosted_ci_blob_batch_header_has_an_exact_byte_limit
+    runner = MergeAssurance::Runner.new
+    exact = "x" * 255 << "\n"
+    assert_equal exact, read_fake_materialization_line(runner, exact)
+
+    error = assert_raises(MergeAssurance::Error) do
+      read_fake_materialization_line(runner, "x" * 256 << "\n")
+    end
+    assert_equal(
+      "could not extract trusted-base selected hosted CI seam: " \
+      "git returned malformed blob metadata",
+      error.message
+    )
+  end
+
+  def test_selected_hosted_ci_blob_batch_rejects_truncated_content_and_bad_delimiter
+    runner = MergeAssurance::Runner.new
+    truncated = assert_raises(MergeAssurance::Error) do
+      stream_fake_blob_batch_response(
+        runner, "#{BATCH_OBJECT_ID} blob 4\nab"
+      )
+    end
+    delimiter = assert_raises(MergeAssurance::Error) do
+      stream_fake_blob_batch_response(
+        runner, "#{BATCH_OBJECT_ID} blob 2\nabX"
+      )
+    end
+
+    assert_equal(
+      "could not extract trusted-base selected hosted CI seam: " \
+      "git ended before returning the requested blob",
+      truncated.message
+    )
+    assert_equal(
+      "could not extract trusted-base selected hosted CI seam: " \
+      "git returned malformed blob content",
+      delimiter.message
+    )
+  end
+
+  def test_selected_hosted_ci_blob_batch_enforces_symlink_size_boundary
+    runner = MergeAssurance::Runner.new
+    exact_target = "x" * MergeAssurance::SELECTED_HOSTED_CI_SYMLINK_MAX_BYTES
+    assert_equal(
+      exact_target,
+      stream_fake_blob_batch_response(
+        runner,
+        "#{BATCH_OBJECT_ID} blob #{exact_target.bytesize}\n#{exact_target}\n",
+        max_bytes: MergeAssurance::SELECTED_HOSTED_CI_SYMLINK_MAX_BYTES
+      )
+    )
+
+    oversized_target = "x" * (MergeAssurance::SELECTED_HOSTED_CI_SYMLINK_MAX_BYTES + 1)
+    error = assert_raises(MergeAssurance::Error) do
+      stream_fake_blob_batch_response(
+        runner,
+        "#{BATCH_OBJECT_ID} blob #{oversized_target.bytesize}\n#{oversized_target}\n",
+        max_bytes: MergeAssurance::SELECTED_HOSTED_CI_SYMLINK_MAX_BYTES
+      )
+    end
+    assert_equal(
+      "trusted-base selected hosted CI snapshot contains an unsafe symlink",
+      error.message
+    )
+  end
+
+  def test_selected_hosted_ci_blob_batch_rejects_nonzero_exit_after_valid_payload
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-batch-nonzero") do |repo_root|
+      fake_git = File.join(repo_root, "fake-git")
+      File.write(
+        fake_git,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          object_id = STDIN.gets.to_s.strip
+          STDOUT.write("\#{object_id} blob 2\\nok\\n")
+          STDOUT.flush
+          STDERR.write("batch failed")
+          exit 7
+        RUBY
+      )
+      FileUtils.chmod(0o755, fake_git)
+      resolver = runner.method(:resolve_system_tool!)
+      runner.define_singleton_method(:resolve_system_tool!) do |name, outside_root:|
+        name == "git" ? fake_git : resolver.call(name, outside_root:)
+      end
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :with_trusted_blob_batch,
+          repo_root,
+          deadline: runner.send(:selected_hosted_ci_monotonic_time) + 1,
+          timeout_seconds: 1
+        ) do |blob_reader|
+          blob_reader.call(BATCH_OBJECT_ID, StringIO.new(+"".b))
+        end
+      end
+
+      assert_includes error.message, "could not extract trusted-base selected hosted CI seam:"
+      assert_includes error.message, "batch failed"
+    end
+  end
+
+  def test_selected_hosted_ci_blob_batch_terminates_descendant_after_successful_leader_exit
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-batch-descendant") do |repo_root|
+      fake_git = File.join(repo_root, "fake-git")
+      child_pid_path = File.join(repo_root, "child.pid")
+      File.write(
+        fake_git,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          child_pid = fork do
+            Signal.trap("TERM", "IGNORE")
+            File.write(#{child_pid_path.inspect}, Process.pid.to_s)
+            loop { sleep 1 }
+          end
+          sleep 0.01 until File.file?(#{child_pid_path.inspect})
+          object_id = STDIN.gets.to_s.strip
+          STDOUT.write("\#{object_id} blob 0\\n\\n")
+          STDOUT.flush
+          exit 0
+        RUBY
+      )
+      FileUtils.chmod(0o755, fake_git)
+      resolver = runner.method(:resolve_system_tool!)
+      runner.define_singleton_method(:resolve_system_tool!) do |name, outside_root:|
+        name == "git" ? fake_git : resolver.call(name, outside_root:)
+      end
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :with_trusted_blob_batch,
+          repo_root,
+          deadline: runner.send(:selected_hosted_ci_monotonic_time) + 2,
+          timeout_seconds: 2
+        ) do |blob_reader|
+          blob_reader.call(BATCH_OBJECT_ID, StringIO.new(+"".b))
+        end
+      end
+      child_pid = Integer(File.read(child_pid_path))
+
+      assert_equal(
+        "trusted-base selected hosted CI materialization left a running process group, " \
+        "which was terminated",
+        error.message
+      )
+      refute process_executing?(child_pid), "batch descendant #{child_pid} leaked"
+    ensure
+      begin
+        Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_tree_listing_terminates_descendant_after_successful_leader_exit
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-tree-descendant") do |repo_root|
+      fake_git = File.join(repo_root, "fake-git")
+      child_pid_path = File.join(repo_root, "child.pid")
+      File.write(
+        fake_git,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          fork do
+            Signal.trap("TERM", "IGNORE")
+            File.write(#{child_pid_path.inspect}, Process.pid.to_s)
+            loop { sleep 1 }
+          end
+          sleep 0.01 until File.file?(#{child_pid_path.inspect})
+          exit 0
+        RUBY
+      )
+      FileUtils.chmod(0o755, fake_git)
+      output = Tempfile.new("merge-assurance-tree-output")
+      resolver = runner.method(:resolve_system_tool!)
+      runner.define_singleton_method(:resolve_system_tool!) do |name, outside_root:|
+        name == "git" ? fake_git : resolver.call(name, outside_root:)
+      end
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :run_trusted_git_to_io!, repo_root, ["ls-tree"], output,
+          "could not materialize trusted-base selected hosted CI seam",
+          deadline: runner.send(:selected_hosted_ci_monotonic_time) + 2,
+          timeout_seconds: 2
+        )
+      end
+      child_pid = Integer(File.read(child_pid_path))
+
+      assert_equal(
+        "trusted-base selected hosted CI materialization left a running process group, " \
+        "which was terminated",
+        error.message
+      )
+      refute process_executing?(child_pid), "tree-listing descendant #{child_pid} leaked"
+    ensure
+      output&.close!
+      begin
+        Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_materialization_reports_blob_extraction_failure
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-blob-failure") do |repo_root|
+      snapshot_root = File.join(repo_root, "snapshot")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      File.write(File.join(repo_root, "tracked"), "trusted")
+      run_git!(repo_root, "add", "tracked")
+      run_git!(repo_root, "commit", "-qm", "trusted base")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+      FileUtils.mkdir_p(snapshot_root)
+      git_runner = runner.method(:run_trusted_git_to_io!)
+      runner.define_singleton_method(:run_trusted_git_to_io!) do |root, arguments, output, label, **options|
+        if arguments.include?("ls-tree")
+          output.write("100644 blob #{'f' * 40}\ttracked\0")
+        else
+          git_runner.call(root, arguments, output, label, **options)
+        end
+      end
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(:materialize_trusted_base!, repo_root, base_sha, snapshot_root)
+      end
+
+      assert_match(
+        /\Acould not extract trusted-base selected hosted CI seam: /,
+        error.message
+      )
+    end
+  end
+
+  def test_selected_hosted_ci_materialization_rejects_an_escaping_symlink
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-escaping-symlink") do |repo_root|
+      executable = ".agents/bin/selected-hosted-ci-receipts"
+      materialized = File.join(repo_root, executable)
+      outside = File.join(File.dirname(repo_root), "merge-assurance-outside-#{Process.pid}")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.dirname(materialized))
+      File.write(materialized, "#!#{RbConfig.ruby}\nputs '{}'")
+      FileUtils.chmod(0o755, materialized)
+      File.write(outside, "outside")
+      File.symlink(outside, File.join(repo_root, "escaping-link"))
+      run_git!(repo_root, "add", "--all")
+      run_git!(repo_root, "commit", "-qm", "trusted base")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :run_selected_hosted_ci_seam!,
+          repo_root:,
+          base_sha:,
+          executable:,
+          trusted_bytes: File.binread(materialized),
+          request: {
+            "host" => "github.com",
+            "repository" => "owner/repo",
+            "pr" => 42,
+            "head_sha" => HEAD_SHA,
+            "selected_runs" => []
+          },
+          credential_env: []
+        )
+      end
+
+      assert_equal(
+        "trusted-base selected hosted CI snapshot contains an escaping symlink",
+        error.message
+      )
+    ensure
+      FileUtils.rm_f(outside)
+    end
+  end
+
   def test_cli_blocks_local_evidence_before_selected_hosted_ci_seam_launch
     cases = {
       "malformed-ci" => [
@@ -429,6 +910,34 @@ class MergeAssuranceTest < Minitest::Test
         failure.start_with?("trusted-base selected hosted CI seam returned invalid JSON")
       end)
       refute stdout.include?("preflight-secret"), "declared credential leaked in CLI JSON"
+    end
+  end
+
+  def test_cli_output_overflow_diagnostic_does_not_echo_forwarded_credentials
+    with_selected_hosted_ci_cli_fixture do |fixture|
+      replace_fixture_trusted_seam!(
+        fixture,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          credential = ENV.fetch("HOSTED_CI_TOKEN")
+          repetitions = (#{MergeAssurance::SELECTED_HOSTED_CI_STDOUT_MAX_BYTES} / credential.bytesize) + 2
+          STDOUT.write(credential * repetitions)
+        RUBY
+      )
+
+      stdout, stderr, status = run_selected_hosted_ci_cli_fixture(fixture)
+      result = JSON.parse(stdout)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr, "unexpected CLI exception: #{stderr}"
+      assert_equal(
+        [
+          "trusted-base selected hosted CI seam output exceeded its byte limit " \
+          "and its process group was terminated"
+        ],
+        result.fetch("failures")
+      )
+      refute_includes stdout, "preflight-secret"
     end
   end
 
@@ -778,10 +1287,217 @@ class MergeAssuranceTest < Minitest::Test
         result.fetch("failures"),
         "trusted-base selected hosted CI seam timed out after 0.2 seconds and its process group was terminated"
       )
-      refute process_alive?(child_pid), "hung hosted seam child #{child_pid} leaked"
+      refute process_executing?(child_pid), "hung hosted seam child #{child_pid} leaked"
     ensure
       begin
         Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_seam_blocks_fast_stdout_over_its_byte_limit
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-hosted-stdout-limit") do |directory|
+      seam = File.join(directory, "noisy-seam.rb")
+      File.write(
+        seam,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          STDOUT.write("x" * 1_048_577)
+        RUBY
+      )
+      FileUtils.chmod(0o755, seam)
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :run_selected_hosted_ci_process!,
+          runner.send(:system_tool_environment),
+          [RbConfig.ruby, seam],
+          { "contract" => "test-request" },
+          chdir: directory
+        )
+      end
+
+      assert_equal(
+        "trusted-base selected hosted CI seam output exceeded its byte limit " \
+        "and its process group was terminated",
+        error.message
+      )
+    end
+  end
+
+  def test_selected_hosted_ci_seam_accepts_valid_json_exactly_at_stdout_byte_limit
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-hosted-exact-stdout") do |directory|
+      seam = File.join(directory, "exact-stdout.rb")
+      File.write(
+        seam,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          require "json"
+          payload = JSON.generate("exact" => true)
+          STDOUT.write(payload)
+          STDOUT.write(" " * (#{MergeAssurance::SELECTED_HOSTED_CI_STDOUT_MAX_BYTES} - payload.bytesize))
+        RUBY
+      )
+      FileUtils.chmod(0o755, seam)
+
+      stdout, stderr, status = runner.send(
+        :run_selected_hosted_ci_process!,
+        runner.send(:system_tool_environment),
+        [RbConfig.ruby, seam],
+        { "contract" => "test-request" },
+        chdir: directory
+      )
+
+      assert status.success?, stderr
+      assert_equal MergeAssurance::SELECTED_HOSTED_CI_STDOUT_MAX_BYTES, stdout.bytesize
+      assert_equal({ "exact" => true }, JSON.parse(stdout))
+      assert_empty stderr
+    end
+  end
+
+  def test_selected_hosted_ci_seam_accepts_stderr_exactly_at_its_byte_limit
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-hosted-exact-stderr") do |directory|
+      seam = File.join(directory, "exact-stderr.rb")
+      File.write(
+        seam,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          STDOUT.write('{"exact":true}')
+          STDERR.write("e" * #{MergeAssurance::SELECTED_HOSTED_CI_STDERR_MAX_BYTES})
+        RUBY
+      )
+      FileUtils.chmod(0o755, seam)
+
+      stdout, stderr, status = runner.send(
+        :run_selected_hosted_ci_process!,
+        runner.send(:system_tool_environment),
+        [RbConfig.ruby, seam],
+        { "contract" => "test-request" },
+        chdir: directory
+      )
+
+      assert status.success?, stderr.lines.first
+      assert_equal({ "exact" => true }, JSON.parse(stdout))
+      assert_equal MergeAssurance::SELECTED_HOSTED_CI_STDERR_MAX_BYTES, stderr.bytesize
+    end
+  end
+
+  def test_selected_hosted_ci_seam_blocks_stderr_over_its_byte_limit
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-hosted-stderr-limit") do |directory|
+      seam = File.join(directory, "noisy-stderr.rb")
+      File.write(
+        seam,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          STDERR.write("e" * #{MergeAssurance::SELECTED_HOSTED_CI_STDERR_MAX_BYTES + 1})
+        RUBY
+      )
+      FileUtils.chmod(0o755, seam)
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :run_selected_hosted_ci_process!,
+          runner.send(:system_tool_environment),
+          [RbConfig.ruby, seam],
+          { "contract" => "test-request" },
+          chdir: directory
+        )
+      end
+
+      assert_equal(
+        "trusted-base selected hosted CI seam output exceeded its byte limit " \
+        "and its process group was terminated",
+        error.message
+      )
+    end
+  end
+
+  def test_selected_hosted_ci_seam_drains_noisy_stdout_and_stderr_concurrently
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-hosted-concurrent-output") do |directory|
+      seam = File.join(directory, "concurrent-output.rb")
+      File.write(
+        seam,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          writers = [
+            Thread.new { 64.times { STDOUT.write("o" * 16_384) } },
+            Thread.new { 64.times { STDERR.write("e" * 16_384) } }
+          ]
+          writers.each(&:join)
+        RUBY
+      )
+      FileUtils.chmod(0o755, seam)
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      stdout, stderr, status = runner.send(
+        :run_selected_hosted_ci_process!,
+        runner.send(:system_tool_environment),
+        [RbConfig.ruby, seam],
+        { "contract" => "test-request" },
+        chdir: directory
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert status.success?
+      assert_equal MergeAssurance::SELECTED_HOSTED_CI_STDOUT_MAX_BYTES, stdout.bytesize
+      assert_equal MergeAssurance::SELECTED_HOSTED_CI_STDERR_MAX_BYTES, stderr.bytesize
+      assert_operator elapsed, :<, 1.5
+    end
+  end
+
+  def test_selected_hosted_ci_seam_output_overflow_terminates_its_process_group
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-hosted-output-group") do |directory|
+      child_pid_path = File.join(directory, "noisy-child.pid")
+      seam = File.join(directory, "noisy-group.rb")
+      File.write(
+        seam,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          child_pid = fork do
+            Signal.trap("TERM", "IGNORE")
+            File.write(#{child_pid_path.inspect}, "\#{Process.pid} \#{Process.getpgrp}")
+            loop { sleep 1 }
+          end
+          Signal.trap("TERM", "IGNORE")
+          sleep 0.01 until File.size?(#{child_pid_path.inspect})
+          STDOUT.write("x" * #{MergeAssurance::SELECTED_HOSTED_CI_STDOUT_MAX_BYTES + 1})
+          STDOUT.flush
+          Process.wait(child_pid)
+        RUBY
+      )
+      FileUtils.chmod(0o755, seam)
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :run_selected_hosted_ci_process!,
+          runner.send(:system_tool_environment),
+          [RbConfig.ruby, seam],
+          { "contract" => "test-request" },
+          chdir: directory
+        )
+      end
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      _child_pid, process_group_id = File.read(child_pid_path).split.map { |value| Integer(value) }
+
+      assert_equal(
+        "trusted-base selected hosted CI seam output exceeded its byte limit " \
+        "and its process group was terminated",
+        error.message
+      )
+      assert_operator elapsed, :<, 1.5
+      refute runner.send(:selected_hosted_ci_process_group_alive?, process_group_id)
+    ensure
+      begin
+        Process.kill("KILL", -process_group_id) if process_group_id
       rescue Errno::ESRCH
         nil
       end
@@ -828,7 +1544,7 @@ class MergeAssuranceTest < Minitest::Test
         "trusted-base selected hosted CI seam left a running process group, which was terminated",
         error.message
       )
-      refute process_alive?(child_pid), "lingering hosted seam child #{child_pid} leaked"
+      refute process_executing?(child_pid), "lingering hosted seam child #{child_pid} leaked"
     ensure
       begin
         Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
@@ -836,6 +1552,152 @@ class MergeAssuranceTest < Minitest::Test
         nil
       end
     end
+  end
+
+  def test_selected_hosted_ci_seam_deadline_still_applies_after_leader_exit
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-hosted-detached-output") do |directory|
+      child_pid_path = File.join(directory, "detached-child.pid")
+      leader = File.join(directory, "detached-output-leader.rb")
+      File.write(
+        leader,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          fork do
+            Process.setsid
+            File.write(#{child_pid_path.inspect}, Process.pid.to_s)
+            loop { sleep 1 }
+          end
+        RUBY
+      )
+      FileUtils.chmod(0o755, leader)
+      original_timeout = ENV["MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS"]
+      ENV["MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS"] = "0.1"
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      error = Timeout.timeout(0.75) do
+        assert_raises(MergeAssurance::Error) do
+          runner.send(
+            :run_selected_hosted_ci_process!,
+            runner.send(:system_tool_environment),
+            [RbConfig.ruby, leader],
+            { "contract" => "test-request" },
+            chdir: directory
+          )
+        end
+      end
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert_equal(
+        "trusted-base selected hosted CI seam timed out after 0.1 seconds " \
+        "and its process group was terminated",
+        error.message
+      )
+      assert_operator elapsed, :<, 0.75
+    ensure
+      if original_timeout
+        ENV["MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS"] = original_timeout
+      else
+        ENV.delete("MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS")
+      end
+      child_pid = Integer(File.read(child_pid_path)) if File.file?(child_pid_path)
+      begin
+        Process.kill("KILL", child_pid) if child_pid
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_process_group_liveness_excludes_zombie_only_groups
+    runner = MergeAssurance::Runner.new
+    zombie_reader, zombie_writer = IO.pipe
+    zombie_pid = Process.spawn(
+      RbConfig.ruby, "-e", 'STDOUT.write("exited")',
+      out: zombie_writer, pgroup: true
+    )
+    zombie_writer.close
+    assert_equal "exited", zombie_reader.read
+    zombie_state = wait_for_process_state(zombie_pid, "Z")
+
+    mixed_reader, mixed_writer = IO.pipe
+    mixed_leader_pid = Process.spawn(
+      RbConfig.ruby, "-e", "child = fork { loop {} }; STDOUT.puts(child); STDOUT.flush",
+      out: mixed_writer, pgroup: true
+    )
+    mixed_writer.close
+    mixed_child_pid = Integer(mixed_reader.gets)
+    mixed_leader_state = wait_for_process_state(mixed_leader_pid, "Z")
+    mixed_child_state = wait_for_process_state(mixed_child_pid, "R")
+
+    assert_match(/\AZ/, zombie_state)
+    assert_match(/\AZ/, mixed_leader_state)
+    assert_match(/\AR/, mixed_child_state)
+    assert runner.send(:selected_hosted_ci_process_group_alive?, mixed_leader_pid)
+    refute runner.send(:selected_hosted_ci_process_group_alive?, zombie_pid)
+  ensure
+    zombie_reader&.close
+    zombie_writer&.close unless zombie_writer&.closed?
+    mixed_reader&.close
+    mixed_writer&.close unless mixed_writer&.closed?
+    begin
+      Process.kill("KILL", -mixed_leader_pid) if mixed_leader_pid
+    rescue Errno::ESRCH
+      nil
+    end
+    [mixed_leader_pid, zombie_pid].compact.each do |pid|
+      Process.waitpid(pid)
+    rescue Errno::ECHILD
+      nil
+    end
+  end
+
+  def test_selected_hosted_ci_process_group_liveness_fails_closed_when_inspection_is_empty
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-empty-process-inspection") do |directory|
+      fake_ps = File.join(directory, "ps")
+      File.write(fake_ps, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, fake_ps)
+      resolver = runner.method(:resolve_system_tool!)
+      runner.define_singleton_method(:resolve_system_tool!) do |name, outside_root:|
+        name == "ps" ? fake_ps : resolver.call(name, outside_root:)
+      end
+      ready_reader, ready_writer = IO.pipe
+      process_pid = Process.spawn(
+        RbConfig.ruby, "-e", 'STDOUT.write("ready"); STDOUT.flush; loop {}',
+        out: ready_writer, pgroup: true
+      )
+      ready_writer.close
+      assert_equal "ready", ready_reader.read(5)
+
+      assert runner.send(:selected_hosted_ci_process_group_alive?, process_pid)
+    ensure
+      ready_reader&.close
+      ready_writer&.close unless ready_writer&.closed?
+      begin
+        Process.kill("KILL", -process_pid) if process_pid
+      rescue Errno::ESRCH
+        nil
+      end
+      Process.waitpid(process_pid) if process_pid
+    end
+  end
+
+  def test_selected_hosted_ci_process_group_inspection_includes_linux_threads
+    runner = MergeAssurance::Runner.new
+
+    assert_equal(
+      ["-A", "-L", "-o", "pgid=", "-o", "state="],
+      runner.send(:selected_hosted_ci_ps_arguments, "x86_64-linux-gnu")
+    )
+    assert_equal(
+      ["-A", "-L", "-o", "pgid=", "-o", "state="],
+      runner.send(:selected_hosted_ci_ps_arguments, "aarch64-linux")
+    )
+    assert_equal(
+      ["-A", "-o", "pgid=", "-o", "state="],
+      runner.send(:selected_hosted_ci_ps_arguments, "darwin")
+    )
   end
 
   def test_selected_hosted_ci_declared_credentials_must_be_present_and_nonempty
@@ -2832,11 +3694,86 @@ class MergeAssuranceTest < Minitest::Test
     File.foreach(@fake_gh_calls).count
   end
 
+  def stream_fake_blob_batch_response(runner, response, max_bytes: nil)
+    request_reader, request_writer = IO.pipe
+    response_reader, response_writer = IO.pipe
+    [request_reader, request_writer, response_reader, response_writer].each(&:binmode)
+    server = Thread.new do
+      request_reader.gets
+      response_writer.write(response)
+    rescue Errno::EPIPE, IOError
+      nil
+    ensure
+      request_reader.close unless request_reader.closed?
+      response_writer.close unless response_writer.closed?
+    end
+    destination = StringIO.new(+"".b)
+    deadline = runner.send(:selected_hosted_ci_monotonic_time) + 1
+    runner.send(
+      :stream_trusted_blob_from_batch!,
+      request_writer,
+      response_reader,
+      BATCH_OBJECT_ID,
+      destination,
+      max_bytes:,
+      deadline:,
+      timeout_seconds: 1
+    )
+    destination.string
+  ensure
+    request_writer&.close unless request_writer&.closed?
+    response_reader&.close unless response_reader&.closed?
+    server&.join
+  end
+
+  def read_fake_materialization_line(runner, contents)
+    reader, writer = IO.pipe
+    writer.write(contents)
+    writer.close
+    runner.send(
+      :read_materialization_line!,
+      reader,
+      deadline: runner.send(:selected_hosted_ci_monotonic_time) + 1,
+      timeout_seconds: 1
+    )
+  ensure
+    reader&.close unless reader&.closed?
+    writer&.close unless writer&.closed?
+  end
+
   def process_alive?(pid)
     Process.kill(0, pid)
     true
   rescue Errno::ESRCH
     false
+  end
+
+  def process_executing?(pid)
+    ps = MergeAssurance::SYSTEM_TOOL_DIRS
+         .map { |directory| File.join(directory, "ps") }
+         .find { |path| File.file?(path) && File.executable?(path) }
+    raise "ps is unavailable" unless ps
+
+    stdout, _stderr, status = Open3.capture3(ps, "-p", pid.to_s, "-o", "state=")
+    status.success? && !stdout.strip.empty? && !stdout.strip.start_with?("Z")
+  end
+
+  def wait_for_process_state(pid, expected_state)
+    ps = MergeAssurance::SYSTEM_TOOL_DIRS
+         .map { |directory| File.join(directory, "ps") }
+         .find { |path| File.file?(path) && File.executable?(path) }
+    raise "ps is unavailable" unless ps
+
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+    loop do
+      stdout, _stderr, status = Open3.capture3(ps, "-p", pid.to_s, "-o", "state=")
+      state = stdout.strip
+      return state if status.success? && state.start_with?(expected_state)
+      raise "process #{pid} did not reach state #{expected_state}" if
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.01
+    end
   end
 
   def fake_gh_argv

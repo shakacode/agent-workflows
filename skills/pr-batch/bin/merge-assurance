@@ -123,6 +123,12 @@ module MergeAssurance
   SELECTED_HOSTED_CI_TIMEOUT_SECONDS = 60
   SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS = 0.25
   SELECTED_HOSTED_CI_POLL_SECONDS = 0.01
+  SELECTED_HOSTED_CI_STDOUT_MAX_BYTES = 1_048_576
+  SELECTED_HOSTED_CI_STDERR_MAX_BYTES = 1_048_576
+  SELECTED_HOSTED_CI_MATERIALIZATION_TIMEOUT_SECONDS = 60
+  SELECTED_HOSTED_CI_MATERIALIZATION_DIAGNOSTIC_MAX_BYTES = 4096
+  SELECTED_HOSTED_CI_TREE_ENTRY_MAX_BYTES = 65_536
+  SELECTED_HOSTED_CI_SYMLINK_MAX_BYTES = 4096
   POLICY_CONFIG = ".agents/agent-workflow.yml"
   SELECTED_HOSTED_CI_POLICY_KEY = "selected_hosted_ci_receipts"
   SELECTED_HOSTED_CI_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
@@ -1374,20 +1380,7 @@ module MergeAssurance
       FileUtils.mkdir_p(snapshot_root, mode: 0o700)
       FileUtils.mkdir_p(seam_home, mode: 0o700)
       File.chmod(0o700, seam_home)
-      archive, archive_error, archive_status = git_capture(
-        "-C", repo_root, "archive", "--format=tar", base_sha, chdir: repo_root
-      )
-      unless archive_status.success?
-        raise Error, "could not materialize trusted-base selected hosted CI seam: " \
-                     "#{failure_output(archive, archive_error)}"
-      end
-      tar = resolve_system_tool!("tar", outside_root: repo_root)
-      _tar_out, tar_error, tar_status = Open3.capture3(
-        system_tool_environment, tar, "-xf", "-", "-C", snapshot_root,
-        stdin_data: archive, chdir: snapshot_root, unsetenv_others: true
-      )
-      raise Error, "could not extract trusted-base selected hosted CI seam: #{tar_error.strip}" unless
-        tar_status.success?
+      materialize_trusted_base!(repo_root, base_sha, snapshot_root)
 
       validate_snapshot_symlinks!(snapshot_root)
       materialized = File.join(snapshot_root, executable)
@@ -1414,23 +1407,286 @@ module MergeAssurance
       FileUtils.remove_entry(directory) if directory && File.exist?(directory)
     end
 
-    def run_selected_hosted_ci_process!(environment, launch, request, chdir:)
-      stdin_file = Tempfile.new("merge-assurance-selected-hosted-ci-stdin")
-      stdout_file = Tempfile.new("merge-assurance-selected-hosted-ci-stdout")
-      stderr_file = Tempfile.new("merge-assurance-selected-hosted-ci-stderr")
-      stdin_file.write(JSON.generate(request))
-      stdin_file.rewind
-      timeout_seconds = selected_hosted_ci_timeout_seconds
-      pid = Process.spawn(
-        environment, *launch,
-        in: stdin_file.path, out: stdout_file.path, err: stderr_file.path,
-        pgroup: true, chdir:, unsetenv_others: true
-      )
+    def materialize_trusted_base!(repo_root, base_sha, snapshot_root)
+      timeout_seconds = selected_hosted_ci_materialization_timeout_seconds
       deadline = selected_hosted_ci_monotonic_time + timeout_seconds
+      tree_file = Tempfile.new("merge-assurance-selected-hosted-ci-tree")
+      tree_file.binmode
+      run_trusted_git_to_io!(
+        repo_root,
+        ["-C", repo_root, "ls-tree", "-rz", "--full-tree", base_sha],
+        tree_file,
+        "could not materialize trusted-base selected hosted CI seam",
+        deadline:,
+        timeout_seconds:
+      )
+      tree_file.rewind
+      with_trusted_blob_batch(repo_root, deadline:, timeout_seconds:) do |blob_reader|
+        tree_file.each_line("\0", SELECTED_HOSTED_CI_TREE_ENTRY_MAX_BYTES + 1) do |entry|
+          materialize_trusted_tree_entry!(snapshot_root, entry, blob_reader)
+        end
+      end
+    ensure
+      tree_file&.close!
+    end
+
+    def materialize_trusted_tree_entry!(snapshot_root, entry, blob_reader)
+      if !entry.end_with?("\0") || entry.bytesize > SELECTED_HOSTED_CI_TREE_ENTRY_MAX_BYTES
+        raise Error, "trusted-base selected hosted CI snapshot contains malformed tree metadata"
+      end
+
+      metadata, relative_path = entry.delete_suffix("\0").split("\t", 2)
+      mode, type, object_id = metadata.to_s.split(" ", 3)
+      expected_type = mode == "160000" ? "commit" : "blob"
+      unless %w[100644 100755 120000 160000].include?(mode) &&
+             type == expected_type && object_id&.match?(/\A[0-9a-f]{40}\z/) &&
+             relative_path
+        raise Error, "trusted-base selected hosted CI snapshot contains malformed tree metadata"
+      end
+      return if mode == "160000"
+
+      components = trusted_tree_path_components!(relative_path)
+      ensure_trusted_tree_parent_directories!(snapshot_root, components[0...-1])
+      destination = File.join(snapshot_root, *components)
+      if File.exist?(destination) || File.symlink?(destination)
+        raise Error, "trusted-base selected hosted CI snapshot contains a duplicate path"
+      end
+
+      if mode == "120000"
+        materialize_trusted_symlink!(blob_reader, object_id, destination)
+      else
+        File.open(destination, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+          blob_reader.call(object_id, file)
+        end
+        File.chmod(mode == "100755" ? 0o755 : 0o644, destination)
+      end
+    rescue SystemCallError => e
+      raise Error, "could not extract trusted-base selected hosted CI seam: #{e.message}"
+    end
+
+    def trusted_tree_path_components!(relative_path)
+      components = relative_path.b.split("/", -1)
+      unless !components.empty? && components.none? { |component| component.empty? || %w[. ..].include?(component) }
+        raise Error, "trusted-base selected hosted CI snapshot contains an unsafe path"
+      end
+
+      components
+    end
+
+    def ensure_trusted_tree_parent_directories!(snapshot_root, components)
+      parent = snapshot_root
+      components.each do |component|
+        directory = File.join(parent, component)
+        if File.exist?(directory) || File.symlink?(directory)
+          unless File.directory?(directory) && !File.symlink?(directory)
+            raise Error, "trusted-base selected hosted CI snapshot contains an unsafe parent path"
+          end
+        else
+          Dir.mkdir(directory, 0o700)
+        end
+        parent = directory
+      end
+    end
+
+    def materialize_trusted_symlink!(blob_reader, object_id, destination)
+      target_file = Tempfile.new("merge-assurance-selected-hosted-ci-symlink")
+      target_file.binmode
+      blob_reader.call(
+        object_id, target_file, max_bytes: SELECTED_HOSTED_CI_SYMLINK_MAX_BYTES
+      )
+
+      target_file.rewind
+      target = target_file.read
+      if target.empty? || target.include?("\0")
+        raise Error, "trusted-base selected hosted CI snapshot contains an unsafe symlink"
+      end
+
+      File.symlink(target, destination)
+    rescue SystemCallError => e
+      raise Error, "could not extract trusted-base selected hosted CI seam: #{e.message}"
+    ensure
+      target_file&.close!
+    end
+
+    def with_trusted_blob_batch(repo_root, deadline:, timeout_seconds:)
+      input_reader, input_writer = IO.pipe
+      output_reader, output_writer = IO.pipe
+      error_file = Tempfile.new("merge-assurance-selected-hosted-ci-git-error")
+      [input_reader, input_writer, output_reader, output_writer, error_file].each(&:binmode)
+      git = resolve_system_tool!("git", outside_root: repo_root)
+      pid = Process.spawn(
+        system_tool_environment, git, "-C", repo_root, "cat-file", "--batch",
+        in: input_reader, out: output_writer, err: error_file, pgroup: true,
+        chdir: repo_root, unsetenv_others: true
+      )
+      input_reader.close
+      output_writer.close
+      blob_reader = lambda do |object_id, destination, max_bytes: nil|
+        stream_trusted_blob_from_batch!(
+          input_writer, output_reader, object_id, destination,
+          max_bytes:, deadline:, timeout_seconds:
+        )
+      end
+      yield blob_reader
+      input_writer.close
+      status = wait_for_selected_hosted_ci_child(pid, deadline)
+      unless status
+        raise Error, selected_hosted_ci_materialization_timeout_message(timeout_seconds)
+      end
+
+      if selected_hosted_ci_process_group_alive?(pid)
+        _ignored_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        pid = nil
+        unless cleanup_complete
+          raise Error, "trusted-base selected hosted CI materialization process group " \
+                       "did not exit after forced termination"
+        end
+        raise Error, "trusted-base selected hosted CI materialization left a running " \
+                     "process group, which was terminated"
+      end
+      pid = nil
+      return if status.success?
+
+      raise Error, "could not extract trusted-base selected hosted CI seam: " \
+                   "#{failure_output('', bounded_materialization_diagnostic(error_file))}"
+    rescue SystemCallError => e
+      raise Error, "could not extract trusted-base selected hosted CI seam: #{e.message}"
+    ensure
+      [input_reader, input_writer, output_reader, output_writer].compact.each do |stream|
+        stream.close unless stream.closed?
+      end
+      if pid
+        _status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        unless cleanup_complete
+          cleanup_error = "could not extract trusted-base selected hosted CI seam: " \
+                          "git process group did not exit after forced termination"
+        end
+      end
+      error_file&.close!
+      raise Error, cleanup_error if cleanup_error
+    end
+
+    def stream_trusted_blob_from_batch!(
+      input, output, object_id, destination, max_bytes:, deadline:, timeout_seconds:
+    )
+      write_materialization_bytes!(
+        input, "#{object_id}\n", deadline:, timeout_seconds:
+      )
+      header = read_materialization_line!(output, deadline:, timeout_seconds:)
+      match = header.match(
+        /\A#{Regexp.escape(object_id)} blob (?<size>0|[1-9]\d*)\n\z/
+      )
+      unless match
+        raise Error, "could not extract trusted-base selected hosted CI seam: " \
+                     "git returned malformed blob metadata"
+      end
+
+      size = Integer(match[:size], 10)
+      if max_bytes && size > max_bytes
+        raise Error, "trusted-base selected hosted CI snapshot contains an unsafe symlink"
+      end
+
+      copy_materialization_bytes!(
+        output, destination, size, deadline:, timeout_seconds:
+      )
+      separator = read_materialization_bytes!(
+        output, 1, deadline:, timeout_seconds:
+      )
+      return if separator == "\n"
+
+      raise Error, "could not extract trusted-base selected hosted CI seam: " \
+                   "git returned malformed blob content"
+    end
+
+    def read_materialization_line!(input, deadline:, timeout_seconds:)
+      line = +"".b
+      loop do
+        byte = read_materialization_bytes!(
+          input, 1, deadline:, timeout_seconds:
+        )
+        line << byte
+        if line.bytesize > 256
+          raise Error, "could not extract trusted-base selected hosted CI seam: " \
+                       "git returned malformed blob metadata"
+        end
+        return line if byte == "\n"
+      end
+    end
+
+    def copy_materialization_bytes!(
+      input, destination, byte_count, deadline:, timeout_seconds:
+    )
+      remaining = byte_count
+      while remaining.positive?
+        chunk = read_materialization_bytes!(
+          input, [remaining, 16_384].min, deadline:, timeout_seconds:
+        )
+        destination.write(chunk)
+        remaining -= chunk.bytesize
+      end
+    end
+
+    def read_materialization_bytes!(input, byte_count, deadline:, timeout_seconds:)
+      bytes = +"".b
+      while bytes.bytesize < byte_count
+        begin
+          wait_for_materialization_io!(input, :read, deadline:, timeout_seconds:)
+          bytes << input.read_nonblock(byte_count - bytes.bytesize)
+        rescue IO::WaitReadable
+          next
+        rescue EOFError
+          raise Error, "could not extract trusted-base selected hosted CI seam: " \
+                       "git ended before returning the requested blob"
+        end
+      end
+      bytes
+    end
+
+    def write_materialization_bytes!(output, bytes, deadline:, timeout_seconds:)
+      offset = 0
+      while offset < bytes.bytesize
+        begin
+          wait_for_materialization_io!(output, :write, deadline:, timeout_seconds:)
+          offset += output.write_nonblock(bytes.byteslice(offset..))
+        rescue IO::WaitWritable
+          next
+        end
+      end
+    end
+
+    def wait_for_materialization_io!(stream, operation, deadline:, timeout_seconds:)
+      remaining = deadline - selected_hosted_ci_monotonic_time
+      if remaining <= 0
+        raise Error, selected_hosted_ci_materialization_timeout_message(timeout_seconds)
+      end
+
+      ready = if operation == :read
+                IO.select([stream], nil, nil, remaining)
+              else
+                IO.select(nil, [stream], nil, remaining)
+              end
+      return if ready
+
+      raise Error, selected_hosted_ci_materialization_timeout_message(timeout_seconds)
+    end
+
+    def selected_hosted_ci_materialization_timeout_message(timeout_seconds)
+      "trusted-base selected hosted CI materialization timed out after #{timeout_seconds} seconds " \
+        "and its process group was terminated"
+    end
+
+    def run_trusted_git_to_io!(
+      repo_root, arguments, output, label, deadline:, timeout_seconds:
+    )
+      error_file = Tempfile.new("merge-assurance-selected-hosted-ci-git-error")
+      error_file.binmode
+      git = resolve_system_tool!("git", outside_root: repo_root)
+      pid = Process.spawn(
+        system_tool_environment, git, *arguments,
+        out: output, err: error_file, pgroup: true,
+        chdir: repo_root, unsetenv_others: true
+      )
       status = nil
-      timed_out = false
-      lingering_group = false
-      cleanup_complete = true
       loop do
         waited = Process.waitpid2(pid, Process::WNOHANG)
         if waited
@@ -1438,26 +1694,127 @@ module MergeAssurance
           break
         end
         if selected_hosted_ci_monotonic_time >= deadline
-          timed_out = true
-          status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
-          break
+          _status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          pid = nil
+          unless cleanup_complete
+            raise Error, "trusted-base selected hosted CI materialization process group " \
+                         "did not exit after forced termination"
+          end
+          raise Error, "trusted-base selected hosted CI materialization timed out after " \
+                       "#{timeout_seconds} seconds and its process group was terminated"
         end
 
         sleep SELECTED_HOSTED_CI_POLL_SECONDS
       end
-      unless timed_out
-        group_deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
-        unless wait_for_selected_hosted_ci_process_group_exit(pid, group_deadline)
-          lingering_group = true
-          _ignored_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+      if selected_hosted_ci_process_group_alive?(pid)
+        _ignored_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        pid = nil
+        unless cleanup_complete
+          raise Error, "trusted-base selected hosted CI materialization process group " \
+                       "did not exit after forced termination"
         end
+        raise Error, "trusted-base selected hosted CI materialization left a running " \
+                     "process group, which was terminated"
       end
-      stdout_file.rewind
-      stderr_file.rewind
-      stdout = stdout_file.read
-      stderr = stderr_file.read
+      pid = nil
+      return if status.success?
+
+      raise Error, "#{label}: #{failure_output('', bounded_materialization_diagnostic(error_file))}"
+    rescue SystemCallError => e
+      raise Error, "#{label}: #{e.message}"
+    ensure
+      if pid
+        _status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        cleanup_error = "#{label}: git process group did not exit after forced termination" unless
+          cleanup_complete
+      end
+      error_file&.close!
+      raise Error, cleanup_error if cleanup_error
+    end
+
+    def bounded_materialization_diagnostic(file)
+      file.rewind
+      file.read(SELECTED_HOSTED_CI_MATERIALIZATION_DIAGNOSTIC_MAX_BYTES).to_s
+    end
+
+    def selected_hosted_ci_materialization_timeout_seconds
+      value = Float(
+        ENV.fetch(
+          "MERGE_ASSURANCE_SELECTED_HOSTED_CI_MATERIALIZATION_TIMEOUT_SECONDS",
+          SELECTED_HOSTED_CI_MATERIALIZATION_TIMEOUT_SECONDS.to_s
+        )
+      )
+      unless value.positive? && value.finite?
+        raise Error, "selected hosted CI materialization timeout must be a positive finite number"
+      end
+
+      value
+    rescue ArgumentError
+      raise Error, "selected hosted CI materialization timeout must be a positive finite number"
+    end
+
+    def run_selected_hosted_ci_process!(environment, launch, request, chdir:)
+      stdin_file = Tempfile.new("merge-assurance-selected-hosted-ci-stdin")
+      stdout_reader, stdout_writer = IO.pipe
+      stderr_reader, stderr_writer = IO.pipe
+      [stdout_reader, stdout_writer, stderr_reader, stderr_writer].each(&:binmode)
+      stdin_file.write(JSON.generate(request))
+      stdin_file.rewind
+      timeout_seconds = selected_hosted_ci_timeout_seconds
+      pid = Process.spawn(
+        environment, *launch,
+        in: stdin_file.path, out: stdout_writer, err: stderr_writer,
+        pgroup: true, chdir:, unsetenv_others: true
+      )
+      stdout_writer.close
+      stderr_writer.close
+      deadline = selected_hosted_ci_monotonic_time + timeout_seconds
+      stdout = +"".b
+      stderr = +"".b
+      streams = {
+        stdout_reader => [stdout, SELECTED_HOSTED_CI_STDOUT_MAX_BYTES],
+        stderr_reader => [stderr, SELECTED_HOSTED_CI_STDERR_MAX_BYTES]
+      }
+      status = nil
+      timed_out = false
+      lingering_group = false
+      output_overflow = false
+      cleanup_complete = true
+      group_deadline = nil
+      loop do
+        output_overflow = drain_selected_hosted_ci_output!(streams) || output_overflow
+        if output_overflow
+          status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          break
+        end
+
+        waited = Process.waitpid2(pid, Process::WNOHANG) unless status
+        status = waited[1] if waited
+        now = selected_hosted_ci_monotonic_time
+        if now >= deadline
+          timed_out = true
+          terminated_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          status ||= terminated_status
+          break
+        end
+
+        next unless status
+
+        group_deadline ||= now + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
+        group_alive = selected_hosted_ci_process_group_alive?(pid)
+        break if !group_alive && streams.empty?
+        next unless group_alive && now >= group_deadline
+
+        lingering_group = true
+        _ignored_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        break
+      end
       unless cleanup_complete
         raise Error, "trusted-base selected hosted CI seam process group did not exit after forced termination"
+      end
+      if output_overflow
+        raise Error, "trusted-base selected hosted CI seam output exceeded its byte limit " \
+                     "and its process group was terminated"
       end
       if timed_out
         raise Error, "trusted-base selected hosted CI seam timed out after #{timeout_seconds} seconds " \
@@ -1474,8 +1831,39 @@ module MergeAssurance
       terminate_selected_hosted_ci_process_group(pid) if
         pid && selected_hosted_ci_process_group_alive?(pid)
       stdin_file&.close!
-      stdout_file&.close!
-      stderr_file&.close!
+      [stdout_reader, stdout_writer, stderr_reader, stderr_writer].compact.each do |stream|
+        stream.close unless stream.closed?
+      end
+    end
+
+    def drain_selected_hosted_ci_output!(streams)
+      if streams.empty?
+        sleep SELECTED_HOSTED_CI_POLL_SECONDS
+        return false
+      end
+
+      ready = IO.select(
+        streams.keys, nil, nil, SELECTED_HOSTED_CI_POLL_SECONDS
+      )&.first.to_a
+      ready.any? do |stream|
+        buffer, limit = streams.fetch(stream)
+        remaining = limit - buffer.bytesize
+        read_size = [16_384, remaining + 1].min
+        chunk = stream.read_nonblock([read_size, 1].max)
+        if chunk.bytesize > remaining
+          buffer << chunk.byteslice(0, remaining) if remaining.positive?
+          true
+        else
+          buffer << chunk
+          false
+        end
+      rescue IO::WaitReadable
+        false
+      rescue EOFError
+        streams.delete(stream)
+        stream.close
+        false
+      end
     end
 
     def selected_hosted_ci_timeout_seconds
@@ -1526,11 +1914,39 @@ module MergeAssurance
 
     def selected_hosted_ci_process_group_alive?(pid)
       Process.kill(0, -pid)
-      true
+      selected_hosted_ci_process_group_has_executing_member?(pid)
     rescue Errno::ESRCH
       false
     rescue Errno::EPERM
+      selected_hosted_ci_process_group_has_executing_member?(pid)
+    end
+
+    def selected_hosted_ci_process_group_has_executing_member?(pid)
+      ps = resolve_system_tool!("ps", outside_root: __dir__)
+      stdout, _stderr, status = Open3.capture3(
+        system_tool_environment, ps, *selected_hosted_ci_ps_arguments,
+        unsetenv_others: true
+      )
+      return true unless status.success?
+
+      states = stdout.each_line.filter_map do |line|
+        fields = line.split
+        next if fields.empty?
+        return true unless fields.length == 2 && fields.first.match?(/\A\d+\z/)
+
+        fields.last if fields.first.to_i == pid
+      end
+      return true if states.empty?
+
+      states.any? { |state| !state.start_with?("Z") }
+    rescue Error, SystemCallError
       true
+    end
+
+    def selected_hosted_ci_ps_arguments(platform = RUBY_PLATFORM)
+      arguments = ["-A"]
+      arguments << "-L" if platform.match?(/linux/)
+      arguments.concat(["-o", "pgid=", "-o", "state="])
     end
 
     def wait_for_selected_hosted_ci_process_group_exit(pid, deadline)
