@@ -947,6 +947,7 @@ module BatchTokenBudget
     projected.fetch("reservation_decisions", {}).each_value do |fence|
       fence.fetch("outcomes", []).each do |outcome|
         remove_legacy_receipt_fields!(outcome["receipt"], removed_fields)
+        remove_legacy_receipt_fields!(outcome.dig("result_fields", "receipt"), removed_fields)
       end
     end
     projected.fetch("reservations", {}).each_value do |reservation|

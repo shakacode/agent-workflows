@@ -453,6 +453,15 @@ class BatchTokenBudgetTest < Minitest::Test
         reservation.fetch("receipt").delete("request")
         reservation.fetch("receipt").delete("request_digest")
       end
+      state.fetch("reservation_decisions").each_value do |fence|
+        fence.fetch("outcomes").each do |outcome|
+          receipt = outcome.dig("result_fields", "receipt")
+          next unless receipt
+
+          receipt.delete("request")
+          receipt.delete("request_digest")
+        end
+      end
     end
     rehash_control_tail(state)
   end
@@ -2919,6 +2928,11 @@ class BatchTokenBudgetTest < Minitest::Test
         end
         refute persisted_reservation_receipt.key?("request")
         refute persisted_reservation_receipt.key?("request_digest")
+        persisted_result_receipt = JSON.parse(File.read(state_path)).dig(
+          "reservation_decisions", request.fetch("id"), "outcomes", 0, "result_fields", "receipt"
+        )
+        refute persisted_result_receipt.key?("request")
+        refute persisted_result_receipt.key?("request_digest")
       end
     end
   end
