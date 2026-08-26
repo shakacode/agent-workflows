@@ -32,15 +32,16 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
           exit 2
         end
         state = ENV.fetch("QA_SUPERPOWERS_STATE", "installed-disabled")
+        installed_version = ENV.fetch("QA_SUPERPOWERS_VERSION", "host-version")
         catalog_root = ENV.fetch("QA_SUPERPOWERS_CATALOG_ROOT")
         plugin_id = "superpowers@\#{marketplace}"
         if marketplace == ENV.fetch("QA_SUPERPOWERS_MARKETPLACE", "openai-curated")
           puts "PLUGIN STATUS VERSION PATH"
           row = case state
                 when "active"
-                  "\#{plugin_id}  installed, enabled   host-version  \#{catalog_root}"
+                  "\#{plugin_id}  installed, enabled   \#{installed_version}  \#{catalog_root}"
                 when "installed-disabled"
-                  "\#{plugin_id}  installed, disabled  host-version  \#{catalog_root}"
+                  "\#{plugin_id}  installed, disabled  \#{installed_version}  \#{catalog_root}"
                 when "available-not-installed"
                   version = ENV["QA_SUPERPOWERS_NOT_INSTALLED_VERSION"]
                   if version.to_s.empty?
@@ -151,6 +152,14 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     File.write(File.join(manifest_dir, "plugin.json"), "#{JSON.pretty_generate(manifest)}\n")
   end
 
+  def write_superpowers_manifest(root, version: "6.2.0")
+    FileUtils.mkdir_p(File.join(root, ".codex-plugin"))
+    File.write(
+      File.join(root, ".codex-plugin/plugin.json"),
+      "#{JSON.generate('name' => 'superpowers', 'version' => version, 'repository' => 'https://github.com/obra/superpowers')}\n"
+    )
+  end
+
   def write_codex_native_state(target)
     plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
     FileUtils.mkdir_p(target)
@@ -258,6 +267,65 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert_equal "https://github.com/obra/superpowers", payload.dig("superpowers", "catalog_entries", 0, "upstream_repository")
       assert_nil payload.dig("superpowers", "upstream_version")
       assert_equal "not-queried", payload.dig("superpowers", "upstream_version_source")
+    end
+  end
+
+  def test_installed_superpowers_url_path_reads_catalog_metadata_from_safe_codex_cache
+    {
+      "active" => "active",
+      "installed-disabled" => "installed-disabled"
+    }.each do |fixture_state, expected_state|
+      Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+        target = File.join(tmp, "codex")
+        version = "6.2.0"
+        cache_root = File.join(target, "plugins/cache/openai-curated/superpowers", version)
+        write_codex_native_state(target)
+        write_superpowers_manifest(cache_root, version: version)
+
+        out, err, status = run_state_with_env(
+          {
+            "QA_SUPERPOWERS_STATE" => fixture_state,
+            "QA_SUPERPOWERS_VERSION" => version,
+            "QA_SUPERPOWERS_CATALOG_ROOT" => "https://github.com/obra/superpowers.git"
+          },
+          "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+          "--delivery-mode", "plugin-companion", "--json"
+        )
+        payload = JSON.parse(out)
+        entry = payload.dig("superpowers", "catalog_entries", 0)
+
+        assert status.success?, "#{fixture_state}: #{out}#{err}"
+        assert_equal expected_state, payload.dig("superpowers", "state"), fixture_state
+        assert_equal version, entry.fetch("installed_version"), fixture_state
+        assert_equal version, entry.fetch("catalog_version"), fixture_state
+        assert_equal "https://github.com/obra/superpowers", entry.fetch("upstream_repository"), fixture_state
+      end
+    end
+  end
+
+  def test_installed_superpowers_cache_version_cannot_escape_codex_home
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      escaped_root = File.join(tmp, "escaped")
+      write_codex_native_state(target)
+      write_superpowers_manifest(escaped_root, version: "escaped-version")
+
+      out, err, status = run_state_with_env(
+        {
+          "QA_SUPERPOWERS_STATE" => "active",
+          "QA_SUPERPOWERS_VERSION" => "../../../../escaped",
+          "QA_SUPERPOWERS_CATALOG_ROOT" => "https://github.com/obra/superpowers.git"
+        },
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+      entry = payload.dig("superpowers", "catalog_entries", 0)
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", payload.dig("superpowers", "state")
+      refute entry.key?("catalog_version")
+      refute entry.key?("upstream_repository")
     end
   end
 
