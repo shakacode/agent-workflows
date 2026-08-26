@@ -506,6 +506,40 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal [held, failed], scopes.dig("other", "rows")
   end
 
+  def test_optional_policy_does_not_disposition_duplicate_provider_identity_with_distinct_ids
+    head = "a" * 40
+    held = {
+      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    replacement = held.merge("id" => 32)
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held, replacement], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+    assert_equal [held, replacement], scopes.dig("other", "rows")
+  end
+
   def test_required_reclassification_prevents_optional_approval_held_disposition
     head = "a" * 40
     held = {
@@ -3506,6 +3540,40 @@ class PrCiReadinessCliTest < Minitest::Test
         assert_includes error, "changed during run materialization"
       end
     end
+  end
+
+  def test_check_run_snapshot_fails_closed_when_phase_changes_after_suite_materialization
+    head = "a" * 40
+    suite = {
+      "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+      "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
+    }
+    successful_run = {
+      "id" => 100, "name" => "build", "head_sha" => head,
+      "status" => "completed", "conclusion" => "success",
+      "started_at" => "2026-08-25T10:00:00Z", "html_url" => "",
+      "app" => suite.fetch("app"), "check_suite" => { "id" => 10 }
+    }
+    changed_run = successful_run.merge("conclusion" => "neutral")
+    run_fetches = 0
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        [suite]
+      else
+        run_fetches += 1
+        [run_fetches == 1 ? successful_run : changed_run]
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    refute complete
+    assert_empty rows
+    assert_includes error, "check-run inventory changed during final verification"
+    assert_equal 2, run_fetches
   end
 
   def test_check_suite_inventory_selects_latest_cross_suite_attempt_without_hiding_failure

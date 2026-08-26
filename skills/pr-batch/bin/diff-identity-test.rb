@@ -71,4 +71,27 @@ class DiffIdentityTest < Minitest::Test
       end
     end
   end
+
+  def test_cli_interprets_canonical_ref_bytes_as_utf8_independent_of_locale
+    ["main", "feature/café"].each do |base_ref|
+      out, err, status = Open3.capture3(
+        { "LC_ALL" => "C" }, RbConfig.ruby, SCRIPT,
+        "--base-ref", base_ref, "--base-sha", BASE_SHA, "--head-sha", HEAD_SHA
+      )
+
+      assert status.success?, err
+      assert_empty err
+      assert_equal DiffIdentity.derive(base_ref:, base_sha: BASE_SHA, head_sha: HEAD_SHA), out.strip
+    end
+  end
+
+  def test_cli_rejects_invalid_utf8_ref_bytes_independent_of_locale
+    _out, err, status = Open3.capture3(
+      { "LC_ALL" => "C" }, RbConfig.ruby, SCRIPT,
+      "--base-ref", "feature/\xFF".b, "--base-sha", BASE_SHA, "--head-sha", HEAD_SHA
+    )
+
+    refute status.success?
+    assert_equal "Error: --base-ref must contain valid UTF-8 bytes\n", err
+  end
 end

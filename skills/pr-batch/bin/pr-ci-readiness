@@ -925,31 +925,21 @@ module PrCiReadiness
       )
       validated_suites = validate_check_suites(suites, head_sha)
       initial_suite_snapshot = canonical_check_suite_snapshot(validated_suites)
-      suite_ids = {}
-      rows = validated_suites.flat_map do |validated_suite|
-        _suite, suite_id, suite_app, suite_created_at, suite_status, suite_conclusion, latest_count =
-          validated_suite
-        raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
-
-        suite_ids[suite_id] = true
-        suite_rows = fetch_paginated_collection(
-          "repos/#{repo}/check-suites/#{suite_id}/check-runs?filter=latest&per_page=100&page=%<page>s",
-          "check_runs"
-        ).map do |row|
-          normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
-        end
-        validate_check_suite_materialization!(
-          suite_rows, latest_count:, status: suite_status, conclusion: suite_conclusion
-        )
-        suite_rows.map { |row| [row, suite_created_at] }
-      end
+      rows = materialize_check_suite_runs(repo, head_sha, validated_suites)
       final_suites = fetch_paginated_collection(
         "repos/#{repo}/commits/#{head_sha}/check-suites?per_page=100&page=%<page>s",
         "check_suites"
       )
-      final_suite_snapshot = canonical_check_suite_snapshot(validate_check_suites(final_suites, head_sha))
+      final_validated_suites = validate_check_suites(final_suites, head_sha)
+      final_suite_snapshot = canonical_check_suite_snapshot(final_validated_suites)
       unless final_suite_snapshot == initial_suite_snapshot
         raise Error, "check suite inventory changed during run materialization"
+      end
+
+      final_rows = materialize_check_suite_runs(repo, head_sha, final_validated_suites)
+      unless canonical_materialized_check_run_snapshot(final_rows) ==
+             canonical_materialized_check_run_snapshot(rows)
+        raise Error, "check-run inventory changed during final verification"
       end
 
       duplicate_ids = rows.group_by { |row, _created_at| row["id"] }
@@ -978,12 +968,40 @@ module PrCiReadiness
       suites.map { |suite| [suite, *validate_check_suite_identity!(suite, head_sha)] }
     end
 
+    def materialize_check_suite_runs(repo, head_sha, validated_suites)
+      suite_ids = {}
+      validated_suites.flat_map do |validated_suite|
+        _suite, suite_id, suite_app, suite_created_at, suite_status, suite_conclusion, latest_count =
+          validated_suite
+        raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
+
+        suite_ids[suite_id] = true
+        suite_rows = fetch_paginated_collection(
+          "repos/#{repo}/check-suites/#{suite_id}/check-runs?filter=latest&per_page=100&page=%<page>s",
+          "check_runs"
+        ).map do |row|
+          normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
+        end
+        validate_check_suite_materialization!(
+          suite_rows, latest_count:, status: suite_status, conclusion: suite_conclusion
+        )
+        suite_rows.map { |row| [row, suite_created_at] }
+      end
+    end
+
     def canonical_check_suite_snapshot(validated_suites)
       validated_suites.map do |_suite, suite_id, app, created_at, status, conclusion, latest_count|
         JSON.generate([
                         suite_id, app.fetch("id"), app.fetch("slug"), created_at.utc.iso8601(9),
                         status, conclusion, latest_count
                       ])
+      end.sort
+    end
+
+    def canonical_materialized_check_run_snapshot(rows)
+      rows.map do |row, suite_created_at|
+        canonical_row = row.keys.sort.map { |key| [key, row[key]] }
+        JSON.generate([suite_created_at.utc.iso8601(9), canonical_row])
       end.sort
     end
 

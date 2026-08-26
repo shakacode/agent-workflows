@@ -91,7 +91,9 @@ module DiffIdentity
       options = { json: false }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: diff-identity --base-ref REF --base-sha SHA --head-sha SHA [--json]"
-        opts.on("--base-ref REF") { |value| options[:base_ref] = value }
+        opts.on("--base-ref REF") do |value|
+          options[:base_ref] = utf8_cli_argument!(value, "--base-ref")
+        end
         opts.on("--base-sha SHA") { |value| options[:base_sha] = value }
         opts.on("--head-sha SHA") { |value| options[:head_sha] = value }
         opts.on("--json") { options[:json] = true }
@@ -108,6 +110,13 @@ module DiffIdentity
       options
     rescue OptionParser::ParseError => e
       raise Error, e.message
+    end
+
+    def utf8_cli_argument!(value, option)
+      utf8 = value.dup.force_encoding(Encoding::UTF_8)
+      raise Error, "#{option} must contain valid UTF-8 bytes" unless utf8.valid_encoding?
+
+      utf8
     end
 
     def help
