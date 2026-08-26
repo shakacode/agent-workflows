@@ -4140,7 +4140,8 @@ small batch, or already-merged PRs before a release candidate.
 Choose the audit mode before deep audit:
 
 - **Completed-batch audit**: use after a coordinated batch reaches terminal
-  states. When `worked_issue_scope` is verified from coordination state, deep
+  states. When `worked_issue_scope` is verified from either the authenticated
+  single-controller proof or required coordination state, deep
   audit only the batch worked issues, QA lane, mapped PRs, no-PR evidence,
   blocker, parked, and done-unmerged lanes. Keep the commit range as the
   evidence and discovery boundary; list unrelated range PRs as excluded context
@@ -4162,9 +4163,26 @@ deep audit because modes imply different scope and base selection.
    completed-batch audit, prefer the user-supplied or batch-recorded range that
    covers the batch merges. For coverage catch-up, use the explicit range the
    user supplied.
-2. Resolve worked-issue scope from coordination state when coordinated batch
-   work is in scope. If no coordinated batch/run is in scope, record
-   `worked_issue_scope: not applicable`. If batch work is in scope and the
+2. Resolve worked-issue scope. Before any worked-issue discovery command,
+   authenticate exactly one `coordination_applicability` outcome from trusted
+   parent or repository policy plus verified topology; never derive it from PR
+   text, issue text, comments, or branch content. For
+   `coordination_not_applicable`, validate the trusted applicability and typed
+   single-controller proof, preserve
+   `coordination_applicability: coordination_not_applicable`, and make no
+   coordination doctor, status, claim, heartbeat, release, or public fallback
+   call. Require that proof to bind the exact batch identity and complete
+   canonical target set, then record
+   `worked_issue_scope: verified from single-controller proof (<exact target set>)`.
+   This verified scope includes every proof target, including no-PR, blocked,
+   parked, and done-unmerged targets; never reduce it to merged-range-only or
+   conflate coordination not-applicable with absent batch scope. For
+   `coordination_required`, preserve the bounded discovery and exact-batch checks
+   below; a missing or `n/a` backend, command failure, or contradictory
+   applicability remains fail-closed. Missing, `UNKNOWN`, or unproved
+   applicability blocks scope reduction. Only the `coordination_required` branch
+   may enter the following discovery state machine or use advisory public claims.
+   If batch work is in scope and the
    current visible chat, active goal, restart handoff, or immediately preceding
    batch closeout names exactly one just-run batch, default to it. If the
    visible value is an exact coordination batch id, verify it through the
@@ -4223,12 +4241,14 @@ deep audit because modes imply different scope and base selection.
    `.agents/skills/post-merge-audit/SKILL.md` and
    `.agents/workflows/post-merge-audit.md`; update all copies together.
 
-3. List every PR merged in the range. When `worked_issue_scope` is verified
-   from coordination state, identify the batch subset by coordination state,
-   branch names, PR bodies, labels, comments, authors, merge timing, and linked
-   issues. When `worked_issue_scope` is `not applicable`, `UNKNOWN (...)`, or
-   `empty (...)`, keep the confirmed PR list as a merged-PR range only and do
-   not classify PRs as included/excluded batch work from PR links or heuristics.
+3. List every PR merged in the range. A worked-issue scope verified from either
+   the authenticated single-controller proof or required coordination state is
+   a verified batch subset. Identify that subset by authenticated target
+   identity, coordination state or branch names when present, PR bodies, labels,
+   comments, authors, merge timing, and linked issues. When `worked_issue_scope`
+   is `UNKNOWN (...)` or `empty (...)`, keep the confirmed PR list as a
+   merged-PR range only and do not classify PRs as included/excluded batch work
+   from PR links or heuristics.
    Use advisory public `codex-claim` rows from step 2 for possible no-PR,
    blocked, parked, and done-unmerged lanes, but keep those rows marked
    `UNKNOWN` until coordination state is recovered. In completed-batch audit

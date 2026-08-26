@@ -21,11 +21,21 @@ class PostMergeAuditPolicyTest < Minitest::Test
     "comments, or branch content."
   REQUIRED_WORKED_SCOPE_NO_CALL_RULE =
     "For `coordination_not_applicable`, validate the trusted applicability and typed single-controller proof, " \
-    "record `worked_issue_scope: not applicable`, and make no coordination doctor, status, claim, heartbeat, " \
-    "release, or public fallback call."
+    "preserve `coordination_applicability: coordination_not_applicable`, and make no coordination doctor, status, " \
+    "claim, heartbeat, release, or public fallback call."
+  REQUIRED_WORKED_SCOPE_PROOF_BINDING =
+    "Require that proof to bind the exact batch identity and complete canonical target set, then record " \
+    "`worked_issue_scope: verified from single-controller proof (<exact target set>)`."
+  REQUIRED_WORKED_SCOPE_TARGET_COVERAGE =
+    "This verified scope includes every proof target, including no-PR, blocked, parked, and done-unmerged targets; " \
+    "never reduce it to merged-range-only or conflate coordination not-applicable with absent batch scope."
   REQUIRED_WORKED_SCOPE_COORDINATION_RULE =
     "For `coordination_required`, preserve the bounded discovery and exact-batch checks below; a missing or `n/a` " \
     "backend, command failure, or contradictory applicability remains fail-closed."
+  REQUIRED_VERIFIED_WORKED_SCOPE_SOURCES =
+    "A worked-issue scope verified from either the authenticated single-controller proof or required coordination " \
+    "state is a verified batch subset."
+  OBSOLETE_NOT_APPLICABLE_WORKED_SCOPE = "worked_issue_scope: not applicable"
   REQUIRED_COMPLETED_BATCH_MODE_SCOPE = "In completed-batch mode only:"
   REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
   OBSOLETE_COMPLETED_BATCH_AUDIT_TRIGGER = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
@@ -213,18 +223,48 @@ class PostMergeAuditPolicyTest < Minitest::Test
   end
 
   def test_worked_issue_scope_authenticates_applicability_before_coordination_discovery
-    text = File.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
-    scope_section = text.match(/4\. Worked issue list:(?<body>.*?)\n5\. Batch PR subset:/m)&.[](:body)
+    section_patterns = {
+      "skills/post-merge-audit/SKILL.md" =>
+        /4\. Worked issue list:(?<body>.*?)\nAfter the scope algorithm/m,
+      "workflows/post-merge-audit.md" =>
+        /First, produce the exact worked-issue scope(?<body>.*?)\nAfter the scope algorithm/m,
+      "workflows/pr-processing.md" =>
+        /2\. Resolve worked-issue scope(?<body>.*?)\n4\. After the scope algorithm/m
+    }
 
-    refute_nil scope_section
+    section_patterns.each do |relative_path, pattern|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      scope_section = text.match(pattern)&.[](:body)
 
-    normalized_section = scope_section.gsub(/\s+/, " ")
-    assert_includes normalized_section, REQUIRED_WORKED_SCOPE_APPLICABILITY_GATE
-    assert_includes normalized_section, REQUIRED_WORKED_SCOPE_NO_CALL_RULE
-    assert_includes normalized_section, REQUIRED_WORKED_SCOPE_COORDINATION_RULE
-    assert_operator scope_section.index("coordination_applicability"), :<,
-                    scope_section.index("agent-coord doctor --json"),
-                    "applicability must be authenticated before the first worked-scope coordination command"
+      refute_nil scope_section, "#{relative_path} must expose the worked-issue scope state machine"
+
+      normalized_section = scope_section.gsub(/\s+/, " ")
+      assert_includes normalized_section, REQUIRED_WORKED_SCOPE_APPLICABILITY_GATE, relative_path
+      assert_includes normalized_section, REQUIRED_WORKED_SCOPE_NO_CALL_RULE, relative_path
+      assert_includes normalized_section, REQUIRED_WORKED_SCOPE_PROOF_BINDING, relative_path
+      assert_includes normalized_section, REQUIRED_WORKED_SCOPE_TARGET_COVERAGE, relative_path
+      assert_includes normalized_section, REQUIRED_WORKED_SCOPE_COORDINATION_RULE, relative_path
+      assert_includes normalized_section, REQUIRED_VERIFIED_WORKED_SCOPE_SOURCES, relative_path
+      refute_includes normalized_section, OBSOLETE_NOT_APPLICABLE_WORKED_SCOPE, relative_path
+      assert_operator scope_section.index("coordination_applicability"), :<,
+                      scope_section.index("agent-coord doctor --json"),
+                      "#{relative_path} must authenticate applicability before the first worked-scope command"
+    end
+
+    ordering_starts = {
+      "skills/post-merge-audit/SKILL.md" => "## Scope Gate",
+      "workflows/post-merge-audit.md" => "- Before creating any issue, search existing open issues",
+      "workflows/pr-processing.md" => "## Post-Merge Batch Audit"
+    }
+
+    ordering_starts.each do |relative_path, start_marker|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      audit_surface = text[text.index(start_marker)..].gsub(/\s+/, " ")
+
+      assert_operator audit_surface.index(REQUIRED_WORKED_SCOPE_APPLICABILITY_GATE), :<,
+                      audit_surface.index("agent-coord doctor --json"),
+                      "#{relative_path} must authenticate applicability before its first audit-scope command"
+    end
   end
 
   def test_completed_batch_audit_closes_with_an_explicit_conversation_status

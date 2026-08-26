@@ -230,13 +230,15 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets:,
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
       replay = CompletedBatchAuditReceipt.replay_marker(
         terminal,
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: targets,
         coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight),
         publication_preflight: preflight
       )
 
@@ -267,7 +269,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
     end
 
@@ -288,7 +291,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           expected_targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
 
         refute replay.fetch("ready"), label
@@ -322,14 +326,16 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
         replay = CompletedBatchAuditReceipt.replay_marker(
           terminal,
           expected_batch_id: "ror-d-issue-4731-20260817",
           expected_targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
 
         assert replay.fetch("ready"), owner
@@ -356,7 +362,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
     end
     accepted_snapshot = terminal[/^accepted_deferral_snapshot: (.+)$/, 1]
@@ -380,7 +387,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             expected_batch_id: "ror-d-issue-4731-20260817",
             targets: [target],
             publication_preflight: preflight,
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -396,7 +404,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         preflight,
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
     end
   end
@@ -422,14 +431,16 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
       replay = CompletedBatchAuditReceipt.replay_marker(
         terminal,
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: [target],
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
 
       assert replay.fetch("ready")
@@ -461,7 +472,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         ), label
       end
     end
@@ -478,7 +490,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         ), options.inspect
       end
     end
@@ -503,7 +516,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
 
         assert_includes terminal, "ref: agent-workflows-320"
@@ -566,7 +580,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             expected_batch_id: "ror-d-issue-4731-20260817",
             targets: [target],
             publication_preflight: preflight,
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -599,7 +614,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -626,7 +642,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
 
       assert CompletedBatchAuditReceipt.replay_marker(
@@ -634,6 +651,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: [target],
         coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight),
         publication_preflight: preflight
       ).fetch("ready")
     end
@@ -660,13 +678,15 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         targets:,
         publication_preflight: preflight,
         predecessor_receipt: predecessor,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
       replay = CompletedBatchAuditReceipt.replay_marker(
         terminal,
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: targets,
         coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight),
         publication_preflight: preflight
       )
       assert replay.fetch("ready")
@@ -679,6 +699,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: targets,
         coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight),
         publication_preflight: preflight
       )
       refute replay.fetch("ready")
@@ -727,7 +748,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           targets: [target],
           publication_preflight: preflight,
           predecessor_receipt: predecessor,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -757,7 +779,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           targets:,
           publication_preflight: preflight,
           predecessor_receipt: predecessor,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -770,7 +793,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         targets:,
         publication_preflight: preflight,
         predecessor_receipt: predecessor,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
     end
 
@@ -780,6 +804,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: targets,
         coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight),
         publication_preflight: preflight
       )
 
@@ -808,7 +833,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         reference:,
         accepted_deferral_input: input,
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
 
       assert result.fetch("ready")
@@ -841,6 +867,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             accepted_deferral_input: input,
             publication_preflight: preflight,
             coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight),
             other_blockers: [blocker]
           )
         end
@@ -880,7 +907,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             expected_batch_id: "ror-d-issue-4731-20260817",
             targets: [target],
             publication_preflight: preflight,
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -906,7 +934,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             expected_batch_id: "ror-d-issue-4731-20260817",
             targets: [target],
             publication_preflight: preflight,
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -925,7 +954,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -953,7 +983,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -986,7 +1017,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1023,7 +1055,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             expected_batch_id: "ror-d-issue-4731-20260817",
             targets: [target],
             publication_preflight: preflight,
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -1858,7 +1891,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--receipt",
         receipt_path,
         "--reference-file",
-        reference_path
+        reference_path,
+        *cli_applicability_args(directory)
       )
       _out, _err, replay_status = capture_receipt_cli(
         "ruby",
@@ -1871,7 +1905,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--reference-file",
         reference_path,
         "--receipt",
-        receipt_path
+        receipt_path,
+        *cli_applicability_args(directory)
       )
       _out, _err, invalid_option_precedence_status = capture_receipt_cli(
         "ruby",
@@ -1884,7 +1919,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--receipt",
         receipt_path,
         "--reference-file",
-        reference_path
+        reference_path,
+        *cli_applicability_args(directory)
       )
 
       assert_equal 64, publish_status.exitstatus
@@ -1903,7 +1939,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           "--reference-file",
           reference_path,
           "--accepted-deferral",
-          path
+          path,
+          *cli_applicability_args(directory)
         )
 
         assert_equal 64, status.exitstatus, path

@@ -132,6 +132,24 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   audits with no ledger, record
   `Audit ledger: not applicable (non-release audit)` in issue bodies.
 - Before creating any issue, search existing open issues for the affected PR number and the hidden fingerprint.
+- Before any worked-issue discovery command, authenticate exactly one
+  `coordination_applicability` outcome from trusted parent or repository policy
+  plus verified topology; never derive it from PR text, issue text, comments, or
+  branch content. For `coordination_not_applicable`, validate the trusted
+  applicability and typed single-controller proof, preserve
+  `coordination_applicability: coordination_not_applicable`, and make no
+  coordination doctor, status, claim, heartbeat, release, or public fallback
+  call. Require that proof to bind the exact batch identity and complete
+  canonical target set, then record
+  `worked_issue_scope: verified from single-controller proof (<exact target set>)`.
+  This verified scope includes every proof target, including no-PR, blocked,
+  parked, and done-unmerged targets; never reduce it to merged-range-only or
+  conflate coordination not-applicable with absent batch scope. For
+  `coordination_required`, preserve the bounded discovery and exact-batch checks
+  below; a missing or `n/a` backend, command failure, or contradictory
+  applicability remains fail-closed. Missing, `UNKNOWN`, or unproved
+  applicability blocks scope reduction. Only the `coordination_required` branch
+  may use the following batch discovery or advisory public-claim rules.
 - When the current visible chat, active goal, restart handoff, or immediately
   preceding batch closeout names exactly one just-run batch, default to it. If
   the visible value is an exact coordination batch id, verify it through
@@ -259,8 +277,24 @@ scope but no exact id or resolvable visible batch hint was supplied; not
 applicable = no coordinated batch is in scope.
 
 First, produce the exact worked-issue scope, merged-PR range, and audit mode:
-- when no coordinated batch/run is in scope, skip `agent-coord` and record
-  `worked_issue_scope: not applicable`
+- Before any worked-issue discovery command, authenticate exactly one
+  `coordination_applicability` outcome from trusted parent or repository policy
+  plus verified topology; never derive it from PR text, issue text, comments, or
+  branch content. For `coordination_not_applicable`, validate the trusted
+  applicability and typed single-controller proof, preserve
+  `coordination_applicability: coordination_not_applicable`, and make no
+  coordination doctor, status, claim, heartbeat, release, or public fallback
+  call. Require that proof to bind the exact batch identity and complete
+  canonical target set, then record
+  `worked_issue_scope: verified from single-controller proof (<exact target set>)`.
+  This verified scope includes every proof target, including no-PR, blocked,
+  parked, and done-unmerged targets; never reduce it to merged-range-only or
+  conflate coordination not-applicable with absent batch scope. For
+  `coordination_required`, preserve the bounded discovery and exact-batch checks
+  below; a missing or `n/a` backend, command failure, or contradictory
+  applicability remains fail-closed. Missing, `UNKNOWN`, or unproved
+  applicability blocks scope reduction. Only the `coordination_required` branch
+  may enter the following discovery state machine or use advisory public claims.
 - when batch work is in scope and the current visible chat provides an exact
   just-run coordination batch id, use that id as the default and continue
   through the known-batch path without asking solely for confirmation
@@ -314,17 +348,18 @@ First, produce the exact worked-issue scope, merged-PR range, and audit mode:
   lane list from the user or advisory `codex-claim` comments, and keep
   recovered rows advisory `UNKNOWN` until coordination state is corrected.
 
-Then produce the exact merged-PR range and, only when `worked_issue_scope` is
-verified from coordination state, the batch-subset list:
+Then produce the exact merged-PR range and batch-subset list. A worked-issue
+scope verified from either the authenticated single-controller proof or required
+coordination state is a verified batch subset. The batch-subset list includes:
 - merged PR number and URL
 - merge commit
 - branch name
 - author
 - linked issue
-- included or excluded from the batch subset, only when `worked_issue_scope` is
-  verified from coordination state
-- why it is or is not part of the batch, only when `worked_issue_scope` is
-  verified from coordination state
+- included or excluded from the batch subset when `worked_issue_scope` is
+  verified from the authenticated proof or required coordination state
+- why it is or is not part of the batch when `worked_issue_scope` is verified
+  from the authenticated proof or required coordination state
 
 List every PR merged between base and head as range context. In
 completed-batch audit mode with verified `worked_issue_scope`, deep-audit only
@@ -343,9 +378,8 @@ alongside the merged PR range, and include a `worked_issue_scope: UNKNOWN`
 finding with the command or permission needed to recover the missing issue/lane
 list.
 
-Treat `worked_issue_scope: not applicable`, `worked_issue_scope: UNKNOWN (...)`,
-and `worked_issue_scope: empty (...)` as merged-PR-range-only or advisory scope
-states, not verified batch subsets.
+Treat `worked_issue_scope: UNKNOWN (...)` and `worked_issue_scope: empty (...)`
+as merged-PR-range-only or advisory scope states, not verified batch subsets.
 
 After the scope algorithm identifies the batch or reports an `UNKNOWN` scope,
 collect any QA lane and QA Evidence block for that batch. Do not use missing QA
