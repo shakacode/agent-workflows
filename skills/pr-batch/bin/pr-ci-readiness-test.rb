@@ -576,6 +576,36 @@ class PrCiReadinessTest < Minitest::Test
     assert_empty scopes.dig("other", "policy_dispositions")
   end
 
+  def test_required_third_party_row_remains_required_across_workflow_shapes
+    head = "a" * 40
+    held = {
+      "kind" => "check_run", "id" => 32, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        { "id" => "circleci-storybook", "app_slug" => "circleci-checks", "name" => "storybook-review-app" }
+      ]
+    }
+
+    ["", "future-third-party-workflow-shape"].each do |workflow|
+      scopes = PrCiReadiness.inventory_scopes(
+        head_sha: head, checked_at: "2026-07-30T12:00:00Z",
+        required_rows: [{ "workflow" => workflow, "name" => "storybook-review-app", "bucket" => "pending" }],
+        required_complete: true, actions_rows: [], actions_complete: true,
+        check_runs: [held], check_runs_complete: true,
+        statuses: [], statuses_complete: true,
+        optional_approval_held_policy: policy
+      )
+
+      assert_equal "NOT_READY", scopes.dig("required_status_check_rollup", "state"), workflow
+      assert_equal "NOT_READY", scopes.dig("other", "state"), workflow
+      assert_empty scopes.dig("other", "policy_dispositions"), workflow
+    end
+  end
+
   def test_trusted_ci_policy_is_loaded_from_the_exact_base_commit_not_worktree_bytes
     Dir.mktmpdir("pr-ci-policy") do |root|
       run_fixture_git(root, "init", "-q")
@@ -3618,7 +3648,7 @@ class PrCiReadinessCliTest < Minitest::Test
     assert_equal 2, run_fetches
   end
 
-  def test_check_suite_inventory_selects_latest_cross_suite_attempt_without_hiding_failure
+  def test_check_suite_inventory_rejects_same_name_rows_from_distinct_suites
     head = "a" * 40
     %w[success failure].each do |latest_conclusion|
       runner = PrCiReadiness::Runner.new
@@ -3661,14 +3691,13 @@ class PrCiReadinessCliTest < Minitest::Test
 
       rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
 
-      assert complete, latest_conclusion
-      assert_nil error, latest_conclusion
-      assert_equal [100], rows.map { |row| row.fetch("id") }, latest_conclusion
-      assert_equal latest_conclusion, rows.first.fetch("conclusion"), latest_conclusion
+      refute complete, latest_conclusion
+      assert_empty rows, latest_conclusion
+      assert_includes error, "distinct check suites", latest_conclusion
     end
   end
 
-  def test_check_suite_inventory_uses_run_chronology_when_older_suite_is_rerequested
+  def test_check_suite_inventory_does_not_treat_cross_suite_rerequest_as_retry_lineage
     head = "a" * 40
     {
       running: ["in_progress", nil],
@@ -3709,24 +3738,18 @@ class PrCiReadinessCliTest < Minitest::Test
 
       rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
 
-      assert complete, "#{label}: #{error}"
-      assert_nil error, label
-      assert_equal [200], rows.map { |row| row.fetch("id") }, label
-      assert_equal latest_status, rows.first.fetch("status"), label
-      if latest_conclusion.nil?
-        assert_nil rows.first.fetch("conclusion"), label
-      else
-        assert_equal latest_conclusion, rows.first.fetch("conclusion"), label
-      end
+      refute complete, label
+      assert_empty rows, label
+      assert_includes error, "distinct check suites", label
     end
   end
 
-  def test_check_suite_inventory_rejects_missing_or_tied_cross_suite_chronology
+  def test_check_suite_inventory_rejects_invalid_or_cross_suite_chronology
     head = "a" * 40
     {
       missing_suite_created_at: [nil, "2026-08-25T12:00:00Z", /created_at/],
-      missing_run_started_at: ["2026-08-25T12:00:00Z", nil, /chronology/],
-      tied_run_started_at: ["2026-08-25T12:00:00Z", "2026-08-25T11:00:00Z", /chronology/]
+      missing_run_started_at: ["2026-08-25T12:00:00Z", nil, /distinct check suites/],
+      tied_run_started_at: ["2026-08-25T12:00:00Z", "2026-08-25T11:00:00Z", /distinct check suites/]
     }.each do |label, (second_created_at, second_started_at, error_pattern)|
       runner = PrCiReadiness::Runner.new
       runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|

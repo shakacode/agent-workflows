@@ -7,6 +7,7 @@
 
 require "json"
 require "digest"
+require "English"
 require "etc"
 require "fileutils"
 require "open3"
@@ -1296,10 +1297,14 @@ module PrMergeSubmit
     end
 
     def cleanup_private_guard_directory!(directory, guard_result)
+      in_flight = $ERROR_INFO
       remove_private_guard_directory!(directory)
       guard_result
     rescue StandardError => e
       message = "private guarded-direct repository cleanup failed: #{e.message}"
+      if guard_result.nil? && in_flight.is_a?(UnknownOutcome)
+        raise UnknownOutcome, "#{in_flight.message}; additionally, #{message}"
+      end
       raise Error, message if guard_result.nil?
 
       stdout, stderr, = guard_result

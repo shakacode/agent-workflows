@@ -531,6 +531,22 @@ class PrMergeSubmitTest < Minitest::Test
     refute status.success?
   end
 
+  def test_cleanup_failure_preserves_an_in_flight_unknown_outcome
+    runner = PrMergeSubmit::Runner.allocate
+    runner.define_singleton_method(:remove_private_guard_directory!) do |_directory|
+      raise Errno::EACCES, "cleanup denied"
+    end
+
+    error = assert_raises(PrMergeSubmit::UnknownOutcome) do
+      raise PrMergeSubmit::UnknownOutcome, "queue state changed during materialization"
+    ensure
+      runner.send(:cleanup_private_guard_directory!, "/private/guard", nil)
+    end
+
+    assert_includes error.message, "queue state changed during materialization"
+    assert_includes error.message, "cleanup failed"
+  end
+
   def test_forced_termination_unknown_is_returned_for_exact_reconciliation
     runner = PrMergeSubmit::Runner.allocate
     runner.instance_variable_set(
@@ -1398,6 +1414,24 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  def test_guarded_direct_blocks_base_and_queue_changes_after_materialization
+    {
+      guard_post_materialization_base_race: "PR base moved",
+      guard_post_materialization_queue_race: "merge-queue state changed"
+    }.each do |mode, expected_error|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held,
+        merge_submission: guarded_direct_policy
+      )
+
+      refute result.fetch(:status).success?, mode
+      assert_includes result.fetch(:stderr), expected_error, mode
+      assert_operator log.scan("/check-suites?").length, :>=, 6, mode
+      refute_includes log, "GUARD_EXECUTION", mode
+      assert_empty guard_log, mode
+    end
+  end
+
   def test_uppercase_expected_head_remains_bound_through_final_ci_refresh_on_every_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
@@ -1720,7 +1754,7 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def test_cross_suite_chronology_uses_later_suite_even_when_its_run_id_is_lower
+  def test_cross_suite_same_name_rows_block_every_submission_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
       queue: [merge_queue_policy, "enqueuePullRequest"],
@@ -1728,14 +1762,10 @@ class PrMergeSubmitTest < Minitest::Test
       guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
     }
     routes.each do |mode, (merge_submission, mutation)|
-      success, success_log = run_cli(
-        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
-        ci_transition: :later_lower_id_success
-      )
-      assert success.fetch(:status).success?, "#{mode}: #{success.fetch(:stderr)}"
-      assert_ci_refresh_immediately_precedes_mutation(success_log, mutation)
-
-      %i[later_lower_id_failure missing_suite_chronology tied_suite_chronology].each do |transition|
+      %i[
+        later_lower_id_success later_lower_id_failure
+        missing_suite_chronology tied_suite_chronology
+      ].each do |transition|
         failure, failure_log, guard_log = run_cli(
           mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
           ci_transition: transition
@@ -3419,6 +3449,8 @@ class PrMergeSubmitTest < Minitest::Test
                         when "direct_queue_race", "guard_queue_race", "guard_queue_ci_base_race"
                           query_count.positive?
                         when "direct_graphql_error_queue_enabled" then query_count >= 2
+                        when "guard_post_materialization_queue_race"
+                          gh_log.scan("/check-suites?").length > 3
                         else false
                         end
         queued = case current_mode
@@ -3462,7 +3494,9 @@ class PrMergeSubmitTest < Minitest::Test
         ]
         ci_inventory_complete = gh_log.include?("/commits/")
         live_base = if (base_race_modes.include?(current_mode) && query_count.positive?) ||
-                       (ci_base_race_modes.include?(current_mode) && ci_inventory_complete)
+                       (ci_base_race_modes.include?(current_mode) && ci_inventory_complete) ||
+                       (current_mode == "guard_post_materialization_base_race" &&
+                        gh_log.scan("/check-suites?").length > 3)
                       "release"
                     else
                       #{base.inspect}

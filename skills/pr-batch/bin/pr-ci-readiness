@@ -955,13 +955,17 @@ module PrCiReadiness
                           .any? { |_id, matches| matches.length > 1 }
       raise Error, "latest check-run inventory repeated an id" if duplicate_ids
 
-      rows_by_name = rows.group_by do |row, _created_at|
+      rows_by_name = rows.group_by do |row, _created_at, _suite_id|
         row.values_at("app_slug", "name")
       end
       rows = rows_by_name.map do |identity, attempts|
+        suite_ids = attempts.map { |_row, _created_at, suite_id| suite_id }.uniq
+        if suite_ids.length != 1
+          raise Error, "latest check-run inventory repeated #{identity.join('/')} across distinct check suites"
+        end
         next attempts.first.first if attempts.length == 1
 
-        attempts_with_times = attempts.map do |row, _suite_created_at|
+        attempts_with_times = attempts.map do |row, _suite_created_at, _suite_id|
           started_at = row["started_at"]
           if started_at.nil?
             raise Error, "latest check-run inventory lacked run attempt chronology for #{identity.join('/')}"
@@ -1004,7 +1008,7 @@ module PrCiReadiness
         validate_check_suite_materialization!(
           suite_rows, latest_count:, status: suite_status, conclusion: suite_conclusion
         )
-        suite_rows.map { |row| [row, suite_created_at] }
+        suite_rows.map { |row| [row, suite_created_at, suite_id] }
       end
     end
 
@@ -1018,9 +1022,9 @@ module PrCiReadiness
     end
 
     def canonical_materialized_check_run_snapshot(rows)
-      rows.map do |row, suite_created_at|
+      rows.map do |row, suite_created_at, suite_id|
         canonical_row = row.keys.sort.map { |key| [key, row[key]] }
-        JSON.generate([suite_created_at.utc.iso8601(9), canonical_row])
+        JSON.generate([suite_id, suite_created_at.utc.iso8601(9), canonical_row])
       end.sort
     end
 
