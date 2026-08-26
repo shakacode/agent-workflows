@@ -25,6 +25,22 @@ module BatchTokenBudget
     batch-token-budget-override-expiration-receipt batch-token-budget-release-receipt
     batch-token-budget-reconciliation-receipt
   ].freeze
+  DECISION_RECEIPT_COMPATIBILITY_PROJECTIONS = {
+    "telemetry-only-6be" => {
+      "decision" => %w[trusted_plan_path trusted_plan_id trusted_plan_digest],
+      "reservation" => []
+    },
+    "pre-telemetry-297f" => {
+      "decision" => %w[telemetry_max_age_seconds trusted_plan_path trusted_plan_id trusted_plan_digest],
+      "reservation" => []
+    },
+    "stacked-base-a556" => {
+      "decision" => %w[
+        request telemetry_max_age_seconds trusted_plan_path trusted_plan_id trusted_plan_digest
+      ],
+      "reservation" => %w[request request_digest]
+    }
+  }.freeze
   COMPLETE_TIMESTAMP = /
     \A
     (?<year>\d{4})-(?<month>0[1-9]|1[0-2])-(?<day>0[1-9]|[12]\d|3[01])
@@ -902,13 +918,53 @@ module BatchTokenBudget
 
       next_state, = apply_command(replayed_state, command, trusted_budget, trusted_plan_binding)
       return false if replayed_state && digest(control_projection(next_state)) == expected_pre_state_digest
-      return false unless event["post_state_digest"] == digest(control_projection(next_state))
+
+      unless event["post_state_digest"] == digest(control_projection(next_state))
+        compatible_states = DECISION_RECEIPT_COMPATIBILITY_PROJECTIONS.keys.map do |projection|
+          decision_receipt_compatibility_projection(next_state, projection)
+        end
+        compatible_state = compatible_states.find do |candidate|
+          event["post_state_digest"] == digest(control_projection(candidate))
+        end
+        return false unless compatible_state
+
+        next_state = compatible_state
+      end
 
       replayed_state = deep_copy(next_state)
       replayed_state["control_events"] = deep_copy(events.first(index + 1))
       previous_digest = event["digest"]
     end
     control_projection(replayed_state) == control_projection(state)
+  end
+
+  def decision_receipt_compatibility_projection(state, projection)
+    removed_fields = DECISION_RECEIPT_COMPATIBILITY_PROJECTIONS.fetch(projection)
+    projected = deep_copy(state)
+    projected.fetch("receipts", []).each do |receipt|
+      remove_legacy_receipt_fields!(receipt, removed_fields)
+    end
+    projected.fetch("reservation_decisions", {}).each_value do |fence|
+      fence.fetch("outcomes", []).each do |outcome|
+        remove_legacy_receipt_fields!(outcome["receipt"], removed_fields)
+        remove_legacy_receipt_fields!(outcome.dig("result_fields", "receipt"), removed_fields)
+      end
+    end
+    projected.fetch("reservations", {}).each_value do |reservation|
+      remove_legacy_receipt_fields!(reservation["receipt"], removed_fields)
+    end
+    projected
+  end
+
+  def remove_legacy_receipt_fields!(receipt, fields)
+    return unless receipt.is_a?(Hash)
+
+    receipt_fields = case receipt["type"]
+                     when "batch-token-budget-reservation-decision-receipt" then fields.fetch("decision")
+                     when "batch-token-budget-reservation-receipt" then fields.fetch("reservation")
+                     else []
+                     end
+    receipt_fields.each { |field| receipt.delete(field) }
   end
 
   def valid_state?(state, trusted_budget, trusted_plan_binding)
@@ -1217,7 +1273,12 @@ module BatchTokenBudget
       state,
       "batch-token-budget-reservation-decision-receipt",
       "reservation_id" => reservation_id,
+      "request" => canonicalize(reservation),
       "request_digest" => request_digest,
+      "telemetry_max_age_seconds" => original_state.dig("budget", "telemetry", "max_age_seconds"),
+      "trusted_plan_path" => original_state.dig("trusted_plan_binding", "path"),
+      "trusted_plan_id" => original_state.dig("trusted_plan_binding", "id"),
+      "trusted_plan_digest" => original_state.dig("trusted_plan_binding", "digest"),
       "status" => status,
       "reason" => fields["reason"],
       "evaluated_at" => evaluated_at
@@ -1233,9 +1294,51 @@ module BatchTokenBudget
 
   def replay_reservation_decision(state, outcome)
     fields = deep_copy(outcome.fetch("result_fields"))
+    request = verified_replay_request(state, outcome)
+    if request && fields["receipt"].is_a?(Hash)
+      fields["receipt"] = deep_copy(fields.fetch("receipt")).merge(
+        "request" => canonicalize(request),
+        "request_digest" => digest(request)
+      )
+    end
     fields["decision_status"] = outcome.fetch("status")
-    fields["decision_receipt"] = outcome.fetch("receipt")
+    fields["decision_receipt"] = current_decision_receipt(state, outcome.fetch("receipt"), request)
     [state, result(state, "replayed", fields)]
+  end
+
+  def verified_replay_request(state, outcome)
+    decision_receipt = outcome.fetch("receipt")
+    reservation_id = decision_receipt["reservation_id"]
+    request_digest = decision_receipt["request_digest"]
+    candidates = [
+      decision_receipt["request"],
+      state.dig("reservations", reservation_id, "request")
+    ]
+    state.fetch("control_events").reverse_each do |event|
+      command = event.dig("payload", "command")
+      next unless command.is_a?(Hash) && command["action"] == "reserve"
+
+      candidates << command["reservation"]
+    end
+    request = candidates.find do |candidate|
+      candidate.is_a?(Hash) && candidate["id"] == reservation_id && digest(candidate) == request_digest
+    end
+    canonicalize(request) if request
+  end
+
+  def current_decision_receipt(state, receipt, request)
+    current = deep_copy(receipt).merge(
+      "telemetry_max_age_seconds" => state.dig("budget", "telemetry", "max_age_seconds"),
+      "trusted_plan_path" => state.dig("trusted_plan_binding", "path"),
+      "trusted_plan_id" => state.dig("trusted_plan_binding", "id"),
+      "trusted_plan_digest" => state.dig("trusted_plan_binding", "digest")
+    )
+    return current unless request
+
+    current.merge(
+      "request" => canonicalize(request),
+      "request_digest" => digest(request)
+    )
   end
 
   def totals(state)
@@ -1507,6 +1610,8 @@ module BatchTokenBudget
       "tokens" => tokens,
       "admission_kind" => reservation.fetch("admission_kind"),
       "target_id" => reservation.dig("target", "task_id"),
+      "request" => canonicalize(reservation),
+      "request_digest" => digest(reservation),
       "threshold_state" => state_name,
       "overshoot_envelope" => {
         "max_in_flight_turns" => 1,
@@ -2486,8 +2591,11 @@ end
 
 options = {}
 OptionParser.new do |parser|
-  parser.banner = "Usage: batch-token-budget --state PATH --trusted-plan PATH --trusted-plan-id ID " \
-                  "--trusted-plan-digest SHA256 < command.json"
+  parser.banner = "Usage: batch-token-budget [--verify-plan-only | --state PATH] --trusted-plan PATH " \
+                  "--trusted-plan-id ID --trusted-plan-digest SHA256 < command.json"
+  parser.on("--verify-plan-only", "Verify and emit the canonical trusted plan without state mutation") do
+    options[:verify_plan_only] = true
+  end
   parser.on("--state PATH", "Durable batch budget state path") { |value| options[:state_path] = value }
   parser.on("--trusted-plan PATH", "Immutable batch-token-budget v1 plan path") do |value|
     options[:trusted_plan_path] = value
@@ -2498,15 +2606,45 @@ OptionParser.new do |parser|
   end
 end.parse!
 
-state_path = options[:state_path]
-unless state_path.is_a?(String) && !state_path.empty?
-  warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => "missing-state-path")
-  exit 1
-end
-
 unless options.values_at(:trusted_plan_path, :trusted_plan_id, :trusted_plan_digest).all?
   warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input",
                      "reason" => "trusted-plan-required")
+  exit 1
+end
+
+if options[:verify_plan_only]
+  if options.key?(:state_path)
+    warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input",
+                       "reason" => "verify-plan-only-forbids-state-path")
+    exit 1
+  end
+
+  begin
+    trusted_budget = BatchTokenBudget.load_trusted_plan(
+      options.fetch(:trusted_plan_path), options.fetch(:trusted_plan_id), options.fetch(:trusted_plan_digest)
+    )
+    plan_path = File.expand_path(options.fetch(:trusted_plan_path))
+    state_path = File.expand_path(trusted_budget.fetch("state_path"))
+    if BatchTokenBudget.artifact_path_collision?(plan_path, state_path)
+      raise BatchTokenBudget::InvalidInput, "trusted-plan-state-path-collision"
+    end
+
+    puts JSON.generate(
+      "type" => "batch-token-budget-plan-verification", "version" => 1, "status" => "verified",
+      "trusted_plan_path" => plan_path,
+      "trusted_plan_id" => options.fetch(:trusted_plan_id),
+      "trusted_plan_digest" => options.fetch(:trusted_plan_digest), "plan" => trusted_budget
+    )
+    exit 0
+  rescue BatchTokenBudget::InvalidInput => e
+    warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => e.message)
+    exit 1
+  end
+end
+
+state_path = options[:state_path]
+unless state_path.is_a?(String) && !state_path.empty?
+  warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => "missing-state-path")
   exit 1
 end
 

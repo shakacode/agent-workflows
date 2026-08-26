@@ -200,7 +200,7 @@ USER_SELECTED_SOL_XHIGH_OVERRIDE_RULE =
 CODEX_CHANGELOG_ROUTING_NOTE =
   "Adopt the recommended Codex GPT-5.6 routing profile: balanced/high routine multi-lane coordination, with Terra/high for host-verified coordination and positively classified simple workers; Sol/xhigh adversarial QA and high-risk escalation; and Sol/high for uncertainty and routine deterministic QA."
 MEASURED_PROMOTION_DEFERRAL_RULE =
-  "No ten-batch measured promotion decision may be made before #398 usage/cost receipts, #333 execution-provenance receipts, and #335 evaluation runner exist. A promotion experiment must use matched task classes and context topology, record requested-versus-observed execution evidence, and publish its comparison results; this evidence is not complete."
+  "The replay-safe usage receipt capability now supplies `batch-usage-receipt-v2` artifacts. No ten-batch promotion decision may be made before the execution-provenance and evaluation-runner capability dependencies each have current, task-bound satisfied evidence. A pilot may still publish retain, adverse, or `UNKNOWN` evidence without promotion. It must use matched task classes and context topology, record host-observed execution evidence, and publish its comparison results; this evidence is not yet complete."
 ROUTE_ONLY_FIELD_SOURCE = "model|effort|reasoning[-\\s]effort|route|tuple"
 ROUTE_ONLY_SUBJECT_PATTERN = /
   (?:
@@ -1875,9 +1875,9 @@ class ModelRoutingContractTest < Minitest::Test
         "An explicitly user-selected Sol/xhigh override is honored and\nreported as an override, not silently rewritten",
         "An explicitly user-selected Sol/xhigh override is silently\nrewritten"
       ),
-      "promotion decision made before all prerequisite receipts and runner" => text.sub(
-        "#398 usage/cost\nreceipts, #333 execution-provenance receipts, and #335 evaluation runner exist",
-        "#398 usage/cost receipts alone exist"
+      "promotion decision made before all remaining dependencies exist" => text.sub(
+        "the\nexecution-provenance and evaluation-runner capability dependencies each have current, task-bound satisfied\nevidence",
+        "the execution-provenance capability exists"
       )
     }
 

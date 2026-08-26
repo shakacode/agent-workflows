@@ -7,6 +7,7 @@ require "open3"
 require "openssl"
 require "base64"
 require "digest"
+require "fileutils"
 require "tmpdir"
 
 HELPER = File.expand_path("batch-token-budget", __dir__)
@@ -424,6 +425,47 @@ class BatchTokenBudgetTest < Minitest::Test
     tail["digest"] = object_digest(tail.reject { |key, _value| key == "digest" })
   end
 
+  def project_decision_receipts!(state, profile)
+    decision_receipts = state.fetch("receipts").select do |receipt|
+      receipt["type"] == "batch-token-budget-reservation-decision-receipt"
+    end
+    state.fetch("reservation_decisions").each_value do |fence|
+      decision_receipts.concat(fence.fetch("outcomes").map { |outcome| outcome.fetch("receipt") })
+    end
+    decision_receipts.each do |receipt|
+      receipt.delete("trusted_plan_path")
+      receipt.delete("trusted_plan_id")
+      receipt.delete("trusted_plan_digest")
+      receipt.delete("telemetry_max_age_seconds") if profile == :pre_telemetry_297f
+      if profile == :stacked_base_a556
+        receipt.delete("telemetry_max_age_seconds")
+        receipt.delete("request")
+      end
+    end
+    if profile == :stacked_base_a556
+      state.fetch("receipts").each do |receipt|
+        next unless receipt["type"] == "batch-token-budget-reservation-receipt"
+
+        receipt.delete("request")
+        receipt.delete("request_digest")
+      end
+      state.fetch("reservations").each_value do |reservation|
+        reservation.fetch("receipt").delete("request")
+        reservation.fetch("receipt").delete("request_digest")
+      end
+      state.fetch("reservation_decisions").each_value do |fence|
+        fence.fetch("outcomes").each do |outcome|
+          receipt = outcome.dig("result_fields", "receipt")
+          next unless receipt
+
+          receipt.delete("request")
+          receipt.delete("request_digest")
+        end
+      end
+    end
+    rehash_control_tail(state)
+  end
+
   def rechain_control_events(state)
     previous_digest = "0" * 64
     state.fetch("control_events").each_with_index do |event, index|
@@ -538,6 +580,50 @@ class BatchTokenBudgetTest < Minitest::Test
       refute mismatch_status.success?
       assert_nil output
       assert_equal "state-path-mismatch", JSON.parse(mismatch_stderr).fetch("reason")
+    end
+  end
+
+  def test_verify_plan_only_uses_the_production_contract_without_state_mutation
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+
+      stdout, stderr, status = Open3.capture3(
+        HELPER, "--verify-plan-only",
+        "--trusted-plan", anchor.fetch("path"),
+        "--trusted-plan-id", anchor.fetch("id"),
+        "--trusted-plan-digest", anchor.fetch("digest"),
+        stdin_data: ""
+      )
+
+      assert status.success?, stderr
+      receipt = JSON.parse(stdout)
+      assert_equal "batch-token-budget-plan-verification", receipt.fetch("type")
+      assert_equal "verified", receipt.fetch("status")
+      assert_equal canonicalize(candidate), receipt.fetch("plan")
+      refute File.exist?(state_path)
+      refute File.exist?("#{state_path}.lock")
+    end
+  end
+
+  def test_verify_plan_only_rejects_a_trusted_plan_state_path_collision
+    Dir.mktmpdir("batch-token-budget-verify-collision") do |directory|
+      state_path = File.join(directory, "state-root")
+      FileUtils.mkdir_p(state_path)
+      candidate = budget(state_path: state_path)
+      plan_path = File.join(state_path, "trusted-plan.json")
+      File.write(plan_path, JSON.generate(canonicalize(candidate)))
+      digest = "sha256:#{object_digest(candidate)}"
+
+      stdout, stderr, status = Open3.capture3(
+        HELPER, "--verify-plan-only", "--trusted-plan", plan_path,
+        "--trusted-plan-id", candidate.fetch("batch_id"), "--trusted-plan-digest", digest,
+        stdin_data: ""
+      )
+
+      refute status.success?
+      assert_empty stdout
+      assert_equal "trusted-plan-state-path-collision", JSON.parse(stderr).fetch("reason")
     end
   end
 
@@ -2735,6 +2821,125 @@ class BatchTokenBudgetTest < Minitest::Test
       refute mismatch_status.success?
       assert_nil output
       assert_equal "reservation-replay-mismatch", JSON.parse(mismatch_stderr).fetch("reason")
+    end
+  end
+
+  def test_reservation_decision_and_admission_receipts_bind_the_canonical_request
+    with_state do |state_path|
+      initialize_budget(state_path)
+      request = reservation(id: "receipt-bound-request")
+
+      admitted, stderr, status = run_helper(
+        state_path,
+        command("reserve", "reservation" => request)
+      )
+
+      assert status.success?, stderr
+      digest = object_digest(request)
+      assert_equal canonicalize(request), admitted.dig("receipt", "request")
+      assert_equal digest, admitted.dig("receipt", "request_digest")
+      assert_equal canonicalize(request), admitted.dig("decision_receipt", "request")
+      assert_equal digest, admitted.dig("decision_receipt", "request_digest")
+      assert_equal 900, admitted.dig("decision_receipt", "telemetry_max_age_seconds")
+      state = JSON.parse(File.read(state_path))
+      assert_equal state.dig("trusted_plan_binding", "path"),
+                   admitted.dig("decision_receipt", "trusted_plan_path")
+      assert_equal state.dig("trusted_plan_binding", "id"),
+                   admitted.dig("decision_receipt", "trusted_plan_id")
+      assert_equal state.dig("trusted_plan_binding", "digest"),
+                   admitted.dig("decision_receipt", "trusted_plan_digest")
+      assert_operator admitted.dig("receipt", "state_revision"), :<,
+                      admitted.dig("decision_receipt", "state_revision")
+      assert_equal admitted.dig("decision_receipt", "state_revision"), admitted.fetch("state_revision")
+    end
+  end
+
+  def test_pre_telemetry_297f_decision_receipts_transition_to_current_replay
+    assert_legacy_decision_receipt_transition(:pre_telemetry_297f)
+  end
+
+  def test_telemetry_only_6be_decision_receipts_transition_to_current_replay
+    assert_legacy_decision_receipt_transition(:telemetry_only_6be)
+  end
+
+  def test_stacked_base_a556_receipts_transition_to_current_replay
+    assert_legacy_decision_receipt_transition(:stacked_base_a556)
+  end
+
+  def test_unsupported_partial_decision_receipt_projection_remains_corrupt
+    with_state do |state_path|
+      initialize_budget(state_path)
+      request = reservation(id: "unsupported-decision-receipt")
+      admitted, stderr, status = run_helper(state_path, command("reserve", "reservation" => request))
+      assert status.success?, stderr
+      assert_equal "admitted", admitted.fetch("status")
+
+      state = JSON.parse(File.read(state_path))
+      project_decision_receipts!(state, :telemetry_only_6be)
+      state.fetch("receipts").last["trusted_plan_id"] = state.dig("trusted_plan_binding", "id")
+      state.dig("reservation_decisions", request.fetch("id"), "outcomes", 0, "receipt")["trusted_plan_id"] =
+        state.dig("trusted_plan_binding", "id")
+      rehash_control_tail(state)
+      File.write(state_path, JSON.generate(canonicalize(state)))
+
+      output, replay_stderr, replay_status = run_helper(state_path, command("reserve", "reservation" => request))
+
+      refute replay_status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(replay_stderr).fetch("reason")
+    end
+  end
+
+  def assert_legacy_decision_receipt_transition(profile)
+    with_state do |state_path|
+      initialize_budget(state_path)
+      request = reservation(id: "#{profile}-decision-receipt")
+      admitted, stderr, status = run_helper(state_path, command("reserve", "reservation" => request))
+      assert status.success?, stderr
+      assert_equal "admitted", admitted.fetch("status")
+
+      state = JSON.parse(File.read(state_path))
+      project_decision_receipts!(state, profile)
+      File.write(state_path, JSON.generate(canonicalize(state)))
+
+      replayed, replay_stderr, replay_status = run_helper(
+        state_path,
+        command("reserve", "reservation" => request, "evaluated_at" => "2026-08-12T12:20:00Z")
+      )
+
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal 900, replayed.dig("decision_receipt", "telemetry_max_age_seconds")
+      assert_equal state.dig("trusted_plan_binding", "path"),
+                   replayed.dig("decision_receipt", "trusted_plan_path")
+      if profile == :stacked_base_a556
+        assert_equal canonicalize(request), replayed.dig("decision_receipt", "request")
+        assert_equal object_digest(request), replayed.dig("decision_receipt", "request_digest")
+        assert_equal canonicalize(request), replayed.dig("receipt", "request")
+        assert_equal object_digest(request), replayed.dig("receipt", "request_digest")
+      end
+      persisted_receipt = JSON.parse(File.read(state_path)).dig(
+        "reservation_decisions", request.fetch("id"), "outcomes", 0, "receipt"
+      )
+      if profile == :telemetry_only_6be
+        assert_equal 900, persisted_receipt.fetch("telemetry_max_age_seconds")
+      else
+        refute persisted_receipt.key?("telemetry_max_age_seconds")
+      end
+      refute persisted_receipt.key?("trusted_plan_path")
+      if profile == :stacked_base_a556
+        refute persisted_receipt.key?("request")
+        persisted_reservation_receipt = JSON.parse(File.read(state_path)).fetch("receipts").find do |receipt|
+          receipt["type"] == "batch-token-budget-reservation-receipt"
+        end
+        refute persisted_reservation_receipt.key?("request")
+        refute persisted_reservation_receipt.key?("request_digest")
+        persisted_result_receipt = JSON.parse(File.read(state_path)).dig(
+          "reservation_decisions", request.fetch("id"), "outcomes", 0, "result_fields", "receipt"
+        )
+        refute persisted_result_receipt.key?("request")
+        refute persisted_result_receipt.key?("request_digest")
+      end
     end
   end
 

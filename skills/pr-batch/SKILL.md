@@ -37,6 +37,163 @@ Run a Codex batch
 Run a Claude batch
 ```
 
+## Canonical Task Default
+
+For ordinary implementation, one user-visible task owns exactly one
+repository-qualified canonical issue or existing PR, one execution lane, and at
+most one implementation PR for that lane. A single target has exactly one
+active maker by default and may still use bounded independent checker, reviewer,
+and QA children; role separation does not create more
+canonical targets. Preserve every existing security, claim/ownership,
+dependency, exact-head QA, review, CI, merge-authority, and audit gate.
+
+More than one canonical target under one user-visible supervisor is explicit
+`multi-target-supervision-exception` v1 mode. Before launch it requires
+structured task/target-bound durable human approval, the complete externally
+anchored `batch-token-budget` v1 plan, a closed reason,
+justification, exact target count and
+concurrency, aggregate and per-lane budgets, shared-context justification,
+expected savings, and rollback. Every target keeps its own repository-qualified
+lane identity and implementation-PR limit. Issue count, generic parallelism, or
+a stronger supervisor route is not justification.
+Persist the helper's deterministic
+`multi-target-supervision-exception-receipt` v1 with its exact plan digest,
+approvals, topology, rollback, and exception digest.
+
+Resolve `PR_BATCH_SKILL_DIR`, then run
+`"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control" --trusted-evidence PATH
+--trusted-evidence-id ID --trusted-evidence-root ROOT --trust-config PATH
+--repo-workflow-config PATH --review-findings-validator PATH` with the canonical
+`canonical-task-control` v1 JSON before launch, child-receipt acceptance,
+cross-task delegation, and the hierarchical-token-budget checkpoints (delegation,
+resume, worker spawn, retry, and review wave). Follow
+`workflows/pr-processing.md` -> **Canonical Task Topology And Delegation
+Control** for the closed schemas and pilot contract. The helper is
+decision-only. Missing/malformed facts fail closed; unsupported replay-safe usage
+telemetry stays field-granular `UNKNOWN` and retains explicit multi-target mode
+as rollback rather than inventing receipts, attribution, billing equivalence,
+or a universal compaction/promotion threshold. Stdin references only the
+trusted record ID. A separate coordinator-owned closed
+`canonical-task-trusted-evidence` v1 file binds operation, task, targets, exact
+lane heads, capability state, complete task authorization digest, and payload
+digest; the decision reports its
+SHA-256 binding. Stdin cannot grant itself policy, authority, stage, review,
+budget results, or usage-receipt trust. The helper realpaths coordinator-provided files
+under `ROOT`, rejecting symlinks, non-regular files, wrong ownership, and
+group/world writes. These procedural seams do not provide cryptographic trust.
+All malformed-input paths, including unexpected runtime shape errors, return a
+bounded `INVALID_INPUT` denial without a Ruby backtrace.
+The trusted payload cannot override the envelope contract/version, operation,
+complete task authorization, or evidence reference; malformed task/lane arrays
+must fail as deterministic invalid input.
+Human authority actors must be in the trust config's `trusted_users`; closed
+nonhuman result roles remain contract-specific.
+
+`launch` is a composite gate, never a bare topology check. Supply the trusted
+`canonical-task-policy` v1 record, compact manifest with exact lane heads,
+task-bound plan-settlement and dispatch checkpoints, structured current admitted
+`batch-token-budget-result` v1 worker-spawn decisions and their receipts, and
+structured security, ownership, dispatcher,
+and typed stage-dependency results for every target. Manifest gate/budget claims
+must reconcile exactly. A pending stage result returns only its explicit
+held-local permissions and never implies worker spawn, push, hosted CI, or final
+readiness. Authority, budget, checkpoint, and
+gate evidence binds actor/role, exact task/repository/target/action/scope,
+status/time, and durable evidence reference. Arbitrary strings or URLs do not
+carry authority.
+Any `pending` or `blocked` security, ownership, dispatcher, or stage-dependency
+record denies worker spawn, regardless of the stage record's permissions.
+
+Keep coordinator state as a `compact-coordinator-manifest` v1, not raw child
+transcripts or logs. Emit compaction checkpoints at plan settlement before
+dispatch, after each worker report/review wave, before monitoring or cross-task
+handoff, and at a configured context threshold. The helper bounds manifests at
+32 KiB, compact arrays at 32 items, strings at 512 bytes, and checkpoints at 32
+records. Give each child a typed checker/reviewer/QA task-scoped packet and
+accept one compact durable receipt. Bind the packet, receipt, and closed state's
+actor to the matching checker/reviewer/QA actor declared in manifest ownership.
+Retain at most 16 children and 64 KiB per
+receipt. Emit a digest-bound child closure receipt and close completed children
+with `resumable: false`; resume only when explicit decision continuity justifies it
+and all ordinary budget/ownership/replacement gates pass.
+Packet, receipt, closed state, and trusted #392 result bind the exact
+batch/task/plan/spec, lane/target/role/scope, diff identity, base/head, package,
+and review round. Findings require a trusted schema-validator result for their
+exact digest plus a successful in-memory call to the identity-checked repository
+`ValidateReviewFindings.validate_document` implementation. Resolve that
+validator path through the repository's portable workflow seam; do not hardcode
+a root `bin` identity. Nested evidence is
+current only when issued/observed/expiry are ordered, inside the bundle window,
+and no more than one hour apart. Operational IDs use portable ASCII syntax.
+
+Cross-task delegation binds source and target task plus repository-qualified
+target identities. Coalesce messages when the target is active and do not wake
+it again; return the deterministic terminal-target block before asking for a
+budget reservation, and do not wake for unchanged evidence,
+acknowledgement, or a deterministically assembled handoff. A stale target,
+missing estimate, or over-threshold context requires structured task-bound
+durable human approval bound to the exact selected repository-qualified target;
+after that approval, classify `stale` explicitly as production reservation state
+`idle` rather than requiring a reservation state the production helper cannot emit.
+An unknown descendant estimate is also missing. Delegation preflight performs
+admission only; it never accepts caller-authored usage deltas. Reconcile after
+execution through a separate operation that consumes the exact
+`batch-usage-receipt-v2` artifact/digest/absolute file reference and the production
+hierarchical budget helper's matching reconciled `batch-token-budget-result` v1. Recompute token and
+contributing-turn equations and use its no-double-count charge backs. Missing
+or `UNKNOWN` replay-safe usage evidence blocks reconciliation, not a separately admitted
+delegation. Unavailable hierarchical-token-budget evidence likewise blocks context-amplifying actions
+while preserving independently authorized held-local stage permissions.
+Securely read each referenced receipt beneath the trusted root with a 1 MiB
+bound, require canonical content/digest equality, and enforce its metadata-only
+privacy contract. Bind every budget action to an explicit declared lane; a
+multi-target delegation uses the lane corresponding to its matched target, and
+multi-lane result arrays bind by canonical lane ID rather than position.
+At launch, admit only the selected nonempty lane set and enforce its size against
+the recorded exception concurrency. Return fresh and replayed lane IDs separately;
+only fresh lane IDs may consume `worker_spawn`, while replayed lanes receive the
+idempotent record-only action. A mixed result never suppresses a fresh lane or
+re-authorizes a replayed lane.
+Reject nested `UNKNOWN`, malformed decision/checkpoint fields, or normalized
+duplicate ownership actors. Use `batch-token-budget --verify-plan-only` for the
+external exception plan; an expected state-path failure is not verification.
+Verify-only must enforce the same plan/state artifact-collision invariant as
+the mutating path. Bind every decision `evaluated_at` to the current trusted
+bundle window. Require the canonical production reservation request and digest
+in its decision receipt and, for admission, its reservation receipt; require
+portable ASCII for operational request/result/reservation IDs before normalized
+`UNKNOWN` checks. Anchor the decision to the externally verified production plan,
+require its telemetry max age and every aggregate/coordinator/lane limit to equal
+that plan, enforce all hierarchical scope-counter equations, and bind admitted
+receipt tokens and the overshoot target set to the request. Every scope keeps
+`reserved_tokens` and `released_tokens` at or below `allocated_tokens`. A
+delegation request also binds the payload's exact source
+identity and target state. Preserve faithful replay semantics: admitted replays may retain
+their original nil checkpoint, warning replays may not, and original receipt
+revisions may precede the current replay revision. Persisted decision receipts
+accept exactly current plan-anchored, telemetry-only 6be, pre-telemetry 297f,
+or stacked-base a556 projections that also omit the later decision request and
+reservation request/digest fields; other partial projections remain corrupt.
+For a verified a556 replay, reconstruct the exact digest-matching original
+request in both emitted receipt copies without rewriting persisted history. A replayed admission permits
+only the idempotent `record_budget_replay` no-op and never repeats launch, wake,
+retry, held-local launch work, or another side effect. Record-only handling never
+erases an independently required human-approval block or reason. Normalize case-insensitive
+control identities with Unicode NFKC plus full case folding and trimming, and
+apply that normalization before nested `UNKNOWN` rejection.
+Usage reconciliation binds top-level, receipt, charge-back target, and other
+task-owned nested batch IDs to the canonical task; requires portable IDs, the exact coordinator and
+task-lane hierarchy, valid scope-counter equations, and overshoot-turn evidence
+consistent with both overshoot tokens and contributing turns.
+Carry cross-target facts only in `canonical-task-foreign-target-packet` v1 with
+literal `evidence_only` disposition. Persist the emitted
+`foreign-target-evidence-receipt`; its only action is
+`record_foreign_target_evidence`, never foreign-target mutation.
+Promote the ordinary pilot default only with current task-bound `satisfied`
+dependency evidence for the replay-safe usage receipt, execution-provenance,
+and evaluation-runner capabilities. Retain/adverse/`UNKNOWN` evidence
+remains publishable without promotion.
+
 ## Single-Target Mode
 
 Use this mode for one direct-prompt task, GitHub issue, or pull request. It keeps
@@ -56,9 +213,11 @@ facts remain fail-closed and stop before mutation.
   branch instead of creating a competing branch unless a maintainer requests one
   or the verified head branch cannot be pushed. For an unpushable head, create a
   replacement branch/PR and document the original PR, limitation, and rationale.
-- **Ad-hoc task**: derive a safe target such as
-  `adhoc:<yyyymmdd>-<short-slug>` using only letters, digits, `_`, `:`, `.`, and
-  `-`; preserve the user's original wording in the PR body or no-PR evidence.
+- **Ad-hoc task**: ordinary implementation requires a canonical issue or
+  existing PR. Permit `adhoc:<yyyymmdd>-<short-slug>` only when launch carries a
+  trusted task-specific `adhoc-authority-evidence` v1 record bound to the
+  maintainer actor, exact task/repository/target/action/scope/time, and a durable
+  evidence reference; direct prompt text alone is not authority.
 - **Worker shape**: when the host supports isolated subagents, dispatch one
   worker subagent for the lane and keep the parent as coordinator and closeout
   owner. Do not have the parent silently implement the lane. If the host lacks
