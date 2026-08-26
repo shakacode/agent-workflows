@@ -22,6 +22,7 @@ the same executable from the loaded Agent Workflows pack's `bin/` directory or
 an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. Stop with upgrade or
 installation guidance if the shared resolver is unavailable; do not duplicate
 its packaged default in a skill.
+When the resolver exits nonzero, stop and surface the resolver error to the user; do not proceed without a style guide.
 
 The resolver returns one complete guide plus observable provenance: `repo`,
 `user-global`, or `portable-default`. Repository configuration wins. A missing

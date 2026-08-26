@@ -8,6 +8,8 @@ ROOT = File.expand_path("../../..", __dir__)
 
 class WritingStyleContractTest < Minitest::Test
   RESOLUTION_RULE = "Resolve writing style before authoring human-facing prose"
+  RESOLVER_FAILURE_RULE = "When the resolver exits nonzero, stop and surface the resolver error to the user; " \
+                          "do not proceed without a style guide."
   COVERED_SURFACES = %w[
     workflows/pr-processing.md
     skills/pr-batch/SKILL.md
@@ -52,6 +54,12 @@ class WritingStyleContractTest < Minitest::Test
     assert_includes address_templates, "<!-- address-review-summary -->"
     assert_includes address_templates, "<!-- address-review-source-state:v1"
     assert_includes audit, "<!-- completed-batch-audit v1"
+  end
+
+  def test_shared_authoring_contract_stops_on_resolver_failure
+    workflow = read("workflows/pr-processing.md")
+
+    assert_includes workflow, RESOLVER_FAILURE_RULE
   end
 
   def test_seam_design_inventories_covered_and_deferred_consumers

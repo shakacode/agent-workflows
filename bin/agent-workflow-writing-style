@@ -52,9 +52,40 @@ module AgentWorkflowWritingStyle
     File.lstat(path)
     true
   rescue Errno::ENOENT
+    if dangling_symlink_ancestor?(path, label:)
+      raise ConfigurationError, "invalid #{label} writing_style configuration: dangling symlink ancestor"
+    end
+
     false
   rescue SystemCallError => e
     raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
+  end
+
+  def dangling_symlink_ancestor?(path, label:)
+    current = File.dirname(File.expand_path(path))
+    loop do
+      begin
+        stat = File.lstat(current)
+        if stat.symlink?
+          begin
+            File.stat(current)
+          rescue Errno::ENOENT
+            return true
+          rescue SystemCallError => e
+            raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
+          end
+        end
+      rescue Errno::ENOENT
+        # A genuinely missing component may still sit below a dangling symlink.
+      rescue SystemCallError => e
+        raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
+      end
+
+      parent = File.dirname(current)
+      return false if parent == current
+
+      current = parent
+    end
   end
 
   def load_mapping(path, label:)
