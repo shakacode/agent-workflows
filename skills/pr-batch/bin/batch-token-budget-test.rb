@@ -39,6 +39,14 @@ class BatchTokenBudgetTest < Minitest::Test
     }.merge(overrides)
   end
 
+  def host_timestamp(offset_seconds)
+    format_timestamp(Time.now.utc + offset_seconds)
+  end
+
+  def format_timestamp(time)
+    time.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ")
+  end
+
   def run_helper(state_path, input)
     install_trusted_plan(state_path, input.fetch("budget")) if input["action"] == "initialize" && input["budget"]
     run_helper_raw(state_path, JSON.generate(input))
@@ -64,8 +72,9 @@ class BatchTokenBudgetTest < Minitest::Test
     @trusted_anchor_bindings[state_path] ||= install_trusted_plan(state_path)
   end
 
-  def run_helper_raw(state_path, input, anchor: trusted_anchor_binding(state_path))
+  def run_helper_raw(state_path, input, anchor: trusted_anchor_binding(state_path), env: {})
     stdout, stderr, status = Open3.capture3(
+      env,
       HELPER,
       "--state",
       state_path,
@@ -78,6 +87,35 @@ class BatchTokenBudgetTest < Minitest::Test
       stdin_data: input
     )
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
+  end
+
+  def trusted_clock_env(directory, trusted_time)
+    preloader = File.join(directory, "trusted-clock.rb")
+    File.write(
+      preloader,
+      <<~RUBY
+        class << Time
+          def now
+            at(Float(ENV.fetch("BATCH_TOKEN_BUDGET_TEST_EPOCH"))).utc
+          end
+        end
+      RUBY
+    )
+    {
+      "RUBYOPT" => "-r#{preloader}",
+      "BATCH_TOKEN_BUDGET_TEST_EPOCH" => trusted_time.to_f.to_s
+    }
+  end
+
+  def closeout_in_memory(state, evaluated_at)
+    source = File.read(HELPER, encoding: "UTF-8")
+    module_source = source.split("\noptions = {}\n", 2).fetch(0)
+    Dir.mktmpdir("batch-token-budget-module") do |directory|
+      module_path = File.join(directory, "batch-token-budget-module.rb")
+      File.write(module_path, module_source)
+      load module_path
+    end
+    BatchTokenBudget.closeout_command(state, evaluated_at).last
   end
 
   def with_state
@@ -322,6 +360,35 @@ class BatchTokenBudgetTest < Minitest::Test
         "usage_receipt_ref" => receipt_ref,
         "usage_receipt_digest" => receipt_digest,
         "completed_reservation_ids" => completed_reservation_ids
+      )
+    )
+  end
+
+  def reconcile_final_zero_usage_window(
+    state_path,
+    name:,
+    to: "2026-08-12T12:00:00Z",
+    evaluated_at: to
+  )
+    state = JSON.parse(File.read(state_path))
+    base_receipt, = real_descendants_usage_receipt(state_path)
+    receipt = usage_window(
+      base_receipt,
+      from: state["usage_cursor"] || state.fetch("usage_initial_cutoff"),
+      to: to,
+      coordinator_tokens: 0,
+      lane_tokens: state.dig("scopes", "lanes").keys.to_h { |lane_id| [lane_id, 0] }
+    )
+    receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, name)
+    run_helper(
+      state_path,
+      command(
+        "reconcile",
+        "evaluated_at" => evaluated_at,
+        "usage_receipt" => receipt,
+        "usage_receipt_ref" => receipt_ref,
+        "usage_receipt_digest" => receipt_digest,
+        "completed_reservation_ids" => []
       )
     )
   end
@@ -712,6 +779,161 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_far_future_initialization_is_rejected_before_artifact_creation
+    Dir.mktmpdir("batch-token-budget-future-initialize") do |directory|
+      state_path = File.join(directory, "fresh", "state.json")
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(File.join(directory, "anchor"), candidate)
+
+      output, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(
+          command(
+            "initialize",
+            "evaluated_at" => host_timestamp(3600),
+            "budget" => candidate
+          )
+        ),
+        anchor: anchor
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "command-time-future", JSON.parse(stderr).fetch("reason")
+      refute File.exist?(state_path)
+      refute File.exist?("#{state_path}.lock")
+      refute Dir.exist?(File.dirname(state_path))
+    end
+  end
+
+  def test_command_time_accepts_the_forward_skew_boundary_and_rejects_overage
+    Dir.mktmpdir("batch-token-budget-command-skew") do |directory|
+      trusted_time = Time.utc(2026, 8, 26, 12, 0, 0)
+      observations = [29, 30, 30.001, 31].map do |offset|
+        state_path = File.join(directory, "offset-#{offset.to_s.tr('.', '-')}.json")
+        candidate = budget(state_path: state_path)
+        anchor = install_trusted_plan(state_path, candidate)
+        output, stderr, status = run_helper_raw(
+          state_path,
+          JSON.generate(
+            command(
+              "initialize",
+              "evaluated_at" => format_timestamp(trusted_time + offset),
+              "budget" => candidate
+            )
+          ),
+          anchor: anchor,
+          env: trusted_clock_env(directory, trusted_time)
+        )
+        [offset, output, stderr, status]
+      end
+
+      observations.each do |offset, output, stderr, status|
+        if offset <= 30
+          assert status.success?, "offset #{offset}: #{stderr}"
+          assert_equal "initialized", output.fetch("status"), offset
+        else
+          refute status.success?, offset
+          assert_nil output, offset
+          assert_equal "command-time-future", JSON.parse(stderr).fetch("reason"), offset
+        end
+      end
+    end
+  end
+
+  def test_far_future_closeout_preserves_state_and_an_active_override_then_normal_time_succeeds
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reference_time = Time.now.utc
+      override = budget_override(
+        state_path,
+        id: "future-command-override",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 700,
+        issued_at: format_timestamp(reference_time - 60),
+        expires_at: format_timestamp(reference_time + 120)
+      )
+      overridden, override_stderr, override_status = run_helper(
+        state_path,
+        command(
+          "override",
+          "evaluated_at" => format_timestamp(reference_time),
+          "override" => override
+        )
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", overridden.fetch("status")
+      state_before = File.read(state_path)
+      events_before = JSON.parse(state_before).fetch("control_events").length
+
+      output, stderr, status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => format_timestamp(reference_time + 3600))
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "command-time-future", JSON.parse(stderr).fetch("reason")
+      state_after = File.read(state_path)
+      assert_equal state_before, state_after
+      assert_equal events_before, JSON.parse(state_after).fetch("control_events").length
+      assert JSON.parse(state_after).dig("overrides", "future-command-override", "active")
+      assert_equal 700, JSON.parse(state_after).dig("scopes", "lanes", "lane-a", "limit_tokens")
+
+      normal, normal_stderr, normal_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => format_timestamp(reference_time + 1))
+      )
+      assert normal_status.success?, normal_stderr
+      assert_equal "not-complete", normal.fetch("status")
+    end
+  end
+
+  def test_persisted_command_time_implausibly_ahead_of_the_same_trusted_clock_fails_closed
+    Dir.mktmpdir("batch-token-budget-persisted-future") do |directory|
+      state_path = File.join(directory, "state.json")
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+      trusted_time = Time.utc(2026, 8, 26, 12, 0, 0)
+      initialized, initialize_stderr, initialize_status = run_helper_raw(
+        state_path,
+        JSON.generate(
+          command(
+            "initialize",
+            "evaluated_at" => format_timestamp(trusted_time + 30),
+            "budget" => candidate
+          )
+        ),
+        anchor: anchor,
+        env: trusted_clock_env(directory, trusted_time)
+      )
+      assert initialize_status.success?, initialize_stderr
+      assert_equal "initialized", initialized.fetch("status")
+      boundary, boundary_stderr, boundary_status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout", "evaluated_at" => format_timestamp(trusted_time + 30))),
+        anchor: anchor,
+        env: trusted_clock_env(directory, trusted_time)
+      )
+      assert boundary_status.success?, boundary_stderr
+      assert_equal "not-complete", boundary.fetch("status")
+      state_before = File.read(state_path)
+
+      output, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout", "evaluated_at" => format_timestamp(trusted_time - 2))),
+        anchor: anchor,
+        env: trusted_clock_env(directory, trusted_time - 2)
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "persisted-command-time-future", JSON.parse(stderr).fetch("reason")
+      assert_equal state_before, File.read(state_path)
+    end
+  end
+
   def test_fresh_state_closeout_without_state_leaves_no_artifacts
     Dir.mktmpdir("batch-token-budget-fresh-closeout") do |directory|
       state_path = File.join(directory, "fresh", "state.json")
@@ -733,11 +955,214 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_closeout_without_an_authoritative_usage_window_is_not_complete
+    with_state do |state_path|
+      initialize_budget(state_path)
+
+      closeout, stderr, status = run_helper(state_path, command("closeout"))
+
+      assert status.success?, stderr
+      assert_equal "not-complete", closeout.fetch("status")
+      assert_equal "NOT COMPLETE", closeout.fetch("completion")
+      assert_equal(
+        {
+          "status" => "missing",
+          "usage_cursor" => nil,
+          "age_seconds" => nil,
+          "reason" => "usage-cursor-missing"
+        },
+        closeout.fetch("telemetry")
+      )
+    end
+  end
+
+  def test_closeout_with_a_fresh_authoritative_usage_window_is_complete
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      reconciled, reconcile_stderr, reconcile_status = reconcile_receipt(state_path, receipt, "fresh-closeout")
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      closeout, stderr, status = run_helper(state_path, command("closeout"))
+
+      assert status.success?, stderr
+      assert_equal "complete", closeout.fetch("status")
+      assert_equal "COMPLETE", closeout.fetch("completion")
+      assert_equal(
+        {
+          "status" => "fresh",
+          "usage_cursor" => "2026-08-12T12:00:00Z",
+          "age_seconds" => 0,
+          "reason" => "usage-cursor-current"
+        },
+        closeout.fetch("telemetry")
+      )
+    end
+  end
+
+  def test_closeout_accepts_an_authoritative_usage_cursor_at_the_exact_maximum_age
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      reconcile_receipt(state_path, receipt, "boundary-closeout")
+
+      closeout, stderr, status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T12:15:00Z")
+      )
+
+      assert status.success?, stderr
+      assert_equal "complete", closeout.fetch("status")
+      assert_equal "COMPLETE", closeout.fetch("completion")
+      assert_equal(
+        {
+          "status" => "fresh",
+          "usage_cursor" => "2026-08-12T12:00:00Z",
+          "age_seconds" => 900,
+          "reason" => "usage-cursor-current"
+        },
+        closeout.fetch("telemetry")
+      )
+    end
+  end
+
+  def test_fully_attributed_closeout_rejects_a_fractionally_stale_usage_cursor
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      reconcile_receipt(state_path, receipt, "fractionally-stale-closeout")
+
+      closeout, stderr, status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T12:15:00.001Z")
+      )
+
+      assert status.success?, stderr
+      assert_equal "not-complete", closeout.fetch("status")
+      assert_equal "NOT COMPLETE", closeout.fetch("completion")
+      assert_equal 0, closeout.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal 0, closeout.fetch("unattributed_tokens")
+      assert_equal(
+        {
+          "status" => "stale",
+          "usage_cursor" => "2026-08-12T12:00:00Z",
+          "age_seconds" => 900.001,
+          "reason" => "usage-cursor-stale"
+        },
+        closeout.fetch("telemetry")
+      )
+    end
+  end
+
+  def test_closeout_rejects_a_future_usage_cursor
+    with_state do |state_path|
+      initialize_budget(state_path)
+      state = JSON.parse(File.read(state_path))
+      state["usage_cursor"] = "2026-08-12T12:00:00.001Z"
+
+      closeout = closeout_in_memory(state, "2026-08-12T12:00:00Z")
+
+      assert_equal "not-complete", closeout.fetch("status")
+      assert_equal "NOT COMPLETE", closeout.fetch("completion")
+      assert_equal(
+        {
+          "status" => "future",
+          "usage_cursor" => "2026-08-12T12:00:00.001Z",
+          "age_seconds" => -0.001,
+          "reason" => "usage-cursor-future"
+        },
+        closeout.fetch("telemetry")
+      )
+    end
+  end
+
+  def test_closeout_freshness_survives_restart_and_recovers_after_a_new_authoritative_window
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      first_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      reconcile_receipt(state_path, first_receipt, "restart-first-window")
+
+      stale, stale_stderr, stale_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T12:15:00.001Z")
+      )
+      assert stale_status.success?, stale_stderr
+      assert_equal "not-complete", stale.fetch("status")
+      assert_equal "stale", stale.dig("telemetry", "status")
+
+      second_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T12:00:00Z",
+        to: "2026-08-12T12:15:00.001Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      second_receipt, receipt_ref, receipt_digest = receipt_artifact(
+        state_path,
+        second_receipt,
+        "restart-second-window"
+      )
+      reconciled, reconcile_stderr, reconcile_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:15:00.001Z",
+          "usage_receipt" => second_receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      recovered, recovered_stderr, recovered_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T12:15:00.001Z")
+      )
+      assert recovered_status.success?, recovered_stderr
+      assert_equal "complete", recovered.fetch("status")
+      assert_equal "fresh", recovered.dig("telemetry", "status")
+      assert_equal 0, recovered.dig("telemetry", "age_seconds")
+    end
+  end
+
   def test_concurrent_valid_initialization_remains_serialized
     with_state do |state_path|
       candidate = budget(state_path: state_path)
       anchor = install_trusted_plan(state_path, candidate)
-      input = JSON.generate(command("initialize", "budget" => candidate))
+      input = JSON.generate(
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => candidate)
+      )
 
       outcomes = 2.times.map do
         Thread.new { run_helper_raw(state_path, input, anchor: anchor) }
@@ -747,6 +1172,12 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal %w[initialized replayed], outcomes.map { |output, _stderr, _status| output.fetch("status") }.sort
       assert File.file?(state_path)
       assert File.file?("#{state_path}.lock")
+      reconciled, reconcile_stderr, reconcile_status = reconcile_final_zero_usage_window(
+        state_path,
+        name: "concurrent-initialize-closeout"
+      )
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
 
       closeout, stderr, status = run_helper_raw(
         state_path,
@@ -2243,10 +2674,14 @@ class BatchTokenBudgetTest < Minitest::Test
         "aggregate" => { "tokens" => 800, "scope_id" => "aggregate", "lane_limit" => 1_000 }
       }
       scenarios.each do |name, scenario|
-        state_path = File.join(directory, "#{name}.json")
+        state_path = File.join(directory, name, "state.json")
+        FileUtils.mkdir_p(File.dirname(state_path))
         candidate = budget(state_path: state_path)
         candidate.dig("scopes", "lanes", "lane-a")["limit_tokens"] = scenario["lane_limit"] if scenario["lane_limit"]
-        run_helper(state_path, command("initialize", "budget" => candidate))
+        run_helper(
+          state_path,
+          command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => candidate)
+        )
         stopped_request = reservation(id: "#{name}-approval-stop", tokens: scenario.fetch("tokens"))
 
         stopped, stopped_stderr, stopped_status = run_helper(
@@ -2304,6 +2739,12 @@ class BatchTokenBudgetTest < Minitest::Test
         )
         assert release_status.success?, release_stderr
         assert_equal "released", released.fetch("status"), name
+        reconciled, reconcile_stderr, reconcile_status = reconcile_final_zero_usage_window(
+          state_path,
+          name: "#{name}-approval-closeout"
+        )
+        assert reconcile_status.success?, reconcile_stderr
+        assert_equal "reconciled", reconciled.fetch("status"), name
 
         complete, complete_stderr, complete_status = run_helper(state_path, command("closeout"))
         assert complete_status.success?, complete_stderr
@@ -2877,7 +3318,10 @@ class BatchTokenBudgetTest < Minitest::Test
         "approval_percent" => 95,
         "hard_percent" => 100
       }
-      run_helper(state_path, command("initialize", "budget" => retry_budget))
+      run_helper(
+        state_path,
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => retry_budget)
+      )
       reserve(state_path, id: "occupying", lane_id: "lane-a", tokens: 600)
       retried_request = reservation(id: "retry-after-headroom", lane_id: "lane-b", tokens: 500)
 
@@ -2908,6 +3352,13 @@ class BatchTokenBudgetTest < Minitest::Test
           )
         )
       end
+
+      reconciled, reconcile_stderr, reconcile_status = reconcile_final_zero_usage_window(
+        state_path,
+        name: "retry-after-headroom-closeout"
+      )
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
 
       closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
       assert closeout_status.success?, closeout_stderr
@@ -3054,6 +3505,7 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal checkpoint, closeout.fetch("latest_checkpoint")
       assert_equal 0, closeout.dig("totals", "aggregate", "consumed_tokens")
       assert_equal 0, closeout.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal "missing", closeout.dig("telemetry", "status")
 
       aggregate_override = budget_override(
         state_path,
@@ -3088,6 +3540,12 @@ class BatchTokenBudgetTest < Minitest::Test
           }
         )
       )
+      reconciled, reconcile_stderr, reconcile_status = reconcile_final_zero_usage_window(
+        state_path,
+        name: "hard-checkpoint-recovery-closeout"
+      )
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
       recovered, = run_helper(state_path, command("closeout"))
       assert_equal "complete", recovered.fetch("status")
       assert_equal "COMPLETE", recovered.fetch("completion")

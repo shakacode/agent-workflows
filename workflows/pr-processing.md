@@ -820,10 +820,16 @@ is durably fenced to the exact request digest; later changed-payload reuse fails
 closed even after the active target or predecessor is released. Exact existing
 IDs replay the recorded outcome before telemetry freshness is evaluated, so
 aged telemetry cannot allocate twice or rewrite a decision.
-Treat command time as a durable monotonic watermark; future-dated human
-decisions and time rollback fail closed. Replacement/escalation always names a
-released or reconciled predecessor, and persisted reservations contain only
-pinned metadata fields.
+At most one reservation is active per accounting scope: same-scope nested work
+coalesces into it while different lanes may remain concurrent.
+Treat command time as a durable monotonic watermark. Capture trusted host time
+once per helper invocation; accept at most 30 seconds of forward skew,
+inclusively, and reject greater command skew before fresh lock/state artifacts
+or existing-state evaluation and persistence. Reject an otherwise valid
+persisted `last_evaluated_at` that is more than 30 seconds ahead of that same
+captured clock. Future-dated human decisions and time rollback also fail
+closed. Replacement/escalation always names a released or reconciled
+predecessor, and persisted reservations contain only pinned metadata fields.
 Cross-task admission resolves source and target task/root/batch/lane plus
 canonical issue/PR identities from metadata only, reserves the target batch/lane
 before its turn, and includes retained-child fan-out in the estimate. A paused
@@ -884,7 +890,12 @@ reservation/usage ledgers against all counters, and complete closeout requires
 zero reserved tokens in every scope.
 Every unresolved `approval-required` decision also keeps closeout `NOT COMPLETE`;
 an approval receipt alone is insufficient until an explicit approved
-admission resolves that decision.
+admission resolves that decision. Automatic `COMPLETE` additionally requires
+an authoritative non-null `usage_cursor` aged from zero through the configured
+telemetry maximum at the validated closeout `evaluated_at`; missing, future, or
+fractionally stale cursor evidence is `NOT COMPLETE`. Return compact telemetry
+status/cursor/age/reason evidence, while preserving `budget-exhausted` as the
+stronger closeout status.
 It also deterministically replays exact typed control-event payloads from a
 unique external-plan-bound initialization root, checking each pre/post-state and all
 approval, override/expiry, stop, checkpoint, fence, charge-back, and receipt

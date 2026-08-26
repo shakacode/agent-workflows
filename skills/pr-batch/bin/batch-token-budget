@@ -36,6 +36,7 @@ module BatchTokenBudget
   /ix
   TRUSTED_PLAN_MAX_BYTES = 1024 * 1024
   USAGE_RECEIPT_MAX_BYTES = TRUSTED_PLAN_MAX_BYTES
+  MAX_FUTURE_SKEW_SECONDS = 30
 
   class InvalidInput < StandardError; end
   class DuplicateJSONKey < StandardError; end
@@ -1038,6 +1039,10 @@ module BatchTokenBudget
     (DateTime.iso8601(later) - DateTime.iso8601(earlier)) * 86_400
   end
 
+  def timestamp_future_of?(timestamp, trusted_time)
+    ((DateTime.iso8601(timestamp) - trusted_time.to_datetime) * 86_400) > MAX_FUTURE_SKEW_SECONDS
+  end
+
   def valid_telemetry?(telemetry, reservation, evaluated_at, max_age_seconds)
     expected_keys = %w[
       context_status descendant_estimate_tokens descendant_target_ids observed_at self_estimate_tokens status
@@ -1822,7 +1827,44 @@ module BatchTokenBudget
     [state, result(state, "overridden", "receipt" => override_receipt)]
   end
 
-  def closeout_command(state)
+  def closeout_telemetry(state, evaluated_at)
+    usage_cursor = state["usage_cursor"]
+    unless usage_cursor
+      return {
+        "status" => "missing",
+        "usage_cursor" => nil,
+        "age_seconds" => nil,
+        "reason" => "usage-cursor-missing"
+      }
+    end
+
+    age = seconds_between(evaluated_at, usage_cursor)
+    age_seconds = age.denominator == 1 ? age.to_i : age.to_f
+    if age.negative?
+      {
+        "status" => "future",
+        "usage_cursor" => usage_cursor,
+        "age_seconds" => age_seconds,
+        "reason" => "usage-cursor-future"
+      }
+    elsif age <= state.dig("budget", "telemetry", "max_age_seconds")
+      {
+        "status" => "fresh",
+        "usage_cursor" => usage_cursor,
+        "age_seconds" => age_seconds,
+        "reason" => "usage-cursor-current"
+      }
+    else
+      {
+        "status" => "stale",
+        "usage_cursor" => usage_cursor,
+        "age_seconds" => age_seconds,
+        "reason" => "usage-cursor-stale"
+      }
+    end
+  end
+
+  def closeout_command(state, evaluated_at)
     active_reservations = state.fetch("reservations").values.count { |reservation| reservation["status"] == "active" }
     reserved_scope = ([state.dig("scopes", "aggregate"), state.dig("scopes", "coordinator")] +
                       state.dig("scopes", "lanes").values).any? { |record| record["reserved_tokens"].positive? }
@@ -1855,9 +1897,11 @@ module BatchTokenBudget
                        state.dig("scopes", "lanes").values).any? do |record|
       record["consumed_tokens"] >= record["limit_tokens"]
     end
+    telemetry = closeout_telemetry(state, evaluated_at)
     status = if exhausted_scope || current_hard_stop || unresolved_hard_checkpoint
                "budget-exhausted"
-             elsif current_approval_stop || active_reservations.positive? || reserved_scope || unattributed.positive?
+             elsif current_approval_stop || active_reservations.positive? || reserved_scope || unattributed.positive? ||
+                   telemetry["status"] != "fresh"
                "not-complete"
              else
                "complete"
@@ -1869,7 +1913,8 @@ module BatchTokenBudget
       "active_reservations" => active_reservations,
       "unattributed_tokens" => unattributed,
       "overshoot" => overshoot,
-      "latest_checkpoint" => latest_checkpoint
+      "latest_checkpoint" => latest_checkpoint,
+      "telemetry" => telemetry
     )]
   end
 
@@ -2621,7 +2666,7 @@ module BatchTokenBudget
       when "checkpoint"
         checkpoint_command(state, command)
       when "closeout"
-        closeout_command(state)
+        closeout_command(state, command.fetch("evaluated_at"))
       else
         raise InvalidInput, "unsupported-action"
       end
@@ -2720,6 +2765,7 @@ rescue JSON::ParserError
   warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => "malformed-json")
   exit 1
 end
+trusted_host_time = Time.now.utc
 
 begin
   trusted_budget = BatchTokenBudget.load_trusted_plan(
@@ -2748,6 +2794,9 @@ begin
   unless BatchTokenBudget.nonempty_string?(command["batch_id"])
     raise BatchTokenBudget::InvalidInput, "invalid-batch-id"
   end
+  if BatchTokenBudget.timestamp_future_of?(command.fetch("evaluated_at"), trusted_host_time)
+    raise BatchTokenBudget::InvalidInput, "command-time-future"
+  end
 
   if command["action"] == "initialize"
     raise BatchTokenBudget::InvalidInput, "batch-id-mismatch" if command["batch_id"] != trusted_budget["batch_id"]
@@ -2770,6 +2819,9 @@ begin
             end
     if state && !BatchTokenBudget.valid_state?(state, trusted_budget, trusted_plan_binding)
       raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state"
+    end
+    if state && BatchTokenBudget.timestamp_future_of?(state.fetch("last_evaluated_at"), trusted_host_time)
+      raise BatchTokenBudget::InvalidInput, "persisted-command-time-future"
     end
 
     next_state, result = BatchTokenBudget.evaluate(state, command, trusted_budget, trusted_plan_binding)

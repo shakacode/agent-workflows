@@ -123,8 +123,14 @@ remain bound to the externally supplied immutable preflighted plan;
 scoped overrides update a separate effective-budget digest, so restart replay
 and unresolved threshold evidence cannot be hidden by a limit change.
 `evaluated_at` is a monotonic durable watermark: a command cannot roll state
-back to make an expired approval or stale receipt appear current. Approval and
-override receipts cannot take effect before their recorded decision time.
+back to make an expired approval or stale receipt appear current. Each helper
+invocation captures trusted host time once and accepts at most 30 seconds of
+forward skew, inclusively. A command beyond that boundary fails as
+`command-time-future` before a fresh state directory or lock can be created and
+before existing-state expiration, evaluation, or persistence. Restart also
+fails closed when persisted `last_evaluated_at` is more than 30 seconds ahead
+of the same captured clock. Approval and override receipts cannot take effect
+before their recorded decision time.
 
 Before a model turn, spawn, retry, review wave, scheduled continuation,
 monitor, resume, replacement, escalation, or cross-task delegation, submit a
@@ -275,8 +281,14 @@ stop; an explicit approved admission transition must bind the decision's
 resolution before closeout can become complete.
 Every state load recomputes accounting from reservation, release,
 reconciliation, and accepted usage-window ledgers. Missing ledger entries or
-counter mismatches are corrupt state, and `COMPLETE` additionally requires zero
-reserved tokens in every scope.
+counter mismatches are corrupt state. Automatic `COMPLETE` additionally
+requires zero reserved tokens in every scope plus a non-null authoritative
+`usage_cursor` whose age at the closeout command's validated `evaluated_at` is
+between zero and `telemetry.max_age_seconds`, inclusively. Missing, future, or
+fractionally stale cursors remain `NOT COMPLETE`, even when all observed tokens
+are attributed and every reservation is closed. Closeout returns compact
+telemetry evidence with status, usage cursor, numeric age, and reason;
+`budget-exhausted` remains the stronger status when both conditions apply.
 The state also carries an append-only `batch-token-budget-control-event v1`
 chain. Each exact typed event binds its sequence, predecessor digest, action,
 external plan path/id/digest, canonical command payload, pre-state digest, and
