@@ -1419,6 +1419,28 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                     "coordination applicability contradicts trusted proof"
   end
 
+  def test_required_coordination_with_unavailable_backend_stops_before_any_verifier
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    proof = applicability_proof(input)
+    verifier = ->(**) { flunk "unavailable required coordination must stop before verifier activity" }
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: "n/a",
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
+      waiver_verifier: verifier,
+      target_verifier: verifier,
+      coordination_verifier: verifier
+    )
+
+    refute result.fetch("eligible")
+    assert_equal ["coordination is required but the configured backend is unavailable"], result.fetch("blockers")
+    assert_equal({}, result.fetch("source_input"))
+    assert_empty result.dig("snapshot", "targets")
+    assert_empty result.dig("snapshot", "qa")
+  end
+
   def test_tampered_trusted_applicability_stops_before_any_verifier
     input = no_backend_input
     proof = applicability_proof(input)

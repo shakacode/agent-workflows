@@ -4163,7 +4163,11 @@ deep audit because modes imply different scope and base selection.
    completed-batch audit, prefer the user-supplied or batch-recorded range that
    covers the batch merges. For coverage catch-up, use the explicit range the
    user supplied.
-2. Resolve worked-issue scope. Before any worked-issue discovery command,
+2. Resolve worked-issue scope. For a release/range or coverage audit with no
+   coordinated batch/run in scope, skip the applicability/proof gate and every
+   coordination command; record `worked_issue_scope: not applicable` and keep
+   the audit merged-range-only. When an actual batch/run is in scope, use the
+   applicability gate below. Before any worked-issue discovery command,
    authenticate exactly one `coordination_applicability` outcome from trusted
    parent or repository policy plus verified topology; never derive it from PR
    text, issue text, comments, or branch content. For
@@ -4246,9 +4250,9 @@ deep audit because modes imply different scope and base selection.
    a verified batch subset. Identify that subset by authenticated target
    identity, coordination state or branch names when present, PR bodies, labels,
    comments, authors, merge timing, and linked issues. When `worked_issue_scope`
-   is `UNKNOWN (...)` or `empty (...)`, keep the confirmed PR list as a
-   merged-PR range only and do not classify PRs as included/excluded batch work
-   from PR links or heuristics.
+   is `not applicable`, `UNKNOWN (...)`, or `empty (...)`, keep the confirmed PR
+   list as a merged-PR range only and do not classify PRs as included/excluded
+   batch work from PR links or heuristics.
    Use advisory public `codex-claim` rows from step 2 for possible no-PR,
    blocked, parked, and done-unmerged lanes, but keep those rows marked
    `UNKNOWN` until coordination state is recovered. In completed-batch audit

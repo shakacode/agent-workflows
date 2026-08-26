@@ -132,6 +132,10 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   audits with no ledger, record
   `Audit ledger: not applicable (non-release audit)` in issue bodies.
 - Before creating any issue, search existing open issues for the affected PR number and the hidden fingerprint.
+- For a release/range or coverage audit with no coordinated batch/run in scope,
+  skip the applicability/proof gate and every coordination command; record
+  `worked_issue_scope: not applicable` and keep the audit merged-range-only.
+  When an actual batch/run is in scope, use the applicability gate below.
 - Before any worked-issue discovery command, authenticate exactly one
   `coordination_applicability` outcome from trusted parent or repository policy
   plus verified topology; never derive it from PR text, issue text, comments, or
@@ -277,6 +281,10 @@ scope but no exact id or resolvable visible batch hint was supplied; not
 applicable = no coordinated batch is in scope.
 
 First, produce the exact worked-issue scope, merged-PR range, and audit mode:
+- For a release/range or coverage audit with no coordinated batch/run in scope,
+  skip the applicability/proof gate and every coordination command; record
+  `worked_issue_scope: not applicable` and keep the audit merged-range-only.
+  When an actual batch/run is in scope, use the applicability gate below.
 - Before any worked-issue discovery command, authenticate exactly one
   `coordination_applicability` outcome from trusted parent or repository policy
   plus verified topology; never derive it from PR text, issue text, comments, or
@@ -378,8 +386,9 @@ alongside the merged PR range, and include a `worked_issue_scope: UNKNOWN`
 finding with the command or permission needed to recover the missing issue/lane
 list.
 
-Treat `worked_issue_scope: UNKNOWN (...)` and `worked_issue_scope: empty (...)`
-as merged-PR-range-only or advisory scope states, not verified batch subsets.
+Treat `worked_issue_scope: not applicable`, `worked_issue_scope: UNKNOWN (...)`,
+and `worked_issue_scope: empty (...)` as merged-PR-range-only or advisory scope
+states, not verified batch subsets.
 
 After the scope algorithm identifies the batch or reports an `UNKNOWN` scope,
 collect any QA lane and QA Evidence block for that batch. Do not use missing QA

@@ -94,6 +94,10 @@ module CompletedBatchPublicationPreflight
 
     coordination_not_applicable = applicability == "coordination_not_applicable"
     coordination_required = applicability == "coordination_required"
+    if coordination_required && backend&.downcase == "n/a"
+      blockers << "coordination is required but the configured backend is unavailable"
+      return blocked_result(blockers.uniq)
+    end
     if coordination_not_applicable
       no_backend_evidence = resolved_no_backend_evidence(
         input["coordination_status"],
@@ -104,7 +108,7 @@ module CompletedBatchPublicationPreflight
       batch = nil
       lane_entries = []
       resolved_targets = no_backend_evidence ? expected_targets : []
-    elsif coordination_required && backend&.downcase != "n/a"
+    else
       no_backend_evidence = nil
       authenticated_status = coordination_verifier&.call(backend:, batch_id:)
       unless authenticated_status == input["coordination_status"]
@@ -112,12 +116,6 @@ module CompletedBatchPublicationPreflight
       end
       batch = resolved_batch(input["coordination_status"], batch_id, blockers)
       lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
-    else
-      no_backend_evidence = nil
-      batch = nil
-      lane_entries = []
-      resolved_targets = []
-      blockers << "coordination is required but the configured backend is unavailable" if coordination_required
     end
     compare_resolved_scope(expected_targets, resolved_targets, blockers)
     snapshots = indexed_target_snapshots(input["target_snapshots"], expected_targets, blockers)

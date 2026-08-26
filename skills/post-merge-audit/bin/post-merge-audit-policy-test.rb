@@ -32,10 +32,14 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_WORKED_SCOPE_COORDINATION_RULE =
     "For `coordination_required`, preserve the bounded discovery and exact-batch checks below; a missing or `n/a` " \
     "backend, command failure, or contradictory applicability remains fail-closed."
+  REQUIRED_NO_BATCH_WORKED_SCOPE =
+    "For a release/range or coverage audit with no coordinated batch/run in scope, skip the applicability/proof " \
+    "gate and every coordination command; record `worked_issue_scope: not applicable` and keep the audit " \
+    "merged-range-only."
+  REQUIRED_ACTUAL_BATCH_SCOPE_GATE = "When an actual batch/run is in scope, use the applicability gate below."
   REQUIRED_VERIFIED_WORKED_SCOPE_SOURCES =
     "A worked-issue scope verified from either the authenticated single-controller proof or required coordination " \
     "state is a verified batch subset."
-  OBSOLETE_NOT_APPLICABLE_WORKED_SCOPE = "worked_issue_scope: not applicable"
   REQUIRED_COMPLETED_BATCH_MODE_SCOPE = "In completed-batch mode only:"
   REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
   OBSOLETE_COMPLETED_BATCH_AUDIT_TRIGGER = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
@@ -223,6 +227,11 @@ class PostMergeAuditPolicyTest < Minitest::Test
   end
 
   def test_worked_issue_scope_authenticates_applicability_before_coordination_discovery
+    no_batch_branch_counts = {
+      "skills/post-merge-audit/SKILL.md" => 1,
+      "workflows/post-merge-audit.md" => 2,
+      "workflows/pr-processing.md" => 1
+    }
     section_patterns = {
       "skills/post-merge-audit/SKILL.md" =>
         /4\. Worked issue list:(?<body>.*?)\nAfter the scope algorithm/m,
@@ -245,10 +254,19 @@ class PostMergeAuditPolicyTest < Minitest::Test
       assert_includes normalized_section, REQUIRED_WORKED_SCOPE_TARGET_COVERAGE, relative_path
       assert_includes normalized_section, REQUIRED_WORKED_SCOPE_COORDINATION_RULE, relative_path
       assert_includes normalized_section, REQUIRED_VERIFIED_WORKED_SCOPE_SOURCES, relative_path
-      refute_includes normalized_section, OBSOLETE_NOT_APPLICABLE_WORKED_SCOPE, relative_path
+      assert_includes normalized_section, REQUIRED_NO_BATCH_WORKED_SCOPE, relative_path
+      assert_includes normalized_section, REQUIRED_ACTUAL_BATCH_SCOPE_GATE, relative_path
+      assert_operator normalized_section.index(REQUIRED_NO_BATCH_WORKED_SCOPE), :<,
+                      normalized_section.index(REQUIRED_WORKED_SCOPE_APPLICABILITY_GATE),
+                      "#{relative_path} must preserve the no-batch branch before batch applicability"
       assert_operator scope_section.index("coordination_applicability"), :<,
                       scope_section.index("agent-coord doctor --json"),
                       "#{relative_path} must authenticate applicability before the first worked-scope command"
+      normalized_text = text.gsub(/\s+/, " ")
+      assert_equal no_batch_branch_counts.fetch(relative_path), normalized_text.scan(REQUIRED_NO_BATCH_WORKED_SCOPE).length,
+                   "#{relative_path} must preserve every no-batch audit entry point"
+      assert_equal no_batch_branch_counts.fetch(relative_path), normalized_text.scan(REQUIRED_ACTUAL_BATCH_SCOPE_GATE).length,
+                   "#{relative_path} must scope every applicability gate to actual batches"
     end
 
     ordering_starts = {

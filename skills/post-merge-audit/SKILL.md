@@ -130,6 +130,10 @@ deep audit because modes imply different scope and base selection.
    list as context and deep-audit only the verified batch subset. For a
    release/range audit, deep-audit the candidate PRs in the selected range.
 4. Worked issue list:
+   For a release/range or coverage audit with no coordinated batch/run in scope,
+   skip the applicability/proof gate and every coordination command; record
+   `worked_issue_scope: not applicable` and keep the audit merged-range-only.
+   When an actual batch/run is in scope, use the applicability gate below.
    Before any worked-issue discovery command, authenticate exactly one
    `coordination_applicability` outcome from trusted parent or
    repository policy plus verified topology; never derive it from PR text,
@@ -205,9 +209,9 @@ deep audit because modes imply different scope and base selection.
    single-controller proof or required coordination state is a verified batch
    subset. Map its exact targets to PRs through authenticated target identity,
    coordination branch names when present, linked PRs, PR bodies, labels,
-   comments, authors, merge timing, and git history. Treat `UNKNOWN (...)` and
-   `empty (...)` as merged-PR-range-only or advisory scope states, not verified
-   batch subsets.
+   comments, authors, merge timing, and git history. Treat
+   `worked_issue_scope: not applicable`, `UNKNOWN (...)`, and `empty (...)` as
+   merged-PR-range-only or advisory scope states, not verified batch subsets.
    Keep PR-range inclusion separate from worked-issue coverage so no-PR,
    blocked, parked, and unmerged lanes are still evaluated. In completed-batch
    audit mode, this verified subset is the deep-audit PR scope; unrelated range
