@@ -434,7 +434,7 @@ until observed receipts exist for it; do not cite a profile route as measured
 evidence, and do not compare a requested route that lacks an observed receipt
 against one that has one.
 
-#398 now supplies replay-safe `batch-usage-receipt-v2` artifacts. No ten-batch
+Issue #398 now supplies replay-safe `batch-usage-receipt-v2` artifacts. No ten-batch
 promotion decision may be made before the remaining #333 execution-provenance
 and #335 evaluation-runner dependencies exist. A pilot may still publish
 retain, adverse, or `UNKNOWN` evidence without promotion. It must use matched
@@ -474,7 +474,7 @@ Operational decisions use a separate closed `canonical-task-trusted-evidence`
 v1 file passed by explicit path and ID. Its current/expiry times, task/target,
 exact heads, capability state, and payload digest are SHA-256 bound; stdin only
 references the ID and cannot self-assert route, authority, stage, #392 review,
-#399 budget results, or #398 usage evidence.
+the #399 budget results, or #398 usage evidence.
 The trusted bundle, trust config, and review validator are owner/mode checked
 regular files realpathed beneath a coordinator root. This is procedural rather
 than cryptographic trust. Human authority actors resolve through

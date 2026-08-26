@@ -677,8 +677,8 @@ repository-qualified target, role, narrow scope, acceptance criteria,
 verification, and stop conditions. Accept only one matching
 `compact-child-receipt` v1 with status, exact head, summary, findings,
 verification, and open decisions. Packet, receipt, and closed state bind one to
-one across child/lane/target/role/scope plus the exact manifest head and one
-#392-compatible batch/task/plan/spec identity, exact diff identity, base/head,
+one across child/lane/target/role/scope plus the exact manifest head and
+one #392-compatible batch/task/plan/spec identity, exact diff identity, base/head,
 review package, review round, and findings-result record. Findings require a
 trusted schema-validator result bound to their exact digest. Nested `UNKNOWN`
 evidence fails closed. Retain at most 16 children, 32 items in each compact
