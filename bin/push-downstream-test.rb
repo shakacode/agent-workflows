@@ -1154,6 +1154,24 @@ class PushDownstreamScaffoldTest < Minitest::Test
     end
   end
 
+  def test_apply_scaffold_rejects_managed_path_symlink_without_following_external_target
+    Dir.mktmpdir("push-downstream-apply-symlink") do |dir|
+      root = File.join(dir, "consumer")
+      FileUtils.mkdir_p(root)
+      external_target = File.join(dir, "external-agents.md")
+      File.binwrite(external_target, "unchanged\n")
+      File.symlink(external_target, File.join(root, "AGENTS.md"))
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.reconcile_scaffold(root, CONTRACT)
+      end
+
+      assert_includes error.message, "managed scaffold path contains a symlink"
+      assert_equal "unchanged\n", File.binread(external_target)
+      refute Dir.exist?(File.join(root, ".agents")), "validation must run before the first managed write"
+    end
+  end
+
   def test_apply_scaffold_migrates_legacy_agents_command_values
     Dir.mktmpdir("push-downstream-scaffold") do |root|
       File.write(File.join(root, "AGENTS.md"), <<~MARKDOWN)
@@ -1628,6 +1646,25 @@ class PushDownstreamAuditTest < Minitest::Test
       # untouched and no sync branch is ever pushed.
       branches = `git --git-dir=#{remote.shellescape} branch --list`.split.reject { |token| token == "*" }
       assert_equal ["main"], branches
+    end
+  end
+
+  def test_audit_rejects_same_named_tag_when_configured_base_branch_is_missing
+    Dir.mktmpdir("push-downstream-audit-detached-tag") do |dir|
+      remote, seed = seed_bare_consumer(dir)
+      system("git", "-C", seed, "tag", "main")
+      system("git", "-C", seed, "push", "origin", "refs/tags/main", out: File::NULL)
+      system("git", "--git-dir", remote, "config", "receive.denyDeleteCurrent", "ignore")
+      system("git", "-C", seed, "push", "origin", ":refs/heads/main", out: File::NULL)
+
+      entry = audit(remote)
+
+      assert_equal "blocked", entry.fetch("status")
+      assert_includes entry.fetch("reason"), "configured base branch is not the tracked remote branch"
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("base_sha")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("seam_doctor_issues")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("changed_managed_paths")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("follow_ups")
     end
   end
 

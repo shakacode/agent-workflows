@@ -397,6 +397,7 @@ module PushDownstream
   end
 
   def reconcile_scaffold(root, contract)
+    validate_managed_scaffold_paths!(root)
     changed = false
     follow_ups = []
     preexisting_scripts = repo_owned_standard_scripts(root)
@@ -979,9 +980,15 @@ module PushDownstream
       end
 
       begin
-        base_sha = audit_local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
+        base_sha = audit_local_ref_head(clone, "HEAD^{commit}")
+        tracked_base_sha = audit_local_ref_head(
+          clone, "refs/remotes/origin/#{repo.fetch(:base_branch)}^{commit}"
+        )
       rescue RuntimeError, SystemCallError => e
         return audit_blocked(repo, "consumer base commit could not be resolved: #{e.message}")
+      end
+      unless base_sha && tracked_base_sha == base_sha
+        return audit_blocked(repo, "configured base branch is not the tracked remote branch")
       end
 
       begin
