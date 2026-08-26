@@ -938,7 +938,7 @@ module PushDownstream
           next
         end
         if stat.symlink?
-          displayed = current.delete_prefix("#{clone_root}#{File::SEPARATOR}")
+          displayed = audit_display_path(current.delete_prefix("#{clone_root}#{File::SEPARATOR}"))
           raise "audit read path contains a symlink: #{displayed}"
         end
         next unless stat.directory?
@@ -949,6 +949,10 @@ module PushDownstream
     true
   rescue Errno::EACCES, Errno::ENOTDIR => e
     raise "audit read path could not be safely inspected: #{e.message}"
+  end
+
+  def audit_display_path(path)
+    path.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
   end
 
   def audit_repo(repo, presets)

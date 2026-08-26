@@ -1668,6 +1668,14 @@ class PushDownstreamAuditTest < Minitest::Test
     end
   end
 
+  def test_audit_display_path_is_valid_utf8_for_json_errors
+    displayed = PushDownstream.audit_display_path(".agents/skills/bad-\xFF.md".b)
+
+    assert_equal Encoding::UTF_8, displayed.encoding
+    assert_predicate displayed, :valid_encoding?
+    assert JSON.generate("reason" => displayed)
+  end
+
   def test_audit_blocks_managed_path_symlink_without_following_external_target
     Dir.mktmpdir("push-downstream-audit-symlink") do |dir|
       remote, seed = seed_bare_consumer(dir)
