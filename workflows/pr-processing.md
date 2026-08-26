@@ -3861,6 +3861,9 @@ The resulting `pr-ci-readiness` v2 contract owns complete, scoped exact-head
 evidence for required status checks, GitHub Actions, Dependabot, and other
 checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
 must migrate to the scoped v2 result.
+`pr-ci-readiness` also owns the authenticated live GitHub refresh and complete
+suite/run materialization; `merge-assurance` structurally revalidates the
+resulting `ci_result` rather than independently querying GitHub.
 
 The optional trusted-base `ci_readiness` seam is a closed version 1 mapping:
 
@@ -3954,6 +3957,9 @@ canonical nonempty Git refs and both SHAs must be exactly 40 lowercase hex
 characters. Changing the base ref, resolved base/effective merge-base SHA, or
 head SHA changes the identity and invalidates walkthrough, decision, CI, and
 merge-receipt evidence.
+The trusted coordinator must resolve that reviewed SHA from the trusted
+repository. `merge-assurance` authenticates and canonically binds the supplied
+value but intentionally does not query Git or prove ancestry itself.
 Store `DIFF_BASE_SHA` separately as `context.diff_base_sha` and copy that exact
 binding into the `pr-walkthrough` and `human-merge-decision` evidence. Keep
 `context.base.sha` bound to the live `baseRefOid` used to authenticate base

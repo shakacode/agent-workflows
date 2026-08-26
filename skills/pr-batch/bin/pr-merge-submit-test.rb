@@ -321,7 +321,7 @@ class PrMergeSubmitTest < Minitest::Test
       timeout_result.fetch(:stderr)
     )
     assert_includes timeout_result.fetch(:stderr), "do not retry blindly"
-    assert_equal(3, timeout_log.lines.count { |line| line.include?("number=42") })
+    assert_equal(4, timeout_log.lines.count { |line| line.include?("number=42") })
 
     interrupt_result, interrupt_log, interrupt_guard_log = run_cli(
       mode: "guard_interrupt",
@@ -335,7 +335,7 @@ class PrMergeSubmitTest < Minitest::Test
       interrupt_result.fetch(:stderr)
     )
     assert_includes interrupt_result.fetch(:stderr), "do not retry blindly"
-    assert_equal(3, interrupt_log.lines.count { |line| line.include?("number=42") })
+    assert_equal(4, interrupt_log.lines.count { |line| line.include?("number=42") })
     refute_empty interrupt_guard_log
   end
 
@@ -542,6 +542,7 @@ class PrMergeSubmitTest < Minitest::Test
       [[executable], nil]
     end
     runner.define_singleton_method(:guard_timeout_seconds) { 0.1 }
+    runner.define_singleton_method(:validate_guard_launch_boundary!) { |_options| }
     runner.define_singleton_method(:run_process) do |*_args, **_kwargs|
       raise PrMergeSubmit::UnknownOutcome,
             "guarded-direct executable process group did not exit after forced termination; " \
@@ -1923,6 +1924,21 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "mergePullRequest"
   end
 
+  def test_guarded_direct_revalidates_ci_after_guard_materialization
+    result, log, guard_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      receipt_mode: :optional_held,
+      ci_transition: :held_then_failed_after_first_inventory
+    )
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "current CI disposed check is neither held nor independently ready"
+    assert_operator log.scan("/check-suites?").length, :>=, 4
+    refute_includes log, "GUARD_EXECUTION"
+    assert_empty guard_log
+  end
+
   def test_authenticated_tracker_receipt_evidence_is_exact_and_current
     cases = {
       semantic_read_missing: "authenticated tracker read count is malformed",
@@ -2286,7 +2302,7 @@ class PrMergeSubmitTest < Minitest::Test
       stdin.close
       stdout_reader = Thread.new { stdout.read }
       stderr_reader = Thread.new { stderr.read }
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
       until File.exist?(wait_path)
         raise "guard did not start before interrupt deadline" if
           Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
@@ -3239,6 +3255,16 @@ class PrMergeSubmitTest < Minitest::Test
                                       "status" => "completed", "conclusion" => "success",
                                       "started_at" => "2026-08-25T12:00:00Z"
                                     )], 1]
+                                  when :held_then_failed_after_first_inventory
+                                    suite_reads = File.read(ENV.fetch("GH_LOG")).scan("/check-suites?").length
+                                    if suite_reads > 3
+                                      [[held.merge(
+                                        "status" => "completed", "conclusion" => "failure",
+                                        "started_at" => "2026-08-25T12:00:00Z"
+                                      )], 1]
+                                    else
+                                      [[held], 1]
+                                    end
                                   else
                                     [[held], 1]
                                   end

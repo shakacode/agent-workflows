@@ -638,8 +638,10 @@ direct evidence repair and reevaluation and must never be worded as approvable.
 After ordinary readiness and any required walkthrough or human decision, capture
 the resolved `pr-ci-readiness` v2 result, the autonomous eligibility result, and
 a trusted coordinator-owned merge context. `pr-ci-readiness` v2 owns the scoped,
-exact-head required-status, GitHub Actions, Dependabot, and other CI evidence;
-legacy v1 CI output is not sufficient.
+exact-head required-status, GitHub Actions, Dependabot, and other CI evidence,
+including authenticated live GitHub suite/run refresh and complete
+materialization. `merge-assurance` structurally revalidates that `ci_result`; it
+does not independently query GitHub. Legacy v1 CI output is not sufficient.
 
 When a hosted workflow outside the ordinary GitHub check scopes is explicitly
 selected, add its exact `{provider, run_id}` to merge-context

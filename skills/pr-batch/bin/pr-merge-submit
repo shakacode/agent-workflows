@@ -1174,6 +1174,7 @@ module PrMergeSubmit
           policy.fetch("trusted_bytes"), executable
         )
         policy.fetch("identity")["interpreter"] = interpreter_identity if interpreter_identity
+        validate_guard_launch_boundary!(options)
         begin
           guard_result = run_process(
             guarded_direct_environment(options),
@@ -1195,6 +1196,19 @@ module PrMergeSubmit
         guard_result = cleanup_private_guard_directory!(directory, guard_result)
       end
       guard_result
+    end
+
+    def validate_guard_launch_boundary!(options)
+      validate_current_ci_for_submission!(options)
+      refreshed = fetch_pr(options)
+      validate_receipt_live_bindings!(refreshed, options)
+      validate_pr!(refreshed, options)
+      return if refreshed["isInMergeQueue"] == false &&
+                refreshed["mergeQueueEntry"].nil? &&
+                refreshed["isMergeQueueEnabled"] == false
+
+      raise UnknownOutcome,
+            "PR merge-queue state changed or became UNKNOWN during guarded-direct materialization"
     end
 
     def guarded_direct_environment(options)
