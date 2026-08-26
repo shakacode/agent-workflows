@@ -3651,7 +3651,8 @@ class PrCiReadinessCliTest < Minitest::Test
           [{
             "id" => run_id, "name" => "build", "head_sha" => head,
             "status" => "completed", "conclusion" => conclusion,
-            "started_at" => "2026-08-25T12:00:00Z", "html_url" => "",
+            "started_at" => suite_id == 10 ? "2026-08-25T11:00:00Z" : "2026-08-25T12:00:00Z",
+            "html_url" => "",
             "app" => { "id" => 9, "slug" => "ci-app" },
             "check_suite" => { "id" => suite_id }
           }]
@@ -3667,9 +3668,66 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_check_suite_inventory_uses_run_chronology_when_older_suite_is_rerequested
+    head = "a" * 40
+    {
+      running: ["in_progress", nil],
+      failed: %w[completed failure]
+    }.each do |label, (latest_status, latest_conclusion)|
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          [
+            {
+              "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+              "status" => latest_status, "conclusion" => latest_conclusion
+            },
+            {
+              "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+              "status" => "completed", "conclusion" => "success"
+            }
+          ].map do |suite|
+            suite.merge(
+              "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+              "latest_check_runs_count" => 1
+            )
+          end
+        else
+          suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
+          rerequested = suite_id == 10
+          [{
+            "id" => rerequested ? 200 : 100, "name" => "build", "head_sha" => head,
+            "status" => rerequested ? latest_status : "completed",
+            "conclusion" => rerequested ? latest_conclusion : "success",
+            "started_at" => rerequested ? "2026-08-25T14:00:00Z" : "2026-08-25T13:00:00Z",
+            "html_url" => "", "app" => { "id" => 9, "slug" => "ci-app" },
+            "check_suite" => { "id" => suite_id }
+          }]
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      assert complete, "#{label}: #{error}"
+      assert_nil error, label
+      assert_equal [200], rows.map { |row| row.fetch("id") }, label
+      assert_equal latest_status, rows.first.fetch("status"), label
+      if latest_conclusion.nil?
+        assert_nil rows.first.fetch("conclusion"), label
+      else
+        assert_equal latest_conclusion, rows.first.fetch("conclusion"), label
+      end
+    end
+  end
+
   def test_check_suite_inventory_rejects_missing_or_tied_cross_suite_chronology
     head = "a" * 40
-    [nil, "2026-08-25T10:00:00Z"].each do |second_created_at|
+    {
+      missing_suite_created_at: [nil, "2026-08-25T12:00:00Z", /created_at/],
+      missing_run_started_at: ["2026-08-25T12:00:00Z", nil, /chronology/],
+      tied_run_started_at: ["2026-08-25T12:00:00Z", "2026-08-25T11:00:00Z", /chronology/]
+    }.each do |label, (second_created_at, second_started_at, error_pattern)|
       runner = PrCiReadiness::Runner.new
       runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
         _validate_page = validate_page
@@ -3689,7 +3747,8 @@ class PrCiReadinessCliTest < Minitest::Test
           [{
             "id" => suite_id * 10, "name" => "build", "head_sha" => head,
             "status" => "completed", "conclusion" => "success",
-            "started_at" => "2026-08-25T12:00:00Z", "html_url" => "",
+            "started_at" => suite_id == 10 ? "2026-08-25T11:00:00Z" : second_started_at,
+            "html_url" => "",
             "app" => { "id" => 9, "slug" => "ci-app" },
             "check_suite" => { "id" => suite_id }
           }]
@@ -3698,9 +3757,9 @@ class PrCiReadinessCliTest < Minitest::Test
 
       rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
 
-      refute complete, second_created_at.inspect
-      assert_empty rows, second_created_at.inspect
-      assert_match(/chronology|created_at/, error, second_created_at.inspect)
+      refute complete, label
+      assert_empty rows, label
+      assert_match error_pattern, error, label
     end
   end
 

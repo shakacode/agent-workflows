@@ -959,10 +959,20 @@ module PrCiReadiness
         row.values_at("app_slug", "name")
       end
       rows = rows_by_name.map do |identity, attempts|
-        latest_time = attempts.map(&:last).max
-        latest_attempts = attempts.select { |_row, created_at| created_at == latest_time }
+        next attempts.first.first if attempts.length == 1
+
+        attempts_with_times = attempts.map do |row, _suite_created_at|
+          started_at = row["started_at"]
+          if started_at.nil?
+            raise Error, "latest check-run inventory lacked run attempt chronology for #{identity.join('/')}"
+          end
+
+          [row, strict_rfc3339_time!(started_at, "check run started_at")]
+        end
+        latest_time = attempts_with_times.map(&:last).max
+        latest_attempts = attempts_with_times.select { |_row, started_at| started_at == latest_time }
         if latest_attempts.length != 1
-          raise Error, "latest check-run inventory had tied suite chronology for #{identity.join('/')}"
+          raise Error, "latest check-run inventory had tied run attempt chronology for #{identity.join('/')}"
         end
 
         latest_attempts.first.first
