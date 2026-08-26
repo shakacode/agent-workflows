@@ -261,8 +261,20 @@ module BatchTokenBudget
       raise InvalidInput, "trusted-plan-digest-invalid"
     end
 
-    trusted_plan_json = File.read(path, TRUSTED_PLAN_MAX_BYTES + 1, encoding: "UTF-8")
-    raise InvalidInput, "trusted-plan-oversized" if trusted_plan_json.bytesize > TRUSTED_PLAN_MAX_BYTES
+    trusted_plan_json = begin
+      File.open(path, File::RDONLY | File::NONBLOCK, encoding: "UTF-8") do |file|
+        artifact_stat = file.stat
+        raise InvalidInput, "trusted-plan-unreadable" unless artifact_stat.file?
+        raise InvalidInput, "trusted-plan-oversized" if artifact_stat.size > TRUSTED_PLAN_MAX_BYTES
+
+        bounded_json = file.read(TRUSTED_PLAN_MAX_BYTES + 1) || ""
+        raise InvalidInput, "trusted-plan-oversized" if bounded_json.bytesize > TRUSTED_PLAN_MAX_BYTES
+
+        bounded_json
+      end
+    rescue SystemCallError, IOError
+      raise InvalidInput, "trusted-plan-unreadable"
+    end
 
     budget = parse_json_strict(trusted_plan_json)
     raise InvalidInput, "trusted-plan-contract-invalid" unless valid_budget?(budget)
@@ -270,8 +282,6 @@ module BatchTokenBudget
     raise InvalidInput, "trusted-plan-digest-mismatch" unless trusted_plan_digest(budget) == expected_digest
 
     canonicalize(budget)
-  rescue Errno::ENOENT, Errno::EACCES, Errno::EISDIR
-    raise InvalidInput, "trusted-plan-unreadable"
   rescue JSON::ParserError
     raise InvalidInput, "trusted-plan-malformed"
   end
@@ -2198,6 +2208,16 @@ module BatchTokenBudget
     !usage_receipt.key?("credit_equivalents") || credit_equivalents_shape?(usage_receipt["credit_equivalents"])
   end
 
+  def v2_usage_receipt_evidence_consistent?(usage_receipt)
+    evidence = usage_receipt["evidence"]
+    return true unless evidence["status"] == "complete"
+    return false unless evidence["unknown"].empty?
+
+    lanes = usage_receipt.fetch("lanes")
+    scopes = [usage_receipt.fetch("coordinator"), *lanes, *lanes.flat_map { |lane| lane.fetch("workers") }]
+    scopes.all? { |scope| scope.dig("evidence", "status") == "complete" }
+  end
+
   def lane_usage_projection(lane)
     return unless lane.is_a?(Hash) && lane.keys.sort == %w[
       evidence id observed_routes reconciliation requested_route root_thread_id scope turns usage workers
@@ -2249,7 +2269,7 @@ module BatchTokenBudget
   end
 
   def batch_usage_projection(usage_receipt, state)
-    return unless v2_usage_receipt_shape?(usage_receipt)
+    return unless v2_usage_receipt_shape?(usage_receipt) && v2_usage_receipt_evidence_consistent?(usage_receipt)
 
     allowed_top_keys = %w[accounting batch coordinator evidence lanes privacy schema window]
     allowed_top_keys << "credit_equivalents" if usage_receipt.key?("credit_equivalents")
@@ -2647,7 +2667,8 @@ module BatchTokenBudget
     end
     if state && command["action"] == "reconcile" &&
        command.dig("usage_receipt", "schema") == "batch-usage-receipt-v2" &&
-       !v2_usage_receipt_shape?(command.fetch("usage_receipt"))
+       (!v2_usage_receipt_shape?(command.fetch("usage_receipt")) ||
+        !v2_usage_receipt_evidence_consistent?(command.fetch("usage_receipt")))
       return blocked_usage_result(state, "usage-telemetry-malformed-or-unknown")
     end
 

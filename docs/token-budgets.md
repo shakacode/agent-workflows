@@ -102,7 +102,12 @@ state. The coordinator-selected `--trusted-plan` path is trusted input outside
 the mutable budget state: the helper cannot authenticate an arbitrary path a
 caller chooses. Its guarantee is that persisted-state forgery alone cannot
 replace the budget or verifier authority because every invocation must match
-the separately held path, id, and canonical digest.
+the separately held path, id, and canonical digest. The helper opens that path
+read-only and nonblocking, then checks the opened descriptor before a bounded
+read: it must be a regular file no larger than 1 MiB. An exact 1 MiB regular
+file and a symlink resolving to such a file remain valid; oversized plans fail
+as `trusted-plan-oversized`, while FIFOs, other non-regular objects, and
+filesystem read failures fail as `trusted-plan-unreadable`.
 Admission denials are valid decisions and exit zero so callers can persist the
 receipt and checkpoint safely. State updates use an exclusive adjacent lock,
 an fsynced private temporary file, and atomic rename. Replaying an id with a
@@ -231,7 +236,12 @@ cutoff, digest/reference mismatch, or malformed relevant accounting fails
 closed. Relevant `UNKNOWN` totals or topology also fail closed. The receipt
 helper's structured `UNKNOWN` for route metadata, or a missing non-total usage
 counter, may pass only when all raw total-token accounting and reconciliation
-equations remain known and balanced. The helper's global
+equations remain known and balanced. Conversely, top-level
+`evidence.status: "complete"` is authoritative only when coordinator, every
+lane, and every worker evidence status is also `complete`; a contradictory
+nested `UNKNOWN` blocks before state, event, or usage-cursor mutation. The
+route-only top-level `UNKNOWN` exception remains narrow and does not let a
+top-level `complete` claim hide incomplete scope evidence. The helper's global
 `accounting.usage_samples` is not per-scope turn evidence and never authorizes
 overshoot.
 

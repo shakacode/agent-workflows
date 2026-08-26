@@ -266,7 +266,12 @@ value conforms to the receipt schema's RFC 3339 `date-time` format.
 Top-level `evidence.sources` lists supported and attempted metadata source
 types; it does not claim that each source was available. Source failures and
 partial availability are represented by top-level `evidence.status: "UNKNOWN"`
-and the corresponding structured entries in `evidence.unknown`.
+and the corresponding structured entries in `evidence.unknown`. A top-level
+`complete` status is consistent only when coordinator, every lane, and every
+worker also reports complete evidence; consumers must reject a receipt that
+hides a nested `UNKNOWN` behind top-level `complete`. Route-metadata-only
+uncertainty remains explicitly top-level `UNKNOWN`, even when known token totals
+and reconciliation equations allow the receipt's narrow accounting use.
 
 ## Optional Credit Equivalents
 

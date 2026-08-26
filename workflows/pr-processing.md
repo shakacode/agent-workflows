@@ -807,6 +807,12 @@ the helper cannot authenticate an arbitrary caller-selected path, but persisted
 state alone cannot replace the budget or verifier authority.
 Compare the trusted budget's expanded `state_path` to CLI `--state` and reject
 plan/state artifact collisions before creating a state directory or lock.
+Open the trusted plan read-only and nonblocking, require the opened descriptor
+to be a regular file of at most 1 MiB, and bound the read to that limit. Exact
+limit regular files and symlinks to them remain valid; oversized plans fail as
+`trusted-plan-oversized`, while FIFOs, other non-regular objects, and filesystem
+read failures fail as `trusted-plan-unreadable` without creating state or lock
+artifacts.
 Initialization requires an exact duplicate projection of the externally trusted
 budget; null or omitted projections are invalid.
 
@@ -856,7 +862,11 @@ mutation of the same window, gap,
 overlap, rollback, identity drift, stale/future cutoffs, and unknown relevant
 totals or topology fail closed. Route-only or missing non-total counter
 `UNKNOWN` may pass only when raw totals and reconciliation stay known and
-balanced. Each accepted window shifts observed use from reserved to consumed;
+balanced. A top-level complete evidence claim additionally requires complete
+coordinator, lane, and worker evidence; any nested `UNKNOWN` contradiction
+blocks before state, control-event, or usage-cursor mutation. This does not
+widen the narrow route-only top-level `UNKNOWN` exception. Each accepted window
+shifts observed use from reserved to consumed;
 completed reservations release their remaining headroom. Observed use without
 an active scope reservation is unattributed and blocks clean closeout.
 Cross-task charge-back records source causality for actual target self plus

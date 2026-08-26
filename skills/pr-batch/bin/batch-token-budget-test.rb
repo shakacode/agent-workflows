@@ -104,6 +104,49 @@ class BatchTokenBudgetTest < Minitest::Test
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
   end
 
+  def run_helper_raw_with_watchdog(
+    state_path, input, timeout_seconds:, anchor: trusted_anchor_binding(state_path)
+  )
+    clock_options = trusted_clock_options_for_command(input)
+    stdout_text = nil
+    stderr_text = nil
+    status = nil
+    Open3.popen3(
+      clock_options.fetch(:env),
+      RbConfig.ruby,
+      *clock_options.fetch(:ruby_arguments),
+      HELPER,
+      "--state",
+      state_path,
+      "--trusted-plan",
+      anchor.fetch("path"),
+      "--trusted-plan-id",
+      anchor.fetch("id"),
+      "--trusted-plan-digest",
+      anchor.fetch("digest")
+    ) do |stdin, stdout, stderr, wait_thread|
+      stdin.write(input)
+      stdin.close
+      unless wait_thread.join(timeout_seconds)
+        Process.kill("TERM", wait_thread.pid)
+        Process.kill("KILL", wait_thread.pid) unless wait_thread.join(0.2)
+        wait_thread.join
+        flunk "helper exceeded #{timeout_seconds}-second watchdog"
+      end
+
+      stdout_text = stdout.read
+      stderr_text = stderr.read
+      status = wait_thread.value
+    ensure
+      stdin.close unless stdin.closed?
+      unless wait_thread.join(0)
+        Process.kill("KILL", wait_thread.pid)
+        wait_thread.join
+      end
+    end
+    [stdout_text.empty? ? nil : JSON.parse(stdout_text), stderr_text, status]
+  end
+
   def trusted_clock_options(directory, trusted_time)
     preloader = File.join(directory, "trusted-clock.rb")
     File.write(preloader, TRUSTED_CLOCK_SOURCE)
@@ -711,6 +754,54 @@ class BatchTokenBudgetTest < Minitest::Test
       refute status.success?
       assert_nil output
       assert_equal "trusted-plan-oversized", JSON.parse(stderr).fetch("reason")
+    end
+  end
+
+  def test_trusted_plan_fifo_is_rejected_boundedly_before_artifact_creation
+    Dir.mktmpdir("batch-token-budget-fifo-plan") do |directory|
+      state_path = File.join(directory, "fresh", "state.json")
+      candidate = budget(state_path: state_path)
+      fifo_path = File.join(directory, "trusted-plan.fifo")
+      assert system("mkfifo", fifo_path), "mkfifo failed"
+      anchor = {
+        "path" => fifo_path,
+        "id" => candidate.fetch("batch_id"),
+        "digest" => "sha256:#{object_digest(candidate)}"
+      }
+
+      output, stderr, status = run_helper_raw_with_watchdog(
+        state_path,
+        JSON.generate(command("initialize", "budget" => candidate)),
+        timeout_seconds: 1,
+        anchor: anchor
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "trusted-plan-unreadable", JSON.parse(stderr).fetch("reason")
+      refute File.exist?(state_path)
+      refute File.exist?("#{state_path}.lock")
+      refute Dir.exist?(File.dirname(state_path))
+    end
+  end
+
+  def test_trusted_plan_symlink_to_a_bounded_regular_file_remains_valid
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      regular_anchor = install_trusted_plan(state_path, candidate)
+      symlink_path = File.join(File.dirname(state_path), "trusted-plan-link.json")
+      File.symlink(regular_anchor.fetch("path"), symlink_path)
+      symlink_anchor = regular_anchor.merge("path" => symlink_path)
+
+      initialized, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("initialize", "budget" => candidate)),
+        anchor: symlink_anchor
+      )
+
+      assert status.success?, stderr
+      assert_equal "initialized", initialized.fetch("status")
+      assert_equal symlink_path, JSON.parse(File.read(state_path)).dig("trusted_plan_binding", "path")
     end
   end
 
@@ -2388,6 +2479,50 @@ class BatchTokenBudgetTest < Minitest::Test
       state = JSON.parse(File.read(state_path))
       assert_equal JSON.parse(state_before).fetch("scopes"), state.fetch("scopes")
       assert_empty state.fetch("usage_receipts")
+    end
+  end
+
+  def test_top_level_complete_cannot_hide_incomplete_coordinator_lane_or_worker_evidence
+    variants = {
+      "coordinator" => proc { |receipt| receipt.dig("coordinator", "evidence")["status"] = "UNKNOWN" },
+      "lane" => proc { |receipt| receipt.dig("lanes", 0, "evidence")["status"] = "UNKNOWN" },
+      "worker" => proc { |receipt| receipt.dig("lanes", 0, "workers", 0, "evidence")["status"] = "UNKNOWN" }
+    }
+
+    variants.each do |name, contradict|
+      with_state do |state_path|
+        initialize_budget(state_path)
+        base_receipt, = real_descendants_usage_receipt(state_path)
+        receipt = usage_window(
+          base_receipt,
+          from: "2026-08-12T11:00:00Z",
+          to: "2026-08-12T12:00:00Z",
+          coordinator_tokens: 0,
+          lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+        )
+        assert_equal "complete", receipt.dig("evidence", "status"), name
+        contradict.call(receipt)
+        state_before = File.read(state_path)
+        before = JSON.parse(state_before)
+
+        blocked, stderr, status = reconcile_receipt(state_path, receipt, "incomplete-#{name}")
+
+        assert status.success?, "#{name}: #{stderr}"
+        assert_equal "blocked", blocked.fetch("status"), name
+        assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason"), name
+        assert_equal state_before, File.read(state_path), name
+        saved = JSON.parse(File.read(state_path))
+        assert_equal before.fetch("control_events"), saved.fetch("control_events"), name
+        assert_nil before["usage_cursor"], name
+        assert_nil saved["usage_cursor"], name
+        assert_empty saved.fetch("usage_receipts"), name
+
+        closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
+        assert closeout_status.success?, "#{name}: #{closeout_stderr}"
+        assert_equal "not-complete", closeout.fetch("status"), name
+        assert_equal "NOT COMPLETE", closeout.fetch("completion"), name
+        assert_equal "usage-cursor-missing", closeout.dig("telemetry", "reason"), name
+      end
     end
   end
 
@@ -4136,6 +4271,11 @@ class BatchTokenBudgetTest < Minitest::Test
           "detail" => "schema permits evidence-specific extension fields"
         }]
       )
+      receipt.fetch("coordinator").fetch("evidence")["status"] = "UNKNOWN"
+      receipt.fetch("lanes").each do |lane|
+        lane.fetch("evidence")["status"] = "UNKNOWN"
+        lane.fetch("workers").each { |worker| worker.fetch("evidence")["status"] = "UNKNOWN" }
+      end
 
       reconciled, stderr, status = reconcile_receipt(state_path, receipt, "valid-optional-shapes")
 
