@@ -67,7 +67,10 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_PUBLIC_FALLBACK_PUBLICATION_BLOCK = "Configured `public claim-comment fallback` is advisory ownership state only; it must not invoke private `agent-coord`, and without a separate authenticated terminal coordination contract it leaves completed-batch publication blocked as `UNKNOWN`."
   REQUIRED_TYPED_NO_BACKEND_EVIDENCE = "When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks."
   REQUIRED_TYPED_NO_PR_EVIDENCE = "An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks."
-  REQUIRED_LEGACY_PUBLICATION_REFRESH = "A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness."
+  REQUIRED_LEGACY_PUBLICATION_REFRESH = "A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness."
+  REQUIRED_ACCEPTED_DEFERRAL_LIFECYCLE = "Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it."
+  REQUIRED_ACCEPTED_DEFERRAL_GUARD = "This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed."
+  REQUIRED_ACCEPTED_DEFERRAL_DECISION = "The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number."
   REQUIRED_RECORD_DELIMITER_RULE = "Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported."
   REQUIRED_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union."
   REQUIRED_CANONICAL_DISPLAY_SAFETY_RULE = "After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union."
@@ -408,6 +411,16 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should block an unmerged coordinated target"
       assert_includes normalized_text, "in_progress",
                       "#{relative_path} should block in-progress QA"
+    end
+  end
+
+  def test_accepted_deferral_is_append_only_authenticated_and_non_product_only
+    REQUIRED_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_LIFECYCLE, relative_path
+      assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_GUARD, relative_path
+      assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_DECISION, relative_path
     end
   end
 end
