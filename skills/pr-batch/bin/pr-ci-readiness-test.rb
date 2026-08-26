@@ -1112,6 +1112,25 @@ class PrCiReadinessCliTest < Minitest::Test
                                         }
                                       }
                                     })
+    first_page_command =
+      if first_page.is_a?(Array)
+        state_path = "#{pr_head_state_path}.review-inventory"
+        cases = first_page.each_with_index.map do |payload, index|
+          "#{index}) payload=#{JSON.generate(payload).inspect} ;;"
+        end.join("\n")
+        <<~BASH
+          count=0
+          if [ -f #{state_path.inspect} ]; then count=$(cat #{state_path.inspect}); fi
+          case "$count" in
+          #{cases}
+            *) payload=#{JSON.generate(first_page.last).inspect} ;;
+          esac
+          printf '%s' "$payload"
+          printf '%s' "$((count + 1))" > #{state_path.inspect}
+        BASH
+      else
+        shell_json_printf(first_page)
+      end
     check_fields_guard = if required_check_fields
                            <<~BASH
                              if [[ " $* " != *" --json #{required_check_fields} "* ]]; then
@@ -1229,9 +1248,7 @@ class PrCiReadinessCliTest < Minitest::Test
             exit 1
           fi
       #{review_cases}
-          cat <<'JSON'
-      #{JSON.generate(first_page)}
-      JSON
+      #{first_page_command}
           exit 0
         fi
         if [[ "$*" = *"actions/runs?head_sha="* ]]; then
@@ -3242,6 +3259,42 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_pending_review_draft_inventory_fails_closed_when_snapshot_changes_during_assessment
+    head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    review_payload = lambda do |nodes|
+      {
+        "data" => {
+          "repository" => {
+            "pullRequest" => {
+              "reviews" => {
+                "nodes" => nodes,
+                "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+              }
+            }
+          }
+        }
+      }
+    end
+    late_draft = {
+      "id" => "PRR_late", "state" => "PENDING", "submittedAt" => nil,
+      "commit" => { "oid" => head }
+    }
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]', full_json: "[]", pr_head: head,
+      review_pages: { nil => [review_payload.call([]), review_payload.call([late_draft])] }
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      draft_ids = data.fetch("viewer_pending_review_drafts").map { |row| row.fetch("id") }
+      assert_equal ["PRR_late"], draft_ids
+      assert_equal false, data.dig("viewer_review_inventory", "complete")
+      assert_includes data.dig("viewer_review_inventory", "error"), "changed during assessment"
+    end
+  end
+
   def test_review_draft_inventory_uses_outer_authenticated_head_during_transient_head_change
     outer_head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
     transient_head = "4f67da47c44b7f403c72be2ed8f5bf4505666975"
@@ -3375,6 +3428,84 @@ class PrCiReadinessCliTest < Minitest::Test
     refute(endpoints.any? do |endpoint|
       endpoint.include?("/commits/") && endpoint.include?("/check-runs")
     end)
+  end
+
+  def test_check_suite_inventory_fails_closed_when_suite_set_changes_during_materialization
+    head = "a" * 40
+    initial_suite = {
+      "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+      "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
+    }
+    late_suite = initial_suite.merge(
+      "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+      "status" => "in_progress", "conclusion" => nil, "latest_check_runs_count" => 0
+    )
+    suite_fetches = 0
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        suite_fetches += 1
+        suite_fetches == 1 ? [initial_suite] : [initial_suite, late_suite]
+      else
+        [{
+          "id" => 100, "name" => "build", "head_sha" => head,
+          "status" => "completed", "conclusion" => "success",
+          "started_at" => "2026-08-25T10:00:00Z", "html_url" => "",
+          "app" => initial_suite.fetch("app"), "check_suite" => { "id" => 10 }
+        }]
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    refute complete
+    assert_empty rows
+    assert_includes error, "changed during run materialization"
+    assert_equal 2, suite_fetches
+  end
+
+  def test_check_suite_snapshot_is_order_independent_and_multiplicity_preserving
+    head = "a" * 40
+    suites = [10, 20].map do |suite_id|
+      {
+        "id" => suite_id, "created_at" => "2026-08-25T#{suite_id}:00:00Z",
+        "head_sha" => head, "app" => { "id" => suite_id, "slug" => "ci-#{suite_id}" },
+        "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
+      }
+    end
+    { reordered: suites.reverse, duplicated: [suites.first, suites.last, suites.last] }.each do |label, final|
+      suite_fetches = 0
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          suite_fetches += 1
+          suite_fetches == 1 ? suites : final
+        else
+          suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
+          suite = suites.find { |row| row.fetch("id") == suite_id }
+          [{
+            "id" => suite_id * 10, "name" => "build", "head_sha" => head,
+            "status" => "completed", "conclusion" => "success",
+            "started_at" => "2026-08-25T10:00:00Z", "html_url" => "",
+            "app" => suite.fetch("app"), "check_suite" => { "id" => suite_id }
+          }]
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      if label == :reordered
+        assert complete, error
+        assert_equal [100, 200], rows.map { |row| row.fetch("id") }.sort
+      else
+        refute complete
+        assert_empty rows
+        assert_includes error, "changed during run materialization"
+      end
+    end
   end
 
   def test_check_suite_inventory_selects_latest_cross_suite_attempt_without_hiding_failure
