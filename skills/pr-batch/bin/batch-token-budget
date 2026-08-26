@@ -1217,6 +1217,7 @@ module BatchTokenBudget
       state,
       "batch-token-budget-reservation-decision-receipt",
       "reservation_id" => reservation_id,
+      "request" => canonicalize(reservation),
       "request_digest" => request_digest,
       "status" => status,
       "reason" => fields["reason"],
@@ -1507,6 +1508,8 @@ module BatchTokenBudget
       "tokens" => tokens,
       "admission_kind" => reservation.fetch("admission_kind"),
       "target_id" => reservation.dig("target", "task_id"),
+      "request" => canonicalize(reservation),
+      "request_digest" => digest(reservation),
       "threshold_state" => state_name,
       "overshoot_envelope" => {
         "max_in_flight_turns" => 1,

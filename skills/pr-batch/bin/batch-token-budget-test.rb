@@ -2783,6 +2783,28 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_reservation_decision_and_admission_receipts_bind_the_canonical_request
+    with_state do |state_path|
+      initialize_budget(state_path)
+      request = reservation(id: "receipt-bound-request")
+
+      admitted, stderr, status = run_helper(
+        state_path,
+        command("reserve", "reservation" => request)
+      )
+
+      assert status.success?, stderr
+      digest = object_digest(request)
+      assert_equal canonicalize(request), admitted.dig("receipt", "request")
+      assert_equal digest, admitted.dig("receipt", "request_digest")
+      assert_equal canonicalize(request), admitted.dig("decision_receipt", "request")
+      assert_equal digest, admitted.dig("decision_receipt", "request_digest")
+      assert_operator admitted.dig("receipt", "state_revision"), :<,
+                      admitted.dig("decision_receipt", "state_revision")
+      assert_equal admitted.dig("decision_receipt", "state_revision"), admitted.fetch("state_revision")
+    end
+  end
+
   def test_coalesced_reservation_id_is_durably_fenced_after_predecessor_release
     with_state do |state_path|
       initialize_budget(state_path)

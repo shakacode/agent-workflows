@@ -137,15 +137,21 @@ while preserving independently authorized held-local stage permissions.
 Securely read each referenced receipt beneath the trusted root with a 1 MiB
 bound, require canonical content/digest equality, and enforce its metadata-only
 privacy contract. Bind every budget action to an explicit declared lane; a
-multi-target delegation uses the lane corresponding to its matched target.
+multi-target delegation uses the lane corresponding to its matched target, and
+multi-lane result arrays bind by canonical lane ID rather than position.
 Reject nested `UNKNOWN`, malformed decision/checkpoint fields, or normalized
 duplicate ownership actors. Use `batch-token-budget --verify-plan-only` for the
 external exception plan; an expected state-path failure is not verification.
 Verify-only must enforce the same plan/state artifact-collision invariant as
 the mutating path. Bind every decision `evaluated_at` to the current trusted
-bundle window. Preserve faithful replay semantics: admitted replays may retain
+bundle window. Require the canonical production reservation request and digest
+in its decision receipt and, for admission, its reservation receipt; require
+portable ASCII for operational request/result/reservation IDs before normalized
+`UNKNOWN` checks. Preserve faithful replay semantics: admitted replays may retain
 their original nil checkpoint, warning replays may not, and original receipt
-revisions may precede the current replay revision. Normalize case-insensitive
+revisions may precede the current replay revision. A replayed admission permits
+only the idempotent `record_budget_replay` no-op and never repeats launch, wake,
+retry, or another side effect. Normalize case-insensitive
 control identities with Unicode NFKC plus full case folding and trimming, and
 apply that normalization before nested `UNKNOWN` rejection.
 Carry cross-target facts only in `canonical-task-foreign-target-packet` v1 with

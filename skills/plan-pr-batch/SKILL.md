@@ -156,7 +156,8 @@ pilot contract from `workflows/pr-processing.md`: at least ten matched
 representative implementation pairs with exact v2 usage artifacts, digests,
 absolute file references, and reconciled budget results, plus every required
 elapsed, coordination, correction, acceptance, defect, and gate-compliance metric.
-Bind the threshold and publication to structured trusted evidence. Promote only
+Bind the threshold and publication to structured trusted evidence. Compute
+complete token evidence independently from optional credit equivalence. Promote only
 on configured materially lower token and credit usage, no escaped P0/P1 regression,
 and preserved gates; otherwise retain explicit multi-target mode as rollback.
 Require current task-bound `satisfied` dependency evidence for #398, #333, and
@@ -169,13 +170,17 @@ Plan the trusted bundle/config/validator as owned regular files under the
 coordinator root, never symlinks or group/world writable. This is procedural,
 not cryptographic, trust. Human authority resolves only through `trusted_users`.
 All nested evidence expires within the bundle and within one hour.
-Plan portable repo-seam resolution for the findings validator, explicit lane
+Plan portable repo-seam resolution and receipt identity for the findings validator, explicit lane
 identity for every budget action, trusted-root reads of bounded usage artifacts
 with metadata-only privacy, normalized distinct ownership actors, and
 `batch-token-budget --verify-plan-only` for external plan validation.
 Require verify-only to enforce the normal plan/state artifact-collision fence.
 Plan current trusted-bundle-window evidence for budget decision timestamps and
-faithful replay handling for original revisions/checkpoints. Canonicalize
+canonical production request/digest binding across decision and admission
+receipts. Bind multi-lane result arrays by canonical lane ID, require portable
+ASCII operational IDs before normalized `UNKNOWN` checks, and make admitted
+replays record-only no-ops that cannot repeat a side effect. Plan faithful replay
+handling for original revisions/checkpoints. Canonicalize
 case-insensitive control identities with Unicode NFKC, full case folding, and
 trimming; normalize before rejecting nested `UNKNOWN` compatibility forms.
 

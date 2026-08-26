@@ -188,7 +188,7 @@ module CanonicalTaskControl
       raise InvalidInput, "review findings validator module unavailable"
     end
 
-    ValidateReviewFindings
+    { module: ValidateReviewFindings, identity: seam_path.freeze }.freeze
   rescue Psych::Exception => e
     raise InvalidInput, "repo workflow config malformed: #{e.class}"
   end
@@ -197,7 +197,8 @@ module CanonicalTaskControl
     context = {
       trusted_users: trusted_users.freeze,
       bundle_window: bundle_window.map { |value| parse_time!(value, "bundle validity") }.freeze,
-      review_validator: review_validator,
+      review_validator: review_validator.fetch(:module),
+      review_validator_identity: review_validator.fetch(:identity),
       trusted_root: File.realpath(trusted_root)
     }.freeze
     raise InvalidInput, "top-level JSON must be an object" unless input.is_a?(Hash)
@@ -252,7 +253,7 @@ module CanonicalTaskControl
       allowed_actions = launch.fetch("permissions")
       unless launch.fetch("all_gates_passed") && launch.fetch("stage_result") == "passed" &&
              allowed_actions.include?("worker_spawn") &&
-             capabilities["issue_399"] == "available"
+             capabilities["issue_399"] == "available" && !launch.fetch("budget_replayed")
         verdict = "block"
         allowed_actions -= ["worker_spawn"]
         blockers << "typed_gate_pending_or_blocked" unless launch.fetch("all_gates_passed")
@@ -261,6 +262,10 @@ module CanonicalTaskControl
         if capabilities["issue_399"] != "available"
           blockers << "issue_399_budget_evidence_UNKNOWN"
           unknowns << "budget_evidence"
+        end
+        if launch.fetch("budget_replayed")
+          blockers << "budget_admission_replayed_noop"
+          allowed_actions << "record_budget_replay"
         end
       end
     when "accept_child_receipt"
@@ -275,15 +280,21 @@ module CanonicalTaskControl
       delegation_decision, delegation_lane = validate_delegation!(
         input.fetch("delegation"), task, lifecycle["context_threshold"], context: context
       )
-      budget_status = validate_budget_gate!(
+      budget_outcome = validate_budget_gate!(
         input.fetch("budget_gate"), task: task, lane: delegation_lane, action: "delegation", context: context
       )
+      budget_status = budget_outcome.fetch("status")
       target_active = input.dig("delegation", "target_state") == "active"
       if (target_active && budget_status != "coalesced") || (!target_active && budget_status == "coalesced")
         raise InvalidInput, "delegation target state contradicts batch-token-budget decision"
       end
 
-      if budget_status == "blocked"
+      if budget_outcome.fetch("replayed")
+        delegation_decision = {
+          "verdict" => "allow", "allowed_actions" => ["record_budget_replay"], "wake_target" => false,
+          "blockers" => [], "unknowns" => []
+        }
+      elsif budget_status == "blocked"
         delegation_decision = {
           "verdict" => "block", "allowed_actions" => [], "wake_target" => false,
           "blockers" => ["budget_admission_blocked"], "unknowns" => []
@@ -331,10 +342,13 @@ module CanonicalTaskControl
       end
       raise InvalidInput, "budget action lane is outside task" unless lane
 
-      budget_status = validate_budget_gate!(
+      budget_outcome = validate_budget_gate!(
         input.fetch("budget_gate"), task: task, lane: lane, action: action, context: context
       )
-      if capabilities["issue_399"] == "available" && %w[admitted admitted-with-warning].include?(budget_status)
+      budget_status = budget_outcome.fetch("status")
+      if budget_outcome.fetch("replayed") && %w[admitted admitted-with-warning].include?(budget_status)
+        allowed_actions = ["record_budget_replay"]
+      elsif capabilities["issue_399"] == "available" && %w[admitted admitted-with-warning].include?(budget_status)
         allowed_actions = [action]
       else
         verdict = "block"
@@ -424,8 +438,10 @@ module CanonicalTaskControl
     end
 
     budgets = validate_launch_budget!(input.fetch("budget_gate"), task, context: context)
-    reconcile_manifest_budget!(manifest.fetch("budgets"), budgets)
-    validate_typed_gates!(input.fetch("typed_gates"), task, manifest, context: context)
+    reconcile_manifest_budget!(manifest.fetch("budgets"), budgets.fetch("records"))
+    validate_typed_gates!(input.fetch("typed_gates"), task, manifest, context: context).merge(
+      "budget_replayed" => budgets.fetch("replayed")
+    )
   end
 
   def validate_policy!(policy, task, context:)
@@ -454,15 +470,27 @@ module CanonicalTaskControl
       raise InvalidInput, "launch batch-token-budget results must cover every lane"
     end
 
-    records.each_with_index do |record, index|
-      status = validate_budget_result!(
-        record, task: task, lane: task.fetch("lanes").fetch(index), action: "worker_spawn", context: context
-      )
-      unless %w[admitted admitted-with-warning].include?(status)
+    lanes = task.fetch("lanes").to_h { |lane| [canonical_identity(lane.fetch("id")), lane] }
+    seen = []
+    outcomes = records.map do |record|
+      lane_id = record.is_a?(Hash) && record.dig("receipt", "scope_id")
+      lane = lane_id && lanes[canonical_identity(lane_id)]
+      raise InvalidInput, "launch batch-token-budget result lane is outside task" unless lane
+
+      canonical_lane_id = canonical_identity(lane.fetch("id"))
+      raise InvalidInput, "launch batch-token-budget results must cover every lane" if seen.include?(canonical_lane_id)
+
+      seen << canonical_lane_id
+      outcome = validate_budget_result!(record, task: task, lane: lane, action: "worker_spawn", context: context)
+      unless %w[admitted admitted-with-warning].include?(outcome.fetch("status"))
         raise InvalidInput, "launch batch-token-budget result did not admit worker_spawn"
       end
+
+      outcome
     end
-    records
+    raise InvalidInput, "launch batch-token-budget results must cover every lane" unless seen.sort == lanes.keys.sort
+
+    { "records" => records, "replayed" => outcomes.any? { |outcome| outcome.fetch("replayed") } }
   end
 
   def reconcile_manifest_budget!(manifest_budget, records)
@@ -681,7 +709,8 @@ module CanonicalTaskControl
     multi_tokens = 0
     ordinary_credits = 0
     multi_credits = 0
-    usage_metrics_known = true
+    token_metrics_known = true
+    credit_metrics_known = true
     execution_refs = []
     escaped_defect_regression = false
     gate_regression = false
@@ -705,11 +734,15 @@ module CanonicalTaskControl
         execution_refs << arm["usage_receipt_ref"]
       end
       unknowns.concat(ordinary.fetch("unknowns") + multi.fetch("unknowns"))
-      if [ordinary, multi].any? { |metrics| metrics["total_tokens"] == "UNKNOWN" || metrics["credit_equivalents"] == "UNKNOWN" }
-        usage_metrics_known = false
+      if [ordinary, multi].any? { |metrics| metrics["total_tokens"] == "UNKNOWN" }
+        token_metrics_known = false
       else
         ordinary_tokens += ordinary.fetch("total_tokens")
         multi_tokens += multi.fetch("total_tokens")
+      end
+      if [ordinary, multi].any? { |metrics| metrics["credit_equivalents"] == "UNKNOWN" }
+        credit_metrics_known = false
+      else
         ordinary_credits += ordinary.fetch("credit_equivalents")
         multi_credits += multi.fetch("credit_equivalents")
       end
@@ -725,10 +758,10 @@ module CanonicalTaskControl
       raise InvalidInput, "pilot usage receipt references must be globally unique"
     end
 
-    token_reduction = if usage_metrics_known && !multi_tokens.zero?
+    token_reduction = if token_metrics_known && !multi_tokens.zero?
                         ((multi_tokens - ordinary_tokens) * 100.0 / multi_tokens)
                       end
-    credit_reduction = if usage_metrics_known && !multi_credits.zero?
+    credit_reduction = if credit_metrics_known && !multi_credits.zero?
                          ((multi_credits - ordinary_credits) * 100.0 / multi_credits)
                        end
     dependencies.reject { |record| record["status"] == "satisfied" }.each do |record|
@@ -813,7 +846,9 @@ module CanonicalTaskControl
       raise InvalidInput, "unsupported batch-token-budget admission status"
     end
     raise InvalidInput, "budget result may not contain nested UNKNOWN" if nested_unknown?(result)
-    raise InvalidInput, "budget result batch id must be known" unless known_string?(result["batch_id"])
+    unless portable_id?(result["batch_id"]) && canonical_identity(result["batch_id"]) == canonical_identity(task["id"])
+      raise InvalidInput, "budget result batch id must be a portable ASCII task id"
+    end
     raise InvalidInput, "budget result state revision must be nonnegative" unless nonnegative_integer?(result["state_revision"])
     unless valid_budget_totals?(result["totals"], task) && result["preserved_gates"] == PRESERVED_GATES
       raise InvalidInput, "batch-token-budget result must preserve ordinary gates"
@@ -821,10 +856,14 @@ module CanonicalTaskControl
 
     decision = result["decision_receipt"]
     require_exact_keys!(decision, %w[
-                          type version batch_id state_revision preserved_gates reservation_id request_digest
+                          type version batch_id state_revision preserved_gates reservation_id request request_digest
                           status reason evaluated_at
                         ])
     replayed = result["status"] == "replayed"
+    unless portable_id?(decision["reservation_id"])
+      raise InvalidInput, "budget reservation identifiers must use portable ASCII ids"
+    end
+
     decision_revision_valid = if replayed
                                 nonnegative_integer?(decision["state_revision"]) &&
                                   decision["state_revision"] <= result["state_revision"]
@@ -834,12 +873,19 @@ module CanonicalTaskControl
     unless decision.is_a?(Hash) && decision["type"] == "batch-token-budget-reservation-decision-receipt" &&
            decision["version"] == 1 && decision["batch_id"] == result["batch_id"] &&
            decision_revision_valid && decision["status"] == status &&
-           decision["preserved_gates"] == PRESERVED_GATES && known_string?(decision["reservation_id"]) &&
+           decision["preserved_gates"] == PRESERVED_GATES && portable_id?(decision["reservation_id"]) &&
            decision["request_digest"].to_s.match?(/\A[0-9a-f]{64}\z/) && rfc3339_utc?(decision["evaluated_at"])
       raise InvalidInput, "budget result requires bound reservation decision receipt"
     end
 
     validate_budget_decision_time!(decision["evaluated_at"], context: context)
+    validate_budget_request!(
+      decision["request"], task: task, lane: lane, action: action, evaluated_at: decision["evaluated_at"]
+    )
+    unless decision["request"]["id"] == decision["reservation_id"] &&
+           Digest::SHA256.hexdigest(JSON.generate(canonicalize(decision["request"]))) == decision["request_digest"]
+      raise InvalidInput, "budget decision request provenance mismatch"
+    end
 
     replay_keys = result["status"] == "replayed" ? ["decision_status"] : []
     case status
@@ -849,7 +895,7 @@ module CanonicalTaskControl
       receipt = result["receipt"]
       require_exact_keys!(receipt, %w[
                             type version batch_id state_revision preserved_gates reservation_id scope_id tokens
-                            admission_kind target_id threshold_state overshoot_envelope
+                            admission_kind target_id threshold_state overshoot_envelope request request_digest
                           ])
       expected_kind = {
         "worker_spawn" => "spawn", "delegation" => "cross-task-delegation",
@@ -859,9 +905,11 @@ module CanonicalTaskControl
              receipt["batch_id"] == result["batch_id"] && receipt["scope_id"] == lane["id"] &&
              receipt["target_id"] == task["id"] && receipt["admission_kind"] == expected_kind &&
              positive_integer?(receipt["tokens"]) && nonnegative_integer?(receipt["state_revision"]) &&
-             receipt["state_revision"] < result["state_revision"] && known_string?(receipt["reservation_id"]) &&
+             receipt["state_revision"] < decision["state_revision"] && portable_id?(receipt["reservation_id"]) &&
              receipt["preserved_gates"] == PRESERVED_GATES && valid_overshoot_envelope?(receipt["overshoot_envelope"], task) &&
-             decision["reservation_id"] == receipt["reservation_id"]
+             decision["reservation_id"] == receipt["reservation_id"] &&
+             canonicalize(receipt["request"]) == canonicalize(decision["request"]) &&
+             receipt["request_digest"] == decision["request_digest"]
         raise InvalidInput, "batch-token-budget reservation receipt binding mismatch"
       end
 
@@ -876,7 +924,7 @@ module CanonicalTaskControl
         type version status batch_id state_revision totals preserved_gates reason
         coalesced_reservation_id decision_receipt
       ] + replay_keys)
-      unless (result["coalesced_reservation_id"].nil? || known_string?(result["coalesced_reservation_id"])) &&
+      unless (result["coalesced_reservation_id"].nil? || portable_id?(result["coalesced_reservation_id"])) &&
              result["reason"] == "target-already-active"
         raise InvalidInput, "coalesced budget result binding mismatch"
       end
@@ -886,12 +934,81 @@ module CanonicalTaskControl
       ] + replay_keys)
       raise InvalidInput, "blocked budget result reason must be known" unless known_string?(result["reason"])
     end
-    status
+    { "status" => status, "replayed" => replayed }
+  end
+
+  def validate_budget_request!(request, task:, lane:, action:, evaluated_at:)
+    keys = %w[admission_kind id message_fingerprint scope_id target target_state telemetry tokens type version]
+    keys << "approval_id" if request.is_a?(Hash) && request.key?("approval_id")
+    keys << "source" if action == "delegation"
+    require_exact_keys!(request, keys)
+    expected_kind = {
+      "worker_spawn" => "spawn", "delegation" => "cross-task-delegation",
+      "resume" => "resume", "retry" => "retry", "review_wave" => "review-wave"
+    }.fetch(action)
+    unless request["type"] == "batch-token-reservation" && request["version"] == 1 &&
+           portable_id?(request["id"]) && portable_id?(request["scope_id"]) &&
+           canonical_identity(request["scope_id"]) == canonical_identity(lane["id"]) &&
+           request["admission_kind"] == expected_kind && positive_integer?(request["tokens"]) &&
+           %w[idle paused active].include?(request["target_state"]) && portable_id?(request["message_fingerprint"])
+      raise InvalidInput, "budget request must satisfy the portable production reservation contract"
+    end
+    if request.key?("approval_id") && !portable_id?(request["approval_id"])
+      raise InvalidInput, "budget request approval id must be portable ASCII"
+    end
+
+    validate_budget_task_identity!(request["target"], task: task, lane: lane, expected_target: true)
+    validate_budget_task_identity!(request["source"], task: task, lane: lane, expected_target: false) if action == "delegation"
+    telemetry = request["telemetry"]
+    require_exact_keys!(telemetry, %w[
+                          status observed_at context_status self_estimate_tokens descendant_estimate_tokens
+                          descendant_target_ids
+                        ])
+    observed_at = parse_utc_time!(telemetry["observed_at"], "budget request telemetry observed_at")
+    decision_time = parse_utc_time!(evaluated_at, "budget decision evaluated_at")
+    unless telemetry["status"] == "fresh" && observed_at <= decision_time &&
+           %w[ready compaction-required].include?(telemetry["context_status"]) &&
+           nonnegative_integer?(telemetry["self_estimate_tokens"]) &&
+           nonnegative_integer?(telemetry["descendant_estimate_tokens"]) &&
+           telemetry["self_estimate_tokens"] + telemetry["descendant_estimate_tokens"] == request["tokens"] &&
+           telemetry["descendant_target_ids"].is_a?(Array) &&
+           telemetry["descendant_target_ids"].uniq.length == telemetry["descendant_target_ids"].length &&
+           telemetry["descendant_target_ids"].all? { |id| portable_id?(id) }
+      raise InvalidInput, "budget request telemetry is not production-compatible"
+    end
+  end
+
+  def validate_budget_task_identity!(identity, task:, lane:, expected_target:)
+    require_exact_keys!(identity, %w[task_id batch_id lane_id root_id work_item])
+    unless %w[task_id batch_id lane_id root_id].all? { |key| portable_id?(identity[key]) }
+      raise InvalidInput, "budget request identity must use portable ASCII ids"
+    end
+
+    work_item = identity["work_item"]
+    require_exact_keys!(work_item, %w[repo type number])
+    validate_target!({ "repository" => work_item["repo"], "target" => "#{work_item['type']}:#{work_item['number']}" })
+    unless expected_target
+      if canonical_identity(identity["batch_id"]) == canonical_identity(task["id"])
+        raise InvalidInput, "budget delegation source must be outside the target batch"
+      end
+
+      return
+    end
+
+    expected_type, expected_number = lane.fetch("target").split(":", 2)
+    unless canonical_identity(identity["task_id"]) == canonical_identity(task["id"]) &&
+           canonical_identity(identity["batch_id"]) == canonical_identity(task["id"]) &&
+           canonical_identity(identity["lane_id"]) == canonical_identity(lane["id"]) &&
+           canonical_identity(work_item["repo"]) == canonical_identity(lane["repository"]) &&
+           work_item["type"] == expected_type && work_item["number"] == expected_number.to_i
+      raise InvalidInput, "budget request target identity binding mismatch"
+    end
   end
 
   def valid_overshoot_envelope?(envelope, task)
     envelope.is_a?(Hash) && envelope.keys.sort == %w[max_in_flight_turns target_ids] &&
-      envelope["max_in_flight_turns"] == 1 && known_string_array?(envelope["target_ids"]) &&
+      envelope["max_in_flight_turns"] == 1 && envelope["target_ids"].is_a?(Array) &&
+      !envelope["target_ids"].empty? && envelope["target_ids"].all? { |id| portable_id?(id) } &&
       envelope["target_ids"].include?(task["id"])
   end
 
@@ -914,7 +1031,7 @@ module CanonicalTaskControl
                      canonicalize(checkpoint["totals"]) == canonicalize(result["totals"])
                    end
     unless checkpoint["type"] == "batch-token-budget-threshold-checkpoint" && checkpoint["version"] == 1 &&
-           known_string?(checkpoint["id"]) && checkpoint["batch_id"] == result["batch_id"] &&
+           portable_id?(checkpoint["id"]) && checkpoint["batch_id"] == result["batch_id"] &&
            canonical_identity(checkpoint["scope_id"]) == canonical_identity(lane["id"]) &&
            %w[warning approval-authorized].include?(checkpoint["status"]) &&
            checkpoint["cutoff"] == decision_evaluated_at && rfc3339_utc?(checkpoint["receipt_cutoff"]) && totals_valid
@@ -1564,7 +1681,7 @@ module CanonicalTaskControl
                           contract version validator status findings_digest issued_at observed_at expires_at
                         ])
     unless validation["contract"] == "review-findings-validation-result" && validation["version"] == 1 &&
-           validation["validator"] == "bin/validate-review-findings" && validation["status"] == "valid"
+           validation["validator"] == context.fetch(:review_validator_identity) && validation["status"] == "valid"
       raise InvalidInput, "trusted review findings schema validation is required"
     end
 

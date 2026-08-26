@@ -461,7 +461,8 @@ rollback. The matched
 pilot has at least ten representative pairs with distinct exact task/batch
 identities, matching task class/context facts, and verified #398 v2 usage
 artifacts bound to reconciled #426 budget results. It derives total tokens,
-contributing turns, and optional rate-card credit equivalents, and reports elapsed time, human
+contributing turns, and optional rate-card credit equivalents independently: missing credits keep
+only the credit reduction `UNKNOWN` while complete token evidence still reports token reduction. It reports elapsed time, human
 coordination time, correction turns, first-pass acceptance, escaped P0/P1
 defects, and gate compliance for both arms. Promotion requires configured
 materially lower token and credit usage with structured policy/publication
@@ -481,13 +482,19 @@ The trusted bundle, trust config, and review validator are owner/mode checked
 regular files realpathed beneath a coordinator root. This is procedural rather
 than cryptographic trust. Human authority actors resolve through
 `trusted_users`; nested evidence has at most a one-hour, bundle-contained
-validity window, and review findings must pass the validator module resolved
-through the repository's portable workflow seam.
+validity window, and review findings must pass the validator module and receipt
+identity resolved through the repository's portable workflow seam.
 Budget decisions bind their evaluation time to that same current bundle window,
 retain faithful original checkpoint/revision semantics on production replay,
-and validate external plans through the production verify-only collision fence.
+bind the canonical production reservation request and digest through both
+decision and admission receipts, and validate external plans through the
+production verify-only collision fence. Multi-lane result sets bind by canonical
+lane ID, never array position. An admitted replay authorizes only the idempotent
+`record_budget_replay` no-op; it never launches, wakes, retries, or repeats another
+side effect.
 Case-insensitive control identities use Unicode NFKC plus full case folding and
-trimming; nested `UNKNOWN` checks apply the same normalization.
+trimming; nested `UNKNOWN` checks apply the same normalization. Operational
+request/result/reservation IDs first require portable ASCII syntax.
 
 | Scenario class | Risk | Recommended route | Samples | Evidence strength |
 | --- | --- | --- | --- | --- |

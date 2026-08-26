@@ -698,14 +698,19 @@ and open findings instead.
 Before delegation, task resume, worker spawn, retry, or review wave, require the
 actual admitted `batch-token-budget-result` v1 and its bound reservation and
 decision receipts, explicit lane identity, exact nested checkpoint shape,
-canonical identifiers, request digest, and evaluation time inside the current
+portable ASCII operational identifiers, the complete canonical production
+reservation request and digest in the decision receipt and admitted reservation
+receipt, and evaluation time inside the current
 trusted-bundle window. A faithful replay of an original `admitted` result keeps
 its original nil checkpoint; a replayed warning still requires the original
 well-formed checkpoint, and an original decision revision may precede the
-current replay revision. Caller-authored
+current replay revision. Replayed admission is an idempotent record-only outcome:
+permit only `record_budget_replay`, never a second launch, wake, retry, or other
+side effect. Caller-authored
 amounts, units, URLs, nested `UNKNOWN`, or `status: passed` objects are not budget
 authority. Multi-target actions may select any declared lane, but never default
-silently to the first lane.
+silently to the first lane. Bind multi-lane result sets by canonical lane ID,
+not array position.
 Before waking another task, also bind source and target task plus
 repository-qualified identities; classify target state as active, idle, paused,
 stale, or terminal; estimate rendered context and descendant fan-out from
@@ -743,7 +748,8 @@ or digest-mismatched evidence blocks reconciliation. Unavailable #398 reports
 actions without erasing independently permitted held-local stage work.
 Resolve the review-findings validator path through the repository's portable
 workflow seam; do not hardcode a root `bin` identity. Do not accept the schema
-result's `valid` string alone: load the resolved root-bound module and require
+result's `valid` string alone: require its validator identity to equal the
+resolved seam identity, load the resolved root-bound module, and require
 `ValidateReviewFindings.validate_document` to return zero failures for the
 in-memory document. Restrict task, lane, child, pair, and representative
 task/batch identities to portable ASCII IDs rather than relying on Unicode
@@ -766,6 +772,8 @@ pair/task/batch identities and bind each arm to an exact
 matching reconciled `batch-token-budget-result` v1; relabelled or reused
 task/batch identities or receipt references fail closed. Derive total tokens,
 contributing turns, and optional rate-card credit equivalents from the receipts.
+Compute complete token evidence independently from optional credit evidence, so
+missing credits keep only the credit reduction `UNKNOWN`.
 Record elapsed
 time, human coordination time, correction turns, first-pass acceptance,
 escaped P0/P1 defects, and gate compliance. Bind the material threshold to
