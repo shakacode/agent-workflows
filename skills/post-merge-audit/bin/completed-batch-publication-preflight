@@ -85,6 +85,7 @@ module CompletedBatchPublicationPreflight
   GRAPHQL
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
   RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned superseded].freeze
+  ADHOC_TARGET_PATTERN = /\Aadhoc:[A-Za-z0-9_.-]+\z/
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
   DEFAULT_GH_TIMEOUT_SECONDS = 60
   COORDINATION_TIMEOUT_SECONDS = 20
@@ -451,6 +452,7 @@ module CompletedBatchPublicationPreflight
     batch_repo = batch["repo"].to_s
     seen_names = {}
     entries = []
+    auxiliary_lanes = []
     target_projection_cache = {}
     cached_target_projection_verifier = if target_projection_verifier.respond_to?(:call)
                                           lambda do |source:, target:|
@@ -468,6 +470,15 @@ module CompletedBatchPublicationPreflight
       else
         seen_names[name.downcase] = true
       end
+      coordination_target = raw_adhoc_target(lane)
+      if coordination_target
+        auxiliary_lanes << {
+          "name" => name,
+          "coordination_target" => coordination_target,
+          "lane" => lane
+        }
+        next
+      end
       resolved_targets = targets_for_lane(
         lane,
         batch_repo,
@@ -478,15 +489,33 @@ module CompletedBatchPublicationPreflight
         blockers << "coordination lane #{name || 'UNKNOWN'} target is absent or ambiguous"
       end
       resolved_targets.each do |resolved|
-        entries << {
+        entry = {
           "name" => name,
           "target" => resolved.fetch("target"),
           "target_projection" => resolved["target_projection"],
           "lane" => lane
         }
+        entry["coordination_target"] = resolved.fetch("coordination_target") if resolved["coordination_target"]
+        entries << entry
       end
     end
-    entries.group_by { |entry| target_key(entry.fetch("target")) }.each_value do |target_entries|
+    auxiliary_lanes.each do |auxiliary|
+      candidate = auxiliary_lane_primary_entry(auxiliary.fetch("lane"), entries)
+      unless candidate
+        blockers << "coordination lane #{auxiliary.fetch('name') || 'UNKNOWN'} target is absent or ambiguous"
+        next
+      end
+
+      entries << {
+        "name" => auxiliary.fetch("name"),
+        "target" => candidate.fetch("target"),
+        "target_projection" => nil,
+        "coordination_target" => auxiliary.fetch("coordination_target"),
+        "lane" => auxiliary.fetch("lane")
+      }
+    end
+    publication_entries = entries.reject { |entry| entry["coordination_target"] }
+    publication_entries.group_by { |entry| target_key(entry.fetch("target")) }.each_value do |target_entries|
       next if target_entries.one?
 
       projections = target_entries.map { |entry| entry["target_projection"] }
@@ -494,8 +523,12 @@ module CompletedBatchPublicationPreflight
 
       blockers << "#{target_label(target_entries.first.fetch('target'))} appears in multiple coordination lanes"
     end
-    entries.sort_by! { |entry| target_sort_key(entry.fetch("target")) + [entry.fetch("name").to_s] }
-    [entries, entries.map { |entry| entry.fetch("target") }]
+    auxiliary_targets = entries.filter_map { |entry| entry["coordination_target"] }
+    blockers << "coordination auxiliary target is duplicated" unless auxiliary_targets.uniq.length == auxiliary_targets.length
+    entries.sort_by! do |entry|
+      target_sort_key(entry.fetch("target")) + [entry.fetch("coordination_target", ""), entry.fetch("name").to_s]
+    end
+    [entries, publication_entries.map { |entry| entry.fetch("target") }]
   end
 
   def targets_for_lane(lane, batch_repo, expected_targets, target_projection_verifier: nil)
@@ -515,13 +548,18 @@ module CompletedBatchPublicationPreflight
     return [] if url_targets.length > 1
 
     unless lane.key?("targets")
+      return [] if url_targets.any? { |target| !target["repo"].casecmp?(batch_repo) }
+
       return url_targets.map { |target| { "target" => target, "target_projection" => nil } }
     end
 
     raw_targets = lane["targets"]
     return [] unless raw_targets.is_a?(Array) && !raw_targets.empty?
 
-    raw_numbers = raw_targets.map { |raw| Integer(raw.to_s.sub(/\A#/, ""), exception: false) }
+    normalized_targets = raw_targets.map { |raw| normalized_known_string(raw) }
+    return [] if normalized_targets.any?(&:nil?)
+
+    raw_numbers = normalized_targets.map { |raw| Integer(raw.sub(/\A#/, ""), exception: false) }
     return [] if raw_numbers.any?(&:nil?) || raw_numbers.uniq.length != raw_numbers.length
 
     if url_targets.empty?
@@ -559,6 +597,36 @@ module CompletedBatchPublicationPreflight
       verifier: target_projection_verifier
     )
     projection ? [{ "target" => target, "target_projection" => projection }] : []
+  end
+
+  def raw_adhoc_target(lane)
+    raw_targets = lane["targets"]
+    return unless raw_targets.is_a?(Array) && raw_targets.one?
+
+    target = normalized_known_string(raw_targets.first)
+    target if target&.match?(ADHOC_TARGET_PATTERN)
+  end
+
+  def auxiliary_lane_primary_entry(lane, entries)
+    return unless valid_terminal_lane?(lane) && lane["terminal"] == "done"
+    return unless lane["pr_state"] == "no_pr_evidence"
+    return if %w[pr_url issue_url target_url].any? { |field| lane.key?(field) }
+
+    evidence = normalized_known_string(lane["evidence_url"])
+    evidence_target = issue_comment_target_from_url(evidence)
+    return unless evidence && evidence_target
+
+    candidates = entries.select do |entry|
+      next false if entry["coordination_target"]
+
+      primary_lane = entry.fetch("lane")
+      target = entry.fetch("target")
+      target["type"] == "issue" && target == evidence_target &&
+        valid_terminal_lane?(primary_lane) && primary_lane["terminal"] == "done" &&
+        primary_lane["pr_state"] == "no_pr_evidence" &&
+        normalized_known_string(primary_lane["evidence_url"]) == evidence
+    end
+    candidates.first if candidates.one?
   end
 
   def verified_target_projection(source, target, expected_targets, verifier:)
@@ -635,8 +703,14 @@ module CompletedBatchPublicationPreflight
         "target_state" => scalar_or_nil(lane["pr_state"]),
         "evidence" => evidence
       }
+      snapshot["coordination_target"] = entry.fetch("coordination_target") if entry["coordination_target"]
+      snapshot["publication_target"] = false if entry["coordination_target"]
       if terminal && later_target_completion
-        snapshot["completion_mode"] = "authenticated_target_after_coordination_closeout"
+        snapshot["completion_mode"] = if terminal_state == "done" && lane["pr_state"] == "no_pr_evidence"
+                                        "authenticated_issue_closure_after_no_pr_closeout"
+                                      else
+                                        "authenticated_target_after_coordination_closeout"
+                                      end
       end
       projection = entry["target_projection"]
       snapshot["target_projection"] = projection if projection
@@ -1103,16 +1177,36 @@ module CompletedBatchPublicationPreflight
 
   def authenticated_later_target_completion?(lane, target_snapshot)
     return false unless valid_terminal_lane?(lane)
-    return false unless RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"])
     return false unless target_snapshot.is_a?(Hash)
 
     target = validated_target(target_snapshot["target"])
     return false unless target
 
+    reconcilable_terminal = RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"])
+    if lane["terminal"] == "done" && lane["pr_state"] == "no_pr_evidence"
+      reconcilable_terminal = target["type"] == "issue" &&
+                              issue_comment_target_from_url(lane["evidence_url"]) == target
+    end
+    return false unless reconcilable_terminal
+
     expected_state = target["type"] == "pull_request" ? "merged" : "closed"
     target_snapshot["state"] == expected_state &&
       target_snapshot["verification_source"] == "authenticated gh api" &&
       timestamp_after?(target_snapshot["completed_at"], lane["closed_at"])
+  end
+
+  def issue_comment_target_from_url(value)
+    url = normalized_known_string(value)
+    return unless url
+
+    uri = URI.parse(url)
+    return unless uri.fragment.to_s.match?(/\Aissuecomment-\d+\z/)
+
+    uri.fragment = nil
+    target = target_from_url(uri.to_s)
+    target if target && target["type"] == "issue"
+  rescue URI::InvalidURIError
+    nil
   end
 
   def authenticated_target_projection(source:, target:, repository_root: Dir.pwd)

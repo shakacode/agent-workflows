@@ -74,6 +74,58 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input
   end
 
+  def later_closed_no_pr_with_auxiliary_qa_lane_input
+    input = no_pr_input
+    original_number = 10_036
+    number = 10_235
+    batch_id = "hc-a06-0822-2035-issue10235"
+    target = input.fetch("expected_targets").find { |row| row.fetch("number") == original_number }
+    snapshot = input.fetch("target_snapshots").find { |row| row.fetch("target") == target }
+    qa = input.fetch("qa_evidence").find { |row| row.fetch("target") == target }
+
+    target["number"] = number
+    snapshot.fetch("target")["number"] = number
+    snapshot.fetch("no_pr_evidence").fetch("target")["number"] = number
+    snapshot.fetch("no_pr_evidence")["url"] = "https://github.com/shakacode/hichee/issues/#{number}"
+    snapshot["source"] = "https://github.com/shakacode/hichee/issues/#{number}"
+    snapshot["completed_at"] = "2026-08-25T07:05:23Z"
+    qa.fetch("target")["number"] = number
+    qa["user_visible_ui_change"] = "no"
+    qa["evidence"] = qa.fetch("evidence").gsub("10036", number.to_s)
+
+    input["batch_id"] = batch_id
+    input["expected_targets"] = [target]
+    input["target_snapshots"] = [snapshot]
+    input["qa_evidence"] = [qa]
+    input.dig("coordination_status", "scope")["batch_id"] = batch_id
+    batch = input.dig("coordination_status", "batches", 0)
+    batch["batch_id"] = batch_id
+    batch["updated_at"] = "2026-08-23T08:05:03Z"
+    batch["completed_at"] = "2026-08-23T08:05:03Z"
+    evidence_url = "https://github.com/shakacode/hichee/issues/#{number}#issuecomment-5384964861"
+    batch["lanes"] = [
+      {
+        "name" => "issue-10235",
+        "targets" => [number.to_s],
+        "status" => "done",
+        "terminal" => "done",
+        "closed_at" => "2026-08-23T08:04:57Z",
+        "pr_state" => "no_pr_evidence",
+        "evidence_url" => evidence_url
+      },
+      {
+        "name" => "issue-10235-qa",
+        "targets" => ["adhoc:hc-a06-issue10235-qa"],
+        "status" => "done",
+        "terminal" => "done",
+        "closed_at" => "2026-08-23T08:05:03Z",
+        "pr_state" => "no_pr_evidence",
+        "evidence_url" => evidence_url
+      }
+    ]
+    input
+  end
+
   def issue_to_pr_with_qa_lane_input
     input = fixture("completed-batch-publication-hichee-terminal.json")
     target = {
@@ -858,6 +910,132 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                     "shakacode/hichee#pull_request:10049 appears in multiple coordination lanes"
   end
 
+  def test_later_closed_no_pr_issue_preserves_auxiliary_qa_lane_without_publishing_adhoc_target
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal input.fetch("expected_targets"), result.fetch("targets")
+    lanes = result.dig("snapshot", "coordination", "lanes")
+    assert_equal(%w[issue-10235 issue-10235-qa], lanes.map { |lane| lane.fetch("name") })
+    assert_equal([nil, "adhoc:hc-a06-issue10235-qa"], lanes.map { |lane| lane["coordination_target"] })
+    assert(lanes.all? { |lane| lane.fetch("target") == input.fetch("expected_targets").first })
+    assert lanes.all? do |lane|
+      lane.fetch("completion_mode") == "authenticated_issue_closure_after_no_pr_closeout"
+    end
+    assert_equal false, lanes.last.fetch("publication_target")
+    assert_equal "NOT_APPLICABLE", result.dig("snapshot", "qa", 0, "verdict")
+    assert_nil result.dig("snapshot", "qa", 0, "head_sha")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+    assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
+  end
+
+  def test_auxiliary_qa_lane_cannot_replace_the_publication_target_lane
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    input.dig("coordination_status", "batches", 0, "lanes").shift
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 is absent from resolved coordination scope"
+  end
+
+  def test_auxiliary_qa_lane_must_bind_its_evidence_to_the_expected_issue
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    qa_lane = input.dig("coordination_status", "batches", 0, "lanes", 1)
+    qa_lane["evidence_url"] = qa_lane.fetch("evidence_url").sub("10235", "10236")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane issue-10235-qa target is absent or ambiguous"
+  end
+
+  def test_auxiliary_qa_lane_must_share_the_primary_lane_evidence_comment
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    qa_lane = input.dig("coordination_status", "batches", 0, "lanes", 1)
+    qa_lane["evidence_url"] = qa_lane.fetch("evidence_url").sub("5384964861", "5384964862")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane issue-10235-qa target is absent or ambiguous"
+  end
+
+  def test_auxiliary_qa_lane_rejects_public_url_fields_or_non_later_closure
+    with_url = later_closed_no_pr_with_auxiliary_qa_lane_input
+    with_url.dig("coordination_status", "batches", 0, "lanes", 1)["issue_url"] =
+      "https://github.com/shakacode/hichee/issues/10235"
+    with_url_result = assess_input(with_url)
+    refute with_url_result.fetch("eligible")
+    assert_includes with_url_result.fetch("blockers"),
+                    "coordination lane issue-10235-qa target is absent or ambiguous"
+
+    non_later = later_closed_no_pr_with_auxiliary_qa_lane_input
+    non_later.fetch("target_snapshots").first["completed_at"] = "2026-08-23T08:05:03Z"
+    non_later_result = assess_input(non_later)
+    refute non_later_result.fetch("eligible")
+    assert_includes non_later_result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 coordination target state is not closed"
+  end
+
+  def test_auxiliary_qa_lane_does_not_authorize_head_bound_no_pr_qa
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    qa = input.fetch("qa_evidence").first
+    fabricated_head = "a" * 40
+    qa["evidence"] = qa.fetch("evidence")
+                       .sub("required: no", "required: yes")
+                       .sub("status: not_applicable", "status: satisfied")
+                       .sub("head_sha: not_applicable", "head_sha: #{fabricated_head}")
+                       .sub("release_blocking: not_applicable", "release_blocking: clear")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 QA evidence contradicts typed no-PR disposition"
+  end
+
+  def test_auxiliary_qa_lane_disappearance_invalidates_receipt_reassessment
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    receipt = assess_input(input)
+    refreshed_status = JSON.parse(JSON.generate(input.fetch("coordination_status")))
+    refreshed_status.dig("batches", 0, "lanes").pop
+
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      receipt,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: lambda do |backend:, batch_id:|
+        refreshed_status if backend == BACKEND && batch_id == input.fetch("batch_id")
+      end
+    )
+  end
+
+  def test_done_lane_requires_no_pr_evidence_state_for_later_issue_closure_reconciliation
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    input.dig("coordination_status", "batches", 0, "lanes", 0)["pr_state"] = "open"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 coordination and target state disagree"
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 coordination target state is not closed"
+  end
+
   def test_direct_lane_target_must_match_coordination_batch_repo
     target = {
       "host" => "github.com",
@@ -870,6 +1048,13 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       "targets" => ["7"]
     }
 
+    assert_empty CompletedBatchPublicationPreflight.targets_for_lane(
+      lane,
+      "acme/batch",
+      [target]
+    )
+
+    lane.delete("targets")
     assert_empty CompletedBatchPublicationPreflight.targets_for_lane(
       lane,
       "acme/batch",

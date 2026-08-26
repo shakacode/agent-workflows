@@ -437,6 +437,8 @@ preserves the original coordination terminal and records the later-target
 completion mode. Active/nonterminal lanes, open targets, unauthenticated target
 facts, and malformed terminal timestamps remain blocked.
 
+A terminal `done`/`no_pr_evidence` issue lane may reconcile only when authenticated issue closure occurred after lane closeout and the lane's exact same-issue `#issuecomment-<id>` evidence matches the typed no-PR target. A terminal `adhoc:` auxiliary lane may bind only to exactly one such primary issue lane with the identical evidence URL; preserve it with `publication_target: false`, exclude it from publication targets, and never let it authorize head-bound QA—issue-only no-PR QA remains explicit `NOT_APPLICABLE` with `head_sha: not_applicable`.
+
 A raw issue target may project to a different final PR only when the lane's
 exact PR URL is in the trusted final manifest and authenticated GitHub GraphQL
 proves both closing-reference directions for the same host/repository, a closed
