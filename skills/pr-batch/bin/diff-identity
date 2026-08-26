@@ -36,7 +36,7 @@ module DiffIdentity
   def canonical_ref?(value)
     return false unless value.is_a?(String)
     return false unless value.encoding == Encoding::UTF_8 && value.valid_encoding?
-    return false if value.empty? || value == "@"
+    return false if value.empty?
     return false if value.start_with?("-", "/") || value.end_with?("/", ".")
     return false if value.include?("..") || value.include?("@{") || value.include?("//")
     return false if value.each_char.any? do |character|

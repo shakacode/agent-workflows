@@ -547,6 +547,22 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes error.message, "cleanup failed"
   end
 
+  def test_cleanup_failure_preserves_an_in_flight_error
+    runner = PrMergeSubmit::Runner.allocate
+    runner.define_singleton_method(:remove_private_guard_directory!) do |_directory|
+      raise Errno::EACCES, "cleanup denied"
+    end
+
+    error = assert_raises(PrMergeSubmit::Error) do
+      raise PrMergeSubmit::Error, "current CI evidence no longer qualifies"
+    ensure
+      runner.send(:cleanup_private_guard_directory!, "/private/guard", nil)
+    end
+
+    assert_includes error.message, "current CI evidence no longer qualifies"
+    assert_includes error.message, "cleanup failed"
+  end
+
   def test_forced_termination_unknown_is_returned_for_exact_reconciliation
     runner = PrMergeSubmit::Runner.allocate
     runner.instance_variable_set(

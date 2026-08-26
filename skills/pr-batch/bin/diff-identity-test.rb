@@ -81,10 +81,10 @@ class DiffIdentityTest < Minitest::Test
     end
   end
 
-  def test_rejects_every_forbidden_ref_character_bare_at_and_leading_dash
+  def test_rejects_every_forbidden_ref_character_and_leading_dash
     invalid_refs = [
       "feature~name", "feature^name", "feature:name", "feature?name",
-      "feature*name", "feature[name", "feature\\name", "@", "-main"
+      "feature*name", "feature[name", "feature\\name", "-main"
     ]
 
     invalid_refs.each do |base_ref|
@@ -92,6 +92,12 @@ class DiffIdentityTest < Minitest::Test
         DiffIdentity.derive(base_ref:, base_sha: BASE_SHA, head_sha: HEAD_SHA)
       end
     end
+  end
+
+  def test_accepts_bare_at_as_a_canonical_git_branch_name
+    identity = DiffIdentity.derive(base_ref: "@", base_sha: BASE_SHA, head_sha: HEAD_SHA)
+
+    assert_match(/\A[0-9a-f]{64}\z/, identity)
   end
 
   def test_cli_interprets_canonical_ref_bytes_as_utf8_independent_of_locale

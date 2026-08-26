@@ -1302,8 +1302,8 @@ module PrMergeSubmit
       guard_result
     rescue StandardError => e
       message = "private guarded-direct repository cleanup failed: #{e.message}"
-      if guard_result.nil? && in_flight.is_a?(UnknownOutcome)
-        raise UnknownOutcome, "#{in_flight.message}; additionally, #{message}"
+      if guard_result.nil? && in_flight.is_a?(Error)
+        raise in_flight.class, "#{in_flight.message}; additionally, #{message}"
       end
       raise Error, message if guard_result.nil?
 
