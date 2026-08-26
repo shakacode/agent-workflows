@@ -156,7 +156,7 @@ module AgentWorkflowsStatus
   end
 
   def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
-    {
+    payload = {
       "status" => status,
       "host" => host,
       "target" => target,
@@ -170,9 +170,10 @@ module AgentWorkflowsStatus
       "guidance" => delivery_state&.fetch("guidance", nil),
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
       "native" => delivery_state&.fetch("native", nil),
-      "superpowers" => delivery_state&.fetch("superpowers", nil),
       "flat" => delivery_state&.fetch("flat", nil)
     }
+    payload["superpowers"] = delivery_state.fetch("superpowers") if delivery_state&.key?("superpowers")
+    payload
   end
 
   def text_for(payload)
@@ -221,13 +222,15 @@ module AgentWorkflowsStatus
     host, target = resolve_host_and_target(options.fetch(:host), options[:target])
     metadata = read_metadata(target)
     unless metadata
-      superpowers = AgentWorkflowsDeliveryState.superpowers_state(host, target)
+      delivery = if host == "codex"
+                   { "superpowers" => AgentWorkflowsDeliveryState.superpowers_state(host, target) }
+                 end
       return status_payload(
         "NOT_INSTALLED",
         target:,
         source: options[:source],
         host:,
-        delivery_state: { "superpowers" => superpowers }
+        delivery_state: delivery
       )
     end
 

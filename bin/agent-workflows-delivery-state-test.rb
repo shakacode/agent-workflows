@@ -420,7 +420,7 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
-  def test_non_codex_superpowers_state_is_unknown_without_guessing
+  def test_non_codex_json_omits_superpowers_diagnostic
     Dir.mktmpdir("agent-workflows-delivery-state") do |target|
       out, err, status = run_state(
         "check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__),
@@ -429,8 +429,7 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       payload = JSON.parse(out)
 
       assert status.success?, "#{out}#{err}"
-      assert_equal "UNKNOWN", payload.dig("superpowers", "state")
-      assert_includes payload.dig("superpowers", "reason"), "only for Codex"
+      refute payload.key?("superpowers"), out
     end
   end
 

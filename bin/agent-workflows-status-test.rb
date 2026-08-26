@@ -90,12 +90,24 @@ class AgentWorkflowsStatusTest < Minitest::Test
     File.write(File.join(plugin_root, "plugin.json"), "#{JSON.generate(manifest)}\n")
   end
 
-  def test_not_installed_target_reports_not_installed
+  def test_claude_not_installed_text_omits_superpowers_diagnostic
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       out, status = run_status({}, "--target", target, "--host", "claude")
 
       assert_equal 2, status.exitstatus, out
       assert_includes out, "NOT_INSTALLED"
+      refute_includes out, "superpowers"
+    end
+  end
+
+  def test_claude_not_installed_json_omits_superpowers_diagnostic
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+      payload = JSON.parse(out)
+
+      assert_equal 2, status.exitstatus, out
+      assert_equal "NOT_INSTALLED", payload.fetch("status")
+      refute payload.key?("superpowers"), out
     end
   end
 
@@ -131,7 +143,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
-  def test_up_to_date_with_non_git_source
+  def test_claude_up_to_date_text_omits_superpowers_diagnostic
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|
         File.write(File.join(source, "VERSION"), "9.9.9\n")
@@ -141,6 +153,23 @@ class AgentWorkflowsStatusTest < Minitest::Test
 
         assert_equal 0, status.exitstatus, out
         assert_includes out, "UP_TO_DATE"
+        refute_includes out, "superpowers"
+      end
+    end
+  end
+
+  def test_claude_up_to_date_json_omits_superpowers_diagnostic
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+
+        out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UP_TO_DATE", payload.fetch("status")
+        refute payload.key?("superpowers"), out
       end
     end
   end

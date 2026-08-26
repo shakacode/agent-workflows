@@ -684,13 +684,10 @@ module AgentWorkflowsDeliveryState
   end
 
   def check(host:, target:, source:, delivery_mode:)
-    host_queries = [
-      Thread.new { ["native", native_state(host, target)] },
-      Thread.new { ["superpowers", superpowers_state(host, target)] }
-    ]
+    host_queries = [Thread.new { ["native", native_state(host, target)] }]
+    host_queries << Thread.new { ["superpowers", superpowers_state(host, target)] } if host == "codex"
     host_state = host_queries.map(&:value).to_h
     native = host_state.fetch("native")
-    superpowers = host_state.fetch("superpowers")
     collision_names = Array(native["skill_names"])
     flat = managed_flat_inventory(
       target: target,
@@ -726,15 +723,16 @@ module AgentWorkflowsDeliveryState
       else
         "Install and enable scw@agent-workflows, then rerun with --delivery-mode plugin-companion."
       end
-    {
+    payload = {
       "compatible" => compatible,
       "delivery_mode" => delivery_mode,
       "native" => native,
-      "superpowers" => superpowers,
       "flat" => flat,
       "reason" => reason,
       "guidance" => compatible ? nil : guidance
     }
+    payload["superpowers"] = host_state.fetch("superpowers") if host_state.key?("superpowers")
+    payload
   end
 
   def migrate(**options)

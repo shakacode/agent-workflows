@@ -16,9 +16,11 @@ is the governing decision: Agent Workflows remains the sole orchestrator.
 
 Do not invoke Superpowers branch-finishing, worktree-owning, planning-to-
 execution, or end-to-end subagent workflows inside an Agent Workflows lane.
-The normal profile should keep the complete Superpowers plugin disabled.
+The normal profile should keep the complete Superpowers plugin disabled. This
+ownership boundary is universal: it applies on Codex, Claude, and any other
+host even when Agent Workflows cannot automatically observe Superpowers state.
 
-## Advisory Diagnostic
+## Codex-Only Advisory Diagnostic
 
 Run the read-only status helper against the intended Codex home:
 
@@ -46,6 +48,12 @@ does not contact upstream and does not claim an upstream version. It performs no
 plugin installation, enablement, disablement, removal, upgrade, or
 configuration write, and an advisory state never changes the Agent Workflows
 status exit code.
+
+On Claude, the same sole-orchestrator boundary still applies, but Agent
+Workflows does not inspect Claude Superpowers state. `agent-workflows-status`
+therefore omits the `superpowers` member from Claude JSON and omits Superpowers
+fields from Claude text output. That omission does not establish that
+Superpowers is disabled or absent; inspect Claude state manually when needed.
 
 ## Version Provenance
 
