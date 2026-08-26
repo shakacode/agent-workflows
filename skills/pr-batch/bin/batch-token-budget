@@ -2118,24 +2118,28 @@ module BatchTokenBudget
                         execution_scope_shape?(usage_receipt["coordinator"], "coordinator") &&
                         usage_receipt["lanes"].is_a?(Array) &&
                         usage_receipt["lanes"].all? { |lane| lane_scope_shape?(lane) }
+
     window = usage_receipt["window"]
     return false unless exact_object_keys?(window, %w[differencing from_inclusive to_exclusive]) &&
                         window["differencing"] == "full_history_before_window_filter" &&
                         timestamp?(window["from_inclusive"]) && timestamp?(window["to_exclusive"])
+
     accounting = usage_receipt["accounting"]
     return false unless exact_object_keys?(accounting, %w[
-      compactions counter_resets duplicate_samples_omitted inherited_seeds_omitted replay_records_omitted
-      session_rebind_attempts_ignored usage_samples
-    ]) && accounting.values.all? { |value| nonnegative_integer?(value) }
+                                             compactions counter_resets duplicate_samples_omitted inherited_seeds_omitted replay_records_omitted
+                                             session_rebind_attempts_ignored usage_samples
+                                           ]) && accounting.values.all? { |value| nonnegative_integer?(value) }
+
     evidence = usage_receipt["evidence"]
     return false unless exact_object_keys?(evidence, %w[sources status unknown]) &&
                         %w[complete UNKNOWN].include?(evidence["status"]) &&
                         evidence["sources"] == ["codex_rollout_jsonl", "state_5.sqlite"] &&
                         evidence["unknown"].is_a?(Array) && evidence["unknown"].all? do |reason|
                           reason.is_a?(Hash) &&
-                            %w[code status].all? { |key| reason.key?(key) } &&
-                            reason["status"] == "UNKNOWN" && schema_nonempty_string?(reason["code"])
+                          %w[code status].all? { |key| reason.key?(key) } &&
+                          reason["status"] == "UNKNOWN" && schema_nonempty_string?(reason["code"])
                         end
+
     privacy = usage_receipt["privacy"]
     return false unless exact_object_keys?(privacy, %w[emitted_or_persisted_content excluded mode]) &&
                         privacy["mode"] == "metadata_only" &&
