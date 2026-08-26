@@ -33,10 +33,13 @@ class PostMergeAuditPolicyTest < Minitest::Test
     "For `coordination_required`, preserve the bounded discovery and exact-batch checks below; a missing or `n/a` " \
     "backend, command failure, or contradictory applicability remains fail-closed."
   REQUIRED_NO_BATCH_WORKED_SCOPE =
-    "For a release/range or coverage audit with no coordinated batch/run in scope, skip the applicability/proof " \
+    "For a release/range or coverage audit with no batch/run of any kind in scope, skip the applicability/proof " \
     "gate and every coordination command; record `worked_issue_scope: not applicable` and keep the audit " \
     "merged-range-only."
-  REQUIRED_ACTUAL_BATCH_SCOPE_GATE = "When an actual batch/run is in scope, use the applicability gate below."
+  REQUIRED_ACTUAL_BATCH_SCOPE_GATE =
+    "When an actual batch/run is in scope, including an uncoordinated serialized batch classified " \
+    "`coordination_not_applicable`, use the applicability gate below."
+  AMBIGUOUS_NO_COORDINATED_BATCH_SCOPE = "no coordinated batch/run in scope"
   REQUIRED_VERIFIED_WORKED_SCOPE_SOURCES =
     "A worked-issue scope verified from either the authenticated single-controller proof or required coordination " \
     "state is a verified batch subset."
@@ -267,6 +270,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
                    "#{relative_path} must preserve every no-batch audit entry point"
       assert_equal no_batch_branch_counts.fetch(relative_path), normalized_text.scan(REQUIRED_ACTUAL_BATCH_SCOPE_GATE).length,
                    "#{relative_path} must scope every applicability gate to actual batches"
+      refute_includes normalized_text, AMBIGUOUS_NO_COORDINATED_BATCH_SCOPE,
+                      "#{relative_path} must not classify an uncoordinated serialized batch as no-batch"
     end
 
     ordering_starts = {

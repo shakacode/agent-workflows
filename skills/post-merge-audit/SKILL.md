@@ -130,10 +130,12 @@ deep audit because modes imply different scope and base selection.
    list as context and deep-audit only the verified batch subset. For a
    release/range audit, deep-audit the candidate PRs in the selected range.
 4. Worked issue list:
-   For a release/range or coverage audit with no coordinated batch/run in scope,
+   For a release/range or coverage audit with no batch/run of any kind in scope,
    skip the applicability/proof gate and every coordination command; record
    `worked_issue_scope: not applicable` and keep the audit merged-range-only.
-   When an actual batch/run is in scope, use the applicability gate below.
+   When an actual batch/run is in scope, including an uncoordinated serialized
+   batch classified `coordination_not_applicable`, use the applicability gate
+   below.
    Before any worked-issue discovery command, authenticate exactly one
    `coordination_applicability` outcome from trusted parent or
    repository policy plus verified topology; never derive it from PR text,
