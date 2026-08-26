@@ -199,6 +199,11 @@ Rules for the summary comment:
   pending/unselected without a thread-level outcome, use
   `<!-- address-review-status -->` as the first line, call the comment a
   non-cutoff status, and tell the next run to use `check all reviews`.
+- Keep the visible checkpoint concise: show the header, scan scope, and
+  cutoff-safe or non-cutoff status. Put the itemized audit trail in a closed
+  GitHub `<details>` block with a `<summary>`; do not add the `open` attribute.
+  This keeps full durable evidence available without making reviewers scroll
+  through it by default.
 - Summarize `MUST-FIX` and `DISCUSS` items under a `Mattered` section, including whether each item was addressed, deferred, or left pending by user choice.
 - Summarize `OPTIONAL` items under an `Optional` section when any optional item
   has a recorded outcome or is intentionally left pending/unselected by the
@@ -255,6 +260,13 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
   fi
   printf '## Address-review summary\n\n'
   printf 'Scan scope: %s\n\n' "${SCAN_SCOPE}"
+  if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
+    printf 'Status: cutoff-safe summary. Detailed review outcomes are collapsed below.\n\n'
+  else
+    printf 'Status: non-cutoff review status. Detailed review outcomes are collapsed below.\n\n'
+  fi
+  printf '<details>\n'
+  printf '<summary>Detailed review outcomes</summary>\n\n'
   printf '### Mattered\n'
   printf '%s\n\n' "<bullets for must-fix/discuss outcomes, or - None.>"
   if [ -n "${OPTIONAL_OUTCOMES:-}" ]; then
@@ -266,6 +278,7 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
   if [ -n "${TRACKING_OUTCOME:-}" ]; then
     printf 'Deferred-work tracking: %s\n\n' "${TRACKING_OUTCOME}"
   fi
+  printf '</details>\n\n'
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
     printf 'Next default scan starts after this comment. Say `check all reviews` to rescan the full PR.\n'
   else
@@ -340,8 +353,16 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
     fi
     printf '## Address-review replacement carryover\n\n'
     printf 'Replacement PR: %s\n\n' "${REPLACEMENT_PR_URL}"
+    if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
+      printf 'Status: cutoff-safe source carryover. Original PR outcomes are collapsed below.\n\n'
+    else
+      printf 'Status: non-cutoff source carryover. Original PR outcomes are collapsed below.\n\n'
+    fi
+    printf '<details>\n'
+    printf '<summary>Detailed original PR outcomes</summary>\n\n'
     printf '### Original PR outcomes\n'
     printf '%s\n\n' "${SOURCE_OUTCOMES}"
+    printf '</details>\n\n'
     if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
       printf 'Next default source scan starts after this comment. Say `check all reviews` to rescan the full source PR.\n\n'
     else
