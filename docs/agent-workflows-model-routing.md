@@ -483,6 +483,11 @@ than cryptographic trust. Human authority actors resolve through
 `trusted_users`; nested evidence has at most a one-hour, bundle-contained
 validity window, and review findings must pass the validator module resolved
 through the repository's portable workflow seam.
+Budget decisions bind their evaluation time to that same current bundle window,
+retain faithful original checkpoint/revision semantics on production replay,
+and validate external plans through the production verify-only collision fence.
+Case-insensitive control identities use Unicode NFKC plus full case folding and
+trimming; nested `UNKNOWN` checks apply the same normalization.
 
 | Scenario class | Risk | Recommended route | Samples | Evidence strength |
 | --- | --- | --- | --- | --- |

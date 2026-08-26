@@ -340,6 +340,20 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "may not be a symlink"
   end
 
+  def test_multi_target_exception_rejects_a_plan_whose_state_path_contains_the_plan
+    task = multi_target_task
+    plan = task.dig("exception", "budget_plan")
+    plan_path = task.dig("exception", "budget_plan_anchor", "trusted_plan_path")
+    plan["state_path"] = File.dirname(plan_path)
+    File.write(plan_path, JSON.generate(canonicalize(plan)))
+    task["exception"]["budget_plan_anchor"]["trusted_plan_digest"] = findings_digest(plan)
+
+    _result, stderr, status = run_helper(launch_input(task))
+
+    refute status.success?
+    assert_includes stderr, "trusted-plan-state-path-collision"
+  end
+
   def test_multi_target_exception_rejects_invalid_external_verifier_contracts
     mutations = {
       "malformed-key" => proc { |records| records[0]["public_key_pem"] = "not-a-public-key" },
@@ -463,6 +477,14 @@ class CanonicalTaskControlTest < Minitest::Test
     _result, stderr, status = run_helper(input)
     refute status.success?
     assert_includes stderr, "distinct checker/reviewer/qa actors"
+
+    [["Straße", "STRASSE"], ["Ｍａｋｅｒ－Ａ", "maker-a"]].each do |maker, checker|
+      input = child_receipt_input
+      input["manifest"]["ownership"] = { "maker" => maker, "checker" => checker }
+      _result, stderr, status = run_helper(input)
+      refute status.success?, "#{maker.inspect} and #{checker.inspect} bypassed actor independence"
+      assert_includes stderr, "distinct checker/reviewer/qa actors"
+    end
   end
 
   def test_review_findings_validator_can_be_resolved_from_a_portable_repo_seam
@@ -972,6 +994,60 @@ class CanonicalTaskControlTest < Minitest::Test
     end
   end
 
+  def test_budget_result_rejects_unicode_disguised_unknown
+    gate = budget_result(action: "retry")
+    gate["receipt"]["reservation_id"] = "ＵＮＫＮＯＷＮ"
+    gate["decision_receipt"]["reservation_id"] = "ＵＮＫＮＯＷＮ"
+    input = base_input.merge(
+      "operation" => "budget_action", "budget_action" => "retry",
+      "budget_lane_id" => "aw-i402", "budget_gate" => gate
+    )
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "nested UNKNOWN"
+  end
+
+  def test_budget_decision_evaluation_time_must_be_current_and_inside_the_trusted_bundle
+    ["2000-01-01T00:00:00Z", "2099-01-01T00:00:00Z"].each do |evaluated_at|
+      input = budget_action_input("retry")
+      input["budget_gate"]["decision_receipt"]["evaluated_at"] = evaluated_at
+
+      _result, stderr, status = run_helper(input)
+
+      refute status.success?, evaluated_at
+      assert_includes stderr, "budget decision evaluated_at must be current and inside trusted bundle validity"
+    end
+
+    input = budget_action_input("retry")
+    input["budget_gate"]["decision_receipt"]["evaluated_at"] = (Time.now.utc - 120).iso8601
+    bundle = trusted_bundle_for(input)
+    bundle["issued_at"] = (Time.now.utc - 60).iso8601
+    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+    refute status.success?
+    assert_includes stderr, "budget decision evaluated_at must be current and inside trusted bundle validity"
+  end
+
+  def test_replayed_admitted_budget_result_preserves_original_checkpoint_semantics
+    input = budget_action_input("retry")
+    gate = input.fetch("budget_gate")
+    gate["status"] = "replayed"
+    gate["decision_status"] = "admitted"
+    gate["state_revision"] += 1
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal ["retry"], result.fetch("allowed_actions")
+
+    gate["decision_status"] = "admitted-with-warning"
+    gate["decision_receipt"]["status"] = "admitted-with-warning"
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "expected object"
+  end
+
   def test_budget_action_rejects_arbitrary_string_evidence
     input = base_input.merge(
       "operation" => "budget_action",
@@ -1338,6 +1414,14 @@ class CanonicalTaskControlTest < Minitest::Test
         "deterministic_handoff_available" => false,
         "human_approval" => human_approval
       }
+    )
+  end
+
+  def budget_action_input(action, task: base_input.fetch("task"), lane: task.fetch("lanes").first)
+    base_input.merge(
+      "operation" => "budget_action", "task" => task,
+      "budget_action" => action, "budget_lane_id" => lane.fetch("id"),
+      "budget_gate" => budget_result(action: action, task: task, lane: lane)
     )
   end
 

@@ -7,6 +7,7 @@ require "open3"
 require "openssl"
 require "base64"
 require "digest"
+require "fileutils"
 require "tmpdir"
 
 HELPER = File.expand_path("batch-token-budget", __dir__)
@@ -561,6 +562,27 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal canonicalize(candidate), receipt.fetch("plan")
       refute File.exist?(state_path)
       refute File.exist?("#{state_path}.lock")
+    end
+  end
+
+  def test_verify_plan_only_rejects_a_trusted_plan_state_path_collision
+    Dir.mktmpdir("batch-token-budget-verify-collision") do |directory|
+      state_path = File.join(directory, "state-root")
+      FileUtils.mkdir_p(state_path)
+      candidate = budget(state_path: state_path)
+      plan_path = File.join(state_path, "trusted-plan.json")
+      File.write(plan_path, JSON.generate(canonicalize(candidate)))
+      digest = "sha256:#{object_digest(candidate)}"
+
+      stdout, stderr, status = Open3.capture3(
+        HELPER, "--verify-plan-only", "--trusted-plan", plan_path,
+        "--trusted-plan-id", candidate.fetch("batch_id"), "--trusted-plan-digest", digest,
+        stdin_data: ""
+      )
+
+      refute status.success?
+      assert_empty stdout
+      assert_equal "trusted-plan-state-path-collision", JSON.parse(stderr).fetch("reason")
     end
   end
 

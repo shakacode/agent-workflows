@@ -56,7 +56,7 @@ module CanonicalTaskControl
 
     task = input["task"]
     raise InvalidInput, "trusted evidence task binding mismatch" unless task.is_a?(Hash) &&
-                                                                        canonical_scalar(trusted["task_id"]) == canonical_scalar(task["id"]) &&
+                                                                        canonical_identity(trusted["task_id"]) == canonical_identity(task["id"]) &&
                                                                         trusted_targets_match?(trusted["targets"], task["targets"])
     unless trusted["task_digest"] == canonical_digest(task)
       raise InvalidInput, "trusted evidence task digest mismatch"
@@ -66,8 +66,8 @@ module CanonicalTaskControl
     heads = trusted["heads"]
     raise InvalidInput, "trusted evidence heads must be an object" unless heads.is_a?(Hash)
 
-    expected_lanes = task.fetch("lanes").map { |lane| canonical_scalar(lane.fetch("id")) }
-    actual_lanes = heads.keys.map { |lane_id| canonical_scalar(lane_id) }
+    expected_lanes = task.fetch("lanes").map { |lane| canonical_identity(lane.fetch("id")) }
+    actual_lanes = heads.keys.map { |lane_id| canonical_identity(lane_id) }
     unless actual_lanes.uniq.length == actual_lanes.length && actual_lanes.sort == expected_lanes.sort && heads.values.all? { |sha| full_sha?(sha) }
       raise InvalidInput, "trusted evidence heads must exactly cover task lanes"
     end
@@ -159,7 +159,7 @@ module CanonicalTaskControl
       raise InvalidInput, "trust config trusted_users must be an array of known actors"
     end
 
-    users.map { |actor| canonical_scalar(actor) }.uniq
+    users.map { |actor| canonical_identity(actor) }.uniq
   rescue Psych::Exception => e
     raise InvalidInput, "trust config malformed: #{e.class}"
   end
@@ -275,8 +275,9 @@ module CanonicalTaskControl
       delegation_decision, delegation_lane = validate_delegation!(
         input.fetch("delegation"), task, lifecycle["context_threshold"], context: context
       )
-      budget_status = validate_budget_gate!(input.fetch("budget_gate"), task: task, lane: delegation_lane,
-                                                                        action: "delegation")
+      budget_status = validate_budget_gate!(
+        input.fetch("budget_gate"), task: task, lane: delegation_lane, action: "delegation", context: context
+      )
       target_active = input.dig("delegation", "target_state") == "active"
       if (target_active && budget_status != "coalesced") || (!target_active && budget_status == "coalesced")
         raise InvalidInput, "delegation target state contradicts batch-token-budget decision"
@@ -326,11 +327,13 @@ module CanonicalTaskControl
       raise InvalidInput, "unsupported budget action" unless allowed_budget_actions.include?(action)
 
       lane = task.fetch("lanes").find do |candidate|
-        canonical_scalar(candidate["id"]) == canonical_scalar(input.fetch("budget_lane_id"))
+        canonical_identity(candidate["id"]) == canonical_identity(input.fetch("budget_lane_id"))
       end
       raise InvalidInput, "budget action lane is outside task" unless lane
 
-      budget_status = validate_budget_gate!(input.fetch("budget_gate"), task: task, lane: lane, action: action)
+      budget_status = validate_budget_gate!(
+        input.fetch("budget_gate"), task: task, lane: lane, action: action, context: context
+      )
       if capabilities["issue_399"] == "available" && %w[admitted admitted-with-warning].include?(budget_status)
         allowed_actions = [action]
       else
@@ -420,7 +423,7 @@ module CanonicalTaskControl
       raise InvalidInput, "lifecycle threshold must match the trusted policy record"
     end
 
-    budgets = validate_launch_budget!(input.fetch("budget_gate"), task)
+    budgets = validate_launch_budget!(input.fetch("budget_gate"), task, context: context)
     reconcile_manifest_budget!(manifest.fetch("budgets"), budgets)
     validate_typed_gates!(input.fetch("typed_gates"), task, manifest, context: context)
   end
@@ -446,13 +449,15 @@ module CanonicalTaskControl
     policy
   end
 
-  def validate_launch_budget!(records, task)
+  def validate_launch_budget!(records, task, context:)
     unless records.is_a?(Array) && records.length == task.fetch("lanes").length
       raise InvalidInput, "launch batch-token-budget results must cover every lane"
     end
 
     records.each_with_index do |record, index|
-      status = validate_budget_result!(record, task: task, lane: task.fetch("lanes").fetch(index), action: "worker_spawn")
+      status = validate_budget_result!(
+        record, task: task, lane: task.fetch("lanes").fetch(index), action: "worker_spawn", context: context
+      )
       unless %w[admitted admitted-with-warning].include?(status)
         raise InvalidInput, "launch batch-token-budget result did not admit worker_spawn"
       end
@@ -530,12 +535,12 @@ module CanonicalTaskControl
   end
 
   def validate_typed_gate_head!(record, task, manifest)
-    lane = task.fetch("lanes").find { |candidate| canonical_scalar(candidate["id"]) == canonical_scalar(record["lane_id"]) }
+    lane = task.fetch("lanes").find { |candidate| canonical_identity(candidate["id"]) == canonical_identity(record["lane_id"]) }
     raise InvalidInput, "typed gate lane is outside task" unless lane && canonical_target_key(lane) == canonical_target_key(record)
     unless full_sha?(record["base_sha"]) && full_sha?(record["head_sha"]) && record["base_sha"] != record["head_sha"]
       raise InvalidInput, "typed gate requires distinct full base/head SHAs"
     end
-    return if canonical_scalar(record["head_sha"]) == canonical_scalar(manifest_head_for(manifest, lane["id"]))
+    return if canonical_identity(record["head_sha"]) == canonical_identity(manifest_head_for(manifest, lane["id"]))
 
     raise InvalidInput, "typed gate head must equal manifest current head"
   end
@@ -568,10 +573,10 @@ module CanonicalTaskControl
     raise InvalidInput, "evidence actor must be known" unless known_string?(evidence["actor"])
     raise InvalidInput, "evidence role is unauthorized" unless allowed_roles.include?(evidence["role"])
     if %w[maintainer budget_owner].include?(evidence["role"]) &&
-       !context.fetch(:trusted_users).include?(canonical_scalar(evidence["actor"]))
+       !context.fetch(:trusted_users).include?(canonical_identity(evidence["actor"]))
       raise InvalidInput, "human authority actor is not trusted"
     end
-    unless canonical_scalar(evidence["task_id"]) == canonical_scalar(task["id"])
+    unless canonical_identity(evidence["task_id"]) == canonical_identity(task["id"])
       raise InvalidInput, "evidence task binding mismatch"
     end
 
@@ -611,7 +616,7 @@ module CanonicalTaskControl
       unless %w[dependency_checker coordinator].include?(dependency["role"])
         raise InvalidInput, "pilot dependency role is unauthorized"
       end
-      unless canonical_scalar(dependency["task_id"]) == canonical_scalar(task["id"]) && task_target?(task, dependency)
+      unless canonical_identity(dependency["task_id"]) == canonical_identity(task["id"]) && task_target?(task, dependency)
         raise InvalidInput, "pilot dependency task/target binding mismatch"
       end
       raise InvalidInput, "pilot dependency action mismatch" unless dependency["action"] == "evaluate_pilot"
@@ -691,10 +696,10 @@ module CanonicalTaskControl
       ordinary = validate_pilot_arm!(pair["ordinary"], expected_arm: "ordinary", pair: pair, context: context)
       multi = validate_pilot_arm!(pair["multi_target"], expected_arm: "multi_target", pair: pair, context: context)
       representative_ids.concat([
-                                  canonical_scalar(pair["ordinary"]["task_identity"]),
-                                  canonical_scalar(pair["ordinary"]["batch_identity"]),
-                                  canonical_scalar(pair["multi_target"]["task_identity"]),
-                                  canonical_scalar(pair["multi_target"]["batch_identity"])
+                                  canonical_identity(pair["ordinary"]["task_identity"]),
+                                  canonical_identity(pair["ordinary"]["batch_identity"]),
+                                  canonical_identity(pair["multi_target"]["task_identity"]),
+                                  canonical_identity(pair["multi_target"]["batch_identity"])
                                 ])
       [pair["ordinary"], pair["multi_target"]].each do |arm|
         execution_refs << arm["usage_receipt_ref"]
@@ -794,11 +799,11 @@ module CanonicalTaskControl
     value.to_s.match?(%r{\Ahttps://[^[:space:]]+\z})
   end
 
-  def validate_budget_gate!(gate, task:, lane:, action:)
-    validate_budget_result!(gate, task: task, lane: lane, action: action)
+  def validate_budget_gate!(gate, task:, lane:, action:, context:)
+    validate_budget_result!(gate, task: task, lane: lane, action: action, context: context)
   end
 
-  def validate_budget_result!(result, task:, lane:, action:)
+  def validate_budget_result!(result, task:, lane:, action:, context:)
     unless result.is_a?(Hash) && result["type"] == "batch-token-budget-result" && result["version"] == 1
       raise InvalidInput, "budget gate requires batch-token-budget-result v1"
     end
@@ -819,13 +824,22 @@ module CanonicalTaskControl
                           type version batch_id state_revision preserved_gates reservation_id request_digest
                           status reason evaluated_at
                         ])
+    replayed = result["status"] == "replayed"
+    decision_revision_valid = if replayed
+                                nonnegative_integer?(decision["state_revision"]) &&
+                                  decision["state_revision"] <= result["state_revision"]
+                              else
+                                decision["state_revision"] == result["state_revision"]
+                              end
     unless decision.is_a?(Hash) && decision["type"] == "batch-token-budget-reservation-decision-receipt" &&
            decision["version"] == 1 && decision["batch_id"] == result["batch_id"] &&
-           decision["state_revision"] == result["state_revision"] && decision["status"] == status &&
+           decision_revision_valid && decision["status"] == status &&
            decision["preserved_gates"] == PRESERVED_GATES && known_string?(decision["reservation_id"]) &&
            decision["request_digest"].to_s.match?(/\A[0-9a-f]{64}\z/) && rfc3339_utc?(decision["evaluated_at"])
       raise InvalidInput, "budget result requires bound reservation decision receipt"
     end
+
+    validate_budget_decision_time!(decision["evaluated_at"], context: context)
 
     replay_keys = result["status"] == "replayed" ? ["decision_status"] : []
     case status
@@ -851,7 +865,10 @@ module CanonicalTaskControl
         raise InvalidInput, "batch-token-budget reservation receipt binding mismatch"
       end
 
-      validate_budget_checkpoint!(result["checkpoint"], result: result, lane: lane)
+      validate_budget_checkpoint!(
+        result["checkpoint"], result: result, lane: lane, task: task, effective_status: status,
+                              decision_evaluated_at: decision["evaluated_at"]
+      )
     when "coalesced"
       raise InvalidInput, "only delegation may consume coalesced budget results" unless action == "delegation"
 
@@ -878,16 +895,29 @@ module CanonicalTaskControl
       envelope["target_ids"].include?(task["id"])
   end
 
-  def validate_budget_checkpoint!(checkpoint, result:, lane:)
-    return if checkpoint.nil? && result["status"] == "admitted"
+  def validate_budget_decision_time!(value, context:)
+    evaluated_at = parse_utc_time!(value, "budget decision evaluated_at")
+    bundle_issued, bundle_expires = context.fetch(:bundle_window)
+    now = Time.now.utc
+    return if bundle_issued <= evaluated_at && evaluated_at <= now && evaluated_at <= bundle_expires
+
+    raise InvalidInput, "budget decision evaluated_at must be current and inside trusted bundle validity"
+  end
+
+  def validate_budget_checkpoint!(checkpoint, result:, lane:, task:, effective_status:, decision_evaluated_at:)
+    return if checkpoint.nil? && effective_status == "admitted"
 
     require_exact_keys!(checkpoint, %w[type version id batch_id scope_id status cutoff receipt_cutoff totals])
+    totals_valid = if result["status"] == "replayed"
+                     valid_budget_totals?(checkpoint["totals"], task)
+                   else
+                     canonicalize(checkpoint["totals"]) == canonicalize(result["totals"])
+                   end
     unless checkpoint["type"] == "batch-token-budget-threshold-checkpoint" && checkpoint["version"] == 1 &&
            known_string?(checkpoint["id"]) && checkpoint["batch_id"] == result["batch_id"] &&
-           canonical_scalar(checkpoint["scope_id"]) == canonical_scalar(lane["id"]) &&
+           canonical_identity(checkpoint["scope_id"]) == canonical_identity(lane["id"]) &&
            %w[warning approval-authorized].include?(checkpoint["status"]) &&
-           rfc3339_utc?(checkpoint["cutoff"]) && rfc3339_utc?(checkpoint["receipt_cutoff"]) &&
-           canonicalize(checkpoint["totals"]) == canonicalize(result["totals"])
+           checkpoint["cutoff"] == decision_evaluated_at && rfc3339_utc?(checkpoint["receipt_cutoff"]) && totals_valid
       raise InvalidInput, "budget result checkpoint binding mismatch"
     end
   end
@@ -896,8 +926,8 @@ module CanonicalTaskControl
     return false unless totals.is_a?(Hash) && totals.keys.sort == %w[aggregate coordinator lanes]
 
     lanes = totals["lanes"]
-    expected_lane_ids = task.fetch("lanes").map { |lane| canonical_scalar(lane["id"]) }.sort
-    return false unless lanes.is_a?(Hash) && lanes.keys.map { |id| canonical_scalar(id) }.sort == expected_lane_ids
+    expected_lane_ids = task.fetch("lanes").map { |lane| canonical_identity(lane["id"]) }.sort
+    return false unless lanes.is_a?(Hash) && lanes.keys.map { |id| canonical_identity(id) }.sort == expected_lane_ids
 
     [totals["aggregate"], totals["coordinator"], *lanes.values].all? do |scope|
       scope.is_a?(Hash) && scope.keys.sort == %w[
@@ -918,7 +948,7 @@ module CanonicalTaskControl
     require_exact_keys!(delegation, keys)
     source = validate_task_identity!(delegation["source"])
     target = validate_task_identity!(delegation["target"])
-    if canonical_scalar(source["task_id"]) == canonical_scalar(target["task_id"])
+    if canonical_identity(source["task_id"]) == canonical_identity(target["task_id"])
       raise InvalidInput, "source and target task identities must differ case-insensitively"
     end
     if canonical_target_key(source) == canonical_target_key(target)
@@ -926,7 +956,7 @@ module CanonicalTaskControl
     end
 
     canonical = task.fetch("targets").find { |candidate| canonical_target_key(target) == canonical_target_key(candidate) }
-    unless canonical && canonical_scalar(target["task_id"]) == canonical_scalar(task["id"])
+    unless canonical && canonical_identity(target["task_id"]) == canonical_identity(task["id"])
       raise InvalidInput, "delegation target must bind this task and canonical repository-qualified target"
     end
 
@@ -1032,10 +1062,10 @@ module CanonicalTaskControl
 
     source = validate_task_identity!(packet["source"])
     recipient = validate_task_identity!(packet["recipient"])
-    unless canonical_scalar(recipient["task_id"]) == canonical_scalar(task["id"]) && task_target?(task, recipient)
+    unless canonical_identity(recipient["task_id"]) == canonical_identity(task["id"]) && task_target?(task, recipient)
       raise InvalidInput, "foreign target packet recipient binding mismatch"
     end
-    if canonical_scalar(source["task_id"]) == canonical_scalar(recipient["task_id"]) ||
+    if canonical_identity(source["task_id"]) == canonical_identity(recipient["task_id"]) ||
        canonical_target_key(source) == canonical_target_key(recipient) || task_target?(task, source)
       raise InvalidInput, "foreign target packet source must remain outside the canonical task"
     end
@@ -1063,10 +1093,10 @@ module CanonicalTaskControl
                         ])
     source = validate_task_identity!(reconciliation["source"])
     target = validate_task_identity!(reconciliation["target"])
-    unless canonical_scalar(target["task_id"]) == canonical_scalar(task["id"]) && task_target?(task, target)
+    unless canonical_identity(target["task_id"]) == canonical_identity(task["id"]) && task_target?(task, target)
       raise InvalidInput, "usage reconciliation target binding mismatch"
     end
-    if canonical_scalar(source["task_id"]) == canonical_scalar(target["task_id"]) ||
+    if canonical_identity(source["task_id"]) == canonical_identity(target["task_id"]) ||
        canonical_target_key(source) == canonical_target_key(target)
       raise InvalidInput, "usage reconciliation source and target must differ"
     end
@@ -1118,11 +1148,11 @@ module CanonicalTaskControl
     return false unless identity.is_a?(Hash) && identity.keys.sort == %w[batch_id lane_id root_id task_id work_item]
     return false unless %w[batch_id lane_id root_id task_id].all? { |key| known_string?(identity[key]) }
     return false if expected_batch_id && identity["batch_id"] != expected_batch_id
-    return false unless canonical_scalar(identity["task_id"]) == canonical_scalar(canonical["task_id"])
+    return false unless canonical_identity(identity["task_id"]) == canonical_identity(canonical["task_id"])
 
     work_item = identity["work_item"]
     return false unless work_item.is_a?(Hash) && work_item.keys.sort == %w[number repo type] &&
-                        canonical_scalar(work_item["repo"]) == canonical_scalar(canonical["repository"])
+                        canonical_identity(work_item["repo"]) == canonical_identity(canonical["repository"])
 
     match = canonical["target"].to_s.match(/\A(issue|pull_request):([1-9][0-9]*)\z/)
     match && work_item["type"] == match[1] && work_item["number"] == match[2].to_i
@@ -1265,7 +1295,7 @@ module CanonicalTaskControl
     end
     ownership = manifest["ownership"]
     allowed_roles = %w[maker checker reviewer qa]
-    normalized_actors = ownership.values.map { |actor| canonical_scalar(actor) }
+    normalized_actors = ownership.values.map { |actor| canonical_identity(actor) }
     unless (ownership.keys - allowed_roles).empty? && known_string?(ownership["maker"]) &&
            ownership.values.all? { |actor| known_string?(actor) } &&
            normalized_actors.uniq.length == normalized_actors.length
@@ -1280,8 +1310,8 @@ module CanonicalTaskControl
       raise InvalidInput, "manifest exceeds #{MAX_MANIFEST_BYTES} bytes"
     end
 
-    expected_head_keys = task.fetch("lanes").map { |lane| canonical_scalar(lane.fetch("id")) }
-    actual_head_keys = manifest["current_heads"].keys.map { |lane_id| canonical_scalar(lane_id) }
+    expected_head_keys = task.fetch("lanes").map { |lane| canonical_identity(lane.fetch("id")) }
+    actual_head_keys = manifest["current_heads"].keys.map { |lane_id| canonical_identity(lane_id) }
     unless actual_head_keys.uniq.length == actual_head_keys.length && actual_head_keys.sort == expected_head_keys.sort
       raise InvalidInput, "manifest current_heads must exactly cover task lanes"
     end
@@ -1342,7 +1372,7 @@ module CanonicalTaskControl
   def validate_checkpoint_binding!(checkpoint, task)
     raise InvalidInput, "checkpoint actor must be known" unless known_string?(checkpoint["actor"])
     raise InvalidInput, "checkpoint role is unauthorized" unless %w[coordinator maintainer].include?(checkpoint["role"])
-    unless canonical_scalar(checkpoint["task_id"]) == canonical_scalar(task["id"])
+    unless canonical_identity(checkpoint["task_id"]) == canonical_identity(task["id"])
       raise InvalidInput, "checkpoint task binding mismatch"
     end
 
@@ -1368,7 +1398,7 @@ module CanonicalTaskControl
       raise InvalidInput, "children exceed #{MAX_CHILDREN} records"
     end
 
-    task_lanes = task.fetch("lanes").to_h { |lane| [canonical_scalar(lane.fetch("id")), lane] }
+    task_lanes = task.fetch("lanes").to_h { |lane| [canonical_identity(lane.fetch("id")), lane] }
     packet_ids = packets.map do |packet|
       keys = %w[
         contract version child_kind child_id lane_id repository target role scope
@@ -1398,7 +1428,7 @@ module CanonicalTaskControl
       enforce_compact_strings!(packet, label: "child packet")
       validate_review_binding!(packet)
       validate_child_binding!(packet, task_lanes, task)
-      canonical_scalar(packet["child_id"])
+      canonical_identity(packet["child_id"])
     end
     raise InvalidInput, "child packet ids must be unique" unless packet_ids.uniq.length == packet_ids.length
 
@@ -1433,7 +1463,7 @@ module CanonicalTaskControl
       end
 
       validate_review_binding!(receipt)
-      unless canonical_scalar(receipt["head_sha"]) == canonical_scalar(manifest_head_for(manifest, receipt["lane_id"]))
+      unless canonical_identity(receipt["head_sha"]) == canonical_identity(manifest_head_for(manifest, receipt["lane_id"]))
         raise InvalidInput, "child receipt head must equal manifest current head"
       end
 
@@ -1441,7 +1471,7 @@ module CanonicalTaskControl
       raise InvalidInput, "child receipt evidence may not contain nested UNKNOWN" if nested_unknown?(receipt)
 
       validate_child_binding!(receipt, task_lanes, task)
-      canonical_scalar(receipt["child_id"])
+      canonical_identity(receipt["child_id"])
     end
     raise InvalidInput, "child receipt ids must be unique" unless receipt_ids.uniq.length == receipt_ids.length
 
@@ -1464,21 +1494,21 @@ module CanonicalTaskControl
 
       validate_review_binding!(state)
       validate_child_binding!(state, task_lanes, task)
-      canonical_scalar(state["child_id"])
+      canonical_identity(state["child_id"])
     end
     raise InvalidInput, "child state ids must be unique" unless state_ids.uniq.length == state_ids.length
     unless packet_ids.sort == receipt_ids.sort && receipt_ids.sort == state_ids.sort
       raise InvalidInput, "every accepted child packet requires one receipt and closed state"
     end
 
-    packet_bindings = packets.to_h { |record| [canonical_scalar(record["child_id"]), child_binding(record)] }
-    receipt_bindings = receipts.to_h { |record| [canonical_scalar(record["child_id"]), child_binding(record)] }
-    state_bindings = states.to_h { |record| [canonical_scalar(record["child_id"]), child_binding(record)] }
+    packet_bindings = packets.to_h { |record| [canonical_identity(record["child_id"]), child_binding(record)] }
+    receipt_bindings = receipts.to_h { |record| [canonical_identity(record["child_id"]), child_binding(record)] }
+    state_bindings = states.to_h { |record| [canonical_identity(record["child_id"]), child_binding(record)] }
     unless packet_bindings == receipt_bindings && receipt_bindings == state_bindings
       raise InvalidInput, "packet/receipt/state bindings must match"
     end
 
-    receipt_by_id = receipts.to_h { |record| [canonical_scalar(record["child_id"]), record] }
+    receipt_by_id = receipts.to_h { |record| [canonical_identity(record["child_id"]), record] }
     closure_receipts = states.map do |state|
       closure = state["closure"]
       require_exact_keys!(closure, %w[
@@ -1487,14 +1517,14 @@ module CanonicalTaskControl
       unless closure["contract"] == "canonical-task-child-closure-receipt" && closure["version"] == 1 &&
              closure.values_at("child_kind", "child_id", "lane_id", "task_id", "status", "resumable") ==
              state.values_at("child_kind", "child_id", "lane_id", "task_id", "status", "resumable") &&
-             closure["receipt_digest"] == canonical_digest(receipt_by_id.fetch(canonical_scalar(state["child_id"])))
+             closure["receipt_digest"] == canonical_digest(receipt_by_id.fetch(canonical_identity(state["child_id"])))
         raise InvalidInput, "child closure receipt binding mismatch"
       end
 
       closure
     end
 
-    [receipt_ids.sort, state_ids.sort, closure_receipts.sort_by { |receipt| canonical_scalar(receipt["child_id"]) }]
+    [receipt_ids.sort, state_ids.sort, closure_receipts.sort_by { |receipt| canonical_identity(receipt["child_id"]) }]
   end
 
   def validate_review_binding!(record)
@@ -1505,7 +1535,7 @@ module CanonicalTaskControl
       raise InvalidInput, "review diff identity must be sha256"
     end
     raise InvalidInput, "review base/head must be full SHAs" unless full_sha?(record["base_sha"]) && full_sha?(record["head_sha"])
-    raise InvalidInput, "review base and head must differ" if canonical_scalar(record["base_sha"]) == canonical_scalar(record["head_sha"])
+    raise InvalidInput, "review base and head must differ" if canonical_identity(record["base_sha"]) == canonical_identity(record["head_sha"])
     raise InvalidInput, "review round must be positive" unless positive_integer?(record["review_round"])
     raise InvalidInput, "review package ref must be durable HTTPS" unless durable_ref?(record["review_package_ref"])
   end
@@ -1550,16 +1580,16 @@ module CanonicalTaskControl
 
   def child_binding(record)
     %w[child_kind lane_id repository target role scope batch_id task_id plan_id spec_id diff_identity base_sha head_sha review_round review_package_ref].map do |key|
-      %w[lane_id repository target role].include?(key) ? canonical_scalar(record[key]) : record[key]
+      %w[lane_id repository target role].include?(key) ? canonical_identity(record[key]) : record[key]
     end
   end
 
   def validate_child_binding!(record, task_lanes, task)
-    unless canonical_scalar(record["task_id"]) == canonical_scalar(task["id"])
+    unless canonical_identity(record["task_id"]) == canonical_identity(task["id"])
       raise InvalidInput, "child record task binding mismatch"
     end
 
-    lane = task_lanes[canonical_scalar(record["lane_id"])]
+    lane = task_lanes[canonical_identity(record["lane_id"])]
     raise InvalidInput, "child record lane is outside the task" unless lane
     return if canonical_target_key(record) == canonical_target_key(lane)
 
@@ -1594,7 +1624,7 @@ module CanonicalTaskControl
       raise InvalidInput, "canonical targets must be unique case-insensitively"
     end
 
-    lane_ids = lanes.map { |lane| canonical_scalar(lane["id"]) }
+    lane_ids = lanes.map { |lane| canonical_identity(lane["id"]) }
     raise InvalidInput, "lane ids must be unique case-insensitively" unless lane_ids.uniq.length == lane_ids.length
     unless lane_target_keys.sort == target_keys.sort
       raise InvalidInput, "each canonical repository-qualified target requires exactly one execution lane"
@@ -1690,7 +1720,7 @@ module CanonicalTaskControl
                           type version batch_id state_path scopes thresholds telemetry delegation trusted_verifiers
                         ])
     unless budget["type"] == "batch-token-budget" && budget["version"] == 1 &&
-           canonical_scalar(budget["batch_id"]) == canonical_scalar(task["id"]) &&
+           canonical_identity(budget["batch_id"]) == canonical_identity(task["id"]) &&
            budget["state_path"].to_s.start_with?("/")
       raise InvalidInput, "multi-target exception requires batch-token-budget v1"
     end
@@ -1698,8 +1728,8 @@ module CanonicalTaskControl
     scopes = budget["scopes"]
     require_exact_keys!(scopes, %w[aggregate coordinator lanes])
     lane_limits = scopes["lanes"]
-    expected_ids = task.fetch("lanes").map { |lane| canonical_scalar(lane["id"]) }.sort
-    actual_ids = lane_limits.is_a?(Hash) ? lane_limits.keys.map { |id| canonical_scalar(id) }.sort : []
+    expected_ids = task.fetch("lanes").map { |lane| canonical_identity(lane["id"]) }.sort
+    actual_ids = lane_limits.is_a?(Hash) ? lane_limits.keys.map { |id| canonical_identity(id) }.sort : []
     raise InvalidInput, "budget plan lanes must exactly match exception lanes" unless actual_ids == expected_ids
 
     [scopes["aggregate"], scopes["coordinator"], *lane_limits.values].each do |limit|
@@ -1775,7 +1805,7 @@ module CanonicalTaskControl
   end
 
   def known_string?(value)
-    value.is_a?(String) && !value.strip.empty? && value.strip != "UNKNOWN"
+    value.is_a?(String) && !value.strip.empty? && canonical_identity(value) != "unknown"
   end
 
   def portable_id?(value)
@@ -1821,7 +1851,7 @@ module CanonicalTaskControl
     case value
     when Hash then value.any? { |key, nested| nested_unknown?(key) || nested_unknown?(nested) }
     when Array then value.any? { |nested| nested_unknown?(nested) }
-    when String then value.upcase.include?("UNKNOWN")
+    when String then canonical_identity(value).include?("unknown")
     else false
     end
   end
@@ -1830,12 +1860,12 @@ module CanonicalTaskControl
     value.to_s.match?(/\A[0-9a-fA-F]{40}\z/)
   end
 
-  def canonical_scalar(value)
-    value.to_s.strip.downcase
+  def canonical_identity(value)
+    value.to_s.unicode_normalize(:nfkc).downcase(:fold).strip
   end
 
   def canonical_target_key(target)
-    [canonical_scalar(target["repository"]), canonical_scalar(target["target"])]
+    [canonical_identity(target["repository"]), canonical_identity(target["target"])]
   end
 
   def task_target?(task, record)
@@ -1844,7 +1874,7 @@ module CanonicalTaskControl
 
   def manifest_head_for(manifest, lane_id)
     entry = manifest.fetch("current_heads").find do |candidate, _sha|
-      canonical_scalar(candidate) == canonical_scalar(lane_id)
+      canonical_identity(candidate) == canonical_identity(lane_id)
     end
     raise InvalidInput, "manifest current head missing for lane" unless entry
 

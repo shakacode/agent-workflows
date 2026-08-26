@@ -2518,9 +2518,15 @@ if options[:verify_plan_only]
     trusted_budget = BatchTokenBudget.load_trusted_plan(
       options.fetch(:trusted_plan_path), options.fetch(:trusted_plan_id), options.fetch(:trusted_plan_digest)
     )
+    plan_path = File.expand_path(options.fetch(:trusted_plan_path))
+    state_path = File.expand_path(trusted_budget.fetch("state_path"))
+    if BatchTokenBudget.artifact_path_collision?(plan_path, state_path)
+      raise BatchTokenBudget::InvalidInput, "trusted-plan-state-path-collision"
+    end
+
     puts JSON.generate(
       "type" => "batch-token-budget-plan-verification", "version" => 1, "status" => "verified",
-      "trusted_plan_path" => File.expand_path(options.fetch(:trusted_plan_path)),
+      "trusted_plan_path" => plan_path,
       "trusted_plan_id" => options.fetch(:trusted_plan_id),
       "trusted_plan_digest" => options.fetch(:trusted_plan_digest), "plan" => trusted_budget
     )

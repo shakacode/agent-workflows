@@ -141,6 +141,13 @@ multi-target delegation uses the lane corresponding to its matched target.
 Reject nested `UNKNOWN`, malformed decision/checkpoint fields, or normalized
 duplicate ownership actors. Use `batch-token-budget --verify-plan-only` for the
 external exception plan; an expected state-path failure is not verification.
+Verify-only must enforce the same plan/state artifact-collision invariant as
+the mutating path. Bind every decision `evaluated_at` to the current trusted
+bundle window. Preserve faithful replay semantics: admitted replays may retain
+their original nil checkpoint, warning replays may not, and original receipt
+revisions may precede the current replay revision. Normalize case-insensitive
+control identities with Unicode NFKC plus full case folding and trimming, and
+apply that normalization before nested `UNKNOWN` rejection.
 Carry cross-target facts only in `canonical-task-foreign-target-packet` v1 with
 literal `evidence_only` disposition. Persist the emitted
 `foreign-target-evidence-receipt`; its only action is

@@ -698,7 +698,11 @@ and open findings instead.
 Before delegation, task resume, worker spawn, retry, or review wave, require the
 actual admitted `batch-token-budget-result` v1 and its bound reservation and
 decision receipts, explicit lane identity, exact nested checkpoint shape,
-canonical identifiers, request digest, and evaluation time. Caller-authored
+canonical identifiers, request digest, and evaluation time inside the current
+trusted-bundle window. A faithful replay of an original `admitted` result keeps
+its original nil checkpoint; a replayed warning still requires the original
+well-formed checkpoint, and an original decision revision may precede the
+current replay revision. Caller-authored
 amounts, units, URLs, nested `UNKNOWN`, or `status: passed` objects are not budget
 authority. Multi-target actions may select any declared lane, but never default
 silently to the first lane.
@@ -744,6 +748,10 @@ result's `valid` string alone: load the resolved root-bound module and require
 in-memory document. Restrict task, lane, child, pair, and representative
 task/batch identities to portable ASCII IDs rather than relying on Unicode
 case folding.
+For actor and other case-insensitive control identities, use one normalization:
+Unicode NFKC, full case folding, then trim. Thus `Straße`, `STRASSE`, and
+compatibility-width variants collide. Apply the same normalization before
+nested `UNKNOWN` detection so compatibility forms cannot become evidence.
 The helper securely resolves each usage-receipt path beneath the trusted root,
 reads at most 1 MiB, parses the artifact, and requires its canonical content and
 digest to equal the in-memory receipt. Its privacy object must remain
@@ -778,7 +786,9 @@ evidence and the matched run establish it.
 The production `batch-token-budget --verify-plan-only` mode validates an
 externally anchored plan without a state path or state mutation and emits the
 canonical verified plan. Canonical task control consumes that contract directly;
-it never uses an expected state-path error as a validation signal.
+it never uses an expected state-path error as a validation signal. Verify-only
+also rejects the same plan-path/state-path equality, ancestor, descendant,
+symlink, and filesystem-identity collisions as the mutating production path.
 
 ### Short Invocation
 

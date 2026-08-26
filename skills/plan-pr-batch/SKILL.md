@@ -173,6 +173,11 @@ Plan portable repo-seam resolution for the findings validator, explicit lane
 identity for every budget action, trusted-root reads of bounded usage artifacts
 with metadata-only privacy, normalized distinct ownership actors, and
 `batch-token-budget --verify-plan-only` for external plan validation.
+Require verify-only to enforce the normal plan/state artifact-collision fence.
+Plan current trusted-bundle-window evidence for budget decision timestamps and
+faithful replay handling for original revisions/checkpoints. Canonicalize
+case-insensitive control identities with Unicode NFKC, full case folding, and
+trimming; normalize before rejecting nested `UNKNOWN` compatibility forms.
 
 ## Workflow
 
