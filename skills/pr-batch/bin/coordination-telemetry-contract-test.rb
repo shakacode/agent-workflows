@@ -13,15 +13,15 @@ PAUSE_SKILL_PATH = File.join(ROOT, "skills/pause/SKILL.md")
 CONTINUE_SKILL_PATH = File.join(ROOT, "skills/continue/SKILL.md")
 TRIAGE_SKILL_PATH = File.join(ROOT, "skills/triage/SKILL.md")
 MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
-                       "coordinator_route=<model>/<effort>@<binding>;" \
-                       "lanes=<lane-id:host+model/effort@binding>,...;" \
+                       "coordinator_preference=<model>/<effort>;" \
+                       "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
                        "UNKNOWN=field;no guesses"
 MANIFEST_MISSING_REPETITION_LINE = MANIFEST_PROMPT_LINE.sub(">,...", ">")
 MANIFEST_WHOLE_LANE_ENTRY_UNKNOWN_LINE =
-  MANIFEST_PROMPT_LINE.sub("model/effort@binding>,...", "model/effort@binding|UNKNOWN>,...")
-MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_LINE =
-  MANIFEST_PROMPT_LINE.sub("coordinator_route=<model>/<effort>@<binding>",
-                           "coordinator_route=<model/effort@binding|UNKNOWN>")
+  MANIFEST_PROMPT_LINE.sub("observed-host/model/effort>,...", "observed-host/model/effort|UNKNOWN>,...")
+MANIFEST_WHOLE_COORDINATOR_PREFERENCE_UNKNOWN_LINE =
+  MANIFEST_PROMPT_LINE.sub("coordinator_preference=<model>/<effort>",
+                           "coordinator_preference=<model/effort|UNKNOWN>")
 HELP_REQUESTED_REASON_PRECEDENCE =
   "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
   "approval or capability; otherwise `question` for a required maintainer or product answer; " \
@@ -119,12 +119,12 @@ DRAIN_EMISSION_FAILURE_REQUIREMENT =
   "`UNKNOWN` evidence; the worker continues its cooperative drain and claim release, while the coordinator/operator " \
   "hard-escape path proceeds immediately to worker process termination and claim release, without waiting further " \
   "on the drain event."
-REGISTRATION_RECONCILIATION_FRAGMENTS = [
-  "After every accepted host-observed `launch-confirmation v2`, reconcile",
-  "fallback, escalation, or replacement",
-  "preserve verified",
-  "`UNKNOWN` only per unverifiable field"
-].freeze
+REGISTRATION_RECONCILIATION_PATTERNS = {
+  "optional host observation" => %r{optional observed host/model/effort|host(?:-observed)? (?:metadata|observations?|host/model/effort)},
+  "field-granular unknown" => /field-granular `UNKNOWN`|`UNKNOWN` only per unavailable field|use `UNKNOWN` only per unavailable field/,
+  "nonblocking observation" => /does not block|never blocks/,
+  "registration reconciliation" => /reconcil/
+}.freeze
 REGISTRATION_BOUNDED_FRAGMENTS = [
   "backend-advertised safe executable plus ordered opaque argv",
   "without shell evaluation",
@@ -132,26 +132,16 @@ REGISTRATION_BOUNDED_FRAGMENTS = [
   "whole-group `TERM` then `KILL`",
   "does not block worker launch"
 ].freeze
-REGISTRATION_OBSERVATION_MARKER = "accepted host-observed `launch-confirmation v2`"
-REGISTRATION_ACTIVE_PATTERN = /before treating (?:the|that) lane as active/
 REGISTRATION_NO_SHELL_MARKER = "without shell evaluation"
 REGISTRATION_UPDATE_PATTERNS = {
-  "signed actual host" => /signed `actual_host`/,
-  "unknown host blocks exact policy" => /cannot satisfy exact-policy activation/,
   "update capability detection" => %r{registration update/upsert/reconciliation capability},
   "create-only fallback" => /unadvertised or unsupported create-only backend/,
   "affected fields unknown" => /affected (?:registration )?fields? `UNKNOWN`/,
-  "safe pending state" => /launch-pending/,
   "advertised update path" => /advertised update/,
-  "nonwedging failure" => /without wedging|must not wedge/
+  "nonwedging failure" => /without wedging|must not wedge|does not block/
 }.freeze
 CREATE_ONLY_BRANCH_PATTERNS = {
-  "affected fields unknown" => /affected (?:registration )?fields? `UNKNOWN`/,
-  "authenticated confirmation survives" =>
-    /does not undo an authenticated confirmation|authenticated confirmation remains valid/,
-  "verified acceptance fields gate activation" =>
-    /activation (?:proceeds only when|requires) every launch-\s*acceptance field (?:is )?verified/,
-  "unverified activation remains pending" => /otherwise (?:remains|stays) `launch-pending`/
+  "affected fields unknown" => /affected (?:registration )?fields? `UNKNOWN`/
 }.freeze
 ADVERTISED_UPDATE_BRANCH_PATTERNS = {
   "bounded safe executable and opaque argv" => /bounded safe executable-plus-opaque-argv/,
@@ -237,10 +227,10 @@ def parse_operational_signal_rows(section)
 end
 
 def extract_json_fence(text, heading)
-  heading_index = text.index(heading)
-  raise "missing heading #{heading.inspect}" unless heading_index
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  raise "missing heading #{heading.inspect}" unless heading_match
 
-  fence_start = text.index("```json\n", heading_index)
+  fence_start = text.index("```json\n", heading_match.end(0))
   raise "missing JSON fence after #{heading.inspect}" unless fence_start
 
   body_start = fence_start + "```json\n".length
@@ -261,21 +251,25 @@ def assert_nonblank_string(value, label)
 end
 
 def assert_manifest_route_provenance(manifest)
-  coordinator_route = manifest.fetch("coordinator_route")
-  assert_equal %w[binding_source effort model], coordinator_route.keys.sort
-  coordinator_route.each do |key, value|
-    assert_nonblank_string(value, "coordinator_route.#{key}")
+  coordinator_preference = manifest.fetch("coordinator_preference")
+  assert_equal %w[effort model], coordinator_preference.keys.sort
+  coordinator_preference.each do |key, value|
+    assert_nonblank_string(value, "coordinator_preference.#{key}")
   end
 
   lanes = manifest.fetch("lanes")
   refute_empty lanes
   lanes.each_with_index do |lane, lane_index|
-    assert_nonblank_string(lane.fetch("host"), "lanes[#{lane_index}].host")
+    worker_preference = lane.fetch("worker_preference")
+    assert_equal %w[effort model], worker_preference.keys.sort
+    worker_preference.each do |key, value|
+      assert_nonblank_string(value, "lanes[#{lane_index}].worker_preference.#{key}")
+    end
 
-    worker_route = lane.fetch("worker_route")
-    assert_equal %w[binding_source effort model], worker_route.keys.sort
-    worker_route.each do |key, value|
-      assert_nonblank_string(value, "lanes[#{lane_index}].worker_route.#{key}")
+    observed_host = lane.fetch("observed_host")
+    assert_equal %w[effort host model], observed_host.keys.sort
+    observed_host.each do |key, value|
+      assert_nonblank_string(value, "lanes[#{lane_index}].observed_host.#{key}")
     end
   end
 end
@@ -351,23 +345,28 @@ def assert_manifest_prompt_contract(text, location)
   normalized_text = text.gsub(/\s+/, " ")
   assert_includes normalized_text, MANIFEST_PROMPT_LINE,
                   "#{location} must use the exact manifest provenance grammar"
-  assert_includes normalized_text, "coordinator_route=<model>/<effort>@<binding>",
-                  "#{location} must keep coordinator route UNKNOWN at field granularity"
-  assert_includes normalized_text, "lanes=<lane-id:host+model/effort@binding>,...",
+  assert_includes normalized_text, "coordinator_preference=<model>/<effort>",
+                  "#{location} must keep coordinator preference UNKNOWN at field granularity"
+  assert_includes normalized_text, "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...",
                   "#{location} must require repeated lane entries"
   assert_includes normalized_text, ";UNKNOWN=field;",
                   "#{location} must keep UNKNOWN at field granularity"
   refute_match(/lanes=<lane-id:[^>]*\|UNKNOWN>/, normalized_text,
                "#{location} must reject whole-entry UNKNOWN")
-  refute_includes normalized_text, "coordinator_route=<model/effort@binding|UNKNOWN>",
-                  "#{location} must reject whole-route UNKNOWN"
+  refute_includes normalized_text, "coordinator_preference=<model/effort|UNKNOWN>",
+                  "#{location} must reject whole-preference UNKNOWN"
 end
 
 def assert_registration_runtime_contract(text, location)
   normalized_text = text.gsub(/\s+/, " ")
-  (REGISTRATION_RECONCILIATION_FRAGMENTS + REGISTRATION_BOUNDED_FRAGMENTS).each do |fragment|
+  REGISTRATION_RECONCILIATION_PATTERNS.each do |concept, pattern|
+    assert_match pattern, normalized_text, "#{location} must include #{concept}"
+  end
+  REGISTRATION_BOUNDED_FRAGMENTS.each do |fragment|
     assert_includes normalized_text, fragment, "#{location} must include #{fragment.inspect}"
   end
+  refute_match(/launch-confirmation v2|signed `actual_host`|authenticated confirmation/, normalized_text,
+               "#{location} must not require signed launch telemetry")
 end
 
 def assert_registration_section_runtime_contract(section, location)
@@ -377,15 +376,14 @@ def assert_registration_section_runtime_contract(section, location)
   refute_includes normalized_section, "with shell evaluation",
                   "#{location} must reject positive shell-evaluation wording"
 
-  observation_offset = normalized_section.index(REGISTRATION_OBSERVATION_MARKER)
-  active_match = normalized_section.match(REGISTRATION_ACTIVE_PATTERN)
-  refute_nil observation_offset, "#{location} must require host-observed reconciliation"
-  refute_nil active_match, "#{location} must bind reconciliation before treating the lane as active"
-  assert_operator observation_offset, :<, active_match.begin(0),
-                  "#{location} must reconcile the host observation before treating the lane active"
+  REGISTRATION_RECONCILIATION_PATTERNS.each do |concept, pattern|
+    assert_match pattern, normalized_section, "#{location} must include #{concept}"
+  end
   REGISTRATION_UPDATE_PATTERNS.each do |concept, pattern|
     assert_match pattern, normalized_section, "#{location} must include #{concept}"
   end
+  refute_match(/launch-confirmation v2|signed `actual_host`|authenticated confirmation/, normalized_section,
+               "#{location} must not require signed launch telemetry")
 end
 
 def assert_registration_capability_branches(section, location)
@@ -437,7 +435,7 @@ def authoritative_registration_sections
                       "<!-- host-branch: codex-only start -->"),
     TRIAGE_SKILL_PATH =>
       extract_between(read_repo_file(TRIAGE_SKILL_PATH),
-                      "After every accepted host-observed `launch-confirmation v2`",
+                      "When host observations become available",
                       "For Codex prompts")
   }
 end
@@ -450,6 +448,23 @@ def assert_remediation_authority_section_contract(section, location)
 end
 
 class CoordinationTelemetryContractTest < Minitest::Test
+  def test_json_fence_extractor_ignores_a_quoted_heading
+    fixture = <<~MARKDOWN
+      <!-- Keep `## Batch Provenance Manifest` synchronized. -->
+      ```json
+      {"source":"decoy"}
+      ```
+
+      ## Batch Provenance Manifest
+
+      ```json
+      {"source":"real"}
+      ```
+    MARKDOWN
+
+    assert_equal({ "source" => "real" }, extract_json_fence(fixture, "## Batch Provenance Manifest"))
+  end
+
   def test_extract_section_stops_at_a_parent_heading
     fixture = <<~MARKDOWN
       ### Target
@@ -624,19 +639,14 @@ class CoordinationTelemetryContractTest < Minitest::Test
   def test_registration_section_runtime_contract_rejects_qa_mutants
     authoritative_registration_sections.each do |path, section|
       normalized = section.gsub(/\s+/, " ")
-      active_phrase = normalized[REGISTRATION_ACTIVE_PATTERN]
+      observation_pattern = REGISTRATION_RECONCILIATION_PATTERNS.fetch("optional host observation")
+      nonblocking_pattern = REGISTRATION_RECONCILIATION_PATTERNS.fetch("nonblocking observation")
       mutants = {
         "deleted no-shell rule" => normalized.sub(REGISTRATION_NO_SHELL_MARKER, ""),
         "positive shell evaluation" =>
           normalized.sub(REGISTRATION_NO_SHELL_MARKER, "with shell evaluation"),
-        "deleted host observation" => normalized.sub(REGISTRATION_OBSERVATION_MARKER, ""),
-        "inactive target state" =>
-          normalized.sub(REGISTRATION_ACTIVE_PATTERN) { |phrase| phrase.sub("active", "inactive") },
-        "inverted reconciliation order" =>
-          normalized
-          .sub(REGISTRATION_OBSERVATION_MARKER, "__REGISTRATION_OBSERVATION__")
-          .sub(active_phrase, REGISTRATION_OBSERVATION_MARKER)
-          .sub("__REGISTRATION_OBSERVATION__", active_phrase)
+        "deleted host observation" => normalized.gsub(observation_pattern, ""),
+        "deleted nonblocking rule" => normalized.gsub(nonblocking_pattern, "")
       }
 
       mutants.each do |name, mutant|
@@ -669,12 +679,6 @@ class CoordinationTelemetryContractTest < Minitest::Test
       hostile_mutants = {
         "create-only fields become verified" =>
           normalized.sub(CREATE_ONLY_BRANCH_PATTERNS.fetch("affected fields unknown"), "affected fields verified"),
-        "create-only invalidates authenticated confirmation" =>
-          normalized.sub(CREATE_ONLY_BRANCH_PATTERNS.fetch("authenticated confirmation survives"),
-                         "authenticated confirmation is invalidated"),
-        "create-only activates without verified acceptance" =>
-          normalized.sub(CREATE_ONLY_BRANCH_PATTERNS.fetch("verified acceptance fields gate activation"),
-                         "activation proceeds without verified launch-acceptance fields"),
         "advertised update enables shell evaluation" =>
           normalized.sub(REGISTRATION_NO_SHELL_MARKER, "with shell evaluation"),
         "advertised update locally uses shell evaluation" =>
@@ -691,7 +695,14 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_registration_runtime_contract_rejects_independent_mutants
     text = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
-    (REGISTRATION_RECONCILIATION_FRAGMENTS + REGISTRATION_BOUNDED_FRAGMENTS).each do |fragment|
+    REGISTRATION_RECONCILIATION_PATTERNS.each_value do |pattern|
+      fragment = text[pattern]
+      refute_nil fragment
+      mutant = text.gsub(pattern, "")
+      refute_equal text, mutant
+      assert_raises(Minitest::Assertion) { assert_registration_runtime_contract(mutant, "independent mutant") }
+    end
+    REGISTRATION_BOUNDED_FRAGMENTS.each do |fragment|
       mutant = text.gsub(fragment, "")
       refute_equal text, mutant
       assert_raises(Minitest::Assertion) { assert_registration_runtime_contract(mutant, "independent mutant") }
@@ -702,7 +713,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
     {
       "missing repetition" => MANIFEST_MISSING_REPETITION_LINE,
       "whole-entry UNKNOWN" => MANIFEST_WHOLE_LANE_ENTRY_UNKNOWN_LINE,
-      "whole coordinator-route UNKNOWN" => MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_LINE
+      "whole coordinator-preference UNKNOWN" => MANIFEST_WHOLE_COORDINATOR_PREFERENCE_UNKNOWN_LINE
     }.each do |mutation, invalid_line|
       [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
         text = read_repo_file(path)
@@ -719,10 +730,10 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_registered_batch_manifest_route_provenance_accepts_literal_unknown
     manifest = registered_batch_manifest
-    manifest.fetch("coordinator_route")["model"] = "UNKNOWN"
+    manifest.fetch("coordinator_preference")["model"] = "UNKNOWN"
     manifest.fetch("lanes").each do |lane|
-      lane["host"] = "UNKNOWN"
-      lane.fetch("worker_route")["binding_source"] = "UNKNOWN"
+      lane.fetch("observed_host")["host"] = "UNKNOWN"
+      lane.fetch("observed_host")["model"] = "UNKNOWN"
     end
 
     assert_manifest_route_provenance(manifest)
@@ -730,14 +741,14 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_registered_batch_manifest_route_provenance_rejects_whitespace_only_values
     mutations = {
-      "coordinator_route.model" => lambda do |manifest|
-        manifest.fetch("coordinator_route")["model"] = " \t\n"
+      "coordinator_preference.model" => lambda do |manifest|
+        manifest.fetch("coordinator_preference")["model"] = " \t\n"
       end,
-      "lanes[0].host" => lambda do |manifest|
-        manifest.fetch("lanes").first["host"] = " \t\n"
+      "lanes[0].observed_host.host" => lambda do |manifest|
+        manifest.fetch("lanes").first.fetch("observed_host")["host"] = " \t\n"
       end,
-      "lanes[0].worker_route.binding_source" => lambda do |manifest|
-        manifest.fetch("lanes").first.fetch("worker_route")["binding_source"] = " \t\n"
+      "lanes[0].worker_preference.model" => lambda do |manifest|
+        manifest.fetch("lanes").first.fetch("worker_preference")["model"] = " \t\n"
       end
     }
 
@@ -765,7 +776,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
     end
 
     {
-      "skills/plan-pr-batch/SKILL.md" => %w[pack_sha coordinator_route worker_route host],
+      "skills/plan-pr-batch/SKILL.md" => %w[pack_sha coordinator_preference worker_preference observed_host],
       "skills/pr-batch/SKILL.md" => %w[help_requested escalation_requested error human_intervention],
       "skills/pr-monitoring/SKILL.md" => %w[help_requested error],
       "skills/pause/SKILL.md" => %w[help_requested blocked-user-input],

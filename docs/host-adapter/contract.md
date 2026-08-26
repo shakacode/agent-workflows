@@ -71,6 +71,38 @@ Claude Code slash commands or subagent runtime support for Claude Code. If those
 signals are absent or mixed, use the `generic` prompt target and conservative
 batch sizing.
 
+Model and effort selections remain advisory preferences across every host. A
+host adapter may report observed host, model, and effort only from runtime state
+it actually exposes; every unavailable field is `UNKNOWN`, and absence or
+mismatch never alone blocks workflow progress. The host owns any route-exposure
+mechanism. Agent Workflows does not provision or require signing keys, fixed
+trust anchors, launch-confirmation receipts, or human waivers. Prompt conversion
+for incompatible runtime instructions is tracked separately in
+[issue #372](https://github.com/shakacode/agent-workflows/issues/372).
+
+## Host-Owned Fact Rollout
+
+Before any host-owned fact becomes a portable mandatory gate, the proposal must
+name an accountable owner for each producer, verifier, provisioner, and
+installer role and define clean-install acceptance for every supported host.
+Record that ownership in the design or PR with this minimum matrix:
+
+| Host-owned fact | Producer owner | Verifier owner | Provisioner owner | Installer owner | Clean-install acceptance |
+| --- | --- | --- | --- | --- | --- |
+| Named fact and schema | Accountable component/person | Accountable component/person | Accountable component/person | Accountable component/person | Commands and expected evidence for Codex and Claude |
+
+Every owner must be named and every role must have an implemented path. The
+clean-install acceptance must start from an empty supported host target, install
+through the public installer path, exercise the real producer and verifier, and
+prove that provisioning makes the evidence available without fixture-generated
+keys, receipts, or pre-seeded local state.
+
+If any role or clean-install acceptance is absent, the capability remains
+optional and advisory; unavailable host-owned fields use `UNKNOWN` and do not
+block otherwise valid workflow progress. Unit-tested verification without its
+producer, provisioning, installation, and clean-install path is not rollout
+readiness.
+
 ## Invocation Syntax
 
 Shared docs may mention the portable skill name, but user-facing prompts must
@@ -107,15 +139,67 @@ instead of silently weakening the workflow.
 
 ## Scheduled Monitoring and Planning-Chat Lifecycle
 
-The portable completion contract may request one deduplicated, inspectable,
-updatable, stoppable 15-minute **current-thread** monitor for a blocker that
-can clear without user input. This is not a request for a durable job that
-starts a new conversation. A wake is supported only when it returns to the
-same task/thread; otherwise preserve the exact manual-resume instruction.
+The portable completion contract prefers one deduplicated deterministic
+**state-change watcher** for a blocker that can clear without user input. A host
+may advertise this capability only when its adapter can collect a sanitized
+authoritative observation, resolve `PR_BATCH_SKILL_DIR` through the standard
+explicit environment / loaded skill base / repo-pinned fallback chain, and
+invoke `"${PR_BATCH_SKILL_DIR}/bin/goal-state-change-monitor" --state <path>`
+outside parent task context, before any model continuation. `suppress-unchanged`,
+`suppress-stale-probe`, `suppress-replayed-probe`, and
+`suppress-acknowledgement-retry` must not re-enter the parent task.
+`wake_parent: true` is authoritative: `wake-state-change`, `fallback-model-poll`,
+`stop-dependency-terminal`, and `redeliver-pending-wake` re-enter it with the
+compact `state_delta` when present and then rerun all mandatory gates. The
+adapter must durably
+enqueue that continuation before acknowledging its `wake_id`; until then,
+`redeliver-pending-wake` remains a waking result so a runner restart cannot lose
+the transition. Its returned `acknowledgement_payload` is the exact bounded
+payload to submit after durable enqueue; do not rebuild it from a newer live
+observation. Acknowledgement is idempotent: retrying the same acknowledged
+`wake_id` is a non-waking replay and cannot fail a recovered runner.
+The reducer keeps this state bounded and does not persist an
+acknowledgement-membership ledger. It validates the current pending or last
+decision directly. Delayed acknowledgement retries replay the original
+canonical observation and `probe_sequence`; the reducer accepts only a
+`wake_id` derived from that fingerprint and a waking action possible for the
+submitted capability and statuses, without mutating newer state. Attaching an
+old acknowledgement to unrelated newer evidence, or naming an impossible
+waking action, fails closed. For bounded migration, legacy
+`acknowledged_wake_ids` is dropped on the next state persistence.
+
+`blocker_state` is an object whose arrays are set-valued collections; adapters
+must encode ordered sequences as keyed objects. The reducer canonicalizes object
+keys and set members before hashing so API result order alone cannot wake the
+parent task.
+
+A retry with the same `probe_sequence` must replay a canonical-equivalent observation payload.
+For state carrying the current `observation_digest_version`, only `observed_at` and
+`acknowledged_wake_id` may differ. Legacy state without `observation_digest_version`
+must first replay the exact prior `observed_at` and payload so the reducer can migrate it;
+a restamped legacy retry fails closed. A substantive change to
+`blocker_state`, `resume_instruction`, limits, polling policy, capability, or task/dependency
+status at the same sequence fails closed as `probe-replay-mismatch`; advance the sequence for
+new evidence.
+
+Adapters must provide a nonempty `resume_instruction` for every observation so
+any terminal or budget handoff remains actionable. A blocked-user-input
+`blocker_state` must also carry the exact nonempty `question`; the reducer
+persists both values in its non-waking manual handoff.
+When an unsupported capability and a budget ceiling coincide, the unsupported
+handoff also preserves `budget_reason`, `usage`, and `limits`.
+
+This source pack defines the portable reducer verb and adapter contract; it
+does not implement a live host scheduler. Current-thread scheduling alone is
+not deterministic-watcher capability. When a host lacks the out-of-context
+verb, advertise `model-polling-only` and use one inspectable, updatable,
+stoppable bounded fallback, or advertise `unsupported` and preserve the exact
+manual-resume instruction.
 
 | Portable lifecycle | Codex Desktop | Claude Code (CLI and Desktop) |
 | --- | --- | --- |
-| Current-thread blocked-goal monitor | Use the current thread's supported recurring wake mechanism only when it can re-enter that same goal/thread. Keep one monitor, refresh evidence at each wake, and stop it when unblocked or complete. | In the current Claude Code session, use `/loop <interval> <prompt>` or the Cron scheduling tools. These tasks are session-scoped: they run only while Claude Code is running and idle, and a new conversation clears them. A resumed CLI session restores only unexpired tasks (`claude --resume` or `claude --continue`); recurring tasks expire after seven days. [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks) |
+| Deterministic state-change watcher | Advertise `deterministic-watcher` only when a configured adapter verb runs the sanitized probe and reducer outside task context, persists one stable monitor identity, and resumes the same task for every `wake_parent: true` decision, including an idempotent `redeliver-pending-wake` after restart. Without that verb, use `model-polling-only` or `unsupported`; a scheduled task that first reloads the parent does not qualify. | Apply the same capability test. Background Bash or Monitor work is not restored on resume, and `/loop`/Cron re-entry is model-mediated rather than proof of an out-of-context reducer verb; use it only as the bounded fallback unless a configured adapter supplies the required verb. [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks) |
+| Current-thread bounded fallback | Use the current task's recurring wake mechanism only when it can be inspected, updated, and stopped. Keep one monitor identity; use four 15-minute fast-window polls, exponential backoff capped at four hours, finite unchanged-run/call/token ceilings, and stop or pause on clear, done, terminal, user-input, or budget state. | In the current Claude Code session, `/loop <interval> <prompt>` or Cron may provide the same bounded fallback. These tasks are session-scoped: they run only while Claude Code is running and idle, a new conversation clears them, resumed sessions restore only unexpired tasks, and recurring tasks expire after seven days. [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks) |
 | Resume after a scheduled handoff | Re-enter the same goal/thread, or give the exact manual resume instruction. | Name the CLI session before handoff, then record the exact `claude --resume <name>` (or the applicable `claude --continue` from the same project/worktree). On Desktop, record the session-selection path and resume it from the sidebar. Sessions are saved locally and can be resumed by name; project and worktree scope matters. Do not treat background Bash or Monitor work as resumable: those tasks are not restored on resume. [Sessions](https://code.claude.com/docs/en/sessions) |
 | Durable or independent scheduling | Use a Codex mechanism only when it still meets the portable current-thread requirement; otherwise hand off with exact manual resume. | Do not substitute a Routine or a Desktop scheduled task for a current-thread monitor: those are durable, independent scheduling surfaces, not evidence that the original thread will be re-entered. Use them only when the workflow explicitly authorizes independent work. [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks) |
 | Planning-chat resume and archive | Preserve the planning-chat role, durable handoff, and archive-readiness criteria; resume the same planning chat when it retains parent-orchestrator duties. | CLI sessions and Desktop sessions have separate histories. For CLI, `--resume`/`--continue` (or `/resume`) returns to the saved conversation; accepting a plan can name the session. `Ready for archiving` remains the portable lifecycle status, not a claim that the CLI has a matching archive UI. In Desktop, resume by selecting the session in the sidebar; its archive control removes the session worktree, and auto-archive applies only to finished local sessions after a PR merges or closes. Do not archive a planning parent that still owns reconciliation or an unresolved follow-up. [Sessions](https://code.claude.com/docs/en/sessions), [Desktop](https://code.claude.com/docs/en/desktop) |

@@ -1,0 +1,25 @@
+{
+  "name": "compaction-correlated repeated counter vector starts a new epoch",
+  "window": {"from":"2026-08-07T00:00:00Z","to":"2026-08-08T00:00:00Z"},
+  "threads": [
+    {"id":"root","rollout":"root.jsonl","model_provider":"openai","model":"gpt-test","reasoning_effort":"high"}
+  ],
+  "edges": [],
+  "manifest": {
+    "schema":"batch-usage-manifest-v1",
+    "batch_id":"batch-compaction-reset",
+    "coordinator":{"id":"coordinator","root_thread_id":"root","requested_route":{"host":"codex","model":"requested-root","effort":"high"}},
+    "lanes":[]
+  },
+  "rollouts": {
+    "root.jsonl":[
+      {"timestamp":"2026-08-07T00:00:00Z","type":"session_meta","payload":{"id":"root","session_id":"root"}},
+      {"timestamp":"2026-08-07T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"cached_input_tokens":2,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":10},"last_token_usage":{"input_tokens":8,"cached_input_tokens":2,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":10}}}},
+      {"timestamp":"2026-08-07T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":16,"cached_input_tokens":4,"output_tokens":4,"reasoning_output_tokens":2,"total_tokens":20},"last_token_usage":{"input_tokens":8,"cached_input_tokens":2,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":10}}}},
+      {"timestamp":"2026-08-07T00:00:03Z","type":"compacted","payload":{"replacement_history":[]}},
+      {"timestamp":"2026-08-07T00:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":16,"cached_input_tokens":4,"output_tokens":4,"reasoning_output_tokens":2,"total_tokens":20},"last_token_usage":{"input_tokens":100,"cached_input_tokens":100,"output_tokens":100,"reasoning_output_tokens":100,"total_tokens":200}}}},
+      {"timestamp":"2026-08-07T00:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"cached_input_tokens":2,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":10},"last_token_usage":{"input_tokens":8,"cached_input_tokens":2,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":10}}}},
+      {"timestamp":"2026-08-07T00:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":16,"cached_input_tokens":4,"output_tokens":4,"reasoning_output_tokens":2,"total_tokens":20},"last_token_usage":{"input_tokens":8,"cached_input_tokens":2,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":10}}}}
+    ]
+  }
+}

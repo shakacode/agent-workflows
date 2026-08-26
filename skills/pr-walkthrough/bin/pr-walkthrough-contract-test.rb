@@ -67,4 +67,21 @@ class PrWalkthroughContractTest < Minitest::Test
       positions.each_cons(2) { |before, after| assert_operator before, :<, after, path }
     end
   end
+
+  def test_walkthrough_is_an_internal_current_task_phase_not_a_new_owner
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+    phrases = [
+      "The current task remains the sole user-facing coordinator.",
+      "The walkthrough is an internal explanatory phase, not another task or owner.",
+      "Present exactly one conceptual change per response.",
+      "return control to the current task",
+      "ask its one final merge decision separately"
+    ]
+    positions = phrases.map do |phrase|
+      position = skill.index(phrase)
+      assert position, "expected #{phrase.inspect}"
+      position
+    end
+    positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+  end
 end
