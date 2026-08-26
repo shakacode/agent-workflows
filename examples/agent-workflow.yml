@@ -15,6 +15,10 @@ review_gate: "n/a"
 #   reviewers:
 #     - id: "configured-reviewer"
 #       check_name: "configured-review-check"
+#       producer:
+#         app_slug: "github-actions"
+#         workflow_path: ".github/workflows/configured-review.yml"
+#         event: "pull_request"
 #       artifact:
 #         actors: ["configured-reviewer[bot]"]
 #         kinds: [pull_request_review, review_thread]

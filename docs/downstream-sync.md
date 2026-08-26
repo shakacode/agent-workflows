@@ -81,8 +81,12 @@ review_gate:
   reviewers:
     - id: claude
       check_name: claude-review
+      producer:
+        app_slug: github-actions
+        workflow_path: .github/workflows/claude-code-review.yml
+        event: pull_request
       artifact:
-        actors: [claude, "claude[bot]", "github-actions[bot]"]
+        actors: [claude, "claude[bot]"]
         kinds: [pull_request_review, review_thread]
   require_current_head: true
   artifact_settlement:
@@ -101,9 +105,11 @@ issue comments never qualify. For each configured actor, only its latest
 current-head pull-request review qualifies, and only in `APPROVED` or
 `COMMENTED` state. `CHANGES_REQUESTED`, `DISMISSED`, pending, or unknown states
 hard-block alternate artifact kinds until a later acceptable formal review
-supersedes them. The source Claude workflow publishes an exact-head
-`COMMENTED` review as `github-actions[bot]` after its result is verified. The
-gate blocks missing, stale, pending,
+supersedes them. The configured check must come from the named producer: the
+check-run app and exact workflow run must match, the run must bind to the
+expected head and event, and the workflow file at that head must be
+byte-identical to its exact trusted-base version. The gate blocks missing,
+stale, pending,
 failed, unsettled, or unknown evidence and unresolved current-head review
 threads. A fallback must instead use
 `mode: named_attested_check` with explicit `triggers` and a complete `reviewer`

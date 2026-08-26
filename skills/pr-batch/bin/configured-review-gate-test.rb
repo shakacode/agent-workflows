@@ -33,7 +33,7 @@ class ConfiguredReviewGateTest < Minitest::Test
   class FakeGitHubApiClient < ConfiguredReviewGate::GitHubClient
     # This API fixture deliberately bypasses the production initializer's system-tool resolution.
     # rubocop:disable Lint/MissingSuper
-    def initialize(policy:, threads:, reviews: [], checks: [])
+    def initialize(policy:, threads:, reviews: [], checks: [], permissions: {}, workflow_runs: nil)
       @host = HOST
       @repo = REPO
       @pr = PR
@@ -41,6 +41,14 @@ class ConfiguredReviewGateTest < Minitest::Test
       @threads = threads
       @reviews = reviews
       @checks = checks
+      @permissions = permissions
+      @workflow_runs = workflow_runs || [{
+        "id" => 1,
+        "check_suite_id" => 7,
+        "path" => ".github/workflows/claude-code-review.yml",
+        "event" => "pull_request",
+        "head_sha" => HEAD_SHA
+      }]
     end
     # rubocop:enable Lint/MissingSuper
 
@@ -50,6 +58,13 @@ class ConfiguredReviewGateTest < Minitest::Test
       endpoint = arguments.find { |argument| argument.start_with?("repos/") }
       return pull_response if endpoint == "repos/#{REPO}/pulls/#{PR}"
       return [{ "check_runs" => @checks }] if endpoint&.include?("/check-runs?")
+      return { "workflow_runs" => @workflow_runs } if endpoint&.include?("/actions/runs")
+      return { "sha" => "1" * 40 } if endpoint&.include?("/contents/")
+
+      if endpoint&.include?("/collaborators/")
+        actor = endpoint.split("/collaborators/", 2).last.split("/permission", 2).first
+        return @permissions.fetch(actor, { "permission" => "read", "role_name" => "read" })
+      end
       return [[]] if endpoint&.include?("/issues/#{PR}/comments?")
       return [@reviews] if endpoint&.include?("/pulls/#{PR}/reviews?")
       return graphql_response if arguments.include?("graphql")
@@ -112,6 +127,11 @@ class ConfiguredReviewGateTest < Minitest::Test
         {
           "id" => "claude",
           "check_name" => "claude-review",
+          "producer" => {
+            "app_slug" => "github-actions",
+            "workflow_path" => ".github/workflows/claude-code-review.yml",
+            "event" => "pull_request"
+          },
           "artifact" => {
             "actors" => %w[claude claude[bot]],
             "kinds" => %w[pull_request_review review_thread]
@@ -131,7 +151,7 @@ class ConfiguredReviewGateTest < Minitest::Test
 
   def check(
     name: "claude-review", status: "completed", conclusion: "success",
-    head_sha: HEAD_SHA, output: "review complete"
+    head_sha: HEAD_SHA, output: "review complete", producer: trusted_producer
   )
     {
       "name" => name,
@@ -141,7 +161,22 @@ class ConfiguredReviewGateTest < Minitest::Test
       "started_at" => "2026-08-25T11:55:00Z",
       "completed_at" => status == "completed" ? "2026-08-25T11:59:00Z" : nil,
       "details_url" => "https://github.com/example/widgets/actions/runs/1",
-      "output" => output
+      "output" => output,
+      "producer" => producer,
+      "app" => { "slug" => producer["app_slug"] },
+      "check_suite" => { "id" => 7 }
+    }
+  end
+
+  def trusted_producer
+    {
+      "app_slug" => "github-actions",
+      "workflow_path" => ".github/workflows/claude-code-review.yml",
+      "event" => "pull_request",
+      "head_sha" => HEAD_SHA,
+      "workflow_blob_sha" => "1" * 40,
+      "trusted_base_workflow_blob_sha" => "1" * 40,
+      "verified" => true
     }
   end
 
@@ -279,8 +314,10 @@ class ConfiguredReviewGateTest < Minitest::Test
   def test_source_policy_names_each_live_claude_artifact_login
     source_policy = YAML.safe_load(File.read(SOURCE_POLICY), aliases: false)
 
-    assert_equal %w[claude claude[bot] github-actions[bot]],
+    assert_equal %w[claude claude[bot]],
                  source_policy.dig("review_gate", "reviewers", 0, "artifact", "actors")
+    assert_equal trusted_producer.slice("app_slug", "workflow_path", "event"),
+                 source_policy.dig("review_gate", "reviewers", 0, "producer")
   end
 
   def test_completed_claude_workflow_publishes_an_exact_head_gate_accepted_review
@@ -307,7 +344,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy_source: File.read(SOURCE_POLICY),
       snapshot: snapshot(
         "checks" => [check],
-        "artifacts" => [artifact(actor: "github-actions[bot]")]
+        "artifacts" => [artifact(actor: "claude[bot]")]
       ),
       settled: true,
       now: NOW
@@ -316,20 +353,55 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "READY", result.fetch("verdict")
   end
 
+  def test_same_named_check_from_untrusted_producer_is_blocking
+    forged = trusted_producer.merge(
+      "workflow_path" => ".github/workflows/forged-review.yml",
+      "workflow_blob_sha" => "2" * 40,
+      "verified" => false
+    )
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check(producer: forged)]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-producer-untrusted", result.dig("blockers", 0, "code")
+  end
+
   def test_configured_review_workflow_refreshes_evidence_changes_from_trusted_base
     workflow = YAML.safe_load(File.read(CONFIGURED_REVIEW_WORKFLOW), aliases: false)
     triggers = workflow.fetch(true)
     checkout = workflow.dig("jobs", "configured-review-gate", "steps").find do |step|
       step["name"] == "Checkout trusted base"
     end
+    bindings = workflow.dig("jobs", "configured-review-gate", "steps").find do |step|
+      step["name"] == "Resolve exact pull request bindings"
+    end
 
     assert_equal %w[opened synchronize reopened ready_for_review], triggers.dig("pull_request_target", "types")
     assert_equal %w[submitted edited dismissed], triggers.dig("pull_request_review", "types")
     assert_equal %w[created edited deleted], triggers.dig("pull_request_review_comment", "types")
-    assert_equal "${{ github.event.pull_request.base.sha }}", checkout.dig("with", "ref")
+    assert_equal ["Claude Code Review"], triggers.dig("workflow_run", "workflows")
+    assert_equal ["completed"], triggers.dig("workflow_run", "types")
+    assert_equal "bindings", bindings.fetch("id")
+    assert_includes bindings.fetch("run"), 'if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]'
+    assert_includes bindings.fetch("run"), "length == 1"
+    assert_includes bindings.fetch("run"), '.workflow_run.event == "pull_request"'
+    assert_includes bindings.fetch("run"), '"$live_head_sha" != "$triggering_head_sha"'
+    assert_equal "${{ steps.bindings.outputs.base_sha }}", checkout.dig("with", "ref")
     assert_equal false, checkout.dig("with", "persist-credentials")
     assert_equal true, workflow.dig("concurrency", "cancel-in-progress")
-    assert_includes workflow.dig("concurrency", "group"), "${{ github.event.pull_request.head.sha }}"
+    assert_includes workflow.dig("concurrency", "group"), "github.event.workflow_run.head_sha"
+
+    gate = workflow.dig("jobs", "configured-review-gate", "steps").find do |step|
+      step["name"] == "Require settled configured reviews"
+    end
+    assert_equal "${{ steps.bindings.outputs.pr }}", gate.dig("env", "REVIEW_GATE_PR")
+    assert_equal "${{ steps.bindings.outputs.base_sha }}", gate.dig("env", "REVIEW_GATE_BASE_SHA")
+    assert_equal "${{ steps.bindings.outputs.head_sha }}", gate.dig("env", "REVIEW_GATE_HEAD_SHA")
   end
 
   def test_queued_current_head_duplicate_without_timestamps_blocks_success_and_replay
@@ -452,6 +524,62 @@ class ConfiguredReviewGateTest < Minitest::Test
     collected = client.collect
 
     assert_equal "COMMENTED", collected.dig("artifacts", 0, "state")
+  end
+
+  def test_live_collector_proves_check_producer_against_trusted_base_blob
+    raw_check = check.merge("output" => { "title" => "review complete", "summary" => nil, "text" => nil })
+    client = FakeGitHubApiClient.new(policy: policy, threads: [], checks: [raw_check])
+
+    producer = client.collect.dig("checks", 0, "producer")
+
+    assert_equal true, producer.fetch("verified")
+    assert_equal "github-actions", producer.fetch("app_slug")
+    assert_equal ".github/workflows/claude-code-review.yml", producer.fetch("workflow_path")
+    assert_equal producer.fetch("workflow_blob_sha"), producer.fetch("trusted_base_workflow_blob_sha")
+  end
+
+  def test_live_collector_authorizes_disposition_markers_from_repository_permission
+    comments = [
+      {
+        "id" => "root", "url" => "https://github.com/example/widgets/pull/42#discussion_r1",
+        "body" => "Please fix this.", "createdAt" => "2026-08-25T11:59:10Z",
+        "author" => { "login" => "claude" }, "authorAssociation" => "CONTRIBUTOR",
+        "commit" => { "oid" => HEAD_SHA }, "originalCommit" => { "oid" => HEAD_SHA }, "replyTo" => nil
+      },
+      {
+        "id" => "writer", "url" => "https://github.com/example/widgets/pull/42#discussion_r1",
+        "body" => "configured-review-disposition: fixed", "createdAt" => "2026-08-25T12:00:00Z",
+        "author" => { "login" => "writer" }, "authorAssociation" => "COLLABORATOR",
+        "commit" => { "oid" => HEAD_SHA }, "originalCommit" => { "oid" => HEAD_SHA },
+        "replyTo" => { "id" => "root" }
+      },
+      {
+        "id" => "triager", "url" => "https://github.com/example/widgets/pull/42#discussion_r1",
+        "body" => "configured-review-disposition: waived", "createdAt" => "2026-08-25T12:00:01Z",
+        "author" => { "login" => "triager" }, "authorAssociation" => "COLLABORATOR",
+        "commit" => { "oid" => HEAD_SHA }, "originalCommit" => { "oid" => HEAD_SHA },
+        "replyTo" => { "id" => "root" }
+      }
+    ]
+    thread = {
+      "id" => "T1", "isResolved" => false, "isOutdated" => false,
+      "comments" => { "nodes" => comments, "pageInfo" => { "hasNextPage" => false, "endCursor" => nil } }
+    }
+    client = FakeGitHubApiClient.new(
+      policy: policy, threads: [thread],
+      permissions: {
+        "writer" => { "permission" => "write", "role_name" => "maintain" },
+        "triager" => { "permission" => "read", "role_name" => "triage" }
+      }
+    )
+
+    collected_comments = client.collect.dig("threads", 0, "comments")
+
+    assert_equal true, collected_comments[1].fetch("disposition")
+    assert_equal true, collected_comments[1].dig("authorization", "trusted")
+    assert_equal "maintain", collected_comments[1].dig("authorization", "role_name")
+    assert_equal false, collected_comments[2].fetch("disposition")
+    assert_equal false, collected_comments[2].dig("authorization", "trusted")
   end
 
   def test_success_requires_a_current_head_artifact_and_a_settled_snapshot
@@ -667,6 +795,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       "id" => "reply-1",
       "actor" => "maintainer",
       "association" => "MEMBER",
+      "authorization" => { "permission" => "write", "role_name" => "write", "trusted" => true },
       "body" => "configured-review-disposition: fixed",
       "created_at" => "2026-08-25T11:59:20Z"
     }
@@ -700,6 +829,30 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "READY", live_result.fetch("verdict")
   end
 
+  def test_collaborator_association_without_write_permission_cannot_dispose_a_thread
+    disposition = {
+      "id" => "reply-1",
+      "actor" => "triager",
+      "association" => "COLLABORATOR",
+      "authorization" => { "permission" => "read", "role_name" => "triage", "trusted" => false },
+      "body" => "configured-review-disposition: waived",
+      "created_at" => "2026-08-25T11:59:20Z"
+    }
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot(
+        "checks" => [check],
+        "artifacts" => [artifact(kind: "review_thread")],
+        "threads" => [thread(id: "T1", comments: [disposition])]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "configured-review-thread-untriaged", result.dig("blockers", 0, "code")
+  end
+
   def test_explicit_named_attested_fallback_can_override_only_a_configured_trigger
     fallback_policy = policy
     fallback_policy["fallback"] = {
@@ -708,6 +861,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       "reviewer" => {
         "id" => "codex-fallback",
         "check_name" => "codex-review",
+        "producer" => trusted_producer.slice("app_slug", "workflow_path", "event"),
         "artifact" => {
           "actors" => ["codex-reviewer"],
           "kinds" => ["pull_request_review"]
@@ -743,6 +897,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       "reviewer" => {
         "id" => "codex-fallback",
         "check_name" => "codex-review",
+        "producer" => trusted_producer.slice("app_slug", "workflow_path", "event"),
         "artifact" => { "actors" => ["codex-reviewer"], "kinds" => ["pull_request_review"] }
       }
     }
@@ -1181,6 +1336,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       "reviewer" => {
         "id" => "codex-fallback",
         "check_name" => "codex-review",
+        "producer" => trusted_producer.slice("app_slug", "workflow_path", "event"),
         "artifact" => {
           "actors" => ["codex-reviewer"],
           "kinds" => ["pull_request_review"]
@@ -1223,6 +1379,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       "reviewer" => {
         "id" => "codex-fallback",
         "check_name" => "codex-review",
+        "producer" => trusted_producer.slice("app_slug", "workflow_path", "event"),
         "artifact" => {
           "actors" => ["codex-reviewer"],
           "kinds" => ["pull_request_review"]
@@ -1266,6 +1423,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       "reviewer" => {
         "id" => "codex-fallback",
         "check_name" => "codex-review",
+        "producer" => trusted_producer.slice("app_slug", "workflow_path", "event"),
         "artifact" => {
           "actors" => ["codex-reviewer"],
           "kinds" => ["pull_request_review"]

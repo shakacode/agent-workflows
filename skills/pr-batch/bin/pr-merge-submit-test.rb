@@ -1564,6 +1564,11 @@ class PrMergeSubmitTest < Minitest::Test
       "reviewers" => [{
         "id" => "claude",
         "check_name" => "claude-review",
+        "producer" => {
+          "app_slug" => "github-actions",
+          "workflow_path" => ".github/workflows/claude-code-review.yml",
+          "event" => "pull_request"
+        },
         "artifact" => {
           "actors" => %w[claude claude[bot]],
           "kinds" => %w[pull_request_review review_thread]

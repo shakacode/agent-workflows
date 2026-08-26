@@ -3327,9 +3327,11 @@ Evaluate configured reviews through the executable gate before merge assurance:
 
 The helper loads `.agents/agent-workflow.yml` from the exact expected base Git
 object, never from PR-controlled working-tree bytes. `review_gate: n/a` is an
-explicit pass. The versioned mapping names the configured reviewer checks and
-artifacts, settlement quiet period, thread-disposition marker, and any named
-fallback. Missing, pending, stale, failed, cancelled, timed-out,
+explicit pass. The versioned mapping names the configured reviewer checks,
+their producer app/workflow/event identities, artifacts, settlement quiet
+period, thread-disposition marker, and any named fallback. A qualifying check
+must resolve to one exact-head workflow run whose workflow file blob matches
+the exact trusted-base blob. Missing, pending, stale, failed, cancelled, timed-out,
 action-required, unknown, rate-, quota-, or capacity-limited checks block by
 default. So do missing or unsettled artifacts and newly untriaged actionable
 threads rooted on the current head.

@@ -20,7 +20,16 @@
       "started_at": "2026-07-18T06:43:52Z",
       "completed_at": "2026-07-18T06:55:27Z",
       "details_url": "https://github.com/shakacode/react_on_rails/actions/runs/4701",
-      "output": "review completed"
+      "output": "review completed",
+      "producer": {
+        "app_slug": "github-actions",
+        "workflow_path": ".github/workflows/claude-code-review.yml",
+        "event": "pull_request",
+        "head_sha": "df00766e2b330135c02674f794a0a5568f6b10f4",
+        "workflow_blob_sha": "1111111111111111111111111111111111111111",
+        "trusted_base_workflow_blob_sha": "1111111111111111111111111111111111111111",
+        "verified": true
+      }
     }
   ],
   "artifacts": [

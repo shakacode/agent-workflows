@@ -13,6 +13,7 @@ require "optparse"
 require "rbconfig"
 require "tempfile"
 require "time"
+require "uri"
 require "yaml"
 
 module ConfiguredReviewGate
@@ -31,7 +32,6 @@ module ConfiguredReviewGate
     "timed_out" => "configured-review-timed-out",
     "action_required" => "configured-review-action-required"
   }.freeze
-  TRUSTED_DISPOSITION_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
   DISPOSITION_VALUES = %w[fixed waived not-actionable].freeze
   BLOCKER_TRIGGER = {
     "configured-review-missing" => "missing",
@@ -175,7 +175,7 @@ module ConfiguredReviewGate
         "base_sha" => pull.dig("base", "sha"),
         "head_sha" => pull.dig("head", "sha")
       }
-      checks = collect_checks(bindings.fetch("head_sha"))
+      checks = collect_checks(bindings.fetch("head_sha"), bindings.fetch("base_sha"))
       artifacts = collect_artifacts
       threads, threads_complete, thread_artifacts = collect_threads(bindings.fetch("head_sha"))
       artifacts.concat(thread_artifacts)
@@ -195,7 +195,7 @@ module ConfiguredReviewGate
 
     private
 
-    def collect_checks(head_sha)
+    def collect_checks(head_sha, base_sha)
       pages = api_json(
         "--paginate", "--slurp",
         "repos/#{@repo}/commits/#{head_sha}/check-runs?per_page=100",
@@ -210,10 +210,58 @@ module ConfiguredReviewGate
           "started_at" => check["started_at"],
           "completed_at" => check["completed_at"],
           "details_url" => check["details_url"],
-          "output" => [check.dig("output", "title"), check.dig("output", "summary"), check.dig("output", "text")].compact.join("\n")
+          "output" => [check.dig("output", "title"), check.dig("output", "summary"), check.dig("output", "text")].compact.join("\n"),
+          "producer" => collect_check_producer(check, head_sha, base_sha)
         }
       end
       checks.sort_by { |check| [check["name"].to_s, check["started_at"].to_s] }
+    end
+
+    def collect_check_producer(check, head_sha, base_sha)
+      expected = all_reviewers.find { |reviewer| reviewer["check_name"] == check["name"] }&.fetch("producer", nil)
+      producer = {
+        "app_slug" => check.dig("app", "slug"),
+        "check_suite_id" => check.dig("check_suite", "id")&.to_s,
+        "verified" => false
+      }
+      return producer unless expected.is_a?(Hash)
+      return producer.merge("reason" => "check-suite-missing") if producer["check_suite_id"].to_s.empty?
+
+      runs = api_json(
+        "--method", "GET", "repos/#{@repo}/actions/runs",
+        "-F", "check_suite_id=#{producer.fetch('check_suite_id')}", "-F", "per_page=100"
+      )
+      candidates = Array(runs["workflow_runs"]).select do |run|
+        run["check_suite_id"].to_s == producer["check_suite_id"]
+      end
+      return producer.merge("reason" => "workflow-run-ambiguous") unless candidates.one?
+
+      run = candidates.first
+      workflow_path = expected.fetch("workflow_path")
+      head_blob = workflow_blob(workflow_path, head_sha)
+      base_blob = workflow_blob(workflow_path, base_sha)
+      producer.merge(
+        "workflow_run_id" => run["id"]&.to_s,
+        "workflow_path" => run["path"],
+        "event" => run["event"],
+        "head_sha" => run["head_sha"],
+        "workflow_blob_sha" => head_blob,
+        "trusted_base_workflow_blob_sha" => base_blob,
+        "verified" => producer["app_slug"] == expected["app_slug"] &&
+          run["path"] == workflow_path && run["event"] == expected["event"] &&
+          run["head_sha"].to_s.casecmp?(head_sha.to_s) && head_blob == base_blob
+      )
+    end
+
+    def workflow_blob(path, commit_sha)
+      encoded_path = path.split("/").map { |segment| URI.encode_www_form_component(segment) }.join("/")
+      document = api_json(
+        "--method", "GET", "repos/#{@repo}/contents/#{encoded_path}", "-f", "ref=#{commit_sha}"
+      )
+      blob_sha = document["sha"]
+      raise Error, "GitHub workflow blob evidence is invalid" unless blob_sha.to_s.match?(/\A[0-9a-f]{40}\z/i)
+
+      blob_sha
     end
 
     def collect_artifacts
@@ -250,15 +298,16 @@ module ConfiguredReviewGate
         complete = false if comments_connection.dig("pageInfo", "hasNextPage") == true
         comments = Array(comments_connection["nodes"]).map do |comment|
           marker = @policy.is_a?(Hash) ? @policy.dig("thread_disposition", "marker") : nil
-          disposition = marker.is_a?(String) &&
-                        TRUSTED_DISPOSITION_ASSOCIATIONS.include?(comment["authorAssociation"]) &&
-                        ConfiguredReviewGate.disposition_body?(comment["body"], marker)
+          marker_present = marker.is_a?(String) && ConfiguredReviewGate.disposition_body?(comment["body"], marker)
+          authorization = marker_present ? collaborator_authorization(comment.dig("author", "login")) : nil
+          disposition = marker_present && authorization["trusted"] == true
           {
             "id" => comment["id"],
             "actor" => comment.dig("author", "login"),
             "association" => comment["authorAssociation"],
             "body_digest" => "sha256:#{Digest::SHA256.hexdigest(comment['body'].to_s)}",
             "disposition" => disposition,
+            "authorization" => authorization,
             "created_at" => comment["createdAt"]
           }
         end
@@ -284,6 +333,22 @@ module ConfiguredReviewGate
       normalized_artifacts = artifacts.uniq { |artifact| artifact["id"] }
                                       .sort_by { |artifact| artifact["id"].to_s }
       [normalized_threads, complete, normalized_artifacts]
+    end
+
+    def collaborator_authorization(actor)
+      return { "permission" => nil, "role_name" => nil, "trusted" => false } if actor.to_s.empty?
+
+      @permission_cache ||= {}
+      @permission_cache[actor] ||= begin
+        encoded_actor = URI.encode_www_form_component(actor)
+        permission = api_json("repos/#{@repo}/collaborators/#{encoded_actor}/permission")
+        value = permission["permission"]
+        {
+          "permission" => value,
+          "role_name" => permission["role_name"],
+          "trusted" => %w[admin write].include?(value)
+        }
+      end
     end
 
     def artifact_record(id, kind, actor, created_at, url, head_sha, state: nil)
@@ -760,9 +825,25 @@ module ConfiguredReviewGate
         blocker("configured-review-missing", reviewer, nil, "missing")
       else
         check = governing_check(candidates, snapshot.dig("bindings", "head_sha"))
-        classify_check_blocker(reviewer, check, snapshot.dig("bindings", "head_sha"))
+        producer_blocker = classify_producer_blocker(reviewer, check, snapshot.dig("bindings", "head_sha"))
+        producer_blocker || classify_check_blocker(reviewer, check, snapshot.dig("bindings", "head_sha"))
       end
     end
+  end
+
+  def classify_producer_blocker(reviewer, check, expected_head)
+    expected = reviewer.fetch("producer")
+    actual = check["producer"]
+    trusted = actual.is_a?(Hash) && actual["verified"] == true &&
+              actual["app_slug"] == expected["app_slug"] &&
+              actual["workflow_path"] == expected["workflow_path"] &&
+              actual["event"] == expected["event"] &&
+              actual["head_sha"].to_s.casecmp?(expected_head.to_s) &&
+              actual["workflow_blob_sha"].to_s.match?(/\A[0-9a-f]{40}\z/i) &&
+              actual["workflow_blob_sha"] == actual["trusted_base_workflow_blob_sha"]
+    return if trusted
+
+    blocker("configured-review-producer-untrusted", reviewer, check, "producer-untrusted")
   end
 
   def fallback_applicable?(fallback, blockers)
@@ -863,9 +944,8 @@ module ConfiguredReviewGate
 
   def explicitly_disposed_thread?(thread, marker)
     Array(thread["comments"])[1..].to_a.any? do |comment|
-      comment["disposition"] == true ||
-        (TRUSTED_DISPOSITION_ASSOCIATIONS.include?(comment["association"]) &&
-          disposition_body?(comment["body"], marker))
+      comment.dig("authorization", "trusted") == true &&
+        (comment["disposition"] == true || disposition_body?(comment["body"], marker))
     end
   end
 

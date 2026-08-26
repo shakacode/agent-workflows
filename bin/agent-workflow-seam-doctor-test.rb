@@ -21,6 +21,11 @@ module AgentWorkflowSeamDoctorTestHelpers
       {
         "id" => "claude",
         "check_name" => "claude-review",
+        "producer" => {
+          "app_slug" => "github-actions",
+          "workflow_path" => ".github/workflows/claude-code-review.yml",
+          "event" => "pull_request"
+        },
         "artifact" => {
           "actors" => %w[claude claude[bot]],
           "kinds" => %w[pull_request_review review_thread]
@@ -506,6 +511,32 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       assert_includes out, "invalid review_gate policy: thread_disposition.marker must be a nonempty single-line string"
       assert_includes out, "invalid review_gate policy: fallback.triggers contains an invalid trigger"
       assert_includes out, 'invalid review_gate policy: fallback.reviewer is missing key "check_name"'
+    end
+  end
+
+  def test_review_gate_rejects_non_string_nested_mapping_keys_without_crashing
+    fixtures = {
+      "reviewers[0].producer" => ->(gate) { gate.dig("reviewers", 0, "producer")[1] = "bad" },
+      "reviewers[0].artifact" => ->(gate) { gate.dig("reviewers", 0, "artifact")[1] = "bad" },
+      "artifact_settlement" => ->(gate) { gate["artifact_settlement"][1] = "bad" },
+      "thread_disposition" => ->(gate) { gate["thread_disposition"][1] = "bad" },
+      "fallback" => ->(gate) { gate["fallback"][1] = "bad" }
+    }
+
+    fixtures.each do |path, mutate|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        gate = structured_review_gate_policy
+        mutate.call(gate)
+        write_policy(root, POLICY.merge("review_gate" => gate))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, path
+        assert_includes out, "invalid review_gate policy: #{path} keys must be strings", path
+        refute_includes out, "comparison of", path
+      end
     end
   end
 
@@ -1337,7 +1368,6 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     assert_equal coordination_backend_contract(PRIVATE_COORDINATION_BACKEND),
                  config.fetch("coordination_backend_contract")
     expected_review_gate = structured_review_gate_policy
-    expected_review_gate.dig("reviewers", 0, "artifact", "actors") << "github-actions[bot]"
     assert_equal expected_review_gate, config.fetch("review_gate")
   end
 

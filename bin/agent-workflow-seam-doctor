@@ -144,7 +144,8 @@ module AgentWorkflowSeamDoctor
     failure_policy fallback
   ].freeze
   REVIEW_GATE_FALLBACK_MODES = %w[disabled named_attested_check].freeze
-  REVIEW_GATE_REVIEWER_KEYS = %w[id check_name artifact].freeze
+  REVIEW_GATE_REVIEWER_KEYS = %w[id check_name producer artifact].freeze
+  REVIEW_GATE_PRODUCER_KEYS = %w[app_slug workflow_path event].freeze
   REVIEW_GATE_ARTIFACT_KEYS = %w[actors kinds].freeze
   REVIEW_GATE_ARTIFACT_KINDS = %w[pull_request_review review_thread].freeze
   REVIEW_GATE_SETTLEMENT_KEYS = %w[required quiet_period_seconds].freeze
@@ -1862,6 +1863,7 @@ module AgentWorkflowSeamDoctor
     unless valid_review_gate_single_line?(reviewer["check_name"])
       errors << "#{path}.check_name must be a nonempty single-line string"
     end
+    errors.concat(review_gate_producer_errors(reviewer["producer"], "#{path}.producer")) if reviewer.key?("producer")
     errors.concat(review_gate_artifact_errors(reviewer["artifact"], "#{path}.artifact")) if reviewer.key?("artifact")
     errors
   end
@@ -1880,9 +1882,7 @@ module AgentWorkflowSeamDoctor
   def review_gate_artifact_errors(artifact, path)
     return ["#{path} must be a closed mapping"] unless artifact.is_a?(Hash)
 
-    errors = []
-    errors << "#{path} keys must be exactly: #{REVIEW_GATE_ARTIFACT_KEYS.sort.join(', ')}" unless
-      artifact.keys.sort == REVIEW_GATE_ARTIFACT_KEYS.sort
+    errors = review_gate_mapping_key_errors(artifact, REVIEW_GATE_ARTIFACT_KEYS, path)
     actors = artifact["actors"]
     unless actors.is_a?(Array) && !actors.empty? && actors.all? do |actor|
              actor.is_a?(String) && actor.match?(REVIEW_GATE_ACTOR_PATTERN)
@@ -1897,12 +1897,25 @@ module AgentWorkflowSeamDoctor
     errors
   end
 
+  def review_gate_producer_errors(producer, path)
+    return ["#{path} must be a closed mapping"] unless producer.is_a?(Hash)
+
+    errors = review_gate_mapping_key_errors(producer, REVIEW_GATE_PRODUCER_KEYS, path)
+    errors << "#{path}.app_slug must be a nonempty single-line string" unless
+      valid_review_gate_single_line?(producer["app_slug"])
+    workflow_path = producer["workflow_path"]
+    unless workflow_path.is_a?(String) && workflow_path.match?(%r{\A\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml\z})
+      errors << "#{path}.workflow_path must name a workflow under .github/workflows"
+    end
+    errors << "#{path}.event must be a nonempty single-line string" unless
+      valid_review_gate_single_line?(producer["event"])
+    errors
+  end
+
   def review_gate_settlement_errors(settlement)
     return ["artifact_settlement must be a closed mapping"] unless settlement.is_a?(Hash)
 
-    errors = []
-    errors << "artifact_settlement keys must be exactly: #{REVIEW_GATE_SETTLEMENT_KEYS.sort.join(', ')}" unless
-      settlement.keys.sort == REVIEW_GATE_SETTLEMENT_KEYS.sort
+    errors = review_gate_mapping_key_errors(settlement, REVIEW_GATE_SETTLEMENT_KEYS, "artifact_settlement")
     errors << "artifact_settlement.required must be true" unless settlement["required"] == true
     seconds = settlement["quiet_period_seconds"]
     errors << "artifact_settlement.quiet_period_seconds must be between 1 and 300" unless
@@ -1913,9 +1926,7 @@ module AgentWorkflowSeamDoctor
   def review_gate_thread_disposition_errors(disposition)
     return ["thread_disposition must be a closed mapping"] unless disposition.is_a?(Hash)
 
-    errors = []
-    errors << "thread_disposition keys must be exactly: #{REVIEW_GATE_THREAD_DISPOSITION_KEYS.sort.join(', ')}" unless
-      disposition.keys.sort == REVIEW_GATE_THREAD_DISPOSITION_KEYS.sort
+    errors = review_gate_mapping_key_errors(disposition, REVIEW_GATE_THREAD_DISPOSITION_KEYS, "thread_disposition")
     errors << "thread_disposition.required must be true" unless disposition["required"] == true
     unless valid_review_gate_single_line?(disposition["marker"])
       errors << "thread_disposition.marker must be a nonempty single-line string"
@@ -1928,9 +1939,7 @@ module AgentWorkflowSeamDoctor
     return ["fallback mode is invalid"] unless REVIEW_GATE_FALLBACK_MODES.include?(mode)
 
     expected_keys = mode == "disabled" ? ["mode"] : REVIEW_GATE_FALLBACK_KEYS
-    errors = []
-    errors << "fallback keys must be exactly: #{expected_keys.sort.join(', ')}" unless
-      fallback.keys.sort == expected_keys.sort
+    errors = review_gate_mapping_key_errors(fallback, expected_keys, "fallback")
     return errors if mode == "disabled"
 
     triggers = fallback["triggers"]
@@ -1940,6 +1949,13 @@ module AgentWorkflowSeamDoctor
     end
     errors.concat(review_gate_reviewer_errors(fallback["reviewer"], "fallback.reviewer"))
     errors
+  end
+
+  def review_gate_mapping_key_errors(mapping, expected_keys, path)
+    return ["#{path} keys must be strings"] unless mapping.keys.all? { |key| key.is_a?(String) }
+    return [] if mapping.keys.sort == expected_keys.sort
+
+    ["#{path} keys must be exactly: #{expected_keys.sort.join(', ')}"]
   end
 
   def valid_review_gate_single_line?(value)
