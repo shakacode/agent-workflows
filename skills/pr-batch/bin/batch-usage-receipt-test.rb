@@ -1253,6 +1253,121 @@ class BatchUsageReceiptTest < Minitest::Test
     refute_empty JSONSchemer.schema(receipt_schema(2)).validate(receipt).to_a
   end
 
+  def test_v2_schema_accepts_only_producer_defined_unknown_reason_metadata
+    receipt, = run_fixture("replay")
+    schema = JSONSchemer.schema(receipt_schema(2))
+    thread_id = receipt.dig("coordinator", "root_thread_id")
+    physical_rollout_id = receipt.dig("coordinator", "evidence", "physical_rollout_ids").first
+    rollout_identity = {
+      "thread_id" => thread_id,
+      "physical_rollout_id" => physical_rollout_id
+    }
+    valid_reasons = [
+      { "status" => "UNKNOWN", "code" => "state_database_missing" },
+      {
+        "status" => "UNKNOWN", "code" => "coordinator_root_in_lane_scope",
+        "lane_id" => "lane-a", "thread_id" => thread_id
+      },
+      {
+        "status" => "UNKNOWN", "code" => "lane_scope_overlap",
+        "lane_ids" => %w[lane-a lane-b], "thread_ids" => [thread_id]
+      },
+      {
+        "status" => "UNKNOWN", "code" => "worker_outside_lane_scope",
+        "lane_id" => "lane-a", "worker_id" => "worker-a"
+      },
+      {
+        "status" => "UNKNOWN", "code" => "worker_scope_overlap",
+        "lane_id" => "lane-a", "worker_ids" => %w[worker-a worker-b]
+      },
+      { "status" => "UNKNOWN", "code" => "thread_missing", "thread_id" => thread_id },
+      { "status" => "UNKNOWN", "code" => "rollout_missing" }.merge(rollout_identity),
+      { "status" => "UNKNOWN", "code" => "malformed_jsonl", "line" => 2 }.merge(rollout_identity),
+      {
+        "status" => "UNKNOWN", "code" => "rollout_read_error", "detail" => "Errno::EACCES"
+      }.merge(rollout_identity),
+      {
+        "status" => "UNKNOWN", "code" => "rollout_read_error", "line" => 2,
+        "detail" => "Encoding::InvalidByteSequenceError"
+      }.merge(rollout_identity),
+      {
+        "status" => "UNKNOWN", "code" => "invalid_token_usage_vector", "line" => 2,
+        "counter_source" => "total_token_usage"
+      }.merge(rollout_identity),
+      {
+        "status" => "UNKNOWN", "code" => "usage_counter_missing", "line" => 2,
+        "fields" => ["cache_read_tokens"]
+      }.merge(rollout_identity),
+      {
+        "status" => "UNKNOWN", "code" => "route_metadata_missing", "line" => 2,
+        "fields" => ["model"]
+      }.merge(rollout_identity)
+    ]
+    valid_reasons.concat(
+      %w[state_database_unsupported sqlite3_cli_unavailable].map do |code|
+        { "status" => "UNKNOWN", "code" => code }
+      end
+    )
+    valid_reasons << { "status" => "UNKNOWN", "code" => "rollout_path_missing", "thread_id" => thread_id }
+    valid_reasons.concat(
+      %w[
+        missing_first_session_id state_thread_first_session_mismatch copied_history_boundary_missing
+        missing_first_session_meta missing_usage_evidence
+      ].map { |code| { "status" => "UNKNOWN", "code" => code }.merge(rollout_identity) }
+    )
+    valid_reasons.concat(
+      %w[
+        non_object_rollout_record invalid_boundary_timestamp invalid_turn_context invalid_turn_timestamp
+        invalid_usage_timestamp missing_total_token_usage ambiguous_turn_usage ambiguous_turn_timestamp
+        turn_context_missing_for_usage
+      ].map do |code|
+        { "status" => "UNKNOWN", "code" => code, "line" => 2 }.merge(rollout_identity)
+      end
+    )
+    valid_reasons.concat(
+      %w[missing_first_last_token_usage ambiguous_counter_decrease].map do |code|
+        {
+          "status" => "UNKNOWN", "code" => code, "line" => 2,
+          "fields" => ["total_tokens"]
+        }.merge(rollout_identity)
+      end
+    )
+
+    producer_source = File.read(HELPER, encoding: "UTF-8").split("\n    def credit_equivalents", 2).first
+    producer_codes = producer_source.scan(/\bunknown(?:_turn)?\(\s*"([a-z0-9_]+)"/m).flatten
+    producer_codes.concat(producer_source.scan(/"code"\s*=>\s*"([a-z0-9_]+)"/).flatten)
+    schema_codes = receipt_schema(2).dig("$defs", "unknownReason", "oneOf").flat_map do |variant|
+      code_contract = variant.dig("properties", "code")
+      code_contract["enum"] || [code_contract.fetch("const")]
+    end
+    asserted_codes = valid_reasons.map { |reason| reason.fetch("code") }.uniq
+    assert_equal producer_codes.uniq.sort, asserted_codes.sort
+    assert_equal producer_codes.uniq.sort, schema_codes.uniq.sort
+
+    valid_reasons.each do |reason|
+      candidate = JSON.parse(JSON.generate(receipt))
+      candidate.fetch("evidence").merge!("status" => "UNKNOWN", "unknown" => [reason])
+      assert_empty schema.validate(candidate).to_a, reason.fetch("code")
+    end
+
+    canonical_route_reason = valid_reasons.last
+    invalid_reasons = {
+      "nested-sentinel" => canonical_route_reason.merge(
+        "unexpected_content" => { "nested" => ["secret-payload"] }
+      ),
+      "extra-scalar" => canonical_route_reason.merge("unexpected_scalar" => "secret-payload"),
+      "extra-object" => canonical_route_reason.merge("unexpected_object" => { "payload" => "secret-payload" }),
+      "extra-array" => canonical_route_reason.merge("unexpected_array" => ["secret-payload"]),
+      "wrong-code-metadata" => canonical_route_reason.merge("detail" => "ArgumentError"),
+      "unknown-code" => { "status" => "UNKNOWN", "code" => "future_reason" }
+    }
+    invalid_reasons.each do |name, reason|
+      candidate = JSON.parse(JSON.generate(receipt))
+      candidate.fetch("evidence").merge!("status" => "UNKNOWN", "unknown" => [reason])
+      refute_empty schema.validate(candidate).to_a, name
+    end
+  end
+
   def test_output_is_deterministic_across_replays_and_public_contract_is_versioned
     first_receipt, first_output = run_fixture("replay")
     second_receipt, second_output = run_fixture("replay")

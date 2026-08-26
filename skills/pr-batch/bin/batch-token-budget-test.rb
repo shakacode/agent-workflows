@@ -2898,13 +2898,15 @@ class BatchTokenBudgetTest < Minitest::Test
       initialize_budget(state_path)
       receipt, = real_descendants_usage_receipt(state_path)
       set_usage_counter(receipt, "cache_read_tokens", "UNKNOWN")
+      physical_rollout_id = receipt.dig("coordinator", "evidence", "physical_rollout_ids").first
       receipt.fetch("evidence")["status"] = "UNKNOWN"
       receipt.fetch("evidence")["unknown"] = [{
         "status" => "UNKNOWN",
         "code" => "usage_counter_missing",
+        "thread_id" => receipt.dig("coordinator", "root_thread_id"),
+        "physical_rollout_id" => physical_rollout_id,
         "line" => 2,
-        "fields" => ["cache_read_tokens"],
-        "affects_usage" => false
+        "fields" => ["cache_read_tokens"]
       }]
       receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "cache-unknown")
 
@@ -4459,12 +4461,16 @@ class BatchTokenBudgetTest < Minitest::Test
       reserve(state_path, id: "valid-optional-shapes", tokens: 200)
       receipt, = real_descendants_usage_receipt(state_path)
       receipt["credit_equivalents"] = available_credit_equivalents
+      physical_rollout_id = receipt.dig("coordinator", "evidence", "physical_rollout_ids").first
       receipt.fetch("evidence").merge!(
         "status" => "UNKNOWN",
         "unknown" => [{
           "status" => "UNKNOWN",
           "code" => "route_metadata_missing",
-          "detail" => "schema permits evidence-specific extension fields"
+          "thread_id" => receipt.dig("coordinator", "root_thread_id"),
+          "physical_rollout_id" => physical_rollout_id,
+          "line" => 2,
+          "fields" => ["model"]
         }]
       )
       receipt.fetch("coordinator").fetch("evidence")["status"] = "UNKNOWN"
@@ -4478,6 +4484,61 @@ class BatchTokenBudgetTest < Minitest::Test
       assert status.success?, stderr
       assert_equal "reconciled", reconciled.fetch("status")
       assert_equal 1, JSON.parse(File.read(state_path)).fetch("usage_receipts").length
+    end
+  end
+
+  def test_batch_usage_receipt_rejects_noncanonical_unknown_reason_metadata_before_any_state_mutation
+    invalid_metadata = {
+      "nested-sentinel" => { "unexpected_content" => { "nested" => ["secret-payload"] } },
+      "extra-scalar" => { "unexpected_scalar" => "secret-payload" },
+      "extra-object" => { "unexpected_object" => { "payload" => "secret-payload" } },
+      "extra-array" => { "unexpected_array" => ["secret-payload"] },
+      "wrong-code-metadata" => { "detail" => "ArgumentError" }
+    }
+
+    invalid_metadata.each do |name, extra|
+      with_state do |state_path|
+        initialize_budget(state_path)
+        base_receipt, = real_descendants_usage_receipt(state_path)
+        receipt = usage_window(
+          base_receipt,
+          from: "2026-08-12T11:00:00Z",
+          to: "2026-08-12T12:00:00Z",
+          coordinator_tokens: 0,
+          lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+        )
+        receipt.fetch("evidence").merge!(
+          "status" => "UNKNOWN",
+          "unknown" => [{
+            "status" => "UNKNOWN",
+            "code" => "route_metadata_missing",
+            "thread_id" => receipt.dig("coordinator", "root_thread_id"),
+            "physical_rollout_id" => receipt.dig("coordinator", "evidence", "physical_rollout_ids").first,
+            "line" => 2,
+            "fields" => ["model"]
+          }.merge(extra)]
+        )
+        state_before = File.binread(state_path)
+        parsed_before = JSON.parse(state_before)
+
+        blocked, stderr, status = reconcile_receipt(state_path, receipt, "invalid-unknown-#{name}")
+
+        assert status.success?, "#{name}: #{stderr}"
+        assert_equal "blocked", blocked.fetch("status"), name
+        assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason"), name
+        assert_equal state_before, File.binread(state_path), name
+        saved = JSON.parse(File.binread(state_path))
+        assert_equal parsed_before.fetch("control_events"), saved.fetch("control_events"), name
+        assert_nil parsed_before["usage_cursor"], name
+        assert_nil saved["usage_cursor"], name
+        assert_empty saved.fetch("usage_receipts"), name
+
+        closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
+        assert closeout_status.success?, "#{name}: #{closeout_stderr}"
+        assert_equal "not-complete", closeout.fetch("status"), name
+        assert_equal "NOT COMPLETE", closeout.fetch("completion"), name
+        assert_equal "usage-cursor-missing", closeout.dig("telemetry", "reason"), name
+      end
     end
   end
 

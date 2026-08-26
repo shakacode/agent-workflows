@@ -230,13 +230,173 @@
       "additionalProperties": false
     },
     "unknownReason": {
-      "type": "object",
-      "required": ["status", "code"],
-      "properties": {
-        "status": {"const": "UNKNOWN"},
-        "code": {"type": "string", "minLength": 1}
-      },
-      "additionalProperties": true
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "code"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"enum": ["state_database_missing", "state_database_unsupported", "sqlite3_cli_unavailable"]}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "lane_id", "thread_id"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "coordinator_root_in_lane_scope"},
+            "lane_id": {"type": "string", "minLength": 1},
+            "thread_id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "lane_ids", "thread_ids"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "lane_scope_overlap"},
+            "lane_ids": {
+              "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "thread_ids": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "lane_id", "worker_id"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "worker_outside_lane_scope"},
+            "lane_id": {"type": "string", "minLength": 1},
+            "worker_id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "lane_id", "worker_ids"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "worker_scope_overlap"},
+            "lane_id": {"type": "string", "minLength": 1},
+            "worker_ids": {
+              "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"enum": ["thread_missing", "rollout_path_missing"]},
+            "thread_id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {
+              "enum": [
+                "rollout_missing", "missing_first_session_id", "state_thread_first_session_mismatch",
+                "copied_history_boundary_missing", "missing_first_session_meta", "missing_usage_evidence"
+              ]
+            },
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id", "line"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {
+              "enum": [
+                "malformed_jsonl", "non_object_rollout_record", "invalid_boundary_timestamp",
+                "invalid_turn_context", "invalid_turn_timestamp", "invalid_usage_timestamp",
+                "missing_total_token_usage", "ambiguous_turn_usage", "ambiguous_turn_timestamp",
+                "turn_context_missing_for_usage"
+              ]
+            },
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "line": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id", "detail"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "rollout_read_error"},
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "detail": {"type": "string", "minLength": 1},
+            "line": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id", "line", "counter_source"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "invalid_token_usage_vector"},
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "line": {"type": "integer", "minimum": 1},
+            "counter_source": {"enum": ["total_token_usage", "last_token_usage"]}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id", "line", "fields"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"enum": ["missing_first_last_token_usage", "ambiguous_counter_decrease", "usage_counter_missing"]},
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "line": {"type": "integer", "minimum": 1},
+            "fields": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"enum": ["input_tokens", "output_tokens", "reasoning_output_tokens", "cache_read_tokens", "total_tokens"]}
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id", "line", "fields"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "route_metadata_missing"},
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "line": {"type": "integer", "minimum": 1},
+            "fields": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"enum": ["provider", "model", "effort"]}
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "availableCreditModelValue": {
       "type": "object",
