@@ -1361,6 +1361,55 @@ RUBY
     fail "missing metadata commit capability leaked install lock"
 }
 
+test_metadata_commit_link_capability_failure_stops_before_managed_mutation() {
+  local tmp source target injection output status license_before metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-atomic-metadata-probe-link.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  license_before="$(shasum "$target/LICENSE")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  printf '\nlink capability probe source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailAtomicMetadataProbeLink
+  def extern(signature, *arguments)
+    result = super
+    if name == "AtomicMetadataRenameProbe" && signature.include?("linkat")
+      define_singleton_method(:linkat) do |*|
+        Fiddle.last_error = Errno::EPERM::Errno
+        -1
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(FailAtomicMetadataProbeLink)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "missing metadata link capability unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "missing metadata link capability mutated a managed file"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "missing metadata link capability changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
+    fail "missing metadata link capability prepared new metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "missing metadata link capability leaked install lock"
+}
+
 test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation() {
   local tmp source target injection output status license_before metadata_before
   tmp="$(mktemp -d)"
@@ -6130,6 +6179,7 @@ main() {
     test_metadata_commit_does_not_unlink_replaced_attested_old_destination
     test_metadata_commit_rejects_replaced_prepared_file
     test_metadata_commit_capability_failure_stops_before_managed_mutation
+    test_metadata_commit_link_capability_failure_stops_before_managed_mutation
     test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation
     test_atomic_rename_capability_failure_stops_before_recovery_mutation
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat

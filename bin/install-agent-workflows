@@ -1577,6 +1577,7 @@ preflight_metadata_commit_capability() {
     lock = File.expand_path(ARGV.fetch(0))
     first_name = "metadata-rename-probe-a"
     second_name = "metadata-rename-probe-b"
+    link_name = "metadata-rename-probe-link"
     first_path = File.join(lock, first_name)
     second_path = File.join(lock, second_name)
     directory = nil
@@ -1622,14 +1623,28 @@ preflight_metadata_commit_capability() {
         first_name,
         second_name
       ) == 0
-      abort unless open_at.call(first_name).read == "first" && open_at.call(second_name).read == "second"
+      first = open_at.call(first_name)
+      second = open_at.call(second_name)
+      abort unless first.read == "first" && second.read == "second"
+      abort unless AtomicMetadataRenameProbe.linkat(
+        directory.fileno,
+        first_name,
+        directory.fileno,
+        link_name,
+        0
+      ) == 0
+      linked = open_at.call(link_name)
+      first_stat = first.stat
+      linked_stat = linked.stat
+      abort unless linked.read == "first" &&
+                   first_stat.dev == linked_stat.dev && first_stat.ino == linked_stat.ino
       named_lock_stat = File.lstat(lock)
       abort unless named_lock_stat.directory? && !named_lock_stat.symlink? &&
                    named_lock_stat.dev == directory_stat.dev && named_lock_stat.ino == directory_stat.ino
     ensure
       ios.reverse_each { |io| io.close unless io.closed? }
       if directory
-        [first_name, second_name].each do |name|
+        [first_name, second_name, link_name].each do |name|
           next if AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0) == 0
 
           cleanup_failed = true
@@ -1658,6 +1673,7 @@ commit_metadata() {
       extend Fiddle::Importer
       dlload Fiddle.dlopen(nil)
       extern "int openat(int, const char *, int)"
+      extern "int linkat(int, const char *, int, const char *, int)"
       extern "int unlinkat(int, const char *, int)"
       if RUBY_PLATFORM.include?("darwin")
         extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
