@@ -576,8 +576,9 @@ or hardened runtime variables cannot be declared. `merge-assurance` runs the
 one repository-owned `.agents/bin` executable from a private materialization of
 the trusted base, never from PR-head bytes. The seam process alone receives a
 fresh empty `0700` `HOME` inside that private temp directory, distinct from the
-account home; git/archive/tar setup does not receive it. Account dotfiles and
-provider credential files are therefore absent from that private `HOME`.
+account home; raw trusted-base Git-object materialization does not receive it.
+Account dotfiles and provider credential files are therefore absent from that
+private `HOME`.
 Credential values copied into the seam environment enter only through declared
 `credential_env` names. Its provider-neutral records bind repository, PR,
 exact head, run ID, selection time, and terminal result.

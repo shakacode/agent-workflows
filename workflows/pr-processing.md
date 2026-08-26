@@ -3806,14 +3806,17 @@ closed trusted-base seam:
 
 ```yaml
 selected_hosted_ci_receipts:
-  executable: ".agents/bin/selected-hosted-ci-receipts"
+  executable: ".agents/bin/REPLACE_WITH_CONSUMER_RECEIPT_HELPER"
   credential_env:
-    - HOSTED_CI_TOKEN
+    - REPLACE_WITH_CONSUMER_CI_TOKEN
 ```
 
 The mapping has exactly `executable` and `credential_env`. The executable is one
 tracked executable regular file under `.agents/bin`, not a command string. The
-credential allowlist is a unique array of uppercase environment-variable names;
+placeholder values above must be replaced with the consumer repository's own
+helper name and credential variable while preserving the shown path and suffix
+grammar. The credential allowlist is a unique array of uppercase
+environment-variable names;
 each name must end in exactly one of `_TOKEN`, `_API_KEY`, `_SECRET`,
 `_PASSWORD`, `_CREDENTIALS`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, or
 `_PRIVATE_KEY`, and each declared value must be present and nonempty.
@@ -3830,9 +3833,10 @@ command. A generic `#!/usr/bin/env ruby` seam resolves to the verified current
 Only the seam process receives a fresh empty `0700` `HOME` inside the private
 materialization temp directory. It is distinct from the account home, so
 account dotfiles and provider credential files are not discovered implicitly.
-Git/archive/tar setup retains its separate minimal system environment and never
-uses this isolated seam `HOME`. Credential values copied into the seam
-environment enter only through the declared `credential_env` names above.
+Raw trusted-base Git-object materialization retains its separate minimal system
+environment and never uses this isolated seam `HOME`. Credential values copied
+into the seam environment enter only through the declared `credential_env`
+names above.
 Mixed, non-string, missing, or extra policy keys produce a blocked
 merge-assurance result rather than escaping the fail-closed boundary.
 
