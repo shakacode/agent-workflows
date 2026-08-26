@@ -8,6 +8,7 @@ require "openssl"
 require "base64"
 require "digest"
 require "rbconfig"
+require "time"
 require "tmpdir"
 
 HELPER = File.expand_path("batch-token-budget", __dir__)
@@ -17,6 +18,17 @@ USAGE_FIXTURE = File.expand_path("../fixtures/batch-usage-receipt/descendants.js
 
 class BatchTokenBudgetTest < Minitest::Test
   TEST_VERIFIER_KEY = OpenSSL::PKey::RSA.generate(2048)
+  TRUSTED_CLOCK_SOURCE = <<~RUBY
+    class << Time
+      def now
+        at(Float(ENV.fetch("BATCH_TOKEN_BUDGET_TEST_EPOCH"))).utc
+      end
+    end
+  RUBY
+  DEFAULT_TRUSTED_CLOCK_DIRECTORY = Dir.mktmpdir("batch-token-budget-default-clock")
+  DEFAULT_TRUSTED_CLOCK_PRELOADER = File.join(DEFAULT_TRUSTED_CLOCK_DIRECTORY, "trusted-clock.rb")
+  File.write(DEFAULT_TRUSTED_CLOCK_PRELOADER, TRUSTED_CLOCK_SOURCE)
+  Minitest.after_run { FileUtils.remove_entry(DEFAULT_TRUSTED_CLOCK_DIRECTORY) }
 
   def budget(state_path: nil)
     parsed = JSON.parse(File.read(FIXTURE))
@@ -47,9 +59,9 @@ class BatchTokenBudgetTest < Minitest::Test
     time.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ")
   end
 
-  def run_helper(state_path, input)
+  def run_helper(state_path, input, **options)
     install_trusted_plan(state_path, input.fetch("budget")) if input["action"] == "initialize" && input["budget"]
-    run_helper_raw(state_path, JSON.generate(input))
+    run_helper_raw(state_path, JSON.generate(input), **options)
   end
 
   def trusted_plan_path(state_path)
@@ -72,11 +84,12 @@ class BatchTokenBudgetTest < Minitest::Test
     @trusted_anchor_bindings[state_path] ||= install_trusted_plan(state_path)
   end
 
-  def run_helper_raw(state_path, input, anchor: trusted_anchor_binding(state_path), env: {}, ruby_arguments: [])
+  def run_helper_raw(state_path, input, anchor: trusted_anchor_binding(state_path), env: nil, ruby_arguments: nil)
+    clock_options = trusted_clock_options_for_command(input)
     stdout, stderr, status = Open3.capture3(
-      env,
+      env || clock_options.fetch(:env),
       RbConfig.ruby,
-      *ruby_arguments,
+      *(ruby_arguments || clock_options.fetch(:ruby_arguments)),
       HELPER,
       "--state",
       state_path,
@@ -93,20 +106,22 @@ class BatchTokenBudgetTest < Minitest::Test
 
   def trusted_clock_options(directory, trusted_time)
     preloader = File.join(directory, "trusted-clock.rb")
-    File.write(
-      preloader,
-      <<~RUBY
-        class << Time
-          def now
-            at(Float(ENV.fetch("BATCH_TOKEN_BUDGET_TEST_EPOCH"))).utc
-          end
-        end
-      RUBY
-    )
+    File.write(preloader, TRUSTED_CLOCK_SOURCE)
+    trusted_clock_options_for_time(trusted_time, preloader: preloader)
+  end
+
+  def trusted_clock_options_for_time(trusted_time, preloader: DEFAULT_TRUSTED_CLOCK_PRELOADER)
     {
       env: { "BATCH_TOKEN_BUDGET_TEST_EPOCH" => trusted_time.to_f.to_s },
       ruby_arguments: ["-r", preloader]
     }
+  end
+
+  def trusted_clock_options_for_command(input)
+    evaluated_at = JSON.parse(input, allow_duplicate_key: true)["evaluated_at"]
+    trusted_clock_options_for_time(Time.iso8601(evaluated_at))
+  rescue JSON::ParserError, TypeError, ArgumentError
+    { env: {}, ruby_arguments: [] }
   end
 
   def closeout_in_memory(state, evaluated_at)
@@ -796,12 +811,42 @@ class BatchTokenBudgetTest < Minitest::Test
             "budget" => candidate
           )
         ),
-        anchor: anchor
+        anchor: anchor,
+        **trusted_clock_options(directory, Time.now.utc)
       )
 
       refute status.success?
       assert_nil output
       assert_equal "command-time-future", JSON.parse(stderr).fetch("reason")
+      refute File.exist?(state_path)
+      refute File.exist?("#{state_path}.lock")
+      refute Dir.exist?(File.dirname(state_path))
+    end
+  end
+
+  def test_far_past_initialization_is_rejected_before_artifact_creation
+    Dir.mktmpdir("batch-token-budget-stale-initialize") do |directory|
+      state_path = File.join(directory, "fresh", "state.json")
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(File.join(directory, "anchor"), candidate)
+      trusted_time = Time.utc(2026, 8, 12, 12, 0, 0)
+
+      output, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(
+          command(
+            "initialize",
+            "evaluated_at" => format_timestamp(trusted_time - 3600),
+            "budget" => candidate
+          )
+        ),
+        anchor: anchor,
+        **trusted_clock_options_for_time(trusted_time)
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "command-time-stale", JSON.parse(stderr).fetch("reason")
       refute File.exist?(state_path)
       refute File.exist?("#{state_path}.lock")
       refute Dir.exist?(File.dirname(state_path))
@@ -814,7 +859,7 @@ class BatchTokenBudgetTest < Minitest::Test
       FileUtils.mkdir_p(directory)
       assert_includes directory, " "
       trusted_time = Time.utc(2026, 8, 26, 12, 0, 0)
-      observations = [29, 30, 30.001, 31].map do |offset|
+      observations = [-30.001, -30, 29, 30, 30.001, 31].map do |offset|
         state_path = File.join(directory, "offset-#{offset.to_s.tr('.', '-')}.json")
         candidate = budget(state_path: state_path)
         anchor = install_trusted_plan(state_path, candidate)
@@ -834,13 +879,16 @@ class BatchTokenBudgetTest < Minitest::Test
       end
 
       observations.each do |offset, output, stderr, status|
-        if offset <= 30
+        if offset.between?(-30, 30)
           assert status.success?, "offset #{offset}: #{stderr}"
           assert_equal "initialized", output.fetch("status"), offset
         else
           refute status.success?, offset
           assert_nil output, offset
-          assert_equal "command-time-future", JSON.parse(stderr).fetch("reason"), offset
+          reason = offset < -30 ? "command-time-stale" : "command-time-future"
+          assert_equal reason, JSON.parse(stderr).fetch("reason"), offset
+          refute File.exist?(File.join(directory, "offset-#{offset.to_s.tr('.', '-')}.json")), offset
+          refute File.exist?(File.join(directory, "offset-#{offset.to_s.tr('.', '-')}.json.lock")), offset
         end
       end
     end
@@ -874,7 +922,8 @@ class BatchTokenBudgetTest < Minitest::Test
 
       output, stderr, status = run_helper(
         state_path,
-        command("closeout", "evaluated_at" => format_timestamp(reference_time + 3600))
+        command("closeout", "evaluated_at" => format_timestamp(reference_time + 3600)),
+        **trusted_clock_options(File.dirname(state_path), reference_time)
       )
 
       refute status.success?
@@ -888,7 +937,8 @@ class BatchTokenBudgetTest < Minitest::Test
 
       normal, normal_stderr, normal_status = run_helper(
         state_path,
-        command("closeout", "evaluated_at" => format_timestamp(reference_time + 1))
+        command("closeout", "evaluated_at" => format_timestamp(reference_time + 1)),
+        **trusted_clock_options(File.dirname(state_path), reference_time)
       )
       assert normal_status.success?, normal_stderr
       assert_equal "not-complete", normal.fetch("status")
@@ -936,6 +986,153 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_nil output
       assert_equal "persisted-command-time-future", JSON.parse(stderr).fetch("reason")
       assert_equal state_before, File.read(state_path)
+    end
+  end
+
+  def test_stale_closeout_equal_to_the_usage_cursor_cannot_complete_and_current_time_recovers
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reconciled, reconcile_stderr, reconcile_status = reconcile_final_zero_usage_window(
+        state_path,
+        name: "stale-closeout-window"
+      )
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      state_before = File.read(state_path)
+      projection_before = JSON.parse(state_before)
+      trusted_time = Time.utc(2026, 8, 12, 12, 0, 30, 1_000)
+
+      stale, stale_stderr, stale_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T12:00:00Z"),
+        **trusted_clock_options_for_time(trusted_time)
+      )
+
+      refute stale_status.success?
+      assert_nil stale
+      assert_equal "command-time-stale", JSON.parse(stale_stderr).fetch("reason")
+      state_after = File.read(state_path)
+      assert_equal state_before, state_after
+      projection_after = JSON.parse(state_after)
+      assert_equal projection_before.fetch("control_events"), projection_after.fetch("control_events")
+      assert_equal projection_before.fetch("last_evaluated_at"), projection_after.fetch("last_evaluated_at")
+
+      recovered, recovered_stderr, recovered_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => format_timestamp(trusted_time)),
+        **trusted_clock_options_for_time(trusted_time)
+      )
+      assert recovered_status.success?, recovered_stderr
+      assert_equal "complete", recovered.fetch("status")
+      assert_equal "COMPLETE", recovered.fetch("completion")
+    end
+  end
+
+  def test_stale_approval_cannot_be_stored_or_consumed
+    with_state do |state_path|
+      initialize_budget(state_path)
+      trusted_time = Time.utc(2026, 8, 12, 12, 0, 0)
+      expired_approval = approval(
+        state_path,
+        id: "stale-expired-approval",
+        issued_at: "2026-08-12T11:58:00Z",
+        expires_at: "2026-08-12T11:59:30Z"
+      )
+      state_before = File.read(state_path)
+      projection_before = JSON.parse(state_before)
+
+      approved, approval_stderr, approval_status = run_helper(
+        state_path,
+        command(
+          "approve",
+          "evaluated_at" => "2026-08-12T11:59:29.999Z",
+          "approval" => expired_approval
+        ),
+        **trusted_clock_options_for_time(trusted_time)
+      )
+
+      refute approval_status.success?
+      assert_nil approved
+      assert_equal "command-time-stale", JSON.parse(approval_stderr).fetch("reason")
+      state_after = File.read(state_path)
+      assert_equal state_before, state_after
+      projection_after = JSON.parse(state_after)
+      assert_equal projection_before.fetch("control_events"), projection_after.fetch("control_events")
+      assert_equal projection_before.fetch("last_evaluated_at"), projection_after.fetch("last_evaluated_at")
+      refute projection_after.fetch("approvals").key?("stale-expired-approval")
+
+      reservation_result, reservation_stderr, reservation_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "evaluated_at" => format_timestamp(trusted_time),
+          "reservation" => reservation(
+            id: "stale-approval-reservation",
+            tokens: 500,
+            overrides: { "approval_id" => "stale-expired-approval" }
+          )
+        ),
+        **trusted_clock_options_for_time(trusted_time)
+      )
+      assert reservation_status.success?, reservation_stderr
+      assert_equal "approval-required", reservation_result.fetch("status")
+      refute JSON.parse(File.read(state_path)).fetch("approvals").key?("stale-expired-approval")
+    end
+  end
+
+  def test_stale_command_cannot_keep_an_expired_override_active
+    with_state do |state_path|
+      initialize_budget(state_path)
+      expired_override = budget_override(
+        state_path,
+        id: "stale-expired-override",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 700,
+        issued_at: "2026-08-12T11:58:00Z",
+        expires_at: "2026-08-12T11:59:30Z"
+      )
+      overridden, override_stderr, override_status = run_helper(
+        state_path,
+        command(
+          "override",
+          "evaluated_at" => "2026-08-12T11:59:00Z",
+          "override" => expired_override
+        )
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", overridden.fetch("status")
+      state_before = File.read(state_path)
+      projection_before = JSON.parse(state_before)
+      trusted_time = Time.utc(2026, 8, 12, 12, 0, 0)
+
+      stale, stale_stderr, stale_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T11:59:29.999Z"),
+        **trusted_clock_options_for_time(trusted_time)
+      )
+
+      refute stale_status.success?
+      assert_nil stale
+      assert_equal "command-time-stale", JSON.parse(stale_stderr).fetch("reason")
+      state_after = File.read(state_path)
+      assert_equal state_before, state_after
+      projection_after = JSON.parse(state_after)
+      assert_equal projection_before.fetch("control_events"), projection_after.fetch("control_events")
+      assert_equal projection_before.fetch("last_evaluated_at"), projection_after.fetch("last_evaluated_at")
+      assert projection_after.dig("overrides", "stale-expired-override", "active")
+      assert_equal 700, projection_after.dig("scopes", "lanes", "lane-a", "limit_tokens")
+
+      recovered, recovered_stderr, recovered_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => format_timestamp(trusted_time)),
+        **trusted_clock_options_for_time(trusted_time)
+      )
+      assert recovered_status.success?, recovered_stderr
+      assert_equal "not-complete", recovered.fetch("status")
+      recovered_state = JSON.parse(File.read(state_path))
+      refute recovered_state.dig("overrides", "stale-expired-override", "active")
+      assert_equal 600, recovered_state.dig("scopes", "lanes", "lane-a", "limit_tokens")
     end
   end
 
@@ -4643,7 +4840,11 @@ class BatchTokenBudgetTest < Minitest::Test
       run_helper(state_path, command("closeout", "evaluated_at" => "2026-08-12T14:00:00Z"))
       backdated, backdated_stderr, backdated_status = run_helper(
         state_path,
-        command("reserve", "reservation" => reservation(id: "backdated"))
+        command(
+          "reserve",
+          "evaluated_at" => "2026-08-12T13:59:59Z",
+          "reservation" => reservation(id: "backdated")
+        )
       )
       refute backdated_status.success?
       assert_nil backdated

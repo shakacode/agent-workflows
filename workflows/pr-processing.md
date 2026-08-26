@@ -823,12 +823,15 @@ aged telemetry cannot allocate twice or rewrite a decision.
 At most one reservation is active per accounting scope: same-scope nested work
 coalesces into it while different lanes may remain concurrent.
 Treat command time as a durable monotonic watermark. Capture trusted host time
-once per helper invocation; accept at most 30 seconds of forward skew,
-inclusively, and reject greater command skew before fresh lock/state artifacts
-or existing-state evaluation and persistence. Reject an otherwise valid
+once per helper invocation; accept `evaluated_at` only within the inclusive
+30-second window before or after that clock. Reject older commands as
+`command-time-stale` and newer commands as `command-time-future` before fresh
+lock/state artifacts or existing-state expiration, evaluation, event/watermark
+mutation, and persistence. Reject an otherwise valid
 persisted `last_evaluated_at` that is more than 30 seconds ahead of that same
 captured clock. Future-dated human decisions and time rollback also fail
-closed. Replacement/escalation always names a released or reconciled
+closed; stale commands cannot store expired approvals or defer override
+expiration. Replacement/escalation always names a released or reconciled
 predecessor, and persisted reservations contain only pinned metadata fields.
 Cross-task admission resolves source and target task/root/batch/lane plus
 canonical issue/PR identities from metadata only, reserves the target batch/lane

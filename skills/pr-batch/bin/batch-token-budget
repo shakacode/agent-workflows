@@ -36,7 +36,7 @@ module BatchTokenBudget
   /ix
   TRUSTED_PLAN_MAX_BYTES = 1024 * 1024
   USAGE_RECEIPT_MAX_BYTES = TRUSTED_PLAN_MAX_BYTES
-  MAX_FUTURE_SKEW_SECONDS = 30
+  MAX_COMMAND_TIME_SKEW_SECONDS = 30
 
   class InvalidInput < StandardError; end
   class DuplicateJSONKey < StandardError; end
@@ -1040,7 +1040,11 @@ module BatchTokenBudget
   end
 
   def timestamp_future_of?(timestamp, trusted_time)
-    ((DateTime.iso8601(timestamp) - trusted_time.to_datetime) * 86_400) > MAX_FUTURE_SKEW_SECONDS
+    ((DateTime.iso8601(timestamp) - trusted_time.to_datetime) * 86_400) > MAX_COMMAND_TIME_SKEW_SECONDS
+  end
+
+  def timestamp_stale_of?(timestamp, trusted_time)
+    ((trusted_time.to_datetime - DateTime.iso8601(timestamp)) * 86_400) > MAX_COMMAND_TIME_SKEW_SECONDS
   end
 
   def valid_telemetry?(telemetry, reservation, evaluated_at, max_age_seconds)
@@ -2796,6 +2800,9 @@ begin
   end
   if BatchTokenBudget.timestamp_future_of?(command.fetch("evaluated_at"), trusted_host_time)
     raise BatchTokenBudget::InvalidInput, "command-time-future"
+  end
+  if BatchTokenBudget.timestamp_stale_of?(command.fetch("evaluated_at"), trusted_host_time)
+    raise BatchTokenBudget::InvalidInput, "command-time-stale"
   end
 
   if command["action"] == "initialize"
