@@ -1743,6 +1743,7 @@ module AgentWorkflowSeamDoctor
     config.each do |key, value|
       next if REQUIRED_POLICY_KEYS.include?(key)
       next if key == "trusted_actions" && value == []
+      next if key == "writing_style"
 
       closed_policy = ["autonomous_merge", SELECTED_HOSTED_CI_POLICY_KEY].include?(key)
       next unless unresolved_policy_value?(

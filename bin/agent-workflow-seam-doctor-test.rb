@@ -727,6 +727,22 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_writing_style_accepts_legacy_angle_bracket_phrases_in_the_guide
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("writing_style" => { "guide" => "Write the <main branch> in angle brackets." })
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
   def test_selected_hosted_ci_receipts_accepts_an_empty_credential_allowlist
     with_repo do |root|
       write_valid_binstub_contract(root)
