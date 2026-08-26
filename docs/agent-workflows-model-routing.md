@@ -441,6 +441,9 @@ evidence. A pilot may still publish
 retain, adverse, or `UNKNOWN` evidence without promotion. It must use matched
 task classes and context topology, record host-observed execution evidence, and
 publish its comparison results; this evidence is not yet complete.
+Canonical reconciliation applies the production source pair, bounded
+full-history window, nonnegative accounting, and lane
+unattributed-plus-worker token and turn equations before pilot use.
 
 Topology is independent from route strength. The ordinary implementation
 default is one user-visible task, one repository-qualified canonical issue or
@@ -495,6 +498,8 @@ retain faithful original checkpoint/revision semantics on production replay,
 and accept exactly current plan-anchored, telemetry-only 6be, pre-telemetry
 297f, or stacked-base a556 receipts that omit the later decision request and
 reservation request/digest fields; any other partial receipt remains corrupt.
+For a verified a556 replay, reconstruct the exact digest-matching original
+request in both emitted receipt copies without rewriting persisted history.
 They bind the canonical production reservation request and digest through both
 decision and admission receipts, and enforce the receipt-carried production
 telemetry max age. The decision receipt also anchors the externally verified
@@ -513,7 +518,8 @@ exception concurrency. The decision returns fresh and replayed lane IDs
 separately, authorizes `worker_spawn` only for fresh lanes, and keeps mixed
 fresh/replay batches lane-scoped instead of collapsing the entire batch. An admitted replay authorizes only the idempotent
 `record_budget_replay` no-op; it never launches, wakes, retries, or repeats another
-side effect, and a replayed launch exposes no held-local actions.
+side effect, and a replayed launch exposes no held-local actions. Record-only
+handling never erases an independently required human-approval block or reason.
 Case-insensitive control identities use Unicode NFKC plus full case folding and
 trimming; nested `UNKNOWN` checks apply the same normalization. Operational
 request/result/reservation IDs first require portable ASCII syntax.

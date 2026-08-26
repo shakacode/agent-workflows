@@ -173,9 +173,12 @@ their original nil checkpoint, warning replays may not, and original receipt
 revisions may precede the current replay revision. Persisted decision receipts
 accept exactly current plan-anchored, telemetry-only 6be, pre-telemetry 297f,
 or stacked-base a556 projections that also omit the later decision request and
-reservation request/digest fields; other partial projections remain corrupt. A replayed admission permits
+reservation request/digest fields; other partial projections remain corrupt.
+For a verified a556 replay, reconstruct the exact digest-matching original
+request in both emitted receipt copies without rewriting persisted history. A replayed admission permits
 only the idempotent `record_budget_replay` no-op and never repeats launch, wake,
-retry, held-local launch work, or another side effect. Normalize case-insensitive
+retry, held-local launch work, or another side effect. Record-only handling never
+erases an independently required human-approval block or reason. Normalize case-insensitive
 control identities with Unicode NFKC plus full case folding and trimming, and
 apply that normalization before nested `UNKNOWN` rejection.
 Usage reconciliation binds top-level, receipt, charge-back target, and other

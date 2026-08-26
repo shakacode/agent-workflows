@@ -718,9 +718,12 @@ well-formed checkpoint, and an original decision revision may precede the
 current replay revision. Persisted-state replay accepts exactly current
 plan-anchored, telemetry-only 6be, pre-telemetry 297f, or stacked-base a556
 receipts that omit the later decision request and reservation request/digest
-fields; any other partial projection remains corrupt. Replayed admission is an idempotent record-only outcome:
+fields; any other partial projection remains corrupt. For a verified a556 replay,
+reconstruct the exact digest-matching original request in both emitted receipt
+copies without rewriting persisted history. Replayed admission is an idempotent record-only outcome:
 permit only `record_budget_replay`, never a second launch, wake, retry, or other
-side effect or held-local launch action. For a fresh admission, bind receipt
+side effect or held-local launch action. Record-only handling never erases an
+independently required human-approval block or reason. For a fresh admission, bind receipt
 tokens, aggregate/lane allocation totals, and the overshoot target set to the
 request. Caller-authored
 amounts, units, URLs, nested `UNKNOWN`, or `status: passed` objects are not budget
@@ -769,7 +772,9 @@ and matching reconciliation receipts. Recompute both physical-token and
 contributing-turn equations: batch descendant-inclusive equals coordinator
 self-only plus batch unattributed plus every lane descendant-inclusive. Use the
 budget result's charge-back summaries; never add descendants twice or increment
-the physical total for a charge-back. Missing, `UNKNOWN`, unbalanced, rebound,
+the physical total for a charge-back. Require the production source pair,
+bounded full-history window, nonnegative accounting, and each lane's exact
+unattributed-plus-worker token and turn equations. Missing, `UNKNOWN`, unbalanced, rebound,
 or digest-mismatched evidence blocks reconciliation. Unavailable replay-safe
 usage receipts report `usage_telemetry` as `UNKNOWN`; unavailable hierarchical-token-budget evidence blocks context-amplifying
 actions without erasing independently permitted held-local stage work.

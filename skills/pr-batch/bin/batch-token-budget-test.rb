@@ -2912,6 +2912,12 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal 900, replayed.dig("decision_receipt", "telemetry_max_age_seconds")
       assert_equal state.dig("trusted_plan_binding", "path"),
                    replayed.dig("decision_receipt", "trusted_plan_path")
+      if profile == :stacked_base_a556
+        assert_equal canonicalize(request), replayed.dig("decision_receipt", "request")
+        assert_equal object_digest(request), replayed.dig("decision_receipt", "request_digest")
+        assert_equal canonicalize(request), replayed.dig("receipt", "request")
+        assert_equal object_digest(request), replayed.dig("receipt", "request_digest")
+      end
       persisted_receipt = JSON.parse(File.read(state_path)).dig(
         "reservation_decisions", request.fetch("id"), "outcomes", 0, "receipt"
       )

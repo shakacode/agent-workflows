@@ -1294,17 +1294,50 @@ module BatchTokenBudget
 
   def replay_reservation_decision(state, outcome)
     fields = deep_copy(outcome.fetch("result_fields"))
+    request = verified_replay_request(state, outcome)
+    if request && fields["receipt"].is_a?(Hash)
+      fields["receipt"] = deep_copy(fields.fetch("receipt")).merge(
+        "request" => canonicalize(request),
+        "request_digest" => digest(request)
+      )
+    end
     fields["decision_status"] = outcome.fetch("status")
-    fields["decision_receipt"] = current_decision_receipt(state, outcome.fetch("receipt"))
+    fields["decision_receipt"] = current_decision_receipt(state, outcome.fetch("receipt"), request)
     [state, result(state, "replayed", fields)]
   end
 
-  def current_decision_receipt(state, receipt)
-    deep_copy(receipt).merge(
+  def verified_replay_request(state, outcome)
+    decision_receipt = outcome.fetch("receipt")
+    reservation_id = decision_receipt["reservation_id"]
+    request_digest = decision_receipt["request_digest"]
+    candidates = [
+      decision_receipt["request"],
+      state.dig("reservations", reservation_id, "request")
+    ]
+    state.fetch("control_events").reverse_each do |event|
+      command = event.dig("payload", "command")
+      next unless command.is_a?(Hash) && command["action"] == "reserve"
+
+      candidates << command["reservation"]
+    end
+    request = candidates.find do |candidate|
+      candidate.is_a?(Hash) && candidate["id"] == reservation_id && digest(candidate) == request_digest
+    end
+    canonicalize(request) if request
+  end
+
+  def current_decision_receipt(state, receipt, request)
+    current = deep_copy(receipt).merge(
       "telemetry_max_age_seconds" => state.dig("budget", "telemetry", "max_age_seconds"),
       "trusted_plan_path" => state.dig("trusted_plan_binding", "path"),
       "trusted_plan_id" => state.dig("trusted_plan_binding", "id"),
       "trusted_plan_digest" => state.dig("trusted_plan_binding", "digest")
+    )
+    return current unless request
+
+    current.merge(
+      "request" => canonicalize(request),
+      "request_digest" => digest(request)
     )
   end
 

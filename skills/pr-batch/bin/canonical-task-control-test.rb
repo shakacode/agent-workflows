@@ -3,14 +3,21 @@
 
 require "json"
 require "digest"
+require "base64"
 require "fileutils"
 require "minitest/autorun"
 require "open3"
 require "openssl"
 require "tempfile"
 require "time"
+require "zlib"
 
 HELPER = File.expand_path("canonical-task-control", __dir__)
+BUDGET_HELPER = File.expand_path("batch-token-budget", __dir__)
+STACKED_BASE_BUDGET_HELPER_FIXTURE = File.expand_path(
+  "fixtures/batch-token-budget-a556.gz.b64", __dir__
+)
+STACKED_BASE_BUDGET_HELPER_SHA256 = "421d4897690d1ff591966f79ce8b07a5b3d112a18d26643b78258de2f947d050"
 REPO_ROOT = File.expand_path("../../..", __dir__)
 REVIEW_VALIDATOR = File.join(REPO_ROOT, "bin", "validate-review-findings")
 WORKFLOW_CONFIG = File.join(REPO_ROOT, ".agents", "agent-workflow.yml")
@@ -762,6 +769,25 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes result.fetch("blockers"), "human_approval_required"
   end
 
+  def test_replayed_over_threshold_delegation_preserves_original_block_reason
+    input = delegation_input(
+      target_state: "idle", context: 60_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    gate = input.fetch("budget_gate")
+    gate["status"] = "replayed"
+    gate["decision_status"] = "admitted"
+    gate["state_revision"] += 1
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "block", result.fetch("verdict")
+    assert_equal ["record_budget_replay"], result.fetch("allowed_actions")
+    assert_includes result.fetch("blockers"), "human_approval_required"
+    refute result.fetch("wake_target")
+  end
+
   def test_active_target_suppresses_unchanged_acknowledgement_and_deterministic_handoff_noise
     %w[unchanged acknowledgement deterministic_handoff].each do |message_class|
       input = delegation_input(
@@ -874,6 +900,49 @@ class CanonicalTaskControlTest < Minitest::Test
 
     refute status.success?
     assert_includes stderr, "usage receipt privacy contract invalid"
+  end
+
+  def test_usage_receipt_rejects_evidence_sources_the_production_contract_rejects
+    input = usage_reconciliation_input
+    reconciliation = input.fetch("usage_reconciliation")
+    reconciliation.fetch("usage_receipt").fetch("evidence")["sources"] = ["caller_asserted_source"]
+    refresh_usage_artifact!(reconciliation)
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "production usage v2 contract"
+  end
+
+  def test_usage_receipt_enforces_production_window_accounting_and_lane_equations
+    mutations = {
+      "window" => proc { |receipt| receipt.fetch("window")["differencing"] = "caller_asserted" },
+      "accounting" => proc { |receipt| receipt.fetch("accounting")["usage_samples"] = -1 },
+      "lane hierarchy" => proc { |receipt| receipt.fetch("lanes").first["workers"] = [] }
+    }
+    mutations.each do |label, mutate|
+      input = usage_reconciliation_input
+      reconciliation = input.fetch("usage_reconciliation")
+      mutate.call(reconciliation.fetch("usage_receipt"))
+      refresh_usage_artifact!(reconciliation)
+
+      _result, stderr, status = run_helper(input)
+
+      refute status.success?, label
+      assert_includes stderr, "production usage v2 contract", label
+    end
+  end
+
+  def test_pilot_rejects_usage_evidence_sources_the_production_contract_rejects
+    pilot = pilot_input
+    arm = pilot.fetch("pairs").first.fetch("ordinary")
+    arm.fetch("usage_receipt").fetch("evidence")["sources"] = ["caller_asserted_source"]
+    refresh_usage_artifact!(arm)
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "production usage v2 contract"
   end
 
   def test_usage_reconciliation_rejects_double_counting_or_foreign_charge_back
@@ -1267,6 +1336,65 @@ class CanonicalTaskControlTest < Minitest::Test
     gate["state_revision"] += 1
     input["manifest"]["budgets"] = budget_manifest_binding(input.fetch("task"), results: input.fetch("budget_gate"))
 
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "block", result.fetch("verdict")
+    assert_equal ["record_budget_replay"], result.fetch("allowed_actions")
+    assert_includes result.fetch("blockers"), "budget_admission_replayed_noop"
+  end
+
+  def test_real_stacked_base_budget_replay_is_accepted_as_record_only_by_canonical_control
+    task = base_input.fetch("task")
+    lane = task.fetch("lanes").first
+    root = Dir.mktmpdir("canonical-a556-replay", TEST_TMP_ROOT)
+    @temporary_roots << root
+    state_path = File.join(root, "budget-state.json")
+    plan = budget_plan(task).merge("state_path" => state_path)
+    plan_path = install_budget_plan(plan, label: "a556-replay")
+    anchor = {
+      "path" => plan_path,
+      "id" => plan.fetch("batch_id"),
+      "digest" => findings_digest(plan)
+    }
+    legacy_helper = install_stacked_base_budget_helper(root)
+    now = Time.now.utc
+    initialize_command = budget_command(
+      "initialize", plan,
+      { "budget" => plan },
+      evaluated_at: (now - 120).iso8601
+    )
+    initialized, initialize_stderr, initialize_status = run_budget_helper(
+      legacy_helper, state_path, anchor, initialize_command
+    )
+    assert initialize_status.success?, initialize_stderr
+    assert_equal "initialized", initialized.fetch("status")
+
+    request = budget_request(action: "worker_spawn", task: task, lane: lane)
+    request.fetch("telemetry")["observed_at"] = (now - 30).iso8601
+    reserve_command = budget_command(
+      "reserve", plan,
+      { "reservation" => request },
+      evaluated_at: (now - 20).iso8601
+    )
+    admitted, reserve_stderr, reserve_status = run_budget_helper(
+      legacy_helper, state_path, anchor, reserve_command
+    )
+    assert reserve_status.success?, reserve_stderr
+    assert_equal "admitted", admitted.fetch("status")
+
+    replay_command = reserve_command.merge("evaluated_at" => (now - 10).iso8601)
+    replayed, replay_stderr, replay_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor, replay_command
+    )
+    assert replay_status.success?, replay_stderr
+    assert_equal "replayed", replayed.fetch("status")
+    assert_equal canonicalize(request), replayed.dig("decision_receipt", "request")
+    assert_equal canonicalize(request), replayed.dig("receipt", "request")
+
+    input = launch_input(task)
+    input["budget_gate"] = [replayed]
+    input["manifest"]["budgets"] = budget_manifest_binding(task, results: [replayed])
     result, stderr, status = run_helper(input)
 
     assert status.success?, stderr
@@ -2159,7 +2287,15 @@ class CanonicalTaskControlTest < Minitest::Test
         "usage" => { "self_only" => usage_vector(lane_tokens),
                      "descendant_inclusive" => usage_vector(lane_tokens), "unattributed" => zero },
         "turns" => { "self_only" => lane_turns, "descendant_inclusive" => lane_turns, "unattributed" => 0 },
-        "evidence" => scope_evidence(lane_id), "workers" => [],
+        "evidence" => scope_evidence(lane_id),
+        "workers" => [{
+          "scope" => "worker", "id" => "worker-#{lane_id}", "root_thread_id" => "root-worker-#{lane_id}",
+          "requested_route" => route, "observed_routes" => [observed_route(lane_tokens)],
+          "usage" => { "self_only" => usage_vector(lane_tokens),
+                       "descendant_inclusive" => usage_vector(lane_tokens) },
+          "turns" => { "self_only" => lane_turns, "descendant_inclusive" => lane_turns },
+          "evidence" => scope_evidence("worker-#{lane_id}")
+        }],
         "reconciliation" => { "status" => "balanced", "equation" => "lane self + workers" }
       }],
       "window" => {
@@ -2426,6 +2562,39 @@ class CanonicalTaskControlTest < Minitest::Test
     when Array then value.map { |entry| canonicalize(entry) }
     else value
     end
+  end
+
+  def install_stacked_base_budget_helper(root)
+    helper = File.join(root, "batch-token-budget-a556")
+    compressed = Base64.strict_decode64(File.read(STACKED_BASE_BUDGET_HELPER_FIXTURE).gsub(/\s+/, ""))
+    source = Zlib.gunzip(compressed)
+    source_digest = Digest::SHA256.hexdigest(source)
+    raise "stacked base budget helper fixture digest mismatch" unless source_digest == STACKED_BASE_BUDGET_HELPER_SHA256
+
+    File.binwrite(helper, source, mode: "wb", perm: 0o700)
+    helper
+  end
+
+  def budget_command(action, plan, fields = {}, evaluated_at:)
+    {
+      "type" => "batch-token-budget-command",
+      "version" => 1,
+      "action" => action,
+      "batch_id" => plan.fetch("batch_id"),
+      "evaluated_at" => evaluated_at
+    }.merge(fields)
+  end
+
+  def run_budget_helper(helper, state_path, anchor, command)
+    stdout, stderr, status = Open3.capture3(
+      helper,
+      "--state", state_path,
+      "--trusted-plan", anchor.fetch("path"),
+      "--trusted-plan-id", anchor.fetch("id"),
+      "--trusted-plan-digest", anchor.fetch("digest"),
+      stdin_data: JSON.generate(command)
+    )
+    [stdout.empty? ? {} : JSON.parse(stdout), stderr, status]
   end
 
   def run_helper(input, trusted: true, trusted_bundle: nil)
