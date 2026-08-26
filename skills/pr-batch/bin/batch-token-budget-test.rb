@@ -72,9 +72,11 @@ class BatchTokenBudgetTest < Minitest::Test
     @trusted_anchor_bindings[state_path] ||= install_trusted_plan(state_path)
   end
 
-  def run_helper_raw(state_path, input, anchor: trusted_anchor_binding(state_path), env: {})
+  def run_helper_raw(state_path, input, anchor: trusted_anchor_binding(state_path), env: {}, ruby_arguments: [])
     stdout, stderr, status = Open3.capture3(
       env,
+      RbConfig.ruby,
+      *ruby_arguments,
       HELPER,
       "--state",
       state_path,
@@ -89,7 +91,7 @@ class BatchTokenBudgetTest < Minitest::Test
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
   end
 
-  def trusted_clock_env(directory, trusted_time)
+  def trusted_clock_options(directory, trusted_time)
     preloader = File.join(directory, "trusted-clock.rb")
     File.write(
       preloader,
@@ -102,8 +104,8 @@ class BatchTokenBudgetTest < Minitest::Test
       RUBY
     )
     {
-      "RUBYOPT" => "-r#{preloader}",
-      "BATCH_TOKEN_BUDGET_TEST_EPOCH" => trusted_time.to_f.to_s
+      env: { "BATCH_TOKEN_BUDGET_TEST_EPOCH" => trusted_time.to_f.to_s },
+      ruby_arguments: ["-r", preloader]
     }
   end
 
@@ -807,7 +809,10 @@ class BatchTokenBudgetTest < Minitest::Test
   end
 
   def test_command_time_accepts_the_forward_skew_boundary_and_rejects_overage
-    Dir.mktmpdir("batch-token-budget-command-skew") do |directory|
+    Dir.mktmpdir("batch-token-budget-command-skew") do |root_directory|
+      directory = File.join(root_directory, "clock seam with spaces")
+      FileUtils.mkdir_p(directory)
+      assert_includes directory, " "
       trusted_time = Time.utc(2026, 8, 26, 12, 0, 0)
       observations = [29, 30, 30.001, 31].map do |offset|
         state_path = File.join(directory, "offset-#{offset.to_s.tr('.', '-')}.json")
@@ -823,7 +828,7 @@ class BatchTokenBudgetTest < Minitest::Test
             )
           ),
           anchor: anchor,
-          env: trusted_clock_env(directory, trusted_time)
+          **trusted_clock_options(directory, trusted_time)
         )
         [offset, output, stderr, status]
       end
@@ -906,7 +911,7 @@ class BatchTokenBudgetTest < Minitest::Test
           )
         ),
         anchor: anchor,
-        env: trusted_clock_env(directory, trusted_time)
+        **trusted_clock_options(directory, trusted_time)
       )
       assert initialize_status.success?, initialize_stderr
       assert_equal "initialized", initialized.fetch("status")
@@ -914,7 +919,7 @@ class BatchTokenBudgetTest < Minitest::Test
         state_path,
         JSON.generate(command("closeout", "evaluated_at" => format_timestamp(trusted_time + 30))),
         anchor: anchor,
-        env: trusted_clock_env(directory, trusted_time)
+        **trusted_clock_options(directory, trusted_time)
       )
       assert boundary_status.success?, boundary_stderr
       assert_equal "not-complete", boundary.fetch("status")
@@ -924,7 +929,7 @@ class BatchTokenBudgetTest < Minitest::Test
         state_path,
         JSON.generate(command("closeout", "evaluated_at" => format_timestamp(trusted_time - 2))),
         anchor: anchor,
-        env: trusted_clock_env(directory, trusted_time - 2)
+        **trusted_clock_options(directory, trusted_time - 2)
       )
 
       refute status.success?
