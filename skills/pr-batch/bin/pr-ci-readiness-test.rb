@@ -3556,11 +3556,13 @@ class PrCiReadinessCliTest < Minitest::Test
       "app" => suite.fetch("app"), "check_suite" => { "id" => 10 }
     }
     changed_run = successful_run.merge("conclusion" => "neutral")
+    suite_fetches = 0
     run_fetches = 0
     runner = PrCiReadiness::Runner.new
     runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
       _validate_page = validate_page
       if key == "check_suites"
+        suite_fetches += 1
         [suite]
       else
         run_fetches += 1
@@ -3573,6 +3575,46 @@ class PrCiReadinessCliTest < Minitest::Test
     refute complete
     assert_empty rows
     assert_includes error, "check-run inventory changed during final verification"
+    assert_equal 3, suite_fetches
+    assert_equal 2, run_fetches
+  end
+
+  def test_check_suite_snapshot_fails_closed_when_suite_appears_during_final_run_materialization
+    head = "a" * 40
+    initial_suite = {
+      "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+      "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
+    }
+    late_suite = initial_suite.merge(
+      "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+      "status" => "in_progress", "conclusion" => nil, "latest_check_runs_count" => 0
+    )
+    suite_fetches = 0
+    run_fetches = 0
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        suite_fetches += 1
+        suite_fetches < 3 ? [initial_suite] : [initial_suite, late_suite]
+      else
+        run_fetches += 1
+        [{
+          "id" => 100, "name" => "build", "head_sha" => head,
+          "status" => "completed", "conclusion" => "success",
+          "started_at" => "2026-08-25T10:00:00Z", "html_url" => "",
+          "app" => initial_suite.fetch("app"), "check_suite" => { "id" => 10 }
+        }]
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    refute complete
+    assert_empty rows
+    assert_includes error, "changed during final verification"
+    assert_equal 3, suite_fetches
     assert_equal 2, run_fetches
   end
 

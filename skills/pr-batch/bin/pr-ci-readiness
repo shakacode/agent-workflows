@@ -937,6 +937,15 @@ module PrCiReadiness
       end
 
       final_rows = materialize_check_suite_runs(repo, head_sha, final_validated_suites)
+      verified_suites = fetch_paginated_collection(
+        "repos/#{repo}/commits/#{head_sha}/check-suites?per_page=100&page=%<page>s",
+        "check_suites"
+      )
+      verified_suite_snapshot = canonical_check_suite_snapshot(validate_check_suites(verified_suites, head_sha))
+      unless verified_suite_snapshot == initial_suite_snapshot
+        raise Error, "check suite inventory changed during final verification"
+      end
+
       unless canonical_materialized_check_run_snapshot(final_rows) ==
              canonical_materialized_check_run_snapshot(rows)
         raise Error, "check-run inventory changed during final verification"
