@@ -734,10 +734,56 @@ escalation assignment, its evidence gate, and a maximum escalation count.
   one; otherwise use the closest available route or runtime default and record
   the requested and observed fields honestly.
 
+#### Planning-Pass Route Assessment
+
+Assess the current planning pass separately from the future batch coordinator,
+worker, and checker routes. Named routes are advisory; use the provider-neutral
+route when the active host or roster is not verified.
+
+| Classification | Provider-neutral | Codex GPT-5.6 | Claude profile |
+| --- | --- | --- | --- |
+| `affirmatively-simple` | `balanced/medium` | `Terra/medium` | `Sonnet 5/medium` |
+| `routine-multi-lane` | `balanced/high` | `Terra/high` | `Sonnet 5/high` |
+| `default-or-uncertain-single-target` | `strongest/high` | `Sol/high` | `Opus 5/high` |
+| `pinned-high-risk-or-escalation` | `strongest/xhigh` | `Sol/xhigh` | `Opus 5/xhigh` |
+
+Use `affirmatively-simple` only after verified scope establishes explicit
+acceptance criteria, a known bounded file surface, no unresolved design or
+dependency question, no security, authorization, concurrency, persistence,
+lifecycle, routing, release, public-contract, or other high-consequence
+boundary, easy failure detection and rollback, and a strong deterministic
+verification oracle. Any missing or disputed simplicity criterion keeps a
+single target in `default-or-uncertain-single-target`; a present or disputed
+pinned high-risk trigger uses `pinned-high-risk-or-escalation`. Multiple
+verified routine targets use `routine-multi-lane` unless a high-risk trigger
+applies. This classification describes only the current planning pass and does
+not select the future batch coordinator.
+
+| Observed comparison | Disposition | Maximum routed reviews | Compare routes? | Restart advice? |
+| --- | --- | --- | --- | --- |
+| `stronger-current` | `future-cost-advisory` | `0` | `yes` | `no` |
+| `weaker-current-host-supported` | `bounded-independent-review` | `1` | `yes` | `no` |
+| `any-observed-field-UNKNOWN` | `non-blocking-advisory` | `0` | `no` | `no` |
+
+When the fully observed current route is stronger than recommended, report the
+cheaper recommendation for a future planning run only. Do not spawn another
+planner merely to save cost after a stronger route is already active.
+When it is materially weaker, the host may run at most one bounded independent
+plan review at the recommended route, but only when explicit route-specific
+execution is supported and the review can finish without user interaction.
+Keep the reviewer distinct from the plan maker and disclose the review route.
+Unavailable, inherited, substituted, or unverifiable route-specific execution
+gets a non-blocking advisory instead; never require a restart.
+Record observed host, model, and effort field by field only from host-exposed
+runtime evidence. If any field needed for comparison is `UNKNOWN`, make no
+stronger/weaker comparison, launch no route-correct review, and give no restart
+advice. Requested preferences, prompt text, and model self-report are not
+observations.
+
 For a Codex GPT-5.6 host, use this recommended advisory profile:
 
-- Default single-target planner: Sol/high
-- Affirmatively simple single-target planner: Terra/high
+- Default single-target future coordinator: Sol/high
+- Affirmatively simple single-target future coordinator: Terra/high
 - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -759,24 +805,22 @@ coordinator or worker, with the actual route recorded honestly. Luna remains
 outside this profile's recommended worker roster. Shared workflow text remains
 portable for other providers and model generations.
 
-For planning, one issue or PR remains single-target even when its coordinator
-delegates bounded implementation, review, or QA lanes. Default to Sol/high
-because one issue may still require difficult diagnosis, design, or verification
-planning. Prefer Terra/high only after an affirmative simple classification,
-and Sol/xhigh only for a present or disputed pinned high-risk boundary or
-another listed exception. Multiple targets use the routine
-multi-lane balanced/high route unless an exception applies; subagents alone do
-not require that route. When the host exposes a materially different current planner route,
-report one concise non-blocking current-versus-recommended advisory with the
-risk or cost reason; do not infer it from `UNKNOWN`, repeat it, stop, or request
-a restart.
+For the future batch coordinator, one issue or PR remains single-target even
+when it delegates bounded implementation, review, or QA lanes. Default to
+Sol/high because one issue may still require difficult diagnosis, design, or
+verification. Prefer Terra/high only after an affirmative simple
+classification, and Sol/xhigh only for a present or disputed pinned high-risk
+boundary or another listed exception. Multiple targets use the routine
+multi-lane balanced/high coordinator route unless an exception applies;
+subagents alone do not require that route. The current planning pass instead
+uses the separate assessment above.
 
 For a Claude host, use this provisional recommended advisory profile
 (`claude-profile v1`; see the Conservative Claude Profile in
 `docs/agent-workflows-model-routing.md`):
 
-- Default single-target planner: Opus 5/high
-- Affirmatively simple single-target planner: Sonnet 5/high
+- Default single-target future coordinator: Opus 5/high
+- Affirmatively simple single-target future coordinator: Sonnet 5/high
 - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 5/high
@@ -784,16 +828,14 @@ For a Claude host, use this provisional recommended advisory profile
 - Independent adversarial QA: Opus 5/xhigh
 - Routine deterministic QA: Opus 5/high
 
-For Claude planning, one issue or PR remains single-target even when its
-coordinator delegates bounded implementation, review, or QA lanes. Default to
+For the future Claude batch coordinator, one issue or PR remains single-target
+even when it delegates bounded implementation, review, or QA lanes. Default to
 Opus 5/high, use Sonnet 5/high only after the affirmative simple
 classification, and use Opus 5/xhigh only for a present or disputed pinned
-high-risk boundary or another listed exception. Multiple targets
-use the routine multi-lane balanced/high route unless an exception applies;
-delegation by itself does not require that route. When the host exposes a materially
-different current planner route, report one concise non-blocking
-current-versus-recommended advisory with the risk or cost reason; do not infer
-it from `UNKNOWN`, repeat it, stop, or request a restart.
+high-risk boundary or another listed exception. Multiple targets use the
+routine multi-lane balanced/high coordinator route unless an exception
+applies; delegation by itself does not require that route. The current planning
+pass instead uses the separate assessment above.
 
 Sonnet 5/high is recommended for the same affirmative simple-task
 classification. When lane risk or bounded delegation requires an execution
@@ -1601,6 +1643,12 @@ owner/serial decision without repeating the expanded map:
 
 > Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`
 
+The Batch Plan always records `Planning-pass model/effort assessment:` with the
+verified-scope classification, requested recommendation, concise evidence,
+field-granular host-observed host/model/effort, comparison disposition, and any
+independent review route or `none`. Keep it separate from the future
+`Coordinator model/effort preference:` and outside the compact goal prompt.
+
 Use this goal prompt shape:
 Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
@@ -1968,6 +2016,17 @@ notification wording.
   instead of, the existing mandatory closeout handoff. Preserve every item of
   required handoff evidence and exact `Conversation status:` line, which remains
   the final user-visible line.
+- Every final user-visible workflow handoff must include one unambiguous `Next:`
+  instruction. When the applicable archive gate passes and no unperformed
+  downstream launch remains, use `Next: Archive this task.` When an
+  archive-ready prompt-only task still requires the user to launch its fenced
+  artifact, name that launch first and end the same ordered `Next:` instruction
+  by telling the user to archive the planning task; a bare archive instruction
+  may not strand the artifact. When user input blocks progress, state the
+  smallest action that clears the blocker and whether to reply here or start a
+  new task.
+  When the current task will continue without input, state its exact next action.
+  A durable issue, receipt, or blocker list is evidence, not a next step.
 - Treat automation lifecycle as separate from notification rendering. After
   each refresh, automatically delete an obsolete heartbeat or monitor when its
   gate clears or becomes durably terminal; retain it on a no-change wake.
@@ -2469,6 +2528,9 @@ Reply with a restart handoff:
   they were stopped or must be restarted after the agent-runner relaunch.
 - Safety: whether it is safe to quit the agent runner now, and any cleanup
   needed before resuming or relaunching.
+- Terminal guidance: end with `Action needed:` stating whether to quit or
+  complete a named cleanup first, followed by `Next:` and the exact same-task
+  resume command or new-task handoff action.
 
 After the claim-preservation step above (or immediately, if this lane held no
 claim), send this handoff reply and then do not run more tools or continue work
@@ -2847,7 +2909,12 @@ Immediately before the exact final `Conversation status` line, emit only:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
-The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. New complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. New complete receipts also contain exactly one helper-managed `publication_snapshot`; unrefreshed or snapshot-mismatched data fails. A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
+The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Ordinary new complete receipts also contain exactly one helper-managed `publication_snapshot`; accepted-deferral receipts contain exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
+
+Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it. This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed.
+
+The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number.
+Before publication, bind `original_receipt_sha256` to the exact local blocked marker and use `not-published` for its URL plus `not-applicable` for author and both timestamps. After publication, copy those five bindings from the verified compact predecessor reference; the decision timestamp must be later than the original receipt.
 
 A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`. Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid. `UNKNOWN` validation is fail-closed: only literal ASCII exact `UNKNOWN` may use an exact-sentinel path; NFKC-normalize a copy of every scalar and record value before case-insensitive nested-`UNKNOWN` rejection, so compatibility forms cannot count as evidence. Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported. Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records. Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens. Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union. After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union.
 

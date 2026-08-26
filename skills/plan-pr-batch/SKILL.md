@@ -53,8 +53,8 @@ helper is still missing.
 For a verified Codex GPT-5.6 host, use this recommended exact profile while
 keeping provider-neutral classes for other runtimes:
 
-- Default single-target planner: Sol/high
-- Affirmatively simple single-target planner: Terra/high
+- Default single-target future coordinator: Sol/high
+- Affirmatively simple single-target future coordinator: Terra/high
 - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -65,14 +65,60 @@ keeping provider-neutral classes for other runtimes:
 For a verified Claude host, use this provisional recommended exact profile
 (`claude-profile v1`):
 
-- Default single-target planner: Opus 5/high
-- Affirmatively simple single-target planner: Sonnet 5/high
+- Default single-target future coordinator: Opus 5/high
+- Affirmatively simple single-target future coordinator: Sonnet 5/high
 - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
 - Unknown or uncertain worker: Opus 5/high
 - Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
 - Independent adversarial QA: Opus 5/xhigh
 - Routine deterministic QA: Opus 5/high
+
+## Planning-Pass Route Assessment
+
+Classify the current planning pass separately from the future batch
+coordinator, worker, and checker routes. Named routes are advisory; use the
+provider-neutral route when the active host or roster is not verified.
+
+| Classification | Provider-neutral | Codex GPT-5.6 | Claude profile |
+| --- | --- | --- | --- |
+| `affirmatively-simple` | `balanced/medium` | `Terra/medium` | `Sonnet 5/medium` |
+| `routine-multi-lane` | `balanced/high` | `Terra/high` | `Sonnet 5/high` |
+| `default-or-uncertain-single-target` | `strongest/high` | `Sol/high` | `Opus 5/high` |
+| `pinned-high-risk-or-escalation` | `strongest/xhigh` | `Sol/xhigh` | `Opus 5/xhigh` |
+
+Use `affirmatively-simple` only after verified scope establishes explicit
+acceptance criteria, a known bounded file surface, no unresolved design or
+dependency question, no security, authorization, concurrency, persistence,
+lifecycle, routing, release, public-contract, or other high-consequence
+boundary, easy failure detection and rollback, and a strong deterministic
+verification oracle. Any missing or disputed simplicity criterion keeps a
+single target in `default-or-uncertain-single-target`; a present or disputed
+pinned high-risk trigger uses `pinned-high-risk-or-escalation`. Multiple
+verified routine targets use `routine-multi-lane` unless a high-risk trigger
+applies. This classification describes only the current planning pass and does
+not select the future batch coordinator.
+
+| Observed comparison | Disposition | Maximum routed reviews | Compare routes? | Restart advice? |
+| --- | --- | --- | --- | --- |
+| `stronger-current` | `future-cost-advisory` | `0` | `yes` | `no` |
+| `weaker-current-host-supported` | `bounded-independent-review` | `1` | `yes` | `no` |
+| `any-observed-field-UNKNOWN` | `non-blocking-advisory` | `0` | `no` | `no` |
+
+When the fully observed current route is stronger than recommended, report the
+cheaper recommendation for a future planning run only. Do not spawn another
+planner merely to save cost after a stronger route is already active.
+When it is materially weaker, the host may run at most one bounded independent
+plan review at the recommended route, but only when explicit route-specific
+execution is supported and the review can finish without user interaction.
+Keep the reviewer distinct from the plan maker and disclose the review route.
+Unavailable, inherited, substituted, or unverifiable route-specific execution
+gets a non-blocking advisory instead; never require a restart.
+Record observed host, model, and effort field by field only from host-exposed
+runtime evidence. If any field needed for comparison is `UNKNOWN`, make no
+stronger/weaker comparison, launch no route-correct review, and give no restart
+advice. Requested preferences, prompt text, and model self-report are not
+observations.
 
 Memorable invocation:
 
@@ -84,33 +130,27 @@ Plan a PR batch
 ## Workflow
 
 1. Intake
-   - Before reading GitHub targets or shaping the batch, record coordinator,
-     worker, and checker model/effort preferences. Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
-     A one-issue or one-PR batch is single-target even when its coordinator
-     later delegates bounded implementation, review, or QA lanes. Prefer the
-     default single-target planner route because a single issue may still need
-     difficult diagnosis, design, or verification planning. Use the
-     pinned high-risk route first when a present or disputed high-risk boundary
-     exists. Otherwise use the affirmatively simple single-target route only
-     when the target has explicit acceptance criteria, a known bounded file
-     surface, no unresolved design or
+   - Before reading GitHub targets or shaping the batch, record future
+     coordinator, worker, and checker model/effort preferences separately from
+     any host-observed current planner fields. Do not classify the planning
+     pass until the scope evidence is verified. Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+     For future coordinator routing, a one-issue or one-PR batch remains
+     single-target even when its coordinator later delegates bounded
+     implementation, review, or QA lanes. After scope verification, prefer the
+     default single-target future coordinator route because a single issue may
+     still need difficult diagnosis, design, or verification planning. Use the
+     pinned high-risk future coordinator route first when a present or disputed
+     high-risk boundary exists. Otherwise use the affirmatively simple
+     single-target future coordinator route only when the target has explicit
+     acceptance criteria, a known bounded file surface, no unresolved design or
      dependency question, no security, authorization, concurrency, persistence,
      lifecycle, routing, release, public-contract, or other high-consequence
      boundary, easy failure detection and rollback, and a strong deterministic
-     verification oracle. Reserve the multi-lane coordinator route for planning
-     multiple targets or retained cross-batch orchestration; do not
-     select it merely because one target will use subagents.
-     When the host exposes the current planner route and it materially differs
-     from this recommendation, include one concise non-blocking advisory in the
-     Batch Plan: current route, recommended route, and the risk or cost reason.
-     A materially lower route is worth flagging when ambiguity, consequence, or
-     weak verification needs more planning capability. Recommend the classified
-     lower-cost route when the current route is unnecessarily stronger,
-     including the default single-target tier; recommend the cheapest
-     single-target route only after the target is affirmatively simple. Do not
-     advise from `UNKNOWN`, repeat
-     the advisory, stop planning, ask for a restart, or treat the mismatch as a
-     readiness gate. Continue on the current route or closest available route.
+     verification oracle. Reserve the multi-lane future coordinator route for
+     multiple targets or retained cross-batch orchestration; do not select it
+     merely because one target will use subagents.
+     The future coordinator preference does not classify the current planning
+     pass and must not be reused as its observed route.
      Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
      Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
      Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
@@ -133,6 +173,13 @@ Plan a PR batch
    - For every bare number, run both `gh pr view N` and `gh issue view N` when type is ambiguous.
    - For filters, run focused `gh pr list` or `gh issue list` commands and keep the query in the report.
    - Record title, URL, state, branch/author for PRs, labels, linked PR/issue refs, and blockers. If a fact cannot be verified, write `UNKNOWN`.
+   - After verifying the complete scope, classify the planning pass using
+     **Planning-Pass Route Assessment** and always include one concise
+     assessment in the Batch Plan. Report the classification, recommended
+     route, concise verified evidence, field-granular host-observed current
+     route, and comparison disposition. Keep the requested recommendation and
+     observed fields separate. Route mismatch is advisory and never a planning
+     readiness gate.
    - Treat the repo's private coordination backend (see `coordination_backend`
      in `.agents/agent-workflow.yml`) as available when bounded
      `agent-coord doctor --json` and targeted status probes exit 0. Resolve
@@ -576,7 +623,8 @@ Plan a PR batch
    - Do not start `$pr-batch` unless the user asks; then hand them the fenced
      goal prompt and any Batch Plan path appendix that the prompt explicitly
      depends on, in the same request.
-   - Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+   - Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+   - Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt.` and `Next: Paste the prompt into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
 
 Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only planning chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
 
@@ -618,9 +666,13 @@ backend must say so in the declaration.
 - File-touch map and path evidence:
 - Dependencies and sequencing:
 - Subagent split:
-- Coordinator model/effort preference: exact pair or dispatch-resolved class,
-  effort, rationale, availability evidence, and any one-time non-blocking route
-  advisory (or `none`).
+- Planning-pass model/effort assessment: classification, recommended route,
+  concise evidence, and field-granular observed host/model/effort; keep the
+  requested planning-pass recommendation separate from host-observed fields,
+  record the comparison disposition or `none`, and include any independent
+  review route or `none`.
+- Coordinator model/effort preference: future batch coordinator exact pair or
+  dispatch-resolved class, effort, rationale, and availability evidence.
 - Worker model/effort preferences: initial and escalation pairs or classes,
   lane ids, escalation threshold and maximum, and availability evidence;
   unavailable preferences remain advisory and never alone block readiness.

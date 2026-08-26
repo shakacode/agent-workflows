@@ -109,6 +109,7 @@ ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
 ruby skills/plan-pr-batch/bin/batch-plan-preflight-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
 ruby skills/pause/bin/pause-prompt-test.rb
+ruby skills/close-batch/bin/close-batch-contract-test.rb
 ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb
 ruby skills/post-merge-audit/bin/completed-batch-publication-preflight-test.rb
 ruby skills/post-merge-audit/bin/completed-batch-audit-receipt-test.rb
@@ -150,6 +151,10 @@ ruby skills/task-observer/bin/task-observer-test.rb
 ruby skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-contract-test.rb
 ruby skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-preflight-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb
+
+echo "== hook adapter tests =="
+ruby plugins/claude-hooks/hooks/close-lane-on-session-end-test.rb
+ruby plugins/claude-hooks/hooks/hooks-install-contract-test.rb
 
 echo "== rubocop ${RUBOCOP_VERSION} =="
 RUBOCOP_VERSION="${RUBOCOP_VERSION}" ruby - <<'RUBY'

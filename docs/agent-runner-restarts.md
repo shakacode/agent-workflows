@@ -38,7 +38,9 @@ only the minimal read-only status checks needed for a handoff.
 Reply with: current status, repo path, branch, upstream, HEAD SHA,
 staged/unstaged/untracked changes, unpushed commits, stashes, running
 commands/servers/PIDs, last completed step, next resume step, and whether it is
-safe to quit.
+safe to quit. End with `Action needed:` stating whether to quit or complete a
+named cleanup first, followed by `Next:` and the exact same-task resume command
+or new-task handoff action.
 
 After the handoff, do not run more tools until I explicitly resume.
 ```
