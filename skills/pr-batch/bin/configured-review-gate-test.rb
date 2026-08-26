@@ -481,6 +481,8 @@ class ConfiguredReviewGateTest < Minitest::Test
         { "number" => PR + 1, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }
       ],
       "foreign" => [{ "number" => PR + 1, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }],
+      "number missing" => [{ "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }],
+      "number zero" => [{ "number" => 0, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }],
       "string" => [{ "number" => "#{PR}junk", "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }],
       "float" => [{ "number" => PR + 0.9, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }]
     }
@@ -515,6 +517,24 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_includes script, '.result | type == "string" and test("\\\\S")'
     refute_includes script, ".is_error // false"
     assert_operator script.scan("exit 1").length, :>=, 3
+  end
+
+  def test_claude_workflow_executes_its_exact_result_predicate_fail_closed
+    workflow = YAML.safe_load(
+      File.read(File.expand_path("../../../.github/workflows/claude-code-review.yml", __dir__)), aliases: false
+    )
+    script = workflow.dig("jobs", "claude-review", "steps").find do |step|
+      step["name"] == "Verify review completed (fail on invalid/expired token)"
+    end.fetch("run")
+    predicate = script.match(/if ! jq -e '\n(?<predicate>.*?)\n' <<<"\$result"/m)&.[](:predicate)
+    refute_nil predicate
+
+    base = { "type" => "result", "subtype" => "success", "is_error" => false, "num_turns" => 1 }
+    _out, _error, whitespace = Open3.capture3("jq", "-e", predicate, stdin_data: JSON.generate(base.merge("result" => " \t")))
+    _out, error, valid = Open3.capture3("jq", "-e", predicate, stdin_data: JSON.generate(base.merge("result" => "Reviewed")))
+
+    refute whitespace.success?
+    assert valid.success?, error
   end
 
   def test_queued_current_head_duplicate_without_timestamps_blocks_success_and_replay
