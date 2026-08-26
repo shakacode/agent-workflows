@@ -83,9 +83,20 @@ jobs:
             exit 1
           fi
 
-          is_error=$(echo "$result" | jq -r '.is_error // false')
+          if ! jq -e '
+            .type == "result" and
+            .subtype == "success" and
+            .is_error == false and
+            (.num_turns | type == "number" and floor == . and . > 0) and
+            (.result | type == "string" and length > 0)
+          ' <<<"$result" >/dev/null; then
+            echo "::error::Claude result record is missing explicit successful review evidence."
+            exit 1
+          fi
+
+          is_error=$(echo "$result" | jq -r '.is_error')
           cost=$(echo "$result" | jq -r '.total_cost_usd // 0')
-          turns=$(echo "$result" | jq -r '.num_turns // 0')
+          turns=$(echo "$result" | jq -r '.num_turns')
           echo "Claude review result: is_error=$is_error total_cost_usd=$cost num_turns=$turns"
 
           # is_error=true with $0 cost and a single turn is the signature of an

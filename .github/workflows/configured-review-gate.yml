@@ -1,6 +1,12 @@
 name: Configured Review Gate
 
 on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to recheck
+        required: true
+        type: string
   pull_request_target:
     types: [opened, synchronize, edited, reopened, ready_for_review]
   pull_request_review:
@@ -12,7 +18,7 @@ on:
     types: [completed]
 
 concurrency:
-  group: configured-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.id }}-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+  group: configured-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.pr || github.run_id }}-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -41,6 +47,9 @@ jobs:
               "$GITHUB_EVENT_PATH" >/dev/null
             pull_request_number=$(jq -er '.workflow_run.pull_requests[0].number' "$GITHUB_EVENT_PATH")
             triggering_head_sha=$(jq -er '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            pull_request_number=$(jq -er '.inputs.pr' "$GITHUB_EVENT_PATH")
+            triggering_head_sha=""
           else
             pull_request_number=$(jq -er '.pull_request.number' "$GITHUB_EVENT_PATH")
             triggering_head_sha=""

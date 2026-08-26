@@ -3331,8 +3331,9 @@ explicit pass. The versioned mapping names the configured reviewer checks,
 their producer app/workflow/event identities, artifacts, settlement quiet
 period, thread-disposition marker, and any named fallback. A qualifying check
 must resolve to one exact-head workflow run whose workflow file blob matches
-the exact trusted-base blob and whose pull-request payload names that same base
-SHA. Base retargeting invalidates the producer evidence even when the head does
+the exact trusted-base blob and whose single pull-request association names the
+same PR, head, and base SHA. Missing, multiple, or foreign PR associations fail
+closed. Base retargeting invalidates the producer evidence even when the head does
 not move. Missing, pending, stale, failed, cancelled, timed-out,
 action-required, unknown, rate-, quota-, or capacity-limited checks block by
 default. So do missing or unsettled artifacts and newly untriaged actionable
@@ -3372,8 +3373,10 @@ this context as a required ruleset or merge-queue check, and never treat it
 alone as merge readiness. Use `pr-merge-submit` for the authoritative,
 receipt-bound, mutation-adjacent replay path. GitHub does not emit an Actions
 event when a review thread is resolved or unresolved; after either operation,
-rerun the trusted-base Configured Review Gate workflow before invoking
-`pr-merge-submit`, which independently recollects current thread state.
+use its trusted-base manual dispatch with only the numeric `pr` input before
+invoking `pr-merge-submit`, which independently recollects current thread state.
+The dispatch accepts no repository, SHA, ref, path, or command input; it resolves
+the live PR, head, and base through GitHub before checkout.
 
 `pr-ci-readiness` encapsulates the required-vs-full readiness rule: it runs
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no

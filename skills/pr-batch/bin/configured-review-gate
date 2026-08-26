@@ -237,6 +237,8 @@ module ConfiguredReviewGate
       return producer.merge("reason" => "workflow-run-ambiguous") unless candidates.one?
 
       run = candidates.first
+      associations = Array(run["pull_requests"])
+      association = associations.one? ? associations.first : nil
       workflow_path = expected.fetch("workflow_path")
       head_blob = workflow_blob(workflow_path, head_sha)
       base_blob = workflow_blob(workflow_path, base_sha)
@@ -245,13 +247,16 @@ module ConfiguredReviewGate
         "workflow_path" => run["path"],
         "event" => run["event"],
         "head_sha" => run["head_sha"],
-        "reviewed_base_sha" => run.dig("pull_requests", 0, "base", "sha"),
+        "reviewed_pr" => association.is_a?(Hash) ? association["number"] : nil,
+        "reviewed_base_sha" => association.is_a?(Hash) ? association.dig("base", "sha") : nil,
         "workflow_blob_sha" => head_blob,
         "trusted_base_workflow_blob_sha" => base_blob,
         "verified" => producer["app_slug"] == expected["app_slug"] &&
           run["path"] == workflow_path && run["event"] == expected["event"] &&
           run["head_sha"].to_s.casecmp?(head_sha.to_s) &&
-          run.dig("pull_requests", 0, "base", "sha").to_s.casecmp?(base_sha.to_s) &&
+          association.is_a?(Hash) && association["number"].to_i == @pr &&
+          association.dig("head", "sha").to_s.casecmp?(head_sha.to_s) &&
+          association.dig("base", "sha").to_s.casecmp?(base_sha.to_s) &&
           head_blob == base_blob
       )
     end
@@ -829,14 +834,15 @@ module ConfiguredReviewGate
       else
         check = governing_check(candidates, snapshot.dig("bindings", "head_sha"))
         producer_blocker = classify_producer_blocker(
-          reviewer, check, snapshot.dig("bindings", "head_sha"), snapshot.dig("bindings", "base_sha")
+          reviewer, check, snapshot.dig("bindings", "head_sha"),
+          snapshot.dig("bindings", "base_sha"), snapshot.dig("bindings", "pr")
         )
         producer_blocker || classify_check_blocker(reviewer, check, snapshot.dig("bindings", "head_sha"))
       end
     end
   end
 
-  def classify_producer_blocker(reviewer, check, expected_head, expected_base = nil)
+  def classify_producer_blocker(reviewer, check, expected_head, expected_base = nil, expected_pr = nil)
     expected = reviewer.fetch("producer")
     actual = check["producer"]
     trusted = actual.is_a?(Hash) && actual["verified"] == true &&
@@ -845,6 +851,7 @@ module ConfiguredReviewGate
               actual["event"] == expected["event"] &&
               actual["head_sha"].to_s.casecmp?(expected_head.to_s) &&
               (expected_base.nil? || actual["reviewed_base_sha"].to_s.casecmp?(expected_base.to_s)) &&
+              (expected_pr.nil? || actual["reviewed_pr"].to_i == expected_pr.to_i) &&
               actual["workflow_blob_sha"].to_s.match?(/\A[0-9a-f]{40}\z/i) &&
               actual["workflow_blob_sha"] == actual["trusted_base_workflow_blob_sha"]
     return if trusted

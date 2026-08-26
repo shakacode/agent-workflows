@@ -48,7 +48,7 @@ class ConfiguredReviewGateTest < Minitest::Test
         "path" => ".github/workflows/claude-code-review.yml",
         "event" => "pull_request",
         "head_sha" => HEAD_SHA,
-        "pull_requests" => [{ "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }]
+        "pull_requests" => [{ "number" => PR, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }]
       }]
     end
     # rubocop:enable Lint/MissingSuper
@@ -181,6 +181,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       "workflow_path" => ".github/workflows/claude-code-review.yml",
       "event" => "pull_request",
       "head_sha" => HEAD_SHA,
+      "reviewed_pr" => PR,
       "reviewed_base_sha" => BASE_SHA,
       "workflow_blob_sha" => "1" * 40,
       "trusted_base_workflow_blob_sha" => "1" * 40,
@@ -416,12 +417,16 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal %w[created edited deleted], triggers.dig("pull_request_review_comment", "types")
     assert_equal ["Claude Code Review"], triggers.dig("workflow_run", "workflows")
     assert_equal ["completed"], triggers.dig("workflow_run", "types")
+    assert_equal true, triggers.dig("workflow_dispatch", "inputs", "pr", "required")
+    assert_equal "string", triggers.dig("workflow_dispatch", "inputs", "pr", "type")
     assert_equal(
       { "actions" => "read", "checks" => "read", "contents" => "read", "pull-requests" => "read", "statuses" => "write" },
       workflow.fetch("permissions")
     )
     assert_equal "bindings", bindings.fetch("id")
     assert_includes bindings.fetch("run"), 'if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]'
+    assert_includes bindings.fetch("run"), 'elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]'
+    assert_includes bindings.fetch("run"), ".inputs.pr"
     assert_includes bindings.fetch("run"), "length == 1"
     assert_includes bindings.fetch("run"), '.workflow_run.event == "pull_request"'
     assert_includes bindings.fetch("run"), '"$live_head_sha" != "$triggering_head_sha"'
@@ -455,6 +460,43 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "configured-review-producer-untrusted", result.dig("blockers", 0, "code")
   end
 
+  def test_producer_reviewed_pr_must_match_current_pr
+    foreign = trusted_producer.merge("reviewed_pr" => PR + 1)
+    result = ConfiguredReviewGate.evaluate(
+      policy:, policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check(producer: foreign)], "artifacts" => [artifact]),
+      settled: true, now: NOW
+    )
+
+    assert_equal "configured-review-producer-untrusted", result.dig("blockers", 0, "code")
+  end
+
+  def test_collector_rejects_missing_multiple_and_foreign_workflow_run_pr_associations
+    associations = {
+      "missing" => [],
+      "multiple" => [
+        { "number" => PR, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } },
+        { "number" => PR + 1, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }
+      ],
+      "foreign" => [{ "number" => PR + 1, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }]
+    }
+    associations.each do |label, pull_requests|
+      run = {
+        "id" => 1, "check_suite_id" => 7, "path" => ".github/workflows/claude-code-review.yml",
+        "event" => "pull_request", "head_sha" => HEAD_SHA, "pull_requests" => pull_requests
+      }
+      raw_check = check.merge(
+        "output" => { "title" => "review complete", "summary" => nil, "text" => nil },
+        "app" => { "slug" => "github-actions" }, "check_suite" => { "id" => 7 }
+      )
+      collected = FakeGitHubApiClient.new(
+        policy:, threads: [], checks: [raw_check], workflow_runs: [run]
+      ).collect
+
+      assert_equal false, collected.dig("checks", 0, "producer", "verified"), label
+    end
+  end
+
   def test_claude_workflow_retargets_and_fails_closed_when_review_execution_is_absent
     workflow = YAML.safe_load(File.read(File.expand_path("../../../.github/workflows/claude-code-review.yml", __dir__)), aliases: false)
     assert_includes workflow.fetch(true).dig("pull_request", "types"), "edited"
@@ -463,6 +505,11 @@ class ConfiguredReviewGateTest < Minitest::Test
     end.fetch("run")
     assert_includes script, "No execution output found; no configured review was performed."
     assert_includes script, "No result record in execution output; no configured review was verified."
+    assert_includes script, '.subtype == "success"'
+    assert_includes script, ".is_error == false"
+    assert_includes script, '.num_turns | type == "number" and floor == . and . > 0'
+    assert_includes script, '.result | type == "string" and length > 0'
+    refute_includes script, ".is_error // false"
     assert_operator script.scan("exit 1").length, :>=, 3
   end
 
