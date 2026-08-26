@@ -42,7 +42,7 @@ module BatchPlanPreflight
   GENERIC_PROVENANCE_VALUES = %w[fix-it pr-batch publish-pr].freeze
   AD_HOC_TARGET_PATTERN = /\Aadhoc:(\d{8})-([a-z0-9][a-z0-9_.-]*)\z/
   REPOSITORY_SEGMENT_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
-  PROVENANCE_IDENTITY_PATTERN = /\A[a-z][a-z0-9_.-]*:[A-Za-z0-9][A-Za-z0-9_.:@\/-]*\z/
+  PROVENANCE_IDENTITY_PATTERN = %r{\A[a-z][a-z0-9_.-]*:[A-Za-z0-9][A-Za-z0-9_.:@/-]*\z}
   EXTERNAL_SUPPORT = %w[supported unsupported UNKNOWN].freeze
   APPLICABILITY = %w[applicable not-applicable].freeze
   EDGE_TYPES = %w[edit validation_open merge_order].freeze
@@ -419,6 +419,7 @@ module BatchPlanPreflight
 
     parsed = URI.parse(value)
     return false unless parsed.userinfo.nil? && parsed.query.nil?
+
     parts = parsed.path.split("/").reject(&:empty?)
 
     case parsed.scheme
@@ -429,7 +430,7 @@ module BatchPlanPreflight
         "#{parts[0]}/#{parts[1]}".casecmp?(repository)
     when "issue"
       issue_target = issue_evidence_target(value)
-      issue_target && issue_target.first.casecmp?(repository)
+      issue_target&.first&.casecmp?(repository)
     when "plan-state"
       parsed.port.nil? && canonical_durable_ref_id?(parsed.host) &&
         canonical_plan_state_path?(parsed.path)
@@ -751,7 +752,7 @@ module BatchPlanPreflight
   end
 
   def validate_launch_target_file_touch_provenance(lanes, maps)
-    lanes.each_with_index.filter_map do |lane, index|
+    lanes.filter_map do |lane|
       target = lane["target"]
       next unless valid_launch_target?(target)
 
@@ -838,7 +839,8 @@ module BatchPlanPreflight
 
     parsed = URI.parse(value)
     return false if parsed.host.to_s.empty?
-    return true if PLANNED_PATH_REF_SCHEMES.fetch(source_kind, []).include?(parsed.scheme)
+
+    PLANNED_PATH_REF_SCHEMES.fetch(source_kind, []).include?(parsed.scheme)
   rescue URI::InvalidURIError
     false
   end
