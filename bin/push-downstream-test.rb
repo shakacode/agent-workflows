@@ -1172,6 +1172,35 @@ class PushDownstreamScaffoldTest < Minitest::Test
     end
   end
 
+  def test_apply_scaffold_rejects_doctor_read_symlink_before_writing
+    Dir.mktmpdir("push-downstream-apply-doctor-symlink") do |root|
+      skill_dir = File.join(root, ".agents/skills/hostile")
+      FileUtils.mkdir_p(skill_dir)
+      File.symlink("/dev/zero", File.join(skill_dir, "SKILL.md"))
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.reconcile_scaffold(root, CONTRACT)
+      end
+
+      assert_includes error.message, "audit read path contains a symlink"
+      refute_path_exists File.join(root, "AGENTS.md")
+      refute Dir.exist?(File.join(root, ".agents/bin")), "validation must run before the first managed write"
+    end
+  end
+
+  def test_apply_scaffold_allows_non_markdown_symlink_the_doctor_does_not_read
+    Dir.mktmpdir("push-downstream-apply-helper-symlink") do |root|
+      skill_dir = File.join(root, ".agents/skills/example")
+      FileUtils.mkdir_p(skill_dir)
+      File.symlink("/dev/null", File.join(skill_dir, "helper.rb"))
+
+      result = PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      assert_predicate result, :changed?
+      assert_path_exists File.join(root, "AGENTS.md")
+    end
+  end
+
   def test_apply_scaffold_migrates_legacy_agents_command_values
     Dir.mktmpdir("push-downstream-scaffold") do |root|
       File.write(File.join(root, "AGENTS.md"), <<~MARKDOWN)
@@ -1674,6 +1703,28 @@ class PushDownstreamAuditTest < Minitest::Test
     assert_equal Encoding::UTF_8, displayed.encoding
     assert_predicate displayed, :valid_encoding?
     assert JSON.generate("reason" => displayed)
+  end
+
+  def test_audit_json_safe_scrubs_nested_strings_and_preserves_unknown
+    report = {
+      "consumers" => [
+        {
+          "seam_doctor_issues" => ["invalid path bad-\xFF.md".b],
+          "changed_managed_paths" => ["bad-\xFE.md".b],
+          "repo" => "local/caf\xC3\xA9".b,
+          "follow_ups" => PushDownstream::AUDIT_UNKNOWN
+        }
+      ]
+    }
+
+    safe = PushDownstream.audit_json_safe(report)
+    consumer = safe.fetch("consumers").fetch(0)
+
+    assert_predicate consumer.fetch("seam_doctor_issues").fetch(0), :valid_encoding?
+    assert_predicate consumer.fetch("changed_managed_paths").fetch(0), :valid_encoding?
+    assert_equal "local/café", consumer.fetch("repo")
+    assert_equal PushDownstream::AUDIT_UNKNOWN, consumer.fetch("follow_ups")
+    assert JSON.generate(safe)
   end
 
   def test_audit_blocks_managed_path_symlink_without_following_external_target

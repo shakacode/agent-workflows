@@ -397,7 +397,7 @@ module PushDownstream
   end
 
   def reconcile_scaffold(root, contract)
-    validate_managed_scaffold_paths!(root)
+    validate_audit_read_paths!(root)
     changed = false
     follow_ups = []
     preexisting_scripts = repo_owned_standard_scripts(root)
@@ -831,7 +831,7 @@ module PushDownstream
     repos = select_repos(load_config(config_path), only: only, include_disabled: include_disabled)
     presets = File.file?(presets_path) ? load_presets(presets_path) : {}
     consumers = repos.map { |repo| audit_repo(repo, presets) }
-    puts JSON.pretty_generate(audit_report(consumers))
+    puts JSON.pretty_generate(audit_json_safe(audit_report(consumers)))
     return 1 if consumers.empty?
 
     consumers.all? { |consumer| consumer.fetch("status") == AUDIT_CLEAN } ? 0 : 1
@@ -922,14 +922,15 @@ module PushDownstream
   end
 
   # The seam doctor discovers repo-local Markdown below these trees. Reject
-  # symlinks before discovery so a consumer cannot make the read-only audit
-  # follow an unbounded device or any other target outside the disposable clone.
+  # symlinks it could read before audit or apply discovery, while allowing
+  # non-Markdown links that are outside the doctor's input surface.
   def validate_audit_read_paths!(root)
     validate_managed_scaffold_paths!(root)
     clone_root = File.expand_path(root)
 
     AUDIT_DOCTOR_READ_TREES.each do |relative_path|
-      pending = [File.join(clone_root, relative_path)]
+      tree_root = File.join(clone_root, relative_path)
+      pending = [tree_root]
       until pending.empty?
         current = pending.pop
         begin
@@ -938,8 +939,11 @@ module PushDownstream
           next
         end
         if stat.symlink?
-          displayed = audit_display_path(current.delete_prefix("#{clone_root}#{File::SEPARATOR}"))
-          raise "audit read path contains a symlink: #{displayed}"
+          if current == tree_root || current.b.end_with?(".md".b)
+            displayed = audit_display_path(current.delete_prefix("#{clone_root}#{File::SEPARATOR}"))
+            raise "audit read path contains a symlink: #{displayed}"
+          end
+          next
         end
         next unless stat.directory?
 
@@ -953,6 +957,21 @@ module PushDownstream
 
   def audit_display_path(path)
     path.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+  end
+
+  def audit_json_safe(value)
+    case value
+    when String
+      source = value.dup
+      source.force_encoding(Encoding::UTF_8) if source.encoding == Encoding::ASCII_8BIT
+      source.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+    when Array
+      value.map { |item| audit_json_safe(item) }
+    when Hash
+      value.to_h { |key, item| [audit_json_safe(key), audit_json_safe(item)] }
+    else
+      value
+    end
   end
 
   def audit_repo(repo, presets)
