@@ -2,7 +2,7 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    types: [opened, synchronize, edited, ready_for_review, reopened]
 
 jobs:
   claude-review:
@@ -51,14 +51,14 @@ jobs:
       # The action exits 0 even when the review never ran: an invalid or expired
       # CLAUDE_CODE_OAUTH_TOKEN makes the first API call fail in <1s at $0 cost,
       # yet the result still reports a green "pass" and posts no review. Inspect
-      # the execution output and fail only that silent-success case.
+      # the execution output and fail every silent-success/no-result case.
       #
       # Scoped to outcome == 'success' on purpose. When the action itself fails
       # (missing token on Dependabot PRs, the "workflow validation failed" safety
       # skip on PRs that edit this file, a real action error) the job is already
       # red and the action prints its own message — re-failing here would only
-      # add a misleading one. And a successful run that legitimately skips Claude
-      # (so emits no execution_file/result) is treated as a pass, not a failure.
+      # add a misleading one. A successful action outcome without a verifiable
+      # Claude result cannot satisfy configured-review completion.
       - name: Verify review completed (fail on invalid/expired token)
         id: verify-review
         if: steps.claude-review.outcome == 'success'
@@ -68,19 +68,19 @@ jobs:
           set -euo pipefail
           TOKEN_HINT="Rotate CLAUDE_CODE_OAUTH_TOKEN with 'claude setup-token' and update the repo secret."
 
-          # No execution output: the action skipped Claude (e.g. the workflow-
-          # validation safety skip). Nothing was claimed to run — let it pass.
+          # No execution output means the action skipped Claude or could not
+          # prove execution; either case is non-success for this review gate.
           if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
-            echo "No execution output found; the action skipped Claude. Nothing to verify."
-            exit 0
+            echo "::error::No execution output found; no configured review was performed."
+            exit 1
           fi
 
           # The execution file may be a JSON array or newline-delimited JSON;
           # slurp + flatten handles both, then grab the final result record.
           result=$(jq -s 'flatten | map(select(type == "object" and .type == "result")) | last' "$EXECUTION_FILE" 2>/dev/null || echo null)
           if [ "$result" = "null" ] || [ -z "$result" ]; then
-            echo "No result record in execution output; nothing to verify."
-            exit 0
+            echo "::error::No result record in execution output; no configured review was verified."
+            exit 1
           fi
 
           is_error=$(echo "$result" | jq -r '.is_error // false')

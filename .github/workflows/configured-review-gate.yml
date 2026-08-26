@@ -2,7 +2,7 @@ name: Configured Review Gate
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, edited, reopened, ready_for_review]
   pull_request_review:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
@@ -90,7 +90,7 @@ jobs:
               >/dev/null
           }
 
-          post_status pending "Waiting for exact-head configured reviews"
+          post_status pending "Advisory: waiting for exact-head configured reviews"
           if skills/pr-batch/bin/configured-review-gate evaluate \
               --repo "$REVIEW_GATE_REPO" \
               --pr "$REVIEW_GATE_PR" \
@@ -101,9 +101,9 @@ jobs:
               --receipt "$RUNNER_TEMP/configured-review-receipt.json" \
               --wait-seconds 900 \
               --poll-seconds 10; then
-            post_status success "Configured reviews are settled for this head"
+            post_status success "Advisory: configured reviews are settled for this head"
           else
             gate_status=$?
-            post_status failure "Configured reviews are not merge-ready"
+            post_status failure "Advisory: configured reviews are not merge-ready"
             exit "$gate_status"
           fi

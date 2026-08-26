@@ -3331,7 +3331,9 @@ explicit pass. The versioned mapping names the configured reviewer checks,
 their producer app/workflow/event identities, artifacts, settlement quiet
 period, thread-disposition marker, and any named fallback. A qualifying check
 must resolve to one exact-head workflow run whose workflow file blob matches
-the exact trusted-base blob. Missing, pending, stale, failed, cancelled, timed-out,
+the exact trusted-base blob and whose pull-request payload names that same base
+SHA. Base retargeting invalidates the producer evidence even when the head does
+not move. Missing, pending, stale, failed, cancelled, timed-out,
 action-required, unknown, rate-, quota-, or capacity-limited checks block by
 default. So do missing or unsettled artifacts and newly untriaged actionable
 threads rooted on the current head.
@@ -3363,12 +3365,15 @@ untriaged current-head thread rejects the submission. A consumer-owned guard
 has no versioned mutation-adjacent replay protocol; the guarded-direct
 limitation below therefore fails closed for structured review policies.
 
-The repository workflow publishes the stable `configured-review-gate` status
-check and can be made required by a repository ruleset. Native GitHub auto-merge
-still has a platform limit: a point-in-time successful check cannot atomically
-revoke an already queued native merge when a later comment changes review
-settlement. Use `pr-merge-submit` for the receipt-bound immediate replay path;
-do not claim that requiring the workflow check alone provides that guarantee.
+The repository workflow publishes an advisory `configured-review-gate` commit
+status for visibility. It is not a security authority: another same-repository
+workflow with `statuses: write` can publish the same context. Never configure
+this context as a required ruleset or merge-queue check, and never treat it
+alone as merge readiness. Use `pr-merge-submit` for the authoritative,
+receipt-bound, mutation-adjacent replay path. GitHub does not emit an Actions
+event when a review thread is resolved or unresolved; after either operation,
+rerun the trusted-base Configured Review Gate workflow before invoking
+`pr-merge-submit`, which independently recollects current thread state.
 
 `pr-ci-readiness` encapsulates the required-vs-full readiness rule: it runs
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no

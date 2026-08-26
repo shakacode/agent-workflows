@@ -245,11 +245,14 @@ module ConfiguredReviewGate
         "workflow_path" => run["path"],
         "event" => run["event"],
         "head_sha" => run["head_sha"],
+        "reviewed_base_sha" => run.dig("pull_requests", 0, "base", "sha"),
         "workflow_blob_sha" => head_blob,
         "trusted_base_workflow_blob_sha" => base_blob,
         "verified" => producer["app_slug"] == expected["app_slug"] &&
           run["path"] == workflow_path && run["event"] == expected["event"] &&
-          run["head_sha"].to_s.casecmp?(head_sha.to_s) && head_blob == base_blob
+          run["head_sha"].to_s.casecmp?(head_sha.to_s) &&
+          run.dig("pull_requests", 0, "base", "sha").to_s.casecmp?(base_sha.to_s) &&
+          head_blob == base_blob
       )
     end
 
@@ -825,13 +828,15 @@ module ConfiguredReviewGate
         blocker("configured-review-missing", reviewer, nil, "missing")
       else
         check = governing_check(candidates, snapshot.dig("bindings", "head_sha"))
-        producer_blocker = classify_producer_blocker(reviewer, check, snapshot.dig("bindings", "head_sha"))
+        producer_blocker = classify_producer_blocker(
+          reviewer, check, snapshot.dig("bindings", "head_sha"), snapshot.dig("bindings", "base_sha")
+        )
         producer_blocker || classify_check_blocker(reviewer, check, snapshot.dig("bindings", "head_sha"))
       end
     end
   end
 
-  def classify_producer_blocker(reviewer, check, expected_head)
+  def classify_producer_blocker(reviewer, check, expected_head, expected_base = nil)
     expected = reviewer.fetch("producer")
     actual = check["producer"]
     trusted = actual.is_a?(Hash) && actual["verified"] == true &&
@@ -839,6 +844,7 @@ module ConfiguredReviewGate
               actual["workflow_path"] == expected["workflow_path"] &&
               actual["event"] == expected["event"] &&
               actual["head_sha"].to_s.casecmp?(expected_head.to_s) &&
+              (expected_base.nil? || actual["reviewed_base_sha"].to_s.casecmp?(expected_base.to_s)) &&
               actual["workflow_blob_sha"].to_s.match?(/\A[0-9a-f]{40}\z/i) &&
               actual["workflow_blob_sha"] == actual["trusted_base_workflow_blob_sha"]
     return if trusted
@@ -892,7 +898,7 @@ module ConfiguredReviewGate
   def producer_check_completion?(artifact_policy, reviewer, check, head_sha)
     completion = artifact_policy["completion"]
     completion.is_a?(Hash) && completion["mode"] == "producer_check" &&
-      classify_producer_blocker(reviewer, check, head_sha).nil?
+      classify_producer_blocker(reviewer, check, head_sha, nil).nil?
   end
 
   def latest_current_head_reviews_by_actor(artifacts, head_sha)

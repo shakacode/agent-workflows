@@ -108,7 +108,8 @@ producer app/workflow/event identities, artifact actors and kinds,
 settlement, required thread dispositions, `failure_policy: block`, and an
 explicit fallback mode. Producer identity binds a qualifying check to its
 GitHub App and exact Actions workflow run; the workflow file at the PR head
-must match the exact trusted-base blob. Actor values are exact GitHub logins.
+must match the exact trusted-base blob, and the run payload must bind the same
+reviewed base SHA. Actor values are exact GitHub logins.
 Optional artifact `completion.mode: producer_check` can use the independently
 verified producer check as the completion artifact without trusting generic
 workflow-bot reviews. Only

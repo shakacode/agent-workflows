@@ -109,7 +109,7 @@ current-head pull-request review qualifies, and only in `APPROVED` or
 hard-block alternate artifact kinds until a later acceptable formal review
 supersedes them. The configured check must come from the named producer: the
 check-run app and exact workflow run must match, the run must bind to the
-expected head and event, and the workflow file at that head must be
+expected head, reviewed base, and event, and the workflow file at that head must be
 byte-identical to its exact trusted-base version. Optional
 `completion.mode: producer_check` treats that verified producer check as the
 completion artifact; unrelated reviews from its workflow bot never qualify.

@@ -47,7 +47,8 @@ class ConfiguredReviewGateTest < Minitest::Test
         "check_suite_id" => 7,
         "path" => ".github/workflows/claude-code-review.yml",
         "event" => "pull_request",
-        "head_sha" => HEAD_SHA
+        "head_sha" => HEAD_SHA,
+        "pull_requests" => [{ "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }]
       }]
     end
     # rubocop:enable Lint/MissingSuper
@@ -180,6 +181,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       "workflow_path" => ".github/workflows/claude-code-review.yml",
       "event" => "pull_request",
       "head_sha" => HEAD_SHA,
+      "reviewed_base_sha" => BASE_SHA,
       "workflow_blob_sha" => "1" * 40,
       "trusted_base_workflow_blob_sha" => "1" * 40,
       "verified" => true
@@ -409,7 +411,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       step["name"] == "Resolve exact pull request bindings"
     end
 
-    assert_equal %w[opened synchronize reopened ready_for_review], triggers.dig("pull_request_target", "types")
+    assert_equal %w[opened synchronize edited reopened ready_for_review], triggers.dig("pull_request_target", "types")
     assert_equal %w[submitted edited dismissed], triggers.dig("pull_request_review", "types")
     assert_equal %w[created edited deleted], triggers.dig("pull_request_review_comment", "types")
     assert_equal ["Claude Code Review"], triggers.dig("workflow_run", "workflows")
@@ -434,6 +436,34 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "${{ steps.bindings.outputs.pr }}", gate.dig("env", "REVIEW_GATE_PR")
     assert_equal "${{ steps.bindings.outputs.base_sha }}", gate.dig("env", "REVIEW_GATE_BASE_SHA")
     assert_equal "${{ steps.bindings.outputs.head_sha }}", gate.dig("env", "REVIEW_GATE_HEAD_SHA")
+    assert_includes gate.fetch("run"), 'post_status success "Advisory:'
+
+    processing = File.read(File.expand_path("../../../workflows/pr-processing.md", __dir__))
+    assert_includes processing, "advisory `configured-review-gate` commit"
+    assert_includes processing, "Never configure\nthis context as a required ruleset or merge-queue check"
+    assert_includes processing, "GitHub does not emit an Actions\nevent when a review thread is resolved or unresolved"
+  end
+
+  def test_producer_reviewed_base_must_match_current_base
+    stale = trusted_producer.merge("reviewed_base_sha" => "d" * 40)
+    result = ConfiguredReviewGate.evaluate(
+      policy:, policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check(producer: stale)], "artifacts" => [artifact]),
+      settled: true, now: NOW
+    )
+
+    assert_equal "configured-review-producer-untrusted", result.dig("blockers", 0, "code")
+  end
+
+  def test_claude_workflow_retargets_and_fails_closed_when_review_execution_is_absent
+    workflow = YAML.safe_load(File.read(File.expand_path("../../../.github/workflows/claude-code-review.yml", __dir__)), aliases: false)
+    assert_includes workflow.fetch(true).dig("pull_request", "types"), "edited"
+    script = workflow.dig("jobs", "claude-review", "steps").find do |step|
+      step["name"] == "Verify review completed (fail on invalid/expired token)"
+    end.fetch("run")
+    assert_includes script, "No execution output found; no configured review was performed."
+    assert_includes script, "No result record in execution output; no configured review was verified."
+    assert_operator script.scan("exit 1").length, :>=, 3
   end
 
   def test_queued_current_head_duplicate_without_timestamps_blocks_success_and_replay
