@@ -284,7 +284,6 @@ capture_bound_recovery_metadata() {
       dlload Fiddle.dlopen(nil)
       extern "int openat(int, const char *, int)"
       extern "int linkat(int, const char *, int, const char *, int)"
-      extern "int unlinkat(int, const char *, int)"
       if RUBY_PLATFORM.include?("darwin")
         extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
         def self.no_replace(source_fd, source, destination_fd, destination)
@@ -483,23 +482,23 @@ capture_bound_recovery_metadata() {
     ensure
       if !completed && sentinel_installed
         begin
-          raise BindingChanged unless displaced_destination_attestation
+          rollback_guard = open_at.call(
+            quarantine_file,
+            "metadata",
+            File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+          )
+          raise BindingChanged unless attestation.call(rollback_guard) == expected_original
           undo_exchange = RecoverySyscalls.exchange(
             quarantine_file.fileno,
-            "sentinel",
+            "metadata",
             target_file.fileno,
             metadata_name
           )
           raise BindingChanged unless undo_exchange == 0
           restored_original = open_at.call(target_file, metadata_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
-          restored_sentinel = open_at.call(
-            quarantine_file,
-            "sentinel",
-            File::RDONLY | File::NONBLOCK | File::NOFOLLOW
-          )
-          raise BindingChanged unless attestation.call(restored_original) == displaced_destination_attestation &&
-                                      attestation.call(restored_sentinel) == sentinel_attestation
+          raise BindingChanged unless attestation.call(restored_original) == expected_original
           sentinel_installed = false
+          binding_changed = true
         rescue StandardError
           binding_changed = true
         end
@@ -847,6 +846,93 @@ capture_install_metadata_binding() {
   install_metadata_snapshot_attestation="$snapshot_attestation"
 }
 
+prebind_install_metadata_rollback_guard() {
+  [[ "$install_metadata_binding_state" = "present" ]] || return 0
+  install_metadata_rollback_guard="$install_lock/metadata-commit-old.guard"
+  if ! ruby -rdigest -rfiddle/import -e '
+    module AtomicMetadataPrebind
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"
+      extern "int linkat(int, const char *, int, const char *, int)"
+      extern "int unlinkat(int, const char *, int)"
+    end
+    target, metadata_name, lock, expected = ARGV
+    target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    lock_file = File.open(lock, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    attest = lambda do |file|
+      file.rewind
+      stat = file.stat
+      abort unless stat.file?
+      digest = Digest::SHA256.new
+      while (chunk = file.read(64 * 1024))
+        digest.update(chunk)
+      end
+      final = file.stat
+      abort unless final.file? && final.dev == stat.dev && final.ino == stat.ino
+      "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}"
+    end
+    open_at = lambda do |directory, name|
+      fd = AtomicMetadataPrebind.openat(directory.fileno, name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      abort if fd == -1
+      File.for_fd(fd)
+    end
+    begin
+      source = open_at.call(target_file, metadata_name)
+      abort unless attest.call(source) == expected
+      abort unless AtomicMetadataPrebind.linkat(
+        target_file.fileno, metadata_name, lock_file.fileno, "metadata-commit-old.guard", 0
+      ) == 0
+      guard = open_at.call(lock_file, "metadata-commit-old.guard")
+      source_stat = source.stat
+      guard_stat = guard.stat
+      abort unless attest.call(guard) == expected &&
+                   source_stat.dev == guard_stat.dev && source_stat.ino == guard_stat.ino
+    ensure
+      guard&.close
+      source&.close
+      lock_file&.close
+      target_file&.close
+    end
+  ' "$target" "$metadata_name" "$install_lock" "$install_metadata_binding_attestation" 2>/dev/null; then
+    echo "METADATA_COMMIT_PREBIND_UNAVAILABLE: could not bind the attested install metadata into the install lock before mutation." >&2
+    echo "Preserved the existing metadata and refused to mutate managed files; verify hardlink support and retry." >&2
+    return 1
+  fi
+}
+
+remove_install_metadata_rollback_guard() {
+  [[ -n "${install_metadata_rollback_guard:-}" && -e "$install_metadata_rollback_guard" ]] || return 0
+  ruby -rdigest -rfiddle/import -e '
+    module AtomicMetadataGuardCleanup
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"
+      extern "int unlinkat(int, const char *, int)"
+    end
+    lock, expected = ARGV
+    lock_path_stat = File.lstat(lock)
+    lock_file = File.open(lock, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    lock_stat = lock_file.stat
+    abort unless lock_path_stat.directory? && !lock_path_stat.symlink? &&
+                 lock_path_stat.dev == lock_stat.dev && lock_path_stat.ino == lock_stat.ino
+    fd = AtomicMetadataGuardCleanup.openat(
+      lock_file.fileno, "metadata-commit-old.guard", File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+    )
+    abort if fd == -1
+    file = File.for_fd(fd)
+    stat = file.stat
+    digest = Digest::SHA256.new
+    while (chunk = file.read(64 * 1024))
+      digest.update(chunk)
+    end
+    abort unless stat.file? && "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}" == expected
+    abort unless AtomicMetadataGuardCleanup.unlinkat(
+      lock_file.fileno, "metadata-commit-old.guard", 0
+    ) == 0
+  ' "$install_lock" "$install_metadata_binding_attestation" 2>/dev/null
+}
+
 verify_install_metadata_binding() {
   local metadata_path="$target/$metadata_name"
   case "$install_metadata_binding_state" in
@@ -1066,9 +1152,14 @@ replace_bound_recovery_metadata() {
       restored_file = open_at.call(target_file, ".agent-workflows-install.json")
       raise "restored metadata binding changed" unless attestation.call(restored_file) == expected_source
       raise "displaced metadata binding changed" unless displaced_destination_attestation == expected_destination
+      guard_stat = guard_file.stat
+      displaced_stat = displaced_destination_file.stat
+      raise "displaced metadata identity changed" unless guard_stat.dev == displaced_stat.dev &&
+                                                          guard_stat.ino == displaced_stat.ino
+      exit 67 unless RecoveryRestoreSyscalls.unlinkat(quarantine_file.fileno, source_name, 0) == 0
+      exit 67 unless attestation.call(guard_file) == expected_destination
       exit 67 unless RecoveryRestoreSyscalls.unlinkat(quarantine_file.fileno, "restore-guard", 0) == 0
       guard_created = false
-      exit 67 unless RecoveryRestoreSyscalls.unlinkat(quarantine_file.fileno, source_name, 0) == 0
       exchanged = false
       completed = true
     rescue StandardError
@@ -1076,28 +1167,18 @@ replace_bound_recovery_metadata() {
     ensure
       if exchanged
         begin
-          unless displaced_destination_identity
-            displaced_destination_file = open_entry.call(quarantine_file, source_name)
-            displaced_destination_identity = identity.call(displaced_destination_file)
-            if displaced_destination_file.stat.file?
-              displaced_destination_attestation = attestation.call(displaced_destination_file)
-            end
-          end
+          guard_file ||= open_at.call(quarantine_file, "restore-guard")
+          raise "restore guard binding changed" unless attestation.call(guard_file) == expected_destination
           if RecoveryRestoreSyscalls.exchange(
             quarantine_file.fileno,
-            source_name,
+            "restore-guard",
             target_file.fileno,
             ".agent-workflows-install.json"
           ) == 0
             exchanged = false
             rollback_destination = open_entry.call(target_file, ".agent-workflows-install.json")
-            rollback_source = open_at.call(quarantine_file, source_name)
-            destination_restored = identity.call(rollback_destination) == displaced_destination_identity
-            if destination_restored && displaced_destination_attestation
-              destination_restored = attestation.call(rollback_destination) == displaced_destination_attestation
-            end
-            rollback_failed = true unless destination_restored &&
-                                               attestation.call(rollback_source) == expected_source
+            raise "restore guard rollback changed" unless attestation.call(rollback_destination) == expected_destination
+            rollback_failed = true
           else
             rollback_failed = true
           end
@@ -1105,7 +1186,7 @@ replace_bound_recovery_metadata() {
           rollback_failed = true
         end
       end
-      if guard_created && quarantine_file && !exchanged
+      if guard_created && quarantine_file && !exchanged && !rollback_failed
         guard_created = false if RecoveryRestoreSyscalls.unlinkat(
           quarantine_file.fileno,
           "restore-guard",
@@ -1563,6 +1644,9 @@ preflight_metadata_commit_capability() {
         def self.exchange(directory_fd, source, destination)
           renameatx_np(directory_fd, source, directory_fd, destination, 0x2)
         end
+        def self.exchange_between(source_fd, source, destination_fd, destination)
+          renameatx_np(source_fd, source, destination_fd, destination, 0x2)
+        end
       else
         extern "int renameat2(int, const char *, int, const char *, unsigned int)"
         def self.no_replace(directory_fd, source, destination)
@@ -1570,6 +1654,9 @@ preflight_metadata_commit_capability() {
         end
         def self.exchange(directory_fd, source, destination)
           renameat2(directory_fd, source, directory_fd, destination, 0x2)
+        end
+        def self.exchange_between(source_fd, source, destination_fd, destination)
+          renameat2(source_fd, source, destination_fd, destination, 0x2)
         end
       end
     end
@@ -1683,6 +1770,9 @@ commit_metadata() {
         def self.exchange(directory_fd, source, destination)
           renameatx_np(directory_fd, source, directory_fd, destination, 0x2)
         end
+        def self.exchange_between(source_fd, source, destination_fd, destination)
+          renameatx_np(source_fd, source, destination_fd, destination, 0x2)
+        end
       else
         extern "int renameat2(int, const char *, int, const char *, unsigned int)"
         def self.no_replace(directory_fd, source, destination)
@@ -1690,6 +1780,9 @@ commit_metadata() {
         end
         def self.exchange(directory_fd, source, destination)
           renameat2(directory_fd, source, directory_fd, destination, 0x2)
+        end
+        def self.exchange_between(source_fd, source, destination_fd, destination)
+          renameat2(source_fd, source, destination_fd, destination, 0x2)
         end
       end
     end
@@ -1710,7 +1803,6 @@ commit_metadata() {
     completed = false
     rollback_failed = false
     cleanup_uncertain = false
-    rollback_destination_attestation = expected
     open_at = lambda do |name|
       fd = AtomicMetadataRename.openat(
         directory.fileno,
@@ -1755,6 +1847,17 @@ commit_metadata() {
       raise MetadataBindingChanged unless lock_stat.directory? && !lock_path_stat.symlink? &&
                                           lock_path_stat.dev == lock_stat.dev && lock_path_stat.ino == lock_stat.ino
 
+      if state == "present"
+        cleanup_guard_fd = AtomicMetadataRename.openat(
+          lock_directory.fileno,
+          cleanup_guard_name,
+          File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+        )
+        raise MetadataBindingChanged if cleanup_guard_fd == -1
+        cleanup_guard = File.for_fd(cleanup_guard_fd)
+        raise MetadataBindingChanged unless attestation.call(cleanup_guard) == expected
+      end
+
       temporary = open_at.call(temporary_name)
       prepared_attestation = attestation.call(temporary)
       raise MetadataBindingChanged unless prepared_attestation == expected_prepared
@@ -1778,7 +1881,8 @@ commit_metadata() {
         absent_moved = true
       when "present"
         destination = open_at.call(metadata_name)
-        raise MetadataBindingChanged unless attestation.call(destination) == expected
+        raise MetadataBindingChanged unless attestation.call(destination) == expected &&
+                                            same_identity.call(destination, cleanup_guard)
         destination.close
         destination = nil
         raise MetadataBindingChanged unless AtomicMetadataRename.exchange(
@@ -1794,8 +1898,8 @@ commit_metadata() {
       if exchanged
         temporary.close
         temporary = open_at.call(temporary_name)
-        rollback_destination_attestation = attestation.call(temporary)
-        raise MetadataBindingChanged unless rollback_destination_attestation == expected
+        raise MetadataBindingChanged unless attestation.call(temporary) == expected &&
+                                            same_identity.call(temporary, cleanup_guard)
       end
 
       destination = open_at.call(metadata_name)
@@ -1805,37 +1909,10 @@ commit_metadata() {
 
       if exchanged
         begin
-          begin
-            stale_guard_fd = AtomicMetadataRename.openat(
-              lock_directory.fileno,
-              cleanup_guard_name,
-              File::RDONLY | File::NONBLOCK | File::NOFOLLOW
-            )
-            raise MetadataBindingChanged unless stale_guard_fd == -1 && Fiddle.last_error == Errno::ENOENT::Errno
-          ensure
-            IO.for_fd(stale_guard_fd).close if stale_guard_fd && stale_guard_fd != -1
-          end
-          raise MetadataBindingChanged unless AtomicMetadataRename.linkat(
-            directory.fileno,
-            temporary_name,
-            lock_directory.fileno,
-            cleanup_guard_name,
-            0
-          ) == 0
-          cleanup_guard_fd = AtomicMetadataRename.openat(
-            lock_directory.fileno,
-            cleanup_guard_name,
-            File::RDONLY | File::NONBLOCK | File::NOFOLLOW
-          )
-          raise MetadataBindingChanged if cleanup_guard_fd == -1
-          cleanup_guard = File.for_fd(cleanup_guard_fd)
-          raise MetadataBindingChanged unless attestation.call(cleanup_guard) == rollback_destination_attestation &&
-                                              same_identity.call(cleanup_guard, temporary)
-
           temporary.close
           temporary = nil
           cleanup_candidate = open_at.call(temporary_name)
-          raise MetadataBindingChanged unless attestation.call(cleanup_candidate) == rollback_destination_attestation &&
+          raise MetadataBindingChanged unless attestation.call(cleanup_candidate) == expected &&
                                               same_identity.call(cleanup_candidate, cleanup_guard)
           raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(
             directory.fileno,
@@ -1844,7 +1921,7 @@ commit_metadata() {
           ) == 0
           cleanup_candidate.close
           cleanup_candidate = nil
-          raise MetadataBindingChanged unless attestation.call(cleanup_guard) == rollback_destination_attestation
+          raise MetadataBindingChanged unless attestation.call(cleanup_guard) == expected
           raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(
             lock_directory.fileno,
             cleanup_guard_name,
@@ -1855,6 +1932,7 @@ commit_metadata() {
           exchanged = false
         rescue StandardError
           cleanup_uncertain = true
+          exchanged = false
           raise
         end
       end
@@ -1866,7 +1944,6 @@ commit_metadata() {
       destination&.close
       temporary&.close
       cleanup_candidate&.close
-      cleanup_guard&.close
       if absent_moved && directory
         if AtomicMetadataRename.no_replace(directory.fileno, metadata_name, temporary_name) == 0
           begin
@@ -1887,27 +1964,29 @@ commit_metadata() {
         else
           rollback_failed = true
         end
-      elsif exchanged && directory && !cleanup_uncertain
-        if AtomicMetadataRename.exchange(directory.fileno, temporary_name, metadata_name) == 0
+      elsif exchanged && directory && lock_directory && !cleanup_uncertain
+        if cleanup_guard && attestation.call(cleanup_guard) == expected &&
+           AtomicMetadataRename.exchange_between(
+             lock_directory.fileno,
+             cleanup_guard_name,
+             directory.fileno,
+             metadata_name
+           ) == 0
           begin
             restored_destination = open_at.call(metadata_name)
-            restored_temporary = open_at.call(temporary_name)
-            if attestation.call(restored_destination) == rollback_destination_attestation &&
-               attestation.call(restored_temporary) == expected_prepared
-              exchanged = false
-            else
-              rollback_failed = true
-            end
+            raise MetadataBindingChanged unless attestation.call(restored_destination) == expected
+            rollback_failed = true
+            exchanged = false
           rescue StandardError
             rollback_failed = true
           ensure
             restored_destination&.close
-            restored_temporary&.close
           end
         else
           rollback_failed = true
         end
       end
+      cleanup_guard&.close
       directory&.close
       lock_directory&.close
     end
@@ -2949,6 +3028,7 @@ install_metadata_binding_state=""
 install_metadata_binding_attestation=""
 install_metadata_snapshot_path=""
 install_metadata_snapshot_attestation=""
+install_metadata_rollback_guard=""
 metadata_absent_under_lock=false
 if ! preflight_metadata_commit_capability; then
   exit 1
@@ -3076,6 +3156,7 @@ fi
 binding_status=0
 capture_install_metadata_binding || binding_status=$?
 [[ "$binding_status" -eq 0 ]] || exit "$binding_status"
+prebind_install_metadata_rollback_guard || exit 1
 metadata_committed=false
 metadata_commit_rollback_failed=false
 release_install_transaction() {
@@ -3095,6 +3176,9 @@ release_install_transaction() {
   if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" &&
         -f "$target/$metadata_name.tmp" ]]; then
     rm -f "$target/$metadata_name.tmp"
+  fi
+  if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" ]]; then
+    remove_install_metadata_rollback_guard || status=1
   fi
   rm -f "${install_metadata_snapshot_path:-}" 2>/dev/null || true
   rmdir "$install_lock" 2>/dev/null || true

@@ -1114,7 +1114,7 @@ RUBY
 }
 
 test_metadata_commit_rolls_back_failed_present_compare_and_swap() {
-  local tmp target metadata preserved injection marker output status
+  local tmp target metadata preserved injection marker output status metadata_before
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   metadata="$target/.agent-workflows-install.json"
@@ -1123,6 +1123,7 @@ test_metadata_commit_rolls_back_failed_present_compare_and_swap() {
   marker="$tmp/metadata-replaced-inside-present-commit"
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
     --delivery-mode flat >"$tmp/initial-install.out"
+  metadata_before="$(shasum "$metadata")"
 
   cat > "$injection" <<'RUBY'
 if ARGV.length == 6 && ARGV[0] == ENV.fetch("QA_TARGET") &&
@@ -1157,13 +1158,71 @@ RUBY
   set -e
 
   assert_file "$marker"
-  [[ "$status" -eq 65 ]] || fail "present metadata compare-and-swap race exited $status: $output"
-  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
-  [[ "$(cat "$metadata")" = "competing metadata" ]] || \
-    fail "failed metadata compare-and-swap did not restore the competing destination"
+  [[ "$status" -eq 67 ]] || fail "present metadata compare-and-swap race exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_ROLLBACK_FAILED"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || \
+    fail "failed metadata compare-and-swap did not restore the trusted original"
   assert_file "$preserved"
-  [[ ! -e "$metadata.tmp" ]] || fail "failed metadata compare-and-swap left prepared metadata"
-  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "failed metadata compare-and-swap leaked install lock"
+  [[ "$(cat "$metadata.tmp")" = "competing metadata" ]] || \
+    fail "failed metadata compare-and-swap did not preserve the competing destination"
+  assert_file "$target/.agent-workflows-install.lock/metadata-commit-old.guard"
+}
+
+test_metadata_commit_restores_from_prebound_guard_when_displaced_tmp_changes() {
+  local tmp target metadata preserved injection marker output status metadata_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/displaced-original-metadata.json"
+  injection="$tmp/replace-displaced-metadata-after-exchange.rb"
+  marker="$tmp/displaced-metadata-replaced"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  metadata_before="$(shasum "$metadata")"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module ReplaceDisplacedMetadataAfterExchange
+  def extern(signature, *arguments)
+    result = super
+    syscall_name = signature[/\b(renameat(?:2|x_np)?)\(/, 1]
+    if name == "AtomicMetadataRename" && syscall_name
+      real_syscall = method(syscall_name)
+      define_singleton_method(syscall_name) do |*syscall_arguments|
+        result = real_syscall.call(*syscall_arguments)
+        if result == 0 && syscall_arguments.fetch(1).end_with?(".tmp") &&
+           syscall_arguments.fetch(3) == ".agent-workflows-install.json" &&
+           syscall_arguments.last == 0x2 && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          temporary = "#{ENV.fetch("QA_INSTALL_METADATA")}.tmp"
+          File.rename(temporary, ENV.fetch("QA_PRESERVED_METADATA"))
+          File.write(temporary, "raced displaced metadata\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+        end
+        result
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(ReplaceDisplacedMetadataAfterExchange)
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_PRESERVED_METADATA="$preserved" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 67 ]] || fail "changed displaced metadata rollback exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_ROLLBACK_FAILED"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || \
+    fail "prebound guard did not restore original canonical metadata"
+  assert_contains "$(cat "$metadata.tmp")" "raced displaced metadata"
+  assert_file "$preserved"
+  assert_file "$target/.agent-workflows-install.lock/metadata-commit-old.guard"
 }
 
 test_metadata_commit_preserves_both_names_when_present_rollback_fails() {
@@ -1178,36 +1237,40 @@ test_metadata_commit_preserves_both_names_when_present_rollback_fails() {
   metadata_before="$(shasum "$metadata" | awk '{print $1}')"
 
   cat > "$injection" <<'RUBY'
-if ARGV.length == 6 && ARGV[0] == ENV.fetch("QA_TARGET") && ARGV[2] == "present"
-  require "digest"
-  require "fiddle"
-  module FailPresentPostExchangeAttestation
-    def update(*)
-      Thread.current[:qa_metadata_digest_updates] = Thread.current[:qa_metadata_digest_updates].to_i + 1
-      if Thread.current[:qa_metadata_digest_updates] == 3
-        Thread.current[:qa_fail_metadata_rollback] = true
-        raise "injected post-exchange metadata attestation failure"
+require "fiddle/import"
+module FailPresentGuardRollback
+  def extern(signature, *arguments)
+    result = super
+    syscall_name = signature[/\b(renameat(?:2|x_np)?)\(/, 1]
+    if name == "AtomicMetadataRename" && syscall_name
+      real_syscall = method(syscall_name)
+      define_singleton_method(syscall_name) do |*syscall_arguments|
+        source_name = syscall_arguments.fetch(1)
+        destination_name = syscall_arguments.fetch(3)
+        if Thread.current[:qa_fail_metadata_rollback] && source_name == "metadata-commit-old.guard"
+          File.write(ENV.fetch("QA_RACE_MARKER"), "rollback failed\n")
+          Fiddle.last_error = Errno::EIO::Errno
+          return -1
+        end
+        result = real_syscall.call(*syscall_arguments)
+        if result == 0 && source_name.end_with?(".tmp") &&
+           destination_name == ".agent-workflows-install.json" && syscall_arguments.last == 0x2
+          temporary = "#{ENV.fetch("QA_INSTALL_METADATA")}.tmp"
+          File.rename(temporary, "#{temporary}.displaced")
+          File.write(temporary, "raced rollback metadata\n")
+          Thread.current[:qa_fail_metadata_rollback] = true
+        end
+        result
       end
-      super
     end
   end
-  Digest::SHA256.prepend(FailPresentPostExchangeAttestation)
-  Fiddle::Function.prepend(Module.new do
-    def call(*arguments)
-      if Thread.current[:qa_fail_metadata_rollback] && arguments.length == 5 && arguments.last == 0x2
-        Thread.current[:qa_fail_metadata_rollback] = false
-        File.write(ENV.fetch("QA_RACE_MARKER"), "rollback failed\n")
-        Fiddle.last_error = Errno::EIO::Errno
-        return -1
-      end
-      super
-    end
-  end)
 end
+Fiddle::Importer.prepend(FailPresentGuardRollback)
 RUBY
 
   set +e
-  output="$(QA_TARGET="$target" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+  output="$(QA_TARGET="$target" QA_INSTALL_METADATA="$metadata" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
     --delivery-mode flat 2>&1)"
   status=$?
@@ -1219,12 +1282,12 @@ RUBY
   assert_contains "$output" "manual recovery"
   assert_file "$metadata"
   assert_file "$metadata.tmp"
-  [[ "$metadata_before" = "$(shasum "$metadata.tmp" | awk '{print $1}')" ]] || \
-    fail "failed present metadata rollback did not preserve the displaced metadata at .tmp"
+  assert_file "$metadata.tmp.displaced"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.lock/metadata-commit-old.guard" | awk '{print $1}')" ]] || \
+    fail "failed present metadata rollback did not preserve the trusted guard"
+  assert_contains "$(cat "$metadata.tmp")" "raced rollback metadata"
   [[ "$metadata_before" != "$(shasum "$metadata" | awk '{print $1}')" ]] || \
     fail "failed present metadata rollback did not preserve the newly committed metadata name"
-  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
-    fail "failed present metadata rollback leaked install lock"
 }
 
 test_metadata_commit_does_not_unlink_replaced_attested_old_destination() {
@@ -1359,6 +1422,53 @@ RUBY
     fail "missing metadata commit capability prepared new metadata"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
     fail "missing metadata commit capability leaked install lock"
+}
+
+test_metadata_actual_source_prebind_failure_stops_before_managed_mutation() {
+  local tmp source target injection output status license_before metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-actual-metadata-prebind.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  license_before="$(shasum "$target/LICENSE")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  printf '\nprebind source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailActualMetadataPrebind
+  def extern(signature, *arguments)
+    result = super
+    if name == "AtomicMetadataPrebind" && signature.include?("linkat")
+      define_singleton_method(:linkat) do |*|
+        Fiddle.last_error = Errno::EOPNOTSUPP::Errno
+        -1
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(FailActualMetadataPrebind)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "actual metadata prebind failure unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_PREBIND_UNAVAILABLE"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "actual metadata prebind failure mutated a managed file"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "actual metadata prebind failure changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
+    fail "actual metadata prebind failure prepared new metadata"
 }
 
 test_metadata_commit_link_capability_failure_stops_before_managed_mutation() {
@@ -2891,8 +3001,51 @@ RUBY
   assert_file "$staging/user-owned-skill/SKILL.md"
 }
 
+test_capture_undo_uses_original_guard_when_displaced_sentinel_changes() {
+  local tmp target staging receipt metadata injection output status before quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-capture-guard"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/replace-displaced-sentinel-after-exchange.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    quarantine = Dir.glob("#{ENV.fetch("QA_INSTALL_METADATA")}.recovery-*").fetch(0)
+    File.rename(File.join(quarantine, "sentinel"), File.join(quarantine, "sentinel-displaced"))
+    File.write(File.join(quarantine, "sentinel"), "raced displaced sentinel\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "changed displaced capture sentinel exited $status: $output"
+  [[ "$before" = "$(shasum "$metadata")" ]] || \
+    fail "capture undo did not restore canonical metadata from original guard"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "capture guard failure did not preserve quarantine"
+  assert_file "$quarantine/sentinel"
+  assert_file "$quarantine/sentinel-displaced"
+  assert_file "$quarantine/metadata"
+  assert_file "$receipt"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "capture guard failure mutated recovery target"
+}
+
 test_recovery_capture_exchange_restores_competing_destination() {
-  local tmp target staging receipt metadata preserved injection marker output status
+  local tmp target staging receipt metadata preserved injection marker output status quarantine
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-capture-exchange"
@@ -2941,10 +3094,14 @@ RUBY
 
   assert_file "$marker"
   [[ "$status" -eq 65 ]] || fail "recovery capture destination race exited $status: $output"
-  [[ "$(cat "$metadata")" = "competing metadata" ]] || \
-    fail "recovery capture did not restore the competing destination"
+  assert_contains "$(cat "$metadata")" '"delivery_mode":"flat"'
   assert_file "$preserved"
   assert_contains "$(cat "$preserved")" '"delivery_mode":"flat"'
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "recovery capture destination race did not preserve quarantine"
+  [[ "$(cat "$quarantine/sentinel")" = "competing metadata" ]] || \
+    fail "recovery capture did not preserve the competing destination"
+  assert_file "$quarantine/metadata"
   assert_file "$receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
   [[ ! -e "$target/skills/user-owned-skill" ]] || \
@@ -4963,7 +5120,10 @@ RUBY
   quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
   [[ -n "$quarantine" ]] || fail "restore directory race did not preserve quarantine: $output"
   assert_file "$quarantine/original-backup"
-  assert_file "$metadata/metadata"
+  assert_file "$metadata"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  assert_file "$quarantine/metadata/metadata"
+  assert_file "$quarantine/restore-guard"
 }
 
 test_recovery_restore_exchange_restores_competing_destination() {
@@ -5002,14 +5162,59 @@ RUBY
 
   assert_file "$marker"
   [[ "$status" -eq 65 ]] || fail "recovery restore destination race exited $status: $output"
-  [[ "$(cat "$metadata")" = "competing restore metadata" ]] || \
-    fail "recovery restore did not restore the competing destination"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
   assert_file "$preserved"
   assert_file "$receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
   quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
   [[ -n "$quarantine" ]] || fail "recovery restore destination race did not preserve quarantine"
   assert_file "$quarantine/original-backup"
+  [[ "$(cat "$quarantine/metadata")" = "competing restore metadata" ]] || \
+    fail "recovery restore did not preserve the competing destination"
+  assert_file "$quarantine/restore-guard"
+}
+
+test_restore_undo_uses_guard_when_displaced_source_changes() {
+  local tmp target staging receipt metadata injection output status quarantine before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-restore-guard-source-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/replace-displaced-restore-source-after-exchange.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    quarantine = Dir.glob("#{ENV.fetch("QA_INSTALL_METADATA")}.recovery-*").fetch(0)
+    source = File.join(quarantine, "metadata")
+    File.rename(source, File.join(quarantine, "metadata-displaced"))
+    File.write(source, "raced displaced restore source\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "changed displaced restore source exited $status: $output"
+  [[ "$before" = "$(shasum "$metadata")" ]] || \
+    fail "restore undo did not restore canonical metadata from restore guard"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "restore source race did not preserve quarantine"
+  assert_file "$quarantine/restore-guard"
+  assert_file "$quarantine/metadata"
+  assert_file "$quarantine/metadata-displaced"
+  assert_file "$receipt"
 }
 
 test_partial_restore_undo_restores_guard_to_target() {
@@ -5051,7 +5256,7 @@ RUBY
   [[ -n "$quarantine" ]] || fail "partial restore undo did not preserve quarantine"
   assert_file "$metadata"
   ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
-  [[ ! -e "$quarantine/restore-guard" ]] || fail "partial restore undo left an unneeded guard link"
+  assert_file "$quarantine/restore-guard"
   assert_file "$receipt"
 }
 
@@ -5142,7 +5347,7 @@ RUBY
 }
 
 test_recovery_restore_destination_symlink_does_not_write_outside_target() {
-  local tmp target staging receipt metadata outside injection observer output status
+  local tmp target staging receipt metadata outside injection observer output status quarantine
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-restore-symlink-race"
@@ -5181,8 +5386,14 @@ RUBY
   assert_file "$outside/SENTINEL"
   [[ -z "$(find "$outside" -mindepth 1 ! -name SENTINEL -print -quit)" ]] || \
     fail "metadata restoration wrote outside target"
-  assert_symlink "$metadata"
-  [[ "$(readlink "$metadata")" = "$outside" ]] || fail "bound metadata restore changed replacement symlink"
+  assert_file "$metadata"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "bound metadata restore did not preserve quarantine"
+  assert_symlink "$quarantine/metadata"
+  [[ "$(readlink "$quarantine/metadata")" = "$outside" ]] || \
+    fail "bound metadata restore did not preserve replacement symlink"
+  assert_file "$quarantine/restore-guard"
   assert_file "$receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
   [[ ! -e "$target/skills/user-owned-skill" ]] || fail "bound metadata restore mutated recovery target"
@@ -6175,10 +6386,12 @@ main() {
     test_metadata_commit_rejects_destination_directory_race
     test_metadata_commit_reverses_absent_install_after_post_rename_failure
     test_metadata_commit_rolls_back_failed_present_compare_and_swap
+    test_metadata_commit_restores_from_prebound_guard_when_displaced_tmp_changes
     test_metadata_commit_preserves_both_names_when_present_rollback_fails
     test_metadata_commit_does_not_unlink_replaced_attested_old_destination
     test_metadata_commit_rejects_replaced_prepared_file
     test_metadata_commit_capability_failure_stops_before_managed_mutation
+    test_metadata_actual_source_prebind_failure_stops_before_managed_mutation
     test_metadata_commit_link_capability_failure_stops_before_managed_mutation
     test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation
     test_atomic_rename_capability_failure_stops_before_recovery_mutation
@@ -6214,6 +6427,7 @@ main() {
     test_recovery_capture_supports_system_ruby_2_6
     test_capture_runtime_load_failure_removes_empty_quarantine
     test_capture_failure_after_sentinel_install_restores_original_metadata
+    test_capture_undo_uses_original_guard_when_displaced_sentinel_changes
     test_recovery_capture_exchange_restores_competing_destination
     test_recovery_partial_backup_copy_failure_removes_quarantine
     test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance
@@ -6264,6 +6478,7 @@ main() {
     test_recovery_restore_atomically_replaces_placeholder
     test_recovery_restore_directory_race_preserves_backup
     test_recovery_restore_exchange_restores_competing_destination
+    test_restore_undo_uses_guard_when_displaced_source_changes
     test_partial_restore_undo_restores_guard_to_target
     test_cleanup_receipt_write_failure_is_pending_without_corrupt_guidance
     test_cleanup_receipt_ancestor_rebind_does_not_write_outside_target
