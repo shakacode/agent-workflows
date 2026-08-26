@@ -84,6 +84,10 @@ class WritingStyleContractTest < Minitest::Test
     assert_includes adoption, "repo → user-global → portable default"
     assert_includes installation, "agent-workflow-writing-style"
     assert_includes installation, "~/.agents/agent-workflow.yml"
+    assert_match(
+      /\| `codex` .*\n\| `claude` .*\n\| `auto` .*\n\nThe installer also supplies/m,
+      installation
+    )
     refute source_policy.key?("writing_style"), "source repo must remain a fallback negative control"
     refute fixture_policy.key?("writing_style"), "consumer fixture must exercise fallback compatibility"
     refute parsed_example.key?("writing_style"), "example must not seed a repository override"

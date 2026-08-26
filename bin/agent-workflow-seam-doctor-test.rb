@@ -176,6 +176,23 @@ end
 class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   include AgentWorkflowSeamDoctorTestHelpers
 
+  def test_missing_writing_style_companion_has_an_actionable_failure
+    Dir.mktmpdir("agent-workflow-seam-doctor-partial-install") do |installed_root|
+      installed_bin = File.join(installed_root, "bin")
+      installed_script = File.join(installed_bin, "agent-workflow-seam-doctor")
+      FileUtils.mkdir_p(installed_bin)
+      FileUtils.cp_r(File.join(__dir__, "agent_doctor"), installed_bin)
+      FileUtils.cp(SCRIPT, installed_script)
+
+      out, status = Open3.capture2e("ruby", installed_script, "--help")
+
+      refute status.success?
+      assert_includes out, "missing required companion agent-workflow-writing-style"
+      assert_includes out, "install or upgrade Agent Workflows and retry"
+      refute_includes out, "LoadError"
+    end
+  end
+
   def test_complete_binstub_contract_passes
     with_repo do |root|
       write_valid_binstub_contract(root)

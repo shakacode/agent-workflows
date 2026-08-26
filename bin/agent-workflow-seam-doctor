@@ -13,7 +13,13 @@ require "shellwords"
 require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
 require_relative "agent_doctor/hosted_qa_policy"
-load File.expand_path("agent-workflow-writing-style", __dir__)
+writing_style_resolver = File.expand_path("agent-workflow-writing-style", __dir__)
+unless File.file?(writing_style_resolver)
+  warn "agent-workflow-seam-doctor: missing required companion agent-workflow-writing-style; " \
+       "install or upgrade Agent Workflows and retry."
+  exit 1
+end
+load writing_style_resolver
 
 module AgentWorkflowSeamDoctor
   SECTION = "Agent Workflow Configuration"
