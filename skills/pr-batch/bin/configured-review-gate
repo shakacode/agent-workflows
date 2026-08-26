@@ -378,21 +378,23 @@ module ConfiguredReviewGate
         blocker_codes = unsettled.fetch("blockers").map { |item| item["code"] }
         return unsettled if terminal_without_wait?(blocker_codes)
 
+        current_result = unsettled
         digest = ConfiguredReviewGate.semantic_snapshot_digest(snapshot)
         if digest == baseline_digest
           quiet_seconds = @policy == "n/a" ? 0 : @policy.dig("artifact_settlement", "quiet_period_seconds")
           if now - baseline_at >= quiet_seconds
-            return ConfiguredReviewGate.evaluate(
+            current_result = ConfiguredReviewGate.evaluate(
               policy: @policy, policy_source: @policy_source, snapshot:, settled: true, now:,
               trusted_live: true
             )
+            return current_result if current_result["verdict"] == "READY"
           end
         else
           baseline_digest = digest
           baseline_at = now
         end
 
-        return unsettled if now - started_at >= @wait_seconds
+        return current_result if now - started_at >= @wait_seconds
 
         @sleeper.call(@poll_seconds)
       end

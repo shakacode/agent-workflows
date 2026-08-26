@@ -22,6 +22,7 @@ class ConfiguredReviewGateTest < Minitest::Test
   PR4701_FIXTURE = File.expand_path("fixtures/configured-review-pr4701.json", __dir__)
   SOURCE_POLICY = File.expand_path("../../../.agents/agent-workflow.yml", __dir__)
   CLAUDE_REVIEW_WORKFLOW = File.expand_path("../../../.github/workflows/claude-code-review.yml", __dir__)
+  CONFIGURED_REVIEW_WORKFLOW = File.expand_path("../../../.github/workflows/configured-review-gate.yml", __dir__)
 
   FakeClient = Struct.new(:snapshots) do
     def collect
@@ -313,6 +314,22 @@ class ConfiguredReviewGateTest < Minitest::Test
     )
 
     assert_equal "READY", result.fetch("verdict")
+  end
+
+  def test_configured_review_workflow_refreshes_evidence_changes_from_trusted_base
+    workflow = YAML.safe_load(File.read(CONFIGURED_REVIEW_WORKFLOW), aliases: false)
+    triggers = workflow.fetch(true)
+    checkout = workflow.dig("jobs", "configured-review-gate", "steps").find do |step|
+      step["name"] == "Checkout trusted base"
+    end
+
+    assert_equal %w[opened synchronize reopened ready_for_review], triggers.dig("pull_request_target", "types")
+    assert_equal %w[submitted edited dismissed], triggers.dig("pull_request_review", "types")
+    assert_equal %w[created edited deleted], triggers.dig("pull_request_review_comment", "types")
+    assert_equal "${{ github.event.pull_request.base.sha }}", checkout.dig("with", "ref")
+    assert_equal false, checkout.dig("with", "persist-credentials")
+    assert_equal true, workflow.dig("concurrency", "cancel-in-progress")
+    assert_includes workflow.dig("concurrency", "group"), "${{ github.event.pull_request.head.sha }}"
   end
 
   def test_queued_current_head_duplicate_without_timestamps_blocks_success_and_replay
@@ -1080,6 +1097,55 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "READY", result.fetch("verdict")
     assert_equal [30], sleeps
     assert_equal true, result.dig("receipt", "mutation_eligible")
+  end
+
+  def test_live_evaluator_keeps_polling_stable_non_ready_evidence_until_ready
+    current = NOW
+    sleeps = []
+    missing = live_snapshot
+    ready = live_snapshot("checks" => [check], "artifacts" => [artifact])
+    result = ConfiguredReviewGate::LiveEvaluator.new(
+      client: FakeClient.new([
+                               missing, Marshal.load(Marshal.dump(missing)),
+                               ready, Marshal.load(Marshal.dump(ready))
+                             ]),
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      expected_base_sha: BASE_SHA,
+      wait_seconds: 120,
+      poll_seconds: 30,
+      clock: -> { current },
+      sleeper: lambda { |seconds|
+        sleeps << seconds
+        current += seconds
+      }
+    ).run
+
+    assert_equal "READY", result.fetch("verdict")
+    assert_equal [30, 30, 30], sleeps
+  end
+
+  def test_live_evaluator_returns_stable_non_ready_evidence_at_deadline
+    current = NOW
+    sleeps = []
+    missing = live_snapshot
+    result = ConfiguredReviewGate::LiveEvaluator.new(
+      client: FakeClient.new([missing]),
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      expected_base_sha: BASE_SHA,
+      wait_seconds: 60,
+      poll_seconds: 30,
+      clock: -> { current },
+      sleeper: lambda { |seconds|
+        sleeps << seconds
+        current += seconds
+      }
+    ).run
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_includes result.fetch("blockers").map { |blocker| blocker.fetch("code") }, "configured-review-missing"
+    assert_equal [30, 30], sleeps
   end
 
   def test_live_evaluator_stops_waiting_on_provider_failure_without_waiving_it
