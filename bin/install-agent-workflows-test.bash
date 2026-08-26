@@ -877,14 +877,14 @@ RUBY
   set -e
 
   assert_file "$marker"
-  [[ "$status" -eq 65 ]] || fail "post-preflight metadata change exited $status: $output"
+  [[ "$status" -eq 1 ]] || fail "post-preflight metadata change exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
   [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
     fail "post-preflight metadata change mutated a managed file"
   [[ "$(cat "$metadata")" = '{"delivery_mode":' ]] || \
     fail "post-preflight metadata change was overwritten"
   [[ ! -e "$metadata.tmp" ]] || fail "post-preflight metadata change left prepared metadata"
-  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "post-preflight metadata change leaked install lock"
+  assert_file "$target/.agent-workflows-install.lock/metadata-commit-old.guard"
 }
 
 test_present_metadata_deleted_after_binding_reports_backup_recovery_guidance() {
@@ -977,12 +977,12 @@ RUBY
   set -e
 
   assert_file "$marker"
-  [[ "$status" -eq 65 ]] || fail "bound metadata ownership race exited $status: $output"
+  [[ "$status" -eq 1 ]] || fail "bound metadata ownership race exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
   [[ "$(readlink "$target/bin/agent_doctor")" = "$outside/bin/agent_doctor" ]] || \
     fail "changed live metadata granted ownership of an unmanaged doctor symlink"
   [[ ! -e "$metadata.tmp" ]] || fail "bound metadata ownership race left prepared metadata"
-  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "bound metadata ownership race leaked install lock"
+  assert_file "$target/.agent-workflows-install.lock/metadata-commit-old.guard"
 }
 
 test_bound_absent_metadata_short_circuits_snapshot_read_to_key_absent() {
@@ -1469,6 +1469,68 @@ RUBY
     fail "actual metadata prebind failure changed install metadata"
   [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
     fail "actual metadata prebind failure prepared new metadata"
+}
+
+test_metadata_partial_prebind_failure_cleans_guard_and_allows_retry() {
+  local tmp source target injection marker output status retry_output license_before metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-prebind-guard-open.rb"
+  marker="$tmp/prebind-guard-open-failed"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  license_before="$(shasum "$target/LICENSE")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  printf '\npartial prebind source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailPrebindGuardOpen
+  def extern(signature, *arguments)
+    result = super
+    if name == "AtomicMetadataPrebind" && signature.include?("openat")
+      real_openat = method(:openat)
+      define_singleton_method(:openat) do |directory_fd, entry_name, flags|
+        if entry_name == "metadata-commit-old.guard" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+          Fiddle.last_error = Errno::EIO::Errno
+          -1
+        else
+          real_openat.call(directory_fd, entry_name, flags)
+        end
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(FailPrebindGuardOpen)
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "partial metadata prebind failure unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_PREBIND_UNAVAILABLE"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "partial metadata prebind failure mutated a managed file"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "partial metadata prebind failure changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "partial metadata prebind failure leaked install lock or guard"
+
+  retry_output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+  [[ "$license_before" != "$(shasum "$target/LICENSE")" ]] || \
+    fail "retry after partial metadata prebind failure did not install the source change"
 }
 
 test_metadata_commit_link_capability_failure_stops_before_managed_mutation() {
@@ -6392,6 +6454,7 @@ main() {
     test_metadata_commit_rejects_replaced_prepared_file
     test_metadata_commit_capability_failure_stops_before_managed_mutation
     test_metadata_actual_source_prebind_failure_stops_before_managed_mutation
+    test_metadata_partial_prebind_failure_cleans_guard_and_allows_retry
     test_metadata_commit_link_capability_failure_stops_before_managed_mutation
     test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation
     test_atomic_rename_capability_failure_stops_before_recovery_mutation

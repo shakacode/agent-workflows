@@ -284,6 +284,7 @@ capture_bound_recovery_metadata() {
       dlload Fiddle.dlopen(nil)
       extern "int openat(int, const char *, int)"
       extern "int linkat(int, const char *, int, const char *, int)"
+      extern "int unlinkat(int, const char *, int)"
       if RUBY_PLATFORM.include?("darwin")
         extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
         def self.no_replace(source_fd, source, destination_fd, destination)
@@ -860,6 +861,7 @@ prebind_install_metadata_rollback_guard() {
     target, metadata_name, lock, expected = ARGV
     target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
     lock_file = File.open(lock, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    created = false
     attest = lambda do |file|
       file.rewind
       stat = file.stat
@@ -883,13 +885,26 @@ prebind_install_metadata_rollback_guard() {
       abort unless AtomicMetadataPrebind.linkat(
         target_file.fileno, metadata_name, lock_file.fileno, "metadata-commit-old.guard", 0
       ) == 0
+      created = true
       guard = open_at.call(lock_file, "metadata-commit-old.guard")
       source_stat = source.stat
       guard_stat = guard.stat
       abort unless attest.call(guard) == expected &&
                    source_stat.dev == guard_stat.dev && source_stat.ino == guard_stat.ino
     ensure
+      failed = !$!.nil?
       guard&.close
+      if failed && created
+        cleanup_guard = open_at.call(lock_file, "metadata-commit-old.guard")
+        source_stat = source.stat
+        cleanup_stat = cleanup_guard.stat
+        abort unless attest.call(cleanup_guard) == expected &&
+                     source_stat.dev == cleanup_stat.dev && source_stat.ino == cleanup_stat.ino
+        abort unless AtomicMetadataPrebind.unlinkat(
+          lock_file.fileno, "metadata-commit-old.guard", 0
+        ) == 0
+        cleanup_guard.close
+      end
       source&.close
       lock_file&.close
       target_file&.close
