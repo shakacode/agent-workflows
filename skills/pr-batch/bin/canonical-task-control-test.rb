@@ -3,6 +3,7 @@
 
 require "json"
 require "digest"
+require "fileutils"
 require "minitest/autorun"
 require "open3"
 require "tempfile"
@@ -11,6 +12,8 @@ require "time"
 HELPER = File.expand_path("canonical-task-control", __dir__)
 REPO_ROOT = File.expand_path("../../..", __dir__)
 REVIEW_VALIDATOR = File.join(REPO_ROOT, "bin", "validate-review-findings")
+TEST_TMP_ROOT = File.join(REPO_ROOT, ".tmp", "canonical-task-control-tests")
+FileUtils.mkdir_p(TEST_TMP_ROOT)
 
 class CanonicalTaskControlTest < Minitest::Test
   def test_launch_rejects_a_bare_task_without_composite_gate_evidence
@@ -70,7 +73,7 @@ class CanonicalTaskControlTest < Minitest::Test
   def test_group_or_world_writable_trusted_evidence_fails_closed
     input = launch_input
     bundle = trusted_bundle_for(input)
-    Tempfile.create(["canonical-task-insecure", ".json"], __dir__) do |file|
+    Tempfile.create(["canonical-task-insecure", ".json"], TEST_TMP_ROOT) do |file|
       file.write(JSON.generate(bundle))
       file.flush
       File.chmod(0o666, file.path)
@@ -100,7 +103,7 @@ class CanonicalTaskControlTest < Minitest::Test
     Tempfile.create(["canonical-task-outside", ".json"]) do |outside|
       outside.write(JSON.generate(bundle))
       outside.flush
-      Tempfile.create(["canonical-task-trust", ".yml"], REPO_ROOT) do |trust|
+      Tempfile.create(["canonical-task-trust", ".yml"], TEST_TMP_ROOT) do |trust|
         trust.write("trusted_users:\n  - trusted-actor-1\n")
         trust.flush
         _stdout, stderr, status = capture_helper(request, bundle.fetch("id"), outside.path, trust.path)
@@ -109,12 +112,12 @@ class CanonicalTaskControlTest < Minitest::Test
       end
     end
 
-    Tempfile.create(["canonical-task-real", ".json"], REPO_ROOT) do |real|
+    Tempfile.create(["canonical-task-real", ".json"], TEST_TMP_ROOT) do |real|
       real.write(JSON.generate(bundle))
       real.flush
-      link = File.join(REPO_ROOT, ".canonical-task-symlink-#{Process.pid}")
+      link = File.join(TEST_TMP_ROOT, ".canonical-task-symlink-#{Process.pid}")
       File.symlink(real.path, link)
-      Tempfile.create(["canonical-task-trust", ".yml"], REPO_ROOT) do |trust|
+      Tempfile.create(["canonical-task-trust", ".yml"], TEST_TMP_ROOT) do |trust|
         trust.write("trusted_users:\n  - trusted-actor-1\n")
         trust.flush
         _stdout, stderr, status = capture_helper(request, bundle.fetch("id"), link, trust.path)
@@ -174,23 +177,25 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes result.fetch("unknowns"), "budget_evidence"
   end
 
-  def test_current_helper_rejects_claim_that_398_is_available
+  def test_merged_398_capability_allows_budget_admitted_delegation_preflight
     input = delegation_input(
-      target_state: "active", context: 40_000, threshold: 50_000,
+      target_state: "idle", context: 40_000, threshold: 50_000,
       message_class: "new_evidence", human_approval: "UNKNOWN"
     )
     bundle = trusted_bundle_for(input)
     bundle["capabilities"]["issue_398"] = "available"
 
-    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+    result, stderr, status = run_helper(input, trusted_bundle: bundle)
 
-    refute status.success?
-    assert_includes stderr, "#398 mechanism is unavailable"
+    assert status.success?, stderr
+    assert_equal "allow", result.fetch("verdict")
+    assert_equal ["wake_target_task"], result.fetch("allowed_actions")
+    assert result.fetch("wake_target")
   end
 
   def test_old_nested_evidence_fails_even_inside_a_current_trusted_bundle
     input = launch_input
-    evidence = input["budget_gate"].first
+    evidence = input["policy"]["evidence"].first
     evidence["issued_at"] = "2000-01-01T00:00:00Z"
     evidence["observed_at"] = "2000-01-01T00:00:01Z"
     evidence["expires_at"] = "2000-01-01T00:10:00Z"
@@ -219,6 +224,10 @@ class CanonicalTaskControlTest < Minitest::Test
     assert status.success?, stderr
     assert_equal "allow", result.fetch("verdict")
     assert_equal "multi_target_exception", result.fetch("topology_mode")
+    receipt = result.fetch("exception_receipt")
+    assert_equal "multi-target-supervision-exception-receipt", receipt.fetch("contract")
+    assert_equal input.dig("task", "exception", "budget_plan_anchor", "trusted_plan_digest"),
+                 receipt.fetch("budget_plan_digest")
   end
 
   def test_multi_target_exception_rejects_arbitrary_approval_and_budget_assertions
@@ -232,11 +241,11 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "expected object"
 
     task = multi_target_task
-    task["exception"]["budget_authorities"][0]["evidence_ref"] = "policy:arbitrary"
+    task["exception"]["budget_plan_anchor"]["trusted_plan_digest"] = "sha256:#{'0' * 64}"
     _result, stderr, status = run_helper(launch_input(task))
 
-    refute status.success?, "arbitrary string budget evidence unexpectedly allowed multi-target launch"
-    assert_includes stderr, "durable HTTPS"
+    refute status.success?, "mismatched hierarchical budget digest unexpectedly allowed multi-target launch"
+    assert_includes stderr, "budget plan digest mismatch"
   end
 
   def test_case_variant_repository_duplicates_fail_closed
@@ -297,7 +306,35 @@ class CanonicalTaskControlTest < Minitest::Test
     assert status.success?, stderr
     assert_equal ["checker-402"], result.fetch("closed_children")
     assert_equal ["checker-402"], result.fetch("accepted_child_receipts")
+    closure = result.fetch("child_closure_receipts").first
+    assert_equal "canonical-task-child-closure-receipt", closure.fetch("contract")
+    assert_equal "checker", closure.fetch("child_kind")
     assert_includes result.fetch("unknowns"), "context_threshold"
+  end
+
+  def test_compact_manifest_and_child_receipts_are_bounded
+    input = child_receipt_input
+    input["manifest"]["requirements"] = Array.new(33, "bounded requirement")
+
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "manifest requirements exceeds 32 items"
+
+    input = child_receipt_input
+    input["children"]["receipts"].first["summary"] = "x" * 513
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "child receipt string exceeds 512 bytes"
+  end
+
+  def test_manifest_requires_one_active_maker_and_closed_independent_roles
+    input = child_receipt_input
+    input["manifest"]["ownership"] = { "makers" => ["maker-a", "maker-b"], "checker" => "checker-402" }
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "manifest ownership requires exactly one maker"
   end
 
   def test_child_receipt_rejects_stale_head_and_swapped_role_scope_binding
@@ -313,7 +350,7 @@ class CanonicalTaskControlTest < Minitest::Test
     input["children"]["receipts"].first["role"] = "maker"
     _result, stderr, status = run_helper(input)
     refute status.success?
-    assert_includes stderr, "packet/receipt/state bindings must match"
+    assert_includes stderr, "child receipt must select checker, reviewer, or qa kind"
   end
 
   def test_child_receipt_rejects_swapped_plan_and_changed_findings_without_matching_validation
@@ -373,10 +410,10 @@ class CanonicalTaskControlTest < Minitest::Test
     result, stderr, status = run_helper(input)
 
     assert status.success?, stderr
-    assert_equal "block", result.fetch("verdict")
+    assert_equal "coalesce", result.fetch("verdict")
     refute result.fetch("wake_target")
-    assert_empty result.fetch("allowed_actions")
-    assert_includes result.fetch("unknowns"), "execution_provenance"
+    assert_equal ["queue_coalesced_message"], result.fetch("allowed_actions")
+    assert_empty result.fetch("unknowns")
   end
 
   def test_idle_delegation_wakes_only_new_evidence_within_policy_or_with_human_approval
@@ -386,8 +423,8 @@ class CanonicalTaskControlTest < Minitest::Test
     )
     result, stderr, status = run_helper(within_policy)
     assert status.success?, stderr
-    assert_equal "block", result.fetch("verdict")
-    refute result.fetch("wake_target")
+    assert_equal "allow", result.fetch("verdict")
+    assert result.fetch("wake_target")
 
     unchanged = delegation_input(
       target_state: "idle", context: 40_000, threshold: 50_000,
@@ -406,6 +443,7 @@ class CanonicalTaskControlTest < Minitest::Test
     assert status.success?, stderr
     assert_equal "block", result.fetch("verdict")
     refute result.fetch("wake_target")
+    assert_includes result.fetch("blockers"), "budget_admission_blocked"
   end
 
   def test_cross_task_wake_rejects_the_same_canonical_target_even_with_case_variants
@@ -452,45 +490,42 @@ class CanonicalTaskControlTest < Minitest::Test
     end
   end
 
-  def test_available_execution_provenance_rejects_arbitrary_receipt_reference
-    input = delegation_input(
-      target_state: "idle", context: 40_000, threshold: 50_000,
-      message_class: "new_evidence", human_approval: "UNKNOWN"
-    )
-    input["delegation"]["usage"]["receipt_ref"] = "receipt:invented"
-
-    _result, stderr, status = run_helper(input)
-
-    refute status.success?
-    assert_includes stderr, "durable verified #398 receipt-result references"
-  end
-
-  def test_available_execution_provenance_rejects_no_double_count_arithmetic_mismatch
-    input = delegation_input(
-      target_state: "idle", context: 40_000, threshold: 50_000,
-      message_class: "new_evidence", human_approval: "UNKNOWN"
-    )
-    input["delegation"]["usage"]["aggregate_physical_delta"] = 55
-
-    _result, stderr, status = run_helper(input)
-
-    refute status.success?
-    assert_includes stderr, "aggregate arithmetic mismatch"
-  end
-
-  def test_unsupported_execution_provenance_stays_unknown_and_blocks_delegation_mutation
-    input = delegation_input(
-      target_state: "idle", context: 40_000, threshold: 50_000,
-      message_class: "new_evidence", human_approval: "UNKNOWN"
-    )
-    input["delegation"]["usage"] = unsupported_usage
+  def test_usage_reconciliation_consumes_v2_receipt_and_budget_result_without_caller_deltas
+    input = usage_reconciliation_input
 
     result, stderr, status = run_helper(input)
 
     assert status.success?, stderr
-    assert_equal "block", result.fetch("verdict")
-    assert_includes result.fetch("blockers"), "execution_provenance_unknown"
-    assert_includes result.fetch("unknowns"), "execution_provenance"
+    assert_equal "allow", result.fetch("verdict")
+    assert_equal ["record_usage_reconciliation"], result.fetch("allowed_actions")
+    assert_equal 35, result.fetch("usage_reconciliation").fetch("physical_tokens")
+    assert_equal 3, result.fetch("usage_reconciliation").fetch("contributing_turns")
+  end
+
+  def test_usage_reconciliation_rejects_digest_or_balancing_mismatch
+    input = usage_reconciliation_input
+    input["usage_reconciliation"]["usage_receipt_digest"] = "sha256:#{'0' * 64}"
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "usage receipt digest mismatch"
+
+    input = usage_reconciliation_input
+    input["usage_reconciliation"]["usage_receipt"]["batch"]["usage"]["descendant_inclusive"]["total_tokens"] = 55
+    input["usage_reconciliation"]["usage_receipt_digest"] =
+      findings_digest(input["usage_reconciliation"]["usage_receipt"])
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "usage receipt token equation mismatch"
+  end
+
+  def test_usage_reconciliation_rejects_double_counting_or_foreign_charge_back
+    input = usage_reconciliation_input
+    input["usage_reconciliation"]["budget_result"]["charge_backs"].first["physical_total_incremented"] = true
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "charge back binding or no-double-count invariant mismatch"
   end
 
   def test_cross_task_wake_rejects_an_arbitrary_approval_url
@@ -504,6 +539,30 @@ class CanonicalTaskControlTest < Minitest::Test
     refute status.success?
   end
 
+  def test_foreign_target_packet_is_evidence_only_and_cannot_authorize_mutation
+    packet = {
+      "contract" => "canonical-task-foreign-target-packet", "version" => 1,
+      "source" => { "task_id" => "task-401", "repository" => "shakacode/agent-workflows", "target" => "issue:401" },
+      "recipient" => { "task_id" => "task-402", "repository" => "shakacode/agent-workflows", "target" => "issue:402" },
+      "evidence_kind" => "dependency_result", "summary" => "Dependency head moved after validation.",
+      "evidence_ref" => "https://example.test/evidence/foreign/401",
+      "evidence_digest" => "sha256:#{'b' * 64}", "disposition" => "evidence_only"
+    }
+    input = base_input.merge("operation" => "foreign_target_packet", "foreign_target_packet" => packet)
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "allow", result.fetch("verdict")
+    assert_equal ["record_foreign_target_evidence"], result.fetch("allowed_actions")
+    assert_equal "foreign-target-evidence-receipt", result.dig("foreign_target_receipt", "contract")
+
+    packet["disposition"] = "patch_edit"
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "foreign target packets are evidence-only"
+  end
+
   def test_pilot_requires_ten_matched_pairs_required_metrics_and_gate_safe_promotion
     input = base_input.merge(
       "operation" => "pilot_evaluation",
@@ -513,29 +572,51 @@ class CanonicalTaskControlTest < Minitest::Test
     result, stderr, status = run_helper(input)
 
     assert status.success?, stderr
-    assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict")
-    assert_includes result.fetch("unknowns"), "execution_provenance"
+    assert_equal "promote_ordinary_default", result.fetch("pilot_verdict")
+    assert_equal "allow", result.fetch("verdict")
+    assert_empty result.fetch("unknowns")
     assert_equal 10, result.fetch("matched_pair_count")
   end
 
   def test_pilot_preserves_multi_target_rollback_when_receipts_are_unsupported
     pilot = pilot_input
-    pilot["pairs"].first["ordinary"]["execution_evidence"] = unsupported_pilot_evidence
-    pilot["pairs"].first["ordinary"]["metrics"]["total_tokens"] = "UNKNOWN"
-    pilot["pairs"].first["ordinary"]["metrics"]["credit_equivalents"] = "UNKNOWN"
+    pilot["pairs"].first["ordinary"]["usage_receipt"]["evidence"] = {
+      "status" => "UNKNOWN", "sources" => ["codex_rollout_jsonl", "state_5.sqlite"],
+      "unknown" => [{ "status" => "UNKNOWN", "code" => "usage_counter_missing", "fields" => ["cache_read_tokens"] }]
+    }
+    arm = pilot["pairs"].first["ordinary"]
+    arm["usage_receipt_digest"] = findings_digest(arm["usage_receipt"])
+    arm["budget_result"]["usage_receipt_digest"] = arm["usage_receipt_digest"]
+    arm["budget_result"]["receipts"].each do |receipt|
+      receipt["usage_receipt_digest"] = arm["usage_receipt_digest"]
+    end
     input = base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot)
 
     result, stderr, status = run_helper(input)
 
     assert status.success?, stderr
     assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict")
-    assert_includes result.fetch("unknowns"), "execution_provenance"
+    assert_equal "allow", result.fetch("verdict")
+    assert_includes result.fetch("unknowns"), "usage_telemetry"
+  end
+
+  def test_pilot_with_unavailable_398_is_publishable_unknown_not_false_promotion
+    input = base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot_input)
+    bundle = trusted_bundle_for(input)
+    bundle["capabilities"]["issue_398"] = "unavailable"
+
+    result, stderr, status = run_helper(input, trusted_bundle: bundle)
+
+    assert status.success?, stderr
+    assert_equal "allow", result.fetch("verdict")
+    assert_equal ["publish_pilot_result"], result.fetch("allowed_actions")
+    assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict")
+    assert_includes result.fetch("unknowns"), "usage_telemetry"
   end
 
   def test_pilot_rejects_repeated_or_relabelled_representative_tasks
     pilot = pilot_input
     pilot["pairs"][1]["ordinary"]["task_identity"] = pilot["pairs"][0]["ordinary"]["task_identity"]
-    pilot["pairs"][1]["ordinary"]["execution_evidence"]["task_identity"] = pilot["pairs"][0]["ordinary"]["task_identity"]
 
     _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
 
@@ -543,26 +624,28 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "representative task identities must be globally unique"
   end
 
-  def test_pilot_rejects_arbitrary_or_unpaired_receipt_result_evidence
+  def test_pilot_rejects_arbitrary_usage_receipt_reference
     pilot = pilot_input
-    pilot["pairs"].first["ordinary"]["execution_evidence"]["result_ref"] = "result:invented"
+    pilot["pairs"].first["ordinary"]["usage_receipt_ref"] = "receipt:invented"
 
     _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
 
     refute status.success?
-    assert_includes stderr, "durable verified #398 receipt-result"
+    assert_includes stderr, "usage receipt reference"
   end
 
-  def test_pilot_rejects_reused_execution_receipt_or_result_references
+  def test_pilot_rejects_reused_usage_receipt_references
     pilot = pilot_input
-    first = pilot["pairs"][0]["ordinary"]["execution_evidence"]
-    second = pilot["pairs"][1]["ordinary"]["execution_evidence"]
-    second["receipt_ref"] = first["receipt_ref"]
+    first = pilot["pairs"][0]["ordinary"]
+    second = pilot["pairs"][1]["ordinary"]
+    second["usage_receipt_ref"] = first["usage_receipt_ref"]
+    second["budget_result"]["receipt_ref"] = first["usage_receipt_ref"]
+    second["budget_result"]["receipts"].each { |receipt| receipt["receipt_ref"] = first["usage_receipt_ref"] }
 
     _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
 
     refute status.success?
-    assert_includes stderr, "receipt/result references must be globally unique"
+    assert_includes stderr, "usage receipt references must be globally unique"
   end
 
   def test_stdin_cannot_change_pilot_metrics_outside_the_trusted_bundle
@@ -612,10 +695,7 @@ class CanonicalTaskControlTest < Minitest::Test
       input = base_input.merge(
         "operation" => "budget_action",
         "budget_action" => action,
-        "budget_gate" => bound_evidence(
-          contract: "budget-evidence", task: base_input.fetch("task"),
-          action: action, role: "budget_owner"
-        )
+        "budget_gate" => budget_result(action: action)
       )
       result, stderr, status = run_helper(input)
 
@@ -636,6 +716,22 @@ class CanonicalTaskControlTest < Minitest::Test
     refute status.success?
   end
 
+  def test_budget_action_rejects_caller_asserted_legacy_budget_evidence
+    input = base_input.merge(
+      "operation" => "budget_action",
+      "budget_action" => "retry",
+      "budget_gate" => bound_evidence(
+        contract: "budget-evidence", task: base_input.fetch("task"),
+        action: "retry", role: "budget_owner"
+      )
+    )
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "batch-token-budget-result"
+  end
+
   def test_malformed_top_level_json_values_fail_stably
     [[], nil, "not-an-object", 42].each do |value|
       _stdout, stderr, status = run_raw(JSON.generate(value))
@@ -651,6 +747,9 @@ class CanonicalTaskControlTest < Minitest::Test
   private
 
   def launch_input(task = base_input.fetch("task"))
+    budget_results = task.fetch("lanes").map.with_index do |lane, index|
+      budget_result(action: "worker_spawn", task: task, lane: lane, revision: index + 2)
+    end
     base_input.merge(
       "task" => task,
       "policy" => {
@@ -666,7 +765,7 @@ class CanonicalTaskControlTest < Minitest::Test
           )
         end
       },
-      "manifest" => compact_manifest(task),
+      "manifest" => compact_manifest(task).merge("budgets" => budget_manifest_binding(task, results: budget_results)),
       "lifecycle" => {
         "context_threshold" => 50_000,
         "context_threshold_source" => "trusted-policy-v1",
@@ -674,12 +773,7 @@ class CanonicalTaskControlTest < Minitest::Test
           [checkpoint("plan_settlement", task: task, target: target), checkpoint("dispatch", task: task, target: target)]
         end
       },
-      "budget_gate" => task.fetch("targets").map do |target|
-        bound_evidence(
-          contract: "budget-evidence", task: task, target: target,
-          action: "worker_spawn", role: "budget_owner"
-        )
-      end,
+      "budget_gate" => budget_results,
       "typed_gates" => %w[security ownership dispatcher stage_dependency].flat_map do |gate|
         task.fetch("targets").map.with_index do |target, index|
           lane = task.fetch("lanes")[index]
@@ -747,11 +841,6 @@ class CanonicalTaskControlTest < Minitest::Test
         "justification" => "The shared compatibility boundary must be validated as one wave.",
         "target_count" => 2,
         "concurrency" => 1,
-        "aggregate_budget" => { "amount" => 100_000, "unit" => "tokens" },
-        "per_lane_budgets" => [
-          { "lane_id" => "lane-402", "amount" => 50_000, "unit" => "tokens" },
-          { "lane_id" => "lane-403", "amount" => 50_000, "unit" => "tokens" }
-        ],
         "shared_context_justification" => "One compatibility matrix is reused by both lanes.",
         "expected_savings" => "Avoid duplicate compatibility setup and combined-tip replay.",
         "rollback" => "Stop the wave and relaunch each target as an ordinary task."
@@ -763,12 +852,12 @@ class CanonicalTaskControlTest < Minitest::Test
         action: "authorize_multi_target_supervision", role: "maintainer"
       )
     end
-    task["exception"]["budget_authorities"] = task.fetch("targets").map do |target|
-      bound_evidence(
-        contract: "budget-evidence", task: task, target: target,
-        action: "authorize_multi_target_budget", role: "budget_owner"
-      )
-    end
+    task["exception"]["budget_plan"] = budget_plan(task)
+    task["exception"]["budget_plan_anchor"] = {
+      "trusted_plan_path" => "/coordinator/plans/#{task.fetch('id')}-budget.json",
+      "trusted_plan_id" => task.fetch("id"),
+      "trusted_plan_digest" => findings_digest(task["exception"]["budget_plan"])
+    }
     task
   end
 
@@ -783,11 +872,99 @@ class CanonicalTaskControlTest < Minitest::Test
         "security" => "passed", "ownership" => "passed",
         "dispatcher" => "passed", "stage_dependency" => "passed"
       },
-      "budgets" => {
-        "status" => "passed", "policy_issue" => 399,
-        "amount" => 50_000 * task.fetch("targets").length, "unit" => "tokens"
+      "budgets" => budget_manifest_binding(task),
+      "decisions" => ["ordinary topology"],
+      "receipt_refs" => ["https://example.test/receipts/#{task.fetch('id')}/manifest"]
+    }
+  end
+
+  def budget_plan(task = base_input.fetch("task"))
+    lanes = task.fetch("lanes").to_h { |lane| [lane.fetch("id"), { "limit_tokens" => 50_000 }] }
+    {
+      "type" => "batch-token-budget", "version" => 1, "batch_id" => task.fetch("id"),
+      "state_path" => "/coordinator/state/#{task.fetch('id')}-budget.json",
+      "scopes" => {
+        "aggregate" => { "limit_tokens" => 50_000 * lanes.length },
+        "coordinator" => { "limit_tokens" => 10_000 }, "lanes" => lanes
       },
-      "decisions" => ["ordinary topology"]
+      "thresholds" => { "warning_percent" => 50, "approval_percent" => 80, "hard_percent" => 100 },
+      "telemetry" => { "max_age_seconds" => 900 },
+      "delegation" => { "approval_threshold_tokens" => 25_000 },
+      "trusted_verifiers" => [{
+        "id" => "budget-verifier", "algorithm" => "rsa-pss-sha256",
+        "public_key_pem" => "HOST_REPORTED_PUBLIC_KEY"
+      }]
+    }
+  end
+
+  def budget_manifest_binding(task = base_input.fetch("task"), results: nil)
+    results ||= task.fetch("lanes").map.with_index do |lane, index|
+      budget_result(action: "worker_spawn", task: task, lane: lane, revision: index + 2)
+    end
+    {
+      "contract" => "batch-token-budget-result-set", "version" => 1,
+      "batch_id" => task.fetch("id"),
+      "result_digests" => task.fetch("lanes").map.with_index.to_h do |lane, index|
+        [lane.fetch("id"), findings_digest(results.fetch(index))]
+      end
+    }
+  end
+
+  def budget_result(action:, task: base_input.fetch("task"), lane: task.fetch("lanes").first, revision: 2,
+                    status: "admitted")
+    admission_kind = {
+      "worker_spawn" => "spawn", "delegation" => "cross-task-delegation",
+      "resume" => "resume", "retry" => "retry", "review_wave" => "review-wave"
+    }.fetch(action)
+    receipt = {
+      "type" => "batch-token-budget-reservation-receipt", "version" => 1,
+      "batch_id" => task.fetch("id"), "state_revision" => revision - 1,
+      "preserved_gates" => %w[security review qa exact-head ownership merge],
+      "reservation_id" => "#{lane.fetch('id')}-#{action}-reservation",
+      "scope_id" => lane.fetch("id"), "tokens" => 10_000,
+      "admission_kind" => admission_kind, "target_id" => task.fetch("id"),
+      "threshold_state" => "ok",
+      "overshoot_envelope" => { "max_in_flight_turns" => 1, "target_ids" => [task.fetch("id")] }
+    }
+    decision_receipt = {
+      "type" => "batch-token-budget-reservation-decision-receipt", "version" => 1,
+      "batch_id" => task.fetch("id"), "state_revision" => revision,
+      "preserved_gates" => %w[security review qa exact-head ownership merge],
+      "reservation_id" => receipt.fetch("reservation_id"),
+      "request_digest" => "#{'a' * 64}", "status" => status,
+      "reason" => status == "blocked" ? "paused-target-requires-resume-approval" :
+        (status == "coalesced" ? "target-already-active" : nil),
+      "evaluated_at" => Time.now.utc.iso8601
+    }
+    result = {
+      "type" => "batch-token-budget-result", "version" => 1, "status" => status,
+      "batch_id" => task.fetch("id"), "state_revision" => revision,
+      "totals" => {
+        "aggregate" => budget_scope_totals(status),
+        "coordinator" => budget_scope_totals("idle"),
+        "lanes" => task.fetch("lanes").to_h do |task_lane|
+          [task_lane.fetch("id"), budget_scope_totals(task_lane.fetch("id") == lane.fetch("id") ? status : "idle")]
+        end
+      },
+      "preserved_gates" => %w[security review qa exact-head ownership merge],
+      "decision_receipt" => decision_receipt
+    }
+    if %w[admitted admitted-with-warning].include?(status)
+      result.merge!("receipt" => receipt, "checkpoint" => nil)
+    elsif status == "coalesced"
+      result.merge!("reason" => "target-already-active", "coalesced_reservation_id" => nil)
+    elsif status == "blocked"
+      result["reason"] = "paused-target-requires-resume-approval"
+    end
+    result
+  end
+
+  def budget_scope_totals(status)
+    allocated = %w[admitted admitted-with-warning].include?(status) ? 10_000 : 0
+    {
+      "limit_tokens" => 50_000, "allocated_tokens" => allocated,
+      "consumed_tokens" => 0, "reserved_tokens" => allocated,
+      "released_tokens" => 0, "unattributed_tokens" => 0
     }
   end
 
@@ -842,29 +1019,6 @@ class CanonicalTaskControlTest < Minitest::Test
   end
 
   def delegation_input(target_state:, context:, threshold:, message_class:, human_approval:)
-    usage = {
-      "contract" => "execution-provenance-evidence",
-      "version" => 1,
-      "support" => "available",
-      "producer_issue" => 398,
-      "actor" => "telemetry-verifier-1",
-      "role" => "telemetry_verifier",
-      "source_task_id" => "source-task",
-      "target_task_id" => "task-402",
-      "repository" => "shakacode/agent-workflows",
-      "target" => "issue:402",
-      "action" => "delegation",
-      "scope" => "source edge and target execution",
-      "status" => "verified",
-      **evidence_times,
-      "receipt_ref" => "https://example.test/receipts/398/delegation",
-      "result_ref" => "https://example.test/results/398/delegation",
-      "source_edge_delta" => 10,
-      "target_self_delta" => 20,
-      "target_descendant_delta" => 5,
-      "aggregate_physical_delta" => 35,
-      "reconciliation" => "reconciled_no_double_count"
-    }
     base_input.merge(
       "operation" => "delegation",
       "manifest" => compact_manifest,
@@ -873,9 +1027,9 @@ class CanonicalTaskControlTest < Minitest::Test
         "context_threshold_source" => "policy:pilot-a",
         "checkpoints" => [checkpoint("cross_task_handoff")]
       },
-      "budget_gate" => bound_evidence(
-        contract: "budget-evidence", task: base_input.fetch("task"),
-        action: "delegation", role: "budget_owner"
+      "budget_gate" => budget_result(
+        action: "delegation",
+        status: target_state == "active" ? "coalesced" : (target_state == "paused" ? "blocked" : "admitted")
       ),
       "delegation" => {
         "source" => {
@@ -896,23 +1050,28 @@ class CanonicalTaskControlTest < Minitest::Test
         "queued_messages" => 1,
         "coalesced" => false,
         "deterministic_handoff_available" => false,
-        "human_approval" => human_approval,
-        "usage" => usage
+        "human_approval" => human_approval
       }
     )
   end
 
-  def unsupported_usage
-    keys = %w[
-      producer_issue actor role source_task_id target_task_id repository target
-      action scope status issued_at observed_at expires_at receipt_ref result_ref source_edge_delta
-      target_self_delta target_descendant_delta aggregate_physical_delta reconciliation
-    ]
-    {
-      "contract" => "execution-provenance-evidence",
-      "version" => 1,
-      "support" => "unsupported"
-    }.merge(keys.to_h { |key| [key, "UNKNOWN"] })
+  def usage_reconciliation_input
+    receipt = usage_receipt(batch_id: "task-402", lane_id: "aw-i402", total_tokens: 35,
+                            coordinator_tokens: 10, lane_tokens: 25, total_turns: 3,
+                            coordinator_turns: 1, lane_turns: 2, credits: 3.5)
+    digest = findings_digest(receipt)
+    result = budget_reconciliation_result(receipt_digest: digest)
+    base_input.merge(
+      "operation" => "usage_reconciliation",
+      "usage_reconciliation" => {
+        "source" => { "task_id" => "source-task", "repository" => "shakacode/agent-workflows", "target" => "issue:401" },
+        "target" => { "task_id" => "task-402", "repository" => "shakacode/agent-workflows", "target" => "issue:402" },
+        "usage_receipt" => receipt,
+        "usage_receipt_ref" => "file:///coordinator/receipts/task-402-usage-v2.json",
+        "usage_receipt_digest" => digest,
+        "budget_result" => result
+      }
+    )
   end
 
   def delegation_approval
@@ -922,10 +1081,117 @@ class CanonicalTaskControlTest < Minitest::Test
     )
   end
 
+  def usage_vector(total)
+    {
+      "input_tokens" => total, "output_tokens" => 0,
+      "reasoning_output_tokens" => 0, "cache_read_tokens" => 0,
+      "total_tokens" => total
+    }
+  end
+
+  def route(host: "codex", model: "gpt-5.6-sol", effort: "high")
+    { "host" => host, "model" => model, "effort" => effort }
+  end
+
+  def observed_route(total, host: "codex", model: "gpt-5.6-sol", effort: "high")
+    route(host: host, model: model, effort: effort).merge(
+      "provider" => "openai", "usage" => usage_vector(total)
+    )
+  end
+
+  def scope_evidence(id)
+    {
+      "status" => "complete", "physical_rollout_ids" => ["sha256:#{Digest::SHA256.hexdigest(id)}"],
+      "first_session_ids" => [id], "first_session_id" => id
+    }
+  end
+
+  def usage_receipt(batch_id:, lane_id:, total_tokens:, coordinator_tokens:, lane_tokens:,
+                    total_turns:, coordinator_turns:, lane_turns:, credits:)
+    zero = usage_vector(0)
+    {
+      "schema" => "batch-usage-receipt-v2",
+      "batch" => {
+        "scope" => "batch", "id" => batch_id,
+        "usage" => { "descendant_inclusive" => usage_vector(total_tokens), "unattributed" => zero },
+        "turns" => { "descendant_inclusive" => total_turns, "unattributed" => 0 },
+        "reconciliation" => { "status" => "balanced", "equation" => "coordinator + lanes" }
+      },
+      "coordinator" => {
+        "scope" => "coordinator", "id" => "coordinator-#{batch_id}", "root_thread_id" => "root-#{batch_id}",
+        "requested_route" => route, "observed_routes" => [observed_route(coordinator_tokens)],
+        "usage" => { "self_only" => usage_vector(coordinator_tokens),
+                     "descendant_inclusive" => usage_vector(coordinator_tokens) },
+        "turns" => { "self_only" => coordinator_turns, "descendant_inclusive" => coordinator_turns },
+        "evidence" => scope_evidence("coordinator-#{batch_id}")
+      },
+      "lanes" => [{
+        "scope" => "lane", "id" => lane_id, "root_thread_id" => "root-#{lane_id}",
+        "requested_route" => route, "observed_routes" => [observed_route(lane_tokens)],
+        "usage" => { "self_only" => usage_vector(lane_tokens),
+                     "descendant_inclusive" => usage_vector(lane_tokens), "unattributed" => zero },
+        "turns" => { "self_only" => lane_turns, "descendant_inclusive" => lane_turns, "unattributed" => 0 },
+        "evidence" => scope_evidence(lane_id), "workers" => [],
+        "reconciliation" => { "status" => "balanced", "equation" => "lane self + workers" }
+      }],
+      "window" => {
+        "from_inclusive" => "2026-08-12T00:00:00Z", "to_exclusive" => "2026-08-12T01:00:00Z",
+        "differencing" => "full_history_before_window_filter"
+      },
+      "accounting" => {
+        "compactions" => 0, "counter_resets" => 0, "duplicate_samples_omitted" => 0,
+        "inherited_seeds_omitted" => 0, "replay_records_omitted" => 0,
+        "session_rebind_attempts_ignored" => 0, "usage_samples" => total_turns
+      },
+      "evidence" => { "status" => "complete", "sources" => ["codex_rollout_jsonl", "state_5.sqlite"], "unknown" => [] },
+      "privacy" => { "mode" => "metadata_only", "emitted_or_persisted_content" => false,
+                     "excluded" => ["prompts", "responses", "secrets"] },
+      "credit_equivalents" => {
+        "status" => "available", "source" => "https://example.test/rates/2026-08-01",
+        "effective_date" => "2026-08-01",
+        "model_values" => [{ "host" => "codex", "model" => "gpt-5.6-sol", "status" => "available", "credits" => credits }],
+        "disclaimer" => "Estimated equivalent; not a bill."
+      }
+    }
+  end
+
+  def budget_reconciliation_result(receipt_digest:, batch_id: "task-402", receipt_ref: "file:///coordinator/receipts/task-402-usage-v2.json")
+    {
+      "type" => "batch-token-budget-result", "version" => 1, "status" => "reconciled",
+      "batch_id" => batch_id, "state_revision" => 4,
+      "totals" => { "aggregate" => { "limit_tokens" => 50_000, "allocated_tokens" => 10_000,
+        "consumed_tokens" => 35, "reserved_tokens" => 0, "released_tokens" => 9_965,
+        "unattributed_tokens" => 0 } },
+      "preserved_gates" => %w[security review qa exact-head ownership merge],
+      "usage_receipt_digest" => receipt_digest, "receipt_ref" => receipt_ref,
+      "receipts" => [{
+        "type" => "batch-token-budget-reconciliation-receipt", "version" => 1,
+        "batch_id" => batch_id, "state_revision" => 3,
+        "preserved_gates" => %w[security review qa exact-head ownership merge],
+        "reservation_id" => "aw-i402-delegation-reservation", "usage_receipt_digest" => receipt_digest,
+        "receipt_ref" => receipt_ref, "from_inclusive" => "2026-08-12T00:00:00Z",
+        "to_exclusive" => "2026-08-12T01:00:00Z", "predicted_tokens" => 10_000,
+        "interval_tokens" => 35, "actual_tokens" => 35, "released_tokens" => 9_965,
+        "overshoot_tokens" => 0, "overshoot_turn_count" => 0, "completed" => true
+      }],
+      "charge_backs" => [{
+        "id" => "charge-back-402", "source" => task_identity("source-task", "batch-source", "source-lane", "issue", 401),
+        "target" => task_identity("task-402", batch_id, "aw-i402", "issue", 402),
+        "tokens" => 35, "physical_total_incremented" => false
+      }]
+    }
+  end
+
+  def task_identity(task_id, batch_id, lane_id, type, number)
+    {
+      "task_id" => task_id, "batch_id" => batch_id, "lane_id" => lane_id,
+      "root_id" => "root-#{task_id}",
+      "work_item" => { "repo" => "shakacode/agent-workflows", "type" => type, "number" => number }
+    }
+  end
+
   def pilot_input
     metrics = {
-      "total_tokens" => 100_000,
-      "credit_equivalents" => 10.0,
       "elapsed_seconds" => 600,
       "human_coordination_seconds" => 60,
       "correction_turns" => 1,
@@ -934,26 +1200,49 @@ class CanonicalTaskControlTest < Minitest::Test
       "gate_compliance" => "preserved"
     }
     pairs = 10.times.map do |index|
+      ordinal = index + 1
+      ordinary_batch = "ordinary-batch-#{ordinal}"
+      multi_batch = "multi-batch-#{ordinal}"
+      ordinary_ref = "file:///coordinator/receipts/pilot/ordinary-#{ordinal}.json"
+      multi_ref = "file:///coordinator/receipts/pilot/multi-#{ordinal}.json"
+      ordinary_receipt = usage_receipt(
+        batch_id: ordinary_batch, lane_id: "ordinary-lane-#{ordinal}", total_tokens: 70_000,
+        coordinator_tokens: 10_000, lane_tokens: 60_000, total_turns: 7,
+        coordinator_turns: 1, lane_turns: 6, credits: 7.0
+      )
+      multi_receipt = usage_receipt(
+        batch_id: multi_batch, lane_id: "multi-lane-#{ordinal}", total_tokens: 100_000,
+        coordinator_tokens: 20_000, lane_tokens: 80_000, total_turns: 10,
+        coordinator_turns: 2, lane_turns: 8, credits: 10.0
+      )
       {
-        "pair_id" => "pair-#{index + 1}",
+        "pair_id" => "pair-#{ordinal}",
         "task_class" => "implementation-bounded",
         "context_topology" => "one-maker-one-checker",
         "ordinary" => {
           "arm_identity" => "ordinary",
-          "task_identity" => "ordinary-task-#{index + 1}",
-          "batch_identity" => "ordinary-batch-#{index + 1}",
+          "task_identity" => "ordinary-task-#{ordinal}",
+          "batch_identity" => ordinary_batch,
           "task_class" => "implementation-bounded",
           "context_topology" => "one-maker-one-checker",
-          "execution_evidence" => pilot_execution_evidence("ordinary", index + 1),
-          "metrics" => metrics.merge("total_tokens" => 70_000, "credit_equivalents" => 7.0)
+          "usage_receipt" => ordinary_receipt, "usage_receipt_ref" => ordinary_ref,
+          "usage_receipt_digest" => findings_digest(ordinary_receipt),
+          "budget_result" => budget_reconciliation_result(
+            receipt_digest: findings_digest(ordinary_receipt), batch_id: ordinary_batch, receipt_ref: ordinary_ref
+          ),
+          "metrics" => metrics
         },
         "multi_target" => {
           "arm_identity" => "multi_target",
-          "task_identity" => "multi-task-#{index + 1}",
-          "batch_identity" => "multi-batch-#{index + 1}",
+          "task_identity" => "multi-task-#{ordinal}",
+          "batch_identity" => multi_batch,
           "task_class" => "implementation-bounded",
           "context_topology" => "one-maker-one-checker",
-          "execution_evidence" => pilot_execution_evidence("multi_target", index + 1),
+          "usage_receipt" => multi_receipt, "usage_receipt_ref" => multi_ref,
+          "usage_receipt_digest" => findings_digest(multi_receipt),
+          "budget_result" => budget_reconciliation_result(
+            receipt_digest: findings_digest(multi_receipt), batch_id: multi_batch, receipt_ref: multi_ref
+          ),
           "metrics" => metrics
         }
       }
@@ -995,34 +1284,6 @@ class CanonicalTaskControlTest < Minitest::Test
     }
   end
 
-  def pilot_execution_evidence(arm, index)
-    slug = arm == "ordinary" ? "ordinary" : "multi"
-    {
-      "contract" => "pilot-execution-result-evidence", "version" => 1,
-      "support" => "available", "producer_issue" => 398,
-      "actor" => "telemetry-verifier-1", "role" => "telemetry_verifier",
-      "task_identity" => "#{slug}-task-#{index}",
-      "batch_identity" => "#{slug}-batch-#{index}",
-      "arm_identity" => arm,
-      "task_class" => "implementation-bounded",
-      "context_topology" => "one-maker-one-checker",
-      "status" => "verified", **evidence_times,
-      "receipt_ref" => "https://example.test/receipts/398/#{slug}/#{index}",
-      "result_ref" => "https://example.test/results/398/#{slug}/#{index}"
-    }
-  end
-
-  def unsupported_pilot_evidence
-    keys = %w[
-      producer_issue actor role task_identity batch_identity arm_identity task_class
-      context_topology status issued_at observed_at expires_at receipt_ref result_ref
-    ]
-    {
-      "contract" => "pilot-execution-result-evidence", "version" => 1,
-      "support" => "unsupported"
-    }.merge(keys.to_h { |key| [key, "UNKNOWN"] })
-  end
-
   def child_receipt_input
     review_identity = {
       "batch_id" => "batch-402", "task_id" => "task-402",
@@ -1030,7 +1291,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "diff_identity" => "sha256:#{'a' * 64}"
     }
     findings = []
-    base_input.merge(
+    input = base_input.merge(
       "operation" => "accept_child_receipt",
       "manifest" => compact_manifest,
       "lifecycle" => {
@@ -1041,6 +1302,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "children" => {
         "packets" => [{
           "contract" => "task-scoped-child-packet", "version" => 1,
+          "child_kind" => "checker",
           "child_id" => "checker-402", "lane_id" => "aw-i402",
           "repository" => "shakacode/agent-workflows", "target" => "issue:402",
           "role" => "checker", "scope" => "Review one diff.",
@@ -1054,6 +1316,7 @@ class CanonicalTaskControlTest < Minitest::Test
         }],
         "receipts" => [{
           "contract" => "compact-child-receipt", "version" => 1,
+          "child_kind" => "checker",
           "child_id" => "checker-402", "lane_id" => "aw-i402",
           "repository" => "shakacode/agent-workflows", "target" => "issue:402",
           "role" => "checker", "scope" => "Review one diff.",
@@ -1083,6 +1346,7 @@ class CanonicalTaskControlTest < Minitest::Test
           }
         }],
         "states" => [{
+          "child_kind" => "checker",
           "child_id" => "checker-402", "lane_id" => "aw-i402",
           "repository" => "shakacode/agent-workflows", "target" => "issue:402",
           "role" => "checker", "scope" => "Review one diff.",
@@ -1091,10 +1355,19 @@ class CanonicalTaskControlTest < Minitest::Test
           "review_round" => 1,
           **review_identity,
           "review_package_ref" => "https://example.test/reviews/packages/checker-402-round-1",
-          "status" => "closed", "resumable" => false
+          "status" => "closed", "resumable" => false,
+          "closure" => {
+            "contract" => "canonical-task-child-closure-receipt", "version" => 1,
+            "child_kind" => "checker", "child_id" => "checker-402", "lane_id" => "aw-i402",
+            "task_id" => "task-402", "status" => "closed", "resumable" => false,
+            "receipt_digest" => "PENDING"
+          }
         }]
       }
     )
+    input["children"]["states"].first["closure"]["receipt_digest"] =
+      findings_digest(input["children"]["receipts"].first)
+    input
   end
 
   def findings_digest(findings)
@@ -1113,10 +1386,10 @@ class CanonicalTaskControlTest < Minitest::Test
     return run_helper_without_trusted(input) unless trusted
 
     bundle = trusted_bundle || trusted_bundle_for(input)
-    Tempfile.create(["canonical-task-trusted", ".json"], REPO_ROOT) do |file|
+    Tempfile.create(["canonical-task-trusted", ".json"], TEST_TMP_ROOT) do |file|
       file.write(JSON.generate(bundle))
       file.flush
-      Tempfile.create(["canonical-task-trust", ".yml"], REPO_ROOT) do |trust|
+      Tempfile.create(["canonical-task-trust", ".yml"], TEST_TMP_ROOT) do |trust|
         trust.write("trusted_users:\n  - trusted-actor-1\n")
         trust.flush
         request = input.slice("contract", "version", "operation", "task").merge(
@@ -1129,10 +1402,10 @@ class CanonicalTaskControlTest < Minitest::Test
   end
 
   def run_request_with_bundle(request, bundle)
-    Tempfile.create(["canonical-task-trusted", ".json"], REPO_ROOT) do |file|
+    Tempfile.create(["canonical-task-trusted", ".json"], TEST_TMP_ROOT) do |file|
       file.write(JSON.generate(bundle))
       file.flush
-      Tempfile.create(["canonical-task-trust", ".yml"], REPO_ROOT) do |trust|
+      Tempfile.create(["canonical-task-trust", ".yml"], TEST_TMP_ROOT) do |trust|
         trust.write("trusted_users:\n  - trusted-actor-1\n")
         trust.flush
         stdout, stderr, status = capture_helper(request, bundle.fetch("id"), file.path, trust.path)
@@ -1177,7 +1450,7 @@ class CanonicalTaskControlTest < Minitest::Test
         input.fetch("task").fetch("lanes").to_h do |lane|
           [lane.fetch("id"), "8cf266b0c1753797e56aefb1b152a16edd4b5a46"]
         end,
-      "capabilities" => { "issue_398" => "unavailable", "issue_399" => "available" },
+      "capabilities" => { "issue_398" => "available", "issue_399" => "available" },
       "payload_digest" => findings_digest(payload),
       "payload" => payload
     }

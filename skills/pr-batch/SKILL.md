@@ -41,19 +41,24 @@ Run a Claude batch
 
 For ordinary implementation, one user-visible task owns exactly one
 repository-qualified canonical issue or existing PR, one execution lane, and at
-most one implementation PR for that lane. A single target may still use bounded
-maker, checker, reviewer, and QA children; role separation does not create more
+most one implementation PR for that lane. A single target has exactly one
+active maker by default and may still use bounded independent checker, reviewer,
+and QA children; role separation does not create more
 canonical targets. Preserve every existing security, claim/ownership,
 dependency, exact-head QA, review, CI, merge-authority, and audit gate.
 
 More than one canonical target under one user-visible supervisor is explicit
 `multi-target-supervision-exception` v1 mode. Before launch it requires
-structured task/target-bound durable human approval, a closed reason,
+structured task/target-bound durable human approval, the complete externally
+anchored `batch-token-budget` v1 plan, a closed reason,
 justification, exact target count and
 concurrency, aggregate and per-lane budgets, shared-context justification,
 expected savings, and rollback. Every target keeps its own repository-qualified
 lane identity and implementation-PR limit. Issue count, generic parallelism, or
 a stronger supervisor route is not justification.
+Persist the helper's deterministic
+`multi-target-supervision-exception-receipt` v1 with its exact plan digest,
+approvals, topology, rollback, and exception digest.
 
 Resolve `PR_BATCH_SKILL_DIR`, then run
 `"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control" --trusted-evidence PATH
@@ -64,15 +69,15 @@ cross-task delegation, and the context-amplifying #399 checkpoints (delegation,
 resume, worker spawn, retry, and review wave). Follow
 `workflows/pr-processing.md` -> **Canonical Task Topology And Delegation
 Control** for the closed schemas and pilot contract. The helper is
-decision-only. Missing/malformed facts fail closed; unsupported #398 execution
-provenance stays field-granular `UNKNOWN` and retains explicit multi-target mode
+decision-only. Missing/malformed facts fail closed; unsupported #398 usage
+telemetry stays field-granular `UNKNOWN` and retains explicit multi-target mode
 as rollback rather than inventing receipts, attribution, billing equivalence,
 or a universal compaction/promotion threshold. Stdin references only the
 trusted record ID. A separate coordinator-owned closed
 `canonical-task-trusted-evidence` v1 file binds operation, task, targets, exact
 lane heads, capability state, and payload digest; the decision reports its
 SHA-256 binding. Stdin cannot grant itself policy, authority, stage, review,
-budget, or telemetry trust. The helper realpaths coordinator-provided files
+budget results, or usage-receipt trust. The helper realpaths coordinator-provided files
 under `ROOT`, rejecting symlinks, non-regular files, wrong ownership, and
 group/world writes. These procedural seams do not provide cryptographic trust.
 Human authority actors must be in the trust config's `trusted_users`; closed
@@ -80,8 +85,9 @@ nonhuman result roles remain contract-specific.
 
 `launch` is a composite gate, never a bare topology check. Supply the trusted
 `canonical-task-policy` v1 record, compact manifest with exact lane heads,
-task-bound plan-settlement and dispatch checkpoints, structured current
-worker-spawn budget evidence, and structured security, ownership, dispatcher,
+task-bound plan-settlement and dispatch checkpoints, structured current admitted
+`batch-token-budget-result` v1 worker-spawn decisions and their receipts, and
+structured security, ownership, dispatcher,
 and typed stage-dependency results for every target. Manifest gate/budget claims
 must reconcile exactly. A pending stage result returns only its explicit
 held-local permissions and never implies worker spawn, push, hosted CI, or final
@@ -93,9 +99,12 @@ carry authority.
 Keep coordinator state as a `compact-coordinator-manifest` v1, not raw child
 transcripts or logs. Emit compaction checkpoints at plan settlement before
 dispatch, after each worker report/review wave, before monitoring or cross-task
-handoff, and at a configured context threshold. Give each child a task-scoped
-packet and accept one compact durable receipt. Close completed children with
-`resumable: false`; resume only when explicit decision continuity justifies it
+handoff, and at a configured context threshold. The helper bounds manifests at
+32 KiB, compact arrays at 32 items, strings at 512 bytes, and checkpoints at 32
+records. Give each child a typed checker/reviewer/QA task-scoped packet and
+accept one compact durable receipt. Retain at most 16 children and 64 KiB per
+receipt. Emit a digest-bound child closure receipt and close completed children
+with `resumable: false`; resume only when explicit decision continuity justifies it
 and all ordinary budget/ownership/replacement gates pass.
 Packet, receipt, closed state, and trusted #392 result bind the exact
 batch/task/plan/spec, lane/target/role/scope, diff identity, base/head, package,
@@ -111,14 +120,19 @@ it again; do not wake terminal targets or wake for unchanged evidence,
 acknowledgement, or a deterministically assembled handoff. A stale target,
 missing estimate, or over-threshold context requires structured task-bound
 durable human approval.
-An unknown descendant estimate is also missing. Attribute verified #398 usage
-separately to the source edge, target self, and target descendants; require a
-durable verified receipt/result and exact arithmetic equality with the aggregate
-physical delta. Unsupported provenance stays all-`UNKNOWN` and blocks wake or
-promotion. At present #398 is unavailable, so available claims, delegation
-mutation, and pilot promotion fail closed. Unavailable #399 evidence likewise
-blocks context-amplifying actions while preserving independently authorized
-held-local stage permissions.
+An unknown descendant estimate is also missing. Delegation preflight performs
+admission only; it never accepts caller-authored usage deltas. Reconcile after
+execution through a separate operation that consumes the exact
+`batch-usage-receipt-v2` artifact/digest/absolute file reference and #426's
+matching reconciled `batch-token-budget-result` v1. Recompute token and
+contributing-turn equations and use its no-double-count charge backs. Missing
+or `UNKNOWN` #398 evidence blocks reconciliation, not a separately admitted
+delegation. Unavailable #399 evidence likewise blocks context-amplifying actions
+while preserving independently authorized held-local stage permissions.
+Carry cross-target facts only in `canonical-task-foreign-target-packet` v1 with
+literal `evidence_only` disposition. Persist the emitted
+`foreign-target-evidence-receipt`; its only action is
+`record_foreign_target_evidence`, never foreign-target mutation.
 
 ## Single-Target Mode
 

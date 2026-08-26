@@ -85,14 +85,16 @@ Plan a PR batch
 
 Plan ordinary implementation as one user-visible task -> one
 repository-qualified canonical issue or existing PR -> one execution lane -> at
-most one implementation PR for that lane. Bounded checker, reviewer, and QA
-children remain inside that canonical lane and preserve independent role,
+most one implementation PR for that lane. Plan exactly one active maker by
+default. Bounded checker, reviewer, and QA children remain inside that canonical
+lane and preserve independent role,
 security, ownership, dependency, exact-head QA, review, CI, merge-authority, and
 audit gates.
 
 If a plan needs more than one canonical target under one supervisor, classify it
 as `multi-target-supervision-exception` v1 before packing waves. Require
-structured task/target-bound durable human approval plus a closed reason,
+structured task/target-bound durable human approval, the complete externally
+anchored `batch-token-budget` v1 plan, plus a closed reason,
 justification, exact target count,
 concurrency, aggregate and per-lane budgets, shared-context justification,
 expected savings, and rollback. Keep each target's repository-qualified lane
@@ -100,26 +102,37 @@ identity and implementation-PR limit distinct. Issue count or available
 parallelism is not sufficient justification. If any field or approval is
 missing or `UNKNOWN`, split the targets into ordinary tasks or stop for the
 exact human decision.
+Plan durable storage for the emitted
+`multi-target-supervision-exception-receipt` v1; never reconstruct approval or
+budget authority from a transcript.
 
 The Batch Plan carries a `compact-coordinator-manifest` v1 and planned
 compaction checkpoints: after plan settlement before dispatch, after every
 worker report/review wave, before monitor scheduling or cross-task handoff, and
 at the configured context threshold. Do not invent that threshold; bind it
 through launch's trusted `canonical-task-policy` v1 record, or keep it literal
-`UNKNOWN` pending #398 evidence. Plan task-scoped child packets, compact child
-receipts, and completed-child closure with `resumable: false` by default.
+`UNKNOWN` pending #398 evidence. Bound manifests at 32 KiB, compact arrays at
+32 items, strings at 512 bytes, and checkpoints at 32 records. Plan no more than
+16 typed checker/reviewer/QA child packets, 64 KiB compact child receipts, and
+digest-bound child closure receipts with `resumable: false` by default.
 
 Plan a current #399/repository budget checkpoint before delegation, resume,
 worker spawn, retry, and review wave. Cross-task delegation also plans source
 and target task/repository/target identities, target lifecycle state, available
 context and descendant estimates, active-target message coalescing, and a human
-approval boundary for stale/missing/over-threshold estimates. Verified #398
-receipts keep source-edge, target-self, target-descendant, and aggregate
-physical deltas separate; unsupported evidence stays field-granular `UNKNOWN`.
+approval boundary for stale/missing/over-threshold estimates. Keep that
+delegation admission separate from post-execution accounting. Reconciliation
+consumes merged #398 `batch-usage-receipt-v2` artifacts and #426 reconciled
+`batch-token-budget-result` v1 receipts, recomputes physical-token and
+contributing-turn equations, and uses no-double-count charge backs.
+Plan cross-target inputs only as `canonical-task-foreign-target-packet` v1
+evidence with a distinct source, exact digest, durable reference, and literal
+`evidence_only` disposition. It never expands claim or mutation scope.
 
 Plan `launch` as one composite input: trusted policy, exact-head compact
-manifest, plan-settlement and dispatch checkpoints, current worker-spawn budget
-evidence, plus security, ownership, and typed stage-dependency evidence for
+manifest, plan-settlement and dispatch checkpoints, current admitted
+`batch-token-budget-result` v1 worker-spawn decisions, plus security, ownership,
+and typed stage-dependency evidence for
 every target. Each evidence record binds actor/role, task/repository/target,
 action/scope, status/time, and durable reference. Ordinary implementation needs
 an issue or existing PR; ad-hoc requires a task-specific durable maintainer
@@ -128,7 +141,7 @@ Materialize that input from one coordinator-owned closed
 `canonical-task-trusted-evidence` v1 file passed by path and exact ID; stdin
 references the ID only. Bind current time/expiry, exact lane heads, capability
 state, and payload digest. Reconcile manifest security, ownership, dispatcher,
-stage, and #399 budget claims with their typed results. Pending stage evidence
+stage, and #399 budget-result digests with their typed results. Pending stage evidence
 grants only its explicit held-local permissions.
 
 Resolve `PR_BATCH_SKILL_DIR` and run
@@ -137,13 +150,15 @@ Resolve `PR_BATCH_SKILL_DIR` and run
 --review-findings-validator PATH` with the versioned JSON
 before calling the plan launchable. For pilot plans, use the canonical matched
 pilot contract from `workflows/pr-processing.md`: at least ten matched
-representative implementation pairs and every required usage, elapsed,
-coordination, correction, acceptance, defect, and gate-compliance metric.
+representative implementation pairs with exact v2 usage artifacts, digests,
+absolute file references, and reconciled budget results, plus every required
+elapsed, coordination, correction, acceptance, defect, and gate-compliance metric.
 Bind the threshold and publication to structured trusted evidence. Promote only
 on configured materially lower token and credit usage, no escaped P0/P1 regression,
 and preserved gates; otherwise retain explicit multi-target mode as rollback.
-Until #398 supplies a trusted metric-bound receipt/result, delegation mutation
-and pilot promotion remain structurally blocked and provenance stays `UNKNOWN`.
+Missing or `UNKNOWN` #398 telemetry retains rollback and blocks reconciliation,
+but does not conflate an admitted delegation with post-usage accounting. A valid
+adverse or retain pilot is publishable without promotion.
 Plan the trusted bundle/config/validator as owned regular files under the
 coordinator root, never symlinks or group/world writable. This is procedural,
 not cryptographic, trust. Human authority resolves only through `trusted_users`.
@@ -707,7 +722,8 @@ backend must say so in the declaration.
   rollback evidence.
 - Compact coordinator control: manifest reference, required compaction
   checkpoints, configured threshold/source or `UNKNOWN`, child packet/receipt
-  plan, completed-child non-resumability, and #399 pre-action budget evidence.
+  plan, completed-child non-resumability and closure receipt, and #399
+  `batch-token-budget-result` pre-action decisions.
 - Batch title(s):
 - Included items:
   - `PR #N` or `Issue #N`: title, URL, state, role in batch

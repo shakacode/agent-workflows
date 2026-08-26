@@ -578,25 +578,33 @@ packing and collision analysis to a batch of one.
 The ordinary implementation topology is one user-visible task -> one
 repository-qualified canonical issue, or one existing PR when no issue exists
 -> one execution lane -> at most one implementation PR for that lane. This is
-also the ordinary shape for a batch of one. It does not prohibit bounded
-checker, reviewer, or QA children inside that lane, and it never weakens
+also the ordinary shape for a batch of one. It has exactly one active maker by
+default and does not prohibit bounded independent checker, reviewer, or QA
+children inside that lane, and it never weakens
 security preflight, ownership/claim fencing, typed dependencies, exact-head QA,
 review, CI, merge-authority, or completed-batch audit gates. Do not add a
 retroactive issue merely because an existing PR is the canonical target.
 
 More than one canonical target in one user-visible task is explicit
 `multi-target-supervision-exception` v1 mode, not ordinary batching. Before
-launch, record structured durable approval and #399 budget evidence bound to
-actor/role plus every exact task/target/action/scope/status/time, and all of: a closed reason
+launch, record structured durable approval bound to actor/role plus every exact
+task/target/action/scope/status/time. Bind the complete preflighted
+`batch-token-budget` v1 plan through its external trusted-plan path, ID, and
+canonical digest, and record all of: a closed reason
 (`independent_read_heavy`, `atomic_cross_issue_migration`, or
 `tightly_coupled_dependency_wave`), justification, exact target count,
-concurrency, aggregate budget, exact per-lane budgets, shared-context
+concurrency, aggregate, coordinator, and exact per-lane budget scopes, shared-context
 justification, expected savings, and rollback. Every repository-qualified
 target still has one distinct lane identity and one implementation-PR limit.
 Issue count, model strength, or generic parallelism is not justification.
 Rollback stops the shared wave and relaunches each target through ordinary mode;
 do not discard useful held-local work or bypass ordinary cancellation and claim
 fencing.
+The decision emits a deterministic
+`multi-target-supervision-exception-receipt` v1 with the exact plan digest,
+approvals, reason, target count, concurrency, rollback, and full exception
+digest. Persist that receipt with the batch rather than reconstructing the
+exception from a transcript.
 
 Ordinary implementation requires the issue or existing PR target above. An
 ad-hoc target is not another ordinary default: accept it only with
@@ -634,7 +642,8 @@ inside the trusted bundle interval, with a maximum one-hour lifetime.
 The `launch` operation is a composite gate. It requires an input-bound trusted
 `canonical-task-policy` v1 record, a compact manifest with exact lane heads,
 task/target-bound `plan_settlement` and `dispatch` checkpoints, current
-structured worker-spawn budget evidence, and structured security, ownership,
+structured admitted `batch-token-budget-result` v1 worker-spawn decisions with
+their reservation and decision receipts, and structured security, ownership,
 dispatcher, and typed stage-dependency results for every target. Manifest gates
 and budgets must exactly reconcile with those results. A pending stage result
 permits only the held-local branch/edit/commit actions it explicitly carries;
@@ -646,9 +655,13 @@ or unbound URL never authorizes launch.
 
 Keep the coordinator as a compact control plane. Persist a
 `compact-coordinator-manifest` v1 containing current requirements, ownership,
-heads, gates, budgets, decisions, and compact receipt references; never retain
+heads, gates, `batch-token-budget-result` digests, decisions, and compact
+durable receipt references. Its canonical JSON is bounded at 32 KiB,
+requirements/decisions/receipt references at 32 items each, and every string at
+512 bytes; never retain
 raw child transcripts, test logs, polling history, or unrelated target history
-as coordinator state. Emit a `coordinator-compaction-checkpoint` v1 after plan
+as coordinator state. Retain no more than 32
+`coordinator-compaction-checkpoint` v1 records, including one after plan
 settlement and before dispatch, after each worker report/review wave, before a
 monitor, before cross-task handoff, and whenever the configured rendered-context
 threshold is crossed. The threshold comes only from launch's trusted
@@ -658,7 +671,8 @@ keeps it literal `UNKNOWN` and never invents a universal threshold. A required
 boundary without a satisfied checkpoint and known evidence reference blocks
 its operation.
 
-Every child receives one `task-scoped-child-packet` v1 bound to child, lane,
+Every child receives one `task-scoped-child-packet` v1 with closed `child_kind`
+`checker`, `reviewer`, or `qa`, bound to child, lane,
 repository-qualified target, role, narrow scope, acceptance criteria,
 verification, and stop conditions. Accept only one matching
 `compact-child-receipt` v1 with status, exact head, summary, findings,
@@ -667,15 +681,20 @@ one across child/lane/target/role/scope plus the exact manifest head and one
 #392-compatible batch/task/plan/spec identity, exact diff identity, base/head,
 review package, review round, and findings-result record. Findings require a
 trusted schema-validator result bound to their exact digest. Nested `UNKNOWN`
-evidence fails closed. After accepting a completed receipt, close
-the child and record `resumable: false`. Resume an old child only through an
+evidence fails closed. Retain at most 16 children, 32 items in each compact
+child array, 512 bytes per string, and 64 KiB per receipt. After accepting a
+completed receipt, emit a `canonical-task-child-closure-receipt` v1 bound to the
+exact compact-receipt digest, close the child, and record `resumable: false`.
+Resume an old child only through an
 explicit new decision-continuity justification and the ordinary budget,
 ownership, and replacement gates; convenience is not continuity. A fresh child
 normally receives the compact manifest, exact diff package, accepted receipts,
 and open findings instead.
 
-Before delegation, task resume, worker spawn, retry, or review wave, require a
-current #399/repository-policy budget decision with a known evidence reference.
+Before delegation, task resume, worker spawn, retry, or review wave, require the
+actual admitted `batch-token-budget-result` v1 and its bound reservation and
+decision receipts. Caller-authored amounts, units, URLs, or `status: passed`
+objects are not budget authority.
 Before waking another task, also bind source and target task plus
 repository-qualified identities; classify target state as active, idle, paused,
 stale, or terminal; estimate rendered context and descendant fan-out from
@@ -688,22 +707,27 @@ woken. Missing context or descendant-fanout estimates, a stale target, or an
 over-threshold estimate needs structured task-bound durable human approval
 before a new-evidence wake.
 
-Integrate #398 execution provenance only through a verified
-`execution-provenance-evidence` v1 verified receipt/result. Bind its producer,
-actor/role, source/target task and repository-qualified target, action/scope,
-status/time, and durable receipt/result references. Attribute source-edge,
-target-self, and target-descendant deltas, then separately record the reconciled
-aggregate physical delta and require it to equal those components exactly, so
-descendants are not added twice. When #398 cannot produce the receipt or a
-field, every unsupported evidence field remains literal `UNKNOWN` and blocks
-wake/promotion; do not invent values or treat local
-cumulative counters as billing/credit evidence.
-The current contract records #398 as unavailable and rejects any assertion that
-it is available. Cross-task mutation and pilot promotion therefore remain
-blocked with field-granular `UNKNOWN` until the future mechanism supplies a
-trusted metric-bound receipt/result. Unavailable #399 evidence similarly blocks
-context-amplifying actions without erasing independently permitted held-local
-stage work.
+Cross-target information never expands the recipient task's mutation scope. Use
+`canonical-task-foreign-target-packet` v1 with distinct source and recipient
+task/repository-qualified identities, a closed evidence kind, bounded summary,
+durable evidence reference, exact digest, and literal `evidence_only`
+disposition. The helper permits only `record_foreign_target_evidence` and emits
+a `foreign-target-evidence-receipt`; it cannot authorize edits, claims, wakes,
+pushes, PRs, or merges for the foreign target.
+
+Delegation is an admission boundary, not a post-execution accounting claim. It
+never accepts caller-authored usage deltas. After execution, run the separate
+`usage_reconciliation` operation with the merged #398
+`batch-usage-receipt-v2` artifact, its canonical digest and absolute `file://`
+reference, plus #426's `batch-token-budget-result` v1 with status `reconciled`
+and matching reconciliation receipts. Recompute both physical-token and
+contributing-turn equations: batch descendant-inclusive equals coordinator
+self-only plus batch unattributed plus every lane descendant-inclusive. Use the
+budget result's charge-back summaries; never add descendants twice or increment
+the physical total for a charge-back. Missing, `UNKNOWN`, unbalanced, rebound,
+or digest-mismatched evidence blocks reconciliation. Unavailable #398 reports
+`usage_telemetry` as `UNKNOWN`; unavailable #399 blocks context-amplifying
+actions without erasing independently permitted held-local stage work.
 Do not accept the schema result's `valid` string alone: load the exact
 root-bound repository `bin/validate-review-findings` module and require
 `ValidateReviewFindings.validate_document` to return zero failures for the
@@ -714,17 +738,23 @@ case folding.
 The promotion experiment is `canonical-task-matched-pilot` v1. It requires at
 least ten matched representative implementation pairs with the same task class
 and context topology. Give every pair distinct exact representative
-pair/task/batch identities and bind each arm identity, task class, and context
-facts to structured verified #398 receipt/result evidence; relabelled or reused
-task/batch identities fail closed. Record total tokens, credit equivalents, elapsed
+pair/task/batch identities and bind each arm to an exact
+`batch-usage-receipt-v2` plus its digest, absolute artifact reference, and the
+matching reconciled `batch-token-budget-result` v1; relabelled or reused
+task/batch identities or receipt references fail closed. Derive total tokens,
+contributing turns, and optional rate-card credit equivalents from the receipts.
+Record elapsed
 time, human coordination time, correction turns, first-pass acceptance,
 escaped P0/P1 defects, and gate compliance. Bind the material threshold to
 structured maintainer policy evidence and the published result to structured
 task/target/status/time evidence; a bare percentage or URL is insufficient. Promote the
 ordinary default only when configured policy says usage is materially lower,
 there is no escaped P0/P1 regression, and gate compliance remains preserved.
-Any failed or `UNKNOWN` criterion retains explicit multi-target mode as the
-rollback. The pilot contract may carry a configured material-reduction
+Any failed, adverse, or `UNKNOWN` criterion retains explicit multi-target mode
+as the rollback. A structurally valid result is still publishable evidence: the
+control decision permits `publish_pilot_result` while `pilot_verdict` remains
+`retain_multi_target_rollback`; publication never implies promotion. The pilot
+contract may carry a configured material-reduction
 percentage; no universal percentage or successful receipt exists until #398
 evidence and the matched run establish it.
 

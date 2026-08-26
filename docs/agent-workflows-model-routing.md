@@ -434,39 +434,47 @@ until observed receipts exist for it; do not cite a profile route as measured
 evidence, and do not compare a requested route that lacks an observed receipt
 against one that has one.
 
-No ten-batch measured promotion decision may be made before #398 usage/cost
-receipts, #333 execution-provenance receipts, and #335 evaluation runner exist.
-A promotion experiment must use matched task classes and context topology,
-record requested-versus-observed execution evidence, and publish its comparison
-results; this evidence is not complete.
+#398 now supplies replay-safe `batch-usage-receipt-v2` artifacts. No ten-batch
+promotion decision may be made before the remaining #333 execution-provenance
+and #335 evaluation-runner dependencies exist. A pilot may still publish
+retain, adverse, or `UNKNOWN` evidence without promotion. It must use matched
+task classes and context topology, record host-observed execution evidence, and
+publish its comparison results; this evidence is not yet complete.
 
 Topology is independent from route strength. The ordinary implementation
 default is one user-visible task, one repository-qualified canonical issue or
-existing PR, one lane, and at most one implementation PR for that lane. Bounded
-checker/reviewer/QA children remain valid and do not make the task multi-target.
+existing PR, one lane, one active maker by default, and at most one
+implementation PR for that lane. Bounded independent checker/reviewer/QA
+children remain valid and do not make the task multi-target.
 A stronger coordinator route, more available context, or a high lane cap never
 justifies retaining multiple canonical targets under one supervisor.
+Route evidence from another canonical target only through an evidence-only
+foreign-target packet and receipt; it never grants execution or mutation
+authority for that target.
 
 Any multi-target comparison uses the versioned exception contract from
 `workflows/pr-processing.md`: structured task/target-bound human approval and
-#399 budget evidence, reason, target count, concurrency,
-aggregate/per-lane budgets, shared-context savings, and rollback. The matched
+the externally anchored #426 `batch-token-budget` v1 plan, reason, target count,
+concurrency, aggregate/coordinator/per-lane budgets, shared-context savings, and
+rollback. The matched
 pilot has at least ten representative pairs with distinct exact task/batch
-identities, matching task class/context facts, and verified #398 receipt/result
-evidence. It reports total tokens, credit equivalents, elapsed time, human
+identities, matching task class/context facts, and verified #398 v2 usage
+artifacts bound to reconciled #426 budget results. It derives total tokens,
+contributing turns, and optional rate-card credit equivalents, and reports elapsed time, human
 coordination time, correction turns, first-pass acceptance, escaped P0/P1
 defects, and gate compliance for both arms. Promotion requires configured
 materially lower token and credit usage with structured policy/publication
 evidence, no escaped P0/P1 regression, and no weakened gate
 compliance. Missing #398 receipts, unsupported observed execution, or any
-`UNKNOWN` criterion retains explicit multi-target mode as rollback; never infer
+`UNKNOWN` criterion retains explicit multi-target mode as rollback while
+remaining publishable evidence; never infer
 a receipt, billing equivalence, or universal percentage from local cumulative
 counters.
 Operational decisions use a separate closed `canonical-task-trusted-evidence`
 v1 file passed by explicit path and ID. Its current/expiry times, task/target,
 exact heads, capability state, and payload digest are SHA-256 bound; stdin only
 references the ID and cannot self-assert route, authority, stage, #392 review,
-#399 budget, or #398 metric evidence.
+#399 budget results, or #398 usage evidence.
 The trusted bundle, trust config, and review validator are owner/mode checked
 regular files realpathed beneath a coordinator root. This is procedural rather
 than cryptographic trust. Human authority actors resolve through
