@@ -877,11 +877,21 @@ require_install_metadata_binding() {
 report_install_metadata_binding_changed() {
   local metadata_path="$target/$metadata_name"
   echo "CORRUPT_INSTALL_METADATA: install metadata binding changed after locked validation; refused an unsafe metadata commit." >&2
-  if [[ -e "$metadata_path" || -L "$metadata_path" ]]; then
-    echo "Restore a valid backup of $metadata_path. If none exists, preserve the target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
-  else
-    echo "Confirm $metadata_path remains absent, then retry the install." >&2
-  fi
+  case "${install_metadata_binding_state:-}" in
+    present)
+      echo "Restore a valid backup of $metadata_path. If none exists, preserve the target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
+      ;;
+    absent)
+      if [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]; then
+        echo "Confirm $metadata_path remains absent, then retry the install." >&2
+      else
+        echo "Unexpected install metadata appeared at $metadata_path after an absent binding was recorded. Preserve that path and the target without overwriting either, then verify their origin before retrying." >&2
+      fi
+      ;;
+    *)
+      echo "The original install metadata state is unavailable. Preserve $metadata_path and the target without overwriting either, then establish a trusted backup or verified empty-target recovery before retrying." >&2
+      ;;
+  esac
 }
 
 recovery_metadata_binding_intact() {
@@ -1543,6 +1553,7 @@ preflight_metadata_commit_capability() {
       extend Fiddle::Importer
       dlload Fiddle.dlopen(nil)
       extern "int openat(int, const char *, int)"
+      extern "int linkat(int, const char *, int, const char *, int)"
       extern "int unlinkat(int, const char *, int)"
       if RUBY_PLATFORM.include?("darwin")
         extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
@@ -1669,15 +1680,20 @@ commit_metadata() {
 
     class MetadataBindingChanged < StandardError; end
 
-    target, metadata_name, state, expected, expected_prepared = ARGV
+    target, metadata_name, state, expected, expected_prepared, lock = ARGV
     temporary_name = "#{metadata_name}.tmp"
+    cleanup_guard_name = "metadata-commit-old.guard"
     directory = nil
+    lock_directory = nil
     temporary = nil
     destination = nil
+    cleanup_guard = nil
+    cleanup_candidate = nil
     exchanged = false
     absent_moved = false
     completed = false
     rollback_failed = false
+    cleanup_uncertain = false
     rollback_destination_attestation = expected
     open_at = lambda do |name|
       fd = AtomicMetadataRename.openat(
@@ -1701,6 +1717,11 @@ commit_metadata() {
                                           final_stat.dev == stat.dev && final_stat.ino == stat.ino
       "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}"
     end
+    same_identity = lambda do |left, right|
+      left_stat = left.stat
+      right_stat = right.stat
+      left_stat.dev == right_stat.dev && left_stat.ino == right_stat.ino
+    end
 
     begin
       abort unless metadata_name == ".agent-workflows-install.json" && File.const_defined?(:NOFOLLOW)
@@ -1712,6 +1733,11 @@ commit_metadata() {
       raise MetadataBindingChanged unless directory_stat.directory? &&
                                           named_target_stat.directory? && !named_target_stat.symlink? &&
                                           named_target_stat.dev == directory_stat.dev && named_target_stat.ino == directory_stat.ino
+      lock_path_stat = File.lstat(lock)
+      lock_directory = File.open(lock, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      lock_stat = lock_directory.stat
+      raise MetadataBindingChanged unless lock_stat.directory? && !lock_path_stat.symlink? &&
+                                          lock_path_stat.dev == lock_stat.dev && lock_path_stat.ino == lock_stat.ino
 
       temporary = open_at.call(temporary_name)
       prepared_attestation = attestation.call(temporary)
@@ -1762,14 +1788,59 @@ commit_metadata() {
       destination = nil
 
       if exchanged
-        temporary.close
-        temporary = nil
-        raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(
-          directory.fileno,
-          temporary_name,
-          0
-        ) == 0
-        exchanged = false
+        begin
+          begin
+            stale_guard_fd = AtomicMetadataRename.openat(
+              lock_directory.fileno,
+              cleanup_guard_name,
+              File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+            )
+            raise MetadataBindingChanged unless stale_guard_fd == -1 && Fiddle.last_error == Errno::ENOENT::Errno
+          ensure
+            IO.for_fd(stale_guard_fd).close if stale_guard_fd && stale_guard_fd != -1
+          end
+          raise MetadataBindingChanged unless AtomicMetadataRename.linkat(
+            directory.fileno,
+            temporary_name,
+            lock_directory.fileno,
+            cleanup_guard_name,
+            0
+          ) == 0
+          cleanup_guard_fd = AtomicMetadataRename.openat(
+            lock_directory.fileno,
+            cleanup_guard_name,
+            File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+          )
+          raise MetadataBindingChanged if cleanup_guard_fd == -1
+          cleanup_guard = File.for_fd(cleanup_guard_fd)
+          raise MetadataBindingChanged unless attestation.call(cleanup_guard) == rollback_destination_attestation &&
+                                              same_identity.call(cleanup_guard, temporary)
+
+          temporary.close
+          temporary = nil
+          cleanup_candidate = open_at.call(temporary_name)
+          raise MetadataBindingChanged unless attestation.call(cleanup_candidate) == rollback_destination_attestation &&
+                                              same_identity.call(cleanup_candidate, cleanup_guard)
+          raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(
+            directory.fileno,
+            temporary_name,
+            0
+          ) == 0
+          cleanup_candidate.close
+          cleanup_candidate = nil
+          raise MetadataBindingChanged unless attestation.call(cleanup_guard) == rollback_destination_attestation
+          raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(
+            lock_directory.fileno,
+            cleanup_guard_name,
+            0
+          ) == 0
+          cleanup_guard.close
+          cleanup_guard = nil
+          exchanged = false
+        rescue StandardError
+          cleanup_uncertain = true
+          raise
+        end
       end
       absent_moved = false
       completed = true
@@ -1778,6 +1849,8 @@ commit_metadata() {
     ensure
       destination&.close
       temporary&.close
+      cleanup_candidate&.close
+      cleanup_guard&.close
       if absent_moved && directory
         if AtomicMetadataRename.no_replace(directory.fileno, metadata_name, temporary_name) == 0
           begin
@@ -1798,7 +1871,7 @@ commit_metadata() {
         else
           rollback_failed = true
         end
-      elsif exchanged && directory
+      elsif exchanged && directory && !cleanup_uncertain
         if AtomicMetadataRename.exchange(directory.fileno, temporary_name, metadata_name) == 0
           begin
             restored_destination = open_at.call(metadata_name)
@@ -1820,14 +1893,22 @@ commit_metadata() {
         end
       end
       directory&.close
+      lock_directory&.close
     end
+    exit 68 if cleanup_uncertain
     exit 67 if rollback_failed
     exit 1 unless completed
   ' "$target" "$metadata_name" "$install_metadata_binding_state" \
-    "$install_metadata_binding_attestation" "$prepared_metadata_attestation" \
+    "$install_metadata_binding_attestation" "$prepared_metadata_attestation" "$install_lock" \
     2>/dev/null || commit_status=$?
 
   if [[ "$commit_status" -ne 0 ]]; then
+    if [[ "$commit_status" -eq 68 ]]; then
+      metadata_commit_rollback_failed=true
+      echo "METADATA_COMMIT_CLEANUP_FAILED: committed metadata cleanup could not prove the attested old destination name; preserved all remaining artifacts for manual recovery." >&2
+      echo "Inspect $metadata_path, $metadata_tmp, and $install_lock before removing any preserved path." >&2
+      return 68
+    fi
     if [[ "$commit_status" -eq 67 ]]; then
       metadata_commit_rollback_failed=true
       echo "METADATA_COMMIT_ROLLBACK_FAILED: atomic metadata commit rollback could not be completed and proven; preserved every remaining metadata artifact for manual recovery." >&2

@@ -887,6 +887,43 @@ RUBY
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "post-preflight metadata change leaked install lock"
 }
 
+test_present_metadata_deleted_after_binding_reports_backup_recovery_guidance() {
+  local tmp target metadata injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/delete-present-metadata-after-binding.rb"
+  marker="$tmp/present-metadata-deleted"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+
+  cat > "$injection" <<'RUBY'
+metadata = ENV.fetch("QA_INSTALL_METADATA")
+if ARGV.length == 1 && ARGV.first == metadata && File.exist?("#{metadata}.tmp") &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  at_exit do
+    File.unlink(metadata)
+    File.write(ENV.fetch("QA_RACE_MARKER"), "deleted\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "present metadata deletion exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$output" "Restore a valid backup of $metadata"
+  assert_contains "$output" "preserve the target"
+  assert_not_contains "$output" "Confirm $metadata remains absent"
+  [[ ! -e "$metadata.tmp" ]] || fail "present metadata deletion left prepared metadata"
+}
+
 test_bound_metadata_change_cannot_grant_symlink_ownership() {
   local tmp target metadata outside injection marker helper initial_helper_identity output status
   tmp="$(mktemp -d)"
@@ -1042,7 +1079,7 @@ test_metadata_commit_reverses_absent_install_after_post_rename_failure() {
   marker="$tmp/absent-post-rename-attestation-failed"
 
   cat > "$injection" <<'RUBY'
-if ARGV.length == 5 && ARGV[0] == ENV.fetch("QA_TARGET") && ARGV[2] == "absent"
+if ARGV.length == 6 && ARGV[0] == ENV.fetch("QA_TARGET") && ARGV[2] == "absent"
   require "digest"
   module FailAbsentPostRenameAttestation
     def update(*)
@@ -1088,7 +1125,7 @@ test_metadata_commit_rolls_back_failed_present_compare_and_swap() {
     --delivery-mode flat >"$tmp/initial-install.out"
 
   cat > "$injection" <<'RUBY'
-if ARGV.length == 5 && ARGV[0] == ENV.fetch("QA_TARGET") &&
+if ARGV.length == 6 && ARGV[0] == ENV.fetch("QA_TARGET") &&
    ARGV[1] == ".agent-workflows-install.json" && ARGV[2] == "present"
   module ReplaceMetadataInsidePresentCommit
     def close(*args)
@@ -1141,7 +1178,7 @@ test_metadata_commit_preserves_both_names_when_present_rollback_fails() {
   metadata_before="$(shasum "$metadata" | awk '{print $1}')"
 
   cat > "$injection" <<'RUBY'
-if ARGV.length == 5 && ARGV[0] == ENV.fetch("QA_TARGET") && ARGV[2] == "present"
+if ARGV.length == 6 && ARGV[0] == ENV.fetch("QA_TARGET") && ARGV[2] == "present"
   require "digest"
   require "fiddle"
   module FailPresentPostExchangeAttestation
@@ -1188,6 +1225,58 @@ RUBY
     fail "failed present metadata rollback did not preserve the newly committed metadata name"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
     fail "failed present metadata rollback leaked install lock"
+}
+
+test_metadata_commit_does_not_unlink_replaced_attested_old_destination() {
+  local tmp target metadata preserved injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/preserved-attested-old-metadata.json"
+  injection="$tmp/replace-attested-old-metadata-before-unlink.rb"
+  marker="$tmp/attested-old-metadata-replaced"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 5 && ARGV[0] == ENV.fetch("QA_TARGET") && ARGV[2] == "present"
+  module ReplaceAttestedOldMetadataBeforeUnlink
+    def close(*)
+      temporary = "#{ENV.fetch("QA_INSTALL_METADATA")}.tmp"
+      unless closed? || File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        opened_stat = stat
+        named_stat = File.lstat(temporary) rescue nil
+        if named_stat && opened_stat.file? && named_stat.file? &&
+           opened_stat.dev == named_stat.dev && opened_stat.ino == named_stat.ino
+          File.rename(temporary, ENV.fetch("QA_PRESERVED_METADATA"))
+          File.write(temporary, "unverified replacement metadata\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+        end
+      end
+      super
+    end
+  end
+  IO.prepend(ReplaceAttestedOldMetadataBeforeUnlink)
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" QA_INSTALL_METADATA="$metadata" \
+    QA_PRESERVED_METADATA="$preserved" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "replaced attested old metadata was silently unlinked"
+  assert_contains "$output" "METADATA_COMMIT_CLEANUP_FAILED"
+  assert_contains "$output" "manual recovery"
+  assert_file "$metadata"
+  assert_file "$metadata.tmp"
+  [[ "$(cat "$metadata.tmp")" = "unverified replacement metadata" ]] || \
+    fail "metadata commit deleted or changed the unverified replacement"
+  assert_file "$preserved"
 }
 
 test_metadata_commit_rejects_replaced_prepared_file() {
@@ -6031,12 +6120,14 @@ main() {
     test_metadata_appearing_before_lock_is_not_treated_as_absent_recovery
     test_metadata_disappearing_before_lock_is_not_treated_as_still_present
     test_metadata_change_after_locked_preflight_fails_before_managed_file_mutation
+    test_present_metadata_deleted_after_binding_reports_backup_recovery_guidance
     test_bound_metadata_change_cannot_grant_symlink_ownership
     test_bound_absent_metadata_short_circuits_snapshot_read_to_key_absent
     test_metadata_commit_rejects_destination_directory_race
     test_metadata_commit_reverses_absent_install_after_post_rename_failure
     test_metadata_commit_rolls_back_failed_present_compare_and_swap
     test_metadata_commit_preserves_both_names_when_present_rollback_fails
+    test_metadata_commit_does_not_unlink_replaced_attested_old_destination
     test_metadata_commit_rejects_replaced_prepared_file
     test_metadata_commit_capability_failure_stops_before_managed_mutation
     test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation
