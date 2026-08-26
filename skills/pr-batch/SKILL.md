@@ -293,9 +293,9 @@ a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
 expose no reliable in-flight state and can be silently blocked or stopped by
 usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
 reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
-failed disposition that satisfies the review-artifact barrier as a waiver;
-record it and proceed to consolidated triage instead of parking in
-`waiting-on-checks-or-review` for an artifact the limit prevents.
+failed disposition that may stop bounded waiting but cannot satisfy the review
+gate. It blocks merge unless the trusted-base seam enables a named, attested
+fallback and the receipt records that override.
 
 While the review cohort is pending, inspect validation failures, prepare local
 fixes, refresh branch/conflict and coordination state, and advance evidence or

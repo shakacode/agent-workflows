@@ -80,12 +80,12 @@ class ReviewWaveContractTest < Minitest::Test
   end
 
   def test_usage_limit_and_observability_invariants_are_documented
-    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_FAILURE, COHORT_DISCOVERY].each do |rule|
-      assert_rule @workflow, rule
+    [@workflow, @docs, @pr_batch].each do |text|
+      assert_rule text, REVIEWER_OBSERVABILITY
+      assert_rule text, USAGE_LIMIT_FAILURE
+      refute_includes text, UNSAFE_USAGE_LIMIT_WAIVER
     end
-    refute_includes @workflow, UNSAFE_USAGE_LIMIT_WAIVER
-    assert_rule @docs, REVIEWER_OBSERVABILITY
-    [REVIEWER_OBSERVABILITY, COHORT_DISCOVERY].each { |rule| assert_rule @pr_batch, rule }
+    [@workflow, @pr_batch].each { |text| assert_rule text, COHORT_DISCOVERY }
   end
 
   def test_continue_replans_serialized_handoffs_before_waiting
