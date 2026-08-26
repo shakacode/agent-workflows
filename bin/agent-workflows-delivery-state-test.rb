@@ -270,6 +270,60 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_unexpected_superpowers_probe_failure_returns_structured_unknown
+    original = AgentWorkflowsDeliveryState.method(:codex_marketplace_output)
+    AgentWorkflowsDeliveryState.define_singleton_method(:codex_marketplace_output) do |*|
+      raise StandardError, "unexpected probe failure"
+    end
+
+    payload = AgentWorkflowsDeliveryState.superpowers_state("codex", @fake_codex_dir)
+
+    assert_equal "UNKNOWN", payload.fetch("state")
+    assert_equal [], payload.fetch("catalog_entries")
+    assert_equal 3, payload.fetch("warnings").length
+    assert_equal(
+      %w[openai-curated openai-curated-remote superpowers-dev],
+      payload.fetch("warnings").map { |warning| warning[/marketplace (\S+):/, 1] }
+    )
+    assert(payload.fetch("warnings").all? { |warning| warning.include?("unexpected probe failure") })
+    assert_includes payload.fetch("reason"), "unexpected probe failure"
+  ensure
+    AgentWorkflowsDeliveryState.define_singleton_method(:codex_marketplace_output, original)
+  end
+
+  def test_trailing_separator_catalog_root_retains_metadata_but_noncanonical_roots_do_not
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      write_codex_native_state(target)
+
+      roots = {
+        "#{@superpowers_catalog_root}/" => true,
+        File.join(@superpowers_catalog_root, "..", File.basename(@superpowers_catalog_root)) => false,
+        File.basename(@superpowers_catalog_root) => false
+      }
+      roots.each do |catalog_root, metadata_expected|
+        out, err, status = run_state_with_env(
+          {
+            "QA_SUPERPOWERS_STATE" => "active",
+            "QA_SUPERPOWERS_CATALOG_ROOT" => catalog_root
+          },
+          "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+          "--delivery-mode", "plugin-companion", "--json"
+        )
+        entry = JSON.parse(out).dig("superpowers", "catalog_entries", 0)
+
+        assert status.success?, "#{catalog_root}: #{out}#{err}"
+        if metadata_expected
+          assert_equal "5.1.3", entry.fetch("catalog_version"), catalog_root
+          assert_equal "https://github.com/obra/superpowers", entry.fetch("upstream_repository"), catalog_root
+        else
+          refute entry.key?("catalog_version"), catalog_root
+          refute entry.key?("upstream_repository"), catalog_root
+        end
+      end
+    end
+  end
+
   def test_installed_superpowers_url_path_reads_catalog_metadata_from_safe_codex_cache
     {
       "active" => "active",

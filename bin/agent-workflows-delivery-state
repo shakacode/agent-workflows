@@ -186,9 +186,12 @@ module AgentWorkflowsDeliveryState
 
   def superpowers_catalog_metadata(root)
     return {} unless root.is_a?(String) && !root.empty?
-    return {} unless File.absolute_path(root) == root
 
-    manifest_path = File.join(root, ".codex-plugin", "plugin.json")
+    normalized_root = root == File::SEPARATOR ? root : root.sub(/#{Regexp.escape(File::SEPARATOR)}+\z/, "")
+    return {} if normalized_root.empty?
+    return {} unless File.absolute_path(normalized_root) == normalized_root
+
+    manifest_path = File.join(normalized_root, ".codex-plugin", "plugin.json")
     return {} unless File.file?(manifest_path)
 
     manifest = JSON.parse(File.binread(manifest_path))
@@ -240,7 +243,11 @@ module AgentWorkflowsDeliveryState
     failures = []
     marketplace_queries = SUPERPOWERS_MARKETPLACES.map do |marketplace|
       Thread.new(marketplace) do |marketplace_name|
-        [marketplace_name, codex_marketplace_output(target, marketplace_name)]
+        result = codex_marketplace_output(target, marketplace_name)
+        [marketplace_name, result]
+      rescue StandardError => e
+        warning = "Superpowers advisory probe failed for marketplace #{marketplace_name}: #{e.message}"
+        [marketplace_name, [nil, warning]]
       end
     end
     marketplace_queries.map(&:value).each do |marketplace, (output, error)|
