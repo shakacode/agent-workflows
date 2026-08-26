@@ -436,7 +436,8 @@ against one that has one.
 
 Issue #398 now supplies replay-safe `batch-usage-receipt-v2` artifacts. No ten-batch
 promotion decision may be made before the remaining #333 execution-provenance
-and #335 evaluation-runner dependencies exist. A pilot may still publish
+and #335 evaluation-runner dependencies each have current, task-bound satisfied
+evidence. A pilot may still publish
 retain, adverse, or `UNKNOWN` evidence without promotion. It must use matched
 task classes and context topology, record host-observed execution evidence, and
 publish its comparison results; this evidence is not yet complete.
@@ -471,15 +472,17 @@ remaining publishable evidence; never infer
 a receipt, billing equivalence, or universal percentage from local cumulative
 counters.
 Operational decisions use a separate closed `canonical-task-trusted-evidence`
-v1 file passed by explicit path and ID. Its current/expiry times, task/target,
-exact heads, capability state, and payload digest are SHA-256 bound; stdin only
+v1 file passed by explicit path and ID. Its current/expiry times, complete task
+authorization digest, targets, exact heads, capability state, and payload digest
+are SHA-256 bound; stdin only
 references the ID and cannot self-assert route, authority, stage, #392 review,
 the #399 budget results, or #398 usage evidence.
 The trusted bundle, trust config, and review validator are owner/mode checked
 regular files realpathed beneath a coordinator root. This is procedural rather
 than cryptographic trust. Human authority actors resolve through
 `trusted_users`; nested evidence has at most a one-hour, bundle-contained
-validity window, and review findings must pass the repository validator module.
+validity window, and review findings must pass the validator module resolved
+through the repository's portable workflow seam.
 
 | Scenario class | Risk | Recommended route | Samples | Evidence strength |
 | --- | --- | --- | --- | --- |

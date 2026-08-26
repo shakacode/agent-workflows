@@ -541,6 +541,29 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_verify_plan_only_uses_the_production_contract_without_state_mutation
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+
+      stdout, stderr, status = Open3.capture3(
+        HELPER, "--verify-plan-only",
+        "--trusted-plan", anchor.fetch("path"),
+        "--trusted-plan-id", anchor.fetch("id"),
+        "--trusted-plan-digest", anchor.fetch("digest"),
+        stdin_data: ""
+      )
+
+      assert status.success?, stderr
+      receipt = JSON.parse(stdout)
+      assert_equal "batch-token-budget-plan-verification", receipt.fetch("type")
+      assert_equal "verified", receipt.fetch("status")
+      assert_equal canonicalize(candidate), receipt.fetch("plan")
+      refute File.exist?(state_path)
+      refute File.exist?("#{state_path}.lock")
+    end
+  end
+
   def test_runtime_trusted_plan_limit_accepts_the_boundary_and_blocks_oversized_state_creation
     with_state do |state_path|
       candidate = budget(state_path: state_path)

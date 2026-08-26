@@ -3,6 +3,7 @@ base_branch: main
 repo_prefix: "AW"
 follow_up_prefix: "Follow-up:"
 review_gate: "independent code review for non-trivial workflow or helper changes"
+review_findings_validator: "bin/validate-review-findings"
 automation_reviewers: "claude-review (GitHub Action; in-flight and terminal state observable via the checks API) and coderabbitai (advisory; may fail on rate limits)"
 approval_exempt: "docs, workflow text, helper scripts, skill metadata, and validation fixtures when the change remains portable"
 trusted_actions:

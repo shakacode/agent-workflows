@@ -616,7 +616,7 @@ case variants cannot duplicate a target or delegate back into it.
 Use the deterministic JSON-in/JSON-out
 `skills/pr-batch/bin/canonical-task-control --trusted-evidence PATH
 --trusted-evidence-id ID --trusted-evidence-root ROOT --trust-config PATH
---review-findings-validator PATH` helper before launch and at the
+--repo-workflow-config PATH --review-findings-validator PATH` helper before launch and at the
 operations below. Its `canonical-task-control` v1 input and closed nested
 contracts validate the topology or exception, compact coordinator state, child
 packet/receipt lifecycle, delegation admission, budget checkpoint, and matched
@@ -627,7 +627,8 @@ repository, GitHub, child-thread, compaction, or budget mutation itself.
 Stdin references exactly one trusted evidence ID and carries no operational
 evidence. The separate coordinator-owned closed
 `canonical-task-trusted-evidence` v1 file binds source/actor/role,
-operation/action/scope, task/targets, exact lane heads, capability state,
+operation/action/scope, the canonical digest of the complete task authorization
+(including exception and approvals), targets, exact lane heads, capability state,
 issue/expiry times, and the canonical payload digest. The helper reports its
 SHA-256 binding. Missing, malformed, expired, `UNKNOWN`, mismatched, or
 payload-tampered trusted evidence fails closed.
@@ -652,6 +653,9 @@ readiness. Evidence records bind
 actor/role, exact task/repository/target/action/scope, passed/satisfied status,
 observation time, and durable HTTPS reference. A bare task, arbitrary string,
 or unbound URL never authorizes launch.
+Every security, ownership, dispatcher, and stage-dependency record must be
+`passed` before worker spawn; any `pending` or `blocked` record denies launch,
+even when the stage record itself carries `worker_spawn`.
 
 Keep the coordinator as a compact control plane. Persist a
 `compact-coordinator-manifest` v1 containing current requirements, ownership,
@@ -693,8 +697,11 @@ and open findings instead.
 
 Before delegation, task resume, worker spawn, retry, or review wave, require the
 actual admitted `batch-token-budget-result` v1 and its bound reservation and
-decision receipts. Caller-authored amounts, units, URLs, or `status: passed`
-objects are not budget authority.
+decision receipts, explicit lane identity, exact nested checkpoint shape,
+canonical identifiers, request digest, and evaluation time. Caller-authored
+amounts, units, URLs, nested `UNKNOWN`, or `status: passed` objects are not budget
+authority. Multi-target actions may select any declared lane, but never default
+silently to the first lane.
 Before waking another task, also bind source and target task plus
 repository-qualified identities; classify target state as active, idle, paused,
 stale, or terminal; estimate rendered context and descendant fan-out from
@@ -706,6 +713,8 @@ handoff that can be assembled deterministically. Terminal targets are not
 woken. Missing context or descendant-fanout estimates, a stale target, or an
 over-threshold estimate needs structured task-bound durable human approval
 before a new-evidence wake.
+The target must match one of the task's complete target set and the budget result
+must bind that target's corresponding lane.
 
 Cross-target information never expands the recipient task's mutation scope. Use
 `canonical-task-foreign-target-packet` v1 with distinct source and recipient
@@ -728,12 +737,18 @@ the physical total for a charge-back. Missing, `UNKNOWN`, unbalanced, rebound,
 or digest-mismatched evidence blocks reconciliation. Unavailable #398 reports
 `usage_telemetry` as `UNKNOWN`; unavailable #399 blocks context-amplifying
 actions without erasing independently permitted held-local stage work.
-Do not accept the schema result's `valid` string alone: load the exact
-root-bound repository `bin/validate-review-findings` module and require
+Resolve the review-findings validator path through the repository's portable
+workflow seam; do not hardcode a root `bin` identity. Do not accept the schema
+result's `valid` string alone: load the resolved root-bound module and require
 `ValidateReviewFindings.validate_document` to return zero failures for the
 in-memory document. Restrict task, lane, child, pair, and representative
 task/batch identities to portable ASCII IDs rather than relying on Unicode
 case folding.
+The helper securely resolves each usage-receipt path beneath the trusted root,
+reads at most 1 MiB, parses the artifact, and requires its canonical content and
+digest to equal the in-memory receipt. Its privacy object must remain
+`metadata_only`, set `emitted_or_persisted_content: false`, and list known
+excluded content classes.
 
 The promotion experiment is `canonical-task-matched-pilot` v1. It requires at
 least ten matched representative implementation pairs with the same task class
@@ -750,6 +765,9 @@ structured maintainer policy evidence and the published result to structured
 task/target/status/time evidence; a bare percentage or URL is insufficient. Promote the
 ordinary default only when configured policy says usage is materially lower,
 there is no escaped P0/P1 regression, and gate compliance remains preserved.
+Promotion additionally requires current bound `satisfied` dependency evidence
+for issues #398, #333, and #335; pending dependency evidence retains rollback
+and publishes the corresponding `UNKNOWN` dependency field.
 Any failed, adverse, or `UNKNOWN` criterion retains explicit multi-target mode
 as the rollback. A structurally valid result is still publishable evidence: the
 control decision permits `publish_pilot_result` while `pilot_verdict` remains
@@ -757,6 +775,10 @@ control decision permits `publish_pilot_result` while `pilot_verdict` remains
 contract may carry a configured material-reduction
 percentage; no universal percentage or successful receipt exists until #398
 evidence and the matched run establish it.
+The production `batch-token-budget --verify-plan-only` mode validates an
+externally anchored plan without a state path or state mutation and emits the
+canonical verified plan. Canonical task control consumes that contract directly;
+it never uses an expected state-path error as a validation signal.
 
 ### Short Invocation
 

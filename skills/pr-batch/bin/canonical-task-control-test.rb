@@ -13,6 +13,7 @@ require "time"
 HELPER = File.expand_path("canonical-task-control", __dir__)
 REPO_ROOT = File.expand_path("../../..", __dir__)
 REVIEW_VALIDATOR = File.join(REPO_ROOT, "bin", "validate-review-findings")
+WORKFLOW_CONFIG = File.join(REPO_ROOT, ".agents", "agent-workflow.yml")
 TEST_TMP_ROOT = File.join(REPO_ROOT, ".tmp", "canonical-task-control-tests")
 FileUtils.mkdir_p(TEST_TMP_ROOT)
 TEST_BUDGET_VERIFIER_KEY = OpenSSL::PKey::RSA.generate(2048)
@@ -20,11 +21,16 @@ TEST_BUDGET_VERIFIER_KEY = OpenSSL::PKey::RSA.generate(2048)
 class CanonicalTaskControlTest < Minitest::Test
   def setup
     @trusted_plan_paths = []
+    @usage_receipt_paths = []
+    @temporary_roots = []
     @trusted_plan_sequence = 0
+    @usage_receipt_sequence = 0
   end
 
   def teardown
     @trusted_plan_paths.each { |path| FileUtils.rm_f(path) }
+    @usage_receipt_paths.each { |path| FileUtils.rm_f(path) }
+    @temporary_roots.each { |path| FileUtils.rm_rf(path) }
   end
 
   def test_launch_rejects_a_bare_task_without_composite_gate_evidence
@@ -58,6 +64,20 @@ class CanonicalTaskControlTest < Minitest::Test
     _result, stderr, status = run_helper(input, trusted_bundle: bundle)
     refute status.success?
     assert_includes stderr, "trusted evidence task binding mismatch"
+  end
+
+  def test_trusted_evidence_binds_the_complete_task_authorization
+    input = launch_input(multi_target_task)
+    bundle = trusted_bundle_for(input)
+    request = input.slice("contract", "version", "operation", "task").merge(
+      "trusted_evidence_refs" => [bundle.fetch("id")]
+    )
+    request["task"]["exception"]["concurrency"] = 2
+
+    _result, stderr, status = run_request_with_bundle(request, bundle)
+
+    refute status.success?
+    assert_includes stderr, "trusted evidence task digest mismatch"
   end
 
   def test_expired_unknown_or_payload_tampered_trusted_evidence_fails_closed
@@ -96,6 +116,7 @@ class CanonicalTaskControlTest < Minitest::Test
         "--trusted-evidence-id", bundle.fetch("id"),
         "--trusted-evidence-root", REPO_ROOT,
         "--trust-config", File.join(REPO_ROOT, ".agents", "trusted-github-actors.yml"),
+        "--repo-workflow-config", WORKFLOW_CONFIG,
         "--review-findings-validator", REVIEW_VALIDATOR,
         stdin_data: JSON.generate(request)
       )
@@ -173,6 +194,21 @@ class CanonicalTaskControlTest < Minitest::Test
 
     refute status.success?
     assert_includes stderr, "manifest gate result mismatch"
+  end
+
+  def test_launch_blocks_when_any_non_stage_typed_gate_is_not_passed
+    %w[security ownership dispatcher].each do |gate|
+      input = launch_input
+      input["manifest"]["gates"][gate] = "pending"
+      input["typed_gates"].find { |record| record["gate"] == gate }["result"] = "pending"
+
+      result, stderr, status = run_helper(input)
+
+      assert status.success?, "#{gate}: #{stderr}"
+      assert_equal "block", result.fetch("verdict"), gate
+      refute_includes result.fetch("allowed_actions"), "worker_spawn", gate
+      assert_includes result.fetch("blockers"), "typed_gate_pending_or_blocked", gate
+    end
   end
 
   def test_launch_blocks_worker_spawn_when_399_is_unavailable_but_preserves_held_local_permissions
@@ -421,6 +457,43 @@ class CanonicalTaskControlTest < Minitest::Test
 
     refute status.success?
     assert_includes stderr, "manifest ownership requires exactly one maker"
+
+    input = child_receipt_input
+    input["manifest"]["ownership"] = { "maker" => "Maker-A", "checker" => " maker-a " }
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "distinct checker/reviewer/qa actors"
+  end
+
+  def test_review_findings_validator_can_be_resolved_from_a_portable_repo_seam
+    input = child_receipt_input
+    portable_root = File.join(TEST_TMP_ROOT, "portable-repo-#{Process.pid}")
+    @temporary_roots << portable_root
+    FileUtils.mkdir_p(File.join(portable_root, ".agents"))
+    alternate = File.join(portable_root, "tools", "review-validator.rb")
+    FileUtils.mkdir_p(File.dirname(alternate))
+    FileUtils.cp(REVIEW_VALIDATOR, alternate)
+    File.chmod(0o600, alternate)
+    workflow_config = File.join(portable_root, ".agents", "agent-workflow.yml")
+    File.write(workflow_config, "review_findings_validator: tools/review-validator.rb\n", mode: "w", perm: 0o600)
+
+    bundle = trusted_bundle_for(input)
+    Tempfile.create(["canonical-task-trusted", ".json"], portable_root) do |file|
+      file.write(JSON.generate(bundle))
+      file.flush
+      Tempfile.create(["canonical-task-trust", ".yml"], portable_root) do |trust|
+        trust.write("trusted_users:\n  - trusted-actor-1\n")
+        trust.flush
+        request = input.slice("contract", "version", "operation", "task").merge(
+          "trusted_evidence_refs" => [bundle.fetch("id")]
+        )
+        stdout, stderr, status = capture_helper(request, bundle.fetch("id"), file.path, trust.path,
+                                                validator_path: alternate, workflow_config_path: workflow_config,
+                                                trusted_root: portable_root)
+        assert status.success?, stderr
+        assert_equal "allow", JSON.parse(stdout).fetch("verdict")
+      end
+    end
   end
 
   def test_child_receipt_rejects_stale_head_and_swapped_role_scope_binding
@@ -532,6 +605,30 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes result.fetch("blockers"), "budget_admission_blocked"
   end
 
+  def test_multi_target_delegation_binds_the_matching_target_lane
+    task = multi_target_task
+    lane = task.fetch("lanes").last
+    target = task.fetch("targets").last
+    input = delegation_input(
+      target_state: "idle", context: 40_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    input["task"] = task
+    input["manifest"] = compact_manifest(task)
+    input["lifecycle"]["checkpoints"] = task.fetch("targets").map do |candidate|
+      checkpoint("cross_task_handoff", task: task, target: candidate)
+    end
+    input["budget_gate"] = budget_result(action: "delegation", task: task, lane: lane)
+    input["delegation"]["target"] = {
+      "task_id" => task.fetch("id"), "repository" => target.fetch("repository"), "target" => target.fetch("target")
+    }
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal ["wake_target_task"], result.fetch("allowed_actions")
+  end
+
   def test_cross_task_wake_rejects_the_same_canonical_target_even_with_case_variants
     input = delegation_input(
       target_state: "idle", context: 40_000, threshold: 50_000,
@@ -604,6 +701,43 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "usage receipt token equation mismatch"
   end
 
+  def test_usage_reconciliation_requires_the_referenced_trusted_artifact
+    input = usage_reconciliation_input
+    FileUtils.rm_f(input.dig("usage_reconciliation", "usage_receipt_path")) if input.dig("usage_reconciliation", "usage_receipt_path")
+    FileUtils.rm_f(input.dig("usage_reconciliation", "usage_receipt_ref").delete_prefix("file://"))
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "usage receipt artifact unreadable"
+
+    input = usage_reconciliation_input
+    artifact_path = input.dig("usage_reconciliation", "usage_receipt_ref").delete_prefix("file://")
+    File.write(artifact_path, JSON.generate({ "schema" => "batch-usage-receipt-v2", "substituted" => true }))
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "usage receipt artifact content mismatch"
+
+    input = usage_reconciliation_input
+    artifact_path = input.dig("usage_reconciliation", "usage_receipt_ref").delete_prefix("file://")
+    File.write(artifact_path, " " * 1_048_577)
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_includes stderr, "usage receipt artifact exceeds 1048576 bytes"
+  end
+
+  def test_usage_receipt_privacy_contract_is_fail_closed
+    input = usage_reconciliation_input
+    receipt = input.dig("usage_reconciliation", "usage_receipt")
+    receipt["privacy"]["emitted_or_persisted_content"] = true
+    refresh_usage_artifact!(input.fetch("usage_reconciliation"))
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "usage receipt privacy contract invalid"
+  end
+
   def test_usage_reconciliation_rejects_double_counting_or_foreign_charge_back
     input = usage_reconciliation_input
     input["usage_reconciliation"]["budget_result"]["charge_backs"].first["physical_total_incremented"] = true
@@ -664,6 +798,21 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_equal 10, result.fetch("matched_pair_count")
   end
 
+  def test_pilot_requires_satisfied_bound_evidence_for_333_and_335_before_promotion
+    [333, 335].each do |issue|
+      pilot = pilot_input
+      dependency = pilot.fetch("dependencies").find { |record| record["issue"] == issue }
+      dependency["status"] = "pending"
+      dependency["result_ref"] = "UNKNOWN"
+
+      result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+      assert status.success?, "#{issue}: #{stderr}"
+      assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict"), issue
+      assert_includes result.fetch("unknowns"), "promotion_dependency_#{issue}", issue
+    end
+  end
+
   def test_pilot_preserves_multi_target_rollback_when_receipts_are_unsupported
     pilot = pilot_input
     pilot["pairs"].first["ordinary"]["usage_receipt"]["evidence"] = {
@@ -671,11 +820,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "unknown" => [{ "status" => "UNKNOWN", "code" => "usage_counter_missing", "fields" => ["cache_read_tokens"] }]
     }
     arm = pilot["pairs"].first["ordinary"]
-    arm["usage_receipt_digest"] = findings_digest(arm["usage_receipt"])
-    arm["budget_result"]["usage_receipt_digest"] = arm["usage_receipt_digest"]
-    arm["budget_result"]["receipts"].each do |receipt|
-      receipt["usage_receipt_digest"] = arm["usage_receipt_digest"]
-    end
+    refresh_usage_artifact!(arm)
     input = base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot)
 
     result, stderr, status = run_helper(input)
@@ -781,6 +926,7 @@ class CanonicalTaskControlTest < Minitest::Test
       input = base_input.merge(
         "operation" => "budget_action",
         "budget_action" => action,
+        "budget_lane_id" => "aw-i402",
         "budget_gate" => budget_result(action: action)
       )
       result, stderr, status = run_helper(input)
@@ -790,10 +936,47 @@ class CanonicalTaskControlTest < Minitest::Test
     end
   end
 
+  def test_budget_action_requires_and_honors_an_explicit_multi_target_lane
+    task = multi_target_task
+    lane = task.fetch("lanes").last
+    input = base_input.merge(
+      "operation" => "budget_action", "task" => task,
+      "budget_action" => "retry", "budget_lane_id" => lane.fetch("id"),
+      "budget_gate" => budget_result(action: "retry", task: task, lane: lane)
+    )
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal ["retry"], result.fetch("allowed_actions")
+  end
+
+  def test_budget_result_rejects_unbound_nested_unknowns_and_identifiers
+    mutations = {
+      "request digest" => proc { |result| result["decision_receipt"]["request_digest"] = "UNKNOWN" },
+      "evaluated at" => proc { |result| result["decision_receipt"]["evaluated_at"] = "UNKNOWN" },
+      "reservation id" => proc { |result| result["receipt"]["reservation_id"] = "UNKNOWN" },
+      "checkpoint" => proc { |result| result["checkpoint"] = { "status" => "UNKNOWN" } }
+    }
+    mutations.each do |label, mutate|
+      gate = budget_result(action: "retry")
+      mutate.call(gate)
+      input = base_input.merge(
+        "operation" => "budget_action", "budget_action" => "retry",
+        "budget_lane_id" => "aw-i402", "budget_gate" => gate
+      )
+
+      _result, stderr, status = run_helper(input)
+      refute status.success?, label
+      assert_includes stderr, "budget result", label
+    end
+  end
+
   def test_budget_action_rejects_arbitrary_string_evidence
     input = base_input.merge(
       "operation" => "budget_action",
       "budget_action" => "retry",
+      "budget_lane_id" => "aw-i402",
       "budget_gate" => { "source" => "#399", "status" => "passed", "evidence_ref" => "local:budget:retry" }
     )
 
@@ -806,6 +989,7 @@ class CanonicalTaskControlTest < Minitest::Test
     input = base_input.merge(
       "operation" => "budget_action",
       "budget_action" => "retry",
+      "budget_lane_id" => "aw-i402",
       "budget_gate" => bound_evidence(
         contract: "budget-evidence", task: base_input.fetch("task"),
         action: "retry", role: "budget_owner"
@@ -1162,18 +1346,42 @@ class CanonicalTaskControlTest < Minitest::Test
                             coordinator_tokens: 10, lane_tokens: 25, total_turns: 3,
                             coordinator_turns: 1, lane_turns: 2, credits: 3.5)
     digest = findings_digest(receipt)
-    result = budget_reconciliation_result(receipt_digest: digest)
+    reference = install_usage_receipt(receipt, label: "task-402")
+    result = budget_reconciliation_result(receipt_digest: digest, receipt_ref: reference)
     base_input.merge(
       "operation" => "usage_reconciliation",
       "usage_reconciliation" => {
         "source" => { "task_id" => "source-task", "repository" => "shakacode/agent-workflows", "target" => "issue:401" },
         "target" => { "task_id" => "task-402", "repository" => "shakacode/agent-workflows", "target" => "issue:402" },
         "usage_receipt" => receipt,
-        "usage_receipt_ref" => "file:///coordinator/receipts/task-402-usage-v2.json",
+        "usage_receipt_ref" => reference,
         "usage_receipt_digest" => digest,
         "budget_result" => result
       }
     )
+  end
+
+  def install_usage_receipt(receipt, label: "usage")
+    @usage_receipt_sequence += 1
+    path = File.join(TEST_TMP_ROOT, "usage-receipt-#{Process.pid}-#{@usage_receipt_sequence}-#{label}.json")
+    File.write(path, JSON.generate(canonicalize(receipt)), mode: "w", perm: 0o600)
+    @usage_receipt_paths << path
+    "file://#{path}"
+  end
+
+  def refresh_usage_artifact!(container)
+    receipt = container.fetch("usage_receipt")
+    reference = install_usage_receipt(receipt, label: "refreshed")
+    digest = findings_digest(receipt)
+    container["usage_receipt_ref"] = reference
+    container["usage_receipt_digest"] = digest
+    result = container.fetch("budget_result")
+    result["usage_receipt_digest"] = digest
+    result["receipt_ref"] = reference
+    result.fetch("receipts").each do |record|
+      record["usage_receipt_digest"] = digest
+      record["receipt_ref"] = reference
+    end
   end
 
   def delegation_approval
@@ -1305,8 +1513,6 @@ class CanonicalTaskControlTest < Minitest::Test
       ordinal = index + 1
       ordinary_batch = "ordinary-batch-#{ordinal}"
       multi_batch = "multi-batch-#{ordinal}"
-      ordinary_ref = "file:///coordinator/receipts/pilot/ordinary-#{ordinal}.json"
-      multi_ref = "file:///coordinator/receipts/pilot/multi-#{ordinal}.json"
       ordinary_receipt = usage_receipt(
         batch_id: ordinary_batch, lane_id: "ordinary-lane-#{ordinal}", total_tokens: 70_000,
         coordinator_tokens: 10_000, lane_tokens: 60_000, total_turns: 7,
@@ -1317,6 +1523,8 @@ class CanonicalTaskControlTest < Minitest::Test
         coordinator_tokens: 20_000, lane_tokens: 80_000, total_turns: 10,
         coordinator_turns: 2, lane_turns: 8, credits: 10.0
       )
+      ordinary_ref = install_usage_receipt(ordinary_receipt, label: "pilot-ordinary-#{ordinal}")
+      multi_ref = install_usage_receipt(multi_receipt, label: "pilot-multi-#{ordinal}")
       {
         "pair_id" => "pair-#{ordinal}",
         "task_class" => "implementation-bounded",
@@ -1352,21 +1560,15 @@ class CanonicalTaskControlTest < Minitest::Test
     {
       "contract" => "canonical-task-matched-pilot",
       "version" => 1,
-      "dependency" => {
-        "contract" => "dependency-gate-evidence",
-        "version" => 1,
-        "issue" => 398,
-        "actor" => "dependency-checker-1",
-        "role" => "dependency_checker",
-        "task_id" => "task-402",
-        "repository" => "shakacode/agent-workflows",
-        "target" => "issue:402",
-        "action" => "evaluate_pilot",
-        "scope" => "canonical task matched pilot",
-        "status" => "satisfied",
-        **evidence_times,
-        "result_ref" => "https://example.test/results/398/dependency"
-      },
+      "dependencies" => [398, 333, 335].map do |issue|
+        {
+          "contract" => "dependency-gate-evidence", "version" => 1, "issue" => issue,
+          "actor" => "dependency-checker-1", "role" => "dependency_checker",
+          "task_id" => "task-402", "repository" => "shakacode/agent-workflows", "target" => "issue:402",
+          "action" => "evaluate_pilot", "scope" => "canonical task matched pilot", "status" => "satisfied",
+          **evidence_times, "result_ref" => "https://example.test/results/#{issue}/dependency"
+        }
+      end,
       "pairs" => pairs,
       "promotion" => {
         "usage_reduction_policy" => "materially_lower",
@@ -1516,13 +1718,15 @@ class CanonicalTaskControlTest < Minitest::Test
     end
   end
 
-  def capture_helper(request, id, evidence_path, trust_path)
+  def capture_helper(request, id, evidence_path, trust_path, validator_path: REVIEW_VALIDATOR,
+                     workflow_config_path: WORKFLOW_CONFIG, trusted_root: REPO_ROOT)
     Open3.capture3(
       "ruby", HELPER, "--trusted-evidence", evidence_path,
       "--trusted-evidence-id", id,
-      "--trusted-evidence-root", REPO_ROOT,
+      "--trusted-evidence-root", trusted_root,
       "--trust-config", trust_path,
-      "--review-findings-validator", REVIEW_VALIDATOR,
+      "--repo-workflow-config", workflow_config_path,
+      "--review-findings-validator", validator_path,
       stdin_data: JSON.generate(request)
     )
   end
@@ -1544,6 +1748,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "operation" => input.fetch("operation"),
       "task_id" => input.fetch("task").fetch("id"),
       "targets" => input.fetch("task").fetch("targets"),
+      "task_digest" => findings_digest(input.fetch("task")),
       "action" => input.fetch("operation"),
       "scope" => "canonical task control",
       "issued_at" => (Time.now.utc - 60).iso8601,

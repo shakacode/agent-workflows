@@ -139,15 +139,18 @@ an issue or existing PR; ad-hoc requires a task-specific durable maintainer
 override. Canonicalize repository-qualified identities case-insensitively.
 Materialize that input from one coordinator-owned closed
 `canonical-task-trusted-evidence` v1 file passed by path and exact ID; stdin
-references the ID only. Bind current time/expiry, exact lane heads, capability
-state, and payload digest. Reconcile manifest security, ownership, dispatcher,
+references the ID only. Bind current time/expiry, the complete task authorization
+digest, exact lane heads, capability state, and payload digest. Reconcile
+manifest security, ownership, dispatcher,
 stage, and #399 budget-result digests with their typed results. Pending stage evidence
 grants only its explicit held-local permissions.
+Plan worker spawn only when every security, ownership, dispatcher, and
+stage-dependency record is `passed`; any `pending` or `blocked` record denies it.
 
 Resolve `PR_BATCH_SKILL_DIR` and run
 `"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control" --trusted-evidence PATH
 --trusted-evidence-id ID --trusted-evidence-root ROOT --trust-config PATH
---review-findings-validator PATH` with the versioned JSON
+--repo-workflow-config PATH --review-findings-validator PATH` with the versioned JSON
 before calling the plan launchable. For pilot plans, use the canonical matched
 pilot contract from `workflows/pr-processing.md`: at least ten matched
 representative implementation pairs with exact v2 usage artifacts, digests,
@@ -156,6 +159,9 @@ elapsed, coordination, correction, acceptance, defect, and gate-compliance metri
 Bind the threshold and publication to structured trusted evidence. Promote only
 on configured materially lower token and credit usage, no escaped P0/P1 regression,
 and preserved gates; otherwise retain explicit multi-target mode as rollback.
+Require current task-bound `satisfied` dependency evidence for #398, #333, and
+issue #335 before promotion; pending dependency evidence is publishable rollback,
+never promotion.
 Missing or `UNKNOWN` #398 telemetry retains rollback and blocks reconciliation,
 but does not conflate an admitted delegation with post-usage accounting. A valid
 adverse or retain pilot is publishable without promotion.
@@ -163,6 +169,10 @@ Plan the trusted bundle/config/validator as owned regular files under the
 coordinator root, never symlinks or group/world writable. This is procedural,
 not cryptographic, trust. Human authority resolves only through `trusted_users`.
 All nested evidence expires within the bundle and within one hour.
+Plan portable repo-seam resolution for the findings validator, explicit lane
+identity for every budget action, trusted-root reads of bounded usage artifacts
+with metadata-only privacy, normalized distinct ownership actors, and
+`batch-token-budget --verify-plan-only` for external plan validation.
 
 ## Workflow
 

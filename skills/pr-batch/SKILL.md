@@ -63,7 +63,7 @@ approvals, topology, rollback, and exception digest.
 Resolve `PR_BATCH_SKILL_DIR`, then run
 `"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control" --trusted-evidence PATH
 --trusted-evidence-id ID --trusted-evidence-root ROOT --trust-config PATH
---review-findings-validator PATH` with the canonical
+--repo-workflow-config PATH --review-findings-validator PATH` with the canonical
 `canonical-task-control` v1 JSON before launch, child-receipt acceptance,
 cross-task delegation, and the context-amplifying #399 checkpoints (delegation,
 resume, worker spawn, retry, and review wave). Follow
@@ -75,7 +75,8 @@ as rollback rather than inventing receipts, attribution, billing equivalence,
 or a universal compaction/promotion threshold. Stdin references only the
 trusted record ID. A separate coordinator-owned closed
 `canonical-task-trusted-evidence` v1 file binds operation, task, targets, exact
-lane heads, capability state, and payload digest; the decision reports its
+lane heads, capability state, complete task authorization digest, and payload
+digest; the decision reports its
 SHA-256 binding. Stdin cannot grant itself policy, authority, stage, review,
 budget results, or usage-receipt trust. The helper realpaths coordinator-provided files
 under `ROOT`, rejecting symlinks, non-regular files, wrong ownership, and
@@ -95,6 +96,8 @@ readiness. Authority, budget, checkpoint, and
 gate evidence binds actor/role, exact task/repository/target/action/scope,
 status/time, and durable evidence reference. Arbitrary strings or URLs do not
 carry authority.
+Any `pending` or `blocked` security, ownership, dispatcher, or stage-dependency
+record denies worker spawn, regardless of the stage record's permissions.
 
 Keep coordinator state as a `compact-coordinator-manifest` v1, not raw child
 transcripts or logs. Emit compaction checkpoints at plan settlement before
@@ -110,7 +113,9 @@ Packet, receipt, closed state, and trusted #392 result bind the exact
 batch/task/plan/spec, lane/target/role/scope, diff identity, base/head, package,
 and review round. Findings require a trusted schema-validator result for their
 exact digest plus a successful in-memory call to the identity-checked repository
-`ValidateReviewFindings.validate_document` implementation. Nested evidence is
+`ValidateReviewFindings.validate_document` implementation. Resolve that
+validator path through the repository's portable workflow seam; do not hardcode
+a root `bin` identity. Nested evidence is
 current only when issued/observed/expiry are ordered, inside the bundle window,
 and no more than one hour apart. Operational IDs use portable ASCII syntax.
 
@@ -129,10 +134,20 @@ contributing-turn equations and use its no-double-count charge backs. Missing
 or `UNKNOWN` #398 evidence blocks reconciliation, not a separately admitted
 delegation. Unavailable #399 evidence likewise blocks context-amplifying actions
 while preserving independently authorized held-local stage permissions.
+Securely read each referenced receipt beneath the trusted root with a 1 MiB
+bound, require canonical content/digest equality, and enforce its metadata-only
+privacy contract. Bind every budget action to an explicit declared lane; a
+multi-target delegation uses the lane corresponding to its matched target.
+Reject nested `UNKNOWN`, malformed decision/checkpoint fields, or normalized
+duplicate ownership actors. Use `batch-token-budget --verify-plan-only` for the
+external exception plan; an expected state-path failure is not verification.
 Carry cross-target facts only in `canonical-task-foreign-target-packet` v1 with
 literal `evidence_only` disposition. Persist the emitted
 `foreign-target-evidence-receipt`; its only action is
 `record_foreign_target_evidence`, never foreign-target mutation.
+Promote the ordinary pilot default only with current task-bound `satisfied`
+dependency evidence for #398, #333, and #335. Retain/adverse/`UNKNOWN` evidence
+remains publishable without promotion.
 
 ## Single-Target Mode
 
