@@ -9,6 +9,7 @@ require "json"
 require "optparse"
 require "openssl"
 require "pathname"
+require "tempfile"
 require "uri"
 
 module BatchTokenBudget
@@ -1699,16 +1700,16 @@ module BatchTokenBudget
 
   def approve_command(original_state, command, trusted_budget)
     approval = command["approval"]
-    unless valid_approval?(approval, original_state, command["evaluated_at"], trusted_budget)
-      raise InvalidInput, "invalid-approval"
-    end
-
-    existing = original_state.dig("approvals", approval.fetch("id"))
+    existing = approval.is_a?(Hash) && original_state.dig("approvals", approval["id"])
     if existing
       raise InvalidInput, "approval-replay-mismatch" unless existing["digest"] == digest(approval)
 
       return [original_state, result(original_state, "replayed", "receipt" => existing.fetch("receipt"))]
     end
+    unless valid_approval?(approval, original_state, command["evaluated_at"], trusted_budget)
+      raise InvalidInput, "invalid-approval"
+    end
+
     ensure_attestation_id_available!(original_state, approval.fetch("attestation"), approval.fetch("id"))
 
     state = deep_copy(original_state)
@@ -2743,18 +2744,44 @@ module BatchTokenBudget
     state
   end
 
+  def with_state_lock(path)
+    flags = File::RDWR | File::CREAT
+    flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+    File.open(path, flags, 0o600) do |lock|
+      lock_stat = lock.stat
+      path_stat = File.lstat(path)
+      unless lock_stat.file? && path_stat.file? &&
+             lock_stat.dev == path_stat.dev && lock_stat.ino == path_stat.ino
+        raise InvalidInput, "state-lock-unsafe"
+      end
+
+      lock.flock(File::LOCK_EX)
+      locked_path_stat = File.lstat(path)
+      unless locked_path_stat.file? && lock_stat.dev == locked_path_stat.dev && lock_stat.ino == locked_path_stat.ino
+        raise InvalidInput, "state-lock-unsafe"
+      end
+
+      yield lock
+    end
+  rescue SystemCallError, IOError
+    raise InvalidInput, "state-lock-unsafe"
+  end
+
   def persist(path, state)
     FileUtils.mkdir_p(File.dirname(path))
-    temporary = "#{path}.tmp.#{Process.pid}"
-    File.open(temporary, "w", 0o600) do |file|
+    temporary = nil
+    Tempfile.create([".#{File.basename(path)}.tmp-", ".json"], File.dirname(path)) do |file|
+      temporary = file.path
       file.write(JSON.generate(canonicalize(state)))
       file.flush
       file.fsync
+      file.close
+      File.rename(temporary, path)
+      temporary = nil
     end
-    File.rename(temporary, path)
     File.open(File.dirname(path), File::RDONLY, &:fsync)
   ensure
-    File.delete(temporary) if defined?(temporary) && File.exist?(temporary)
+    File.delete(temporary) if temporary && File.exist?(temporary)
   end
 end
 
@@ -2836,8 +2863,7 @@ begin
   end
 
   FileUtils.mkdir_p(File.dirname(state_path))
-  File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
-    lock.flock(File::LOCK_EX)
+  BatchTokenBudget.with_state_lock("#{state_path}.lock") do |_lock|
     state = if File.file?(state_path)
               begin
                 BatchTokenBudget.parse_json_strict(File.read(state_path))

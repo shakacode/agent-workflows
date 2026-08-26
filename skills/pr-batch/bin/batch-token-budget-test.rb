@@ -105,7 +105,7 @@ class BatchTokenBudgetTest < Minitest::Test
   end
 
   def run_helper_raw_with_watchdog(
-    state_path, input, timeout_seconds:, anchor: trusted_anchor_binding(state_path)
+    state_path, input, timeout_seconds:, anchor: trusted_anchor_binding(state_path), before_stdin: nil
   )
     clock_options = trusted_clock_options_for_command(input)
     stdout_text = nil
@@ -125,6 +125,7 @@ class BatchTokenBudgetTest < Minitest::Test
       "--trusted-plan-digest",
       anchor.fetch("digest")
     ) do |stdin, stdout, stderr, wait_thread|
+      before_stdin&.call(wait_thread.pid)
       stdin.write(input)
       stdin.close
       unless wait_thread.join(timeout_seconds)
@@ -805,6 +806,59 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_preplanted_state_lock_symlink_is_rejected_without_following
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+      victim_path = File.join(File.dirname(state_path), "lock-victim.txt")
+      File.write(victim_path, "lock-victim-sentinel")
+      File.symlink(victim_path, "#{state_path}.lock")
+
+      output, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("initialize", "budget" => candidate)),
+        anchor: anchor
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "state-lock-unsafe", JSON.parse(stderr).fetch("reason")
+      assert_equal "lock-victim-sentinel", File.read(victim_path)
+      refute File.exist?(state_path)
+      assert File.symlink?("#{state_path}.lock")
+    end
+  end
+
+  def test_preplanted_predictable_temporary_symlink_is_never_followed
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+      victim_path = File.join(File.dirname(state_path), "temporary-victim.txt")
+      File.write(victim_path, "temporary-victim-sentinel")
+      planted_path = nil
+
+      initialized, stderr, status = run_helper_raw_with_watchdog(
+        state_path,
+        JSON.generate(command("initialize", "budget" => candidate)),
+        timeout_seconds: 2,
+        anchor: anchor,
+        before_stdin: proc do |child_pid|
+          planted_path = "#{state_path}.tmp.#{child_pid}"
+          File.symlink(victim_path, planted_path)
+        end
+      )
+
+      assert status.success?, stderr
+      assert_equal "initialized", initialized.fetch("status")
+      assert_equal "temporary-victim-sentinel", File.read(victim_path)
+      assert File.file?(state_path)
+      refute File.symlink?(state_path)
+      assert_equal 0o600, File.stat(state_path).mode & 0o777
+      assert File.symlink?(planted_path)
+      assert_equal [File.basename(planted_path)], Dir.children(File.dirname(state_path)).grep(/\.tmp\./)
+    end
+  end
+
   def test_fresh_state_wrong_batch_id_leaves_no_state_lock_or_parent_directory
     Dir.mktmpdir("batch-token-budget-fresh-batch-id") do |directory|
       state_path = File.join(directory, "fresh", "state.json")
@@ -1168,6 +1222,148 @@ class BatchTokenBudgetTest < Minitest::Test
       assert reservation_status.success?, reservation_stderr
       assert_equal "approval-required", reservation_result.fetch("status")
       refute JSON.parse(File.read(state_path)).fetch("approvals").key?("stale-expired-approval")
+    end
+  end
+
+  def test_exact_approval_replay_precedes_signed_expiry_but_new_admission_rechecks_it
+    with_state do |state_path|
+      initialize_budget(state_path)
+      approval = approval(
+        state_path,
+        id: "expiring-replay-approval",
+        issued_at: "2026-08-12T11:58:00Z",
+        expires_at: "2026-08-12T12:00:00Z"
+      )
+      approved, approval_stderr, approval_status = run_helper(
+        state_path,
+        command(
+          "approve",
+          "evaluated_at" => "2026-08-12T11:59:59Z",
+          "approval" => approval
+        )
+      )
+      assert approval_status.success?, approval_stderr
+      assert_equal "approved", approved.fetch("status")
+      original_receipt = approved.fetch("receipt")
+
+      replayed, replay_stderr, replay_status = run_helper(
+        state_path,
+        command(
+          "approve",
+          "evaluated_at" => "2026-08-12T12:00:01Z",
+          "approval" => approval
+        )
+      )
+
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal original_receipt, replayed.fetch("receipt")
+
+      changed = JSON.parse(JSON.generate(approval))
+      changed["reason"] = "Changed replay payload."
+      output, changed_stderr, changed_status = run_helper(
+        state_path,
+        command(
+          "approve",
+          "evaluated_at" => "2026-08-12T12:00:02Z",
+          "approval" => changed
+        )
+      )
+      refute changed_status.success?
+      assert_nil output
+      assert_equal "approval-replay-mismatch", JSON.parse(changed_stderr).fetch("reason")
+
+      stale, stale_stderr, stale_status = run_helper(
+        state_path,
+        command(
+          "approve",
+          "evaluated_at" => "2026-08-12T12:00:01Z",
+          "approval" => approval
+        ),
+        **trusted_clock_options_for_time(Time.utc(2026, 8, 12, 12, 0, 32))
+      )
+      refute stale_status.success?
+      assert_nil stale
+      assert_equal "command-time-stale", JSON.parse(stale_stderr).fetch("reason")
+
+      blocked, reservation_stderr, reservation_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "evaluated_at" => "2026-08-12T12:00:03Z",
+          "reservation" => reservation(
+            id: "expired-approval-reservation",
+            tokens: 500,
+            overrides: { "approval_id" => "expiring-replay-approval" }
+          )
+        )
+      )
+      assert reservation_status.success?, reservation_stderr
+      assert_equal "approval-required", blocked.fetch("status")
+      assert_equal "projected-approval-threshold", blocked.fetch("reason")
+    end
+  end
+
+  def test_new_admissions_require_scope_matched_and_unconsumed_approval
+    with_state do |state_path|
+      initialize_budget(state_path)
+      lane_approval = approval(state_path, id: "lane-a-only-approval")
+      approved, approval_stderr, approval_status = run_helper(
+        state_path,
+        command("approve", "approval" => lane_approval)
+      )
+      assert approval_status.success?, approval_stderr
+      assert_equal "approved", approved.fetch("status")
+
+      wrong_scope, wrong_scope_stderr, wrong_scope_status = reserve(
+        state_path,
+        id: "wrong-scope-approval-reservation",
+        lane_id: "lane-b",
+        tokens: 400,
+        overrides: { "approval_id" => "lane-a-only-approval" }
+      )
+      assert wrong_scope_status.success?, wrong_scope_stderr
+      assert_equal "approval-required", wrong_scope.fetch("status")
+      assert_equal "projected-approval-threshold", wrong_scope.fetch("reason")
+    end
+
+    with_state do |state_path|
+      initialize_budget(state_path)
+      lane_approval = approval(state_path, id: "single-use-approval")
+      run_helper(state_path, command("approve", "approval" => lane_approval))
+      admitted, admitted_stderr, admitted_status = reserve(
+        state_path,
+        id: "approval-consuming-reservation",
+        tokens: 500,
+        overrides: { "approval_id" => "single-use-approval" }
+      )
+      assert admitted_status.success?, admitted_stderr
+      assert_equal "admitted-with-warning", admitted.fetch("status")
+      released, release_stderr, release_status = run_helper(
+        state_path,
+        command(
+          "release",
+          "release" => {
+            "type" => "batch-token-release",
+            "version" => 1,
+            "id" => "release-approval-consuming-reservation",
+            "reservation_id" => "approval-consuming-reservation",
+            "reason" => "End the approved work before checking single-use fencing."
+          }
+        )
+      )
+      assert release_status.success?, release_stderr
+      assert_equal "released", released.fetch("status")
+
+      consumed, consumed_stderr, consumed_status = reserve(
+        state_path,
+        id: "consumed-approval-reservation",
+        tokens: 500,
+        overrides: { "approval_id" => "single-use-approval" }
+      )
+      assert consumed_status.success?, consumed_stderr
+      assert_equal "approval-required", consumed.fetch("status")
+      assert_equal "projected-approval-threshold", consumed.fetch("reason")
     end
   end
 
@@ -3170,7 +3366,7 @@ class BatchTokenBudgetTest < Minitest::Test
       )
       refute replay_status.success?
       assert_nil replay
-      assert_equal "invalid-approval", JSON.parse(replay_stderr).fetch("reason")
+      assert_equal "approval-replay-mismatch", JSON.parse(replay_stderr).fetch("reason")
 
       rebound = approval(state_path, id: "rebound-approval")
       rebound["attestation"] = human_attestation(

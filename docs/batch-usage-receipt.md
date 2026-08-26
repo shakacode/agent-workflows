@@ -205,8 +205,12 @@ The `accounting` object reports `usage_samples`,
 `duplicate_samples_omitted`, `replay_records_omitted`, `counter_resets`,
 `inherited_seeds_omitted`, `compactions`, and
 `session_rebind_attempts_ignored` explicitly. These diagnostic counts cover the
-complete physical rollouts used for differencing; unlike emitted usage deltas,
-they are not restricted to the requested `[from, to)` window.
+complete physical rollouts used for differencing and are not generally
+restricted to the requested `[from, to)` window. The exclusive `to` bound
+applies specifically to valid-timestamp token-count usage samples: those at or
+after `to` are excluded from usage-sample diagnostics, while records before
+`from` can still contribute. This bound does not claim to exclude diagnostics
+from post-`to` compaction markers or session-rebind attempts.
 Consequently, `usage_samples` is diagnostic only and cannot prove how many
 turns contributed usage to a scope.
 
