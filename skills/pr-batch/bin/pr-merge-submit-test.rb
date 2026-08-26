@@ -1712,6 +1712,32 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  def test_commit_status_change_during_final_inventory_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[status_race_failure status_race_pending].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held,
+          merge_submission:, ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "other", "#{mode}/#{transition}"
+        expected_status_reads = mode == :guard_success ? 4 : 2
+        assert_equal expected_status_reads, log.scan("/status?per_page=").length,
+                     "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
   def test_complete_ci_surface_inventory_errors_stop_before_direct_mutation
     %i[actions_inventory_missing status_inventory_missing].each do |transition|
       result, log = run_cli(
@@ -3132,6 +3158,8 @@ class PrMergeSubmitTest < Minitest::Test
       if status_endpoint
         exit 1 if transition == :status_inventory_missing
 
+        status_reads = File.read(ENV.fetch("GH_LOG")).scan("/status?per_page=").length
+        race_threshold = #{mode.inspect} == "guard_success" ? 4 : 2
         status_rows = case transition
                       when :status_failure
                         [{ "id" => 701, "context" => "current-status", "state" => "failure",
@@ -3139,10 +3167,30 @@ class PrMergeSubmitTest < Minitest::Test
                       when :status_pending
                         [{ "id" => 701, "context" => "current-status", "state" => "pending",
                            "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                      when :status_race_failure
+                        if status_reads >= race_threshold
+                          [{ "id" => 701, "context" => "current-status", "state" => "failure",
+                             "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                        else
+                          []
+                        end
+                      when :status_race_pending
+                        if status_reads >= race_threshold
+                          [{ "id" => 701, "context" => "current-status", "state" => "pending",
+                             "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                        else
+                          []
+                        end
                       else
                         []
                       end
-        combined_state = transition == :status_failure ? "failure" : "pending"
+        combined_state = if status_rows.any? { |row| %w[error failure].include?(row["state"]) }
+                           "failure"
+                         elsif status_rows.empty? || status_rows.any? { |row| row["state"] == "pending" }
+                           "pending"
+                         else
+                           "success"
+                         end
         puts JSON.generate(
           "sha" => #{head.inspect}, "state" => combined_state,
           "total_count" => status_rows.length, "statuses" => status_rows

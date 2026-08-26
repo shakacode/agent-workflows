@@ -906,7 +906,7 @@ class PrCiReadinessCliTest < Minitest::Test
                    exact_check_runs: [], exact_statuses: [], exact_inventory_error: nil,
                    exact_actions_total_count: nil, expected_host: nil,
                    exact_status_sha: :echo, exact_status_total_count: nil,
-                   exact_status_pages: nil)
+                   exact_status_pages: nil, exact_status_snapshots: nil)
     if pr_identity.nil? && (!pr_head.is_a?(String) || !pr_head.match?(/\A[0-9a-f]{40}\z/i))
       fixture_head = "a" * 40
       runs = replace_fixture_value(runs, pr_head, fixture_head)
@@ -925,7 +925,7 @@ class PrCiReadinessCliTest < Minitest::Test
           required_check_error, full_check_error, exact_actions, exact_check_runs,
           exact_statuses, exact_inventory_error, exact_actions_total_count,
           File.join(dir, "pr-head-state"), File.join(dir, "pr-identity-state"), expected_host,
-          exact_status_sha, exact_status_total_count, exact_status_pages
+          exact_status_sha, exact_status_total_count, exact_status_pages, exact_status_snapshots
         )
       )
       FileUtils.chmod(0o755, gh)
@@ -970,7 +970,26 @@ class PrCiReadinessCliTest < Minitest::Test
   # `exact_status_sha` with a literal SHA (mismatch) or nil (missing) to prove
   # the assertion still fails closed.
   def combined_status_branch(exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count,
-                             exact_status_pages)
+                             exact_status_pages, exact_status_snapshots, status_state_path)
+    if exact_status_snapshots
+      snapshot_cases = exact_status_snapshots.each_with_index.map do |payload, index|
+        "  #{index}) #{shell_json_printf(payload)} ;;"
+      end.join("\n")
+      return <<~BASH
+        if [[ "$*" = *"/status?per_page="* ]]; then
+          #{exact_inventory_error == 'statuses' ? 'exit 1' : ''}
+          count=0
+          if [ -f #{status_state_path.inspect} ]; then count=$(cat #{status_state_path.inspect}); fi
+          case "$count" in
+          #{snapshot_cases}
+            *) #{shell_json_printf(exact_status_snapshots.last)} ;;
+          esac
+          printf '%s' "$((count + 1))" > #{status_state_path.inspect}
+          exit 0
+        fi
+      BASH
+    end
+
     if exact_status_pages
       page_cases = exact_status_pages.each_with_index.map do |payload, index|
         "  #{index + 1}) #{shell_json_printf(payload)} ;;"
@@ -1021,7 +1040,8 @@ class PrCiReadinessCliTest < Minitest::Test
                      required_check_error, full_check_error, exact_actions, exact_check_runs,
                      exact_statuses, exact_inventory_error, exact_actions_total_count,
                      pr_head_state_path, pr_identity_state_path, expected_host,
-                     exact_status_sha, exact_status_total_count, exact_status_pages)
+                     exact_status_sha, exact_status_total_count, exact_status_pages,
+                     exact_status_snapshots)
     required_check_command = if required_json.is_a?(Array)
                                state_path = "#{pr_head_state_path}.required-checks"
                                cases = required_json.each_with_index.map do |payload, index|
@@ -1330,7 +1350,8 @@ class PrCiReadinessCliTest < Minitest::Test
         fi
       #{suite_run_cases}
       #{combined_status_branch(
-        exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count, exact_status_pages
+        exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count, exact_status_pages,
+        exact_status_snapshots, "#{pr_head_state_path}.statuses"
       )}
         # The status-history list endpoint is served with its real shape: its
         # rows carry no commit SHA. Nothing should request it -- it is kept so
@@ -2759,6 +2780,35 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "UNKNOWN", data.dig("scopes", "other", "state")
       assert_empty data.dig("scopes", "other", "rows")
       assert_includes data.dig("scopes", "other", "error"), "repeated case-insensitive context"
+    end
+  end
+
+  def test_commit_status_inventory_change_during_assessment_fails_closed
+    head = "a" * 40
+    success = {
+      "id" => 400, "context" => "legacy", "state" => "success",
+      "target_url" => "https://example/status/400"
+    }
+    failure = success.merge("id" => 401, "state" => "failure")
+    snapshots = [success, failure].map do |row|
+      {
+        "sha" => head, "state" => row.fetch("state"),
+        "total_count" => 1, "statuses" => [row]
+      }
+    end
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]", pr_head: head, exact_status_snapshots: snapshots
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_includes data.dig("scopes", "other", "error"),
+                      "commit-status inventory changed during exact-head assessment"
     end
   end
 

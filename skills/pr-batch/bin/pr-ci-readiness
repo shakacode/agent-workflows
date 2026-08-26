@@ -692,6 +692,7 @@ module PrCiReadiness
         ].compact.join("; ")
       end
       result = revalidate_viewer_review_inventory(result, repo, pr_number, exact_head_sha)
+      revalidate_status_inventory!(inventory, repo, exact_head_sha)
       target_identity_error =
         begin
           final_target_pr = fetch_target_pr_identity(repo, pr_number, require_base: !trusted_repo_root.nil?)
@@ -792,6 +793,30 @@ module PrCiReadiness
 
     def canonical_viewer_draft_snapshot(drafts)
       drafts.map { |draft| JSON.generate(draft.values_at("id", "commit_oid")) }.sort
+    end
+
+    def revalidate_status_inventory!(inventory, repo, head_sha)
+      initial_statuses = inventory.fetch(:statuses)
+      initial_complete = inventory.fetch(:statuses_complete)
+      final_statuses, final_complete, final_error = fetch_exact_head_statuses(repo, head_sha)
+      snapshots_match = canonical_status_snapshot(initial_statuses) == canonical_status_snapshot(final_statuses)
+
+      inventory[:statuses] = final_statuses
+      return if initial_complete && final_complete && snapshots_match
+
+      inventory[:statuses_complete] = false
+      diagnostics = [inventory[:errors]["other"], final_error]
+      diagnostics << "commit-status inventory changed during exact-head assessment" unless snapshots_match
+      unless initial_complete && final_complete
+        diagnostics << "commit-status inventory was incomplete during exact-head assessment"
+      end
+      inventory[:errors]["other"] = diagnostics.compact.reject(&:empty?).uniq.join("; ")
+    end
+
+    def canonical_status_snapshot(rows)
+      rows.map do |row|
+        JSON.generate(row.keys.sort.map { |key| [key, row[key]] })
+      end.sort
     end
 
     def supplemental_readiness_verdict(result)
