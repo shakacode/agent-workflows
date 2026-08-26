@@ -249,10 +249,10 @@ class CanonicalTaskControlTest < Minitest::Test
     end
   end
 
-  def test_launch_blocks_worker_spawn_when_399_is_unavailable_but_preserves_held_local_permissions
+  def test_launch_blocks_worker_spawn_when_hierarchical_token_budgets_are_unavailable_but_preserves_held_local_permissions
     input = launch_input
     bundle = trusted_bundle_for(input)
-    bundle["capabilities"]["issue_399"] = "unavailable"
+    bundle["capabilities"]["hierarchical_token_budgets"] = "unavailable"
 
     result, stderr, status = run_helper(input, trusted_bundle: bundle)
 
@@ -262,13 +262,13 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes result.fetch("unknowns"), "budget_evidence"
   end
 
-  def test_merged_398_capability_allows_budget_admitted_delegation_preflight
+  def test_replay_safe_usage_receipt_capability_allows_budget_admitted_delegation_preflight
     input = delegation_input(
       target_state: "idle", context: 40_000, threshold: 50_000,
       message_class: "new_evidence", human_approval: "UNKNOWN"
     )
     bundle = trusted_bundle_for(input)
-    bundle["capabilities"]["issue_398"] = "available"
+    bundle["capabilities"]["replay_safe_usage_receipts"] = "available"
 
     result, stderr, status = run_helper(input, trusted_bundle: bundle)
 
@@ -303,6 +303,7 @@ class CanonicalTaskControlTest < Minitest::Test
 
   def test_multi_target_mode_requires_and_accepts_a_complete_versioned_exception
     input = launch_input(multi_target_task)
+    input["task"]["exception"]["concurrency"] = 2
 
     result, stderr, status = run_helper(input)
 
@@ -994,18 +995,18 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_equal 10, result.fetch("matched_pair_count")
   end
 
-  def test_pilot_requires_satisfied_bound_evidence_for_333_and_335_before_promotion
-    [333, 335].each do |issue|
+  def test_pilot_requires_satisfied_bound_execution_capabilities_before_promotion
+    %w[execution_provenance evaluation_runner].each do |capability|
       pilot = pilot_input
-      dependency = pilot.fetch("dependencies").find { |record| record["issue"] == issue }
+      dependency = pilot.fetch("dependencies").find { |record| record["capability"] == capability }
       dependency["status"] = "pending"
       dependency["result_ref"] = "UNKNOWN"
 
       result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
 
-      assert status.success?, "#{issue}: #{stderr}"
-      assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict"), issue
-      assert_includes result.fetch("unknowns"), "promotion_dependency_#{issue}", issue
+      assert status.success?, "#{capability}: #{stderr}"
+      assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict"), capability
+      assert_includes result.fetch("unknowns"), "promotion_dependency_#{capability}", capability
     end
   end
 
@@ -1046,10 +1047,10 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes result.fetch("unknowns"), "credit_equivalents"
   end
 
-  def test_pilot_with_unavailable_398_is_publishable_unknown_not_false_promotion
+  def test_pilot_with_unavailable_replay_safe_usage_receipts_is_publishable_unknown_not_false_promotion
     input = base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot_input)
     bundle = trusted_bundle_for(input)
-    bundle["capabilities"]["issue_398"] = "unavailable"
+    bundle["capabilities"]["replay_safe_usage_receipts"] = "unavailable"
 
     result, stderr, status = run_helper(input, trusted_bundle: bundle)
 
@@ -1456,7 +1457,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "operation" => "budget_action",
       "budget_action" => "retry",
       "budget_lane_id" => "aw-i402",
-      "budget_gate" => { "source" => "#399", "status" => "passed", "evidence_ref" => "local:budget:retry" }
+      "budget_gate" => { "source" => "caller-asserted-budget", "status" => "passed", "evidence_ref" => "local:budget:retry" }
     )
 
     _result, _stderr, status = run_helper(input)
@@ -1466,6 +1467,7 @@ class CanonicalTaskControlTest < Minitest::Test
 
   def test_launch_budget_results_bind_by_lane_identity_not_array_position
     input = launch_input(multi_target_task)
+    input["task"]["exception"]["concurrency"] = 2
     input["budget_gate"].reverse!
     input["manifest"]["budgets"] = budget_manifest_binding(input.fetch("task"), results: input.fetch("budget_gate"))
 
@@ -1474,6 +1476,82 @@ class CanonicalTaskControlTest < Minitest::Test
     assert status.success?, stderr
     assert_equal "allow", result.fetch("verdict")
     assert_includes result.fetch("allowed_actions"), "worker_spawn"
+  end
+
+  def test_launch_enforces_multi_target_exception_concurrency
+    input = launch_input(multi_target_task)
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "launch lane count exceeds approved exception concurrency"
+  end
+
+  def test_launch_allows_one_lane_under_serial_multi_target_exception
+    input = launch_input(multi_target_task)
+    input["budget_gate"] = [input.fetch("budget_gate").first]
+    input["manifest"]["budgets"] = budget_manifest_binding(input.fetch("task"), results: input.fetch("budget_gate"))
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "allow", result.fetch("verdict")
+    assert_equal ["lane-402"], result.fetch("launch_lane_ids")
+    assert_empty result.fetch("replayed_lane_ids")
+  end
+
+  def test_launch_handles_fresh_and_replayed_budget_admissions_per_lane
+    input = launch_input(multi_target_task)
+    input["task"]["exception"]["concurrency"] = 2
+    replayed = input.fetch("budget_gate").first
+    replayed["status"] = "replayed"
+    replayed["decision_status"] = "admitted"
+    replayed["state_revision"] += 1
+    input["manifest"]["budgets"] = budget_manifest_binding(input.fetch("task"), results: input.fetch("budget_gate"))
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "allow", result.fetch("verdict")
+    assert_includes result.fetch("allowed_actions"), "worker_spawn"
+    assert_includes result.fetch("allowed_actions"), "record_budget_replay"
+    assert_equal ["lane-403"], result.fetch("launch_lane_ids")
+    assert_equal ["lane-402"], result.fetch("replayed_lane_ids")
+  end
+
+  def test_trusted_bundle_uses_portable_capability_names
+    input = launch_input
+    bundle = trusted_bundle_for(input)
+    bundle["capabilities"] = {
+      "hierarchical_token_budgets" => "available",
+      "replay_safe_usage_receipts" => "available"
+    }
+
+    result, stderr, status = run_helper(input, trusted_bundle: bundle)
+
+    assert status.success?, stderr
+    assert_equal "allow", result.fetch("verdict")
+
+    bundle["capabilities"] = { "issue_398" => "available", "issue_399" => "available" }
+    _result, stderr, status = run_helper(input, trusted_bundle: bundle)
+    refute status.success?
+    assert_includes stderr, "hierarchical_token_budgets"
+  end
+
+  def test_pilot_dependencies_use_portable_capability_names
+    pilot = pilot_input
+
+    result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    assert status.success?, stderr
+    assert_equal "promote_ordinary_default", result.fetch("pilot_verdict")
+
+    dependency = pilot.fetch("dependencies").first
+    dependency.delete("capability")
+    dependency["issue"] = 398
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+    refute status.success?
+    assert_includes stderr, "portable capabilities"
   end
 
   def test_budget_action_rejects_caller_asserted_legacy_budget_evidence
@@ -1503,6 +1581,83 @@ class CanonicalTaskControlTest < Minitest::Test
     _stdout, stderr, status = run_raw("{")
     refute status.success?
     assert_match(/\AINVALID_INPUT: /, stderr)
+  end
+
+  def test_malformed_target_and_pilot_dependency_shapes_fail_without_backtraces
+    input = launch_input
+    input["task"]["targets"] = [5]
+    _result, stderr, status = run_helper(input)
+    refute status.success?
+    assert_match(/\AINVALID_INPUT: /, stderr)
+    refute_includes stderr, "canonical-task-control:"
+
+    pilot = pilot_input
+    pilot["dependencies"][1] = "bogus"
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+    refute status.success?
+    assert_match(/\AINVALID_INPUT: /, stderr)
+    refute_includes stderr, "canonical-task-control:"
+  end
+
+  def test_child_actor_must_match_manifest_owner_for_declared_role
+    input = child_receipt_input
+    input.fetch("children").fetch("receipts").first["actor"] = "maker-aw-i402"
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "child actor must match manifest ownership"
+  end
+
+  def test_terminal_delegation_returns_deterministic_block_before_budget_validation
+    input = delegation_input(
+      target_state: "terminal", context: 10_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    input["budget_gate"] = { "malformed" => true }
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "block", result.fetch("verdict")
+    assert_equal ["target_terminal"], result.fetch("blockers")
+    assert_empty result.fetch("allowed_actions")
+  end
+
+  def test_typed_gate_permission_and_cardinality_guards_reject_directly
+    mutations = {
+      "permissions must be an array" => lambda do |input|
+        input.fetch("typed_gates").find { |gate| gate["gate"] == "stage_dependency" }["permissions"] = "worker_spawn"
+      end,
+      "permissions are invalid" => lambda do |input|
+        input.fetch("typed_gates").find { |gate| gate["gate"] == "stage_dependency" }["permissions"] = ["push"]
+      end,
+      "only stage dependency result may carry permissions" => lambda do |input|
+        input.fetch("typed_gates").find { |gate| gate["gate"] == "security" }["permissions"] = ["worker_spawn"]
+      end,
+      "typed gates must contain exactly one required gate per target" => lambda do |input|
+        input.fetch("typed_gates").pop
+      end
+    }
+
+    mutations.each do |message, mutate|
+      input = launch_input
+      mutate.call(input)
+      _result, stderr, status = run_helper(input)
+      refute status.success?, message
+      assert_includes stderr, message
+    end
+  end
+
+  def test_disagreeing_stage_results_fail_closed_directly
+    input = launch_input(multi_target_task)
+    input["task"]["exception"]["concurrency"] = 2
+    input.fetch("typed_gates").select { |gate| gate["gate"] == "stage_dependency" }.last["result"] = "pending"
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "stage dependency results must agree"
   end
 
   private
@@ -2144,13 +2299,13 @@ class CanonicalTaskControlTest < Minitest::Test
     {
       "contract" => "canonical-task-matched-pilot",
       "version" => 1,
-      "dependencies" => [398, 333, 335].map do |issue|
+      "dependencies" => %w[replay_safe_usage_receipts execution_provenance evaluation_runner].map do |capability|
         {
-          "contract" => "dependency-gate-evidence", "version" => 1, "issue" => issue,
+          "contract" => "dependency-gate-evidence", "version" => 1, "capability" => capability,
           "actor" => "dependency-checker-1", "role" => "dependency_checker",
           "task_id" => "task-402", "repository" => "shakacode/agent-workflows", "target" => "issue:402",
           "action" => "evaluate_pilot", "scope" => "canonical task matched pilot", "status" => "satisfied",
-          **evidence_times, "result_ref" => "https://example.test/results/#{issue}/dependency"
+          **evidence_times, "result_ref" => "https://example.test/results/#{capability}/dependency"
         }
       end,
       "pairs" => pairs,
@@ -2191,6 +2346,7 @@ class CanonicalTaskControlTest < Minitest::Test
         "packets" => [{
           "contract" => "task-scoped-child-packet", "version" => 1,
           "child_kind" => "checker",
+          "actor" => "checker-402",
           "child_id" => "checker-402", "lane_id" => "aw-i402",
           "repository" => "shakacode/agent-workflows", "target" => "issue:402",
           "role" => "checker", "scope" => "Review one diff.",
@@ -2205,6 +2361,7 @@ class CanonicalTaskControlTest < Minitest::Test
         "receipts" => [{
           "contract" => "compact-child-receipt", "version" => 1,
           "child_kind" => "checker",
+          "actor" => "checker-402",
           "child_id" => "checker-402", "lane_id" => "aw-i402",
           "repository" => "shakacode/agent-workflows", "target" => "issue:402",
           "role" => "checker", "scope" => "Review one diff.",
@@ -2235,6 +2392,7 @@ class CanonicalTaskControlTest < Minitest::Test
         }],
         "states" => [{
           "child_kind" => "checker",
+          "actor" => "checker-402",
           "child_id" => "checker-402", "lane_id" => "aw-i402",
           "repository" => "shakacode/agent-workflows", "target" => "issue:402",
           "role" => "checker", "scope" => "Review one diff.",
@@ -2341,7 +2499,10 @@ class CanonicalTaskControlTest < Minitest::Test
         input.fetch("task").fetch("lanes").to_h do |lane|
           [lane.fetch("id"), "8cf266b0c1753797e56aefb1b152a16edd4b5a46"]
         end,
-      "capabilities" => { "issue_398" => "available", "issue_399" => "available" },
+      "capabilities" => {
+        "hierarchical_token_budgets" => "available",
+        "replay_safe_usage_receipts" => "available"
+      },
       "payload_digest" => findings_digest(payload),
       "payload" => payload
     }

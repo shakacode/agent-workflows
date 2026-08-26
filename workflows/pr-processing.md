@@ -641,6 +641,8 @@ anchor. Resolve human authority actors case-insensitively through repo-local
 `trusted_users`; nonhuman result roles stay closed by contract. Nested evidence
 must carry issued, observed, and expiry times ordered around the current time,
 inside the trusted bundle interval, with a maximum one-hour lifetime.
+All malformed-input paths, including unexpected runtime shape errors, return a
+bounded `INVALID_INPUT` denial without a Ruby backtrace.
 
 The `launch` operation is a composite gate. It requires an input-bound trusted
 `canonical-task-policy` v1 record, a compact manifest with exact lane heads,
@@ -672,7 +674,7 @@ settlement and before dispatch, after each worker report/review wave, before a
 monitor, before cross-task handoff, and whenever the configured rendered-context
 threshold is crossed. The threshold comes only from launch's trusted
 `canonical-task-policy` v1 record, bound to the exact task/target and durable
-authority evidence. Missing policy evidence or unavailable #398 calibration
+authority evidence. Missing policy evidence or unavailable replay-safe usage calibration
 keeps it literal `UNKNOWN` and never invents a universal threshold. A required
 boundary without a satisfied checkpoint and known evidence reference blocks
 its operation.
@@ -683,7 +685,9 @@ repository-qualified target, role, narrow scope, acceptance criteria,
 verification, and stop conditions. Accept only one matching
 `compact-child-receipt` v1 with status, exact head, summary, findings,
 verification, and open decisions. Packet, receipt, and closed state bind one to
-one across child/lane/target/role/scope plus the exact manifest head and
+one across child/lane/target/role/scope plus the exact manifest head; each
+record's actor must equal the corresponding checker/reviewer/QA actor in
+manifest ownership. They also bind
 one #392-compatible batch/task/plan/spec identity, exact diff identity, base/head,
 review package, review round, and findings-result record. Findings require a
 trusted schema-validator result bound to their exact digest. Nested `UNKNOWN`
@@ -712,8 +716,9 @@ A faithful replay of an original `admitted` result keeps
 its original nil checkpoint; a replayed warning still requires the original
 well-formed checkpoint, and an original decision revision may precede the
 current replay revision. Persisted-state replay accepts exactly current
-plan-anchored, telemetry-only 6be, or pre-telemetry 297f decision receipts; any
-other partial projection remains corrupt. Replayed admission is an idempotent record-only outcome:
+plan-anchored, telemetry-only 6be, pre-telemetry 297f, or stacked-base a556
+receipts that omit the later decision request and reservation request/digest
+fields; any other partial projection remains corrupt. Replayed admission is an idempotent record-only outcome:
 permit only `record_budget_replay`, never a second launch, wake, retry, or other
 side effect or held-local launch action. For a fresh admission, bind receipt
 tokens, aggregate/lane allocation totals, and the overshoot target set to the
@@ -721,7 +726,11 @@ request. Caller-authored
 amounts, units, URLs, nested `UNKNOWN`, or `status: passed` objects are not budget
 authority. Multi-target actions may select any declared lane, but never default
 silently to the first lane. Bind multi-lane result sets by canonical lane ID,
-not array position.
+not array position. For a multi-target launch, the selected result set must be
+nonempty and no larger than the exception's approved concurrency. Return fresh
+and replayed lane IDs separately; `worker_spawn` applies only to the fresh lane
+IDs, while replayed lanes remain record-only. A mixed set must not suppress a
+fresh admission or repeat a replayed side effect.
 Before waking another task, also bind source and target task plus
 repository-qualified identities; classify target state as active, idle, paused,
 stale, or terminal; estimate rendered context and descendant fan-out from
@@ -729,8 +738,8 @@ available metadata; record the configured threshold; and compact at the
 cross-task boundary. An active target receives one coalesced queued message only
 for verified new evidence and is not woken again. Suppress unchanged evidence,
 acknowledgement, or a
-handoff that can be assembled deterministically. Terminal targets are not
-woken. Missing context or descendant-fanout estimates, a stale target, or an
+handoff that can be assembled deterministically. Terminal targets return their
+deterministic block before budget validation and are not woken. Missing context or descendant-fanout estimates, a stale target, or an
 over-threshold estimate needs structured task-bound durable human approval
 before a new-evidence wake.
 Bind that approval to the exact selected repository-qualified target. Map an
@@ -753,18 +762,18 @@ pushes, PRs, or merges for the foreign target.
 
 Delegation is an admission boundary, not a post-execution accounting claim. It
 never accepts caller-authored usage deltas. After execution, run the separate
-`usage_reconciliation` operation with the merged #398
+`usage_reconciliation` operation with the replay-safe
 `batch-usage-receipt-v2` artifact, its canonical digest and absolute `file://`
-reference, plus #426's `batch-token-budget-result` v1 with status `reconciled`
+reference, plus the production hierarchical `batch-token-budget-result` v1 with status `reconciled`
 and matching reconciliation receipts. Recompute both physical-token and
 contributing-turn equations: batch descendant-inclusive equals coordinator
 self-only plus batch unattributed plus every lane descendant-inclusive. Use the
 budget result's charge-back summaries; never add descendants twice or increment
 the physical total for a charge-back. Missing, `UNKNOWN`, unbalanced, rebound,
-or digest-mismatched evidence blocks reconciliation. Unavailable #398 reports
-`usage_telemetry` as `UNKNOWN`; unavailable #399 blocks context-amplifying
+or digest-mismatched evidence blocks reconciliation. Unavailable replay-safe
+usage receipts report `usage_telemetry` as `UNKNOWN`; unavailable hierarchical-token-budget evidence blocks context-amplifying
 actions without erasing independently permitted held-local stage work.
-Each #426 reconciliation receipt must be completed and bind the exact usage
+Each hierarchical-budget reconciliation receipt must be completed and bind the exact usage
 window, canonical digest/reference, a unique production revision ending at the
 result revision, nonnegative interval/actual/released/overshoot counters, and
 the production release/overshoot equations. Invalid or partial receipts are not
@@ -810,14 +819,15 @@ task/target/status/time evidence; a bare percentage or URL is insufficient. Prom
 ordinary default only when configured policy says usage is materially lower,
 there is no escaped P0/P1 regression, and gate compliance remains preserved.
 Promotion additionally requires current bound `satisfied` dependency evidence
-for issues #398, #333, and #335; pending dependency evidence retains rollback
+for the replay-safe usage receipt, execution-provenance, and evaluation-runner
+capabilities; pending dependency evidence retains rollback
 and publishes the corresponding `UNKNOWN` dependency field.
 Any failed, adverse, or `UNKNOWN` criterion retains explicit multi-target mode
 as the rollback. A structurally valid result is still publishable evidence: the
 control decision permits `publish_pilot_result` while `pilot_verdict` remains
 `retain_multi_target_rollback`; publication never implies promotion. The pilot
 contract may carry a configured material-reduction
-percentage; no universal percentage or successful receipt exists until #398
+percentage; no universal percentage or successful receipt exists until replay-safe usage
 evidence and the matched run establish it.
 The production `batch-token-budget --verify-plan-only` mode validates an
 externally anchored plan without a state path or state mutation and emits the

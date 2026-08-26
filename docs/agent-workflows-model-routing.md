@@ -434,9 +434,9 @@ until observed receipts exist for it; do not cite a profile route as measured
 evidence, and do not compare a requested route that lacks an observed receipt
 against one that has one.
 
-Issue #398 now supplies replay-safe `batch-usage-receipt-v2` artifacts. No ten-batch
-promotion decision may be made before the remaining #333 execution-provenance
-and #335 evaluation-runner dependencies each have current, task-bound satisfied
+The replay-safe usage receipt capability now supplies `batch-usage-receipt-v2`
+artifacts. No ten-batch promotion decision may be made before the
+execution-provenance and evaluation-runner capability dependencies each have current, task-bound satisfied
 evidence. A pilot may still publish
 retain, adverse, or `UNKNOWN` evidence without promotion. It must use matched
 task classes and context topology, record host-observed execution evidence, and
@@ -447,6 +447,8 @@ default is one user-visible task, one repository-qualified canonical issue or
 existing PR, one lane, one active maker by default, and at most one
 implementation PR for that lane. Bounded independent checker/reviewer/QA
 children remain valid and do not make the task multi-target.
+Each child packet, receipt, and closed-state actor must match the corresponding
+checker/reviewer/QA actor declared in manifest ownership.
 A stronger coordinator route, more available context, or a high lane cap never
 justifies retaining multiple canonical targets under one supervisor.
 Route evidence from another canonical target only through an evidence-only
@@ -455,19 +457,19 @@ authority for that target.
 
 Any multi-target comparison uses the versioned exception contract from
 `workflows/pr-processing.md`: structured task/target-bound human approval and
-the externally anchored #426 `batch-token-budget` v1 plan, reason, target count,
+the externally anchored production `batch-token-budget` v1 plan, reason, target count,
 concurrency, aggregate/coordinator/per-lane budgets, shared-context savings, and
 rollback. The matched
 pilot has at least ten representative pairs with distinct exact task/batch
-identities, matching task class/context facts, and verified #398 v2 usage
-artifacts bound to reconciled #426 budget results. It derives total tokens,
+identities, matching task class/context facts, and verified replay-safe v2 usage
+artifacts bound to reconciled hierarchical budget results. It derives total tokens,
 contributing turns, and optional rate-card credit equivalents independently: missing credits keep
 only the credit reduction `UNKNOWN` while complete token evidence still reports token reduction. It reports elapsed time, human
 coordination time, correction turns, first-pass acceptance, escaped P0/P1
 defects, and gate compliance for both arms. Promotion requires configured
 materially lower token and credit usage with structured policy/publication
 evidence, no escaped P0/P1 regression, and no weakened gate
-compliance. Missing #398 receipts, unsupported observed execution, or any
+compliance. Missing replay-safe usage receipts, unsupported observed execution, or any
 `UNKNOWN` criterion retains explicit multi-target mode as rollback while
 remaining publishable evidence; never infer
 a receipt, billing equivalence, or universal percentage from local cumulative
@@ -476,10 +478,12 @@ Operational decisions use a separate closed `canonical-task-trusted-evidence`
 v1 file passed by explicit path and ID. Its current/expiry times, complete task
 authorization digest, targets, exact heads, capability state, and payload digest
 are SHA-256 bound; stdin only
-references the ID and cannot self-assert route, authority, stage, #392 review,
-the #399 budget results, or #398 usage evidence.
+references the ID and cannot self-assert route, authority, stage, review,
+hierarchical budget results, or replay-safe usage evidence.
 Reserved envelope fields cannot be overridden by trusted payload keys, and
 malformed task/lane arrays fail as deterministic invalid input.
+Unexpected malformed runtime shapes also return bounded `INVALID_INPUT` denial
+without a Ruby backtrace.
 The trusted bundle, trust config, and review validator are owner/mode checked
 regular files realpathed beneath a coordinator root. This is procedural rather
 than cryptographic trust. Human authority actors resolve through
@@ -488,8 +492,9 @@ validity window, and review findings must pass the validator module and receipt
 identity resolved through the repository's portable workflow seam.
 Budget decisions bind their evaluation time to that same current bundle window,
 retain faithful original checkpoint/revision semantics on production replay,
-and accept exactly current plan-anchored, telemetry-only 6be, or pre-telemetry
-297f persisted decision receipts; any other partial receipt remains corrupt.
+and accept exactly current plan-anchored, telemetry-only 6be, pre-telemetry
+297f, or stacked-base a556 receipts that omit the later decision request and
+reservation request/digest fields; any other partial receipt remains corrupt.
 They bind the canonical production reservation request and digest through both
 decision and admission receipts, and enforce the receipt-carried production
 telemetry max age. The decision receipt also anchors the externally verified
@@ -500,9 +505,13 @@ below allocated tokens. Admitted receipt tokens and the exact overshoot target
 set must match that request; delegation additionally matches the payload source
 identity and target-state classification. An approved stale wake maps explicitly
 to production `idle`, and its approval binds the exact selected repository-qualified
-target. Validate external plans through the production verify-only collision fence.
-Multi-lane result sets bind by canonical
-lane ID, never array position. An admitted replay authorizes only the idempotent
+target. A terminal target returns its deterministic block before budget
+validation. Validate external plans through the production verify-only collision fence.
+Multi-lane result sets bind by canonical lane ID, never array position. A
+multi-target launch selects a nonempty lane set no larger than the approved
+exception concurrency. The decision returns fresh and replayed lane IDs
+separately, authorizes `worker_spawn` only for fresh lanes, and keeps mixed
+fresh/replay batches lane-scoped instead of collapsing the entire batch. An admitted replay authorizes only the idempotent
 `record_budget_replay` no-op; it never launches, wakes, retries, or repeats another
 side effect, and a replayed launch exposes no held-local actions.
 Case-insensitive control identities use Unicode NFKC plus full case folding and

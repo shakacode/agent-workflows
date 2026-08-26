@@ -26,10 +26,20 @@ module BatchTokenBudget
     batch-token-budget-reconciliation-receipt
   ].freeze
   DECISION_RECEIPT_COMPATIBILITY_PROJECTIONS = {
-    "telemetry-only-6be" => %w[trusted_plan_path trusted_plan_id trusted_plan_digest],
-    "pre-telemetry-297f" => %w[
-      telemetry_max_age_seconds trusted_plan_path trusted_plan_id trusted_plan_digest
-    ]
+    "telemetry-only-6be" => {
+      "decision" => %w[trusted_plan_path trusted_plan_id trusted_plan_digest],
+      "reservation" => []
+    },
+    "pre-telemetry-297f" => {
+      "decision" => %w[telemetry_max_age_seconds trusted_plan_path trusted_plan_id trusted_plan_digest],
+      "reservation" => []
+    },
+    "stacked-base-a556" => {
+      "decision" => %w[
+        request telemetry_max_age_seconds trusted_plan_path trusted_plan_id trusted_plan_digest
+      ],
+      "reservation" => %w[request request_digest]
+    }
   }.freeze
   COMPLETE_TIMESTAMP = /
     \A
@@ -932,21 +942,28 @@ module BatchTokenBudget
     removed_fields = DECISION_RECEIPT_COMPATIBILITY_PROJECTIONS.fetch(projection)
     projected = deep_copy(state)
     projected.fetch("receipts", []).each do |receipt|
-      remove_decision_receipt_fields!(receipt, removed_fields)
+      remove_legacy_receipt_fields!(receipt, removed_fields)
     end
     projected.fetch("reservation_decisions", {}).each_value do |fence|
       fence.fetch("outcomes", []).each do |outcome|
-        remove_decision_receipt_fields!(outcome["receipt"], removed_fields)
+        remove_legacy_receipt_fields!(outcome["receipt"], removed_fields)
       end
+    end
+    projected.fetch("reservations", {}).each_value do |reservation|
+      remove_legacy_receipt_fields!(reservation["receipt"], removed_fields)
     end
     projected
   end
 
-  def remove_decision_receipt_fields!(receipt, fields)
-    return unless receipt.is_a?(Hash) &&
-                  receipt["type"] == "batch-token-budget-reservation-decision-receipt"
+  def remove_legacy_receipt_fields!(receipt, fields)
+    return unless receipt.is_a?(Hash)
 
-    fields.each { |field| receipt.delete(field) }
+    receipt_fields = case receipt["type"]
+                     when "batch-token-budget-reservation-decision-receipt" then fields.fetch("decision")
+                     when "batch-token-budget-reservation-receipt" then fields.fetch("reservation")
+                     else []
+                     end
+    receipt_fields.each { |field| receipt.delete(field) }
   end
 
   def valid_state?(state, trusted_budget, trusted_plan_binding)

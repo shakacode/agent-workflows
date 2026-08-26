@@ -65,11 +65,11 @@ Resolve `PR_BATCH_SKILL_DIR`, then run
 --trusted-evidence-id ID --trusted-evidence-root ROOT --trust-config PATH
 --repo-workflow-config PATH --review-findings-validator PATH` with the canonical
 `canonical-task-control` v1 JSON before launch, child-receipt acceptance,
-cross-task delegation, and the context-amplifying #399 checkpoints (delegation,
+cross-task delegation, and the hierarchical-token-budget checkpoints (delegation,
 resume, worker spawn, retry, and review wave). Follow
 `workflows/pr-processing.md` -> **Canonical Task Topology And Delegation
 Control** for the closed schemas and pilot contract. The helper is
-decision-only. Missing/malformed facts fail closed; unsupported #398 usage
+decision-only. Missing/malformed facts fail closed; unsupported replay-safe usage
 telemetry stays field-granular `UNKNOWN` and retains explicit multi-target mode
 as rollback rather than inventing receipts, attribution, billing equivalence,
 or a universal compaction/promotion threshold. Stdin references only the
@@ -81,6 +81,8 @@ SHA-256 binding. Stdin cannot grant itself policy, authority, stage, review,
 budget results, or usage-receipt trust. The helper realpaths coordinator-provided files
 under `ROOT`, rejecting symlinks, non-regular files, wrong ownership, and
 group/world writes. These procedural seams do not provide cryptographic trust.
+All malformed-input paths, including unexpected runtime shape errors, return a
+bounded `INVALID_INPUT` denial without a Ruby backtrace.
 The trusted payload cannot override the envelope contract/version, operation,
 complete task authorization, or evidence reference; malformed task/lane arrays
 must fail as deterministic invalid input.
@@ -108,7 +110,9 @@ dispatch, after each worker report/review wave, before monitoring or cross-task
 handoff, and at a configured context threshold. The helper bounds manifests at
 32 KiB, compact arrays at 32 items, strings at 512 bytes, and checkpoints at 32
 records. Give each child a typed checker/reviewer/QA task-scoped packet and
-accept one compact durable receipt. Retain at most 16 children and 64 KiB per
+accept one compact durable receipt. Bind the packet, receipt, and closed state's
+actor to the matching checker/reviewer/QA actor declared in manifest ownership.
+Retain at most 16 children and 64 KiB per
 receipt. Emit a digest-bound child closure receipt and close completed children
 with `resumable: false`; resume only when explicit decision continuity justifies it
 and all ordinary budget/ownership/replacement gates pass.
@@ -124,7 +128,8 @@ and no more than one hour apart. Operational IDs use portable ASCII syntax.
 
 Cross-task delegation binds source and target task plus repository-qualified
 target identities. Coalesce messages when the target is active and do not wake
-it again; do not wake terminal targets or wake for unchanged evidence,
+it again; return the deterministic terminal-target block before asking for a
+budget reservation, and do not wake for unchanged evidence,
 acknowledgement, or a deterministically assembled handoff. A stale target,
 missing estimate, or over-threshold context requires structured task-bound
 durable human approval bound to the exact selected repository-qualified target;
@@ -133,17 +138,22 @@ after that approval, classify `stale` explicitly as production reservation state
 An unknown descendant estimate is also missing. Delegation preflight performs
 admission only; it never accepts caller-authored usage deltas. Reconcile after
 execution through a separate operation that consumes the exact
-`batch-usage-receipt-v2` artifact/digest/absolute file reference and #426's
-matching reconciled `batch-token-budget-result` v1. Recompute token and
+`batch-usage-receipt-v2` artifact/digest/absolute file reference and the production
+hierarchical budget helper's matching reconciled `batch-token-budget-result` v1. Recompute token and
 contributing-turn equations and use its no-double-count charge backs. Missing
-or `UNKNOWN` #398 evidence blocks reconciliation, not a separately admitted
-delegation. Unavailable #399 evidence likewise blocks context-amplifying actions
+or `UNKNOWN` replay-safe usage evidence blocks reconciliation, not a separately admitted
+delegation. Unavailable hierarchical-token-budget evidence likewise blocks context-amplifying actions
 while preserving independently authorized held-local stage permissions.
 Securely read each referenced receipt beneath the trusted root with a 1 MiB
 bound, require canonical content/digest equality, and enforce its metadata-only
 privacy contract. Bind every budget action to an explicit declared lane; a
 multi-target delegation uses the lane corresponding to its matched target, and
 multi-lane result arrays bind by canonical lane ID rather than position.
+At launch, admit only the selected nonempty lane set and enforce its size against
+the recorded exception concurrency. Return fresh and replayed lane IDs separately;
+only fresh lane IDs may consume `worker_spawn`, while replayed lanes receive the
+idempotent record-only action. A mixed result never suppresses a fresh lane or
+re-authorizes a replayed lane.
 Reject nested `UNKNOWN`, malformed decision/checkpoint fields, or normalized
 duplicate ownership actors. Use `batch-token-budget --verify-plan-only` for the
 external exception plan; an expected state-path failure is not verification.
@@ -161,8 +171,9 @@ delegation request also binds the payload's exact source
 identity and target state. Preserve faithful replay semantics: admitted replays may retain
 their original nil checkpoint, warning replays may not, and original receipt
 revisions may precede the current replay revision. Persisted decision receipts
-accept exactly current plan-anchored, telemetry-only 6be, or pre-telemetry 297f
-projections; other partial projections remain corrupt. A replayed admission permits
+accept exactly current plan-anchored, telemetry-only 6be, pre-telemetry 297f,
+or stacked-base a556 projections that also omit the later decision request and
+reservation request/digest fields; other partial projections remain corrupt. A replayed admission permits
 only the idempotent `record_budget_replay` no-op and never repeats launch, wake,
 retry, held-local launch work, or another side effect. Normalize case-insensitive
 control identities with Unicode NFKC plus full case folding and trimming, and
@@ -176,7 +187,8 @@ literal `evidence_only` disposition. Persist the emitted
 `foreign-target-evidence-receipt`; its only action is
 `record_foreign_target_evidence`, never foreign-target mutation.
 Promote the ordinary pilot default only with current task-bound `satisfied`
-dependency evidence for #398, #333, and #335. Retain/adverse/`UNKNOWN` evidence
+dependency evidence for the replay-safe usage receipt, execution-provenance,
+and evaluation-runner capabilities. Retain/adverse/`UNKNOWN` evidence
 remains publishable without promotion.
 
 ## Single-Target Mode

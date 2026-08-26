@@ -426,17 +426,33 @@ class BatchTokenBudgetTest < Minitest::Test
   end
 
   def project_decision_receipts!(state, profile)
-    receipts = state.fetch("receipts").select do |receipt|
+    decision_receipts = state.fetch("receipts").select do |receipt|
       receipt["type"] == "batch-token-budget-reservation-decision-receipt"
     end
     state.fetch("reservation_decisions").each_value do |fence|
-      receipts.concat(fence.fetch("outcomes").map { |outcome| outcome.fetch("receipt") })
+      decision_receipts.concat(fence.fetch("outcomes").map { |outcome| outcome.fetch("receipt") })
     end
-    receipts.each do |receipt|
+    decision_receipts.each do |receipt|
       receipt.delete("trusted_plan_path")
       receipt.delete("trusted_plan_id")
       receipt.delete("trusted_plan_digest")
       receipt.delete("telemetry_max_age_seconds") if profile == :pre_telemetry_297f
+      if profile == :stacked_base_a556
+        receipt.delete("telemetry_max_age_seconds")
+        receipt.delete("request")
+      end
+    end
+    if profile == :stacked_base_a556
+      state.fetch("receipts").each do |receipt|
+        next unless receipt["type"] == "batch-token-budget-reservation-receipt"
+
+        receipt.delete("request")
+        receipt.delete("request_digest")
+      end
+      state.fetch("reservations").each_value do |reservation|
+        reservation.fetch("receipt").delete("request")
+        reservation.fetch("receipt").delete("request_digest")
+      end
     end
     rehash_control_tail(state)
   end
@@ -2837,6 +2853,10 @@ class BatchTokenBudgetTest < Minitest::Test
     assert_legacy_decision_receipt_transition(:telemetry_only_6be)
   end
 
+  def test_stacked_base_a556_receipts_transition_to_current_replay
+    assert_legacy_decision_receipt_transition(:stacked_base_a556)
+  end
+
   def test_unsupported_partial_decision_receipt_projection_remains_corrupt
     with_state do |state_path|
       initialize_budget(state_path)
@@ -2892,6 +2912,14 @@ class BatchTokenBudgetTest < Minitest::Test
         refute persisted_receipt.key?("telemetry_max_age_seconds")
       end
       refute persisted_receipt.key?("trusted_plan_path")
+      if profile == :stacked_base_a556
+        refute persisted_receipt.key?("request")
+        persisted_reservation_receipt = JSON.parse(File.read(state_path)).fetch("receipts").find do |receipt|
+          receipt["type"] == "batch-token-budget-reservation-receipt"
+        end
+        refute persisted_reservation_receipt.key?("request")
+        refute persisted_reservation_receipt.key?("request_digest")
+      end
     end
   end
 

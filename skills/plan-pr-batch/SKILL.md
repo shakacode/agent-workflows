@@ -111,18 +111,20 @@ compaction checkpoints: after plan settlement before dispatch, after every
 worker report/review wave, before monitor scheduling or cross-task handoff, and
 at the configured context threshold. Do not invent that threshold; bind it
 through launch's trusted `canonical-task-policy` v1 record, or keep it literal
-`UNKNOWN` pending #398 evidence. Bound manifests at 32 KiB, compact arrays at
+`UNKNOWN` pending replay-safe usage evidence. Bound manifests at 32 KiB, compact arrays at
 32 items, strings at 512 bytes, and checkpoints at 32 records. Plan no more than
 16 typed checker/reviewer/QA child packets, 64 KiB compact child receipts, and
-digest-bound child closure receipts with `resumable: false` by default.
+digest-bound child closure receipts with `resumable: false` by default. Bind
+each packet, receipt, and closed-state actor to the corresponding actor in
+manifest ownership.
 
-Plan a current #399/repository budget checkpoint before delegation, resume,
+Plan a current hierarchical-token-budget checkpoint before delegation, resume,
 worker spawn, retry, and review wave. Cross-task delegation also plans source
 and target task/repository/target identities, target lifecycle state, available
 context and descendant estimates, active-target message coalescing, and a human
 approval boundary for stale/missing/over-threshold estimates. Keep that
 delegation admission separate from post-execution accounting. Reconciliation
-consumes merged #398 `batch-usage-receipt-v2` artifacts and #426 reconciled
+consumes replay-safe `batch-usage-receipt-v2` artifacts and production hierarchical
 `batch-token-budget-result` v1 receipts, recomputes physical-token and
 contributing-turn equations, and uses no-double-count charge backs.
 Plan cross-target inputs only as `canonical-task-foreign-target-packet` v1
@@ -142,10 +144,14 @@ Materialize that input from one coordinator-owned closed
 references the ID only. Bind current time/expiry, the complete task authorization
 digest, exact lane heads, capability state, and payload digest. Reconcile
 manifest security, ownership, dispatcher,
-stage, and #399 budget-result digests with their typed results. Pending stage evidence
+stage, and hierarchical budget-result digests with their typed results. Pending stage evidence
 grants only its explicit held-local permissions.
 Plan worker spawn only when every security, ownership, dispatcher, and
 stage-dependency record is `passed`; any `pending` or `blocked` record denies it.
+For a multi-target exception, select a nonempty launch lane set no larger than
+the approved concurrency and bind the budget-result set to exactly those lane IDs.
+Treat fresh and replayed results per lane: authorize `worker_spawn` only for the
+returned fresh lane IDs and record replayed lane IDs as idempotent no-ops.
 
 Resolve `PR_BATCH_SKILL_DIR` and run
 `"${PR_BATCH_SKILL_DIR}/bin/canonical-task-control" --trusted-evidence PATH
@@ -160,10 +166,11 @@ Bind the threshold and publication to structured trusted evidence. Compute
 complete token evidence independently from optional credit equivalence. Promote only
 on configured materially lower token and credit usage, no escaped P0/P1 regression,
 and preserved gates; otherwise retain explicit multi-target mode as rollback.
-Require current task-bound `satisfied` dependency evidence for #398, #333, and
-issue #335 before promotion; pending dependency evidence is publishable rollback,
+Require current task-bound `satisfied` dependency evidence for the replay-safe
+usage receipt, execution-provenance, and evaluation-runner capabilities before
+promotion; pending dependency evidence is publishable rollback,
 never promotion.
-Missing or `UNKNOWN` #398 telemetry retains rollback and blocks reconciliation,
+Missing or `UNKNOWN` replay-safe usage telemetry retains rollback and blocks reconciliation,
 but does not conflate an admitted delegation with post-usage accounting. A valid
 adverse or retain pilot is publishable without promotion.
 Plan the trusted bundle/config/validator as owned regular files under the
@@ -186,9 +193,10 @@ production `idle` reservations and bind approval to the selected repository-qual
 target. Bind multi-lane result arrays by canonical lane ID, require portable
 ASCII operational IDs before normalized `UNKNOWN` checks, and make admitted
 replays record-only no-ops that cannot repeat a side effect or expose held-local
-launch actions. Plan faithful replay
-handling for original revisions/checkpoints and exactly the current plan-anchored,
-telemetry-only 6be, and pre-telemetry 297f persisted receipt projections; other
+launch actions. Return a terminal delegation block before budget validation.
+Plan faithful replay handling for original revisions/checkpoints and exactly the
+current plan-anchored, telemetry-only 6be, pre-telemetry 297f, and stacked-base
+a556 persisted receipt projections; other
 partial projections remain corrupt. Canonicalize
 case-insensitive control identities with Unicode NFKC, full case folding, and
 trimming; normalize before rejecting nested `UNKNOWN` compatibility forms.
@@ -754,7 +762,7 @@ backend must say so in the declaration.
   rollback evidence.
 - Compact coordinator control: manifest reference, required compaction
   checkpoints, configured threshold/source or `UNKNOWN`, child packet/receipt
-  plan, completed-child non-resumability and closure receipt, and #399
+  plan, completed-child non-resumability and closure receipt, and hierarchical-token-budget
   `batch-token-budget-result` pre-action decisions.
 - Batch title(s):
 - Included items:
