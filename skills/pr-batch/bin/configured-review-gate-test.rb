@@ -461,14 +461,16 @@ class ConfiguredReviewGateTest < Minitest::Test
   end
 
   def test_producer_reviewed_pr_must_match_current_pr
-    foreign = trusted_producer.merge("reviewed_pr" => PR + 1)
-    result = ConfiguredReviewGate.evaluate(
-      policy:, policy_source: JSON.generate(policy),
-      snapshot: snapshot("checks" => [check(producer: foreign)], "artifacts" => [artifact]),
-      settled: true, now: NOW
-    )
+    [PR + 1, nil, PR.to_s, "#{PR}junk", PR + 0.9, 0].each do |reviewed_pr|
+      malformed = trusted_producer.merge("reviewed_pr" => reviewed_pr)
+      result = ConfiguredReviewGate.evaluate(
+        policy:, policy_source: JSON.generate(policy),
+        snapshot: snapshot("checks" => [check(producer: malformed)], "artifacts" => [artifact]),
+        settled: true, now: NOW
+      )
 
-    assert_equal "configured-review-producer-untrusted", result.dig("blockers", 0, "code")
+      assert_equal "configured-review-producer-untrusted", result.dig("blockers", 0, "code"), reviewed_pr.inspect
+    end
   end
 
   def test_collector_rejects_missing_multiple_and_foreign_workflow_run_pr_associations
@@ -478,7 +480,9 @@ class ConfiguredReviewGateTest < Minitest::Test
         { "number" => PR, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } },
         { "number" => PR + 1, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }
       ],
-      "foreign" => [{ "number" => PR + 1, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }]
+      "foreign" => [{ "number" => PR + 1, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }],
+      "string" => [{ "number" => "#{PR}junk", "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }],
+      "float" => [{ "number" => PR + 0.9, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }]
     }
     associations.each do |label, pull_requests|
       run = {
@@ -508,7 +512,7 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_includes script, '.subtype == "success"'
     assert_includes script, ".is_error == false"
     assert_includes script, '.num_turns | type == "number" and floor == . and . > 0'
-    assert_includes script, '.result | type == "string" and length > 0'
+    assert_includes script, '.result | type == "string" and test("\\\\S")'
     refute_includes script, ".is_error // false"
     assert_operator script.scan("exit 1").length, :>=, 3
   end

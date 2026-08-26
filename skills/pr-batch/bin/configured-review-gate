@@ -254,7 +254,8 @@ module ConfiguredReviewGate
         "verified" => producer["app_slug"] == expected["app_slug"] &&
           run["path"] == workflow_path && run["event"] == expected["event"] &&
           run["head_sha"].to_s.casecmp?(head_sha.to_s) &&
-          association.is_a?(Hash) && association["number"].to_i == @pr &&
+          association.is_a?(Hash) && association["number"].is_a?(Integer) &&
+          association["number"].positive? && association["number"] == @pr &&
           association.dig("head", "sha").to_s.casecmp?(head_sha.to_s) &&
           association.dig("base", "sha").to_s.casecmp?(base_sha.to_s) &&
           head_blob == base_blob
@@ -851,7 +852,9 @@ module ConfiguredReviewGate
               actual["event"] == expected["event"] &&
               actual["head_sha"].to_s.casecmp?(expected_head.to_s) &&
               (expected_base.nil? || actual["reviewed_base_sha"].to_s.casecmp?(expected_base.to_s)) &&
-              (expected_pr.nil? || actual["reviewed_pr"].to_i == expected_pr.to_i) &&
+              (expected_pr.nil? ||
+                (actual["reviewed_pr"].is_a?(Integer) && actual["reviewed_pr"].positive? &&
+                 expected_pr.is_a?(Integer) && actual["reviewed_pr"] == expected_pr)) &&
               actual["workflow_blob_sha"].to_s.match?(/\A[0-9a-f]{40}\z/i) &&
               actual["workflow_blob_sha"] == actual["trusted_base_workflow_blob_sha"]
     return if trusted

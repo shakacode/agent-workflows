@@ -88,7 +88,7 @@ jobs:
             .subtype == "success" and
             .is_error == false and
             (.num_turns | type == "number" and floor == . and . > 0) and
-            (.result | type == "string" and length > 0)
+            (.result | type == "string" and test("\\S"))
           ' <<<"$result" >/dev/null; then
             echo "::error::Claude result record is missing explicit successful review evidence."
             exit 1
