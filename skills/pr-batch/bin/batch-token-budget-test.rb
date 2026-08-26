@@ -425,6 +425,22 @@ class BatchTokenBudgetTest < Minitest::Test
     tail["digest"] = object_digest(tail.reject { |key, _value| key == "digest" })
   end
 
+  def project_decision_receipts!(state, profile)
+    receipts = state.fetch("receipts").select do |receipt|
+      receipt["type"] == "batch-token-budget-reservation-decision-receipt"
+    end
+    state.fetch("reservation_decisions").each_value do |fence|
+      receipts.concat(fence.fetch("outcomes").map { |outcome| outcome.fetch("receipt") })
+    end
+    receipts.each do |receipt|
+      receipt.delete("trusted_plan_path")
+      receipt.delete("trusted_plan_id")
+      receipt.delete("trusted_plan_digest")
+      receipt.delete("telemetry_max_age_seconds") if profile == :pre_telemetry_297f
+    end
+    rehash_control_tail(state)
+  end
+
   def rechain_control_events(state)
     previous_digest = "0" * 64
     state.fetch("control_events").each_with_index do |event, index|
@@ -2813,32 +2829,48 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def test_legacy_decision_receipts_replay_without_corrupting_persisted_state
+  def test_pre_telemetry_297f_decision_receipts_transition_to_current_replay
+    assert_legacy_decision_receipt_transition(:pre_telemetry_297f)
+  end
+
+  def test_telemetry_only_6be_decision_receipts_transition_to_current_replay
+    assert_legacy_decision_receipt_transition(:telemetry_only_6be)
+  end
+
+  def test_unsupported_partial_decision_receipt_projection_remains_corrupt
     with_state do |state_path|
       initialize_budget(state_path)
-      request = reservation(id: "legacy-decision-receipt")
+      request = reservation(id: "unsupported-decision-receipt")
       admitted, stderr, status = run_helper(state_path, command("reserve", "reservation" => request))
       assert status.success?, stderr
       assert_equal "admitted", admitted.fetch("status")
 
       state = JSON.parse(File.read(state_path))
-      state.fetch("receipts").each do |receipt|
-        next unless receipt["type"] == "batch-token-budget-reservation-decision-receipt"
-
-        receipt.delete("telemetry_max_age_seconds")
-        receipt.delete("trusted_plan_path")
-        receipt.delete("trusted_plan_id")
-        receipt.delete("trusted_plan_digest")
-      end
-      state.fetch("reservation_decisions").each_value do |fence|
-        fence.fetch("outcomes").each do |outcome|
-          outcome.fetch("receipt").delete("telemetry_max_age_seconds")
-          outcome.fetch("receipt").delete("trusted_plan_path")
-          outcome.fetch("receipt").delete("trusted_plan_id")
-          outcome.fetch("receipt").delete("trusted_plan_digest")
-        end
-      end
+      project_decision_receipts!(state, :telemetry_only_6be)
+      state.fetch("receipts").last["trusted_plan_id"] = state.dig("trusted_plan_binding", "id")
+      state.dig("reservation_decisions", request.fetch("id"), "outcomes", 0, "receipt")["trusted_plan_id"] =
+        state.dig("trusted_plan_binding", "id")
       rehash_control_tail(state)
+      File.write(state_path, JSON.generate(canonicalize(state)))
+
+      output, replay_stderr, replay_status = run_helper(state_path, command("reserve", "reservation" => request))
+
+      refute replay_status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(replay_stderr).fetch("reason")
+    end
+  end
+
+  def assert_legacy_decision_receipt_transition(profile)
+    with_state do |state_path|
+      initialize_budget(state_path)
+      request = reservation(id: "#{profile}-decision-receipt")
+      admitted, stderr, status = run_helper(state_path, command("reserve", "reservation" => request))
+      assert status.success?, stderr
+      assert_equal "admitted", admitted.fetch("status")
+
+      state = JSON.parse(File.read(state_path))
+      project_decision_receipts!(state, profile)
       File.write(state_path, JSON.generate(canonicalize(state)))
 
       replayed, replay_stderr, replay_status = run_helper(
@@ -2851,11 +2883,15 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal 900, replayed.dig("decision_receipt", "telemetry_max_age_seconds")
       assert_equal state.dig("trusted_plan_binding", "path"),
                    replayed.dig("decision_receipt", "trusted_plan_path")
-      persisted = JSON.parse(File.read(state_path))
-      assert_equal 3, persisted.fetch("control_events").length
-      refute persisted.dig(
-        "reservation_decisions", "legacy-decision-receipt", "outcomes", 0, "receipt"
-      ).key?("telemetry_max_age_seconds")
+      persisted_receipt = JSON.parse(File.read(state_path)).dig(
+        "reservation_decisions", request.fetch("id"), "outcomes", 0, "receipt"
+      )
+      if profile == :telemetry_only_6be
+        assert_equal 900, persisted_receipt.fetch("telemetry_max_age_seconds")
+      else
+        refute persisted_receipt.key?("telemetry_max_age_seconds")
+      end
+      refute persisted_receipt.key?("trusted_plan_path")
     end
   end
 

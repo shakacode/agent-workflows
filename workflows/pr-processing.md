@@ -706,10 +706,14 @@ receipt, the production telemetry max age, and evaluation time inside the curren
 trusted-bundle window. The decision receipt must anchor the externally verified
 production plan; require its telemetry max age and every aggregate/coordinator/lane
 limit to equal that plan, and require all hierarchical scope-counter equations.
+For aggregate, coordinator, and every lane, require both `reserved_tokens` and
+`released_tokens` to be no greater than `allocated_tokens`.
 A faithful replay of an original `admitted` result keeps
 its original nil checkpoint; a replayed warning still requires the original
 well-formed checkpoint, and an original decision revision may precede the
-current replay revision. Replayed admission is an idempotent record-only outcome:
+current replay revision. Persisted-state replay accepts exactly current
+plan-anchored, telemetry-only 6be, or pre-telemetry 297f decision receipts; any
+other partial projection remains corrupt. Replayed admission is an idempotent record-only outcome:
 permit only `record_budget_replay`, never a second launch, wake, retry, or other
 side effect or held-local launch action. For a fresh admission, bind receipt
 tokens, aggregate/lane allocation totals, and the overshoot target set to the

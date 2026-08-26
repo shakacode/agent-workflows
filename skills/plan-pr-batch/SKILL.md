@@ -179,14 +179,17 @@ Plan current trusted-bundle-window evidence for budget decision timestamps and
 canonical production request/digest binding across decision and admission
 receipts, including a decision anchor to the externally verified plan, exact
 plan-bound telemetry max age and aggregate/coordinator/all-lane limits,
-hierarchical counter equations, admitted receipt tokens, exact overshoot targets,
+hierarchical counter equations with each scope's reserved/released tokens no
+greater than allocated tokens, admitted receipt tokens, exact overshoot targets,
 and delegation source/target-state binding. Plan approved stale wakes as explicit
 production `idle` reservations and bind approval to the selected repository-qualified
 target. Bind multi-lane result arrays by canonical lane ID, require portable
 ASCII operational IDs before normalized `UNKNOWN` checks, and make admitted
 replays record-only no-ops that cannot repeat a side effect or expose held-local
 launch actions. Plan faithful replay
-handling for original revisions/checkpoints. Canonicalize
+handling for original revisions/checkpoints and exactly the current plan-anchored,
+telemetry-only 6be, and pre-telemetry 297f persisted receipt projections; other
+partial projections remain corrupt. Canonicalize
 case-insensitive control identities with Unicode NFKC, full case folding, and
 trimming; normalize before rejecting nested `UNKNOWN` compatibility forms.
 Plan reconciliation bindings for the canonical task batch ID, exact coordinator

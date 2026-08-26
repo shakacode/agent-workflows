@@ -826,6 +826,18 @@ class CanonicalTaskControlTest < Minitest::Test
     end
   end
 
+  def test_usage_reconciliation_rejects_per_scope_release_above_allocation
+    input = usage_reconciliation_input
+    totals = input.dig("usage_reconciliation", "budget_result", "totals")
+    totals.fetch("coordinator")["released_tokens"] = 1
+    totals.fetch("lanes").fetch("aw-i402")["released_tokens"] -= 1
+
+    _decision, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "reconciliation receipts"
+  end
+
   def test_usage_reconciliation_requires_the_referenced_trusted_artifact
     input = usage_reconciliation_input
     FileUtils.rm_f(input.dig("usage_reconciliation", "usage_receipt_path")) if input.dig("usage_reconciliation", "usage_receipt_path")
@@ -1351,6 +1363,24 @@ class CanonicalTaskControlTest < Minitest::Test
 
     refute status.success?
     assert_includes stderr, "trusted plan limits"
+  end
+
+  def test_admission_totals_reject_per_scope_reservation_above_allocation
+    task = multi_target_task
+    lane = task.fetch("lanes").first
+    input = budget_action_input("retry", task: task, lane: lane)
+    totals = input.dig("budget_gate", "totals")
+    selected = totals.fetch("lanes").fetch(lane.fetch("id"))
+    other = totals.fetch("lanes").fetch(task.fetch("lanes").last.fetch("id"))
+    selected["allocated_tokens"] += 2
+    other["reserved_tokens"] = 2
+    totals.fetch("aggregate")["allocated_tokens"] += 2
+    totals.fetch("aggregate")["reserved_tokens"] += 2
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "hierarchical totals"
   end
 
   def test_budget_result_rejects_receipt_token_and_admitted_totals_mismatches

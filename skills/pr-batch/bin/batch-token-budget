@@ -25,6 +25,12 @@ module BatchTokenBudget
     batch-token-budget-override-expiration-receipt batch-token-budget-release-receipt
     batch-token-budget-reconciliation-receipt
   ].freeze
+  DECISION_RECEIPT_COMPATIBILITY_PROJECTIONS = {
+    "telemetry-only-6be" => %w[trusted_plan_path trusted_plan_id trusted_plan_digest],
+    "pre-telemetry-297f" => %w[
+      telemetry_max_age_seconds trusted_plan_path trusted_plan_id trusted_plan_digest
+    ]
+  }.freeze
   COMPLETE_TIMESTAMP = /
     \A
     (?<year>\d{4})-(?<month>0[1-9]|1[0-2])-(?<day>0[1-9]|[12]\d|3[01])
@@ -904,10 +910,15 @@ module BatchTokenBudget
       return false if replayed_state && digest(control_projection(next_state)) == expected_pre_state_digest
 
       unless event["post_state_digest"] == digest(control_projection(next_state))
-        legacy_state = legacy_decision_receipt_projection(next_state)
-        return false unless event["post_state_digest"] == digest(control_projection(legacy_state))
+        compatible_states = DECISION_RECEIPT_COMPATIBILITY_PROJECTIONS.keys.map do |projection|
+          decision_receipt_compatibility_projection(next_state, projection)
+        end
+        compatible_state = compatible_states.find do |candidate|
+          event["post_state_digest"] == digest(control_projection(candidate))
+        end
+        return false unless compatible_state
 
-        next_state = legacy_state
+        next_state = compatible_state
       end
 
       replayed_state = deep_copy(next_state)
@@ -917,22 +928,25 @@ module BatchTokenBudget
     control_projection(replayed_state) == control_projection(state)
   end
 
-  def legacy_decision_receipt_projection(state)
+  def decision_receipt_compatibility_projection(state, projection)
+    removed_fields = DECISION_RECEIPT_COMPATIBILITY_PROJECTIONS.fetch(projection)
     projected = deep_copy(state)
-    projected.fetch("receipts", []).each { |receipt| remove_current_decision_receipt_fields!(receipt) }
+    projected.fetch("receipts", []).each do |receipt|
+      remove_decision_receipt_fields!(receipt, removed_fields)
+    end
     projected.fetch("reservation_decisions", {}).each_value do |fence|
-      fence.fetch("outcomes", []).each { |outcome| remove_current_decision_receipt_fields!(outcome["receipt"]) }
+      fence.fetch("outcomes", []).each do |outcome|
+        remove_decision_receipt_fields!(outcome["receipt"], removed_fields)
+      end
     end
     projected
   end
 
-  def remove_current_decision_receipt_fields!(receipt)
+  def remove_decision_receipt_fields!(receipt, fields)
     return unless receipt.is_a?(Hash) &&
                   receipt["type"] == "batch-token-budget-reservation-decision-receipt"
 
-    %w[telemetry_max_age_seconds trusted_plan_path trusted_plan_id trusted_plan_digest].each do |field|
-      receipt.delete(field)
-    end
+    fields.each { |field| receipt.delete(field) }
   end
 
   def valid_state?(state, trusted_budget, trusted_plan_binding)

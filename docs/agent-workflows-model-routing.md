@@ -488,12 +488,15 @@ validity window, and review findings must pass the validator module and receipt
 identity resolved through the repository's portable workflow seam.
 Budget decisions bind their evaluation time to that same current bundle window,
 retain faithful original checkpoint/revision semantics on production replay,
-bind the canonical production reservation request and digest through both
+and accept exactly current plan-anchored, telemetry-only 6be, or pre-telemetry
+297f persisted decision receipts; any other partial receipt remains corrupt.
+They bind the canonical production reservation request and digest through both
 decision and admission receipts, and enforce the receipt-carried production
 telemetry max age. The decision receipt also anchors the externally verified
 production plan; its telemetry max age and every aggregate/coordinator/lane
 limit must equal that plan, while all scope counters satisfy the production
-hierarchical equations. Admitted receipt tokens and the exact overshoot target
+hierarchical equations and each scope keeps reserved and released tokens at or
+below allocated tokens. Admitted receipt tokens and the exact overshoot target
 set must match that request; delegation additionally matches the payload source
 identity and target-state classification. An approved stale wake maps explicitly
 to production `idle`, and its approval binds the exact selected repository-qualified

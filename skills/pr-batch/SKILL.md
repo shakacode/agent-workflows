@@ -155,10 +155,14 @@ portable ASCII for operational request/result/reservation IDs before normalized
 `UNKNOWN` checks. Anchor the decision to the externally verified production plan,
 require its telemetry max age and every aggregate/coordinator/lane limit to equal
 that plan, enforce all hierarchical scope-counter equations, and bind admitted
-receipt tokens and the overshoot target set to the request. A delegation request also binds the payload's exact source
+receipt tokens and the overshoot target set to the request. Every scope keeps
+`reserved_tokens` and `released_tokens` at or below `allocated_tokens`. A
+delegation request also binds the payload's exact source
 identity and target state. Preserve faithful replay semantics: admitted replays may retain
 their original nil checkpoint, warning replays may not, and original receipt
-revisions may precede the current replay revision. A replayed admission permits
+revisions may precede the current replay revision. Persisted decision receipts
+accept exactly current plan-anchored, telemetry-only 6be, or pre-telemetry 297f
+projections; other partial projections remain corrupt. A replayed admission permits
 only the idempotent `record_budget_replay` no-op and never repeats launch, wake,
 retry, held-local launch work, or another side effect. Normalize case-insensitive
 control identities with Unicode NFKC plus full case folding and trimming, and
