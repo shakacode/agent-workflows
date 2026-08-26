@@ -11,6 +11,7 @@ module DiffIdentity
 
   CONTRACT = "diff-identity"
   VERSION = 1
+  SERIALIZATION_TAG = "#{CONTRACT}-v#{VERSION}".freeze
   SHA_PATTERN = /\A[0-9a-f]{40}\z/
   REF_FORBIDDEN_CHARACTERS = ["~", "^", ":", "?", "*", "[", "\\"].freeze
 
@@ -23,7 +24,7 @@ module DiffIdentity
   def serialization(base_ref:, base_sha:, head_sha:)
     validate!(base_ref:, base_sha:, head_sha:)
     fields = [
-      "diff-identity-v1",
+      SERIALIZATION_TAG,
       "base_ref", base_ref.bytesize.to_s, base_ref,
       "base_sha", base_sha.bytesize.to_s, base_sha,
       "head_sha", head_sha.bytesize.to_s, head_sha,
@@ -94,8 +95,12 @@ module DiffIdentity
         opts.on("--base-ref REF") do |value|
           options[:base_ref] = utf8_cli_argument!(value, "--base-ref")
         end
-        opts.on("--base-sha SHA") { |value| options[:base_sha] = value }
-        opts.on("--head-sha SHA") { |value| options[:head_sha] = value }
+        opts.on("--base-sha SHA") do |value|
+          options[:base_sha] = utf8_cli_argument!(value, "--base-sha")
+        end
+        opts.on("--head-sha SHA") do |value|
+          options[:head_sha] = utf8_cli_argument!(value, "--head-sha")
+        end
         opts.on("--json") { options[:json] = true }
         opts.on("-h", "--help") { options[:help] = true }
       end

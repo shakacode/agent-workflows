@@ -14,6 +14,15 @@ class DiffIdentityTest < Minitest::Test
   BASE_SHA = "b" * 40
   HEAD_SHA = "a" * 40
 
+  def test_contract_version_and_serialization_domain_are_locked_to_v1
+    assert_equal "diff-identity", DiffIdentity::CONTRACT
+    assert_equal 1, DiffIdentity::VERSION
+    assert_equal "diff-identity-v1", DiffIdentity::SERIALIZATION_TAG
+    assert_equal "diff-identity-v1", DiffIdentity.serialization(
+      base_ref: "main", base_sha: BASE_SHA, head_sha: HEAD_SHA
+    ).split("\0", 2).first
+  end
+
   def test_derives_sha256_from_the_versioned_length_delimited_serialization
     serialization = [
       "diff-identity-v1",
@@ -72,6 +81,19 @@ class DiffIdentityTest < Minitest::Test
     end
   end
 
+  def test_rejects_every_forbidden_ref_character_bare_at_and_leading_dash
+    invalid_refs = [
+      "feature~name", "feature^name", "feature:name", "feature?name",
+      "feature*name", "feature[name", "feature\\name", "@", "-main"
+    ]
+
+    invalid_refs.each do |base_ref|
+      assert_raises(DiffIdentity::Error, base_ref.inspect) do
+        DiffIdentity.derive(base_ref:, base_sha: BASE_SHA, head_sha: HEAD_SHA)
+      end
+    end
+  end
+
   def test_cli_interprets_canonical_ref_bytes_as_utf8_independent_of_locale
     ["main", "feature/café"].each do |base_ref|
       out, err, status = Open3.capture3(
@@ -93,5 +115,17 @@ class DiffIdentityTest < Minitest::Test
 
     refute status.success?
     assert_equal "Error: --base-ref must contain valid UTF-8 bytes\n", err
+  end
+
+  def test_cli_rejects_invalid_utf8_sha_bytes_without_a_backtrace
+    %w[--base-sha --head-sha].each do |option|
+      arguments = ["--base-ref", "main", "--base-sha", BASE_SHA, "--head-sha", HEAD_SHA]
+      arguments[arguments.index(option) + 1] = "\xFF".b
+      _out, err, status = Open3.capture3({ "LC_ALL" => "C" }, RbConfig.ruby, SCRIPT, *arguments)
+
+      refute status.success?, option
+      assert_equal "Error: #{option} must contain valid UTF-8 bytes\n", err
+      refute_match(/diff-identity:\d+|ArgumentError/, err)
+    end
   end
 end
