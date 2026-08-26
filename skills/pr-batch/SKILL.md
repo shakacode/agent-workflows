@@ -767,6 +767,19 @@ split final states from `.agents/workflows/pr-processing.md`.
 
 End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them.
 
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. When the applicable archive gate passes, use
+`Next: Archive this task.` When user input blocks progress, state the smallest
+action that clears the blocker and whether to reply here or start a new task.
+When the current task will continue without input, state its exact next action.
+A durable issue, receipt, or blocker list is evidence, not a next step. Place
+this guidance before any receipt that is required to immediately precede the
+final `Conversation status:` line.
+
+Keep `Action needed:` separate: name the exact user action or `none`. Do not
+make the operator infer whether action is required from the readiness state,
+durable references, or the `Next:` instruction.
+
 ## Coordination State
 
 Use [.agents/workflows/pr-processing.md](../../workflows/pr-processing.md) as the

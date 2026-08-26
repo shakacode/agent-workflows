@@ -2016,6 +2016,17 @@ notification wording.
   instead of, the existing mandatory closeout handoff. Preserve every item of
   required handoff evidence and exact `Conversation status:` line, which remains
   the final user-visible line.
+- Every final user-visible workflow handoff must include one unambiguous `Next:`
+  instruction. When the applicable archive gate passes and no unperformed
+  downstream launch remains, use `Next: Archive this task.` When an
+  archive-ready prompt-only task still requires the user to launch its fenced
+  artifact, name that launch first and end the same ordered `Next:` instruction
+  by telling the user to archive the planning task; a bare archive instruction
+  may not strand the artifact. When user input blocks progress, state the
+  smallest action that clears the blocker and whether to reply here or start a
+  new task.
+  When the current task will continue without input, state its exact next action.
+  A durable issue, receipt, or blocker list is evidence, not a next step.
 - Treat automation lifecycle as separate from notification rendering. After
   each refresh, automatically delete an obsolete heartbeat or monitor when its
   gate clears or becomes durably terminal; retain it on a no-change wake.
@@ -2517,6 +2528,9 @@ Reply with a restart handoff:
   they were stopped or must be restarted after the agent-runner relaunch.
 - Safety: whether it is safe to quit the agent runner now, and any cleanup
   needed before resuming or relaunching.
+- Terminal guidance: end with `Action needed:` stating whether to quit or
+  complete a named cleanup first, followed by `Next:` and the exact same-task
+  resume command or new-task handoff action.
 
 After the claim-preservation step above (or immediately, if this lane held no
 claim), send this handoff reply and then do not run more tools or continue work

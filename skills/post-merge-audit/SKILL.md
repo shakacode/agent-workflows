@@ -405,6 +405,15 @@ Only the coordinator should create issues. Independent Codex and Claude audits s
 
 ## Output
 
+Every final user-visible workflow handoff must include one unambiguous `Next:` instruction.
+This applies to completed-batch, release/range, and coverage catch-up audits.
+When the applicable archive gate passes, use `Next: Archive this task.` When
+user input blocks progress, state the smallest action that clears the blocker
+and whether to reply here or start a new task. When the current task will
+continue without input, state its exact next action.
+Keep `Action needed:` separate: name the exact user action or `none`. A durable
+issue, report, receipt, or blocker list is evidence, not a next step.
+
 In completed-batch mode only:
 
 Once every batch target has a final state, the batch coordinator must run its
@@ -412,7 +421,11 @@ completed-batch audit before its final handoff. Each completed-batch audit is
 owned by its batch coordinator. A parent orchestration agent only reconciles
 the durable audit handoff.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, and final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`.
+
+Put `What changed:`, `Action needed:`, and `Next:` before the compact receipt so
+the receipt can still immediately precede the final `Conversation status:`
+line.
 Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
 
