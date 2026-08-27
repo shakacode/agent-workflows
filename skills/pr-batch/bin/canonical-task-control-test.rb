@@ -923,6 +923,16 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_equal ["record_usage_reconciliation"], result.fetch("allowed_actions")
   end
 
+  def test_usage_reconciliation_accepts_canonical_batch_identity_variants_from_production_state
+    input = usage_reconciliation_input
+    input.fetch("task")["id"] = "TASK-402"
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal ["record_usage_reconciliation"], result.fetch("allowed_actions")
+  end
+
   def test_usage_reconciliation_rejects_empty_fraction_or_utc_offset
     ["2026-08-12T00:00:00.Z", "2026-08-12T00:00:00+00:00"].each do |invalid_time|
       input = usage_reconciliation_input
@@ -1679,7 +1689,7 @@ class CanonicalTaskControlTest < Minitest::Test
   end
 
   def test_budget_gate_is_required_before_every_context_amplifying_action
-    actions = %w[delegation resume worker_spawn retry review_wave]
+    actions = %w[delegation resume retry review_wave]
     actions.each do |action|
       input = base_input.merge(
         "operation" => "budget_action",
@@ -1692,6 +1702,15 @@ class CanonicalTaskControlTest < Minitest::Test
       assert status.success?, "#{action}: #{stderr}"
       assert_equal [action], result.fetch("allowed_actions")
     end
+  end
+
+  def test_budget_action_cannot_authorize_worker_spawn_without_composite_launch_evidence
+    input = budget_action_input("worker_spawn")
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "unsupported budget action"
   end
 
   def test_fresh_budget_action_rejects_admission_without_persisted_budget_state

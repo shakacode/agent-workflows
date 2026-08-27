@@ -359,7 +359,7 @@ module CanonicalTaskControl
       unknowns.concat(pilot_result.fetch("unknowns"))
     when "budget_action"
       action = input.fetch("budget_action")
-      allowed_budget_actions = %w[delegation resume worker_spawn retry review_wave]
+      allowed_budget_actions = %w[delegation resume retry review_wave]
       raise InvalidInput, "unsupported budget action" unless allowed_budget_actions.include?(action)
 
       lane = task.fetch("lanes").find do |candidate|
@@ -1762,7 +1762,9 @@ module CanonicalTaskControl
   def valid_budget_task_identity?(identity, canonical, expected_batch_id: nil)
     return false unless identity.is_a?(Hash) && identity.keys.sort == %w[batch_id lane_id root_id task_id work_item]
     return false unless %w[batch_id lane_id root_id task_id].all? { |key| known_portable_id?(identity[key]) }
-    return false if expected_batch_id && identity["batch_id"] != expected_batch_id
+    if expected_batch_id && canonical_identity(identity["batch_id"]) != canonical_identity(expected_batch_id)
+      return false
+    end
     return false unless canonical_identity(identity["task_id"]) == canonical_identity(canonical["task_id"])
 
     work_item = identity["work_item"]
@@ -1986,7 +1988,8 @@ module CanonicalTaskControl
     coordinator = receipt["coordinator"]
     lanes = receipt["lanes"]
     return unless batch.is_a?(Hash) && batch.keys.sort == %w[id reconciliation scope turns usage] &&
-                  batch["scope"] == "batch" && batch["id"] == expected_batch_id &&
+                  batch["scope"] == "batch" &&
+                  canonical_identity(batch["id"]) == canonical_identity(expected_batch_id) &&
                   batch.dig("reconciliation", "status") == "balanced"
     return unless coordinator.is_a?(Hash) && coordinator["scope"] == "coordinator" &&
                   known_portable_id?(coordinator["id"]) && known_portable_id?(coordinator["root_thread_id"])
@@ -2706,7 +2709,8 @@ module CanonicalTaskControl
                           receipt_ref receipts charge_backs reservation_bindings
                         ])
     unless snapshot["type"] == "batch-token-budget-reconciliation-snapshot" && snapshot["version"] == 1 &&
-           snapshot["status"] == "verified" && snapshot["batch_id"] == expected_batch_id &&
+           snapshot["status"] == "verified" &&
+           canonical_identity(snapshot["batch_id"]) == canonical_identity(expected_batch_id) &&
            nonnegative_integer?(snapshot["state_revision"]) &&
            snapshot["state_revision"] >= budget_result["state_revision"] &&
            rfc3339_utc?(snapshot["last_evaluated_at"]) &&
