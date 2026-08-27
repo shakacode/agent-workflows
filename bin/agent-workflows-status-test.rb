@@ -275,6 +275,18 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal commit, payload.fetch("exact_commit")
         assert_equal "1.2.3", payload.fetch("available_version")
 
+        out, status = run_status(
+          { "QA_SUPERPOWERS_STATE" => "active", "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev" },
+          "--target", target, "--host", "codex", "--source", source,
+          "--channel", "stable", "--release", "v1.2.3", "--json"
+        )
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "stable", payload.fetch("channel")
+        assert_equal commit, payload.fetch("exact_commit")
+        assert_equal "active", payload.dig("superpowers", "state")
+
         system("git", "-C", source, "tag", "-d", "v1.2.3", out: File::NULL, exception: true)
         system("git", "-C", source, "tag", "-a", "v1.2.3", "-m", "moved release", exception: true)
         out, status = run_status({}, "--target", target, "--host", "claude", "--source", source, "--json")
