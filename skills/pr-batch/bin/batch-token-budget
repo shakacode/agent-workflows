@@ -2278,6 +2278,7 @@ module BatchTokenBudget
                         evidence["sources"] == ["codex_rollout_jsonl", "state_5.sqlite"] &&
                         evidence["unknown"].is_a?(Array) &&
                         evidence["unknown"].all? { |reason| v2_unknown_reason_shape?(reason) }
+    return false if evidence["status"] == "UNKNOWN" && evidence["unknown"].empty?
 
     privacy = usage_receipt["privacy"]
     return false unless exact_object_keys?(privacy, %w[emitted_or_persisted_content excluded mode]) &&

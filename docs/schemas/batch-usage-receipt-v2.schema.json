@@ -41,6 +41,12 @@
         "sources": {"const": ["codex_rollout_jsonl", "state_5.sqlite"]},
         "unknown": {"type": "array", "items": {"$ref": "#/$defs/unknownReason"}}
       },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "UNKNOWN"}}, "required": ["status"]},
+          "then": {"properties": {"unknown": {"minItems": 1}}}
+        }
+      ],
       "additionalProperties": false
     },
     "privacy": {

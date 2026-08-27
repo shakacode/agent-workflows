@@ -30,6 +30,13 @@ class BatchTokenBudgetTest < Minitest::Test
   File.write(DEFAULT_TRUSTED_CLOCK_PRELOADER, TRUSTED_CLOCK_SOURCE)
   Minitest.after_run { FileUtils.remove_entry(DEFAULT_TRUSTED_CLOCK_DIRECTORY) }
 
+  def test_triage_budget_abbreviation_names_the_coordinator_scope
+    triage_skill = File.read(File.expand_path("../../triage/SKILL.md", __dir__), encoding: "UTF-8")
+
+    assert_includes triage_skill, "`A/R/L` is aggregate/coordinator/lane limits"
+    refute_includes triage_skill, "`A/R/L` is aggregate/root/lane limits"
+  end
+
   def budget(state_path: nil)
     parsed = JSON.parse(File.read(FIXTURE))
     parsed["state_path"] = state_path if state_path
@@ -2803,6 +2810,27 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_consumer_rejects_a_forged_balanced_lane_with_unknown_turn_operands_without_accounting
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, = real_descendants_usage_receipt(state_path, remove_turn_context_for: "lane-a.jsonl")
+      lane = receipt.fetch("lanes").find { |candidate| candidate.fetch("id") == "lane-a" }
+      lane.fetch("reconciliation")["status"] = "balanced"
+      assert_equal "UNKNOWN", lane.dig("turns", "descendant_inclusive")
+      projection_before = JSON.parse(File.binread(state_path))
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "forged-balanced-unknown-turns")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      projection_after = JSON.parse(File.binread(state_path))
+      assert_equal projection_before.fetch("scopes"), projection_after.fetch("scopes")
+      assert_empty projection_after.fetch("usage_receipts")
+      assert_nil projection_after["usage_cursor"]
+    end
+  end
+
   def test_batch_usage_window_preserves_cross_task_charge_back_without_double_counting
     with_state do |state_path|
       initialize_budget(state_path)
@@ -2942,6 +2970,33 @@ class BatchTokenBudgetTest < Minitest::Test
         assert_equal "NOT COMPLETE", closeout.fetch("completion"), name
         assert_equal "usage-cursor-missing", closeout.dig("telemetry", "reason"), name
       end
+    end
+  end
+
+  def test_top_level_unknown_without_a_reason_is_rejected_before_accounting_or_persistence
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, = real_descendants_usage_receipt(state_path)
+      receipt.fetch("evidence").merge!("status" => "UNKNOWN", "unknown" => [])
+      state_before = File.binread(state_path)
+      projection_before = JSON.parse(state_before)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "empty-top-level-unknown")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      projection_after = JSON.parse(File.binread(state_path))
+      assert_equal projection_before.fetch("control_events"), projection_after.fetch("control_events")
+      assert_equal projection_before.fetch("scopes"), projection_after.fetch("scopes")
+      assert_equal projection_before.fetch("usage_receipts"), projection_after.fetch("usage_receipts")
+      assert_nil projection_before["usage_cursor"]
+      assert_nil projection_after["usage_cursor"]
+
+      restarted, restart_stderr, restart_status = run_helper(state_path, command("closeout"))
+      assert restart_status.success?, restart_stderr
+      assert_equal "not-complete", restarted.fetch("status")
     end
   end
 

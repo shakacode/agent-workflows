@@ -294,7 +294,7 @@ precise blocker.
    `Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop` and
    `Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart` and
    `Worker model/effort preferences:<initial>/<effort>-><lanes>;escalate <route> after MODEL_ESCALATION_REQUEST;max=N.`
-   In the v1 budget form, `A/R/L` is aggregate/root/lane limits, `W/P/H` is
+   In the v1 budget form, `A/R/L` is aggregate/coordinator/lane limits, `W/P/H` is
    warning/approval-or-pause/hard-stop thresholds, `a/d` is freshness
    age/delegation threshold, and `S/T/I/D` is the exact state
    path/trusted-plan path/id/digest; substitute the actual values rather than

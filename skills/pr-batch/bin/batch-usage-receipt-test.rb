@@ -164,6 +164,18 @@ class BatchUsageReceiptTest < Minitest::Test
     end
   end
 
+  def test_lane_reconciliation_is_unknown_when_both_turn_operands_are_unknown
+    fixture = fixture_copy("descendants")
+    %w[lane-a.jsonl unnamed-a.jsonl worker-a.jsonl].each do |rollout|
+      fixture.dig("rollouts", rollout).reject! { |record| record["type"] == "turn_context" }
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("lanes", 0, "turns", "descendant_inclusive")
+    assert_equal "UNKNOWN", receipt.dig("lanes", 0, "reconciliation", "status")
+  end
+
   def test_positive_usage_after_an_invalid_turn_context_has_unknown_turn_evidence
     fixture = fixture_copy("descendants")
     fixture.dig("rollouts", "root.jsonl", 1)["timestamp"] = "not-a-time"
@@ -1244,6 +1256,13 @@ class BatchUsageReceiptTest < Minitest::Test
     missing_turns = JSON.parse(JSON.generate(receipt))
     missing_turns.fetch("coordinator").delete("turns")
     refute_empty JSONSchemer.schema(schema).validate(missing_turns).to_a
+  end
+
+  def test_v2_schema_requires_top_level_unknown_evidence_to_name_at_least_one_exact_reason
+    receipt, = run_fixture("replay")
+    receipt.fetch("evidence").merge!("status" => "UNKNOWN", "unknown" => [])
+
+    refute_empty JSONSchemer.schema(receipt_schema(2)).validate(receipt).to_a
   end
 
   def test_v2_schema_rejects_accounting_extensions_the_budget_evaluator_does_not_accept

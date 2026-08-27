@@ -931,6 +931,8 @@ module BatchUsageReceipt
       receipt["reconciliation"] = {
         "status" => if !@topology_unknown_lane_ids.include?(lane.fetch("id")) &&
                        known_usage?(reconciled) && reconciled == receipt.dig("usage", "descendant_inclusive") &&
+                       reconciled_turns.is_a?(Integer) &&
+                       receipt.dig("turns", "descendant_inclusive").is_a?(Integer) &&
                        reconciled_turns == receipt.dig("turns", "descendant_inclusive")
                       "balanced"
                     else
