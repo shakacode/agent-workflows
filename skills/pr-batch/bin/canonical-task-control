@@ -2438,15 +2438,11 @@ module CanonicalTaskControl
       raise InvalidInput, "trusted budget state active reservation identifiers must be unique"
     end
 
-    summed = lane_reserved_tokens.keys.to_h { |lane_id| [canonical_identity(lane_id), 0] }
+    lane_ids = lane_reserved_tokens.keys.map { |lane_id| canonical_identity(lane_id) }
     active.each_value do |record|
       scope_id = canonical_identity(record.fetch("scope_id"))
-      raise InvalidInput, "trusted budget state active reservation lane is invalid" unless summed.key?(scope_id)
-
-      summed[scope_id] += record.fetch("tokens")
+      raise InvalidInput, "trusted budget state active reservation lane is invalid" unless lane_ids.include?(scope_id)
     end
-    expected = lane_reserved_tokens.to_h { |lane_id, tokens| [canonical_identity(lane_id), tokens] }
-    raise InvalidInput, "trusted budget state active reservation totals mismatch" unless summed == expected
 
     active
   end

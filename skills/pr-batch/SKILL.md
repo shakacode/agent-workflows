@@ -624,7 +624,11 @@ concurrent over-allocation and replays reservation/release ids safely. For launc
 concurrency checks, use `--state-snapshot` with the trusted plan anchor and no
 caller-supplied state path or state digest. It verifies the state under the
 existing lock and emits only the plan binding, revision/time watermark, decision
-ledger bindings, active reservation bindings, and per-lane reserved totals. Exact
+ledger bindings, active reservation bindings, and per-lane reserved totals. An
+active reservation keeps its original admitted tokens for receipt binding while
+the lane total reports current remaining tokens after reconciliation; do not
+equate them, and continue counting the active lane even when remaining tokens
+reach zero. Exact
 existing reservation IDs replay their durable outcome before telemetry freshness
 is considered; changed payloads fail the digest fence. At most one reservation
 is active per accounting scope: same-scope nested work coalesces while different

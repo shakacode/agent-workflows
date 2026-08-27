@@ -995,7 +995,10 @@ emits a bounded ledger/totals snapshot without accepting a caller-supplied state
 path or digest. Bind every submitted reservation ID, request digest, decision
 status, and decision revision to that ledger; derive active lane IDs from active
 reservations and positive lane reserved totals, and reject missing, corrupt, or
-stale state.
+stale state. Keep each active reservation's original admitted token amount for
+receipt binding and treat the lane reserved total as its current remaining
+amount after reconciliation. Do not require those values to be equal, and count
+persisted active reservations even when the current remaining amount is zero.
 
 Before every coordinator or worker model turn, spawn, retry, review wave,
 scheduled continuation, monitor wake, resume, replacement, escalation, or

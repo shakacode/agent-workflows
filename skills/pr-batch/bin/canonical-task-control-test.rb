@@ -1851,6 +1851,56 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "launch budget decision is absent from trusted state"
   end
 
+  def test_launch_accepts_verified_active_reservation_after_partial_reconciliation
+    input = launch_input
+    gate = input.fetch("budget_gate").first
+    decision = gate.fetch("decision_receipt")
+    plan = JSON.parse(File.read(decision.fetch("trusted_plan_path")))
+    anchor = {
+      "path" => decision.fetch("trusted_plan_path"),
+      "id" => decision.fetch("trusted_plan_id"),
+      "digest" => decision.fetch("trusted_plan_digest")
+    }
+    state_path = plan.fetch("state_path")
+    state = JSON.parse(File.read(state_path))
+    now = Time.now.utc
+    receipt = usage_receipt(
+      batch_id: input.dig("task", "id"), lane_id: input.dig("task", "lanes", 0, "id"),
+      total_tokens: 6_000, coordinator_tokens: 0, lane_tokens: 6_000,
+      total_turns: 1, coordinator_turns: 0, lane_turns: 1, credits: 0.6
+    )
+    receipt.fetch("window")["from_inclusive"] = state.fetch("usage_initial_cutoff")
+    receipt.fetch("window")["to_exclusive"] = (now - 5).iso8601
+    receipt_ref = install_usage_receipt(receipt, label: "partial-launch")
+    receipt_digest = findings_digest(receipt)
+    reconciled, reconcile_stderr, reconcile_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command(
+        "reconcile", plan,
+        {
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        },
+        evaluated_at: now.iso8601
+      )
+    )
+    assert reconcile_status.success?, reconcile_stderr
+    assert_equal "reconciled", reconciled.fetch("status")
+    assert_equal 4_000, reconciled.dig("totals", "lanes", "aw-i402", "reserved_tokens")
+
+    snapshot, snapshot_stderr, snapshot_status = run_budget_state_snapshot(anchor)
+    assert snapshot_status.success?, snapshot_stderr
+    assert_equal 10_000, snapshot.dig("active_reservations", 0, "tokens")
+    assert_equal 4_000, snapshot.dig("lane_reserved_tokens", "aw-i402")
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "allow", result.fetch("verdict")
+  end
+
   def test_launch_allows_one_lane_under_serial_multi_target_exception
     task = multi_target_task
     input = launch_input(task, launch_lanes: [task.fetch("lanes").first])
@@ -2873,6 +2923,17 @@ class CanonicalTaskControlTest < Minitest::Test
       "--trusted-plan-id", anchor.fetch("id"),
       "--trusted-plan-digest", anchor.fetch("digest"),
       stdin_data: JSON.generate(command)
+    )
+    [stdout.empty? ? {} : JSON.parse(stdout), stderr, status]
+  end
+
+  def run_budget_state_snapshot(anchor)
+    stdout, stderr, status = Open3.capture3(
+      BUDGET_HELPER,
+      "--state-snapshot",
+      "--trusted-plan", anchor.fetch("path"),
+      "--trusted-plan-id", anchor.fetch("id"),
+      "--trusted-plan-digest", anchor.fetch("digest")
     )
     [stdout.empty? ? {} : JSON.parse(stdout), stderr, status]
   end
