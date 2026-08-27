@@ -166,6 +166,22 @@ module BatchPlanPreflight
     raise JSON::ParserError, "duplicate-object-key"
   end
 
+  def read_trusted_plan(path)
+    file = File.open(path, File::RDONLY | File::NONBLOCK, encoding: Encoding::UTF_8)
+    stat = file.stat
+    return [nil, :nonregular] unless stat.file?
+    return [nil, :oversized] if stat.size > TRUSTED_PLAN_MAX_BYTES
+
+    contents = file.read(TRUSTED_PLAN_MAX_BYTES + 1)
+    return [nil, :oversized] if contents.bytesize > TRUSTED_PLAN_MAX_BYTES
+
+    [contents, nil]
+  rescue ArgumentError, IOError, SystemCallError
+    [nil, :unreadable]
+  ensure
+    file&.close
+  end
+
   def violation(code, path, message, lane_ids: nil)
     item = { "code" => code, "path" => path, "message" => message }
     item["lane_ids"] = lane_ids if lane_ids
@@ -595,38 +611,37 @@ module BatchPlanPreflight
     trusted_plan_parsed = false
     if valid_anchor
       trusted_plan_path = anchor.fetch("trusted_plan_path")
-      if File.file?(trusted_plan_path) && File.readable?(trusted_plan_path)
+      trusted_plan_json, trusted_plan_error = read_trusted_plan(trusted_plan_path)
+      case trusted_plan_error
+      when :oversized
+        violations << violation(
+          "token-budget-trusted-plan-oversized",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must not exceed the pinned 1 MiB artifact limit."
+        )
+      when :nonregular
+        violations << violation(
+          "token-budget-trusted-plan-nonregular",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must resolve to a regular file opened without blocking."
+        )
+      when :unreadable
+        violations << violation(
+          "token-budget-trusted-plan-unreadable",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must be a readable persisted file before preflight."
+        )
+      else
         begin
-          trusted_plan_json = File.read(trusted_plan_path, TRUSTED_PLAN_MAX_BYTES + 1, encoding: "UTF-8")
-          if trusted_plan_json.bytesize > TRUSTED_PLAN_MAX_BYTES
-            violations << violation(
-              "token-budget-trusted-plan-oversized",
-              "$.plan.token_budget_anchor.trusted_plan_path",
-              "Trusted token-budget plan must not exceed the pinned 1 MiB artifact limit."
-            )
-          else
-            trusted_plan_artifact = parse_json_strict(trusted_plan_json)
-            trusted_plan_parsed = true
-          end
+          trusted_plan_artifact = parse_json_strict(trusted_plan_json)
+          trusted_plan_parsed = true
         rescue JSON::ParserError
           violations << violation(
             "token-budget-trusted-plan-malformed",
             "$.plan.token_budget_anchor.trusted_plan_path",
             "Trusted token-budget plan must contain one strict JSON object without duplicate keys."
           )
-        rescue SystemCallError
-          violations << violation(
-            "token-budget-trusted-plan-unreadable",
-            "$.plan.token_budget_anchor.trusted_plan_path",
-            "Trusted token-budget plan must be a readable persisted file before preflight."
-          )
         end
-      else
-        violations << violation(
-          "token-budget-trusted-plan-unreadable",
-          "$.plan.token_budget_anchor.trusted_plan_path",
-          "Trusted token-budget plan must be a readable persisted file before preflight."
-        )
       end
     end
     if trusted_plan_parsed

@@ -8,6 +8,7 @@ require "open3"
 require "openssl"
 require "rbconfig"
 require "tempfile"
+require "timeout"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
 STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
@@ -377,6 +378,34 @@ class BatchPlanPreflightTest < Minitest::Test
   def evaluate_raw(input)
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, HELPER, stdin_data: input)
     [JSON.parse(stdout), stderr, status]
+  end
+
+  def evaluate_with_watchdog(input, env:, timeout_seconds:)
+    stdin, stdout, stderr, wait_thread = Open3.popen3(
+      env,
+      RbConfig.ruby,
+      HELPER,
+      pgroup: true
+    )
+    stdin.write(JSON.generate(input))
+    stdin.close
+    stdout_reader = Thread.new { stdout.read }
+    stderr_reader = Thread.new { stderr.read }
+    timed_out = false
+    begin
+      status = Timeout.timeout(timeout_seconds) { wait_thread.value }
+    rescue Timeout::Error
+      timed_out = true
+      Process.kill("KILL", -wait_thread.pid)
+      status = wait_thread.value
+    ensure
+      stdout.close unless stdout.closed?
+      stderr.close unless stderr.closed?
+    end
+
+    stdout_text = stdout_reader.value
+    stderr_text = stderr_reader.value
+    [stdout_text.empty? ? nil : JSON.parse(stdout_text), stderr_text, status, timed_out]
   end
 
   def evaluate_stage_dependency_gate(plan, lanes:, edges:)
@@ -979,6 +1008,122 @@ class BatchPlanPreflightTest < Minitest::Test
       refute status.success?
       assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
                       "token-budget-trusted-plan-unreadable"
+    end
+  end
+
+  def test_token_budget_trusted_plan_fifo_swap_is_rejected_without_blocking
+    Dir.mktmpdir("batch-plan-trusted-budget-fifo-swap") do |directory|
+      input = input_for
+      enable_token_budget(input)
+      trusted_plan_path = input.dig("plan", "token_budget_anchor", "trusted_plan_path")
+      fifo_path = File.join(directory, "replacement.fifo")
+      assert system("mkfifo", fifo_path)
+      swap_hook = File.join(directory, "swap-hook.rb")
+      File.write(swap_hook, <<~'RUBY')
+        module TrustedPlanFifoSwap
+          def file?(path)
+            result = super
+            swap_trusted_plan(path) if result
+            result
+          end
+
+          def open(path, *args, **kwargs, &block)
+            swap_trusted_plan(path)
+            super
+          end
+
+          private
+
+          def swap_trusted_plan(path)
+            return unless path.to_s == ENV["BATCH_PLAN_PREFLIGHT_SWAP_TARGET"]
+
+            source = ENV["BATCH_PLAN_PREFLIGHT_SWAP_SOURCE"]
+            File.rename(source, path) if source && File.exist?(source)
+          end
+        end
+
+        File.singleton_class.prepend(TrustedPlanFifoSwap)
+      RUBY
+
+      result, stderr, status, timed_out = evaluate_with_watchdog(
+        input,
+        env: {
+          "RUBYOPT" => "-r#{swap_hook}",
+          "BATCH_PLAN_PREFLIGHT_SWAP_TARGET" => trusted_plan_path,
+          "BATCH_PLAN_PREFLIGHT_SWAP_SOURCE" => fifo_path
+        },
+        timeout_seconds: 2
+      )
+
+      refute timed_out, "trusted-plan read blocked after a regular-path-to-FIFO swap"
+      refute status.success?, stderr
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-trusted-plan-nonregular"
+    end
+  end
+
+  def test_token_budget_trusted_plan_symlink_to_regular_artifact_remains_valid
+    Dir.mktmpdir("batch-plan-trusted-budget-symlink") do |directory|
+      input = input_for
+      enable_token_budget(input)
+      trusted_plan_path = input.dig("plan", "token_budget_anchor", "trusted_plan_path")
+      symlink_path = File.join(directory, "trusted-plan.json")
+      File.symlink(trusted_plan_path, symlink_path)
+      input.dig("plan", "token_budget_anchor")["trusted_plan_path"] = symlink_path
+
+      result, stderr, status = evaluate(input)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_token_budget_trusted_plan_descriptor_stat_and_read_failures_are_structured
+    %w[stat read].each do |operation|
+      Dir.mktmpdir("batch-plan-trusted-budget-#{operation}-failure") do |directory|
+        input = input_for
+        enable_token_budget(input)
+        trusted_plan_path = input.dig("plan", "token_budget_anchor", "trusted_plan_path")
+        failure_hook = File.join(directory, "failure-hook.rb")
+        File.write(failure_hook, <<~'RUBY')
+          module TrustedPlanDescriptorFailure
+            def stat
+              fail_if_target("stat")
+              super
+            end
+
+            def read(*args)
+              fail_if_target("read")
+              super
+            end
+
+            private
+
+            def fail_if_target(operation)
+              return unless path == ENV["BATCH_PLAN_PREFLIGHT_FAILURE_TARGET"]
+              return unless operation == ENV["BATCH_PLAN_PREFLIGHT_FAILURE_OPERATION"]
+
+              raise Errno::EIO, "injected trusted-plan descriptor #{operation} failure"
+            end
+          end
+
+          File.prepend(TrustedPlanDescriptorFailure)
+        RUBY
+
+        result, stderr, status = evaluate(
+          input,
+          env: {
+            "RUBYOPT" => "-r#{failure_hook}",
+            "BATCH_PLAN_PREFLIGHT_FAILURE_TARGET" => trusted_plan_path,
+            "BATCH_PLAN_PREFLIGHT_FAILURE_OPERATION" => operation
+          }
+        )
+
+        refute status.success?, stderr
+        assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                        "token-budget-trusted-plan-unreadable", operation
+      end
     end
   end
 
