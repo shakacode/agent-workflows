@@ -1343,7 +1343,7 @@ RUBY
 }
 
 test_metadata_commit_rejects_replaced_prepared_file() {
-  local tmp target metadata injection marker output status
+  local tmp target metadata injection marker output status preserved
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   metadata="$target/.agent-workflows-install.json"
@@ -1377,6 +1377,10 @@ RUBY
   assert_file "$target/skills/pr-batch/SKILL.md"
   grep -Rql '"source":"/tmp/attacker"' "$target" || \
     fail "replaced prepared metadata was deleted"
+  preserved="$(find "$target" -maxdepth 1 -type f -name '.cleanup-*' -print -quit)"
+  [[ -n "$preserved" ]] || fail "replaced prepared metadata did not retain private evidence"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $preserved"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING: preserved $metadata.tmp because"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
     fail "replaced prepared metadata left an unnecessary empty install lock"
 }
@@ -3394,7 +3398,7 @@ RUBY
 }
 
 test_normal_guard_cleanup_preserves_post_attestation_replacement() {
-  local tmp target lock guard injection output status
+  local tmp target lock guard injection output status preserved
   tmp="$(mktemp -d)"; target="$tmp/codex-home"; lock="$target/.agent-workflows-install.lock"
   guard="$lock/metadata-commit-old.guard"; injection="$tmp/swap-normal-guard-cleanup.rb"
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
@@ -3425,6 +3429,10 @@ RUBY
   grep -Rql "foreign normal guard replacement" "$lock" || \
     fail "normal guard cleanup deleted foreign replacement"
   assert_file "$guard.attested"
+  preserved="$(find "$lock" -maxdepth 1 -type f -name 'metadata-commit-old.cleanup-*' -print -quit)"
+  [[ -n "$preserved" ]] || fail "normal guard cleanup did not retain private evidence"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $preserved"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING: preserved $guard because"
 }
 
 test_successful_install_reports_retained_lock_cleanup_pending() {
@@ -3446,6 +3454,31 @@ RUBY
   assert_contains "$output" "move the entire preserved path aside"
   assert_file "$target/.agent-workflows-install.json"
   [[ -d "$lock" ]] || fail "lock cleanup failure did not preserve lock"
+}
+
+test_successful_install_reports_private_lock_after_post_detach_failure() {
+  local tmp target clean_target lock injection output status preserved clean_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; clean_target="$tmp/clean-home"
+  lock="$target/.agent-workflows-install.lock"; injection="$tmp/fail-lock-after-detach.rb"
+  clean_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$clean_target" --mode copy --delivery-mode flat 2>&1)"
+  assert_not_contains "$clean_output" "METADATA_CLEANUP_PENDING"
+  cat > "$injection" <<'RUBY'
+module BoundDirCleanupPostDetachHook
+  def self.call(path)
+    raise Errno::EIO if path.include?(".cleanup-dir-")
+  end
+end
+RUBY
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "post-detach lock cleanup failure reported success"
+  [[ ! -e "$lock" ]] || fail "post-detach lock cleanup left the canonical lock name"
+  preserved="$(find "$target" -maxdepth 1 -type d -name '.cleanup-dir-*' -print -quit)"
+  [[ -n "$preserved" ]] || fail "post-detach lock cleanup did not retain private evidence"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $preserved"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING: preserved $lock because"
+  assert_file "$target/.agent-workflows-install.json"
 }
 
 test_restore_post_attestation_cleanup_preserves_source_replacement() {
@@ -6727,6 +6760,7 @@ main() {
     test_metadata_prebind_cleanup_preserves_replacement_guard
     test_normal_guard_cleanup_preserves_post_attestation_replacement
     test_successful_install_reports_retained_lock_cleanup_pending
+    test_successful_install_reports_private_lock_after_post_detach_failure
     test_metadata_commit_link_capability_failure_stops_before_managed_mutation
     test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation
     test_atomic_rename_capability_failure_stops_before_recovery_mutation

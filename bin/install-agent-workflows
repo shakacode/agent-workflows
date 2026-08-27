@@ -553,7 +553,7 @@ capture_bound_recovery_metadata() {
 }
 
 capture_installed_metadata_for_recovery() {
-  local original_attestation original_identity capture_protocol capture_status
+  local original_attestation original_identity capture_protocol capture_status cleanup_path
   local snapshot_identity backup_identity sentinel_identity target_identity
   local metadata_absent_under_lock="${1:-false}"
   recovery_metadata_path="$target/$metadata_name"
@@ -589,14 +589,16 @@ capture_installed_metadata_for_recovery() {
     return 70
   fi
   if ! recovery_metadata_quarantine_identity="$(recovery_directory_identity "$recovery_metadata_quarantine")"; then
-    remove_bound_empty_directory "$recovery_metadata_quarantine" \
-      "$recovery_metadata_quarantine_identity" 2>/dev/null || true
+    cleanup_path="$(remove_bound_empty_directory "$recovery_metadata_quarantine" \
+      "$recovery_metadata_quarantine_identity" 2>/dev/null)" || \
+      [[ -z "$cleanup_path" ]] || recovery_metadata_quarantine="$cleanup_path"
     return 70
   fi
   recovery_metadata_cleanup_receipt="$target/$metadata_name.cleanup-complete-${recovery_metadata_quarantine##*.recovery-}"
   if [[ -e "$recovery_metadata_cleanup_receipt" || -L "$recovery_metadata_cleanup_receipt" ]]; then
-    remove_bound_empty_directory "$recovery_metadata_quarantine" \
-      "$recovery_metadata_quarantine_identity" 2>/dev/null || true
+    cleanup_path="$(remove_bound_empty_directory "$recovery_metadata_quarantine" \
+      "$recovery_metadata_quarantine_identity" 2>/dev/null)" || \
+      [[ -z "$cleanup_path" ]] || recovery_metadata_quarantine="$cleanup_path"
     return 70
   fi
   recovery_metadata_snapshot="$recovery_metadata_quarantine/metadata"
@@ -609,8 +611,9 @@ capture_installed_metadata_for_recovery() {
   [[ "$capture_status" -eq 0 ]] || {
     if [[ "$(recovery_directory_identity "$recovery_metadata_quarantine" 2>/dev/null || true)" = \
           "$recovery_metadata_quarantine_identity" ]]; then
-      remove_bound_empty_directory "$recovery_metadata_quarantine" \
-        "$recovery_metadata_quarantine_identity" 2>/dev/null || true
+      cleanup_path="$(remove_bound_empty_directory "$recovery_metadata_quarantine" \
+        "$recovery_metadata_quarantine_identity" 2>/dev/null)" || \
+        [[ -z "$cleanup_path" ]] || recovery_metadata_quarantine="$cleanup_path"
     fi
     [[ "$capture_status" -eq 67 ]] && return 1
     return 70
@@ -965,6 +968,9 @@ remove_install_metadata_rollback_guard() {
       end
     end
     lock, expected = ARGV
+    retained = File.join(lock, "metadata-commit-old.guard")
+    success = false
+    at_exit { print retained unless success }
     lock_path_stat = File.lstat(lock)
     lock_file = File.open(lock, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
     lock_stat = lock_file.stat
@@ -986,6 +992,8 @@ remove_install_metadata_rollback_guard() {
     abort unless AtomicMetadataGuardCleanup.no_replace(
       lock_file.fileno, "metadata-commit-old.guard", cleanup_name
     ) == 0
+    retained = File.join(lock, cleanup_name)
+    AtomicMetadataGuardCleanupPostDetachHook.call(retained) if defined?(AtomicMetadataGuardCleanupPostDetachHook)
     moved_fd = AtomicMetadataGuardCleanup.openat(
       lock_file.fileno, cleanup_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW
     )
@@ -1001,6 +1009,7 @@ remove_install_metadata_rollback_guard() {
     abort unless AtomicMetadataGuardCleanup.unlinkat(
       lock_file.fileno, cleanup_name, 0
     ) == 0
+    success = true
   ' "$install_lock" "$install_metadata_binding_attestation" 2>/dev/null
 }
 
@@ -2150,15 +2159,20 @@ remove_attested_metadata_file() {
         def self.no_replace(fd, a, b); renameat2(fd, a, fd, b, 0x1); end
       end
     end
-    path, expected = ARGV; parent = File.open(File.dirname(path), File::RDONLY | File::NOFOLLOW)
+    path, expected = ARGV; retained = path; success = false
+    at_exit { print retained unless success }
+    parent = File.open(File.dirname(path), File::RDONLY | File::NOFOLLOW)
     name = File.basename(path); private_name = ".cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
     BoundCleanupHook.call(path) if defined?(BoundCleanupHook)
     abort unless BoundCleanup.no_replace(parent.fileno, name, private_name) == 0
+    retained = File.join(File.dirname(path), private_name)
+    BoundCleanupPostDetachHook.call(retained) if defined?(BoundCleanupPostDetachHook)
     fd = BoundCleanup.openat(parent.fileno, private_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW); abort if fd == -1
     file = File.for_fd(fd); stat = file.stat; digest = Digest::SHA256.new
     while (chunk = file.read(64 * 1024)); digest.update(chunk); end
     abort unless stat.file? && "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}" == expected
     abort unless BoundCleanup.unlinkat(parent.fileno, private_name, 0) == 0
+    success = true
   ' "$path" "$expected" 2>/dev/null
 }
 
@@ -2179,18 +2193,23 @@ remove_bound_empty_directory() {
         REMOVE_DIR = 0x200
       end
     end
-    path, expected = ARGV; parent = File.open(File.dirname(path), File::RDONLY | File::NOFOLLOW)
+    path, expected = ARGV; retained = path; success = false
+    at_exit { print retained unless success }
+    parent = File.open(File.dirname(path), File::RDONLY | File::NOFOLLOW)
     name = File.basename(path); private_name = ".cleanup-dir-#{Process.pid}-#{SecureRandom.hex(12)}"
     original_fd = BoundDirCleanup.openat(parent.fileno, name, File::RDONLY | File::NOFOLLOW); abort if original_fd == -1
     original = File.for_fd(original_fd); original_stat = original.stat
     abort unless original_stat.directory? && "#{original_stat.dev}:#{original_stat.ino}" == expected && Dir.empty?(path)
     BoundDirCleanupHook.call(path) if defined?(BoundDirCleanupHook)
     abort unless BoundDirCleanup.no_replace(parent.fileno, name, private_name) == 0
+    retained = File.join(File.dirname(path), private_name)
+    BoundDirCleanupPostDetachHook.call(retained) if defined?(BoundDirCleanupPostDetachHook)
     fd = BoundDirCleanup.openat(parent.fileno, private_name, File::RDONLY | File::NOFOLLOW); abort if fd == -1
     directory = File.for_fd(fd); stat = directory.stat
     private_path = File.join(File.dirname(path), private_name)
     abort unless stat.directory? && "#{stat.dev}:#{stat.ino}" == expected && Dir.empty?(private_path)
     abort unless BoundDirCleanup.unlinkat(parent.fileno, private_name, BoundDirCleanup::REMOVE_DIR) == 0
+    success = true
   ' "$path" "$expected" 2>/dev/null
 }
 
@@ -3180,7 +3199,7 @@ if ! mkdir "$install_lock" 2>/dev/null; then
 fi
 install_lock_identity="$(recovery_directory_identity "$install_lock")" || exit 1
 release_install_lock() {
-  local status=$?
+  local status=$? cleanup_path
   trap - EXIT
   if [[ "${recovery_metadata_captured:-false}" = "true" &&
         "${recovery_metadata_restore_reported:-false}" != "true" ]] &&
@@ -3189,14 +3208,14 @@ release_install_lock() {
     status=65
   fi
   if [[ -n "${install_metadata_snapshot_attestation:-}" ]]; then
-    if ! remove_attested_metadata_file "$install_metadata_snapshot_path" \
-      "$install_metadata_snapshot_attestation" 2>/dev/null; then
-      report_metadata_cleanup_pending "$install_metadata_snapshot_path"
+    if ! cleanup_path="$(remove_attested_metadata_file "$install_metadata_snapshot_path" \
+      "$install_metadata_snapshot_attestation" 2>/dev/null)"; then
+      report_metadata_cleanup_pending "${cleanup_path:-$install_metadata_snapshot_path}"
       [[ "$status" -ne 0 ]] || status=1
     fi
   fi
-  if ! remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null; then
-    report_metadata_cleanup_pending "$install_lock"
+  if ! cleanup_path="$(remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null)"; then
+    report_metadata_cleanup_pending "${cleanup_path:-$install_lock}"
     [[ "$status" -ne 0 ]] || status=1
   fi
   exit "$status"
@@ -3345,7 +3364,7 @@ prebind_install_metadata_rollback_guard || exit 1
 metadata_committed=false
 metadata_commit_rollback_failed=false
 release_install_transaction() {
-  local status=$?
+  local status=$? cleanup_path
   trap - EXIT
   if [[ -z "$migration_staging" && -f "$migration_receipt" ]]; then
     IFS= read -r migration_staging < "$migration_receipt" || true
@@ -3360,27 +3379,27 @@ release_install_transaction() {
   fi
   if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" &&
         -n "${prepared_metadata_attestation:-}" ]]; then
-    if ! remove_attested_metadata_file "$target/$metadata_name.tmp" \
-      "$prepared_metadata_attestation" 2>/dev/null; then
-      report_metadata_cleanup_pending "$target/$metadata_name.tmp"
+    if ! cleanup_path="$(remove_attested_metadata_file "$target/$metadata_name.tmp" \
+      "$prepared_metadata_attestation" 2>/dev/null)"; then
+      report_metadata_cleanup_pending "${cleanup_path:-$target/$metadata_name.tmp}"
       [[ "$status" -ne 0 ]] || status=1
     fi
   fi
   if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" ]]; then
-    if ! remove_install_metadata_rollback_guard; then
-      report_metadata_cleanup_pending "$install_lock/metadata-commit-old.guard"
+    if ! cleanup_path="$(remove_install_metadata_rollback_guard)"; then
+      report_metadata_cleanup_pending "${cleanup_path:-$install_lock/metadata-commit-old.guard}"
       [[ "$status" -ne 0 ]] || status=1
     fi
   fi
   if [[ -n "${install_metadata_snapshot_attestation:-}" ]]; then
-    if ! remove_attested_metadata_file "$install_metadata_snapshot_path" \
-      "$install_metadata_snapshot_attestation" 2>/dev/null; then
-      report_metadata_cleanup_pending "$install_metadata_snapshot_path"
+    if ! cleanup_path="$(remove_attested_metadata_file "$install_metadata_snapshot_path" \
+      "$install_metadata_snapshot_attestation" 2>/dev/null)"; then
+      report_metadata_cleanup_pending "${cleanup_path:-$install_metadata_snapshot_path}"
       [[ "$status" -ne 0 ]] || status=1
     fi
   fi
-  if ! remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null; then
-    report_metadata_cleanup_pending "$install_lock"
+  if ! cleanup_path="$(remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null)"; then
+    report_metadata_cleanup_pending "${cleanup_path:-$install_lock}"
     [[ "$status" -ne 0 ]] || status=1
   fi
   exit "$status"
