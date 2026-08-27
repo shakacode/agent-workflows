@@ -105,16 +105,17 @@ class BatchTokenBudgetTest < Minitest::Test
   end
 
   def run_helper_raw_with_watchdog(
-    state_path, input, timeout_seconds:, anchor: trusted_anchor_binding(state_path), before_stdin: nil
+    state_path, input, timeout_seconds:, anchor: trusted_anchor_binding(state_path), before_stdin: nil,
+    env: nil, ruby_arguments: nil
   )
     clock_options = trusted_clock_options_for_command(input)
     stdout_text = nil
     stderr_text = nil
     status = nil
     Open3.popen3(
-      clock_options.fetch(:env),
+      env || clock_options.fetch(:env),
       RbConfig.ruby,
-      *clock_options.fetch(:ruby_arguments),
+      *(ruby_arguments || clock_options.fetch(:ruby_arguments)),
       HELPER,
       "--state",
       state_path,
@@ -826,6 +827,164 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "lock-victim-sentinel", File.read(victim_path)
       refute File.exist?(state_path)
       assert File.symlink?("#{state_path}.lock")
+    end
+  end
+
+  def test_state_path_swap_to_fifo_is_rejected_boundedly_without_reading_a_different_object
+    with_state do |state_path|
+      initialize_budget(state_path)
+      state_before = File.binread(state_path)
+      backup_path = "#{state_path}.swap-backup"
+      preloader = File.join(File.dirname(state_path), "state-swap-preloader.rb")
+      File.write(
+        preloader,
+        <<~RUBY
+          require "fileutils"
+          class << File
+            alias_method :batch_budget_original_file?, :file?
+            alias_method :batch_budget_original_open, :open
+
+            def batch_budget_swap_state_path(path)
+              return unless path.to_s == ENV["BATCH_TOKEN_BUDGET_SWAP_STATE"]
+              return if ENV["BATCH_TOKEN_BUDGET_SWAP_DONE"] == "1"
+
+              ENV["BATCH_TOKEN_BUDGET_SWAP_DONE"] = "1"
+              rename(path, ENV.fetch("BATCH_TOKEN_BUDGET_SWAP_BACKUP"))
+              system("mkfifo", path) or raise "mkfifo failed"
+            end
+
+            def file?(path)
+              result = batch_budget_original_file?(path)
+              if path.to_s == ENV["BATCH_TOKEN_BUDGET_SWAP_STATE"] && result
+                count = ENV.fetch("BATCH_TOKEN_BUDGET_STATE_FILE_CHECKS", "0").to_i + 1
+                ENV["BATCH_TOKEN_BUDGET_STATE_FILE_CHECKS"] = count.to_s
+                batch_budget_swap_state_path(path) if count == 2
+              end
+              result
+            end
+
+            def open(path, *arguments, **options, &block)
+              batch_budget_swap_state_path(path)
+              batch_budget_original_open(path, *arguments, **options, &block)
+            end
+          end
+        RUBY
+      )
+      clock_options = trusted_clock_options_for_command(JSON.generate(command("closeout")))
+      environment = clock_options.fetch(:env).merge(
+        "BATCH_TOKEN_BUDGET_SWAP_STATE" => state_path,
+        "BATCH_TOKEN_BUDGET_SWAP_BACKUP" => backup_path
+      )
+
+      output, stderr, status = run_helper_raw_with_watchdog(
+        state_path,
+        JSON.generate(command("closeout")),
+        timeout_seconds: 1,
+        env: environment,
+        ruby_arguments: [*clock_options.fetch(:ruby_arguments), "-r", preloader]
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+      assert_equal state_before, File.binread(backup_path)
+      assert File.pipe?(state_path)
+    ensure
+      File.unlink(state_path) if state_path && File.pipe?(state_path)
+      File.rename(backup_path, state_path) if backup_path && File.exist?(backup_path)
+    end
+  end
+
+  def test_preexisting_state_fifo_is_rejected_boundedly_as_corrupt_persisted_state
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+      assert system("mkfifo", state_path), "mkfifo failed"
+
+      output, stderr, status = run_helper_raw_with_watchdog(
+        state_path,
+        JSON.generate(command("closeout")),
+        timeout_seconds: 1,
+        anchor: anchor
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+      assert File.pipe?(state_path)
+    end
+  end
+
+  def test_regular_persisted_state_is_opened_once_and_eacces_remains_structured_and_mutation_free
+    with_state do |state_path|
+      initialize_budget(state_path)
+      counter_path = "#{state_path}.open-count"
+      preloader = File.join(File.dirname(state_path), "state-open-counter.rb")
+      File.write(
+        preloader,
+        <<~RUBY
+          class << File
+            alias_method :batch_budget_counted_open, :open
+            def open(path, *arguments, **options, &block)
+              if path.to_s == ENV["BATCH_TOKEN_BUDGET_COUNTED_STATE"]
+                count = ENV.fetch("BATCH_TOKEN_BUDGET_STATE_OPEN_COUNT", "0").to_i + 1
+                ENV["BATCH_TOKEN_BUDGET_STATE_OPEN_COUNT"] = count.to_s
+                raise "state opened more than once" if count > 1
+              end
+              batch_budget_counted_open(path, *arguments, **options, &block)
+            end
+          end
+          at_exit do
+            count = ENV.fetch("BATCH_TOKEN_BUDGET_STATE_OPEN_COUNT", "0")
+            File.binwrite(ENV.fetch("BATCH_TOKEN_BUDGET_OPEN_COUNT_PATH"), count)
+          end
+        RUBY
+      )
+      clock_options = trusted_clock_options_for_command(JSON.generate(command("closeout")))
+      environment = clock_options.fetch(:env).merge(
+        "BATCH_TOKEN_BUDGET_COUNTED_STATE" => state_path,
+        "BATCH_TOKEN_BUDGET_OPEN_COUNT_PATH" => counter_path
+      )
+
+      closed, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout")),
+        env: environment,
+        ruby_arguments: [*clock_options.fetch(:ruby_arguments), "-r", preloader]
+      )
+
+      assert status.success?, stderr
+      assert_equal "not-complete", closed.fetch("status")
+      assert_equal "1", File.binread(counter_path)
+      state_before_denied_read = File.binread(state_path)
+
+      denied_preloader = File.join(File.dirname(state_path), "state-eacces-preloader.rb")
+      File.write(
+        denied_preloader,
+        <<~RUBY
+          class << File
+            alias_method :batch_budget_access_checked_open, :open
+            def open(path, *arguments, **options, &block)
+              raise Errno::EACCES, path if path.to_s == ENV["BATCH_TOKEN_BUDGET_DENIED_STATE"]
+
+              batch_budget_access_checked_open(path, *arguments, **options, &block)
+            end
+          end
+        RUBY
+      )
+      denied_environment = clock_options.fetch(:env).merge("BATCH_TOKEN_BUDGET_DENIED_STATE" => state_path)
+
+      output, denied_stderr, denied_status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout")),
+        env: denied_environment,
+        ruby_arguments: [*clock_options.fetch(:ruby_arguments), "-r", denied_preloader]
+      )
+
+      refute denied_status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(denied_stderr).fetch("reason")
+      assert_equal state_before_denied_read, File.binread(state_path)
     end
   end
 
@@ -2125,6 +2284,70 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "blocked", blocked.fetch("status")
       assert_equal "usage-receipt-version-unsupported", blocked.fetch("reason")
       assert_equal state_before, File.read(state_path)
+    end
+  end
+
+  def test_legacy_v1_receipt_is_a_byte_identical_no_op_before_override_expiration_and_generic_mutation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      override = budget_override(
+        state_path,
+        id: "legacy-v1-expiring-override",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 700,
+        issued_at: "2026-08-12T11:58:00Z",
+        expires_at: "2026-08-12T11:59:30Z"
+      )
+      overridden, override_stderr, override_status = run_helper(
+        state_path,
+        command("override", "evaluated_at" => "2026-08-12T11:59:00Z", "override" => override)
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", overridden.fetch("status")
+
+      current_receipt, = real_descendants_usage_receipt(state_path)
+      legacy = legacy_v1_receipt(current_receipt)
+      legacy["arbitrary_payload"] = {
+        "unexpected_content" => ["must-not-persist", { "nested" => "sentinel" }]
+      }
+      legacy, receipt_ref, receipt_digest = receipt_artifact(state_path, legacy, "legacy-v1-no-op")
+      state_before = File.binread(state_path)
+      projection_before = JSON.parse(state_before)
+      command_for = lambda do |evaluated_at|
+        command(
+          "reconcile",
+          "evaluated_at" => evaluated_at,
+          "usage_receipt" => legacy,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      end
+
+      ["2026-08-12T12:00:00Z", "2026-08-12T11:59:00Z"].each do |evaluated_at|
+        blocked, stderr, status = run_helper(state_path, command_for.call(evaluated_at))
+
+        assert status.success?, stderr
+        assert_equal "blocked", blocked.fetch("status"), evaluated_at
+        assert_equal "usage-receipt-version-unsupported", blocked.fetch("reason"), evaluated_at
+        assert_equal state_before, File.binread(state_path), evaluated_at
+        projection_after = JSON.parse(File.binread(state_path))
+        assert_equal projection_before.fetch("control_events"), projection_after.fetch("control_events"), evaluated_at
+        assert_equal projection_before.fetch("overrides"), projection_after.fetch("overrides"), evaluated_at
+        assert_equal projection_before.fetch("receipts"), projection_after.fetch("receipts"), evaluated_at
+        assert_equal projection_before.fetch("scopes"), projection_after.fetch("scopes"), evaluated_at
+        assert_nil projection_before["usage_cursor"], evaluated_at
+        assert_nil projection_after["usage_cursor"], evaluated_at
+        assert_equal projection_before.fetch("usage_receipts"), projection_after.fetch("usage_receipts"), evaluated_at
+        refute_includes File.binread(state_path), "must-not-persist", evaluated_at
+      end
+
+      assert JSON.parse(File.binread(state_path)).dig("overrides", "legacy-v1-expiring-override", "active")
+      restarted, restart_stderr, restart_status = run_helper(state_path, command("closeout"))
+      assert restart_status.success?, restart_stderr
+      assert_equal "not-complete", restarted.fetch("status")
+      refute JSON.parse(File.binread(state_path)).dig("overrides", "legacy-v1-expiring-override", "active")
     end
   end
 

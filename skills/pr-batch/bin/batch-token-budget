@@ -2745,6 +2745,10 @@ module BatchTokenBudget
       return initialize_command(state, command, trusted_budget, trusted_plan_binding)
     end
     if state && command["action"] == "reconcile" &&
+       command.dig("usage_receipt", "schema") == "batch-usage-receipt-v1"
+      return blocked_usage_result(state, "usage-receipt-version-unsupported")
+    end
+    if state && command["action"] == "reconcile" &&
        command.dig("usage_receipt", "schema") == "batch-usage-receipt-v2" &&
        (!v2_usage_receipt_shape?(command.fetch("usage_receipt")) ||
         !v2_usage_receipt_evidence_consistent?(command.fetch("usage_receipt")))
@@ -2845,6 +2849,16 @@ module BatchTokenBudget
     raise InvalidInput, "state-lock-unsafe"
   end
 
+  def load_persisted_state(path)
+    File.open(path, File::RDONLY | File::NONBLOCK, encoding: "UTF-8") do |file|
+      raise InvalidInput, "corrupt-persisted-state" unless file.stat.file?
+
+      parse_json_strict(file.read)
+    end
+  rescue SystemCallError, IOError, JSON::ParserError
+    raise InvalidInput, "corrupt-persisted-state"
+  end
+
   def persist(path, state)
     FileUtils.mkdir_p(File.dirname(path))
     temporary = nil
@@ -2936,18 +2950,16 @@ begin
     if BatchTokenBudget.canonicalize(command["budget"]) != trusted_budget
       raise BatchTokenBudget::InvalidInput, "initialize-budget-anchor-mismatch"
     end
-  elsif !File.file?(state_path)
+  elsif !File.exist?(state_path)
     raise BatchTokenBudget::InvalidInput, "state-required"
   end
 
   FileUtils.mkdir_p(File.dirname(state_path))
   BatchTokenBudget.with_state_lock("#{state_path}.lock") do |_lock|
-    state = if File.file?(state_path)
-              begin
-                BatchTokenBudget.parse_json_strict(File.read(state_path))
-              rescue JSON::ParserError
-                raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state"
-              end
+    state = if command["action"] == "initialize" && !File.exist?(state_path)
+              nil
+            else
+              BatchTokenBudget.load_persisted_state(state_path)
             end
     if state && !BatchTokenBudget.valid_state?(state, trusted_budget, trusted_plan_binding)
       raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state"
