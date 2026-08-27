@@ -775,6 +775,18 @@ module CanonicalTaskControl
       raise InvalidInput, "pilot usage receipt references must be globally unique"
     end
 
+    submitted_representative_ids = pairs.flat_map do |pair|
+      next [] unless pair.is_a?(Hash)
+
+      [pair.dig("ordinary", "task_identity"), pair.dig("ordinary", "batch_identity"),
+       pair.dig("multi_target", "task_identity"), pair.dig("multi_target", "batch_identity")]
+    end
+    if submitted_representative_ids.none?(&:nil?) &&
+       submitted_representative_ids.map { |identity| canonical_identity(identity) }.uniq.length !=
+       submitted_representative_ids.length
+      raise InvalidInput, "representative task identities must be globally unique"
+    end
+
     pair_ids = []
     representative_ids = []
     unknowns = []
@@ -878,6 +890,21 @@ module CanonicalTaskControl
     validate_usage_receipt_binding!(
       arm["usage_receipt"], arm["usage_receipt_ref"], arm["usage_receipt_digest"], arm["budget_result"],
       context: context
+    )
+    anchor = arm.fetch("budget_result").slice(
+      "trusted_plan_path", "trusted_plan_id", "trusted_plan_digest"
+    )
+    persisted = load_trusted_budget_reconciliation_snapshot!(
+      anchor, arm.fetch("usage_receipt_digest"), context: context
+    )
+    representative_scope = {
+      "task_id" => arm.fetch("task_identity"),
+      "batch_id" => arm.fetch("batch_identity"),
+      "lane_ids" => arm.fetch("usage_receipt").fetch("lanes").map { |lane| lane.fetch("id") }
+    }
+    validate_reconciliation_state_snapshot!(
+      persisted, budget_result: arm.fetch("budget_result"), anchor: anchor,
+                 representative_scope: representative_scope
     )
     metrics = arm["metrics"]
     keys = %w[
@@ -2440,14 +2467,19 @@ module CanonicalTaskControl
     raise InvalidInput, "trusted budget reconciliation snapshot malformed"
   end
 
-  def validate_reconciliation_state_snapshot!(snapshot, budget_result:, task:, anchor:)
+  def validate_reconciliation_state_snapshot!(snapshot, budget_result:, anchor:, task: nil, representative_scope: nil)
+    unless task.nil? ^ representative_scope.nil?
+      raise InvalidInput, "trusted reconciliation validation scope is ambiguous"
+    end
+
+    expected_batch_id = task ? task.fetch("id") : representative_scope.fetch("batch_id")
     require_exact_keys!(snapshot, %w[
                           type version status batch_id state_revision last_evaluated_at
                           trusted_plan_path trusted_plan_id trusted_plan_digest usage_receipt_digest
                           receipt_ref receipts charge_backs reservation_bindings
                         ])
     unless snapshot["type"] == "batch-token-budget-reconciliation-snapshot" && snapshot["version"] == 1 &&
-           snapshot["status"] == "verified" && snapshot["batch_id"] == task["id"] &&
+           snapshot["status"] == "verified" && snapshot["batch_id"] == expected_batch_id &&
            nonnegative_integer?(snapshot["state_revision"]) &&
            snapshot["state_revision"] >= budget_result["state_revision"] &&
            rfc3339_utc?(snapshot["last_evaluated_at"]) &&
@@ -2473,7 +2505,8 @@ module CanonicalTaskControl
       binding.is_a?(Hash) && binding.keys.sort == %w[request_digest reservation_id source target] &&
         known_portable_id?(binding["reservation_id"]) &&
         binding["request_digest"].is_a?(String) && binding["request_digest"].match?(/\A[0-9a-f]{64}\z/) &&
-        valid_portable_budget_task_identity?(binding["source"]) && budget_identity_targets_task?(binding["target"], task)
+        valid_portable_budget_task_identity?(binding["source"]) &&
+        reconciliation_target_matches_scope?(binding["target"], task: task, representative_scope: representative_scope)
     end
     raise InvalidInput, "trusted reconciliation reservation bindings mismatch" unless bindings_valid
 
@@ -2486,6 +2519,18 @@ module CanonicalTaskControl
     indexed
   rescue KeyError, NoMethodError, TypeError
     raise InvalidInput, "trusted budget reconciliation snapshot malformed"
+  end
+
+  def reconciliation_target_matches_scope?(identity, task:, representative_scope:)
+    return budget_identity_targets_task?(identity, task) if task
+    return false unless valid_portable_budget_task_identity?(identity)
+
+    expected_task_id = canonical_identity(representative_scope.fetch("task_id"))
+    expected_batch_id = canonical_identity(representative_scope.fetch("batch_id"))
+    expected_lane_ids = representative_scope.fetch("lane_ids").map { |lane_id| canonical_identity(lane_id) }
+    canonical_identity(identity["task_id"]) == expected_task_id &&
+      canonical_identity(identity["batch_id"]) == expected_batch_id &&
+      expected_lane_ids.include?(canonical_identity(identity["lane_id"]))
   end
 
   def validate_launch_state_snapshot!(snapshot, records:, task:, launch_lane_ids:, anchor:)

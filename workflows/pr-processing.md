@@ -822,7 +822,13 @@ pair/task/batch identities and bind each arm to an exact
 `batch-usage-receipt-v2` plus its digest, absolute artifact reference, and the
 matching reconciled `batch-token-budget-result` v1; relabelled or reused
 task/batch identities or receipt references fail closed. Derive total tokens,
-contributing turns, and optional rate-card credit equivalents from the receipts. Before summing credits,
+contributing turns, and optional rate-card credit equivalents from the receipts.
+Before an arm contributes metrics, resolve its exact trusted-plan anchor through
+the production helper's locked reconciliation snapshot keyed by
+`usage_receipt_digest`, require the submitted receipts, charge-backs, and
+reservation bindings to equal the complete persisted set, and bind targets to
+the arm's task, batch, and receipt lane IDs rather than the outer pilot task.
+Before summing credits,
 require the producer's exact metadata and disclaimer plus one unique row for every observed host/model route.
 Compute complete token evidence independently from optional credit evidence, so
 missing credits keep only the credit reduction `UNKNOWN`. Any arm with incomplete

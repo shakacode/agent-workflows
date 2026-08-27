@@ -23,6 +23,8 @@ REVIEW_VALIDATOR = File.join(REPO_ROOT, "bin", "validate-review-findings")
 WORKFLOW_CONFIG = File.join(REPO_ROOT, ".agents", "agent-workflow.yml")
 TEST_TMP_ROOT = File.join(REPO_ROOT, ".tmp", "canonical-task-control-tests")
 FileUtils.mkdir_p(TEST_TMP_ROOT)
+PILOT_FIXTURE_ROOT = Dir.mktmpdir("canonical-pilot-fixtures", TEST_TMP_ROOT)
+Minitest.after_run { FileUtils.rm_rf(PILOT_FIXTURE_ROOT) }
 TEST_BUDGET_VERIFIER_KEY = OpenSSL::PKey::RSA.generate(2048)
 
 class CanonicalTaskControlTest < Minitest::Test
@@ -1224,13 +1226,86 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_equal 10, result.fetch("matched_pair_count")
   end
 
-  def test_pilot_accepts_batch_usage_producer_fractional_utc_windows
-    pilot = pilot_input
-    pilot.fetch("pairs").each do |pair|
-      %w[ordinary multi_target].each do |arm_name|
-        apply_producer_fractional_window!(pair.fetch(arm_name))
+  def test_pilot_rejects_nonexistent_or_fabricated_reconciliation_anchors
+    {
+      "nonexistent path" => lambda do |arm|
+        arm.fetch("budget_result")["trusted_plan_path"] = File.join(PILOT_FIXTURE_ROOT, "missing-plan.json")
+      end,
+      "fabricated digest" => lambda do |arm|
+        arm.fetch("budget_result")["trusted_plan_digest"] = "sha256:#{'0' * 64}"
       end
+    }.each do |label, mutate|
+      pilot = pilot_input
+      mutate.call(pilot.fetch("pairs").first.fetch("ordinary"))
+
+      _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+      refute status.success?, label
+      assert_includes stderr, "trusted budget", label
     end
+  end
+
+  def test_pilot_rejects_a_caller_truncated_or_tampered_persisted_reconciliation
+    {
+      "truncated charge backs" => lambda do |arm|
+        arm.fetch("budget_result")["charge_backs"] = []
+      end,
+      "tampered charge back" => lambda do |arm|
+        arm.dig("budget_result", "charge_backs", 0)["tokens"] = 1
+      end
+    }.each do |label, mutate|
+      pilot = pilot_input
+      mutate.call(pilot.fetch("pairs").first.fetch("ordinary"))
+
+      _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+      refute status.success?, label
+      assert_includes stderr, "complete persisted reconciliation set mismatch", label
+    end
+  end
+
+  def test_pilot_rejects_missing_corrupt_stale_or_mismatched_budget_state
+    pilot = pilot_input
+    arm = pilot.fetch("pairs").first.fetch("ordinary")
+    plan = JSON.parse(File.read(arm.dig("budget_result", "trusted_plan_path")))
+    state_path = plan.fetch("state_path")
+    state_body = File.binread(state_path)
+
+    begin
+      FileUtils.rm_f(state_path)
+      _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+      refute status.success?, "missing state"
+      assert_includes stderr, "trusted budget reconciliation rejected", "missing state"
+    ensure
+      File.binwrite(state_path, state_body, mode: "wb", perm: 0o600)
+    end
+
+    begin
+      File.write(state_path, "{", mode: "w", perm: 0o600)
+      _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+      refute status.success?, "corrupt state"
+      assert_includes stderr, "trusted budget reconciliation rejected", "corrupt state"
+    ensure
+      File.binwrite(state_path, state_body, mode: "wb", perm: 0o600)
+    end
+
+    stale = pilot_input
+    stale.dig("pairs", 0, "ordinary", "budget_result")["state_revision"] += 1
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => stale))
+    refute status.success?, "stale state"
+    assert_includes stderr, "reconciliation", "stale state"
+
+    mismatched = pilot_input
+    first = mismatched.fetch("pairs").first.fetch("ordinary").fetch("budget_result")
+    second = mismatched.fetch("pairs")[1].fetch("ordinary").fetch("budget_result")
+    %w[trusted_plan_path trusted_plan_id trusted_plan_digest].each { |key| first[key] = second.fetch(key) }
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => mismatched))
+    refute status.success?, "mismatched state"
+    assert_includes stderr, "trusted budget reconciliation rejected", "mismatched state"
+  end
+
+  def test_pilot_accepts_batch_usage_producer_fractional_utc_windows
+    pilot = pilot_input(variant: :fractional_window)
 
     result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
 
@@ -1254,13 +1329,7 @@ class CanonicalTaskControlTest < Minitest::Test
   end
 
   def test_pilot_preserves_multi_target_rollback_when_receipts_are_unsupported
-    pilot = pilot_input
-    pilot["pairs"].first["ordinary"]["usage_receipt"]["evidence"] = {
-      "status" => "UNKNOWN", "sources" => ["codex_rollout_jsonl", "state_5.sqlite"],
-      "unknown" => [{ "status" => "UNKNOWN", "code" => "usage_counter_missing", "fields" => ["cache_read_tokens"] }]
-    }
-    arm = pilot["pairs"].first["ordinary"]
-    refresh_usage_artifact!(arm)
+    pilot = pilot_input(variant: :cache_read_unknown)
     input = base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot)
 
     result, stderr, status = run_helper(input)
@@ -1273,14 +1342,7 @@ class CanonicalTaskControlTest < Minitest::Test
   end
 
   def test_pilot_reports_token_reduction_when_optional_credit_equivalents_are_omitted
-    pilot = pilot_input
-    pilot.fetch("pairs").each do |pair|
-      %w[ordinary multi_target].each do |arm_name|
-        arm = pair.fetch(arm_name)
-        arm.fetch("usage_receipt").delete("credit_equivalents")
-        refresh_usage_artifact!(arm)
-      end
-    end
+    pilot = pilot_input(variant: :without_credit_equivalents)
 
     result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
 
@@ -2946,18 +3008,6 @@ class CanonicalTaskControlTest < Minitest::Test
     end
   end
 
-  def apply_producer_fractional_window!(container)
-    window = container.fetch("usage_receipt").fetch("window")
-    %w[from_inclusive to_exclusive].each do |field|
-      window[field] = Time.iso8601(window.fetch(field)).utc.iso8601(9)
-    end
-    container.fetch("budget_result").fetch("receipts").each do |record|
-      record["from_inclusive"] = window.fetch("from_inclusive")
-      record["to_exclusive"] = window.fetch("to_exclusive")
-    end
-    refresh_usage_artifact!(container)
-  end
-
   def delegation_approval
     bound_evidence(
       contract: "authority-evidence", task: base_input.fetch("task"),
@@ -3048,54 +3098,6 @@ class CanonicalTaskControlTest < Minitest::Test
     }
   end
 
-  def budget_reconciliation_result(receipt_digest:, batch_id: "task-402",
-                                   receipt_ref: "file:///coordinator/receipts/task-402-usage-v2.json", tokens: 35,
-                                   lane_id: "aw-i402", coordinator_tokens: 10, lane_tokens: 25)
-    predicted_tokens = [10_000, tokens].max
-    released_tokens = predicted_tokens - tokens
-    scope = lambda do |limit:, allocated:, consumed:, released:|
-      {
-        "limit_tokens" => limit, "allocated_tokens" => allocated,
-        "consumed_tokens" => consumed, "reserved_tokens" => 0,
-        "released_tokens" => released, "unattributed_tokens" => 0
-      }
-    end
-    {
-      "type" => "batch-token-budget-result", "version" => 1, "status" => "reconciled",
-      "batch_id" => batch_id, "state_revision" => 3,
-      "totals" => {
-        "aggregate" => scope.call(limit: [50_000, predicted_tokens].max, allocated: predicted_tokens,
-                                  consumed: tokens, released: released_tokens),
-        "coordinator" => scope.call(limit: 10_000, allocated: 0, consumed: coordinator_tokens, released: 0),
-        "lanes" => {
-          lane_id => scope.call(limit: [50_000, predicted_tokens].max, allocated: predicted_tokens,
-                                consumed: lane_tokens, released: released_tokens)
-        }
-      },
-      "preserved_gates" => %w[security review qa exact-head ownership merge],
-      "usage_receipt_digest" => receipt_digest, "receipt_ref" => receipt_ref,
-      "trusted_plan_path" => File.join(TEST_TMP_ROOT, "synthetic-reconciliation-plan.json"),
-      "trusted_plan_id" => batch_id,
-      "trusted_plan_digest" => "sha256:#{'0' * 64}",
-      "receipts" => [{
-        "type" => "batch-token-budget-reconciliation-receipt", "version" => 1,
-        "batch_id" => batch_id, "state_revision" => 3,
-        "preserved_gates" => %w[security review qa exact-head ownership merge],
-        "reservation_id" => "aw-i402-delegation-reservation", "usage_receipt_digest" => receipt_digest,
-        "receipt_ref" => receipt_ref, "from_inclusive" => "2026-08-12T00:00:00Z",
-        "to_exclusive" => "2026-08-12T01:00:00Z", "predicted_tokens" => predicted_tokens,
-        "interval_tokens" => tokens, "actual_tokens" => tokens, "released_tokens" => released_tokens,
-        "overshoot_tokens" => 0, "overshoot_turn_count" => 0, "completed" => true
-      }],
-      "charge_backs" => [{
-        "id" => "charge-back-402", "source" => task_identity("source-task", "batch-source", "source-lane", "issue", 401),
-        "target" => task_identity("task-402", batch_id, "aw-i402", "issue", 402),
-        "reservation_id" => "aw-i402-delegation-reservation",
-        "tokens" => 35, "physical_total_incremented" => false
-      }]
-    }
-  end
-
   def task_identity(task_id, batch_id, lane_id, type, number)
     {
       "task_id" => task_id, "batch_id" => batch_id, "lane_id" => lane_id,
@@ -3104,67 +3106,8 @@ class CanonicalTaskControlTest < Minitest::Test
     }
   end
 
-  def pilot_input
-    metrics = {
-      "elapsed_seconds" => 600,
-      "human_coordination_seconds" => 60,
-      "correction_turns" => 1,
-      "first_pass_accepted" => true,
-      "escaped_p0_p1_defects" => 0,
-      "gate_compliance" => "preserved"
-    }
-    pairs = 10.times.map do |index|
-      ordinal = index + 1
-      ordinary_batch = "ordinary-batch-#{ordinal}"
-      multi_batch = "multi-batch-#{ordinal}"
-      ordinary_receipt = usage_receipt(
-        batch_id: ordinary_batch, lane_id: "ordinary-lane-#{ordinal}", total_tokens: 70_000,
-        coordinator_tokens: 10_000, lane_tokens: 60_000, total_turns: 7,
-        coordinator_turns: 1, lane_turns: 6, credits: 7.0
-      )
-      multi_receipt = usage_receipt(
-        batch_id: multi_batch, lane_id: "multi-lane-#{ordinal}", total_tokens: 100_000,
-        coordinator_tokens: 20_000, lane_tokens: 80_000, total_turns: 10,
-        coordinator_turns: 2, lane_turns: 8, credits: 10.0
-      )
-      ordinary_ref = install_usage_receipt(ordinary_receipt, label: "pilot-ordinary-#{ordinal}")
-      multi_ref = install_usage_receipt(multi_receipt, label: "pilot-multi-#{ordinal}")
-      {
-        "pair_id" => "pair-#{ordinal}",
-        "task_class" => "implementation-bounded",
-        "context_topology" => "one-maker-one-checker",
-        "ordinary" => {
-          "arm_identity" => "ordinary",
-          "task_identity" => "ordinary-task-#{ordinal}",
-          "batch_identity" => ordinary_batch,
-          "task_class" => "implementation-bounded",
-          "context_topology" => "one-maker-one-checker",
-          "usage_receipt" => ordinary_receipt, "usage_receipt_ref" => ordinary_ref,
-          "usage_receipt_digest" => findings_digest(ordinary_receipt),
-          "budget_result" => budget_reconciliation_result(
-            receipt_digest: findings_digest(ordinary_receipt), batch_id: ordinary_batch, receipt_ref: ordinary_ref,
-            tokens: 70_000, lane_id: "ordinary-lane-#{ordinal}", coordinator_tokens: 10_000,
-            lane_tokens: 60_000
-          ),
-          "metrics" => metrics
-        },
-        "multi_target" => {
-          "arm_identity" => "multi_target",
-          "task_identity" => "multi-task-#{ordinal}",
-          "batch_identity" => multi_batch,
-          "task_class" => "implementation-bounded",
-          "context_topology" => "one-maker-one-checker",
-          "usage_receipt" => multi_receipt, "usage_receipt_ref" => multi_ref,
-          "usage_receipt_digest" => findings_digest(multi_receipt),
-          "budget_result" => budget_reconciliation_result(
-            receipt_digest: findings_digest(multi_receipt), batch_id: multi_batch, receipt_ref: multi_ref,
-            tokens: 100_000, lane_id: "multi-lane-#{ordinal}", coordinator_tokens: 20_000,
-            lane_tokens: 80_000
-          ),
-          "metrics" => metrics
-        }
-      }
-    end
+  def pilot_input(variant: :complete)
+    pairs = cached_production_pilot_pairs(variant)
     {
       "contract" => "canonical-task-matched-pilot",
       "version" => 1,
@@ -3193,6 +3136,154 @@ class CanonicalTaskControlTest < Minitest::Test
         contract: "pilot-publication-evidence", task: base_input.fetch("task"),
         action: "publish_pilot_result", role: "coordinator"
       )
+    }
+  end
+
+  def cached_production_pilot_pairs(variant)
+    cache = self.class.instance_variable_get(:@production_pilot_pairs_by_variant) || {}
+    cache[variant] ||= build_production_pilot_pairs(variant)
+    self.class.instance_variable_set(:@production_pilot_pairs_by_variant, cache)
+    JSON.parse(JSON.generate(cache.fetch(variant)))
+  end
+
+  def build_production_pilot_pairs(variant)
+    metrics = {
+      "elapsed_seconds" => 600,
+      "human_coordination_seconds" => 60,
+      "correction_turns" => 1,
+      "first_pass_accepted" => true,
+      "escaped_p0_p1_defects" => 0,
+      "gate_compliance" => "preserved"
+    }
+    10.times.map do |index|
+      ordinal = index + 1
+      {
+        "pair_id" => "pair-#{ordinal}",
+        "task_class" => "implementation-bounded",
+        "context_topology" => "one-maker-one-checker",
+        "ordinary" => production_pilot_arm(
+          arm_identity: "ordinary", ordinal: ordinal, total_tokens: 70_000,
+          coordinator_tokens: 10_000, lane_tokens: 60_000, total_turns: 7,
+          coordinator_turns: 1, lane_turns: 6, credits: 7.0,
+          metrics: metrics, variant: variant
+        ),
+        "multi_target" => production_pilot_arm(
+          arm_identity: "multi_target", ordinal: ordinal, total_tokens: 100_000,
+          coordinator_tokens: 20_000, lane_tokens: 80_000, total_turns: 10,
+          coordinator_turns: 2, lane_turns: 8, credits: 10.0,
+          metrics: metrics, variant: variant
+        )
+      }
+    end
+  end
+
+  def production_pilot_arm(arm_identity:, ordinal:, total_tokens:, coordinator_tokens:, lane_tokens:,
+                           total_turns:, coordinator_turns:, lane_turns:, credits:, metrics:, variant:)
+    label = arm_identity == "ordinary" ? "ordinary" : "multi"
+    batch_id = "#{label}-batch-#{ordinal}"
+    task_id = "#{label}-task-#{ordinal}"
+    lane_id = "#{label}-lane-#{ordinal}"
+    fixture_id = "#{variant}-#{batch_id}"
+    state_path = File.join(PILOT_FIXTURE_ROOT, "#{fixture_id}-state.json")
+    plan = {
+      "type" => "batch-token-budget", "version" => 1, "batch_id" => batch_id,
+      "state_path" => state_path,
+      "scopes" => {
+        "aggregate" => { "limit_tokens" => 500_000 },
+        "coordinator" => { "limit_tokens" => 100_000 },
+        "lanes" => { lane_id => { "limit_tokens" => 500_000 } }
+      },
+      "thresholds" => { "warning_percent" => 50, "approval_percent" => 80, "hard_percent" => 100 },
+      "telemetry" => { "max_age_seconds" => 900 },
+      "delegation" => { "approval_threshold_tokens" => 200_000 },
+      "trusted_verifiers" => [{
+        "id" => "budget-verifier", "algorithm" => "rsa-pss-sha256",
+        "public_key_pem" => TEST_BUDGET_VERIFIER_KEY.public_key.to_pem
+      }]
+    }
+    plan_path = File.join(PILOT_FIXTURE_ROOT, "#{fixture_id}-plan.json")
+    File.write(plan_path, JSON.generate(canonicalize(plan)), mode: "w", perm: 0o600)
+    anchor = { "path" => plan_path, "id" => batch_id, "digest" => findings_digest(plan) }
+    FileUtils.rm_f(state_path)
+    FileUtils.rm_f("#{state_path}.lock")
+    now = Time.at(Time.now.to_i).utc
+    initialized_at = now - 120
+    _initialized, initialize_stderr, initialize_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command("initialize", plan, { "budget" => plan }, evaluated_at: initialized_at.iso8601)
+    )
+    raise "pilot budget initialization failed: #{initialize_stderr}" unless initialize_status.success?
+
+    request = {
+      "type" => "batch-token-reservation", "version" => 1,
+      "id" => "#{batch_id}-reservation", "scope_id" => lane_id, "tokens" => total_tokens,
+      "admission_kind" => "cross-task-delegation",
+      "source" => task_identity("source-#{task_id}", "source-#{batch_id}", "source-#{lane_id}", "issue", 500 + ordinal),
+      "target" => task_identity(task_id, batch_id, lane_id, "issue", 600 + ordinal),
+      "target_state" => "idle", "message_fingerprint" => "message-#{batch_id}",
+      "telemetry" => {
+        "status" => "fresh", "observed_at" => (now - 100).iso8601, "context_status" => "ready",
+        "self_estimate_tokens" => total_tokens, "descendant_estimate_tokens" => 0,
+        "descendant_target_ids" => []
+      }
+    }
+    admitted, admission_stderr, admission_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command("reserve", plan, { "reservation" => request }, evaluated_at: (now - 90).iso8601)
+    )
+    raise "pilot reservation failed: #{admission_stderr}" unless admission_status.success?
+    raise "pilot reservation was not admitted" unless %w[admitted admitted-with-warning].include?(admitted["status"])
+
+    receipt = usage_receipt(
+      batch_id: batch_id, lane_id: lane_id, total_tokens: total_tokens,
+      coordinator_tokens: coordinator_tokens, lane_tokens: lane_tokens, total_turns: total_turns,
+      coordinator_turns: coordinator_turns, lane_turns: lane_turns, credits: credits
+    )
+    timestamp_precision = variant == :fractional_window ? 9 : 0
+    receipt.fetch("window").merge!(
+      "from_inclusive" => initialized_at.iso8601(timestamp_precision),
+      "to_exclusive" => (now - 10).iso8601(timestamp_precision)
+    )
+    if variant == :cache_read_unknown && arm_identity == "ordinary" && ordinal == 1
+      receipt["evidence"] = {
+        "status" => "UNKNOWN", "sources" => ["codex_rollout_jsonl", "state_5.sqlite"],
+        "unknown" => [{
+          "status" => "UNKNOWN", "code" => "usage_counter_missing", "fields" => ["cache_read_tokens"]
+        }]
+      }
+    end
+    receipt.delete("credit_equivalents") if variant == :without_credit_equivalents
+    receipt_digest = findings_digest(receipt)
+    receipt_path = File.join(PILOT_FIXTURE_ROOT, "#{fixture_id}-usage.json")
+    File.write(receipt_path, JSON.generate(canonicalize(receipt)), mode: "w", perm: 0o600)
+    receipt_ref = "file://#{receipt_path}"
+    reconciled, reconcile_stderr, reconcile_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command(
+        "reconcile", plan,
+        {
+          "usage_receipt" => receipt, "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => [request.fetch("id")],
+          "charge_backs" => [{
+            "reservation_id" => request.fetch("id"),
+            "charge_back" => {
+              "type" => "batch-token-charge-back", "version" => 1, "id" => "charge-back-#{batch_id}",
+              "source" => request.fetch("source"), "target" => request.fetch("target")
+            }
+          }]
+        },
+        evaluated_at: now.iso8601
+      )
+    )
+    raise "pilot usage reconciliation failed: #{reconcile_stderr}" unless reconcile_status.success?
+    raise "pilot usage reconciliation was not admitted" unless reconciled["status"] == "reconciled"
+
+    {
+      "arm_identity" => arm_identity, "task_identity" => task_id, "batch_identity" => batch_id,
+      "task_class" => "implementation-bounded", "context_topology" => "one-maker-one-checker",
+      "usage_receipt" => receipt, "usage_receipt_ref" => receipt_ref,
+      "usage_receipt_digest" => receipt_digest, "budget_result" => reconciled, "metrics" => metrics
     }
   end
 

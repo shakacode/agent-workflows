@@ -465,7 +465,13 @@ concurrency, aggregate/coordinator/per-lane budgets, shared-context savings, and
 rollback. The matched
 pilot has at least ten representative pairs with distinct exact task/batch
 identities, matching task class/context facts, and verified replay-safe v2 usage
-artifacts bound to reconciled hierarchical budget results. It derives total tokens,
+artifacts bound to reconciled hierarchical budget results. Before an arm
+contributes metrics, its exact trusted-plan anchor must resolve through the
+production helper's locked reconciliation snapshot keyed by
+`usage_receipt_digest`; the submitted receipts, charge-backs, and reservation
+bindings must equal the complete persisted set, with representative targets
+bound to that arm's task, batch, and receipt lane IDs rather than the outer
+pilot task. It derives total tokens,
 contributing turns, and optional production-shaped rate-card credit equivalents independently. Credit rows
 must carry the producer metadata and disclaimer exactly once per observed host/model route; missing credits keep
 only the credit reduction `UNKNOWN` while complete token evidence still reports token reduction. Any arm with incomplete

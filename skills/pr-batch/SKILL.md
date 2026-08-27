@@ -208,7 +208,11 @@ dependency evidence for the replay-safe usage receipt, execution-provenance,
 and evaluation-runner capabilities. Retain/adverse/`UNKNOWN` evidence
 remains publishable without promotion. An arm with incomplete usage telemetry
 keeps token reduction `UNKNOWN`; absent optional credits affect only the credit
-reduction.
+reduction. Before an arm contributes metrics, resolve its exact trusted-plan
+anchor through the production helper's locked reconciliation snapshot keyed by
+`usage_receipt_digest`, and require its submitted receipts, charge-backs, and
+reservation bindings to equal the complete persisted set. Bind representative
+targets to that arm's task, batch, and receipt lane IDs, not the outer pilot task.
 
 ## Single-Target Mode
 
