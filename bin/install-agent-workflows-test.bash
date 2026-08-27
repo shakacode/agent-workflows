@@ -7330,6 +7330,42 @@ RUBY
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
 }
 
+test_snapshot_creation_does_not_follow_replaced_lock_ancestor() {
+  local tmp target metadata lock moved_lock outside injection marker before output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  lock="$target/.agent-workflows-install.lock"; moved_lock="$target/.agent-workflows-install.lock-moved"
+  outside="$tmp/outside"; injection="$tmp/swap-snapshot-lock.rb"; marker="$tmp/lock-swapped"
+  mkdir -p "$target" "$outside"; chmod 0777 "$target" "$outside"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module MetadataSnapshotHook
+  def self.call(phase)
+    return unless phase == :before_snapshot_create
+    File.rename(ENV.fetch("QA_INSTALL_LOCK"), ENV.fetch("QA_MOVED_LOCK"))
+    File.symlink(ENV.fetch("QA_OUTSIDE"), ENV.fetch("QA_INSTALL_LOCK"))
+    File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_INSTALL_LOCK="$lock" QA_MOVED_LOCK="$moved_lock" QA_OUTSIDE="$outside" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "replaced snapshot lock ancestor unexpectedly succeeded"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING"
+  [[ ! -e "$outside/install-metadata.snapshot" ]] || fail "snapshot creation wrote through replaced lock ancestor"
+  assert_file "$moved_lock/install-metadata.snapshot"
+  [[ "$before" = "$(shasum "$metadata")" ]] || fail "snapshot lock race changed metadata"
+  [[ ! -e "$target/LICENSE" ]] || fail "snapshot lock race mutated managed files"
+  rm "$lock"
+  rm "$moved_lock/install-metadata.snapshot"
+  rmdir "$moved_lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
 test_persistent_recovery_holder_close_failure_removes_committed_empty_holder() {
   local tmp target staging receipt injection marker output status retry_output
   tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-holder-close"
@@ -7428,6 +7464,7 @@ main() {
     test_recovery_cleanup_close_failure_finalizes_deleted_staging
     test_prebind_guard_close_failure_does_not_leak_lock
     test_metadata_probe_close_failure_cleans_lock_and_allows_retry
+    test_snapshot_creation_does_not_follow_replaced_lock_ancestor
     test_persistent_recovery_holder_close_failure_removes_committed_empty_holder
     test_persistent_recovery_payload_close_failure_preserves_committed_cleanup
     test_delivery_state_helper_unit_suite

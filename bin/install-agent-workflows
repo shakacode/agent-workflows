@@ -789,11 +789,27 @@ regular_file_attestation() {
 }
 
 capture_regular_file_snapshot() {
-  ruby -rdigest -e '
+  ruby -rdigest -rfiddle/import -e '
+    module MetadataSnapshotSyscalls
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int, unsigned int)"
+    end
     source_file = nil
     snapshot_file = nil
+    lock_file = nil
     begin
-      source, snapshot, expected = ARGV
+      source, snapshot, expected, expected_lock = ARGV
+      lock_path = File.dirname(snapshot)
+      snapshot_name = File.basename(snapshot)
+      abort unless snapshot_name == "install-metadata.snapshot"
+      lock_path_stat = File.lstat(lock_path)
+      abort unless lock_path_stat.directory? && !lock_path_stat.symlink? && File.const_defined?(:NOFOLLOW)
+      lock_file = File.open(lock_path, File::RDONLY | File::NOFOLLOW)
+      lock_stat = lock_file.stat
+      abort unless lock_stat.directory? &&
+                   "#{lock_stat.dev}:#{lock_stat.ino}" == expected_lock &&
+                   lock_stat.dev == lock_path_stat.dev && lock_stat.ino == lock_path_stat.ino
       source_path_stat = File.lstat(source)
       abort unless source_path_stat.file? && !source_path_stat.symlink? && File.const_defined?(:NOFOLLOW)
       source_file = File.open(source, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
@@ -809,11 +825,16 @@ capture_regular_file_snapshot() {
                    named_source_stat.file? && !named_source_stat.symlink? &&
                    named_source_stat.dev == source_stat.dev && named_source_stat.ino == source_stat.ino
 
-      snapshot_file = File.open(
-        snapshot,
+      MetadataSnapshotHook.call(:before_snapshot_create) if defined?(MetadataSnapshotHook)
+      snapshot_fd = MetadataSnapshotSyscalls.openat(
+        lock_file.fileno,
+        snapshot_name,
         File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
         0o600
       )
+      abort if snapshot_fd == -1
+      snapshot_file = File.for_fd(snapshot_fd)
+      snapshot_file.chmod(0o600)
       snapshot_file.write(content)
       snapshot_file.flush
       snapshot_file.fsync
@@ -823,8 +844,9 @@ capture_regular_file_snapshot() {
     ensure
       snapshot_file&.close
       source_file&.close
+      lock_file&.close
     end
-  ' "$1" "$2" "$3" 2>/dev/null
+  ' "$1" "$2" "$3" "$install_lock_identity" 2>/dev/null
 }
 
 capture_install_metadata_binding() {
