@@ -432,20 +432,6 @@ def replacement_lane_state_classification(lane_state)
   :unknown
 end
 
-def beginning_candidate_replacement?(input)
-  assignment = input.fetch("active_assignments", []).first
-  return false unless assignment && !input.key?("replacement")
-
-  candidates = input.fetch("candidates", [])
-  return false if candidates.empty?
-
-  candidates.none? do |candidate|
-    candidate.is_a?(Hash) &&
-      candidate["dispatcher"] == assignment["dispatcher"] &&
-      candidate["instance_id"] == assignment["instance_id"]
-  end
-end
-
 def terminal_replacement_output(input:, requested:, authority:, classification:)
   terminal = classification == :terminal
   {
@@ -643,8 +629,7 @@ fail_input("decision_resolution requires a persisted dispatch_decision_request")
 
 authority = { "dispatch" => input.dig("authority", "dispatch") == true }
 lane_classification = replacement_lane_state_classification(input.fetch("lane_state", {}))
-replacement_context = input.key?("replacement") || beginning_candidate_replacement?(input)
-if lane_classification == :terminal || (replacement_context && lane_classification != :nonterminal)
+if lane_classification == :terminal || (input.key?("replacement") && lane_classification != :nonterminal)
   puts JSON.generate(
     terminal_replacement_output(
       input:,
@@ -769,6 +754,17 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
                                    fallback_authority_sufficient?(persisted_assignment, requested, authority) &&
                                    (candidate_inputs.empty? || current_fallback_candidate_matches)
   unless requested_identity_replayable || resolved_identity_replayable || provenance_identity_replayable
+    if lane_classification != :nonterminal
+      puts JSON.generate(
+        terminal_replacement_output(
+          input:,
+          requested:,
+          authority:,
+          classification: lane_classification
+        )
+      )
+      exit
+    end
     prospective_candidate, prospective_index, prospective_rejections = select_candidate(candidate_inputs, requested, authority)
     prospective = if prospective_candidate
                     prospective_assignment(

@@ -552,6 +552,27 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     end
   end
 
+  def test_selected_replacement_requires_lane_refresh_when_active_candidate_remains_available
+    input = input_for
+    active = select(input).fetch("active_assignments").first.merge("lifecycle" => "active")
+    changed = input_for(
+      requested: requested_route(dispatcher: "other"),
+      candidates: [candidate, candidate(dispatcher: "other", instance_id: "other-1")]
+    )
+
+    output = dispatch(
+      changed.merge(
+        "active_assignments" => [active],
+        "lane_state" => changed.fetch("lane_state").merge("status" => "UNKNOWN")
+      )
+    )
+
+    assert_equal "blocked-replacement-terminal-state", output.fetch("status")
+    assert_equal "target-lane-terminal-state-unknown", output.fetch("reason")
+    assert_equal "refresh-targeted-lane-state-before-replacement", output.fetch("required_action")
+    refute output.key?("prospective_replacement_assignment")
+  end
+
   def test_dispatcher_change_requires_replacement_even_when_authorized
     input = input_for
     active = select(input).fetch("active_assignments").first.merge("lifecycle" => "active")
