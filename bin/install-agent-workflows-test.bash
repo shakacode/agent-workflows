@@ -7591,7 +7591,8 @@ RUBY
   assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "cleanup mode restore failure unexpectedly succeeded"
   assert_contains "$output" "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: restored receipted recovery staging at $canonical_target/${staging##*/}"
   assert_file "$receipt"; assert_file "$staging/old-flat-skill/SKILL.md"
-  [[ "$(stat -f '%Lp' "$target")" = "755" ]] || fail "cleanup mode restore failure left unexpected target mode"
+  [[ "$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0o7777' "$target")" = "755" ]] || \
+    fail "cleanup mode restore failure left unexpected target mode"
   retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
   [[ ! -e "$receipt" && ! -e "$staging" ]] || fail "cleanup mode restore retry retained recovery state"
