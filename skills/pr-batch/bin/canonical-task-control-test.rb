@@ -1236,6 +1236,70 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_equal 10, result.fetch("matched_pair_count")
   end
 
+  def test_pilot_rejects_quality_metrics_without_bound_evaluation_evidence
+    pilot = pilot_input
+    pilot.dig("pairs", 0, "ordinary", "metrics")["escaped_p0_p1_defects"] = 99
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "pilot evaluation metrics mismatch"
+  end
+
+  def test_pilot_rejects_missing_fabricated_or_rebound_evaluation_evidence
+    {
+      "missing result" => lambda do |arm|
+        arm["evaluation_result_ref"] = "file://#{File.join(PILOT_FIXTURE_ROOT, 'missing-evaluation.json')}"
+      end,
+      "fabricated digest" => lambda do |arm|
+        arm["evaluation_result_digest"] = "sha256:#{'0' * 64}"
+      end,
+      "rebound budget" => lambda do |arm|
+        rewrite_pilot_evaluation_result!(arm) do |result|
+          result["budget_result_digest"] = "sha256:#{'0' * 64}"
+        end
+      end,
+      "untrusted provenance" => lambda do |arm|
+        rewrite_pilot_evaluation_result!(arm) { |result| result["result_ref"] = "http://example.test/result" }
+      end
+    }.each do |label, mutate|
+      pilot = pilot_input
+      mutate.call(pilot.fetch("pairs").first.fetch("ordinary"))
+
+      _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+      refute status.success?, label
+      assert_includes stderr, "pilot evaluation result", label
+    end
+  end
+
+  def test_pilot_does_not_promote_from_fabricated_inline_quality_metrics
+    pilot = pilot_input
+    arm = pilot.fetch("pairs").first.fetch("multi_target")
+    rewrite_pilot_evaluation_result!(arm) do |result|
+      result.fetch("metrics")["escaped_p0_p1_defects"] = 1
+      result.fetch("metrics")["gate_compliance"] = "weakened"
+    end
+    refresh_pilot_evaluation_dependency_commitments!(pilot)
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "pilot evaluation metrics mismatch"
+  end
+
+  def test_pilot_rejects_jointly_forged_evaluation_artifact_digest_and_inline_metrics
+    pilot = pilot_input
+    arm = pilot.fetch("pairs").first.fetch("ordinary")
+    arm.fetch("metrics")["escaped_p0_p1_defects"] = 99
+    refresh_pilot_evaluation_result!(arm)
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "pilot evaluation dependency commitment mismatch"
+  end
+
   def test_pilot_rejects_nonexistent_or_fabricated_reconciliation_anchors
     {
       "nonexistent path" => lambda do |arm|
@@ -1342,6 +1406,9 @@ class CanonicalTaskControlTest < Minitest::Test
     pilot = pilot_input
     pilot.dig("pairs", 0, "ordinary", "metrics")["gate_compliance"] = "UNKNOWN"
     pilot.dig("pairs", 1, "multi_target", "metrics")["gate_compliance"] = "UNKNOWN"
+    refresh_pilot_evaluation_result!(pilot.dig("pairs", 0, "ordinary"))
+    refresh_pilot_evaluation_result!(pilot.dig("pairs", 1, "multi_target"))
+    refresh_pilot_evaluation_dependency_commitments!(pilot)
 
     result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
 
@@ -1351,6 +1418,8 @@ class CanonicalTaskControlTest < Minitest::Test
 
     weakened = pilot_input
     weakened.dig("pairs", 0, "ordinary", "metrics")["gate_compliance"] = "weakened"
+    refresh_pilot_evaluation_result!(weakened.dig("pairs", 0, "ordinary"))
+    refresh_pilot_evaluation_dependency_commitments!(weakened)
     result, stderr, status = run_helper(
       base_input.merge("operation" => "pilot_evaluation", "pilot" => weakened)
     )
@@ -3337,17 +3406,21 @@ class CanonicalTaskControlTest < Minitest::Test
 
   def pilot_input(variant: :complete, with_rate_card: true, rate_card: nil)
     pairs = cached_production_pilot_pairs(variant)
+    commitments = pilot_evaluation_dependency_commitments(pairs)
     pilot = {
       "contract" => "canonical-task-matched-pilot",
       "version" => 1,
       "dependencies" => %w[replay_safe_usage_receipts execution_provenance evaluation_runner].map do |capability|
-        {
+        record = {
           "contract" => "dependency-gate-evidence", "version" => 1, "capability" => capability,
           "actor" => "dependency-checker-1", "role" => "dependency_checker",
           "task_id" => "task-402", "repository" => "shakacode/agent-workflows", "target" => "issue:402",
           "action" => "evaluate_pilot", "scope" => "canonical task matched pilot", "status" => "satisfied",
           **evidence_times, "result_ref" => "https://example.test/results/#{capability}/dependency"
         }
+        record["arm_commitments"] = JSON.parse(JSON.generate(commitments)) if
+          %w[evaluation_runner execution_provenance].include?(capability)
+        record
       end,
       "pairs" => pairs,
       "promotion" => {
@@ -3395,7 +3468,13 @@ class CanonicalTaskControlTest < Minitest::Test
     cache = self.class.instance_variable_get(:@production_pilot_pairs_by_variant) || {}
     cache[variant] ||= build_production_pilot_pairs(variant)
     self.class.instance_variable_set(:@production_pilot_pairs_by_variant, cache)
-    JSON.parse(JSON.generate(cache.fetch(variant)))
+    pairs = JSON.parse(JSON.generate(cache.fetch(variant)))
+    pairs.each do |pair|
+      %w[ordinary multi_target].each do |arm_identity|
+        install_pilot_evaluation_result!(pair.fetch(arm_identity), pair_id: pair.fetch("pair_id"))
+      end
+    end
+    pairs
   end
 
   def build_production_pilot_pairs(variant)
@@ -3583,12 +3662,77 @@ class CanonicalTaskControlTest < Minitest::Test
     raise "pilot usage reconciliation failed: #{reconcile_stderr}" unless reconcile_status.success?
     raise "pilot usage reconciliation was not admitted" unless reconciled["status"] == "reconciled"
 
-    {
+    arm = {
       "arm_identity" => arm_identity, "task_identity" => task_id, "batch_identity" => batch_id,
       "task_class" => "implementation-bounded", "context_topology" => "one-maker-one-checker",
       "usage_receipt" => receipt, "usage_receipt_ref" => receipt_ref,
       "usage_receipt_digest" => receipt_digest, "budget_result" => reconciled, "metrics" => metrics
     }
+    install_pilot_evaluation_result!(arm, pair_id: "pair-#{ordinal}")
+    arm
+  end
+
+  def install_pilot_evaluation_result!(arm, pair_id:)
+    @pilot_evaluation_sequence ||= 0
+    @pilot_evaluation_sequence += 1
+    evaluation_result = {
+      "contract" => "canonical-task-pilot-evaluation-result", "version" => 1,
+      "pair_id" => pair_id, "arm_identity" => arm.fetch("arm_identity"),
+      "task_identity" => arm.fetch("task_identity"), "batch_identity" => arm.fetch("batch_identity"),
+      "task_class" => arm.fetch("task_class"), "context_topology" => arm.fetch("context_topology"),
+      "usage_receipt_digest" => arm.fetch("usage_receipt_digest"),
+      "budget_result_digest" => findings_digest(arm.fetch("budget_result")),
+      "evaluator" => "qa-#{arm.fetch('batch_identity')}", "evaluator_role" => "qa",
+      "result_ref" => "https://example.test/pilot-evaluations/#{arm.fetch('batch_identity')}",
+      "metrics" => arm.fetch("metrics")
+    }
+    evaluation_path = File.join(
+      PILOT_FIXTURE_ROOT,
+      "#{arm.fetch('batch_identity')}-evaluation-#{Process.pid}-#{@pilot_evaluation_sequence}.json"
+    )
+    File.write(evaluation_path, JSON.generate(canonicalize(evaluation_result)), mode: "w", perm: 0o600)
+    arm["evaluation_result_ref"] = "file://#{evaluation_path}"
+    arm["evaluation_result_digest"] = findings_digest(evaluation_result)
+  end
+
+  def refresh_pilot_evaluation_result!(arm)
+    rewrite_pilot_evaluation_result!(arm) { |result| result["metrics"] = arm.fetch("metrics") }
+  end
+
+  def rewrite_pilot_evaluation_result!(arm)
+    path = arm.fetch("evaluation_result_ref").delete_prefix("file://")
+    result = JSON.parse(File.read(path))
+    yield result
+    File.write(path, JSON.generate(canonicalize(result)), mode: "w", perm: 0o600)
+    arm["evaluation_result_digest"] = findings_digest(result)
+  end
+
+  def pilot_evaluation_dependency_commitments(pairs)
+    pairs.flat_map do |pair|
+      %w[ordinary multi_target].map do |arm_identity|
+        arm = pair.fetch(arm_identity)
+        result = JSON.parse(File.read(arm.fetch("evaluation_result_ref").delete_prefix("file://")))
+        {
+          "pair_id" => pair.fetch("pair_id"), "arm_identity" => arm_identity,
+          "task_identity" => arm.fetch("task_identity"), "batch_identity" => arm.fetch("batch_identity"),
+          "evaluation_result_ref" => arm.fetch("evaluation_result_ref"),
+          "evaluation_result_digest" => arm.fetch("evaluation_result_digest"),
+          "usage_receipt_digest" => arm.fetch("usage_receipt_digest"),
+          "budget_result_digest" => findings_digest(arm.fetch("budget_result")),
+          "evaluator" => result.fetch("evaluator"), "evaluator_role" => result.fetch("evaluator_role"),
+          "result_ref" => result.fetch("result_ref")
+        }
+      end
+    end
+  end
+
+  def refresh_pilot_evaluation_dependency_commitments!(pilot)
+    commitments = pilot_evaluation_dependency_commitments(pilot.fetch("pairs"))
+    pilot.fetch("dependencies").each do |dependency|
+      next unless %w[evaluation_runner execution_provenance].include?(dependency["capability"])
+
+      dependency["arm_commitments"] = JSON.parse(JSON.generate(commitments))
+    end
   end
 
   def apply_shifted_disjoint_priced_usage!(receipt, batch_id:, lane_id:, coordinator_tokens:, lane_tokens:,

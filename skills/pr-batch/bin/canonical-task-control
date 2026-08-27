@@ -27,6 +27,7 @@ module CanonicalTaskControl
   MAX_CHILD_RECEIPT_BYTES = 65_536
   MAX_USAGE_RECEIPT_BYTES = 1_048_576
   MAX_RATE_CARD_BYTES = 65_536
+  MAX_PILOT_EVALUATION_BYTES = 65_536
   BATCH_TOKEN_BUDGET_HELPER = File.expand_path("batch-token-budget", __dir__)
   PRESERVED_GATES = %w[security review qa exact-head ownership merge].freeze
   REQUIRED_CAPABILITIES = %w[hierarchical_token_budgets replay_safe_usage_receipts].freeze
@@ -711,7 +712,11 @@ module CanonicalTaskControl
     end
 
     dependencies.each do |dependency|
-      require_exact_keys!(dependency, dependency_keys)
+      keys = dependency_keys.dup
+      if %w[evaluation_runner execution_provenance].include?(dependency["capability"])
+        keys << "arm_commitments"
+      end
+      require_exact_keys!(dependency, keys)
       unless dependency["contract"] == "dependency-gate-evidence" && dependency["version"] == 1
         raise InvalidInput, "pilot dependency must use dependency-gate-evidence v1"
       end
@@ -780,6 +785,20 @@ module CanonicalTaskControl
       raise InvalidInput, "pilot usage receipt references must be globally unique"
     end
 
+    submitted_evaluation_refs = pairs.flat_map do |pair|
+      if pair.is_a?(Hash)
+        [pair.dig("ordinary", "evaluation_result_ref"), pair.dig("multi_target", "evaluation_result_ref")]
+      else
+        []
+      end
+    end
+    unless submitted_evaluation_refs.length == pairs.length * 2 &&
+           submitted_evaluation_refs.uniq.length == submitted_evaluation_refs.length
+      raise InvalidInput, "pilot evaluation result references must be globally unique"
+    end
+
+    evaluation_commitments = validate_pilot_evaluation_dependency_commitments!(dependencies, pairs)
+
     submitted_representative_ids = pairs.flat_map do |pair|
       next [] unless pair.is_a?(Hash)
 
@@ -814,11 +833,13 @@ module CanonicalTaskControl
       pair_ids << pair["pair_id"]
       ordinary = validate_pilot_arm!(
         pair["ordinary"], expected_arm: "ordinary", pair: pair, context: context,
-                          trusted_rate_card: trusted_rate_card
+                          trusted_rate_card: trusted_rate_card,
+                          evaluation_commitment: evaluation_commitments.fetch([pair["pair_id"], "ordinary"])
       )
       multi = validate_pilot_arm!(
         pair["multi_target"], expected_arm: "multi_target", pair: pair, context: context,
-                              trusted_rate_card: trusted_rate_card
+                              trusted_rate_card: trusted_rate_card,
+                              evaluation_commitment: evaluation_commitments.fetch([pair["pair_id"], "multi_target"])
       )
       representative_ids.concat([
                                   canonical_identity(pair["ordinary"]["task_identity"]),
@@ -882,10 +903,61 @@ module CanonicalTaskControl
     }
   end
 
-  def validate_pilot_arm!(arm, expected_arm:, pair:, context:, trusted_rate_card:)
+  def validate_pilot_evaluation_dependency_commitments!(dependencies, pairs)
+    records = dependencies.select do |dependency|
+      %w[evaluation_runner execution_provenance].include?(dependency["capability"])
+    end
+    maps = records.map do |dependency|
+      commitments = dependency["arm_commitments"]
+      unless commitments.is_a?(Array) && commitments.length == pairs.length * 2
+        raise InvalidInput, "pilot evaluation dependency commitments must exactly cover every arm"
+      end
+
+      by_arm = commitments.to_h do |commitment|
+        require_exact_keys!(commitment, %w[
+                              pair_id arm_identity task_identity batch_identity
+                              evaluation_result_ref evaluation_result_digest usage_receipt_digest
+                              budget_result_digest evaluator evaluator_role result_ref
+                            ])
+        unless portable_id?(commitment["pair_id"]) &&
+               %w[ordinary multi_target].include?(commitment["arm_identity"]) &&
+               portable_id?(commitment["task_identity"]) && portable_id?(commitment["batch_identity"]) &&
+               commitment["evaluation_result_ref"].to_s.match?(%r{\Afile:///[^[:space:]]+\z}) &&
+               %w[evaluation_result_digest usage_receipt_digest budget_result_digest].all? do |key|
+                 commitment[key].is_a?(String) && commitment[key].match?(/\Asha256:[0-9a-f]{64}\z/)
+               end && known_string?(commitment["evaluator"]) &&
+               %w[checker reviewer qa].include?(commitment["evaluator_role"]) &&
+               durable_ref?(commitment["result_ref"])
+          raise InvalidInput, "pilot evaluation dependency commitment is invalid"
+        end
+
+        [[commitment["pair_id"], commitment["arm_identity"]], commitment]
+      end
+      if by_arm.length != commitments.length
+        raise InvalidInput, "pilot evaluation dependency commitments must be unique"
+      end
+
+      by_arm
+    end
+    unless maps.length == 2 && canonicalize(maps.first) == canonicalize(maps.last)
+      raise InvalidInput, "pilot evaluation dependency commitments must agree"
+    end
+
+    expected = pairs.flat_map do |pair|
+      %w[ordinary multi_target].map { |arm_identity| [pair["pair_id"], arm_identity] }
+    end
+    unless maps.first.keys.sort == expected.sort
+      raise InvalidInput, "pilot evaluation dependency commitments must exactly cover every arm"
+    end
+
+    maps.first
+  end
+
+  def validate_pilot_arm!(arm, expected_arm:, pair:, context:, trusted_rate_card:, evaluation_commitment:)
     keys = %w[
       arm_identity task_identity batch_identity task_class context_topology
-      usage_receipt usage_receipt_ref usage_receipt_digest budget_result metrics
+      usage_receipt usage_receipt_ref usage_receipt_digest budget_result
+      evaluation_result_ref evaluation_result_digest metrics
     ]
     require_exact_keys!(arm, keys)
     raise InvalidInput, "pilot arm identity mismatch" unless arm["arm_identity"] == expected_arm
@@ -923,7 +995,80 @@ module CanonicalTaskControl
     trusted_credits = trusted_pilot_credit_total(
       arm.fetch("usage_receipt").fetch("credit_equivalents", nil), arm.fetch("usage_receipt"), trusted_rate_card
     )
-    metrics = arm["metrics"]
+    metrics = load_trusted_pilot_evaluation_metrics!(
+      arm, pair: pair, context: context, evaluation_commitment: evaluation_commitment
+    )
+    unless canonicalize(arm["metrics"]) == canonicalize(metrics)
+      raise InvalidInput, "pilot evaluation metrics mismatch"
+    end
+
+    {
+      "metrics" => metrics,
+      "total_tokens" => projection.fetch("tokens"),
+      "credit_equivalents" => trusted_credits,
+      "unknowns" => (projection.fetch("unknowns") +
+        (trusted_credits == "UNKNOWN" ? ["credit_equivalents"] : [])).uniq.sort
+    }
+  end
+
+  def load_trusted_pilot_evaluation_metrics!(arm, pair:, context:, evaluation_commitment:)
+    reference = arm["evaluation_result_ref"]
+    unless reference.to_s.match?(%r{\Afile:///[^[:space:]]+\z})
+      raise InvalidInput, "pilot evaluation result reference must be an absolute file URI"
+    end
+
+    digest = arm["evaluation_result_digest"]
+    unless digest.is_a?(String) && digest.match?(/\Asha256:[0-9a-f]{64}\z/)
+      raise InvalidInput, "pilot evaluation result digest is invalid"
+    end
+
+    path = secure_file_under_root!(
+      reference.delete_prefix("file://"), context.fetch(:trusted_root), "pilot evaluation result"
+    )
+    payload = File.binread(path, MAX_PILOT_EVALUATION_BYTES + 1)
+    if payload.bytesize > MAX_PILOT_EVALUATION_BYTES
+      raise InvalidInput, "pilot evaluation result exceeds byte limit"
+    end
+
+    result = JSON.parse(payload)
+    raise InvalidInput, "pilot evaluation result must be an object" unless result.is_a?(Hash)
+    raise InvalidInput, "pilot evaluation result digest mismatch" unless canonical_digest(result) == digest
+
+    require_exact_keys!(result, %w[
+                          contract version pair_id arm_identity task_identity batch_identity
+                          task_class context_topology usage_receipt_digest budget_result_digest
+                          evaluator evaluator_role result_ref metrics
+                        ])
+    unless result["contract"] == "canonical-task-pilot-evaluation-result" && result["version"] == 1
+      raise InvalidInput, "pilot evaluation result contract is unsupported"
+    end
+    unless result["pair_id"] == pair["pair_id"] && result["arm_identity"] == arm["arm_identity"] &&
+           canonical_identity(result["task_identity"]) == canonical_identity(arm["task_identity"]) &&
+           canonical_identity(result["batch_identity"]) == canonical_identity(arm["batch_identity"]) &&
+           result["task_class"] == arm["task_class"] && result["context_topology"] == arm["context_topology"] &&
+           result["usage_receipt_digest"] == arm["usage_receipt_digest"] &&
+           result["budget_result_digest"] == canonical_digest(arm["budget_result"])
+      raise InvalidInput, "pilot evaluation result binding mismatch"
+    end
+    unless known_string?(result["evaluator"]) && %w[checker reviewer qa].include?(result["evaluator_role"]) &&
+           durable_ref?(result["result_ref"])
+      raise InvalidInput, "pilot evaluation result provenance is invalid"
+    end
+
+    expected_commitment = {
+      "pair_id" => result["pair_id"], "arm_identity" => result["arm_identity"],
+      "task_identity" => result["task_identity"], "batch_identity" => result["batch_identity"],
+      "evaluation_result_ref" => reference, "evaluation_result_digest" => digest,
+      "usage_receipt_digest" => result["usage_receipt_digest"],
+      "budget_result_digest" => result["budget_result_digest"],
+      "evaluator" => result["evaluator"], "evaluator_role" => result["evaluator_role"],
+      "result_ref" => result["result_ref"]
+    }
+    unless canonicalize(evaluation_commitment) == canonicalize(expected_commitment)
+      raise InvalidInput, "pilot evaluation dependency commitment mismatch"
+    end
+
+    metrics = result["metrics"]
     keys = %w[
       elapsed_seconds human_coordination_seconds
       correction_turns first_pass_accepted escaped_p0_p1_defects gate_compliance
@@ -939,13 +1084,9 @@ module CanonicalTaskControl
       raise InvalidInput, "gate_compliance is unsupported"
     end
 
-    {
-      "metrics" => metrics,
-      "total_tokens" => projection.fetch("tokens"),
-      "credit_equivalents" => trusted_credits,
-      "unknowns" => (projection.fetch("unknowns") +
-        (trusted_credits == "UNKNOWN" ? ["credit_equivalents"] : [])).uniq.sort
-    }
+    metrics
+  rescue JSON::ParserError => e
+    raise InvalidInput, "pilot evaluation result malformed: #{e.class}"
   end
 
   def load_trusted_pilot_rate_card!(anchor, context:)

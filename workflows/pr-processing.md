@@ -828,6 +828,15 @@ the production helper's locked reconciliation snapshot keyed by
 `usage_receipt_digest`, require the submitted receipts, charge-backs, and
 reservation bindings to equal the complete persisted set, and bind targets to
 the arm's task, batch, and receipt lane IDs rather than the outer pilot task.
+Bind each arm's quality metrics to one unique, bounded
+`canonical-task-pilot-evaluation-result` v1 artifact securely resolved beneath
+the trusted evidence root by absolute file reference and canonical digest. The
+artifact binds the pair, arm, representative identities, usage receipt, and
+reconciled budget result. Inline metrics must match the artifact exactly and
+cannot authorize promotion on their own. The satisfied evaluation-runner and
+execution-provenance evidence must carry identical complete per-arm commitments
+to the artifact digest, evaluator, result reference, and bound usage/budget
+digests.
 Before summing credits, require the producer's exact metadata and disclaimer
 plus one unique row for every observed host/model route. Resolve one optional
 pilot-level `batch-usage-rate-card-v1` beneath the trusted evidence root, bind

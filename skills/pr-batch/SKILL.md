@@ -223,6 +223,14 @@ anchor through the production helper's locked reconciliation snapshot keyed by
 `usage_receipt_digest`, and require its submitted receipts, charge-backs, and
 reservation bindings to equal the complete persisted set. Bind representative
 targets to that arm's task, batch, and receipt lane IDs, not the outer pilot task.
+Bind every arm's quality metrics to one unique, bounded
+`canonical-task-pilot-evaluation-result` v1 artifact securely resolved beneath
+the trusted evidence root by absolute file reference and canonical digest. It
+must bind the pair, arm, representative identities, usage receipt, and
+reconciled budget result; inline metrics must match exactly and never authorize
+promotion alone. Require identical complete per-arm commitments in the
+satisfied evaluation-runner and execution-provenance evidence, binding the
+artifact digest, evaluator, result reference, and usage/budget digests.
 Report `gate_compliance` once in pilot unknowns when any arm records literal
 `UNKNOWN`; known `weakened` compliance remains adverse without being relabelled unknown.
 
