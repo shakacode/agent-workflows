@@ -147,7 +147,7 @@ The exact override names `fix-it`, `pr-batch`, and `publish-pr` are likewise gen
 For this override field only, `durable_authorization_ref` must use `issue://OWNER/REPO/N`, `plan-state://<id>/<path>`, `batch://<id>`, or `https://github.com/OWNER/REPO/{issues|pull}/N`; any other scheme or chat-local reference fails closed.
 Parseable `issue://` and GitHub HTTPS authorization references must match `target.repository` case-insensitively; opaque `plan-state://` and `batch://` references remain trusted without invented repository parsing.
 Parseable authorization refs reject userinfo and query; GitHub HTTPS requires port 443, `issue://` requires the exact canonical authority/path shape, and fragments remain permitted.
-Every typed target repository has exactly two ASCII `[A-Za-z0-9][A-Za-z0-9._-]*` components, neither exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
+Every typed target repository has exactly two ASCII components separated by `/`: the owner matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from `[A-Za-z0-9._-]`; neither component is exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
 
 Every preflight lane carries one exact `target` v1 record. GitHub targets use
 `type`, `version`, `repository`, positive `number`, and a matching

@@ -242,6 +242,13 @@ CANONICAL_ISSUE_CREATION_SOURCE_PIN =
   "When search finds no canonical issue or existing PR, create the canonical issue with explicit " \
   "planning-time issue-creation authority, or ask for that authority; do not create a branch, edit, " \
   "or dispatch until the persisted issue identity is rebound into the plan and preflight passes."
+CANONICAL_REPOSITORY_GRAMMAR_SOURCE_PIN =
+  "Every typed target repository has exactly two ASCII components separated by `/`: the owner " \
+  "matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from " \
+  "`[A-Za-z0-9._-]`; neither component is exactly `UNKNOWN`; parseable authorization-reference " \
+  "`N` values are positive decimals matching `[1-9][0-9]*`."
+REPOSITORY_NAME_PATTERN_SOURCE_PIN =
+  'REPOSITORY_NAME_PATTERN = /\A[A-Za-z0-9._-]{1,100}\z/'
 TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target: <repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
     Original: <prompt|n/a>; ovr: <n/a|name/authorizer/ref/task>
@@ -642,6 +649,7 @@ assert_goal_prompt_heading_is_line_anchored
 workflow_text = read_repo_file("workflows/pr-processing.md")
 pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill_text = read_repo_file("skills/triage/SKILL.md")
+batch_plan_preflight_text = read_repo_file("skills/plan-pr-batch/bin/batch-plan-preflight")
 triage_prompt_contract_text = triage_skill_text.gsub(/^ {3}/, "")
 prompt_template = extract_goal_prompt_template(skill_text, "## Goal Prompt for pr-batch",
                                                label: "plan-pr-batch goal prompt template")
@@ -855,7 +863,20 @@ host_aware_batch_sizing_text_by_path.each do |path, text|
     1,
     "#{path} canonical issue creation path"
   )
+  require_occurrence_count(
+    text,
+    CANONICAL_REPOSITORY_GRAMMAR_SOURCE_PIN,
+    1,
+    "#{path} canonical repository grammar"
+  )
 end
+
+require_occurrence_count(
+  batch_plan_preflight_text,
+  REPOSITORY_NAME_PATTERN_SOURCE_PIN,
+  1,
+  "batch-plan-preflight canonical repository grammar"
+)
 
 goal_prompt_batch_size_target_text_by_path = {
   "workflows/pr-processing.md" => workflow_text,
