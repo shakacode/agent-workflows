@@ -129,11 +129,17 @@ scoped overrides update a separate effective-budget digest, so restart replay
 and unresolved threshold evidence cannot be hidden by a limit change.
 `evaluated_at` is a monotonic durable watermark: a command cannot roll state
 back to make an expired approval or stale receipt appear current. Each helper
-invocation captures trusted host time once and accepts `evaluated_at` only
-within 30 seconds before or after that clock, inclusively. An older command
+invocation captures a monotonic baseline immediately before trusted host wall
+time, captured once, and accepts `evaluated_at` only
+within 30 seconds before or after that clock, inclusively. After acquiring the
+state lock, it revalidates against that capture advanced by monotonic elapsed
+time from the earlier baseline, conservatively including suspension between the
+two captures, before expiration, evaluation, or persistence. An older command
 fails as `command-time-stale`; a newer command fails as `command-time-future`.
-Both fail before a fresh state directory or lock can be created and before
-existing-state expiration, evaluation, event/watermark mutation, or persistence. Restart also
+Initial validation rejects an already-out-of-window fresh initialization before
+its state directory or lock can be created. Both the initial and post-lock checks
+reject before existing-state expiration, evaluation, event/watermark mutation,
+or persistence. Restart also
 fails closed when persisted `last_evaluated_at` is more than 30 seconds ahead
 of the same captured clock. Approval and override receipts cannot take effect
 before their recorded decision time, and a stale command cannot store an

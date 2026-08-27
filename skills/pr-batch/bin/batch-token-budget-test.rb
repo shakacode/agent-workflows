@@ -24,6 +24,11 @@ class BatchTokenBudgetTest < Minitest::Test
         at(Float(ENV.fetch("BATCH_TOKEN_BUDGET_TEST_EPOCH"))).utc
       end
     end
+    class << Process
+      def clock_gettime(_clock_id, *_arguments)
+        0.0
+      end
+    end
   RUBY
   DEFAULT_TRUSTED_CLOCK_DIRECTORY = Dir.mktmpdir("batch-token-budget-default-clock")
   DEFAULT_TRUSTED_CLOCK_PRELOADER = File.join(DEFAULT_TRUSTED_CLOCK_DIRECTORY, "trusted-clock.rb")
@@ -165,6 +170,36 @@ class BatchTokenBudgetTest < Minitest::Test
   def trusted_clock_options_for_time(trusted_time, preloader: DEFAULT_TRUSTED_CLOCK_PRELOADER)
     {
       env: { "BATCH_TOKEN_BUDGET_TEST_EPOCH" => trusted_time.to_f.to_s },
+      ruby_arguments: ["-r", preloader]
+    }
+  end
+
+  def trusted_clock_options_with_elapsed(directory, trusted_time, elapsed_seconds)
+    preloader = File.join(directory, "trusted-clock-with-elapsed.rb")
+    File.write(preloader, <<~RUBY)
+      class << Time
+        def now
+          $batch_token_budget_test_wall_captured = true
+          at(Float(ENV.fetch("BATCH_TOKEN_BUDGET_TEST_EPOCH"))).utc
+        end
+      end
+      class << Process
+        def clock_gettime(_clock_id, *_arguments)
+          elapsed = Float(ENV.fetch("BATCH_TOKEN_BUDGET_TEST_ELAPSED"))
+          unless defined?(@batch_token_budget_test_monotonic_captured)
+            @batch_token_budget_test_monotonic_captured = true
+            return $batch_token_budget_test_wall_captured ? elapsed : 0.0
+          end
+
+          elapsed
+        end
+      end
+    RUBY
+    {
+      env: {
+        "BATCH_TOKEN_BUDGET_TEST_EPOCH" => trusted_time.to_f.to_s,
+        "BATCH_TOKEN_BUDGET_TEST_ELAPSED" => elapsed_seconds.to_s
+      },
       ruby_arguments: ["-r", preloader]
     }
   end
@@ -1202,6 +1237,94 @@ class BatchTokenBudgetTest < Minitest::Test
           refute File.exist?(File.join(directory, "offset-#{offset.to_s.tr('.', '-')}.json.lock")), offset
         end
       end
+    end
+  end
+
+  def test_monotonic_before_wall_capture_counts_post_lock_gap_at_exact_stale_boundary
+    Dir.mktmpdir("batch-token-budget-post-lock-initialize") do |directory|
+      trusted_time = Time.utc(2026, 8, 26, 12, 0, 0)
+      [30, 30.001].each do |elapsed_seconds|
+        state_path = File.join(directory, "elapsed-#{elapsed_seconds}.json")
+        candidate = budget(state_path: state_path)
+        anchor = install_trusted_plan(state_path, candidate)
+        output, stderr, status = run_helper_raw(
+          state_path,
+          JSON.generate(command("initialize", "evaluated_at" => format_timestamp(trusted_time), "budget" => candidate)),
+          anchor: anchor,
+          **trusted_clock_options_with_elapsed(directory, trusted_time, elapsed_seconds)
+        )
+
+        if elapsed_seconds == 30
+          assert status.success?, stderr
+          assert_equal "initialized", output.fetch("status")
+        else
+          refute status.success?
+          assert_nil output
+          assert_equal "command-time-stale", JSON.parse(stderr).fetch("reason")
+          refute File.exist?(state_path)
+        end
+      end
+    end
+  end
+
+  def test_post_lock_stale_command_preserves_expired_override_and_state_then_current_time_recovers
+    with_state do |state_path|
+      initialize_budget(state_path)
+      trusted_time = Time.utc(2026, 8, 12, 12, 2, 0)
+      override = budget_override(
+        state_path,
+        id: "post-lock-expired-override",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 900,
+        issued_at: format_timestamp(trusted_time - 120),
+        expires_at: format_timestamp(trusted_time - 1)
+      )
+      overridden, override_stderr, override_status = run_helper(
+        state_path,
+        command("override", "evaluated_at" => format_timestamp(trusted_time - 60), "override" => override)
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", overridden.fetch("status")
+      state_before = File.binread(state_path)
+      projection_before = JSON.parse(state_before)
+
+      output, stderr, status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "evaluated_at" => format_timestamp(trusted_time),
+          "reservation" => reservation(id: "post-lock-aged-reserve", tokens: 700)
+        ),
+        **trusted_clock_options_with_elapsed(File.dirname(state_path), trusted_time, 30.001)
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "command-time-stale", JSON.parse(stderr).fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      projection_after = JSON.parse(File.binread(state_path))
+      assert_equal projection_before.fetch("control_events"), projection_after.fetch("control_events")
+      assert_equal projection_before.fetch("last_evaluated_at"), projection_after.fetch("last_evaluated_at")
+      assert_equal projection_before.fetch("admission_decisions"), projection_after.fetch("admission_decisions")
+      assert_equal projection_before.fetch("reservation_decisions"), projection_after.fetch("reservation_decisions")
+      assert projection_after.dig("overrides", "post-lock-expired-override", "active")
+
+      recovered, recovered_stderr, recovered_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "evaluated_at" => format_timestamp(trusted_time),
+          "reservation" => reservation(id: "post-lock-aged-reserve", tokens: 700)
+        ),
+        **trusted_clock_options_for_time(trusted_time)
+      )
+      assert recovered_status.success?, recovered_stderr
+      assert_equal "budget-exhausted", recovered.fetch("status")
+      recovered_state = JSON.parse(File.binread(state_path))
+      refute recovered_state.dig("overrides", "post-lock-expired-override", "active")
+      assert_equal 600, recovered_state.dig("scopes", "lanes", "lane-a", "limit_tokens")
+      refute recovered_state.fetch("reservations").key?("post-lock-aged-reserve")
     end
   end
 
