@@ -381,7 +381,6 @@ capture_bound_recovery_metadata() {
       copied_attestation
     ensure
       temporary&.close unless temporary&.closed?
-      temporary&.unlink
     end
     remove_exact = lambda do |directory, name, held, expected|
       RecoveryCaptureCleanupHook.call(name) if defined?(RecoveryCaptureCleanupHook)
@@ -524,8 +523,6 @@ capture_bound_recovery_metadata() {
           end
           if created.empty?
             quarantine_file.close unless quarantine_file.closed?
-            remove_directory = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
-            RecoverySyscalls.unlinkat(target_file.fileno, ARGV.fetch(2), remove_directory)
           end
         rescue StandardError
           nil
@@ -592,12 +589,14 @@ capture_installed_metadata_for_recovery() {
     return 70
   fi
   if ! recovery_metadata_quarantine_identity="$(recovery_directory_identity "$recovery_metadata_quarantine")"; then
-    rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
+    remove_bound_empty_directory "$recovery_metadata_quarantine" \
+      "$recovery_metadata_quarantine_identity" 2>/dev/null || true
     return 70
   fi
   recovery_metadata_cleanup_receipt="$target/$metadata_name.cleanup-complete-${recovery_metadata_quarantine##*.recovery-}"
   if [[ -e "$recovery_metadata_cleanup_receipt" || -L "$recovery_metadata_cleanup_receipt" ]]; then
-    rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
+    remove_bound_empty_directory "$recovery_metadata_quarantine" \
+      "$recovery_metadata_quarantine_identity" 2>/dev/null || true
     return 70
   fi
   recovery_metadata_snapshot="$recovery_metadata_quarantine/metadata"
@@ -610,7 +609,8 @@ capture_installed_metadata_for_recovery() {
   [[ "$capture_status" -eq 0 ]] || {
     if [[ "$(recovery_directory_identity "$recovery_metadata_quarantine" 2>/dev/null || true)" = \
           "$recovery_metadata_quarantine_identity" ]]; then
-      rmdir "$recovery_metadata_quarantine" 2>/dev/null || true
+      remove_bound_empty_directory "$recovery_metadata_quarantine" \
+        "$recovery_metadata_quarantine_identity" 2>/dev/null || true
     fi
     [[ "$capture_status" -eq 67 ]] && return 1
     return 70
@@ -1283,12 +1283,13 @@ replace_bound_recovery_metadata() {
         end
       end
       if guard_created && quarantine_file && !exchanged && !rollback_failed
-        guard_created = false if RecoveryRestoreSyscalls.unlinkat(
-          quarantine_file.fileno,
-          "restore-guard",
-          0
-        ) == 0
-        rollback_failed = true if guard_created
+        begin
+          guard_file ||= open_at.call(quarantine_file, "restore-guard")
+          remove_exact.call(quarantine_file, "restore-guard", guard_file, expected_destination)
+          guard_created = false
+        rescue StandardError
+          rollback_failed = true
+        end
       end
       ios.reverse_each do |io|
         begin
@@ -2132,6 +2133,65 @@ recovery_directory_identity() {
                   verified.dev == stat.dev && verified.ino == stat.ino
     print "#{stat.dev}:#{stat.ino}"
   ' "$1" 2>/dev/null
+}
+
+remove_attested_metadata_file() {
+  local path="$1" expected="$2"
+  [[ -n "$path" && -n "$expected" ]] || return 1
+  ruby -rdigest -rfiddle/import -rsecurerandom -e '
+    module BoundCleanup
+      extend Fiddle::Importer; dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"; extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, a, b); renameatx_np(fd, a, fd, b, 0x4); end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, a, b); renameat2(fd, a, fd, b, 0x1); end
+      end
+    end
+    path, expected = ARGV; parent = File.open(File.dirname(path), File::RDONLY | File::NOFOLLOW)
+    name = File.basename(path); private_name = ".cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
+    BoundCleanupHook.call(path) if defined?(BoundCleanupHook)
+    abort unless BoundCleanup.no_replace(parent.fileno, name, private_name) == 0
+    fd = BoundCleanup.openat(parent.fileno, private_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW); abort if fd == -1
+    file = File.for_fd(fd); stat = file.stat; digest = Digest::SHA256.new
+    while (chunk = file.read(64 * 1024)); digest.update(chunk); end
+    abort unless stat.file? && "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}" == expected
+    abort unless BoundCleanup.unlinkat(parent.fileno, private_name, 0) == 0
+  ' "$path" "$expected" 2>/dev/null
+}
+
+remove_bound_empty_directory() {
+  local path="$1" expected="$2"
+  [[ -n "$path" && -n "$expected" ]] || return 1
+  ruby -rfiddle/import -rsecurerandom -e '
+    module BoundDirCleanup
+      extend Fiddle::Importer; dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"; extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, a, b); renameatx_np(fd, a, fd, b, 0x4); end
+        REMOVE_DIR = 0x80
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, a, b); renameat2(fd, a, fd, b, 0x1); end
+        REMOVE_DIR = 0x200
+      end
+    end
+    path, expected = ARGV; parent = File.open(File.dirname(path), File::RDONLY | File::NOFOLLOW)
+    name = File.basename(path); private_name = ".cleanup-dir-#{Process.pid}-#{SecureRandom.hex(12)}"
+    original_fd = BoundDirCleanup.openat(parent.fileno, name, File::RDONLY | File::NOFOLLOW); abort if original_fd == -1
+    original = File.for_fd(original_fd); original_stat = original.stat
+    abort unless original_stat.directory? && "#{original_stat.dev}:#{original_stat.ino}" == expected && Dir.empty?(path)
+    BoundDirCleanupHook.call(path) if defined?(BoundDirCleanupHook)
+    abort unless BoundDirCleanup.no_replace(parent.fileno, name, private_name) == 0
+    fd = BoundDirCleanup.openat(parent.fileno, private_name, File::RDONLY | File::NOFOLLOW); abort if fd == -1
+    directory = File.for_fd(fd); stat = directory.stat
+    private_path = File.join(File.dirname(path), private_name)
+    abort unless stat.directory? && "#{stat.dev}:#{stat.ino}" == expected && Dir.empty?(private_path)
+    abort unless BoundDirCleanup.unlinkat(parent.fileno, private_name, BoundDirCleanup::REMOVE_DIR) == 0
+  ' "$path" "$expected" 2>/dev/null
 }
 
 recovery_path_identity() {
@@ -3112,6 +3172,7 @@ if ! mkdir "$install_lock" 2>/dev/null; then
   echo "DELIVERY_MODE_CONFLICT: another agent-workflows install or migration holds $install_lock" >&2
   exit 1
 fi
+install_lock_identity="$(recovery_directory_identity "$install_lock")" || exit 1
 release_install_lock() {
   local status=$?
   trap - EXIT
@@ -3121,8 +3182,11 @@ release_install_lock() {
     report_recovery_metadata_restore_failure
     status=65
   fi
-  rm -f "${install_metadata_snapshot_path:-}" 2>/dev/null || true
-  rmdir "$install_lock" 2>/dev/null || true
+  if [[ -n "${install_metadata_snapshot_attestation:-}" ]]; then
+    remove_attested_metadata_file "$install_metadata_snapshot_path" \
+      "$install_metadata_snapshot_attestation" 2>/dev/null || status=1
+  fi
+  remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null || true
   exit "$status"
 }
 trap release_install_lock EXIT
@@ -3283,14 +3347,18 @@ release_install_transaction() {
     fi
   fi
   if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" &&
-        -f "$target/$metadata_name.tmp" ]]; then
-    rm -f "$target/$metadata_name.tmp"
+        -n "${prepared_metadata_attestation:-}" ]]; then
+    remove_attested_metadata_file "$target/$metadata_name.tmp" \
+      "$prepared_metadata_attestation" 2>/dev/null || status=1
   fi
   if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" ]]; then
     remove_install_metadata_rollback_guard || status=1
   fi
-  rm -f "${install_metadata_snapshot_path:-}" 2>/dev/null || true
-  rmdir "$install_lock" 2>/dev/null || true
+  if [[ -n "${install_metadata_snapshot_attestation:-}" ]]; then
+    remove_attested_metadata_file "$install_metadata_snapshot_path" \
+      "$install_metadata_snapshot_attestation" 2>/dev/null || status=1
+  fi
+  remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null || true
   exit "$status"
 }
 trap release_install_transaction EXIT

@@ -1371,12 +1371,14 @@ RUBY
   set -e
 
   assert_file "$marker"
-  [[ "$status" -eq 65 ]] || fail "replaced prepared metadata exited $status: $output"
+  [[ "$status" -eq 1 ]] || fail "replaced prepared metadata exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
   [[ ! -e "$metadata" ]] || fail "replaced prepared metadata was committed"
   assert_file "$target/skills/pr-batch/SKILL.md"
-  [[ ! -e "$metadata.tmp" ]] || fail "replaced prepared metadata was not cleaned"
-  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "replaced prepared metadata leaked install lock"
+  grep -Rql '"source":"/tmp/attacker"' "$target" || \
+    fail "replaced prepared metadata was deleted"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "replaced prepared metadata left an unnecessary empty install lock"
 }
 
 test_metadata_commit_capability_failure_stops_before_managed_mutation() {
@@ -1420,8 +1422,8 @@ RUBY
     fail "missing metadata commit capability changed install metadata"
   [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
     fail "missing metadata commit capability prepared new metadata"
-  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
-    fail "missing metadata commit capability leaked install lock"
+  [[ -d "$target/.agent-workflows-install.lock" ]] || \
+    fail "missing metadata commit capability did not preserve the bound install lock"
 }
 
 test_metadata_actual_source_prebind_failure_stops_before_managed_mutation() {
@@ -1760,8 +1762,8 @@ RUBY
     fail "missing recovery atomic rename capability mutated the recovery target"
   [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
     fail "missing recovery atomic rename capability created recovery quarantine"
-  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
-    fail "missing recovery atomic rename capability leaked install lock"
+  [[ -d "$target/.agent-workflows-install.lock" ]] || \
+    fail "missing recovery atomic rename capability did not preserve the bound install lock"
 }
 
 test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat() {
