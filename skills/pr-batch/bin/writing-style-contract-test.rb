@@ -98,14 +98,14 @@ class WritingStyleContractTest < Minitest::Test
   def test_packaged_default_prose_lives_only_in_the_installed_markdown_document
     default_path = "docs/writing-style.md"
     default_lines = read(default_path).lines.map(&:strip).reject(&:empty?)
-    prose_paths = [
+    prose_paths = (COVERED_SURFACES + [
       default_path,
       "bin/agent-workflow-writing-style",
       "docs/adoption.md",
       "docs/installation-and-upgrades.md",
       "docs/seam-design.md",
       "examples/agent-workflow.yml"
-    ]
+    ]).uniq
 
     assert_equal 5, default_lines.length
     default_lines.each do |line|

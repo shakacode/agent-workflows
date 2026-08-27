@@ -11,16 +11,39 @@ SCRIPT = File.expand_path("agent-workflow-writing-style", __dir__)
 DEFAULT_GUIDE = File.expand_path("../docs/writing-style.md", __dir__)
 
 class AgentWorkflowWritingStyleTest < Minitest::Test
-  def run_resolver(repo_root:, home:)
+  def run_resolver(repo_root:, home:, script: SCRIPT)
     Open3.capture3(
       { "HOME" => home },
       RbConfig.ruby,
-      SCRIPT,
+      script,
       "--repo-root",
       repo_root,
       "--format",
       "json"
     )
+  end
+
+  def test_invalid_utf8_packaged_default_fails_cleanly
+    Dir.mktmpdir do |directory|
+      script = File.join(directory, "bin", "agent-workflow-writing-style")
+      default_guide = File.join(directory, "docs", "writing-style.md")
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.dirname(script))
+      FileUtils.mkdir_p(File.dirname(default_guide))
+      Dir.mkdir(repo_root)
+      Dir.mkdir(home)
+      FileUtils.cp(SCRIPT, script)
+      File.binwrite(default_guide, "Valid\n\xFF".b)
+
+      stdout, stderr, status = run_resolver(repo_root:, home:, script:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid packaged writing style"
+      assert_includes stderr, "must contain valid UTF-8"
+      refute_includes stderr, script
+    end
   end
 
   def test_no_configuration_returns_the_packaged_default_with_provenance
@@ -108,6 +131,27 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       assert_includes stderr, "invalid repository writing_style path"
       assert_includes stderr, "must not contain '..' traversal"
       refute_includes stderr, "Outside style must not load"
+    end
+  end
+
+  def test_repository_guide_rejects_a_null_byte_path_without_a_backtrace
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      Dir.mkdir(home)
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: \"docs/evil\\0.md\"\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style file"
+      assert_includes stderr, "ArgumentError"
+      refute_includes stderr, SCRIPT
     end
   end
 

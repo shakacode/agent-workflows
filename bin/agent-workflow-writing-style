@@ -44,7 +44,12 @@ module AgentWorkflowWritingStyle
   end
 
   def portable_default
-    File.read(PORTABLE_DEFAULT_PATH, encoding: "UTF-8").strip
+    guide = File.binread(PORTABLE_DEFAULT_PATH).force_encoding(Encoding::UTF_8)
+    unless guide.valid_encoding?
+      raise ConfigurationError, "invalid packaged writing style: must contain valid UTF-8"
+    end
+
+    guide.strip
   rescue EncodingError, SystemCallError => e
     raise ConfigurationError, "invalid packaged writing style: #{e.class}"
   end
@@ -162,7 +167,7 @@ module AgentWorkflowWritingStyle
     end
 
     guide
-  rescue EncodingError, SystemCallError => e
+  rescue ArgumentError, EncodingError, SystemCallError => e
     raise ConfigurationError,
           "invalid #{label} writing_style file: expected a readable regular Markdown file (#{e.class})"
   end
