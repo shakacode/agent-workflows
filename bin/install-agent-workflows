@@ -838,13 +838,25 @@ capture_regular_file_snapshot() {
       snapshot_file.write(content)
       snapshot_file.flush
       snapshot_file.fsync
+      MetadataSnapshotHook.call(:after_snapshot_fsync) if defined?(MetadataSnapshotHook)
       snapshot_stat = snapshot_file.stat
       abort unless snapshot_stat.file?
+      begin
+        snapshot_file.close
+      rescue StandardError
+        nil
+      ensure
+        snapshot_file = nil
+      end
       print "#{snapshot_stat.dev}:#{snapshot_stat.ino}|#{digest}"
     ensure
-      snapshot_file&.close
-      source_file&.close
-      lock_file&.close
+      [snapshot_file, source_file, lock_file].each do |file|
+        begin
+          file&.close
+        rescue StandardError
+          nil
+        end
+      end
     end
   ' "$1" "$2" "$3" "$install_lock_identity" 2>/dev/null
 }
@@ -1915,8 +1927,19 @@ preflight_metadata_commit_capability() {
         [first_name, second_name, link_name].each do |name|
           next if AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0) == 0
 
+          retry_result = AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0)
+          next if retry_result == 0
+
+          missing_fd = AtomicMetadataRenameProbe.openat(
+            directory.fileno,
+            name,
+            File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+          )
+          if missing_fd == -1 && Fiddle.last_error == Errno::ENOENT::Errno
+            next
+          end
+          File.for_fd(missing_fd).close unless missing_fd == -1
           cleanup_failed = true
-          AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0)
         end
       end
       begin

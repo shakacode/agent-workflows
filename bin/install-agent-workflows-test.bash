@@ -1812,7 +1812,7 @@ RUBY
     fail "missing metadata link capability leaked install lock"
 }
 
-test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation() {
+test_transient_metadata_probe_cleanup_failure_allows_install() {
   local tmp source target injection output status license_before metadata_before
   tmp="$(mktemp -d)"
   source="$tmp/source"
@@ -1835,7 +1835,7 @@ module FailAtomicMetadataProbeCleanup
       real_unlinkat = method(:unlinkat)
       failed_once = false
       define_singleton_method(:unlinkat) do |directory_fd, entry_name, flags|
-        if !failed_once && entry_name.start_with?("metadata-rename-probe-")
+        if (ENV["QA_PERSISTENT_PROBE_UNLINK"] || !failed_once) && entry_name.start_with?("metadata-rename-probe-")
           failed_once = true
           Fiddle.last_error = 1
           -1
@@ -1856,16 +1856,26 @@ RUBY
   status=$?
   set -e
 
-  [[ "$status" -ne 0 ]] || fail "failed metadata probe cleanup unexpectedly succeeded"
-  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
-  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
-    fail "failed metadata probe cleanup mutated a managed file"
-  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
-    fail "failed metadata probe cleanup changed install metadata"
+  [[ "$status" -eq 0 ]] || fail "transient metadata probe cleanup failure exited $status: $output"
+  assert_not_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$(shasum "$source/LICENSE" | awk '{print $1}')" = "$(shasum "$target/LICENSE" | awk '{print $1}')" ]] || \
+    fail "transient metadata probe cleanup failure did not install managed update"
   [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
     fail "failed metadata probe cleanup prepared new metadata"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
     fail "failed metadata probe cleanup leaked install lock"
+
+  license_before="$(shasum "$target/LICENSE")"
+  printf '\npersistent probe cleanup source change\n' >> "$source/LICENSE"
+  set +e
+  output="$(QA_PERSISTENT_PROBE_UNLINK=1 RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "persistent metadata probe cleanup failure unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "persistent metadata probe cleanup failure mutated managed files"
 }
 
 test_atomic_rename_capability_failure_stops_before_recovery_mutation() {
@@ -7366,6 +7376,44 @@ RUBY
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
 }
 
+test_persistent_completed_snapshot_close_failure_cleans_lock_and_allows_retry() {
+  local tmp target metadata injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-snapshot-close.rb"; marker="$tmp/snapshot-close-failed"
+  mkdir -p "$target"; printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  cat > "$injection" <<'RUBY'
+module MetadataSnapshotHook
+  def self.call(phase)
+    $qa_snapshot_fsynced = true if phase == :after_snapshot_fsync
+  end
+end
+module FailCompletedSnapshotClose
+  class << self; attr_accessor :snapshot_id; end
+  def close(*)
+    if ARGV.length == 4 && $qa_snapshot_fsynced && !closed? && stat.file?
+      FailCompletedSnapshotClose.snapshot_id ||= object_id
+      if object_id == FailCompletedSnapshotClose.snapshot_id
+        File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n") unless File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        raise Errno::EIO
+      end
+    end
+    super
+  end
+end
+IO.prepend(FailCompletedSnapshotClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 0 ]] || fail "completed snapshot close failure exited $status: $output"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "completed snapshot close failure retained install lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
 test_persistent_recovery_holder_close_failure_removes_committed_empty_holder() {
   local tmp target staging receipt injection marker output status retry_output
   tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-holder-close"
@@ -7465,6 +7513,7 @@ main() {
     test_prebind_guard_close_failure_does_not_leak_lock
     test_metadata_probe_close_failure_cleans_lock_and_allows_retry
     test_snapshot_creation_does_not_follow_replaced_lock_ancestor
+    test_persistent_completed_snapshot_close_failure_cleans_lock_and_allows_retry
     test_persistent_recovery_holder_close_failure_removes_committed_empty_holder
     test_persistent_recovery_payload_close_failure_preserves_committed_cleanup
     test_delivery_state_helper_unit_suite
@@ -7508,7 +7557,7 @@ main() {
     test_successful_install_reports_retained_lock_cleanup_pending
     test_successful_install_reports_private_lock_after_post_detach_failure
     test_metadata_commit_link_capability_failure_stops_before_managed_mutation
-    test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation
+    test_transient_metadata_probe_cleanup_failure_allows_install
     test_atomic_rename_capability_failure_stops_before_recovery_mutation
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
     test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data
