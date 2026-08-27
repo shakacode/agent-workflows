@@ -599,7 +599,7 @@ module CompletedBatchPublicationPreflight
       authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
       if lane&.fetch("terminal", nil) == "superseded" &&
          authenticated_terminal_completion?(verified_target_facts) &&
-         !typed_no_pr_issue_supersession?(lane, verified_target_facts)
+         !authenticated_later_typed_no_pr_issue_supersession?(lane, verified_target_facts)
         blockers << "#{target_label(target)} premature terminal supersession / replacement protocol violation"
       end
       if lane_state && state && lane_state != state && !authenticated_later_completion
@@ -967,6 +967,11 @@ module CompletedBatchPublicationPreflight
     lane&.fetch("terminal", nil) == "superseded" &&
       target&.fetch("type", nil) == "issue" &&
       target_snapshot["no_pr_evidence"].is_a?(Hash)
+  end
+
+  def authenticated_later_typed_no_pr_issue_supersession?(lane, target_snapshot)
+    typed_no_pr_issue_supersession?(lane, target_snapshot) &&
+      authenticated_target_completed_after_lane?(lane, target_snapshot)
   end
 
   def authenticated_terminal_completion?(target_snapshot)

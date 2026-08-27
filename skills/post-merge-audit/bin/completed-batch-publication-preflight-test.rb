@@ -758,6 +758,24 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                  reconciled_lane.fetch("completion_mode")
   end
 
+  def test_superseded_typed_no_pr_issue_completed_before_lane_closeout_is_a_protocol_violation
+    input = no_pr_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10036"] }
+    lane["status"] = "superseded"
+    lane["terminal"] = "superseded"
+    snapshot = input.fetch("target_snapshots")
+                    .find { |row| row.dig("target", "number") == 10_036 }
+    snapshot["completed_at"] = "2026-07-30T08:43:03Z"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 premature terminal supersession / " \
+                    "replacement protocol violation"
+  end
+
   def test_superseded_closed_issue_without_typed_no_pr_evidence_is_a_protocol_violation
     input = fixture("completed-batch-publication-hichee-terminal.json")
     number = 10_048
