@@ -405,6 +405,8 @@ end
 def replacement_lane_state_classification(lane_state)
   return :unknown unless lane_state.is_a?(Hash)
 
+  # Positive terminal signals fail closed independently; proving nonterminal or
+  # unknown requires the complete, known lane-state tuple below.
   status = lane_state["status"]
   terminal = lane_state["terminal"]
   closed_at = lane_state["closed_at"]
@@ -428,6 +430,20 @@ def replacement_lane_state_classification(lane_state)
   return :nonterminal if target_state == "open"
 
   :unknown
+end
+
+def beginning_candidate_replacement?(input)
+  assignment = input.fetch("active_assignments", []).first
+  return false unless assignment && !input.key?("replacement")
+
+  candidates = input.fetch("candidates", [])
+  return false if candidates.empty?
+
+  candidates.none? do |candidate|
+    candidate.is_a?(Hash) &&
+      candidate["dispatcher"] == assignment["dispatcher"] &&
+      candidate["instance_id"] == assignment["instance_id"]
+  end
 end
 
 def terminal_replacement_output(input:, requested:, authority:, classification:)
@@ -627,7 +643,8 @@ fail_input("decision_resolution requires a persisted dispatch_decision_request")
 
 authority = { "dispatch" => input.dig("authority", "dispatch") == true }
 lane_classification = replacement_lane_state_classification(input.fetch("lane_state", {}))
-if lane_classification == :terminal || (input.key?("replacement") && lane_classification != :nonterminal)
+replacement_context = input.key?("replacement") || beginning_candidate_replacement?(input)
+if lane_classification == :terminal || (replacement_context && lane_classification != :nonterminal)
   puts JSON.generate(
     terminal_replacement_output(
       input:,

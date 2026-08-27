@@ -533,6 +533,25 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal "remote-2", output.dig("prospective_replacement_assignment", "instance_id")
   end
 
+  def test_instance_change_requires_lane_refresh_before_initial_replacement_fencing
+    input = input_for
+    active = select(input).fetch("active_assignments").first.merge("lifecycle" => "active")
+    changed = input_for(candidates: [candidate(instance_id: "remote-2")])
+    cases = {
+      "unknown status" => changed.fetch("lane_state").merge("status" => "UNKNOWN"),
+      "missing terminal tuple facts" => { "status" => "in_progress" }
+    }
+
+    cases.each do |label, lane_state|
+      output = dispatch(changed.merge("active_assignments" => [active], "lane_state" => lane_state))
+
+      assert_equal "blocked-replacement-terminal-state", output.fetch("status"), label
+      assert_equal "target-lane-terminal-state-unknown", output.fetch("reason"), label
+      assert_equal "refresh-targeted-lane-state-before-replacement", output.fetch("required_action"), label
+      refute output.key?("prospective_replacement_assignment"), label
+    end
+  end
+
   def test_dispatcher_change_requires_replacement_even_when_authorized
     input = input_for
     active = select(input).fetch("active_assignments").first.merge("lifecycle" => "active")
