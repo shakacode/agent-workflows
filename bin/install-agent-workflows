@@ -1343,7 +1343,7 @@ replace_bound_recovery_metadata() {
         begin
           io.close unless io.closed?
         rescue StandardError
-          rollback_failed = true
+          rollback_failed = true unless completed
         end
       end
     end

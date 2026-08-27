@@ -5740,6 +5740,58 @@ RUBY
   assert_file "$target/skills/user-owned-skill/SKILL.md"
 }
 
+test_completed_recovery_restore_ignores_persistent_descriptor_close_failure() {
+  local tmp target staging receipt metadata injection marker output status retry_output
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-completed-close"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-completed-restore-close.rb"
+  marker="$tmp/completed-restore-close-failed"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    $qa_completed_restore_cleanup = true if phase == :before_success_cleanup
+  end
+end
+
+module FailCompletedRecoveryRestoreClose
+  def close(*)
+    if ARGV.length == 7 && $qa_completed_restore_cleanup
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n") unless File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailCompletedRecoveryRestoreClose)
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 0 ]] || fail "completed recovery restore close failure exited $status: $output"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  [[ ! -e "$receipt" ]] || fail "completed recovery restore close failure retained receipt"
+  [[ ! -e "$staging" ]] || fail "completed recovery restore close failure retained staging"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "completed recovery restore close failure retained recovery quarantine"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
 test_recovery_restore_directory_race_preserves_backup() {
   local tmp target staging receipt metadata injection observer output status quarantine
   tmp="$(mktemp -d)"
@@ -7466,6 +7518,7 @@ main() {
     test_corrupt_metadata_with_residue_reports_both_problems
     test_recovery_cleanup_residue_does_not_wedge_completed_recovery
     test_recovery_restore_atomically_replaces_placeholder
+    test_completed_recovery_restore_ignores_persistent_descriptor_close_failure
     test_recovery_restore_directory_race_preserves_backup
     test_recovery_restore_exchange_restores_competing_destination
     test_restore_undo_uses_guard_when_displaced_source_changes
