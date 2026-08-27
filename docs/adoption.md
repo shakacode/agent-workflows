@@ -32,8 +32,11 @@ an optional personal fallback for projects that do not set the key, add the
 same YAML to `~/.agents/agent-workflow.yml` and create
 `~/.agents/docs/writing-style.md`; that path is relative to `~/.agents`.
 
-When neither project nor user configuration defines a valid guide, the resolver
-uses [the packaged portable default](writing-style.md). Resolution is
+An invalid repository configuration, path, or guide blocks resolution. An
+invalid user-global configuration, path, or guide emits a warning and falls
+back to [the packaged portable default](writing-style.md). When `writing_style`
+is absent from both repository and user-global configuration, the resolver also
+uses that packaged default. Resolution is
 repo → user-global → portable default, and one complete Markdown file wins
 without merging prose.
 

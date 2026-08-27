@@ -151,6 +151,31 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
     end
   end
 
+  def test_repository_guide_rejects_existing_and_missing_tilde_paths_identically
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      config_path = File.join(repo_root, ".agents", "agent-workflow.yml")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      FileUtils.mkdir_p(File.join(home, ".agents", "docs"))
+      File.write(File.join(home, ".agents", "docs", "existing.md"), "Must not load.\n")
+
+      errors = %w[existing.md missing.md].map do |filename|
+        File.write(config_path, "writing_style: ~/.agents/docs/#{filename}\n")
+
+        stdout, stderr, status = run_resolver(repo_root:, home:)
+
+        refute status.success?
+        assert_empty stdout
+        refute_includes stderr, "Must not load"
+        stderr
+      end
+
+      expected = "invalid repository writing_style: expected a nonblank relative Markdown-file path\n"
+      assert_equal [expected, expected], errors
+    end
+  end
+
   def test_repository_guide_rejects_parent_traversal_even_when_the_target_exists
     Dir.mktmpdir do |directory|
       repo_root = File.join(directory, "repo")

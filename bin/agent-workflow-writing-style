@@ -150,7 +150,12 @@ module AgentWorkflowWritingStyle
       raise ConfigurationError,
             "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
     end
-    relative_path = Pathname.new(style.strip)
+    normalized_style = style.strip
+    if normalized_style.start_with?("~")
+      raise ConfigurationError,
+            "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
+    end
+    relative_path = Pathname.new(normalized_style)
     if relative_path.absolute?
       raise ConfigurationError,
             "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
