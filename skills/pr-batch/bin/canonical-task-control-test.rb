@@ -1375,6 +1375,178 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes result.fetch("unknowns"), "credit_equivalents"
   end
 
+  def test_pilot_does_not_promote_from_fabricated_persisted_credit_rows_without_trusted_rates
+    pilot = pilot_input(variant: :fabricated_credits, with_rate_card: false)
+
+    result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    assert status.success?, stderr
+    assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict")
+    assert_equal 30.0, result.fetch("token_reduction_percent")
+    assert_equal "UNKNOWN", result.fetch("credit_reduction_percent")
+    assert_includes result.fetch("unknowns"), "credit_equivalents"
+  end
+
+  def test_pilot_rejects_fabricated_persisted_credit_rows_against_trusted_rates
+    pilot = pilot_input(variant: :fabricated_credits)
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "credit equivalents do not match trusted rate card"
+  end
+
+  def test_pilot_rejects_priced_route_counters_that_do_not_reconcile_to_scope_usage
+    pilot = pilot_input(variant: :inconsistent_priced_usage)
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "priced route usage does not reconcile to scope usage"
+  end
+
+  def test_pilot_rejects_priced_usage_shifted_between_disjoint_different_rate_scopes
+    mappings = [
+      {
+        "host" => "codex", "model" => "gpt-coordinator",
+        "input_credits_per_million" => 1_000.0, "output_credits_per_million" => 1.0
+      },
+      {
+        "host" => "codex", "model" => "gpt-lane",
+        "input_credits_per_million" => 1.0, "output_credits_per_million" => 1_000.0
+      }
+    ]
+    pilot = pilot_input(variant: :shifted_disjoint_priced_usage, rate_card: { "model_mappings" => mappings })
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "priced route usage does not reconcile to scope usage"
+  end
+
+  def test_pilot_recomputes_mixed_input_and_output_credit_rows_from_trusted_rates
+    pilot = pilot_input(variant: :mixed_priced_usage)
+
+    result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    assert status.success?, stderr
+    assert_equal "promote_ordinary_default", result.fetch("pilot_verdict")
+    assert_equal 30.0, result.fetch("token_reduction_percent")
+    assert_equal 30.0, result.fetch("credit_reduction_percent")
+    assert_empty result.fetch("unknowns")
+  end
+
+  def test_pilot_prices_complete_receipts_with_physically_attributed_unattributed_usage
+    pilot = pilot_input(variant: :unattributed_priced_usage)
+
+    result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    assert status.success?, stderr
+    assert_equal "promote_ordinary_default", result.fetch("pilot_verdict")
+    assert_equal 30.0, result.fetch("token_reduction_percent")
+    assert_equal 30.0, result.fetch("credit_reduction_percent")
+    assert_empty result.fetch("unknowns")
+  end
+
+  def test_pilot_retains_when_trusted_rate_card_has_no_observed_route_mapping
+    pilot = pilot_input(variant: :unmapped_credit, rate_card: { "model_mappings" => [] })
+
+    result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    assert status.success?, stderr
+    assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict")
+    assert_equal 30.0, result.fetch("token_reduction_percent")
+    assert_equal "UNKNOWN", result.fetch("credit_reduction_percent")
+    assert_includes result.fetch("unknowns"), "credit_equivalents"
+  end
+
+  def test_pilot_rejects_available_credit_claim_without_a_trusted_route_mapping
+    pilot = pilot_input(rate_card: { "model_mappings" => [] })
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "unmapped route must stay UNKNOWN"
+  end
+
+  def test_pilot_rejects_fabricated_available_credit_row_when_another_route_is_unmapped
+    pilot = pilot_input(variant: :fabricated_mapped_credit_with_unmapped_route)
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "credit equivalents do not match trusted rate card"
+  end
+
+  def test_pilot_rejects_available_credit_claim_for_unmapped_route_in_unknown_aggregate
+    pilot = pilot_input(variant: :fabricated_unmapped_credit_with_unknown_aggregate)
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "unmapped route must stay UNKNOWN"
+  end
+
+  def test_pilot_keeps_credit_unknown_when_physical_route_topology_cannot_be_deduplicated
+    pilot = pilot_input(variant: :partial_physical_overlap)
+
+    result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    assert status.success?, stderr
+    assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict")
+    assert_equal 30.0, result.fetch("token_reduction_percent")
+    assert_equal "UNKNOWN", result.fetch("credit_reduction_percent")
+    assert_includes result.fetch("unknowns"), "credit_equivalents"
+  end
+
+  def test_pilot_rejects_tampered_trusted_rate_card_anchor
+    mutations = {
+      "path" => proc { |anchor| anchor["trusted_rate_card_path"] = File.join(PILOT_FIXTURE_ROOT, "missing-rate-card.json") },
+      "digest" => proc { |anchor| anchor["trusted_rate_card_digest"] = "sha256:#{'0' * 64}" }
+    }
+    mutations.each do |label, mutate|
+      pilot = pilot_input
+      mutate.call(pilot.fetch("rate_card_anchor"))
+
+      _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+      refute status.success?, label
+      assert_includes stderr, "trusted pilot rate card", label
+    end
+  end
+
+  def test_pilot_rejects_rate_card_metadata_schema_or_duplicate_route_tampering
+    {
+      "source" => { "source" => "https://example.test/rates/other" },
+      "effective date" => { "effective_date" => "2026-08-02" }
+    }.each do |label, override|
+      mismatched_metadata = pilot_input(rate_card: override)
+      _result, stderr, status = run_helper(
+        base_input.merge("operation" => "pilot_evaluation", "pilot" => mismatched_metadata)
+      )
+      refute status.success?, label
+      assert_includes stderr, "do not match trusted rate card metadata", label
+    end
+
+    invalid_schema = pilot_input(rate_card: { "schema" => "caller-rate-card" })
+    _result, stderr, status = run_helper(
+      base_input.merge("operation" => "pilot_evaluation", "pilot" => invalid_schema)
+    )
+    refute status.success?
+    assert_includes stderr, "trusted pilot rate card metadata is invalid"
+
+    mapping = {
+      "host" => "codex", "model" => "gpt-5.6-sol",
+      "input_credits_per_million" => 100.0, "output_credits_per_million" => 200.0
+    }
+    duplicate_routes = pilot_input(rate_card: { "model_mappings" => [mapping, canonicalize(mapping)] })
+    _result, stderr, status = run_helper(
+      base_input.merge("operation" => "pilot_evaluation", "pilot" => duplicate_routes)
+    )
+    refute status.success?
+    assert_includes stderr, "mappings must have unique routes"
+  end
+
   def test_pilot_rejects_credit_equivalents_without_production_metadata
     pilot = pilot_input
     arm = pilot.fetch("pairs").first.fetch("ordinary")
@@ -3087,11 +3259,15 @@ class CanonicalTaskControlTest < Minitest::Test
       },
       "coordinator" => {
         "scope" => "coordinator", "id" => "coordinator-#{batch_id}", "root_thread_id" => "root-#{batch_id}",
-        "requested_route" => route, "observed_routes" => [observed_route(coordinator_tokens)],
+        "requested_route" => route, "observed_routes" => [observed_route(total_tokens)],
         "usage" => { "self_only" => usage_vector(coordinator_tokens),
-                     "descendant_inclusive" => usage_vector(coordinator_tokens) },
-        "turns" => { "self_only" => coordinator_turns, "descendant_inclusive" => coordinator_turns },
-        "evidence" => scope_evidence("coordinator-#{batch_id}")
+                     "descendant_inclusive" => usage_vector(total_tokens) },
+        "turns" => { "self_only" => coordinator_turns, "descendant_inclusive" => total_turns },
+        "evidence" => scope_evidence("coordinator-#{batch_id}").merge(
+          "physical_rollout_ids" => ["coordinator-#{batch_id}", lane_id].map do |id|
+            "sha256:#{Digest::SHA256.hexdigest(id)}"
+          end.sort
+        )
       },
       "lanes" => [{
         "scope" => "lane", "id" => lane_id, "root_thread_id" => "root-#{lane_id}",
@@ -3140,9 +3316,9 @@ class CanonicalTaskControlTest < Minitest::Test
     }
   end
 
-  def pilot_input(variant: :complete)
+  def pilot_input(variant: :complete, with_rate_card: true, rate_card: nil)
     pairs = cached_production_pilot_pairs(variant)
-    {
+    pilot = {
       "contract" => "canonical-task-matched-pilot",
       "version" => 1,
       "dependencies" => %w[replay_safe_usage_receipts execution_provenance evaluation_runner].map do |capability|
@@ -3170,6 +3346,29 @@ class CanonicalTaskControlTest < Minitest::Test
         contract: "pilot-publication-evidence", task: base_input.fetch("task"),
         action: "publish_pilot_result", role: "coordinator"
       )
+    }
+    pilot["rate_card_anchor"] = pilot_rate_card_anchor(rate_card) if with_rate_card
+    pilot
+  end
+
+  def pilot_rate_card_anchor(overrides = nil)
+    @pilot_rate_card_sequence ||= 0
+    @pilot_rate_card_sequence += 1
+    card = {
+      "schema" => "batch-usage-rate-card-v1",
+      "source" => "https://example.test/rates/2026-08-01",
+      "effective_date" => "2026-08-01",
+      "model_mappings" => [{
+        "host" => "codex", "model" => "gpt-5.6-sol",
+        "input_credits_per_million" => 100.0, "output_credits_per_million" => 200.0
+      }]
+    }
+    card.merge!(overrides) if overrides
+    path = File.join(PILOT_FIXTURE_ROOT, "rate-card-#{Process.pid}-#{@pilot_rate_card_sequence}.json")
+    File.write(path, JSON.generate(canonicalize(card)), mode: "w", perm: 0o600)
+    {
+      "trusted_rate_card_path" => path,
+      "trusted_rate_card_digest" => findings_digest(card)
     }
   end
 
@@ -3268,11 +3467,63 @@ class CanonicalTaskControlTest < Minitest::Test
     raise "pilot reservation failed: #{admission_stderr}" unless admission_status.success?
     raise "pilot reservation was not admitted" unless %w[admitted admitted-with-warning].include?(admitted["status"])
 
+    claimed_credits = if variant == :fabricated_credits
+                        arm_identity == "ordinary" ? 1.0 : 100.0
+                      elsif variant == :inconsistent_priced_usage && arm_identity == "ordinary"
+                        0.0
+                      elsif variant == :mixed_priced_usage
+                        (total_tokens * 0.6 * 100.0 / 1_000_000.0) +
+                          (total_tokens * 0.4 * 200.0 / 1_000_000.0)
+                      else
+                        credits
+                      end
     receipt = usage_receipt(
       batch_id: batch_id, lane_id: lane_id, total_tokens: total_tokens,
       coordinator_tokens: coordinator_tokens, lane_tokens: lane_tokens, total_turns: total_turns,
-      coordinator_turns: coordinator_turns, lane_turns: lane_turns, credits: credits
+      coordinator_turns: coordinator_turns, lane_turns: lane_turns, credits: claimed_credits
     )
+    if variant == :shifted_disjoint_priced_usage
+      apply_shifted_disjoint_priced_usage!(
+        receipt, batch_id: batch_id, lane_id: lane_id, coordinator_tokens: coordinator_tokens,
+                 lane_tokens: lane_tokens, coordinator_turns: coordinator_turns
+      )
+    end
+    apply_unattributed_priced_usage!(receipt, batch_id: batch_id) if variant == :unattributed_priced_usage
+    apply_unmapped_credit!(receipt) if variant == :unmapped_credit
+    if %i[fabricated_mapped_credit_with_unmapped_route fabricated_unmapped_credit_with_unknown_aggregate].include?(variant)
+      apply_fabricated_credit_with_unmapped_route!(receipt, fabricated_route: variant)
+    end
+    if variant == :partial_physical_overlap
+      shared_id = "sha256:#{Digest::SHA256.hexdigest("shared-#{batch_id}")}"
+      coordinator_ids = receipt.dig("coordinator", "evidence", "physical_rollout_ids")
+      lane_ids = receipt.dig("lanes", 0, "evidence", "physical_rollout_ids")
+      receipt.dig("coordinator", "evidence")["physical_rollout_ids"] = [coordinator_ids.first, shared_id].sort
+      receipt.dig("lanes", 0, "evidence")["physical_rollout_ids"] = [lane_ids.first, shared_id].sort
+    end
+    if variant == :mixed_priced_usage
+      [receipt.fetch("coordinator"), *receipt.fetch("lanes"),
+       *receipt.fetch("lanes").flat_map { |lane| lane.fetch("workers") }].each do |scope|
+        scope.fetch("observed_routes").each do |observed|
+          total = observed.dig("usage", "total_tokens")
+          input = (total * 0.6).to_i
+          observed["usage"] = usage_vector(total).merge(
+            "input_tokens" => input, "output_tokens" => total - input
+          )
+        end
+      end
+      usage_scopes = [receipt.fetch("batch"), receipt.fetch("coordinator"), *receipt.fetch("lanes"),
+                      *receipt.fetch("lanes").flat_map { |lane| lane.fetch("workers") }]
+      usage_scopes.flat_map { |scope| scope.fetch("usage").values }.each do |vector|
+        total = vector.fetch("total_tokens")
+        input = (total * 0.6).to_i
+        vector.merge!("input_tokens" => input, "output_tokens" => total - input)
+      end
+    end
+    if variant == :inconsistent_priced_usage && arm_identity == "ordinary"
+      receipt.fetch("coordinator").fetch("observed_routes").each do |observed|
+        observed.fetch("usage").merge!("input_tokens" => 0, "output_tokens" => 0)
+      end
+    end
     timestamp_precision = variant == :fractional_window ? 9 : 0
     receipt.fetch("window").merge!(
       "from_inclusive" => initialized_at.iso8601(timestamp_precision),
@@ -3319,6 +3570,100 @@ class CanonicalTaskControlTest < Minitest::Test
       "usage_receipt" => receipt, "usage_receipt_ref" => receipt_ref,
       "usage_receipt_digest" => receipt_digest, "budget_result" => reconciled, "metrics" => metrics
     }
+  end
+
+  def apply_shifted_disjoint_priced_usage!(receipt, batch_id:, lane_id:, coordinator_tokens:, lane_tokens:,
+                                           coordinator_turns:)
+    coordinator = receipt.fetch("coordinator")
+    lane = receipt.fetch("lanes").first
+    coordinator_actual = split_usage_vector(coordinator_tokens, 0)
+    lane_actual = split_usage_vector(lane_tokens - coordinator_tokens, coordinator_tokens)
+    receipt.dig("batch", "usage")["descendant_inclusive"] = split_usage_vector(lane_tokens, coordinator_tokens)
+    coordinator.fetch("usage").merge!(
+      "self_only" => coordinator_actual, "descendant_inclusive" => coordinator_actual
+    )
+    coordinator.fetch("turns")["descendant_inclusive"] = coordinator_turns
+    coordinator.fetch("observed_routes").first.merge!(
+      "model" => "gpt-coordinator", "usage" => split_usage_vector(0, coordinator_tokens)
+    )
+    coordinator.fetch("evidence")["physical_rollout_ids"] = [
+      "sha256:#{Digest::SHA256.hexdigest("coordinator-#{batch_id}")}"
+    ]
+    lane.fetch("usage").merge!("self_only" => lane_actual, "descendant_inclusive" => lane_actual)
+    lane.fetch("observed_routes").first.merge!(
+      "model" => "gpt-lane", "usage" => split_usage_vector(lane_tokens, 0)
+    )
+    lane.fetch("workers").each do |worker|
+      worker.fetch("usage").merge!("self_only" => lane_actual, "descendant_inclusive" => lane_actual)
+      worker.fetch("observed_routes").first.merge!("model" => "gpt-lane", "usage" => lane_actual)
+    end
+    lane.fetch("evidence")["physical_rollout_ids"] = ["sha256:#{Digest::SHA256.hexdigest(lane_id)}"]
+    receipt.fetch("credit_equivalents")["model_values"] = [
+      {
+        "host" => "codex", "model" => "gpt-coordinator", "status" => "available",
+        "credits" => (coordinator_tokens / 1_000_000.0).round(9)
+      },
+      {
+        "host" => "codex", "model" => "gpt-lane", "status" => "available",
+        "credits" => (lane_tokens / 1_000_000.0).round(9)
+      }
+    ]
+  end
+
+  def apply_unattributed_priced_usage!(receipt, batch_id:)
+    unattributed_tokens = 5_000
+    receipt.dig("batch", "usage")["unattributed"] = usage_vector(unattributed_tokens)
+    receipt.dig("batch", "turns")["unattributed"] = 1
+    coordinator = receipt.fetch("coordinator")
+    coordinator_self = coordinator.dig("usage", "self_only", "total_tokens") - unattributed_tokens
+    coordinator.fetch("usage")["self_only"] = usage_vector(coordinator_self)
+    lane = receipt.fetch("lanes").first
+    %w[self_only descendant_inclusive].each { |key| lane.fetch("turns")[key] -= 1 }
+    lane.fetch("workers").each do |worker|
+      worker.fetch("turns").transform_values! { |turns| turns - 1 }
+    end
+    coordinator.fetch("evidence").fetch("physical_rollout_ids") <<
+      "sha256:#{Digest::SHA256.hexdigest("unattributed-#{batch_id}")}"
+    coordinator.fetch("evidence").fetch("physical_rollout_ids").sort!
+  end
+
+  def apply_fabricated_credit_with_unmapped_route!(receipt, fabricated_route:)
+    coordinator = receipt.fetch("coordinator")
+    total = coordinator.dig("usage", "descendant_inclusive", "total_tokens")
+    mapped_tokens = total / 2
+    mapped_credits = (mapped_tokens * 100.0 / 1_000_000.0).round(9)
+    coordinator["observed_routes"] = [
+      observed_route(mapped_tokens),
+      observed_route(total - mapped_tokens, model: "unmapped-model")
+    ]
+    receipt["credit_equivalents"] = receipt.fetch("credit_equivalents").merge(
+      "status" => "UNKNOWN",
+      "model_values" => [
+        { "host" => "codex", "model" => "gpt-5.6-sol", "status" => "available",
+          "credits" => fabricated_route == :fabricated_mapped_credit_with_unmapped_route ? 999.0 : mapped_credits },
+        if fabricated_route == :fabricated_unmapped_credit_with_unknown_aggregate
+          { "host" => "codex", "model" => "unmapped-model", "status" => "available", "credits" => 999.0 }
+        else
+          { "host" => "codex", "model" => "unmapped-model", "status" => "UNKNOWN",
+            "code" => "rate_mapping_missing" }
+        end
+      ]
+    )
+  end
+
+  def apply_unmapped_credit!(receipt)
+    receipt["credit_equivalents"] = receipt.fetch("credit_equivalents").merge(
+      "status" => "UNKNOWN",
+      "model_values" => [{
+        "host" => "codex", "model" => "gpt-5.6-sol", "status" => "UNKNOWN", "code" => "rate_mapping_missing"
+      }]
+    )
+  end
+
+  def split_usage_vector(input_tokens, output_tokens)
+    usage_vector(input_tokens + output_tokens).merge(
+      "input_tokens" => input_tokens, "output_tokens" => output_tokens
+    )
   end
 
   def child_receipt_input

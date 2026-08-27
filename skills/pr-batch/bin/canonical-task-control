@@ -26,6 +26,7 @@ module CanonicalTaskControl
   MAX_CHILDREN = 16
   MAX_CHILD_RECEIPT_BYTES = 65_536
   MAX_USAGE_RECEIPT_BYTES = 1_048_576
+  MAX_RATE_CARD_BYTES = 65_536
   BATCH_TOKEN_BUDGET_HELPER = File.expand_path("batch-token-budget", __dir__)
   PRESERVED_GATES = %w[security review qa exact-head ownership merge].freeze
   REQUIRED_CAPABILITIES = %w[hierarchical_token_budgets replay_safe_usage_receipts].freeze
@@ -690,6 +691,7 @@ module CanonicalTaskControl
 
   def validate_pilot!(pilot, task, context:)
     keys = %w[contract version dependencies pairs promotion rollback publication]
+    keys << "rate_card_anchor" if pilot.is_a?(Hash) && pilot.key?("rate_card_anchor")
     require_exact_keys!(pilot, keys)
     unless pilot["contract"] == "canonical-task-matched-pilot" && pilot["version"] == 1
       raise InvalidInput, "unsupported canonical task matched pilot"
@@ -763,6 +765,9 @@ module CanonicalTaskControl
       promotion["evidence"], contract: "pilot-promotion-policy-evidence", task: task,
                              action: "bind_pilot_promotion_policy", allowed_roles: %w[maintainer], context: context
     )
+    trusted_rate_card = if pilot.key?("rate_card_anchor")
+                          load_trusted_pilot_rate_card!(pilot.fetch("rate_card_anchor"), context: context)
+                        end
 
     pairs = pilot["pairs"]
     raise InvalidInput, "matched pilot requires at least ten pairs" unless pairs.is_a?(Array) && pairs.length >= 10
@@ -807,8 +812,14 @@ module CanonicalTaskControl
         raise InvalidInput, "pilot pair #{key} must be known" unless known_string?(pair[key])
       end
       pair_ids << pair["pair_id"]
-      ordinary = validate_pilot_arm!(pair["ordinary"], expected_arm: "ordinary", pair: pair, context: context)
-      multi = validate_pilot_arm!(pair["multi_target"], expected_arm: "multi_target", pair: pair, context: context)
+      ordinary = validate_pilot_arm!(
+        pair["ordinary"], expected_arm: "ordinary", pair: pair, context: context,
+                          trusted_rate_card: trusted_rate_card
+      )
+      multi = validate_pilot_arm!(
+        pair["multi_target"], expected_arm: "multi_target", pair: pair, context: context,
+                              trusted_rate_card: trusted_rate_card
+      )
       representative_ids.concat([
                                   canonical_identity(pair["ordinary"]["task_identity"]),
                                   canonical_identity(pair["ordinary"]["batch_identity"]),
@@ -871,7 +882,7 @@ module CanonicalTaskControl
     }
   end
 
-  def validate_pilot_arm!(arm, expected_arm:, pair:, context:)
+  def validate_pilot_arm!(arm, expected_arm:, pair:, context:, trusted_rate_card:)
     keys = %w[
       arm_identity task_identity batch_identity task_class context_topology
       usage_receipt usage_receipt_ref usage_receipt_digest budget_result metrics
@@ -909,6 +920,9 @@ module CanonicalTaskControl
       persisted, budget_result: arm.fetch("budget_result"), anchor: anchor,
                  representative_scope: representative_scope
     )
+    trusted_credits = trusted_pilot_credit_total(
+      arm.fetch("usage_receipt").fetch("credit_equivalents", nil), arm.fetch("usage_receipt"), trusted_rate_card
+    )
     metrics = arm["metrics"]
     keys = %w[
       elapsed_seconds human_coordination_seconds
@@ -928,9 +942,217 @@ module CanonicalTaskControl
     {
       "metrics" => metrics,
       "total_tokens" => projection.fetch("tokens"),
-      "credit_equivalents" => projection.fetch("credits"),
-      "unknowns" => projection.fetch("unknowns")
+      "credit_equivalents" => trusted_credits,
+      "unknowns" => (projection.fetch("unknowns") +
+        (trusted_credits == "UNKNOWN" ? ["credit_equivalents"] : [])).uniq.sort
     }
+  end
+
+  def load_trusted_pilot_rate_card!(anchor, context:)
+    require_exact_keys!(anchor, %w[trusted_rate_card_path trusted_rate_card_digest])
+    digest = anchor["trusted_rate_card_digest"]
+    unless digest.is_a?(String) && digest.match?(/\Asha256:[0-9a-f]{64}\z/)
+      raise InvalidInput, "trusted pilot rate card digest is invalid"
+    end
+    unless known_string?(anchor["trusted_rate_card_path"])
+      raise InvalidInput, "trusted pilot rate card path is invalid"
+    end
+
+    path = secure_file_under_root!(
+      anchor["trusted_rate_card_path"], context.fetch(:trusted_root), "trusted pilot rate card"
+    )
+    payload = File.binread(path, MAX_RATE_CARD_BYTES + 1)
+    raise InvalidInput, "trusted pilot rate card exceeds byte limit" if payload.bytesize > MAX_RATE_CARD_BYTES
+
+    card = JSON.parse(payload)
+    raise InvalidInput, "trusted pilot rate card must be an object" unless card.is_a?(Hash)
+
+    unless canonical_digest(card) == digest
+      raise InvalidInput, "trusted pilot rate card digest mismatch"
+    end
+
+    require_exact_keys!(card, %w[schema source effective_date model_mappings])
+    unless card["schema"] == "batch-usage-rate-card-v1" && durable_ref?(card["source"])
+      raise InvalidInput, "trusted pilot rate card metadata is invalid"
+    end
+
+    date = card["effective_date"]
+    unless date.is_a?(String) && date.match?(/\A\d{4}-\d{2}-\d{2}\z/) && Date.iso8601(date).iso8601 == date
+      raise InvalidInput, "trusted pilot rate card effective date is invalid"
+    end
+
+    mappings = card["model_mappings"]
+    raise InvalidInput, "trusted pilot rate card mappings are invalid" unless mappings.is_a?(Array)
+
+    mappings.each do |mapping|
+      require_exact_keys!(mapping, %w[host model input_credits_per_million output_credits_per_million])
+      identities_valid = [mapping["host"], mapping["model"]].all? { |identity| known_string?(identity) }
+      rates_valid = [mapping["input_credits_per_million"], mapping["output_credits_per_million"]].all? do |rate|
+        nonnegative_number?(rate) && (!rate.respond_to?(:finite?) || rate.finite?)
+      end
+      next if identities_valid && rates_valid
+
+      raise InvalidInput, "trusted pilot rate card mapping is invalid"
+    end
+    routes = mappings.map { |mapping| [mapping.fetch("host"), mapping.fetch("model")] }
+    unless routes.uniq.length == routes.length
+      raise InvalidInput, "trusted pilot rate card mappings must have unique routes"
+    end
+
+    card
+  rescue JSON::ParserError, ArgumentError => e
+    raise InvalidInput, "trusted pilot rate card malformed: #{e.class}"
+  end
+
+  def trusted_pilot_credit_total(credit_equivalents, receipt, trusted_rate_card)
+    return "UNKNOWN" unless trusted_rate_card && credit_equivalents
+    unless credit_equivalents["source"] == trusted_rate_card["source"] &&
+           credit_equivalents["effective_date"] == trusted_rate_card["effective_date"]
+      raise InvalidInput, "usage receipt credit equivalents do not match trusted rate card metadata"
+    end
+
+    route_usage = pilot_priced_route_usage(receipt)
+    return "UNKNOWN" if route_usage == "UNKNOWN"
+
+    mappings = trusted_rate_card.fetch("model_mappings").to_h do |mapping|
+      [[mapping.fetch("host"), mapping.fetch("model")], mapping]
+    end
+    claimed = credit_equivalents.fetch("model_values").to_h do |value|
+      [[value.fetch("host"), value.fetch("model")], value]
+    end
+    unless claimed.keys.sort == route_usage.keys.sort
+      raise InvalidInput, "usage receipt credit equivalents do not match trusted observed routes"
+    end
+
+    missing_mapping = false
+    total = route_usage.sum do |route, usage|
+      mapping = mappings[route]
+      unless mapping
+        missing_mapping = true
+        if claimed.fetch(route)["status"] != "UNKNOWN" ||
+           claimed.fetch(route)["code"] != "rate_mapping_missing"
+          raise InvalidInput, "usage receipt unmapped route must stay UNKNOWN"
+        end
+
+        next 0
+      end
+
+      credits = ((usage.fetch("input_tokens") * mapping.fetch("input_credits_per_million")) +
+        (usage.fetch("output_tokens") * mapping.fetch("output_credits_per_million"))) / 1_000_000.0
+      credits = credits.round(9)
+      unless claimed.fetch(route)["status"] == "available" && claimed.fetch(route)["credits"] == credits
+        raise InvalidInput, "usage receipt credit equivalents do not match trusted rate card"
+      end
+
+      credits
+    end
+    return "UNKNOWN" if credit_equivalents["status"] != "available" || missing_mapping
+
+    total
+  end
+
+  def pilot_priced_route_usage(receipt)
+    scopes = pilot_disjoint_priced_scopes(receipt)
+    return "UNKNOWN" unless scopes
+
+    priced_scopes = scopes.map { |scope| pilot_priced_scope_usage(scope) }
+    return "UNKNOWN" if priced_scopes.include?("UNKNOWN")
+
+    usage = Hash.new { |hash, route| hash[route] = { "input_tokens" => 0, "output_tokens" => 0 } }
+    priced_scopes.each do |scope_usage|
+      scope_usage.each do |route, vector|
+        totals = usage[route]
+        totals["input_tokens"] += vector.fetch("input_tokens")
+        totals["output_tokens"] += vector.fetch("output_tokens")
+      end
+    end
+    batch_usage = receipt.dig("batch", "usage", "descendant_inclusive")
+    return "UNKNOWN" unless batch_usage.is_a?(Hash) &&
+                            %w[input_tokens output_tokens total_tokens].all? do |key|
+                              nonnegative_integer?(batch_usage[key])
+                            end
+    unless batch_usage["input_tokens"] + batch_usage["output_tokens"] == batch_usage["total_tokens"] &&
+           usage.values.sum { |totals| totals.fetch("input_tokens") } == batch_usage["input_tokens"] &&
+           usage.values.sum { |totals| totals.fetch("output_tokens") } == batch_usage["output_tokens"]
+      raise InvalidInput, "priced route usage does not reconcile to batch usage"
+    end
+
+    usage
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def pilot_disjoint_priced_scopes(receipt)
+    coordinator = receipt.fetch("coordinator")
+    selected = [coordinator]
+    covered_ids = pilot_scope_physical_ids(coordinator)
+    return unless covered_ids
+
+    lanes = receipt.fetch("lanes")
+    index = 0
+    while index < lanes.length
+      lane = lanes.fetch(index)
+      lane_ids = pilot_scope_physical_ids(lane)
+      return unless lane_ids
+
+      overlap = lane_ids & covered_ids
+      if overlap.length == lane_ids.length
+        index += 1
+        next
+      end
+      return unless overlap.empty?
+
+      selected << lane
+      covered_ids.concat(lane_ids)
+      index += 1
+    end
+    selected
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def pilot_scope_physical_ids(scope)
+    ids = scope.dig("evidence", "physical_rollout_ids")
+    return unless ids.is_a?(Array) && !ids.empty? && ids.all? do |id|
+      id.is_a?(String) && id.match?(/\Asha256:[0-9a-f]{64}\z/)
+    end
+    return unless ids.uniq.length == ids.length
+
+    ids
+  end
+
+  def pilot_priced_scope_usage(scope)
+    observed = scope["observed_routes"]
+    return "UNKNOWN" unless observed.is_a?(Array)
+
+    valid = observed.all? do |route|
+      vector = route["usage"] if route.is_a?(Hash)
+      vector.is_a?(Hash) && nonnegative_integer?(vector["input_tokens"]) &&
+        nonnegative_integer?(vector["output_tokens"])
+    end
+    return "UNKNOWN" unless valid
+
+    usage = Hash.new { |hash, route| hash[route] = { "input_tokens" => 0, "output_tokens" => 0 } }
+    observed.each do |route|
+      vector = route.fetch("usage")
+      totals = usage[[route["host"], route["model"]]]
+      totals["input_tokens"] += vector.fetch("input_tokens")
+      totals["output_tokens"] += vector.fetch("output_tokens")
+    end
+    scope_usage = scope.dig("usage", "descendant_inclusive")
+    return "UNKNOWN" unless scope_usage.is_a?(Hash) &&
+                            %w[input_tokens output_tokens total_tokens].all? do |key|
+                              nonnegative_integer?(scope_usage[key])
+                            end
+    unless scope_usage["input_tokens"] + scope_usage["output_tokens"] == scope_usage["total_tokens"] &&
+           usage.values.sum { |totals| totals.fetch("input_tokens") } == scope_usage["input_tokens"] &&
+           usage.values.sum { |totals| totals.fetch("output_tokens") } == scope_usage["output_tokens"]
+      raise InvalidInput, "priced route usage does not reconcile to scope usage"
+    end
+
+    usage
+  rescue NoMethodError, TypeError
+    "UNKNOWN"
   end
 
   def durable_ref?(value)

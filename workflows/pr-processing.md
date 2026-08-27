@@ -828,8 +828,14 @@ the production helper's locked reconciliation snapshot keyed by
 `usage_receipt_digest`, require the submitted receipts, charge-backs, and
 reservation bindings to equal the complete persisted set, and bind targets to
 the arm's task, batch, and receipt lane IDs rather than the outer pilot task.
-Before summing credits,
-require the producer's exact metadata and disclaimer plus one unique row for every observed host/model route.
+Before summing credits, require the producer's exact metadata and disclaimer
+plus one unique row for every observed host/model route. Resolve one optional
+pilot-level `batch-usage-rate-card-v1` beneath the trusted evidence root, bind
+its canonical digest, and independently recompute every available value from
+physically deduplicated observed input/output tokens that reconcile within each
+selected scope and across the batch, using the exact route mapping. Never fetch
+its source URL or trust the receipt's claimed credit amount. Without trusted provenance or
+a complete mapping, keep the credit reduction `UNKNOWN`.
 Compute complete token evidence independently from optional credit evidence, so
 missing credits keep only the credit reduction `UNKNOWN`. Any arm with incomplete
 usage telemetry keeps token reduction `UNKNOWN`, even when its known total-token

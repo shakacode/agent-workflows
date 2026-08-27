@@ -473,7 +473,11 @@ bindings must equal the complete persisted set, with representative targets
 bound to that arm's task, batch, and receipt lane IDs rather than the outer
 pilot task. It derives total tokens,
 contributing turns, and optional production-shaped rate-card credit equivalents independently. Credit rows
-must carry the producer metadata and disclaimer exactly once per observed host/model route; missing credits keep
+must carry the producer metadata and disclaimer exactly once per observed host/model route. They contribute only
+when one optional pilot-level `batch-usage-rate-card-v1` artifact is securely resolved beneath the trusted evidence
+root and bound by its canonical digest; recompute each value from observed input/output tokens and the exact route
+rate after deduplicating physical rollout identities. Reconcile the priced vectors first within each selected scope
+and then across the batch, without fetching the source URL or trusting the receipt value. Missing trusted rates keep
 only the credit reduction `UNKNOWN` while complete token evidence still reports token reduction. Any arm with incomplete
 usage telemetry keeps the token reduction `UNKNOWN`, even when its known total-token
 counter remains acceptable for production accounting. Literal `UNKNOWN` gate

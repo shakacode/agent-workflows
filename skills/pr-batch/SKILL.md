@@ -208,7 +208,15 @@ dependency evidence for the replay-safe usage receipt, execution-provenance,
 and evaluation-runner capabilities. Retain/adverse/`UNKNOWN` evidence
 remains publishable without promotion. An arm with incomplete usage telemetry
 keeps token reduction `UNKNOWN`; absent optional credits affect only the credit
-reduction. Before an arm contributes metrics, resolve its exact trusted-plan
+reduction. Credit rows contribute only when one optional pilot-level
+`batch-usage-rate-card-v1` artifact is securely resolved beneath the trusted
+evidence root and bound by its canonical digest. Independently recompute every
+available row from physically deduplicated observed input/output tokens that
+reconcile within each selected scope and to the batch counters, using the exact
+host/model rate. Never fetch the card's source URL or trust receipt-provided
+credit values. A
+missing rate card or route mapping keeps the credit reduction `UNKNOWN`. Before
+an arm contributes metrics, resolve its exact trusted-plan
 anchor through the production helper's locked reconciliation snapshot keyed by
 `usage_receipt_digest`, and require its submitted receipts, charge-backs, and
 reservation bindings to equal the complete persisted set. Bind representative
