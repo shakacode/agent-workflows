@@ -143,23 +143,27 @@ Emit user-visible text only at one of five typed checkpoints:
 - `final-handoff`: the batch handoff.
 
 Everything between checkpoints is silent; a tool-call preamble is not a
-checkpoint. A direct answer, an explicitly requested status report, an HST-v1
-actionable notification, and a required safety stop are always allowed.
+checkpoint. An HST-v1 actionable notification is not a separate category: it is
+emitted at the `decision-required` or `merge-decision` checkpoint whose state it
+reports. A direct answer, an explicitly requested status report, and a required
+safety stop are always allowed without being checkpoints.
 
 - **Delta recaps:** after the first recap, repeat only rows whose state
   changed; unchanged targets collapse to one line naming their count and state.
 - **Single-surface findings:** each finding lives on one durable surface;
   messages report counts by severity, name only decision-changing findings, and
-  link.
+  link. This bounds chat narration only and never deletes a durable copy that
+  another contract requires in both the PR description and the final handoff.
 - **Proportional corrections:** state a decision-changing correction once; a
   correction that changes nothing for the reader goes only to the final
   decision log.
-- **Unchanged closing stack:** `OC-v1` collapses no closing structure;
-  that consolidation is tracked separately.
+- **Unchanged closing stack:** `OC-v1` collapses no closing structure; that
+  consolidation is tracked in
+  [issue 484](https://github.com/shakacode/agent-workflows/issues/484).
 
 At closeout, report a shadow-only `coordinator-narration-volume v1` marker of
 self-counted message and character volume. It gates nothing, blocks no handoff,
-and records exact `UNKNOWN` when the count cannot be established.
+and records exact `UNKNOWN` per unavailable count.
 
 The canonical normative text is the Coordinator Output Contract in
 `workflows/pr-processing.md`.

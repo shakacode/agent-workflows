@@ -64,31 +64,19 @@ becomes durably terminal. The automation never owns the task or next action.
 
 ## Coordinator Output Contract
 
-`OC-v1` bounds coordinator narration volume. Emit user-visible text only at
-five typed checkpoints: `dispatch` (one message per wave launch), `pr-open`
-(one message per opened PR), `decision-required` (blocker, required approval,
-or maintainer/product question), `merge-decision` (merge, ready, or blocked
-verdict), and `final-handoff`. Everything between checkpoints is silent, and a
-tool-call preamble is not a checkpoint. A direct answer, an explicitly
-requested status report, an HST-v1 actionable notification, and a required
-safety stop are always allowed.
+<!-- Keep this summary in sync with `.agents/workflows/pr-processing.md` -> `### Coordinator Output Contract`. -->
 
-- **Delta recaps:** after the first recap, repeat only changed rows; unchanged
-  targets collapse to one line naming their count and shared state.
-- **Single-surface findings:** each finding lives on one durable surface;
-  report counts by severity, name only decision-changing findings, and link.
-- **Proportional corrections:** state a decision-changing correction once; a
-  correction that changes nothing for the reader goes only to the final
-  decision log.
-- **Unchanged closing stack:** `OC-v1` collapses no closing structure; that
-  consolidation is tracked separately.
+`OC-v1` bounds coordinator narration volume. Use the canonical
+[Coordinator Output Contract](../../workflows/pr-processing.md#coordinator-output-contract)
+instead of restating its rules here. In short: emit user-visible text only at
+the five typed checkpoints `dispatch`, `pr-open`, `decision-required`,
+`merge-decision`, and `final-handoff`; keep recaps delta-only, findings
+single-surface, and corrections proportional; and report the shadow-only
+`coordinator-narration-volume v1` marker in FYI / decisions made at closeout.
 
-Report the shadow-only `coordinator-narration-volume v1` marker in FYI /
-decisions made at closeout; it gates nothing and records exact `UNKNOWN` when
-the count cannot be established. `OC-v1` is presentation only: it relaxes no
-evidence, verification, or `UNKNOWN`-honesty rule and drops no required exact
-string. The canonical contract is `.agents/workflows/pr-processing.md` ->
-`### Coordinator Output Contract`.
+`OC-v1` is presentation only. It relaxes no evidence, verification, or
+`UNKNOWN`-honesty rule, drops no required exact string, deletes no durable copy
+another contract requires, and collapses no closing structure.
 
 ## Single-Target Mode
 

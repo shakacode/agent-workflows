@@ -2166,15 +2166,18 @@ one of exactly these five checkpoints:
 - `final-handoff`: the batch handoff.
 
 Everything between checkpoints is silent. A tool-call preamble is not a
-checkpoint, and "here is what I'll do next" narration is not a checkpoint. Four
-message kinds are always allowed and are not checkpoints: a direct answer to a
-user question; an explicitly requested status report, such as `$status` or
-`$batch-status`; an HST-v1 actionable notification, which lands as
-`decision-required` or `merge-decision`; and an immediate stop required by a
-non-negotiable safety rule in `.agents/skills/pr-batch/SKILL.md` or by a
-[Worker Rules](#worker-rules) stop condition. A single-target batch therefore
-produces roughly five coordinator messages, not twenty-five. Reducing message
-count never reduces what the final handoff must contain.
+checkpoint, and "here is what I'll do next" narration is not a checkpoint. An
+HST-v1 actionable notification is not a separate category: it is emitted at the
+`decision-required` or `merge-decision` checkpoint whose state it reports, and
+it counts in that checkpoint's bucket. Three message kinds are always allowed
+and are not checkpoints: a direct answer to a user question; an explicitly
+requested status report, such as `$status` or `$batch-status`; and an immediate
+stop required by a non-negotiable safety rule in
+`.agents/skills/pr-batch/SKILL.md` or by a [Worker Rules](#worker-rules) stop
+condition. Those three count in the marker's `always_allowed` bucket below, not
+in `unclassified_messages`. A single-target batch therefore produces roughly
+five coordinator messages, not twenty-five. Reducing message count never reduces
+what the final handoff must contain.
 
 **Delta recaps.** A recap after the first one in a task repeats only the rows
 whose state changed since the previous recap. Unchanged targets collapse into
@@ -2188,10 +2191,16 @@ surface: the PR body findings table, or the repository's configured findings
 destination. The coordinator message reports counts by severity, names only the
 findings that changed a decision and why in at most one sentence each, and links
 to that surface. It never restates the table, and it never narrates a finding a
-second time at greater length. Apply the same one-surface rule to QA Evidence
-blocks, merge-ledger rows, `priority-finding-dispositions v1` markers, and audit
-receipts: emit each required marker or receipt once on its required surface, and
-reference it afterwards instead of repeating it.
+second time at greater length.
+
+This reduction governs chat narration only. It never deletes a durable copy that
+another contract requires. When the QA Evidence block, a
+`priority-finding-dispositions v1` marker, a merge-ledger row, or an audit
+receipt is separately required both in the PR description and in the final batch
+handoff, both required copies are written in full, each on its own required
+surface. Apply the one-surface rule to those artifacts only in chat narration,
+which reports the outcome and links to the durable surface instead of
+reproducing the block.
 
 **Proportional corrections.** A self-correction that changes what the maintainer
 would decide or do is stated once, in one or two sentences, at the point it
@@ -2206,23 +2215,35 @@ this compact marker exactly once inside **FYI / decisions made**, self-counted
 over its own user-visible messages in the task:
 
 ```text
-<!-- coordinator-narration-volume v1 batch_id=<id>; messages=<int>; characters=<int>; checkpoints=<dispatch,pr-open,decision-required,merge-decision,final-handoff counts>; unclassified_messages=<int>; source=<coordinator-self-count|UNKNOWN> -->
+<!-- coordinator-narration-volume v1 batch_id=<id>; messages=<int|UNKNOWN>; characters=<int|UNKNOWN>; checkpoints=dispatch:<int|UNKNOWN>,pr-open:<int|UNKNOWN>,decision-required:<int|UNKNOWN>,merge-decision:<int|UNKNOWN>,final-handoff:<int|UNKNOWN>; always_allowed=<int|UNKNOWN>; unclassified_messages=<int|UNKNOWN>; source=<coordinator-self-count|UNKNOWN> -->
 ```
 
 `characters` means user-visible characters the coordinator emitted in this task.
+`always_allowed` counts the three always-allowed non-checkpoint kinds.
 `unclassified_messages` counts user-visible messages that matched no checkpoint
-and no always-allowed category. The marker is shadow-only: it never gates
-readiness, merge, archive, review, QA, or audit, and it never blocks a handoff.
-A count that cannot be established is recorded as exact `UNKNOWN` rather than
-guessed or omitted. It follows the same shadow-then-enforce path as shadow-mode
-`max_reviewed_heads` calibration; graduating it into an enforced narration
-budget requires an explicit separate decision after a real dataset exists.
+and no always-allowed category. When every field is known, `messages` equals the
+five checkpoint counts plus `always_allowed` plus `unclassified_messages`;
+report a reconciliation mismatch rather than silently adjusting a field.
+
+Every count accepts exact `UNKNOWN` independently, and each checkpoint count is
+serialized as its own `<name>:<value>` pair so one unavailable bucket never
+makes the others unreadable. A count that cannot be established is recorded as
+exact `UNKNOWN` rather than guessed or omitted. `source` records `UNKNOWN` only
+when provenance itself is unavailable; it never stands in for an unavailable
+count.
+
+The marker is shadow-only: it never gates readiness, merge, archive, review, QA,
+or audit, and it never blocks a handoff. It follows the same shadow-then-enforce
+path as shadow-mode `max_reviewed_heads` calibration; graduating it into an
+enforced narration budget requires an explicit separate decision after a real
+dataset exists.
 
 **Deferred: one closing block.** `OC-v1` leaves the required closing stack
 unchanged. The Lane Card, the `Next:` instruction, the `Action needed:` line,
 the required receipt, and the exact `Conversation status:` line keep their
 current separate forms and order. Collapsing them into a single terminal
-structure is deliberately out of scope for `OC-v1` and is tracked separately.
+structure is deliberately out of scope for `OC-v1` and is tracked in
+[issue 484](https://github.com/shakacode/agent-workflows/issues/484).
 
 ### Coordination State
 
