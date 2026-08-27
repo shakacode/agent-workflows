@@ -360,7 +360,7 @@ module CanonicalTaskControl
       unknowns.concat(pilot_result.fetch("unknowns"))
     when "budget_action"
       action = input.fetch("budget_action")
-      allowed_budget_actions = %w[delegation resume retry review_wave]
+      allowed_budget_actions = %w[resume retry review_wave]
       raise InvalidInput, "unsupported budget action" unless allowed_budget_actions.include?(action)
 
       lane = task.fetch("lanes").find do |candidate|

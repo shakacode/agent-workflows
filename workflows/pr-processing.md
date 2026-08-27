@@ -1038,9 +1038,10 @@ Fresh admitted delegation wakes and direct budget actions use the same locked
 state snapshot as launch. Bind their decision and active reservation to the
 persisted ledger before authorizing retry, resume, review-wave, or wake
 effects; missing, corrupt, stale, absent, or mismatched state fails closed.
-Direct budget actions never authorize `worker_spawn`; spawning uses the
-composite launch gate and its lane-scoped policy, lifecycle, typed-gate, stage,
-and budget evidence.
+Direct budget actions never authorize `worker_spawn` or delegation. Spawning
+uses the composite launch gate and delegation uses the composite delegation gate
+with their respective lane-scoped policy, lifecycle, typed-gate, stage, and
+budget evidence.
 Replayed admissions remain record-only, and blocked/coalesced decisions retain
 their existing no-fresh-effect semantics.
 

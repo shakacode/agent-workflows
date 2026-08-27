@@ -158,8 +158,9 @@ idempotent record-only action. A mixed result never suppresses a fresh lane or
 re-authorizes a replayed lane. Apply the same locked state/decision/active-reservation
 binding before a fresh admitted delegation wake or `budget_action` side effect;
 blocked, coalesced, and replayed record-only decisions do not become fresh effects.
-Generic `budget_action` decisions never authorize `worker_spawn`; spawning uses
-the composite launch gate and its lane-scoped evidence.
+Generic `budget_action` decisions never authorize `worker_spawn` or delegation;
+spawning uses the composite launch gate and delegation uses the composite
+delegation gate with their respective lane-scoped evidence.
 Expose stage permissions in `allowed_actions_by_lane` keyed by canonical lane ID.
 The compatibility `allowed_actions` view is the intersection across relevant
 lanes, never their union, so a permission from one lane cannot authorize another.

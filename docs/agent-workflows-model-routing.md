@@ -542,8 +542,10 @@ fresh/replay batches lane-scoped instead of collapsing the entire batch. An admi
 `record_budget_replay` no-op; it never launches, wakes, retries, or repeats another
 side effect, and a replayed launch exposes no held-local actions. Record-only
 handling never erases an independently required human-approval or budget-denial block and reason.
-Generic budget-action decisions never authorize `worker_spawn`; spawning is
-available only through the composite launch gate and its lane-scoped evidence.
+Generic budget-action decisions never authorize `worker_spawn` or delegation;
+spawning is available only through the composite launch gate, and delegation
+only through the composite delegation gate, with their respective lane-scoped
+evidence.
 Case-insensitive control identities use Unicode NFKC plus full case folding and
 trimming; nested `UNKNOWN` checks apply the same normalization. Operational
 request/result/reservation IDs first require portable ASCII syntax.

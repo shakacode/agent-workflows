@@ -1757,8 +1757,8 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "non-resumable by default"
   end
 
-  def test_budget_gate_is_required_before_every_context_amplifying_action
-    actions = %w[delegation resume retry review_wave]
+  def test_budget_gate_is_required_before_each_generic_context_amplifying_action
+    actions = %w[resume retry review_wave]
     actions.each do |action|
       input = base_input.merge(
         "operation" => "budget_action",
@@ -1777,6 +1777,25 @@ class CanonicalTaskControlTest < Minitest::Test
     input = budget_action_input("worker_spawn")
 
     _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "unsupported budget action"
+  end
+
+  def test_budget_action_cannot_authorize_delegation_without_composite_delegation_evidence
+    composite_input = delegation_input(
+      target_state: "idle", context: 60_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    composite_result, stderr, status = run_helper(composite_input)
+
+    assert status.success?, stderr
+    assert_equal "block", composite_result.fetch("verdict")
+    assert_empty composite_result.fetch("allowed_actions")
+    assert_includes composite_result.fetch("blockers"), "human_approval_required"
+
+    generic_input = budget_action_input("delegation")
+    _result, stderr, status = run_helper(generic_input)
 
     refute status.success?
     assert_includes stderr, "unsupported budget action"
