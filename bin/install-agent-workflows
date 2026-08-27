@@ -646,9 +646,13 @@ installed_metadata_blocking_recovery_residue_exists() {
 }
 
 report_blocking_recovery_quarantines() {
-  local residue
+  local explicit_residue="${1:-}" residue
+  if [[ -n "$explicit_residue" && ( -e "$explicit_residue" || -L "$explicit_residue" ) ]]; then
+    echo "Preserved recovery metadata quarantine $explicit_residue blocks automatic recovery." >&2
+  fi
   for residue in "$target/$metadata_name".recovery-*; do
     [[ -e "$residue" || -L "$residue" ]] || continue
+    [[ "$residue" != "$explicit_residue" ]] || continue
     echo "Preserved recovery metadata quarantine $residue blocks automatic recovery." >&2
   done
   echo "Verify the quarantined artifacts against a trusted metadata backup; move the entire quarantine aside only after preserving it, then retry." >&2
@@ -3259,13 +3263,13 @@ if [[ -f "$migration_receipt" ]]; then
     68) prior_delivery_mode="flat" ;;
     66)
       report_corrupt_install_metadata true
-      report_blocking_recovery_quarantines
+      report_blocking_recovery_quarantines "$recovery_metadata_quarantine"
       echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
       exit 65
       ;;
     70)
       echo "RECOVERY_METADATA_CAPTURE_UNAVAILABLE: this filesystem could not create a bound metadata snapshot; preserved $migration_receipt and $recovered_staging." >&2
-      report_blocking_recovery_quarantines
+      report_blocking_recovery_quarantines "$recovery_metadata_quarantine"
       exit 1
       ;;
     *)

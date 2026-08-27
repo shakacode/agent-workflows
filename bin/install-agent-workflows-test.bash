@@ -3114,6 +3114,41 @@ RUBY
   assert_file "$staging/user-owned-skill/SKILL.md"
 }
 
+test_capture_failure_reports_private_quarantine_after_cleanup_detach() {
+  local tmp target staging receipt metadata injection output status quarantine
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-private-quarantine"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-capture-and-detached-cleanup.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module BoundDirCleanupPostDetachHook
+  def self.call(path)
+    raise Errno::EIO if path.include?(".cleanup-dir-")
+  end
+end
+raise LoadError, "capture helper unavailable" if ARGV.length == 5 &&
+                                                 ARGV.fetch(1) == ".agent-workflows-install.json"
+RUBY
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 && "$status" -ne 65 ]] || fail "combined capture cleanup failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  [[ -z "$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "combined capture cleanup failure left canonical quarantine"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.cleanup-dir-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "combined capture cleanup failure lost private quarantine"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine blocks automatic recovery."
+  assert_file "$metadata"
+  assert_file "$receipt"
+}
+
 test_capture_failure_after_sentinel_install_restores_original_metadata() {
   local tmp target staging receipt metadata injection output status before
   tmp="$(mktemp -d)"
@@ -6795,6 +6830,7 @@ main() {
     test_recovery_hardlink_unavailable_is_named_without_blaming_metadata
     test_recovery_capture_supports_system_ruby_2_6
     test_capture_runtime_load_failure_removes_empty_quarantine
+    test_capture_failure_reports_private_quarantine_after_cleanup_detach
     test_capture_failure_after_sentinel_install_restores_original_metadata
     test_capture_undo_uses_original_guard_when_displaced_sentinel_changes
     test_recovery_capture_exchange_restores_competing_destination
