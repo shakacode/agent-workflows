@@ -195,6 +195,98 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal "clean", result.dig("fields", "verdict")
   end
 
+  def test_prior_receipt_hash_is_never_valid_receipt_grammar
+    preflight = publication_preflight
+    prior_hash = "a" * 64
+
+    { "blocked" => followup_marker, "clean" => ready_marker }.each do |label, original|
+      bound = CompletedBatchAuditReceipt.bind_publication_snapshot(original, preflight)
+      forged = bound.sub(/^publication_snapshot:.*\n/) do |line|
+        "#{line}prior_receipt_sha256: sha256:#{prior_hash}\n"
+      end
+      result = CompletedBatchAuditReceipt.replay_marker(
+        forged,
+        expected_batch_id: "batch-184",
+        publication_preflight: preflight,
+        expected_targets: preflight.fetch("targets"),
+        coordination_backend: "n/a"
+      )
+
+      refute result.fetch("well_formed"), label
+      assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers"), label
+    end
+  end
+
+  def test_verify_comment_converts_malformed_timestamps_to_typed_error
+    bound = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, publication_preflight)
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    comment = {
+      "id" => 9_001,
+      "html_url" => "https://github.com/acme/widgets/pull/184#issuecomment-9001",
+      "issue_url" => "https://api.github.com/repos/acme/widgets/issues/184",
+      "user" => { "login" => "justin808", "type" => "User" },
+      "author_association" => "MEMBER",
+      "created_at" => "not-a-timestamp",
+      "updated_at" => "not-a-timestamp",
+      "body" => "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{bound}"
+    }
+
+    error = assert_raises(CompletedBatchAuditReceipt::Error) do
+      CompletedBatchAuditReceipt.verify_comment(
+        comment,
+        target:,
+        expected_comment_id: 9_001,
+        expected_author: "justin808",
+        expected_batch_id: "batch-184"
+      )
+    end
+
+    assert_equal "comment timestamps are malformed", error.message
+  end
+
+  def test_publish_rejects_caller_supplied_prior_receipt_hash_before_external_work
+    bound = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, publication_preflight)
+    caller_terminalized = bound.sub(/^publication_snapshot:.*\n/) do |line|
+      "#{line}prior_receipt_sha256: sha256:#{'a' * 64}\n"
+    end
+
+    error = assert_raises(CompletedBatchAuditReceipt::Error) do
+      CompletedBatchAuditReceipt.publish(
+        expected_batch_id: "batch-184",
+        targets: [],
+        receipt: caller_terminalized
+      )
+    end
+
+    assert_equal "caller-supplied prior receipt SHA-256 is not allowed", error.message
+  end
+
+  def test_verify_comment_rejects_edited_receipts
+    bound = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, publication_preflight)
+    comment = {
+      "id" => 9_001,
+      "html_url" => "https://github.com/acme/widgets/pull/184#issuecomment-9001",
+      "issue_url" => "https://api.github.com/repos/acme/widgets/issues/184",
+      "user" => { "login" => "justin808", "type" => "User" },
+      "author_association" => "MEMBER",
+      "created_at" => "2026-07-18T18:00:00Z",
+      "updated_at" => "2026-07-18T18:00:01Z",
+      "body" => "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{bound}"
+    }
+
+    error = assert_raises(CompletedBatchAuditReceipt::Error) do
+      CompletedBatchAuditReceipt.verify_comment(
+        comment,
+        target: { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 },
+        expected_comment_id: 9_001,
+        expected_author: "justin808",
+        expected_batch_id: "batch-184"
+      )
+    end
+
+    assert_equal "comment was edited before verification", error.message
+  end
+
   def test_ror_blocked_receipt_becomes_ready_only_through_authenticated_accepted_deferral
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"),

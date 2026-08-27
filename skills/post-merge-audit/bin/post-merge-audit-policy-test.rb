@@ -43,7 +43,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_PR_DESCRIPTION_SUMMARY_END = "<!-- completed-batch-audit-summary:end -->"
   REQUIRED_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
   REQUIRED_RECEIPT_PUBLISH_ORDER = "Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync."
-  REQUIRED_RECEIPT_REPLAY_RULE = "Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result."
+  REQUIRED_RECEIPT_REPLAY_RULE = "Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, reference-bound timestamps/body, SHA-256, batch ID, wrapper version, and result. Receipt comments are immutable: any edited timestamp is rejected, and GitHub `UserContentEdit.diff` is never treated as a historical body because its documented contract is only a change summary."
   REQUIRED_RECEIPT_HELPER_RULE = "Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects."
   REQUIRED_BATCH_IDENTITY_FIELD = "batch_id: <opaque coordination batch id (may contain : or ;)|non-backend: identity; rationale: why no backend applies|not-applicable: rationale|UNKNOWN>"
   REQUIRED_STRUCTURED_NON_BACKEND_SCOPE_EVIDENCE = "For `non-backend` and `not-applicable`, the structured `scope_evidence` grammar is `targets=<exact refs>; source=<durable ref>`: name the exact verified target set and durable evidence source."
@@ -65,10 +65,15 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_RAW_PREFLIGHT_INPUT_BINDING = "The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate terminal facts."
   REQUIRED_LIVE_PREFLIGHT_REASSESSMENT = "Before publish or replay accepts a complete receipt, it re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status when a backend applies, and re-authenticates any waiver; missing, altered, stale, or mismatched terminal facts block before POST or ready replay."
   REQUIRED_TRUSTED_RECEIPT_WORKFLOW_CONFIG = "Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay."
+  REQUIRED_TARGET_PROJECTION_RULE = "A raw issue target may project to a different final PR only when the lane's exact PR URL is in the trusted final manifest and authenticated GitHub GraphQL proves both closing-reference directions for the same host/repository, a closed issue, a merged PR, the full head SHA, and merge/close timestamps in order. Bind that typed projection proof into every contributing lane snapshot, retain and validate every maker/checker/QA lane independently, and compare the manifest to the unique projected final-target set; never infer a role from the lane name, trust `pr_url` alone, rewrite coordination history, or discard a repeated lane."
+  REQUIRED_RECEIPT_IMMUTABILITY_RULE = "Receipt comments are immutable. When a blocked receipt's follow-up later clears, leave that receipt unchanged and either publish a new clean receipt after fresh preflight or use the authenticated append-only `supersede` path for an accepted deferral. No `update` command is accepted; caller-supplied `prior_receipt_sha256` is rejected and is not valid marker grammar. Replay rejects every edited receipt because GitHub documents `UserContentEdit.diff` only as a change summary, not a complete historical body."
+  REQUIRED_CONCISE_TARGET_PROJECTION_RULE = "A raw issue lane may resolve to a different final PR only through the post-merge helper's authenticated same-repository symmetric closing-reference projection. Preserve and validate every repeated maker/checker/QA lane, and deduplicate only the final target set."
+  REQUIRED_CONCISE_RECEIPT_IMMUTABILITY_RULE = "Receipt comments are immutable: no `update` command is accepted, caller-supplied `prior_receipt_sha256` is invalid, accepted deferral uses authenticated append-only `supersede`, and replay rejects every edited receipt because GitHub edit diffs are not documented historical bodies."
   REQUIRED_TRUSTED_UI_CLASSIFICATION = "Each `qa_evidence` row must carry a coordinator-owned `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's canonical target and publication snapshot; `yes` requires strict visual-evidence v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or v2-contradictory classification blocks."
   REQUIRED_PUBLIC_FALLBACK_PUBLICATION_BLOCK = "Configured `public claim-comment fallback` is advisory ownership state only; it must not invoke private `agent-coord`, and without a separate authenticated terminal coordination contract it leaves completed-batch publication blocked as `UNKNOWN`."
   REQUIRED_TYPED_NO_BACKEND_EVIDENCE = "When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks."
   REQUIRED_TYPED_NO_PR_EVIDENCE = "An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks."
+  REQUIRED_LATER_NO_PR_AUXILIARY_RULE = "A terminal `done`/`no_pr_evidence` issue lane may reconcile only when authenticated issue closure occurred after lane closeout and authenticated GitHub API evidence proves the lane's exact same-issue `#issuecomment-<id>` ID, HTML URL, and issue URL; replay re-authenticates the comment and API failure or any identity mismatch blocks. A terminal `adhoc:` auxiliary lane may bind only through a trusted `completed-batch-auxiliary-lane-map` v1 row whose exact coordination target, parent target, and `qa` role match exactly one such primary issue lane with the identical evidence URL; undeclared or mismatched `adhoc:` targets block. Preserve an accepted auxiliary lane with `publication_target: false`, exclude it from publication targets, and never let it authorize head-bound QA—issue-only no-PR QA remains explicit `NOT_APPLICABLE` with `head_sha: not_applicable`."
   REQUIRED_LEGACY_PUBLICATION_REFRESH = "A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness."
   REQUIRED_ACCEPTED_DEFERRAL_LIFECYCLE = "Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it."
   REQUIRED_ACCEPTED_DEFERRAL_GUARD = "This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed."
@@ -427,6 +432,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should require typed bounded no-backend evidence"
       assert_includes normalized_text, REQUIRED_TYPED_NO_PR_EVIDENCE,
                       "#{relative_path} should require typed no-PR evidence without a fabricated SHA"
+      assert_includes normalized_text, REQUIRED_LATER_NO_PR_AUXILIARY_RULE,
+                      "#{relative_path} should reconcile later issue closure without publishing an adhoc lane"
       assert_includes normalized_text, REQUIRED_LEGACY_PUBLICATION_REFRESH,
                       "#{relative_path} should keep legacy complete markers parseable but non-ready"
       assert_includes normalized_text, "unmerged",
@@ -443,6 +450,29 @@ class PostMergeAuditPolicyTest < Minitest::Test
       assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_LIFECYCLE, relative_path
       assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_GUARD, relative_path
       assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_DECISION, relative_path
+    end
+  end
+
+  def test_issue_result_projection_and_receipt_immutability_are_documented
+    detailed_paths = ["skills/post-merge-audit/SKILL.md", "workflows/post-merge-audit.md"]
+    concise_paths = ["skills/pr-batch/SKILL.md", "workflows/pr-processing.md"]
+
+    detailed_paths.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_TARGET_PROJECTION_RULE,
+                      "#{relative_path} should authenticate issue-to-result-PR projection without dropping lane roles"
+      assert_includes text, REQUIRED_RECEIPT_IMMUTABILITY_RULE,
+                      "#{relative_path} should preserve append-only receipt terminalization"
+    end
+
+    concise_paths.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_CONCISE_TARGET_PROJECTION_RULE,
+                      "#{relative_path} should preserve concise issue-to-result-PR projection rules"
+      assert_includes text, REQUIRED_CONCISE_RECEIPT_IMMUTABILITY_RULE,
+                      "#{relative_path} should preserve concise immutable receipt rules"
     end
   end
 end

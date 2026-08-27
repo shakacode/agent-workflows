@@ -74,6 +74,168 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input
   end
 
+  def later_closed_no_pr_with_auxiliary_qa_lane_input
+    input = no_pr_input
+    original_number = 10_036
+    number = 10_235
+    batch_id = "hc-a06-0822-2035-issue10235"
+    target = input.fetch("expected_targets").find { |row| row.fetch("number") == original_number }
+    snapshot = input.fetch("target_snapshots").find { |row| row.fetch("target") == target }
+    qa = input.fetch("qa_evidence").find { |row| row.fetch("target") == target }
+
+    target["number"] = number
+    snapshot.fetch("target")["number"] = number
+    snapshot.fetch("no_pr_evidence").fetch("target")["number"] = number
+    snapshot.fetch("no_pr_evidence")["url"] = "https://github.com/shakacode/hichee/issues/#{number}"
+    snapshot["source"] = "https://github.com/shakacode/hichee/issues/#{number}"
+    snapshot["completed_at"] = "2026-08-25T07:05:23Z"
+    qa.fetch("target")["number"] = number
+    qa["user_visible_ui_change"] = "no"
+    qa["evidence"] = qa.fetch("evidence").gsub("10036", number.to_s)
+
+    input["batch_id"] = batch_id
+    input["expected_targets"] = [target]
+    input["target_snapshots"] = [snapshot]
+    input["qa_evidence"] = [qa]
+    input.dig("coordination_status", "scope")["batch_id"] = batch_id
+    batch = input.dig("coordination_status", "batches", 0)
+    batch["batch_id"] = batch_id
+    batch["updated_at"] = "2026-08-23T08:05:03Z"
+    batch["completed_at"] = "2026-08-23T08:05:03Z"
+    evidence_url = "https://github.com/shakacode/hichee/issues/#{number}#issuecomment-5384964861"
+    batch["lanes"] = [
+      {
+        "name" => "issue-10235",
+        "targets" => [number.to_s],
+        "status" => "done",
+        "terminal" => "done",
+        "closed_at" => "2026-08-23T08:04:57Z",
+        "pr_state" => "no_pr_evidence",
+        "evidence_url" => evidence_url
+      },
+      {
+        "name" => "issue-10235-qa",
+        "targets" => ["adhoc:hc-a06-issue10235-qa"],
+        "status" => "done",
+        "terminal" => "done",
+        "closed_at" => "2026-08-23T08:05:03Z",
+        "pr_state" => "no_pr_evidence",
+        "evidence_url" => evidence_url
+      }
+    ]
+    input["auxiliary_lane_map"] = {
+      "contract" => "completed-batch-auxiliary-lane-map",
+      "version" => 1,
+      "lanes" => [
+        {
+          "coordination_target" => "adhoc:hc-a06-issue10235-qa",
+          "parent_target" => JSON.parse(JSON.generate(target)),
+          "role" => "qa"
+        }
+      ]
+    }
+    input
+  end
+
+  def issue_to_pr_with_qa_lane_input
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    target = {
+      "host" => "github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_299
+    }
+    head_sha = "ef30745eccc6e1fdae34c1b770edbc9650800e51"
+    input["batch_id"] = "hc-a27-issue9521-20260822-2035"
+    input["expected_targets"] = [target]
+    batch = input.dig("coordination_status", "batches", 0)
+    input.dig("coordination_status", "scope")["batch_id"] = input.fetch("batch_id")
+    batch["batch_id"] = input.fetch("batch_id")
+    batch["repo"] = target.fetch("repo")
+    batch["lanes"] = %w[issue-9521 qa-issue-9521].map do |name|
+      {
+        "name" => name,
+        "owner" => "hc-a27-#{name}",
+        "targets" => ["9521"],
+        "status" => "done",
+        "terminal" => "done",
+        "closed_at" => "2026-08-24T00:43:00Z",
+        "pr_url" => "https://github.com/shakacode/hichee/pull/10299",
+        "pr_state" => "merged",
+        "evidence_url" => "https://github.com/shakacode/hichee/pull/10299"
+      }
+    end
+    input["target_snapshots"] = [{
+      "target" => target,
+      "state" => "merged",
+      "head_sha" => head_sha,
+      "completed_at" => "2026-08-24T00:41:33Z",
+      "source" => "https://github.com/shakacode/hichee/pull/10299"
+    }]
+    input["qa_evidence"] = [{
+      "target" => target,
+      "user_visible_ui_change" => "no",
+      "evidence" => qa_v2_evidence(head_sha:, user_visible_ui_change: "no")
+    }]
+    input
+  end
+
+  def issue_projection_proof(source:, target:, head_sha: "ef30745eccc6e1fdae34c1b770edbc9650800e51")
+    {
+      "contract" => "github-issue-result-pr-projection",
+      "version" => 1,
+      "source_target" => source,
+      "result_target" => target,
+      "relationship" => "closes_issue",
+      "result_head_sha" => head_sha,
+      "result_merged_at" => "2026-08-24T00:41:33Z",
+      "source_closed_at" => "2026-08-24T00:41:34Z",
+      "verification_source" => "authenticated github graphql symmetric closing references"
+    }
+  end
+
+  def issue_projection_graphql_payload(source:, target:, include_forward: true, include_reverse: true)
+    head_sha = "ef30745eccc6e1fdae34c1b770edbc9650800e51"
+    issue_node = {
+      "number" => source.fetch("number"),
+      "url" => "https://github.com/#{source.fetch('repo')}/issues/#{source.fetch('number')}",
+      "state" => "CLOSED",
+      "closedAt" => "2026-08-24T00:41:34Z",
+      "repository" => { "nameWithOwner" => source.fetch("repo") }
+    }
+    pr_node = {
+      "number" => target.fetch("number"),
+      "url" => "https://github.com/#{target.fetch('repo')}/pull/#{target.fetch('number')}",
+      "state" => "MERGED",
+      "mergedAt" => "2026-08-24T00:41:33Z",
+      "headRefOid" => head_sha,
+      "repository" => { "nameWithOwner" => target.fetch("repo") }
+    }
+    {
+      "data" => {
+        "repository" => {
+          "result" => pr_node.except("repository").merge(
+            "closingIssuesReferences" => {
+              "nodes" => include_forward ? [issue_node] : [],
+              "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+            }
+          ),
+          "source" => issue_node.except("repository").merge(
+            "closedByPullRequestsReferences" => {
+              "nodes" => include_reverse ? [pr_node] : [],
+              "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+            }
+          )
+        }
+      }
+    }
+  end
+
+  def test_issue_projection_query_includes_closed_result_pull_requests
+    assert_includes CompletedBatchPublicationPreflight::TARGET_PROJECTION_QUERY,
+                    "closedByPullRequestsReferences(first: 100, after: $sourceCursor, includeClosedPrs: true)"
+  end
+
   def qa_v2_evidence(head_sha:, user_visible_ui_change:)
     ui_change = user_visible_ui_change == "yes"
     destination = ui_change ? "github_pr" : "not_applicable"
@@ -112,6 +274,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
   def assess_input(
     input,
     backend: BACKEND,
+    evidence_comment_verifier: valid_evidence_comment_verifier(input),
     waiver_verifier: valid_waiver_verifier(input),
     target_verifier: valid_target_verifier(input),
     coordination_verifier: valid_coordination_verifier(input, backend)
@@ -119,10 +282,45 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     CompletedBatchPublicationPreflight.assess(
       input,
       coordination_backend: backend,
+      evidence_comment_verifier:,
       waiver_verifier:,
       target_verifier:,
       coordination_verifier:
     )
+  end
+
+  def valid_evidence_comment_verifier(input)
+    comments = input.dig("coordination_status", "batches", 0, "lanes").to_a.filter_map do |lane|
+      url = lane["evidence_url"].to_s
+      match = url.match(%r{\Ahttps://([^/]+)/([^/]+/[^/]+)/issues/(\d+)#issuecomment-(\d+)\z})
+      next unless match
+
+      comment_id = Integer(match[4], 10)
+      next if comment_id == 999_999_999_999_999_999
+
+      {
+        "host" => match[1],
+        "repo" => match[2],
+        "comment_id" => comment_id,
+        "payload" => {
+          "id" => comment_id,
+          "html_url" => url,
+          "issue_url" => "https://api.github.com/repos/#{match[2]}/issues/#{match[3]}",
+          "body" => "Authenticated no-PR closeout evidence.",
+          "created_at" => "2026-08-23T08:04:50Z",
+          "updated_at" => "2026-08-23T08:04:50Z"
+        }
+      }
+    end
+    comments.uniq! { |comment| [comment.fetch("host"), comment.fetch("repo"), comment.fetch("comment_id")] }
+
+    lambda do |host:, repo:, comment_id:|
+      comment = comments.find do |candidate|
+        candidate.fetch("host") == host && candidate.fetch("repo") == repo &&
+          candidate.fetch("comment_id") == comment_id
+      end
+      comment&.fetch("payload")
+    end
   end
 
   def valid_target_verifier(input)
@@ -142,8 +340,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
-  def valid_coordination_verifier(input, backend)
-    expected_backend = backend
+  def valid_coordination_verifier(input, configured_backend)
+    expected_backend = configured_backend
     lambda do |backend:, batch_id:|
       next unless backend == expected_backend && batch_id == input.fetch("batch_id")
 
@@ -440,7 +638,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
-  def test_authenticated_gh_api_uses_an_external_absolute_tool_with_a_closed_environment_and_safe_cwd
+  def test_authenticated_gh_helpers_use_an_external_absolute_tool_with_a_closed_environment_and_safe_cwd
     Dir.mktmpdir("completed-batch-authenticated-gh") do |directory|
       repository = File.join(directory, "candidate-repository")
       candidate_bin = File.join(repository, "bin")
@@ -527,6 +725,33 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       refute File.exist?(observed.fetch(:chdir)), "authenticated gh cwd must be removed after gh exits"
       refute_equal File.realpath(repository), observed.fetch(:chdir)
       refute observed.fetch(:chdir).start_with?("#{File.realpath(repository)}#{File::SEPARATOR}")
+
+      query = "query($number: Int!) { repository(owner: \"acme\", name: \"widgets\") { issue(number: $number) { id } } }"
+      observed = nil
+      payload = CompletedBatchPublicationPreflight.authenticated_gh_graphql(
+        "github.com",
+        query:,
+        variables: { "number" => 184, "cursor" => "@literal-cursor" },
+        repository_root: repository
+      )
+      assert_equal({ "authenticated" => true }, payload)
+      assert_equal [
+        File.realpath(external_gh),
+        "api", "--hostname", "github.com", "graphql", "-f", "query=#{query}",
+        "-f", "cursor=@literal-cursor", "-F", "number=184"
+      ], observed.fetch(:command)
+      assert_equal expected_environment, observed.fetch(:environment)
+      assert observed.fetch(:unsetenv_others)
+      refute File.exist?(observed.fetch(:chdir)), "authenticated GraphQL cwd must be removed after gh exits"
+
+      observed = nil
+      assert_nil CompletedBatchPublicationPreflight.authenticated_gh_graphql(
+        "github.com",
+        query:,
+        variables: { "bad-name" => 184 },
+        repository_root: repository
+      )
+      assert_nil observed
     ensure
       ambient&.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
       credential_environment&.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
@@ -678,6 +903,534 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
     assert_equal "sha256:a926d6266be958f222901d99cdcd78e3e3fd6148f575971922d66d491d16a5da",
                  result.fetch("snapshot_digest")
+  end
+
+  def test_issue_origin_lanes_resolve_to_one_authenticated_result_pr_target
+    input = issue_to_pr_with_qa_lane_input
+    issue = {
+      "host" => "github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "issue",
+      "number" => 9_521
+    }
+    expected_target = input.fetch("expected_targets").first
+    projection_verifier_calls = 0
+    projection_verifier = lambda do |source:, target:|
+      projection_verifier_calls += 1
+      next unless source == issue && target == input.fetch("expected_targets").first
+
+      issue_projection_proof(source:, target:)
+    end
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      target_projection_verifier: projection_verifier
+    )
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal 1, projection_verifier_calls
+    assert_equal [expected_target], result.fetch("targets")
+    lanes = result.dig("snapshot", "coordination", "lanes")
+    assert_equal(%w[issue-9521 qa-issue-9521], lanes.map { |lane| lane.fetch("name") })
+    assert(lanes.all? { |lane| lane.fetch("target") == expected_target })
+    assert_equal([issue, issue], lanes.map { |lane| lane.dig("target_projection", "source_target") })
+    assert_equal(%w[closes_issue closes_issue],
+                 lanes.map { |lane| lane.dig("target_projection", "relationship") })
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+  end
+
+  def test_duplicate_direct_target_lanes_remain_blocked
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lanes = input.dig("coordination_status", "batches", 0, "lanes")
+    duplicate = JSON.parse(JSON.generate(lanes.first))
+    duplicate["name"] = "hc-b-10049-duplicate"
+    lanes << duplicate
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10049 appears in multiple coordination lanes"
+  end
+
+  def test_later_closed_no_pr_issue_preserves_auxiliary_qa_lane_without_publishing_adhoc_target
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal input.fetch("expected_targets"), result.fetch("targets")
+    lanes = result.dig("snapshot", "coordination", "lanes")
+    assert_equal(%w[issue-10235 issue-10235-qa], lanes.map { |lane| lane.fetch("name") })
+    assert_equal([nil, "adhoc:hc-a06-issue10235-qa"], lanes.map { |lane| lane["coordination_target"] })
+    assert(lanes.all? { |lane| lane.fetch("target") == input.fetch("expected_targets").first })
+    assert lanes.all? do |lane|
+      lane.fetch("completion_mode") == "authenticated_issue_closure_after_no_pr_closeout"
+    end
+    assert_equal false, lanes.last.fetch("publication_target")
+    assert_equal "NOT_APPLICABLE", result.dig("snapshot", "qa", 0, "verdict")
+    assert_nil result.dig("snapshot", "qa", 0, "head_sha")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+    assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      evidence_comment_verifier: valid_evidence_comment_verifier(input),
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
+  end
+
+  def test_auxiliary_qa_lane_cannot_replace_the_publication_target_lane
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    input.dig("coordination_status", "batches", 0, "lanes").shift
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 is absent from resolved coordination scope"
+  end
+
+  def test_auxiliary_qa_lane_must_bind_its_evidence_to_the_expected_issue
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    qa_lane = input.dig("coordination_status", "batches", 0, "lanes", 1)
+    qa_lane["evidence_url"] = qa_lane.fetch("evidence_url").sub("10235", "10236")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane issue-10235-qa target is absent or ambiguous"
+  end
+
+  def test_auxiliary_qa_lane_must_share_the_primary_lane_evidence_comment
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    qa_lane = input.dig("coordination_status", "batches", 0, "lanes", 1)
+    qa_lane["evidence_url"] = qa_lane.fetch("evidence_url").sub("5384964861", "5384964862")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane issue-10235-qa target is absent or ambiguous"
+  end
+
+  def test_unrelated_adhoc_lane_cannot_masquerade_as_auxiliary_qa_by_copying_evidence
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    unrelated_lane = input.dig("coordination_status", "batches", 0, "lanes", 1)
+    unrelated_lane["name"] = "unrelated-operations"
+    unrelated_lane["targets"] = ["adhoc:hc-a06-unrelated-operations"]
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane unrelated-operations target is absent or ambiguous"
+  end
+
+  def test_auxiliary_lane_requires_an_exact_trusted_mapping
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    input.delete("auxiliary_lane_map")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane issue-10235-qa target is absent or ambiguous"
+  end
+
+  def test_auxiliary_lane_rejects_mismatched_trusted_mapping_fields
+    mutations = {
+      "coordination target" => lambda do |mapping|
+        mapping["coordination_target"] = "adhoc:hc-a06-other-qa"
+      end,
+      "parent target" => lambda do |mapping|
+        mapping.fetch("parent_target")["number"] = 10_236
+      end,
+      "role" => lambda do |mapping|
+        mapping["role"] = "operations"
+      end
+    }
+
+    mutations.each do |label, mutate|
+      input = later_closed_no_pr_with_auxiliary_qa_lane_input
+      mutate.call(input.dig("auxiliary_lane_map", "lanes", 0))
+
+      result = assess_input(input)
+
+      refute result.fetch("eligible"), label
+      assert_includes result.fetch("blockers"),
+                      "coordination lane issue-10235-qa target is absent or ambiguous",
+                      label
+    end
+  end
+
+  def test_no_pr_lanes_require_authenticated_existing_evidence_comment
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    forged_url = "https://github.com/shakacode/hichee/issues/10235#issuecomment-999999999999999999"
+    input.dig("coordination_status", "batches", 0, "lanes").each do |lane|
+      lane["evidence_url"] = forged_url
+    end
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 coordination lane issue-10235 terminal evidence comment " \
+                    "is not authenticated or fresh"
+  end
+
+  def test_no_pr_evidence_comment_verification_fails_closed_when_comment_is_missing
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+
+    result = assess_input(input, evidence_comment_verifier: ->(**) {})
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 coordination lane issue-10235 terminal evidence comment " \
+                    "is not authenticated or fresh"
+  end
+
+  def test_no_pr_evidence_comment_requires_exact_authenticated_identity
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    valid_verifier = valid_evidence_comment_verifier(input)
+    mutations = {
+      "id" => ->(comment) { comment["id"] += 1 },
+      "html_url" => ->(comment) { comment["html_url"] = comment.fetch("html_url").sub("10235", "10236") },
+      "issue_url" => ->(comment) { comment["issue_url"] = comment.fetch("issue_url").sub("10235", "10236") }
+    }
+
+    mutations.each do |label, mutate|
+      verifier = lambda do |host:, repo:, comment_id:|
+        comment = JSON.parse(JSON.generate(valid_verifier.call(host:, repo:, comment_id:)))
+        mutate.call(comment)
+        comment
+      end
+
+      result = assess_input(input, evidence_comment_verifier: verifier)
+
+      refute result.fetch("eligible"), label
+      assert_includes result.fetch("blockers"),
+                      "shakacode/hichee#issue:10235 coordination lane issue-10235 terminal evidence comment " \
+                      "is not authenticated or fresh",
+                      label
+    end
+  end
+
+  def test_no_pr_evidence_comment_verification_is_memoized_per_comment
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    valid_verifier = valid_evidence_comment_verifier(input)
+    calls = 0
+    verifier = lambda do |**keywords|
+      calls += 1
+      valid_verifier.call(**keywords)
+    end
+
+    result = assess_input(input, evidence_comment_verifier: verifier)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal 1, calls
+  end
+
+  def test_no_pr_evidence_comment_is_reauthenticated_during_reassessment
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    receipt = assess_input(input)
+    assert receipt.fetch("eligible")
+
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      receipt,
+      coordination_backend: BACKEND,
+      evidence_comment_verifier: ->(**) {},
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
+  end
+
+  def test_auxiliary_qa_lane_rejects_public_url_fields_or_non_later_closure
+    with_url = later_closed_no_pr_with_auxiliary_qa_lane_input
+    with_url.dig("coordination_status", "batches", 0, "lanes", 1)["issue_url"] =
+      "https://github.com/shakacode/hichee/issues/10235"
+    with_url_result = assess_input(with_url)
+    refute with_url_result.fetch("eligible")
+    assert_includes with_url_result.fetch("blockers"),
+                    "coordination lane issue-10235-qa target is absent or ambiguous"
+
+    non_later = later_closed_no_pr_with_auxiliary_qa_lane_input
+    non_later.fetch("target_snapshots").first["completed_at"] = "2026-08-23T08:05:03Z"
+    non_later_result = assess_input(non_later)
+    refute non_later_result.fetch("eligible")
+    assert_includes non_later_result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 coordination target state is not closed"
+  end
+
+  def test_auxiliary_qa_lane_does_not_authorize_head_bound_no_pr_qa
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    qa = input.fetch("qa_evidence").first
+    fabricated_head = "a" * 40
+    qa["evidence"] = qa.fetch("evidence")
+                       .sub("required: no", "required: yes")
+                       .sub("status: not_applicable", "status: satisfied")
+                       .sub("head_sha: not_applicable", "head_sha: #{fabricated_head}")
+                       .sub("release_blocking: not_applicable", "release_blocking: clear")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 QA evidence contradicts typed no-PR disposition"
+  end
+
+  def test_auxiliary_qa_lane_disappearance_invalidates_receipt_reassessment
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    receipt = assess_input(input)
+    refreshed_status = JSON.parse(JSON.generate(input.fetch("coordination_status")))
+    refreshed_status.dig("batches", 0, "lanes").pop
+
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      receipt,
+      coordination_backend: BACKEND,
+      evidence_comment_verifier: valid_evidence_comment_verifier(input),
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: lambda do |backend:, batch_id:|
+        refreshed_status if backend == BACKEND && batch_id == input.fetch("batch_id")
+      end
+    )
+  end
+
+  def test_done_lane_requires_no_pr_evidence_state_for_later_issue_closure_reconciliation
+    input = later_closed_no_pr_with_auxiliary_qa_lane_input
+    input.dig("coordination_status", "batches", 0, "lanes", 0)["pr_state"] = "open"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 coordination and target state disagree"
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10235 coordination target state is not closed"
+  end
+
+  def test_direct_lane_target_must_match_coordination_batch_repo
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/other",
+      "type" => "pull_request",
+      "number" => 7
+    }
+    lane = {
+      "pr_url" => "https://github.com/acme/other/pull/7",
+      "targets" => ["7"]
+    }
+
+    assert_empty CompletedBatchPublicationPreflight.targets_for_lane(
+      lane,
+      "acme/batch",
+      [target]
+    )
+
+    lane.delete("targets")
+    assert_empty CompletedBatchPublicationPreflight.targets_for_lane(
+      lane,
+      "acme/batch",
+      [target]
+    )
+  end
+
+  def test_authenticated_projection_requires_symmetric_github_relationships
+    input = issue_to_pr_with_qa_lane_input
+    target = input.fetch("expected_targets").first
+    source = {
+      "host" => "github.com",
+      "repo" => target.fetch("repo"),
+      "type" => "issue",
+      "number" => 9_521
+    }
+    payload = issue_projection_graphql_payload(source:, target:)
+    original = CompletedBatchPublicationPreflight.method(:authenticated_gh_graphql)
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **_arguments|
+      payload
+    end
+
+    proof = CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+
+    assert_equal issue_projection_proof(source:, target:), proof
+
+    mismatched_closed_at = issue_projection_graphql_payload(source:, target:)
+    mismatched_closed_at.dig(
+      "data", "repository", "result", "closingIssuesReferences", "nodes", 0
+    )["closedAt"] = "2026-08-24T00:42:34Z"
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **_arguments|
+      mismatched_closed_at
+    end
+    assert_nil CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+
+    asymmetric = issue_projection_graphql_payload(source:, target:, include_reverse: false)
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **_arguments|
+      asymmetric
+    end
+    assert_nil CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql, &original) if original
+  end
+
+  def test_authenticated_projection_accepts_canonical_repository_url_casing
+    input = issue_to_pr_with_qa_lane_input
+    target = input.fetch("expected_targets").first
+    source = {
+      "host" => "github.com",
+      "repo" => target.fetch("repo"),
+      "type" => "issue",
+      "number" => 9_521
+    }
+    payload = issue_projection_graphql_payload(source:, target:)
+    canonical_repo = "ShakaCode/HiChee"
+    repository = payload.dig("data", "repository")
+    repository.fetch("result")["url"] = "https://github.com/#{canonical_repo}/pull/#{target.fetch('number')}"
+    repository.fetch("source")["url"] = "https://github.com/#{canonical_repo}/issues/#{source.fetch('number')}"
+    issue_node = repository.dig("result", "closingIssuesReferences", "nodes", 0)
+    issue_node["url"] = repository.fetch("source").fetch("url")
+    issue_node["repository"]["nameWithOwner"] = canonical_repo
+    pr_node = repository.dig("source", "closedByPullRequestsReferences", "nodes", 0)
+    pr_node["url"] = repository.fetch("result").fetch("url")
+    pr_node["repository"]["nameWithOwner"] = canonical_repo
+    original = CompletedBatchPublicationPreflight.method(:authenticated_gh_graphql)
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **_arguments|
+      payload
+    end
+
+    proof = CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+
+    assert_equal issue_projection_proof(source:, target:), proof
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql, &original) if original
+  end
+
+  def test_authenticated_projection_paginates_both_relationships_and_rejects_a_repeated_cursor
+    input = issue_to_pr_with_qa_lane_input
+    target = input.fetch("expected_targets").first
+    source = {
+      "host" => "github.com",
+      "repo" => target.fetch("repo"),
+      "type" => "issue",
+      "number" => 9_521
+    }
+    first_page = issue_projection_graphql_payload(source:, target:, include_forward: false, include_reverse: false)
+    first_page.dig("data", "repository", "result", "closingIssuesReferences", "pageInfo").merge!(
+      "hasNextPage" => true,
+      "endCursor" => "result-page-1"
+    )
+    first_page.dig("data", "repository", "source", "closedByPullRequestsReferences", "pageInfo").merge!(
+      "hasNextPage" => true,
+      "endCursor" => "source-page-1"
+    )
+    pages = [first_page, issue_projection_graphql_payload(source:, target:)]
+    variables = []
+    original = CompletedBatchPublicationPreflight.method(:authenticated_gh_graphql)
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **arguments|
+      variables << arguments.fetch(:variables)
+      pages.shift
+    end
+
+    proof = CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+
+    assert_equal issue_projection_proof(source:, target:), proof
+    assert_nil variables.first["resultCursor"]
+    assert_nil variables.first["sourceCursor"]
+    assert_equal "result-page-1", variables.last.fetch("resultCursor")
+    assert_equal "source-page-1", variables.last.fetch("sourceCursor")
+
+    repeated = issue_projection_graphql_payload(source:, target:, include_forward: false, include_reverse: false)
+    repeated.dig("data", "repository", "result", "closingIssuesReferences", "pageInfo").merge!(
+      "hasNextPage" => true,
+      "endCursor" => "same-result-cursor"
+    )
+    repeated.dig("data", "repository", "source", "closedByPullRequestsReferences", "pageInfo").merge!(
+      "hasNextPage" => true,
+      "endCursor" => "same-source-cursor"
+    )
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **_arguments|
+      repeated
+    end
+    assert_nil CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql, &original) if original
+  end
+
+  def test_issue_origin_projection_disappearing_on_reassessment_blocks_receipt
+    input = issue_to_pr_with_qa_lane_input
+    receipt = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      target_projection_verifier: ->(source:, target:) { issue_projection_proof(source:, target:) }
+    )
+    assert receipt.fetch("eligible")
+
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      receipt,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      target_projection_verifier: ->(source:, target:) {}
+    )
+  end
+
+  def test_issue_origin_pr_url_alone_or_mismatched_projection_head_cannot_resolve_scope
+    input = issue_to_pr_with_qa_lane_input
+    without_projection = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
+    refute without_projection.fetch("eligible")
+    assert_includes without_projection.fetch("blockers"),
+                    "coordination lane issue-9521 target is absent or ambiguous"
+    assert_includes without_projection.fetch("blockers"),
+                    "coordination lane qa-issue-9521 target is absent or ambiguous"
+
+    mismatched_head = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      target_projection_verifier: lambda do |source:, target:|
+        issue_projection_proof(source:, target:, head_sha: "f" * 40)
+      end
+    )
+    refute mismatched_head.fetch("eligible")
+    assert_includes mismatched_head.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10299 projected result facts disagree with authenticated target"
+  end
+
+  def test_each_lane_role_must_remain_terminal_after_projection
+    input = issue_to_pr_with_qa_lane_input
+    input.dig("coordination_status", "batches", 0, "lanes", 1)["status"] = "in_progress"
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      target_projection_verifier: ->(source:, target:) { issue_projection_proof(source:, target:) }
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10299 coordination lane is nonterminal"
+    assert_equal 2, result.dig("snapshot", "coordination", "lanes").length
   end
 
   def test_abandoned_or_superseded_lane_accepts_later_authenticated_target_completion_without_rewriting_closeout

@@ -6,6 +6,7 @@ require "digest"
 require "base64"
 require "optparse"
 require "timeout"
+require "time"
 require "uri"
 
 load File.expand_path("completed-batch-publication-preflight", __dir__) unless defined?(CompletedBatchPublicationPreflight)
@@ -234,11 +235,9 @@ module CompletedBatchAuditReceipt
     accepted_deferral_input: nil,
     predecessor_receipt: nil
   )
-    comment_body = canonical_comment_body(receipt)
-    raise Error, "local completed-batch audit receipt is invalid" unless comment_body
+    comment_body, marker = unterminalized_comment_input(receipt)
 
     deterministic = deterministic_targets(targets)
-    marker = comment_marker(comment_body)
     if accepted_deferral_input
       marker = terminalize_accepted_deferral(
         marker,
@@ -570,6 +569,9 @@ module CompletedBatchAuditReceipt
     created_at = comment.fetch("created_at", "").to_s
     updated_at = comment.fetch("updated_at", "").to_s
     raise Error, "comment timestamps are missing" if created_at.empty? || updated_at.empty?
+
+    parse_comment_timestamp(created_at)
+    parse_comment_timestamp(updated_at)
     raise Error, "comment was edited before verification" unless created_at == updated_at
 
     body = comment.fetch("body", "").to_s
@@ -595,6 +597,12 @@ module CompletedBatchAuditReceipt
       "sha256" => Digest::SHA256.hexdigest(body.encode(Encoding::UTF_8)),
       "marker" => marker
     }
+  end
+
+  def parse_comment_timestamp(value)
+    Time.iso8601(value)
+  rescue ArgumentError
+    raise Error, "comment timestamps are malformed"
   end
 
   def target_base_url(target)
@@ -659,6 +667,17 @@ module CompletedBatchAuditReceipt
     return unless marker
 
     "#{COMMENT_HEADER}\n\n#{marker}"
+  end
+
+  def unterminalized_comment_input(receipt)
+    if receipt.to_s.each_line.any? { |line| line.start_with?("prior_receipt_sha256:") }
+      raise Error, "caller-supplied prior receipt SHA-256 is not allowed"
+    end
+
+    comment_body = canonical_comment_body(receipt)
+    raise Error, "local completed-batch audit receipt is invalid" unless comment_body
+
+    [comment_body, comment_marker(comment_body)]
   end
 
   def validate_publication_preflight!(preflight, expected_batch_id:, targets:, coordination_backend: nil)
@@ -1055,6 +1074,7 @@ module CompletedBatchAuditReceipt
     refreshed = CompletedBatchPublicationPreflight.assess(
       preflight.fetch("source_input"),
       coordination_backend:,
+      evidence_comment_verifier: method(:authenticated_publication_evidence_comment),
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
       coordination_verifier: method(:authenticated_publication_coordination_status)
@@ -1265,9 +1285,11 @@ module CompletedBatchAuditReceipt
     CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       preflight,
       coordination_backend: trusted_backend,
+      evidence_comment_verifier: method(:authenticated_publication_evidence_comment),
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
-      coordination_verifier: method(:authenticated_publication_coordination_status)
+      coordination_verifier: method(:authenticated_publication_coordination_status),
+      target_projection_verifier: method(:authenticated_publication_target_projection)
     )
   end
 
@@ -1278,6 +1300,12 @@ module CompletedBatchAuditReceipt
 
     permission = gh_api(host, "repos/#{repo}/collaborators/#{author}/permission")
     comment if CompletedBatchPublicationPreflight.verified_waiver_author_permission?(comment, permission)
+  rescue Error
+    nil
+  end
+
+  def authenticated_publication_evidence_comment(host:, repo:, comment_id:)
+    gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
   rescue Error
     nil
   end
@@ -1295,6 +1323,10 @@ module CompletedBatchAuditReceipt
 
   def authenticated_publication_coordination_status(backend:, batch_id:)
     CompletedBatchPublicationPreflight.authenticated_coordination_status(backend:, batch_id:)
+  end
+
+  def authenticated_publication_target_projection(source:, target:)
+    CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
   end
 
   def authenticated_accepted_deferral_decision(

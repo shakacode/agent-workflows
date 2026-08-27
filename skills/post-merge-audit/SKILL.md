@@ -450,7 +450,20 @@ preserves the original coordination terminal and records the later-target
 completion mode. Active/nonterminal lanes, open targets, unauthenticated target
 facts, and malformed terminal timestamps remain blocked.
 
+A terminal `done`/`no_pr_evidence` issue lane may reconcile only when authenticated issue closure occurred after lane closeout and authenticated GitHub API evidence proves the lane's exact same-issue `#issuecomment-<id>` ID, HTML URL, and issue URL; replay re-authenticates the comment and API failure or any identity mismatch blocks. A terminal `adhoc:` auxiliary lane may bind only through a trusted `completed-batch-auxiliary-lane-map` v1 row whose exact coordination target, parent target, and `qa` role match exactly one such primary issue lane with the identical evidence URL; undeclared or mismatched `adhoc:` targets block. Preserve an accepted auxiliary lane with `publication_target: false`, exclude it from publication targets, and never let it authorize head-bound QA—issue-only no-PR QA remains explicit `NOT_APPLICABLE` with `head_sha: not_applicable`.
+
+A raw issue target may project to a different final PR only when the lane's
+exact PR URL is in the trusted final manifest and authenticated GitHub GraphQL
+proves both closing-reference directions for the same host/repository, a closed
+issue, a merged PR, the full head SHA, and merge/close timestamps in order. Bind
+that typed projection proof into every contributing lane snapshot, retain and
+validate every maker/checker/QA lane independently, and compare the manifest to
+the unique projected final-target set; never infer a role from the lane name,
+trust `pr_url` alone, rewrite coordination history, or discard a repeated lane.
+
 Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
+
+Receipt comments are immutable. When a blocked receipt's follow-up later clears, leave that receipt unchanged and either publish a new clean receipt after fresh preflight or use the authenticated append-only `supersede` path for an accepted deferral. No `update` command is accepted; caller-supplied `prior_receipt_sha256` is rejected and is not valid marker grammar. Replay rejects every edited receipt because GitHub documents `UserContentEdit.diff` only as a change summary, not a complete historical body.
 
 For `audit_status: complete`, that parse/bind step additionally requires the
 eligible publication preflight and exact manifest match. Pass the same refreshed
@@ -459,15 +472,16 @@ with `--publication-preflight` and explicit `--workflow-config <trusted repo
 workflow config>`; replay reports a snapshot mismatch/staleness blocker if
 coordination, target/head, or QA state no longer matches the published binding.
 
-Use `completed-batch-audit-receipt` for both `publish` and `replay`;
-`--targets-json` is a JSON array of exact `host`, `repo`, `type`
-(`pull_request` or `issue`), and positive `number` objects. The preflight input
+Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type`
+(`pull_request` or `issue`), and positive `number` objects. `supersede` is the authenticated append-only accepted-deferral path, and no `update` command is accepted. The preflight input
 contract is `completed-batch-publication-preflight-input` v1 with `batch_id`,
 the same `expected_targets`, raw successful targeted `coordination_status`,
 `target_snapshots` (`target`, terminal `state`, full `head_sha`, `source`), and
 `qa_evidence` (`target`, marker text, plus `maintainer_waiver: {"url": "<exact
-same-target #issuecomment URL>"}` only for `WAIVED`). The CLI reads
-`coordination_backend` only from `--workflow-config`; do not
+same-target #issuecomment URL>"}` only for `WAIVED`). An optional
+`auxiliary_lane_map` may contain only the trusted versioned exact
+coordination-target, parent-target, and role bindings needed for auxiliary lanes.
+The CLI reads `coordination_backend` only from `--workflow-config`; do not
 replace the bounded coordination result with a caller-written lane summary.
 Each `qa_evidence` row must carry a coordinator-owned
 `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's
@@ -510,7 +524,7 @@ exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`,
 replay independently re-fetch and compare the bound waiver; a self-consistent
 preflight digest is not authentication.
 
-Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
+Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, reference-bound timestamps/body, SHA-256, batch ID, wrapper version, and result. Receipt comments are immutable: any edited timestamp is rejected, and GitHub `UserContentEdit.diff` is never treated as a historical body because its documented contract is only a change summary.
 
 A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Ordinary new complete receipts also have exactly one helper-managed `publication_snapshot`; accepted-deferral receipts have exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
 
@@ -552,7 +566,7 @@ followups_dispositions: <none|one or more ` | `-separated records with ref, owne
 -->
 ```
 
-For a PR anchor, `publish` and `replay` emit this small managed section after
+For a PR anchor, `publish`, `supersede`, and `replay` emit this small managed section after
 comment readback; neither mutates the PR description. The coordinator applies it
 inside `### Audit receipts` in the canonical `Agent details` disclosure through
 a separate freshly-read update, preserves all surrounding text, never duplicates
