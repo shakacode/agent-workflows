@@ -126,6 +126,44 @@ handoff may not make the user infer an action from technical status, durable
 references, or a `Conversation status:` blocker union. Preserve any required
 receipt immediately before the final `Conversation status:` line.
 
+## Output Contract
+
+`OC-v1` bounds how much user-visible text a coordinator emits. It is
+presentation only: no evidence, verification, security, review, QA, CI, merge,
+or `UNKNOWN`-honesty rule is relaxed, and no rule that requires an exact
+user-visible string is dropped or shortened under it.
+
+Emit user-visible text only at one of five typed checkpoints:
+
+- `dispatch`: one message when a wave launches.
+- `pr-open`: one message per PR when it is opened.
+- `decision-required`: a blocker, a required approval, or a maintainer or
+  product question.
+- `merge-decision`: the merge, ready, or blocked verdict for a target.
+- `final-handoff`: the batch handoff.
+
+Everything between checkpoints is silent; a tool-call preamble is not a
+checkpoint. A direct answer, an explicitly requested status report, an HST-v1
+actionable notification, and a required safety stop are always allowed.
+
+- **Delta recaps:** after the first recap, repeat only rows whose state
+  changed; unchanged targets collapse to one line naming their count and state.
+- **Single-surface findings:** each finding lives on one durable surface;
+  messages report counts by severity, name only decision-changing findings, and
+  link.
+- **Proportional corrections:** state a decision-changing correction once; a
+  correction that changes nothing for the reader goes only to the final
+  decision log.
+- **Unchanged closing stack:** `OC-v1` collapses no closing structure;
+  that consolidation is tracked separately.
+
+At closeout, report a shadow-only `coordinator-narration-volume v1` marker of
+self-counted message and character volume. It gates nothing, blocks no handoff,
+and records exact `UNKNOWN` when the count cannot be established.
+
+The canonical normative text is the Coordinator Output Contract in
+`workflows/pr-processing.md`.
+
 ## Ambiguity Guard
 
 When coordination language becomes ambiguous, or the user asks who is working

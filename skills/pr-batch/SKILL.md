@@ -62,6 +62,34 @@ a blocker exhausted its bounded retries and needs intervention, or
 closeout/archive completed; delete the heartbeat when its gate clears or
 becomes durably terminal. The automation never owns the task or next action.
 
+## Coordinator Output Contract
+
+`OC-v1` bounds coordinator narration volume. Emit user-visible text only at
+five typed checkpoints: `dispatch` (one message per wave launch), `pr-open`
+(one message per opened PR), `decision-required` (blocker, required approval,
+or maintainer/product question), `merge-decision` (merge, ready, or blocked
+verdict), and `final-handoff`. Everything between checkpoints is silent, and a
+tool-call preamble is not a checkpoint. A direct answer, an explicitly
+requested status report, an HST-v1 actionable notification, and a required
+safety stop are always allowed.
+
+- **Delta recaps:** after the first recap, repeat only changed rows; unchanged
+  targets collapse to one line naming their count and shared state.
+- **Single-surface findings:** each finding lives on one durable surface;
+  report counts by severity, name only decision-changing findings, and link.
+- **Proportional corrections:** state a decision-changing correction once; a
+  correction that changes nothing for the reader goes only to the final
+  decision log.
+- **Unchanged closing stack:** `OC-v1` collapses no closing structure; that
+  consolidation is tracked separately.
+
+Report the shadow-only `coordinator-narration-volume v1` marker in FYI /
+decisions made at closeout; it gates nothing and records exact `UNKNOWN` when
+the count cannot be established. `OC-v1` is presentation only: it relaxes no
+evidence, verification, or `UNKNOWN`-honesty rule and drops no required exact
+string. The canonical contract is `.agents/workflows/pr-processing.md` ->
+`### Coordinator Output Contract`.
+
 ## Single-Target Mode
 
 Use this mode for one GitHub issue, existing pull request, or durably overridden
@@ -796,7 +824,8 @@ At terminal closeout, use the resolved sibling
 `bin/batch-usage-receipt` helper for supported Codex rollout JSONL plus
 `state_5.sqlite` evidence, following
 [Batch Usage Receipt v1](../../docs/batch-usage-receipt.md). Put the compact
-batch total or a durable artifact reference in FYI / decisions made. Preserve
+batch total or a durable artifact reference in FYI / decisions made, alongside
+the shadow-only `coordinator-narration-volume v1` marker. Preserve
 structured `UNKNOWN` for unavailable evidence, keep requested and observed
 routes separate, and never attach raw rollout/database data or emit prompt,
 response, tool-result, auth, secret, or environment content. Usage telemetry is

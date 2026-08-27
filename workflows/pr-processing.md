@@ -1932,11 +1932,14 @@ Split batch handoffs into two sections:
   evidence, QA Evidence blocks that include `Tested at`, the QA required
   decision and rationale, QA lane status, review churn notes, autonomous nit
   outcomes, confidence notes, decision-point counts per PR, already-answered
-  questions, a per-PR merge-ledger table or JSON artifact path, and the compact
+  questions, a per-PR merge-ledger table or JSON artifact path, the compact
   `batch-usage-receipt-v1` total or durable artifact reference described in
-  [Batch Usage Receipt v1](../docs/batch-usage-receipt.md). Preserve structured
-  `UNKNOWN` when supported host evidence is missing; usage telemetry is
-  informational and never substitutes for a readiness gate.
+  [Batch Usage Receipt v1](../docs/batch-usage-receipt.md), and the shadow-only
+  `coordinator-narration-volume v1` marker defined by the
+  [Coordinator Output Contract](#coordinator-output-contract). Preserve
+  structured `UNKNOWN` when supported host evidence is missing; usage and
+  narration-volume telemetry is informational and never substitutes for a
+  readiness gate.
 
 Every target must use one explicit final state:
 
@@ -2129,6 +2132,97 @@ notification wording.
 - This boundary changes presentation only. It does not alter machine evidence or
   any security, ownership, retry, scope, continuous integration (CI), review, or
   merge gates.
+
+### Coordinator Output Contract
+
+`OC-v1` is the canonical bound on how much user-visible text the coordinator
+emits. It is symmetric to the [Batch Handoff Format](#batch-handoff-format):
+that contract says what durable evidence must exist, and this one says which
+surface the evidence lands on and how often the coordinator speaks. Durable
+evidence goes to PR bodies, issue and PR comments, and state files, where length
+is free; chat gets checkpointed narration. `OC-v1` is a version key that other
+documents and skills reference instead of restating this section.
+
+`OC-v1` changes presentation only. It changes no gate. Its explicit non-goal is
+brevity bought by relaxing evidence, verification, or `UNKNOWN` honesty: no
+security, dependency, review, QA, CI, readiness, merge-assurance, audit, or
+`UNKNOWN`-honesty requirement is weakened, deferred, or softened by anything
+below. Any rule that requires an exact user-visible string is exempt from every
+reduction in this section and is never omitted, abbreviated, or paraphrased:
+the `Next:` instruction, the `Action needed:` line, the `coordination:`
+declaration, the exact `Conversation status:` line, an HST-v1 actionable
+notification, a required receipt line, and a Lane Card.
+
+**Typed narration checkpoints.** The coordinator emits user-visible text only at
+one of exactly these five checkpoints:
+
+- `dispatch`: one message when a wave launches.
+- `pr-open`: one message per PR when it is opened. This is the existing PR-open
+  Lane Card moment.
+- `decision-required`: a blocker, a required approval, or a maintainer/product
+  question, classified under
+  [Question And Decision Handling](#question-and-decision-handling).
+- `merge-decision`: the merge, ready, or blocked verdict for a target.
+- `final-handoff`: the batch handoff.
+
+Everything between checkpoints is silent. A tool-call preamble is not a
+checkpoint, and "here is what I'll do next" narration is not a checkpoint. Four
+message kinds are always allowed and are not checkpoints: a direct answer to a
+user question; an explicitly requested status report, such as `$status` or
+`$batch-status`; an HST-v1 actionable notification, which lands as
+`decision-required` or `merge-decision`; and an immediate stop required by a
+non-negotiable safety rule in `.agents/skills/pr-batch/SKILL.md` or by a
+[Worker Rules](#worker-rules) stop condition. A single-target batch therefore
+produces roughly five coordinator messages, not twenty-five. Reducing message
+count never reduces what the final handoff must contain.
+
+**Delta recaps.** A recap after the first one in a task repeats only the rows
+whose state changed since the previous recap. Unchanged targets collapse into
+one line naming their count and their shared state, not their evidence. Do not
+reprint a full table when one row moved. The first recap of a task is full
+because no previous state exists, and a changed row still carries its complete
+required evidence.
+
+**Single-surface findings.** Each review finding has exactly one durable
+surface: the PR body findings table, or the repository's configured findings
+destination. The coordinator message reports counts by severity, names only the
+findings that changed a decision and why in at most one sentence each, and links
+to that surface. It never restates the table, and it never narrates a finding a
+second time at greater length. Apply the same one-surface rule to QA Evidence
+blocks, merge-ledger rows, `priority-finding-dispositions v1` markers, and audit
+receipts: emit each required marker or receipt once on its required surface, and
+reference it afterwards instead of repeating it.
+
+**Proportional corrections.** A self-correction that changes what the maintainer
+would decide or do is stated once, in one or two sentences, at the point it
+matters. A correction that changes nothing for the reader is made silently and
+appears only in the `Agent details` decision log of the final handoff. No
+running tallies of prior errors, no re-opening a correction in a later message,
+and no mid-flight cross-round retrospectives. Correcting the record stays
+mandatory; only repeating the narration is bounded.
+
+**Narration volume counter (shadow-only).** At closeout, the coordinator emits
+this compact marker exactly once inside **FYI / decisions made**, self-counted
+over its own user-visible messages in the task:
+
+```text
+<!-- coordinator-narration-volume v1 batch_id=<id>; messages=<int>; characters=<int>; checkpoints=<dispatch,pr-open,decision-required,merge-decision,final-handoff counts>; unclassified_messages=<int>; source=<coordinator-self-count|UNKNOWN> -->
+```
+
+`characters` means user-visible characters the coordinator emitted in this task.
+`unclassified_messages` counts user-visible messages that matched no checkpoint
+and no always-allowed category. The marker is shadow-only: it never gates
+readiness, merge, archive, review, QA, or audit, and it never blocks a handoff.
+A count that cannot be established is recorded as exact `UNKNOWN` rather than
+guessed or omitted. It follows the same shadow-then-enforce path as shadow-mode
+`max_reviewed_heads` calibration; graduating it into an enforced narration
+budget requires an explicit separate decision after a real dataset exists.
+
+**Deferred: one closing block.** `OC-v1` leaves the required closing stack
+unchanged. The Lane Card, the `Next:` instruction, the `Action needed:` line,
+the required receipt, and the exact `Conversation status:` line keep their
+current separate forms and order. Collapsing them into a single terminal
+structure is deliberately out of scope for `OC-v1` and is tracked separately.
 
 ### Coordination State
 
