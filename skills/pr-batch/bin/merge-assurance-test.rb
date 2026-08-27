@@ -941,6 +941,174 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_signal_selected_hosted_ci_process_group_ignores_permission_denied
+    runner = MergeAssurance::Runner.new
+
+    result = with_process_kill_error(Errno::EPERM) do
+      runner.send(:signal_selected_hosted_ci_process_group, "TERM", 12_345)
+    end
+
+    assert_equal :permission_denied, result
+  end
+
+  def test_signal_selected_hosted_ci_process_group_reports_missing_group
+    runner = MergeAssurance::Runner.new
+
+    result = with_process_kill_error(Errno::ESRCH) do
+      runner.send(:signal_selected_hosted_ci_process_group, "TERM", 12_345)
+    end
+
+    assert_equal :gone, result
+  end
+
+  def test_process_group_termination_skips_term_grace_after_permission_denial
+    runner = MergeAssurance::Runner.new
+    signals = []
+    wait_calls = 0
+    exit_checks = 0
+    runner.define_singleton_method(:signal_selected_hosted_ci_process_group) do |signal, _pid|
+      signals << signal
+      signal == "TERM" ? :permission_denied : :sent
+    end
+    runner.define_singleton_method(:selected_hosted_ci_monotonic_time) { 1.0 }
+    runner.define_singleton_method(:wait_for_selected_hosted_ci_child) do |_pid, _deadline|
+      wait_calls += 1
+      nil
+    end
+    runner.define_singleton_method(:wait_for_selected_hosted_ci_process_group_exit) do |_pid, _deadline|
+      exit_checks += 1
+      true
+    end
+
+    status, cleanup_complete = runner.send(:terminate_selected_hosted_ci_process_group, 12_345)
+
+    assert_nil status
+    assert cleanup_complete
+    assert_equal %w[TERM KILL], signals
+    assert_equal 1, wait_calls
+    assert_equal 1, exit_checks
+  end
+
+  def test_process_group_termination_treats_missing_group_as_clean
+    runner = MergeAssurance::Runner.new
+    signals = []
+    wait_calls = 0
+    exit_checks = 0
+    runner.define_singleton_method(:signal_selected_hosted_ci_process_group) do |signal, _pid|
+      signals << signal
+      :gone
+    end
+    runner.define_singleton_method(:selected_hosted_ci_monotonic_time) { 1.0 }
+    runner.define_singleton_method(:wait_for_selected_hosted_ci_child) do |_pid, _deadline|
+      wait_calls += 1
+      nil
+    end
+    runner.define_singleton_method(:wait_for_selected_hosted_ci_process_group_exit) do |_pid, _deadline|
+      exit_checks += 1
+      false
+    end
+
+    status, cleanup_complete = runner.send(:terminate_selected_hosted_ci_process_group, 12_345)
+
+    assert_nil status
+    assert cleanup_complete
+    assert_equal ["TERM"], signals
+    assert_equal 1, wait_calls
+    assert_equal 0, exit_checks
+  end
+
+  def test_process_group_termination_fails_closed_immediately_after_persistent_permission_denial
+    runner = MergeAssurance::Runner.new
+    signals = []
+    wait_calls = 0
+    liveness_checks = 0
+    runner.define_singleton_method(:signal_selected_hosted_ci_process_group) do |signal, _pid|
+      signals << signal
+      :permission_denied
+    end
+    runner.define_singleton_method(:wait_for_selected_hosted_ci_child) do |_pid, _deadline|
+      wait_calls += 1
+      nil
+    end
+    runner.define_singleton_method(:selected_hosted_ci_process_group_alive?) do |_pid|
+      liveness_checks += 1
+      true
+    end
+
+    status, cleanup_complete = runner.send(:terminate_selected_hosted_ci_process_group, 12_345)
+
+    assert_nil status
+    refute cleanup_complete
+    assert_equal %w[TERM KILL], signals
+    assert_equal 0, wait_calls
+    assert_equal 1, liveness_checks
+  end
+
+  def test_cli_blocks_promptly_when_process_group_termination_remains_permission_denied
+    process_group_id = nil
+    with_selected_hosted_ci_cli_fixture do |fixture|
+      pid_path = File.join(fixture.fetch(:repo_root), "permission-denied-seam.pid")
+      replace_fixture_trusted_seam!(
+        fixture,
+        <<~BASH
+          #!/bin/bash
+          trap '' TERM
+          printf '%s' "$$" > #{pid_path}
+          while :; do sleep 1; done
+        BASH
+      )
+      arguments = write_selected_hosted_ci_cli_fixture(fixture)
+      original_kill = Process.method(:kill)
+      previous_timeout = ENV["MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS"]
+      previous_credential = ENV["HOSTED_CI_TOKEN"]
+      Process.define_singleton_method(:kill) do |signal, target|
+        if target.negative? && %w[TERM KILL].include?(signal.to_s)
+          raise Errno::EPERM
+        end
+
+        original_kill.call(signal, target)
+      end
+      ENV["MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS"] = "0.2"
+      ENV["HOSTED_CI_TOKEN"] = "preflight-secret"
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      exit_code = nil
+      stdout, stderr = capture_io do
+        Dir.chdir(fixture.fetch(:repo_root)) do
+          exit_code = MergeAssurance::Runner.new.run(arguments)
+        end
+      end
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      process_group_id = Integer(File.read(pid_path))
+      result = JSON.parse(stdout)
+
+      assert_equal 1, exit_code
+      assert_empty stderr
+      assert_equal(
+        ["trusted-base selected hosted CI seam process group did not exit after forced termination"],
+        result.fetch("failures")
+      )
+      assert_operator elapsed, :<, 1.5
+      assert process_executing?(process_group_id), "fixture must demonstrate fail-closed cleanup"
+    ensure
+      Process.define_singleton_method(:kill, original_kill) if original_kill
+      if previous_timeout
+        ENV["MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS"] = previous_timeout
+      else
+        ENV.delete("MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS")
+      end
+      if previous_credential
+        ENV["HOSTED_CI_TOKEN"] = previous_credential
+      else
+        ENV.delete("HOSTED_CI_TOKEN")
+      end
+      terminate_test_process_group(process_group_id)
+    end
+
+    assert_raises(Errno::ECHILD) do
+      Process.waitpid2(process_group_id, Process::WNOHANG)
+    end
+  end
+
   def test_cli_blocks_repo_with_ascii_control_byte_before_selected_hosted_ci_seam_launch
     with_selected_hosted_ci_cli_fixture do |fixture|
       fixture.fetch(:context)["repo"] = "owner/repo\u0000x"
@@ -1325,6 +1493,57 @@ class MergeAssuranceTest < Minitest::Test
         "and its process group was terminated",
         error.message
       )
+    end
+  end
+
+  def test_selected_hosted_ci_cleanup_failure_is_not_retried_by_ensure
+    runner = MergeAssurance::Runner.new
+    termination_attempts = 0
+    real_termination = runner.method(:terminate_selected_hosted_ci_process_group)
+    real_group_alive = runner.method(:selected_hosted_ci_process_group_alive?)
+    force_post_cleanup_liveness_probe = false
+    # Model a stale post-cleanup liveness observation so the old ensure retry
+    # stays observable while every termination attempt still runs real cleanup.
+    runner.define_singleton_method(:selected_hosted_ci_process_group_alive?) do |pid|
+      if force_post_cleanup_liveness_probe
+        force_post_cleanup_liveness_probe = false
+        true
+      else
+        real_group_alive.call(pid)
+      end
+    end
+    runner.define_singleton_method(:terminate_selected_hosted_ci_process_group) do |pid|
+      termination_attempts += 1
+      status, _cleanup_complete = real_termination.call(pid)
+      force_post_cleanup_liveness_probe = true
+      [status, false]
+    end
+    Dir.mktmpdir("merge-assurance-hosted-cleanup-failure") do |directory|
+      seam = File.join(directory, "noisy-seam.rb")
+      File.write(
+        seam,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          STDOUT.write("x" * 1_048_577)
+        RUBY
+      )
+      FileUtils.chmod(0o755, seam)
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :run_selected_hosted_ci_process!,
+          runner.send(:system_tool_environment),
+          [RbConfig.ruby, seam],
+          { "contract" => "test-request" },
+          chdir: directory
+        )
+      end
+
+      assert_equal(
+        "trusted-base selected hosted CI seam process group did not exit after forced termination",
+        error.message
+      )
+      assert_equal 1, termination_attempts
     end
   end
 
@@ -3610,13 +3829,40 @@ class MergeAssuranceTest < Minitest::Test
     stderr_file.rewind
     [stdout_file.read, stderr_file.read, status, harness_timed_out]
   ensure
+    terminate_test_process_group(pid)
+    stdout_file&.close!
+    stderr_file&.close!
+  end
+
+  def terminate_test_process_group(process_group_id)
+    return unless process_group_id
+
     begin
-      Process.kill("KILL", -pid) if pid
+      Process.kill("KILL", -process_group_id)
     rescue Errno::ESRCH
       nil
     end
-    stdout_file&.close!
-    stderr_file&.close!
+    runner = MergeAssurance::Runner.new
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5
+    while runner.send(:selected_hosted_ci_process_group_alive?, process_group_id) &&
+          Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      sleep 0.01
+    end
+    return unless runner.send(:selected_hosted_ci_process_group_alive?, process_group_id)
+
+    raise "test process group #{process_group_id} leaked after KILL"
+  ensure
+    begin
+      if process_group_id
+        reap_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5
+        until Process.waitpid2(process_group_id, Process::WNOHANG) ||
+              Process.clock_gettime(Process::CLOCK_MONOTONIC) >= reap_deadline
+          sleep 0.01
+        end
+      end
+    rescue Errno::ECHILD
+      nil
+    end
   end
 
   def run_git!(root, *args)
@@ -3746,6 +3992,16 @@ class MergeAssuranceTest < Minitest::Test
     true
   rescue Errno::ESRCH
     false
+  end
+
+  def with_process_kill_error(error)
+    original_kill = Process.method(:kill)
+    Process.define_singleton_method(:kill) do |_signal, _process_group|
+      raise error
+    end
+    yield
+  ensure
+    Process.define_singleton_method(:kill, original_kill) if original_kill
   end
 
   def process_executing?(pid)

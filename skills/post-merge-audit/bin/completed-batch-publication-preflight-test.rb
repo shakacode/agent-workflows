@@ -680,31 +680,125 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                  result.fetch("snapshot_digest")
   end
 
-  def test_abandoned_or_superseded_lane_accepts_later_authenticated_target_completion_without_rewriting_closeout
-    %w[abandoned superseded].each do |terminal_state|
-      input = fixture("completed-batch-publication-hichee-terminal.json")
-      lane = input.dig("coordination_status", "batches", 0, "lanes")
-                  .find { |row| row.fetch("targets") == ["10048"] }
-      lane["status"] = terminal_state
-      lane["terminal"] = terminal_state
-      lane.delete("pr_state")
-      lane.delete("evidence_url")
+  def test_9972_terminal_supersession_reports_replacement_protocol_violation
+    result = assess_input(fixture("completed-batch-publication-hichee-9972-replacement.json"))
 
-      result = assess_input(input)
+    refute result.fetch("eligible")
+    assert_equal "BLOCKED", result.fetch("verdict")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:9972 premature terminal supersession / " \
+                    "replacement protocol violation"
+    lane = result.dig("snapshot", "coordination", "lanes").fetch(0)
+    assert_equal "superseded", lane.fetch("status")
+    assert_equal "superseded", lane.fetch("terminal")
+    assert_equal "2026-07-24T13:20:04Z", lane.fetch("closed_at")
+    assert_equal "open", lane.fetch("target_state")
+    refute lane.key?("completion_mode")
+  end
 
-      assert result.fetch("eligible"), result.fetch("blockers").join("\n")
-      reconciled_lane = result.dig("snapshot", "coordination", "lanes")
+  def test_superseded_code_completion_before_terminal_closeout_is_still_a_protocol_violation
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "superseded"
+    lane["terminal"] = "superseded"
+    input.fetch("target_snapshots")
+         .find { |row| row.dig("target", "number") == 10_048 }["completed_at"] = "2026-07-30T08:43:03Z"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 premature terminal supersession / " \
+                    "replacement protocol violation"
+  end
+
+  def test_abandoned_lane_accepts_later_authenticated_target_completion_without_rewriting_closeout
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "abandoned"
+    lane["terminal"] = "abandoned"
+    lane.delete("pr_state")
+    lane.delete("evidence_url")
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    reconciled_lane = result.dig("snapshot", "coordination", "lanes")
+                            .find { |row| row.dig("target", "number") == 10_048 }
+    assert_equal "abandoned", reconciled_lane.fetch("status")
+    assert_equal "abandoned", reconciled_lane.fetch("terminal")
+    assert_equal "authenticated_target_after_coordination_closeout",
+                 reconciled_lane.fetch("completion_mode")
+    reconciled_target = result.dig("snapshot", "targets")
                               .find { |row| row.dig("target", "number") == 10_048 }
-      assert_equal terminal_state, reconciled_lane.fetch("status")
-      assert_equal terminal_state, reconciled_lane.fetch("terminal")
-      assert_equal "authenticated_target_after_coordination_closeout",
-                   reconciled_lane.fetch("completion_mode")
-      reconciled_target = result.dig("snapshot", "targets")
-                                .find { |row| row.dig("target", "number") == 10_048 }
-      assert_equal "2026-08-01T00:00:00Z", reconciled_target.fetch("completed_at")
-      assert_nil reconciled_lane.fetch("target_state")
-      assert_nil reconciled_lane.fetch("evidence")
-    end
+    assert_equal "2026-08-01T00:00:00Z", reconciled_target.fetch("completed_at")
+    assert_nil reconciled_lane.fetch("target_state")
+    assert_nil reconciled_lane.fetch("evidence")
+  end
+
+  def test_superseded_issue_lane_accepts_later_authenticated_typed_no_pr_close
+    input = no_pr_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10036"] }
+    lane["status"] = "superseded"
+    lane["terminal"] = "superseded"
+    lane.delete("pr_state")
+    lane.delete("evidence_url")
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    reconciled_lane = result.dig("snapshot", "coordination", "lanes")
+                            .find { |row| row.dig("target", "number") == 10_036 }
+    assert_equal "issue", reconciled_lane.dig("target", "type")
+    assert_equal "superseded", reconciled_lane.fetch("terminal")
+    assert_equal "authenticated_target_after_coordination_closeout",
+                 reconciled_lane.fetch("completion_mode")
+  end
+
+  def test_superseded_typed_no_pr_issue_completed_before_lane_closeout_is_a_protocol_violation
+    input = no_pr_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10036"] }
+    lane["status"] = "superseded"
+    lane["terminal"] = "superseded"
+    snapshot = input.fetch("target_snapshots")
+                    .find { |row| row.dig("target", "number") == 10_036 }
+    snapshot["completed_at"] = "2026-07-30T08:43:03Z"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 premature terminal supersession / " \
+                    "replacement protocol violation"
+  end
+
+  def test_superseded_closed_issue_without_typed_no_pr_evidence_is_a_protocol_violation
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    number = 10_048
+    target = input.fetch("expected_targets").find { |row| row.fetch("number") == number }
+    target["type"] = "issue"
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == [number.to_s] }
+    lane["status"] = "superseded"
+    lane["terminal"] = "superseded"
+    lane["issue_url"] = lane.delete("pr_url").sub("/pull/", "/issues/")
+    lane["pr_state"] = "closed"
+    snapshot = input.fetch("target_snapshots").find { |row| row.dig("target", "number") == number }
+    snapshot.fetch("target")["type"] = "issue"
+    snapshot["state"] = "closed"
+    qa = input.fetch("qa_evidence").find { |row| row.dig("target", "number") == number }
+    qa.fetch("target")["type"] = "issue"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10048 premature terminal supersession / " \
+                    "replacement protocol violation"
   end
 
   def test_abandoned_issue_lane_accepts_later_authenticated_close

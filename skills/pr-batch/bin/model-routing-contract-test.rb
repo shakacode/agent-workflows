@@ -20,6 +20,15 @@ DISPATCH_PERSISTENCE_RULE =
   "Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active."
 REPLACEMENT_FENCING_RULE =
   "A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities."
+DISPATCHER_PREFLIGHT_STATUSES = %w[
+  selected
+  launch-pending
+  replay-already-active
+  blocked-user-input
+  blocked-replacement-fencing
+  blocked-replacement-terminal-state
+  invalid-input
+].freeze
 CHECKER_RULE =
   "Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict."
 VERDICT_QUALIFICATION_RULE =
@@ -810,6 +819,15 @@ def planning_pass_section(text)
   body.join
 end
 
+def assert_dispatcher_preflight_statuses(test, text, label)
+  emitted_statuses = text.match(
+    /`dispatcher-capability-preflight`, which emits (?<statuses>.*?); that helper/m
+  )&.[](:statuses)&.scan(/`([^`]+)`/)&.flatten
+
+  test.assert_equal DISPATCHER_PREFLIGHT_STATUSES, emitted_statuses,
+                    "#{label} dispatcher preflight emitted-status list drifted"
+end
+
 def planning_pass_rows(section, pattern)
   section.scan(pattern).to_h do |case_id, *values|
     [case_id, values]
@@ -1090,6 +1108,20 @@ class ModelRoutingContractTest < Minitest::Test
     refute_includes source, "OpenSSL"
     refute_includes source, "dispatcher-launch-trust"
     refute_includes source, "launch_confirmation"
+  end
+
+  def test_model_routing_guide_documents_terminal_replacement_dispatch_block
+    guide = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+
+    assert_dispatcher_preflight_statuses(self, guide, MODEL_ROUTING_GUIDE_PATH)
+    assert_includes guide, "reconcile or replan"
+    assert_includes guide, "refresh targeted lane state"
+
+    mutant = guide.sub("`blocked-replacement-terminal-state`, and ", "")
+    refute_equal guide, mutant, "terminal replacement status mutant did not change the emitted-status list"
+    assert_raises(Minitest::Assertion, "emitted-status list accepted the missing terminal replacement status") do
+      assert_dispatcher_preflight_statuses(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} status-list mutant")
+    end
   end
 
   def test_checker_surfaces_preserve_independence_and_quality_without_route_blocking

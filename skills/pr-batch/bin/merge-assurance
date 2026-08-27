@@ -1785,6 +1785,7 @@ module MergeAssurance
         output_overflow = drain_selected_hosted_ci_output!(streams) || output_overflow
         if output_overflow
           status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          pid = nil
           break
         end
 
@@ -1794,6 +1795,7 @@ module MergeAssurance
         if now >= deadline
           timed_out = true
           terminated_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          pid = nil
           status ||= terminated_status
           break
         end
@@ -1807,6 +1809,7 @@ module MergeAssurance
 
         lingering_group = true
         _ignored_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        pid = nil
         break
       end
       unless cleanup_complete
@@ -1883,21 +1886,32 @@ module MergeAssurance
     end
 
     def terminate_selected_hosted_ci_process_group(pid)
-      signal_selected_hosted_ci_process_group("TERM", pid)
-      deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
-      status = wait_for_selected_hosted_ci_child(pid, deadline)
-      return [status, true] if wait_for_selected_hosted_ci_process_group_exit(pid, deadline)
+      term_result = signal_selected_hosted_ci_process_group("TERM", pid)
+      status = nil
+      unless term_result == :permission_denied
+        deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
+        status = wait_for_selected_hosted_ci_child(pid, deadline)
+        return [status, true] if term_result == :gone ||
+                                 wait_for_selected_hosted_ci_process_group_exit(pid, deadline)
+      end
 
-      signal_selected_hosted_ci_process_group("KILL", pid)
+      kill_result = signal_selected_hosted_ci_process_group("KILL", pid)
+      if kill_result == :permission_denied
+        return [status, !selected_hosted_ci_process_group_alive?(pid)]
+      end
+
       deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
       status ||= wait_for_selected_hosted_ci_child(pid, deadline)
-      [status, wait_for_selected_hosted_ci_process_group_exit(pid, deadline)]
+      [status, kill_result == :gone || wait_for_selected_hosted_ci_process_group_exit(pid, deadline)]
     end
 
     def signal_selected_hosted_ci_process_group(signal, pid)
       Process.kill(signal, -pid)
+      :sent
     rescue Errno::ESRCH
-      nil
+      :gone
+    rescue Errno::EPERM
+      :permission_denied
     end
 
     def wait_for_selected_hosted_ci_child(pid, deadline)
