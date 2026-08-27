@@ -16,15 +16,21 @@ module AutonomousMergePolicy
     [patterns, errors]
   end
 
+  # Consumer safe path groups are merged additively onto the portable defaults:
+  # effective include is the portable include plus the consumer include, and
+  # effective exclude is the portable exclude plus the consumer exclude. A
+  # consumer can add includes and add excludes; it can never remove a portable
+  # exclude. Absent, empty, and partial mappings inherit the portable defaults
+  # for every group the consumer did not declare.
   def parse_safe_path_groups(value)
-    return [{}, []] if value.nil?
-    return [{}, ["autonomous_merge.safe_path_groups must be a mapping"]] unless value.is_a?(Hash)
+    groups = portable_safe_path_groups
+    return [groups, []] if value.nil?
+    return [groups, ["autonomous_merge.safe_path_groups must be a mapping"]] unless value.is_a?(Hash)
 
     errors = []
-    groups = {}
     value.each do |name, group|
       prefix = "autonomous_merge.safe_path_groups.#{name}"
-      unless %w[documentation tests].include?(name)
+      unless PORTABLE_SAFE_PATH_GROUPS.key?(name)
         errors << "autonomous_merge.safe_path_groups contains unknown group #{name.inspect}"
         next
       end
@@ -39,7 +45,11 @@ module AutonomousMergePolicy
       errors.concat(include_errors)
       errors.concat(exclude_errors)
       errors << "#{prefix}.include must contain at least one pattern" if includes.empty?
-      groups[name] = { "include" => includes, "exclude" => excludes }
+      portable = groups.fetch(name)
+      groups[name] = {
+        "include" => (portable.fetch("include") + includes).uniq,
+        "exclude" => (portable.fetch("exclude") + excludes).uniq
+      }
     end
     [groups, errors]
   end

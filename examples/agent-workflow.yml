@@ -42,6 +42,10 @@ ci_change_detector: "n/a"
 # ADR 0003 is the source of truth for these copied portable defaults. File,
 # line, and commit maxima are enforced; max_reviewed_heads is shadow-only until
 # a checked calibration artifact explicitly graduates it to enforcement.
+# Portable safe_path_groups defaults ship for documentation and tests. Consumer
+# include and exclude patterns are added to the portable sets; a consumer can
+# never remove a portable exclude. Omit safe_path_groups entirely to take the
+# portable groups unchanged, and declare only the group you need to widen.
 # autonomous_merge:
 #   thresholds:
 #     max_changed_files: 29
@@ -54,6 +58,7 @@ ci_change_detector: "n/a"
 #       reason: "infrastructure"
 #   policy_paths:
 #     - ".agents/**"
+#   # Added to the portable safe path groups; never replacing them.
 #   safe_path_groups:
 #     documentation:
 #       include:

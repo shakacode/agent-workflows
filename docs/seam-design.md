@@ -141,10 +141,11 @@ interpreters and system tools are trusted host OS/toolchain state; arbitrary
 same-user replacement outside the repository is out of scope for this helper.
 
 `autonomous_merge` is an optional closed mapping. When absent, the shared
-workflow uses its portable thresholds and common hard-risk categories. When
-present, it may tighten or explicitly justify relaxing the four thresholds,
-add reason-tagged human-review paths and policy paths, define bounded
-documentation/test safe groups, and identify generated paths for reporting:
+workflow uses its portable thresholds, safe path groups, and common hard-risk
+categories. When present, it may tighten or explicitly justify relaxing the
+four thresholds, add reason-tagged human-review paths and policy paths, extend
+the portable documentation/test safe groups, and identify generated paths for
+reporting:
 
 ADR 0003 is the source of truth for these copied portable defaults. File, line,
 and commit maxima are enforced; `max_reviewed_heads` is shadow-only until a
@@ -163,6 +164,7 @@ autonomous_merge:
       reason: infrastructure
   policy_paths:
     - ".agents/**"
+  # Added to the portable safe path groups; never replacing them.
   safe_path_groups:
     documentation:
       include: ["docs/**"]
@@ -173,6 +175,17 @@ autonomous_merge:
   generated_paths:
     - "dist/generated/**"
 ```
+
+Portable `safe_path_groups` defaults ship for `documentation` and `tests`.
+Consumer `include` and `exclude` patterns are added to the portable sets; a
+consumer can never remove a portable exclude. An absent `safe_path_groups`
+mapping, an empty one, and one that declares a single group all keep the full
+portable defaults for every group the repository did not declare. ADR 0003 is
+the source of truth for the exact portable include and exclude sets. Every
+portable group excludes the built-in autonomous-merge policy surface -
+`AGENTS.md`/`CLAUDE.md`, `**/SKILL.md`, `workflows/**`, `.agents/**`,
+`docs/adr/**`, and the autonomous-merge helpers - so a repository cannot widen
+its includes into a positive safe classification for a policy path.
 
 Thresholds are inclusive maxima: the next value triggers human review. A value
 above a portable default also requires
