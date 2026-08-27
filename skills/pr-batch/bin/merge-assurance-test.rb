@@ -1499,9 +1499,11 @@ class MergeAssuranceTest < Minitest::Test
   def test_selected_hosted_ci_cleanup_failure_is_not_retried_by_ensure
     runner = MergeAssurance::Runner.new
     termination_attempts = 0
-    runner.define_singleton_method(:terminate_selected_hosted_ci_process_group) do |_pid|
+    real_termination = runner.method(:terminate_selected_hosted_ci_process_group)
+    runner.define_singleton_method(:terminate_selected_hosted_ci_process_group) do |pid|
       termination_attempts += 1
-      [nil, false]
+      status, _cleanup_complete = real_termination.call(pid)
+      [status, false]
     end
     Dir.mktmpdir("merge-assurance-hosted-cleanup-failure") do |directory|
       seam = File.join(directory, "noisy-seam.rb")
@@ -3838,7 +3840,13 @@ class MergeAssuranceTest < Minitest::Test
     raise "test process group #{process_group_id} leaked after KILL"
   ensure
     begin
-      Process.waitpid2(process_group_id, Process::WNOHANG) if process_group_id
+      if process_group_id
+        reap_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5
+        until Process.waitpid2(process_group_id, Process::WNOHANG) ||
+              Process.clock_gettime(Process::CLOCK_MONOTONIC) >= reap_deadline
+          sleep 0.01
+        end
+      end
     rescue Errno::ECHILD
       nil
     end
