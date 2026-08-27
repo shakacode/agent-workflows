@@ -4,6 +4,32 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 RUBOCOP_VERSION=$(tr -d '[:space:]' < .rubocop-version)
 
+tracked_dirty_skills="$(git status --porcelain --untracked-files=no -- skills)"
+untracked_dirty_skills="$(git status --porcelain --untracked-files=all -- skills \
+  ':(exclude,glob)skills/**/.DS_Store' \
+  ':(exclude,glob)skills/**/*.orig' \
+  ':(exclude,glob)skills/**/*.rej' \
+  ':(exclude,glob)skills/**/*~' \
+  ':(exclude,glob)skills/**/.*.sw?' | sed -n '/^?? /p')"
+dirty_skills="$(printf '%s\n%s\n' "$tracked_dirty_skills" "$untracked_dirty_skills" | sed '/^$/d')"
+skipped_cleanliness_dependent_suites=0
+
+if [[ -n "$dirty_skills" ]]; then
+  skipped_cleanliness_dependent_suites=1
+  {
+    echo "== working tree cleanliness (skills/) =="
+    echo "WARN: skills/ has uncommitted changes."
+    echo
+    echo "The installer and stack tests install from this checkout and stamp"
+    echo "source_revision from git HEAD. They are skipped to avoid reporting an"
+    echo "unrelated delivery-mode conflict on a skill path. All other validation"
+    echo "sections, including helper tests and RuboCop, will still run."
+    echo
+    echo "Skipped cleanliness-dependent suites because of these changes:"
+    echo "$dirty_skills"
+  } >&2
+fi
+
 echo "== license =="
 test -f LICENSE
 grep -q "MIT License" LICENSE
@@ -89,9 +115,18 @@ echo "== execution provenance schema =="
 ruby bin/validate-execution-provenance-test.rb
 ruby bin/validate-execution-provenance
 
-echo "== installer/status/upgrade tests =="
-bash bin/install-agent-workflows-test.bash
-bash bin/agent-stack-test.bash
+echo "== installer and stack suites (contain source-revision tests) =="
+if ((skipped_cleanliness_dependent_suites)); then
+  echo "SKIP: installer and stack suites that contain source-revision tests (skills/ working tree is dirty)" >&2
+else
+  bash bin/install-agent-workflows-test.bash
+  bash bin/agent-stack-test.bash
+fi
+
+echo "== doctor tests =="
+if ((skipped_cleanliness_dependent_suites)); then
+  echo "RUN: doctor tests (not source-revision dependent)" >&2
+fi
 bash bin/agent-workflows-doctor-test.bash
 bash bin/agent-stack-doctor-test.bash
 
@@ -176,4 +211,13 @@ abort "Expected RuboCop #{version}, got #{actual}" unless actual == version
 RUBY
 rubocop "_${RUBOCOP_VERSION}_"
 
-echo "PASS agent-workflows validation"
+if ((skipped_cleanliness_dependent_suites)); then
+  echo "PARTIAL COVERAGE: installer and stack suites that contain source-revision tests were skipped because skills/ has uncommitted changes." >&2
+  echo "Commit or stash those changes and rerun bin/validate for full coverage." >&2
+  if [[ -n "${CI:-}" ]]; then
+    echo "ERROR: CI requires full validation coverage; refusing a partial-coverage success." >&2
+    exit 1
+  fi
+else
+  echo "PASS agent-workflows validation"
+fi
