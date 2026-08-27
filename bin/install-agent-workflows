@@ -526,7 +526,7 @@ capture_bound_recovery_metadata() {
           restored_original = open_at.call(target_file, metadata_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
           raise BindingChanged unless attestation.call(restored_original) == expected_original
           sentinel_installed = false
-          binding_changed = true
+          binding_changed = false
         rescue StandardError
           binding_changed = true
         end
@@ -947,7 +947,14 @@ prebind_install_metadata_rollback_guard() {
                    source_stat.dev == guard_stat.dev && source_stat.ino == guard_stat.ino
     ensure
       failed = !$!.nil?
-      guard&.close
+      close_safely = lambda do |file|
+        begin
+          file&.close unless file&.closed?
+        rescue StandardError
+          nil
+        end
+      end
+      close_safely.call(guard)
       if failed && created
         cleanup_guard = open_at.call(lock_file, "metadata-commit-old.guard")
         source_stat = source.stat
@@ -965,12 +972,12 @@ prebind_install_metadata_rollback_guard() {
         abort unless AtomicMetadataPrebind.unlinkat(
           lock_file.fileno, cleanup_name, 0
         ) == 0
-        moved_guard.close
-        cleanup_guard.close
+        close_safely.call(moved_guard)
+        close_safely.call(cleanup_guard)
       end
-      source&.close
-      lock_file&.close
-      target_file&.close
+      close_safely.call(source)
+      close_safely.call(lock_file)
+      close_safely.call(target_file)
     end
   ' "$target" "$metadata_name" "$install_lock" "$install_metadata_binding_attestation" 2>/dev/null; then
     echo "METADATA_COMMIT_PREBIND_UNAVAILABLE: could not bind the attested install metadata into the install lock before mutation." >&2
@@ -1940,7 +1947,16 @@ commit_metadata() {
     absent_moved = false
     completed = false
     rollback_failed = false
+    rollback_succeeded = false
     cleanup_uncertain = false
+    descriptor_close_failed = false
+    close_descriptor = lambda do |file|
+      begin
+        file&.close unless file&.closed?
+      rescue StandardError
+        descriptor_close_failed = true
+      end
+    end
     open_at = lambda do |name|
       fd = AtomicMetadataRename.openat(
         directory.fileno,
@@ -1984,7 +2000,7 @@ commit_metadata() {
       raise MetadataBindingChanged unless attestation.call(moved) == expected_attestation &&
                                           held_stat.dev == moved_stat.dev && held_stat.ino == moved_stat.ino
       raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(owner.fileno, private_name, 0) == 0
-      moved.close
+      close_descriptor.call(moved)
     end
 
     begin
@@ -2026,7 +2042,7 @@ commit_metadata() {
         rescue Errno::ENOENT
           nil
         ensure
-          destination&.close
+          close_descriptor.call(destination)
           destination = nil
         end
         raise MetadataBindingChanged unless AtomicMetadataRename.no_replace(
@@ -2039,7 +2055,7 @@ commit_metadata() {
         destination = open_at.call(metadata_name)
         raise MetadataBindingChanged unless attestation.call(destination) == expected &&
                                             same_identity.call(destination, cleanup_guard)
-        destination.close
+        close_descriptor.call(destination)
         destination = nil
         raise MetadataBindingChanged unless AtomicMetadataRename.exchange(
           directory.fileno,
@@ -2047,12 +2063,13 @@ commit_metadata() {
           metadata_name
         ) == 0
         exchanged = true
+        AtomicMetadataCommitHook.call(:after_exchange) if defined?(AtomicMetadataCommitHook)
       else
         raise MetadataBindingChanged
       end
 
       if exchanged
-        temporary.close
+        close_descriptor.call(temporary)
         temporary = open_at.call(temporary_name)
         raise MetadataBindingChanged unless attestation.call(temporary) == expected &&
                                             same_identity.call(temporary, cleanup_guard)
@@ -2060,23 +2077,23 @@ commit_metadata() {
 
       destination = open_at.call(metadata_name)
       raise MetadataBindingChanged unless attestation.call(destination) == expected_prepared
-      destination.close
+      close_descriptor.call(destination)
       destination = nil
 
       if exchanged
         begin
-          temporary.close
+          close_descriptor.call(temporary)
           temporary = nil
           cleanup_candidate = open_at.call(temporary_name)
           raise MetadataBindingChanged unless attestation.call(cleanup_candidate) == expected &&
                                               same_identity.call(cleanup_candidate, cleanup_guard)
           AtomicMetadataCommitHook.call(:before_success_cleanup) if defined?(AtomicMetadataCommitHook)
           remove_exact.call(directory, temporary_name, cleanup_candidate, expected)
-          cleanup_candidate.close
+          close_descriptor.call(cleanup_candidate)
           cleanup_candidate = nil
           raise MetadataBindingChanged unless attestation.call(cleanup_guard) == expected
           remove_exact.call(lock_directory, cleanup_guard_name, cleanup_guard, expected)
-          cleanup_guard.close
+          close_descriptor.call(cleanup_guard)
           cleanup_guard = nil
           exchanged = false
         rescue StandardError
@@ -2090,22 +2107,20 @@ commit_metadata() {
     rescue StandardError
       nil
     ensure
-      destination&.close
-      temporary&.close
-      cleanup_candidate&.close
+      [destination, temporary, cleanup_candidate].each { |file| close_descriptor.call(file) }
       if absent_moved && directory
         if AtomicMetadataRename.no_replace(directory.fileno, metadata_name, temporary_name) == 0
           begin
             restored_temporary = open_at.call(temporary_name)
             raise MetadataBindingChanged unless attestation.call(restored_temporary) == expected_prepared
-            restored_temporary.close
+            close_descriptor.call(restored_temporary)
             begin
               stale_destination = open_at.call(metadata_name)
               raise MetadataBindingChanged
             rescue Errno::ENOENT
               absent_moved = false
             ensure
-              stale_destination&.close
+              close_descriptor.call(stale_destination)
             end
           rescue StandardError
             rollback_failed = true
@@ -2124,23 +2139,45 @@ commit_metadata() {
           begin
             restored_destination = open_at.call(metadata_name)
             raise MetadataBindingChanged unless attestation.call(restored_destination) == expected
-            rollback_failed = true
             exchanged = false
+            rollback_temporary = open_at.call(temporary_name)
+            raise MetadataBindingChanged unless attestation.call(rollback_temporary) == expected &&
+                                                same_identity.call(rollback_temporary, cleanup_guard)
+            remove_exact.call(directory, temporary_name, rollback_temporary, expected)
+            close_descriptor.call(rollback_temporary)
+            rollback_temporary = nil
+            rollback_guard_fd = AtomicMetadataRename.openat(
+              lock_directory.fileno,
+              cleanup_guard_name,
+              File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+            )
+            raise MetadataBindingChanged if rollback_guard_fd == -1
+            rollback_new_guard = File.for_fd(rollback_guard_fd)
+            raise MetadataBindingChanged unless attestation.call(rollback_new_guard) == expected_prepared
+            remove_exact.call(lock_directory, cleanup_guard_name, rollback_new_guard, expected_prepared)
+            close_descriptor.call(rollback_new_guard)
+            rollback_new_guard = nil
+            close_descriptor.call(cleanup_guard)
+            cleanup_guard = nil
+            rollback_succeeded = true
           rescue StandardError
             rollback_failed = true
           ensure
-            restored_destination&.close
+            close_descriptor.call(restored_destination)
+            close_descriptor.call(rollback_temporary)
+            close_descriptor.call(rollback_new_guard)
           end
         else
           rollback_failed = true
         end
       end
-      cleanup_guard&.close
-      directory&.close
-      lock_directory&.close
+      close_descriptor.call(cleanup_guard)
+      close_descriptor.call(directory)
+      close_descriptor.call(lock_directory)
     end
-    exit 68 if cleanup_uncertain
+    exit 68 if cleanup_uncertain || (completed && descriptor_close_failed)
     exit 67 if rollback_failed
+    exit 69 if rollback_succeeded
     exit 1 unless completed
   ' "$target" "$metadata_name" "$install_metadata_binding_state" \
     "$install_metadata_binding_attestation" "$prepared_metadata_attestation" "$install_lock" \
@@ -2158,6 +2195,13 @@ commit_metadata() {
       echo "METADATA_COMMIT_ROLLBACK_FAILED: atomic metadata commit rollback could not be completed and proven; preserved every remaining metadata artifact for manual recovery." >&2
       echo "Inspect $metadata_path and $metadata_tmp; do not delete either path that exists until their contents and ownership are verified." >&2
       return 67
+    fi
+    if [[ "$commit_status" -eq 69 ]]; then
+      prepared_metadata_attestation=""
+      install_metadata_rollback_guard=""
+      echo "METADATA_COMMIT_ROLLED_BACK: the metadata commit failed after mutation, but the original metadata and cleanup state were restored and verified." >&2
+      echo "No metadata artifact requires manual recovery; the managed-file transaction will be rolled back and may be retried." >&2
+      return 69
     fi
     report_install_metadata_binding_changed
     return 65
@@ -2354,10 +2398,15 @@ move_bound_recovery_path() {
     rescue Fiddle::DLError, SystemCallError, StandardError
       exit renamed ? 68 : 67
     ensure
-      source_file&.close
-      moved_file&.close
-      source_parent_file&.close
-      destination_parent_file&.close
+      close_failed = false
+      [source_file, moved_file, source_parent_file, destination_parent_file].each do |file|
+        begin
+          file&.close unless file&.closed?
+        rescue StandardError
+          close_failed = true
+        end
+      end
+      exit(renamed ? 68 : 67) if close_failed
     end
   ' "$@" 2>/dev/null
 }
@@ -2605,7 +2654,11 @@ remove_recovery_cleanup_root() {
           puts captured if cleanup_captured && captured
           exit 69
         ensure
-          target_file.close
+          begin
+            target_file.close
+          rescue StandardError
+            nil
+          end
         end
       end
     end

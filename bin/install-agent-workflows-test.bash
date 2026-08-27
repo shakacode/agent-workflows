@@ -1316,7 +1316,19 @@ module ReplaceDisplacedMetadataAfterExchange
   def extern(signature, *arguments)
     result = super
     syscall_name = signature[/\b(renameat(?:2|x_np)?)\(/, 1]
-    if name == "AtomicMetadataRename" && syscall_name
+    if name == "AtomicMetadataRename" && signature.include?("openat")
+      real_openat = method(:openat)
+      define_singleton_method(:openat) do |directory_fd, entry_name, flags|
+        if Thread.current[:qa_after_metadata_exchange] && entry_name == ".agent-workflows-install.json" &&
+           !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+          Fiddle.last_error = Errno::EIO::Errno
+          -1
+        else
+          real_openat.call(directory_fd, entry_name, flags)
+        end
+      end
+    elsif name == "AtomicMetadataRename" && syscall_name
       real_syscall = method(syscall_name)
       define_singleton_method(syscall_name) do |*syscall_arguments|
         result = real_syscall.call(*syscall_arguments)
@@ -3442,7 +3454,9 @@ RUBY
   status=$?
   set -e
 
-  [[ "$status" -eq 65 ]] || fail "changed displaced capture sentinel exited $status: $output"
+  [[ "$status" -eq 1 ]] || fail "changed displaced capture sentinel exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
   [[ "$before" = "$(shasum "$metadata")" ]] || \
     fail "capture undo did not restore canonical metadata from original guard"
   quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
@@ -3503,7 +3517,9 @@ RUBY
   set -e
 
   assert_file "$marker"
-  [[ "$status" -eq 65 ]] || fail "recovery capture destination race exited $status: $output"
+  [[ "$status" -eq 1 ]] || fail "recovery capture destination race exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
   assert_contains "$(cat "$metadata")" '"delivery_mode":"flat"'
   assert_file "$preserved"
   assert_contains "$(cat "$preserved")" '"delivery_mode":"flat"'
@@ -7002,12 +7018,250 @@ test_upgrade_validates_consumer_root_after_install() {
   assert_contains "$output" "UPGRADE_COMPLETE"
 }
 
+test_metadata_commit_close_failure_after_exchange_preserves_committed_layout() {
+  local tmp target metadata staging receipt injection marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/fail-metadata-temp-close.rb"; marker="$tmp/metadata-temp-close-failed"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+module FailMetadataTemporaryClose
+  def close(*)
+    Thread.current[:qa_commit_close_count] = Thread.current.fetch(:qa_commit_close_count, 0) + 1
+    if ARGV.length == 6 && ARGV.fetch(1) == ".agent-workflows-install.json" &&
+       Thread.current[:qa_commit_close_count] == 2 && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailMetadataTemporaryClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode plugin-companion 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 68 ]] || fail "metadata close failure exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_CLEANUP_FAILED"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode")' "$metadata")" = "plugin-companion" ]] || \
+    fail "metadata close failure did not retain committed plugin-companion metadata"
+  assert_file "$receipt"
+  IFS= read -r staging < "$receipt"
+  [[ -n "$(find "$staging" -mindepth 1 -print -quit)" ]] || fail "metadata close failure lost staged flat skills"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "metadata close failure restored flat skills beside plugin metadata"
+}
+
+test_verified_capture_rollback_is_not_reported_as_corrupt() {
+  local tmp target staging receipt metadata injection marker output status metadata_before
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-capture-rollback"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-after-capture-exchange.rb"; marker="$tmp/capture-failed"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"; printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"; metadata_before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "capture rollback failure unexpectedly succeeded"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"; assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "verified capture rollback changed metadata"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_verified_metadata_commit_rollback_cleans_artifacts() {
+  local tmp target canonical_target metadata canonical_metadata injection marker ensure_marker tail_marker output status metadata_before retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-post-exchange-metadata-open.rb"; marker="$tmp/post-exchange-open-failed"
+  ensure_marker="$tmp/rollback-ensure-close-failed"; tail_marker="$tmp/rollback-tail-close-failed"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_metadata="$canonical_target/.agent-workflows-install.json"; metadata_before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 6 && ARGV.fetch(2) == "present"
+  module AtomicMetadataCommitHook
+    def self.call(phase)
+      return unless phase == :after_exchange
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+  end
+  module FailRollbackDescriptorCloses
+    def close(*)
+      opened_stat = stat unless closed?
+      result = super
+      metadata = ENV.fetch("QA_INSTALL_METADATA")
+      named_stat = File.lstat(metadata) rescue nil
+      if File.exist?(ENV.fetch("QA_RACE_MARKER")) && opened_stat&.file? && named_stat&.file? &&
+         opened_stat.dev == named_stat.dev && opened_stat.ino == named_stat.ino &&
+         !File.exist?(ENV.fetch("QA_ENSURE_CLOSE_MARKER"))
+        File.write(ENV.fetch("QA_ENSURE_CLOSE_MARKER"), "failed\n")
+        raise Errno::EIO
+      end
+      if respond_to?(:path) && path == ENV.fetch("QA_TARGET") && File.exist?(ENV.fetch("QA_RACE_MARKER")) &&
+         !File.exist?(ENV.fetch("QA_TAIL_CLOSE_MARKER"))
+        File.write(ENV.fetch("QA_TAIL_CLOSE_MARKER"), "failed\n")
+        raise Errno::EIO
+      end
+      result
+    end
+  end
+  IO.prepend(FailRollbackDescriptorCloses)
+end
+RUBY
+  set +e
+  output="$(QA_TARGET="$canonical_target" QA_INSTALL_METADATA="$canonical_metadata" QA_RACE_MARKER="$marker" \
+    QA_ENSURE_CLOSE_MARKER="$ensure_marker" QA_TAIL_CLOSE_MARKER="$tail_marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; assert_file "$ensure_marker"; assert_file "$tail_marker"
+  [[ "$status" -eq 69 ]] || fail "verified metadata rollback exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_ROLLED_BACK"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "verified metadata rollback did not restore original"
+  [[ ! -e "$metadata.tmp" ]] || fail "verified metadata rollback left prepared metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "verified metadata rollback left install lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_completed_metadata_commit_tail_close_is_classified_uncertain() {
+  local tmp target canonical_target metadata injection marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-completed-commit-tail-close.rb"; marker="$tmp/completed-tail-close-failed"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 6 && ARGV.fetch(2) == "present"
+  module FailCompletedCommitTailClose
+    def close(*)
+      result = super
+      if respond_to?(:path) && path == ENV.fetch("QA_TARGET") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+        raise Errno::EIO
+      end
+      result
+    end
+  end
+  IO.prepend(FailCompletedCommitTailClose)
+end
+RUBY
+  set +e
+  output="$(QA_TARGET="$canonical_target" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 68 ]] || fail "completed metadata tail close exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_CLEANUP_FAILED"
+  assert_file "$metadata"
+}
+
+test_recovery_move_close_failure_reverses_committed_move() {
+  local tmp target staging receipt injection marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-close-failure"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-moved-source-close.rb"; marker="$tmp/move-close-failed"
+  mkdir -p "$staging/user-owned-skill"; printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailMovedSourceClose
+  def close(*)
+    if ARGV.length == 7 && ARGV.fetch(0).end_with?("/user-owned-skill") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailMovedSourceClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 65 ]] || fail "recovery move close failure exited $status: $output"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "committed move was not reversed after close failure"
+}
+
+test_recovery_cleanup_close_failure_finalizes_deleted_staging() {
+  local tmp target canonical_target staging receipt injection marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-cleanup-close"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-cleanup-target-close.rb"; marker="$tmp/cleanup-close-failed"
+  mkdir -p "$staging/user-owned-skill"; canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"; printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+module FailCleanupTargetClose
+  def close(*)
+    if ARGV.length == 2 && ARGV.fetch(0) == ENV.fetch("QA_TARGET") &&
+       ARGV.fetch(1).include?("/.agent-workflows-recovery-cleanup-") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailCleanupTargetClose)
+RUBY
+  set +e
+  output="$(QA_TARGET="$canonical_target" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 0 ]] || fail "committed cleanup close failure exited $status: $output"
+  [[ ! -e "$receipt" ]] || fail "committed cleanup close failure retained receipt"
+  [[ ! -e "$staging" ]] || fail "committed cleanup close failure retained deleted staging"
+}
+
+test_prebind_guard_close_failure_does_not_leak_lock() {
+  local tmp target injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-prebind-guard-close.rb"; marker="$tmp/prebind-close-failed"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  cat > "$injection" <<'RUBY'
+module FailPrebindGuardClose
+  def close(*)
+    if ARGV.length == 4 && ARGV.fetch(1) == ".agent-workflows-install.json" &&
+       ARGV.fetch(2).end_with?("/.agent-workflows-install.lock") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailPrebindGuardClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 0 ]] || fail "prebind guard close failure exited $status: $output"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "prebind guard close failure leaked install lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
 main() {
   TEST_SOURCE_ROOT="$(mktemp -d)"
   new_source_repo "$TEST_SOURCE_ROOT"
   ROOT="$TEST_SOURCE_ROOT"
 
   local tests=(
+    test_metadata_commit_close_failure_after_exchange_preserves_committed_layout
+    test_verified_capture_rollback_is_not_reported_as_corrupt
+    test_verified_metadata_commit_rollback_cleans_artifacts
+    test_completed_metadata_commit_tail_close_is_classified_uncertain
+    test_recovery_move_close_failure_reverses_committed_move
+    test_recovery_cleanup_close_failure_finalizes_deleted_staging
+    test_prebind_guard_close_failure_does_not_leak_lock
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_existing_symlink_target_is_canonicalized_before_install
