@@ -272,9 +272,10 @@ class AutonomousMergeContractTest < Minitest::Test
         component_variants(component, fragments).map { |variant| [variant] }
       end
     end
-    choices.reduce([[]]) { |paths, options| paths.flat_map { |prefix| options.map { |option| prefix + option } } }
-         .map { |components| components.join("/") }
-         .uniq
+    expanded = choices.reduce([[]]) do |paths, options|
+      paths.flat_map { |prefix| options.map { |option| prefix + option } }
+    end
+    expanded.map { |components| components.join("/") }.uniq
   end
 
   def component_variants(component, fragments)
