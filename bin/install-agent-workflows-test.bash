@@ -478,6 +478,51 @@ YAML
   done
 }
 
+test_third_party_notices_are_installed_for_every_delivery_mode() {
+  local tmp target collision_target delivery_mode mode output status
+
+  for mode in copy symlink; do
+    for delivery_mode in flat plugin-companion; do
+      tmp="$(mktemp -d)"
+      target="$tmp/$mode-$delivery_mode"
+      collision_target="$tmp/$mode-$delivery_mode-collision"
+
+      if [[ "$delivery_mode" = plugin-companion ]]; then
+        write_native_scw_state codex "$target"
+        write_native_scw_state codex "$collision_target"
+      fi
+
+      "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+        --mode "$mode" --delivery-mode "$delivery_mode" >"$tmp/install.out"
+
+      if [[ "$mode" = copy ]]; then
+        assert_file "$target/THIRD_PARTY-NOTICES.md"
+        [[ ! -L "$target/THIRD_PARTY-NOTICES.md" ]] || \
+          fail "$delivery_mode copy install linked THIRD_PARTY-NOTICES.md"
+      else
+        assert_symlink "$target/THIRD_PARTY-NOTICES.md"
+      fi
+      cmp -s "$target/THIRD_PARTY-NOTICES.md" "$ROOT/THIRD_PARTY-NOTICES.md" || \
+        fail "$mode $delivery_mode install changed THIRD_PARTY-NOTICES.md"
+
+      mkdir -p "$collision_target/THIRD_PARTY-NOTICES.md"
+      set +e
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$collision_target" \
+        --mode "$mode" --delivery-mode "$delivery_mode" 2>&1)"
+      status=$?
+      set -e
+
+      [[ "$status" -ne 0 ]] || \
+        fail "$mode $delivery_mode install replaced a THIRD_PARTY-NOTICES.md directory"
+      assert_contains "$output" "$collision_target/THIRD_PARTY-NOTICES.md"
+      [[ ! -e "$collision_target/LICENSE" && ! -e "$collision_target/workflows" ]] || \
+        fail "$mode $delivery_mode notice collision partially installed pack assets"
+      [[ ! -e "$collision_target/.agent-workflows-install.json" ]] || \
+        fail "$mode $delivery_mode notice collision committed metadata"
+    done
+  done
+}
+
 test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation() {
   local tmp target canonical_target outside output status mode variant unsafe_ancestor expected_ancestor outside_scanner
 
@@ -8335,6 +8380,7 @@ main() {
     test_auto_host_skips_unresolved_configured_home_equality_marker
     test_invalid_explicit_target_diagnostics_preserve_exact_path
     test_plugin_companion_installs_non_skill_assets_and_records_mode
+    test_third_party_notices_are_installed_for_every_delivery_mode
     test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass

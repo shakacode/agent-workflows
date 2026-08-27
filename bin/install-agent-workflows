@@ -14,6 +14,7 @@ Default targets:
 
 Installed paths:
   <target>/LICENSE
+  <target>/THIRD_PARTY-NOTICES.md
   <target>/skills/* (flat delivery mode only)
   <target>/workflows/*
   <target>/docs/coordination-backend.md
@@ -3489,11 +3490,12 @@ verify_install_destinations() {
         exit 1
       fi
     fi
-    destination="$target/LICENSE"
-    if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
-      echo "Refusing to replace non-file path: $destination" >&2
-      exit 1
-    fi
+    for destination in "$target/LICENSE" "$target/THIRD_PARTY-NOTICES.md"; do
+      if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-file path: $destination" >&2
+        exit 1
+      fi
+    done
     for helper in "${bin_helpers[@]}"; do
       destination="$target/bin/$helper"
       if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
@@ -3514,7 +3516,7 @@ verify_install_destinations() {
         exit 1
       fi
     done
-    for destination in "$target/LICENSE" "$target/workflows"; do
+    for destination in "$target/LICENSE" "$target/THIRD_PARTY-NOTICES.md" "$target/workflows"; do
       if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
         echo "Refusing to replace non-symlink path: $destination" >&2
         exit 1
@@ -3608,6 +3610,29 @@ link_pack_license() {
     exit 1
   fi
   ln -sfn "$repo_root/LICENSE" "$destination"
+}
+
+copy_pack_third_party_notices() {
+  local destination="$target/THIRD_PARTY-NOTICES.md"
+  mkdir -p "$target"
+  if [[ -L "$destination" ]]; then
+    rm -f "$destination"
+  fi
+  if [[ -e "$destination" && ! -f "$destination" ]]; then
+    echo "Refusing to replace non-file path: $destination" >&2
+    exit 1
+  fi
+  install -m 0644 "$repo_root/THIRD_PARTY-NOTICES.md" "$destination"
+}
+
+link_pack_third_party_notices() {
+  local destination="$target/THIRD_PARTY-NOTICES.md"
+  mkdir -p "$target"
+  if [[ -e "$destination" && ! -L "$destination" ]]; then
+    echo "Refusing to replace non-symlink path: $destination" >&2
+    exit 1
+  fi
+  ln -sfn "$repo_root/THIRD_PARTY-NOTICES.md" "$destination"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -3973,6 +3998,7 @@ if [[ "$mode" = "copy" ]]; then
   ensure_real_directory "$target/bin"
   prepare_workflow_doctor_copy_destination
   copy_pack_license
+  copy_pack_third_party_notices
   if [[ "$delivery_mode" = "flat" ]]; then
     ensure_real_directory "$target/skills"
     copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
@@ -4008,6 +4034,7 @@ else
     exit 1
   fi
   link_pack_license
+  link_pack_third_party_notices
   mkdir -p "$target/bin"
   if [[ -e "$target/workflows" && ! -L "$target/workflows" ]]; then
     echo "Refusing to replace non-symlink path: $target/workflows" >&2
