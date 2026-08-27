@@ -409,7 +409,7 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def test_launch_target_repository_rejects_invalid_or_unknown_components
-    repositories = %w[owner:bad/repo owner/repo! UNKNOWN/repo owner/UNKNOWN]
+    repositories = %w[owner:bad/repo owner/repo! UNKNOWN/repo owner/UNKNOWN owner/. owner/..]
     repositories << "owner/#{'a' * 101}"
 
     repositories.each do |repository|

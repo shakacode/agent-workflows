@@ -245,8 +245,8 @@ CANONICAL_ISSUE_CREATION_SOURCE_PIN =
 CANONICAL_REPOSITORY_GRAMMAR_SOURCE_PIN =
   "Every typed target repository has exactly two ASCII components separated by `/`: the owner " \
   "matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from " \
-  "`[A-Za-z0-9._-]`; neither component is exactly `UNKNOWN`; parseable authorization-reference " \
-  "`N` values are positive decimals matching `[1-9][0-9]*`."
+  "`[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; " \
+  "parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`."
 REPOSITORY_NAME_PATTERN_SOURCE_PIN =
   'REPOSITORY_NAME_PATTERN = /\A[A-Za-z0-9._-]{1,100}\z/'
 TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp

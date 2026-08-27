@@ -465,6 +465,7 @@ module BatchPlanPreflight
 
     owner.match?(REPOSITORY_SEGMENT_PATTERN) &&
       repository.match?(REPOSITORY_NAME_PATTERN) &&
+      !%w[. ..].include?(repository) &&
       !owner.casecmp?("UNKNOWN") &&
       !repository.casecmp?("UNKNOWN")
   end
