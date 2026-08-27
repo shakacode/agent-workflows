@@ -507,11 +507,21 @@ class CanonicalTaskControlTest < Minitest::Test
       action: "authorize_adhoc_task", role: "maintainer"
     )
 
-    lane = task.fetch("lanes").first
     input = base_input.merge(
-      "operation" => "budget_action", "task" => task,
-      "budget_action" => "retry", "budget_lane_id" => lane.fetch("id"),
-      "budget_gate" => budget_result(action: "retry", task: task, lane: lane)
+      "operation" => "foreign_target_packet", "task" => task,
+      "foreign_target_packet" => {
+        "contract" => "canonical-task-foreign-target-packet", "version" => 1,
+        "source" => {
+          "task_id" => "source-task", "repository" => "shakacode/agent-workflows", "target" => "issue:401"
+        },
+        "recipient" => {
+          "task_id" => task.fetch("id"), "repository" => "shakacode/agent-workflows",
+          "target" => "adhoc:20260812-canonical-fix"
+        },
+        "evidence_kind" => "status_update", "summary" => "Trusted ad-hoc topology probe.",
+        "evidence_ref" => "https://example.test/evidence/adhoc-topology",
+        "evidence_digest" => "sha256:#{'c' * 64}", "disposition" => "evidence_only"
+      }
     )
     result, stderr, status = run_helper(input)
 
@@ -723,6 +733,20 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes result.fetch("blockers"), "budget_admission_blocked"
   end
 
+  def test_idle_delegation_rejects_fresh_admission_without_persisted_budget_state
+    input = delegation_input(
+      target_state: "idle", context: 40_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    plan = JSON.parse(File.read(input.dig("budget_gate", "decision_receipt", "trusted_plan_path")))
+    FileUtils.rm_f(plan.fetch("state_path"))
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "trusted budget state rejected: state-required"
+  end
+
   def test_multi_target_delegation_binds_the_matching_target_lane
     task = multi_target_task
     lane = task.fetch("lanes").last
@@ -824,6 +848,8 @@ class CanonicalTaskControlTest < Minitest::Test
     gate["status"] = "replayed"
     gate["decision_status"] = "admitted"
     gate["state_revision"] += 1
+    replay_plan = JSON.parse(File.read(gate.dig("decision_receipt", "trusted_plan_path")))
+    FileUtils.rm_f(replay_plan.fetch("state_path"))
 
     result, stderr, status = run_helper(input)
 
@@ -1412,6 +1438,44 @@ class CanonicalTaskControlTest < Minitest::Test
     end
   end
 
+  def test_fresh_budget_action_rejects_admission_without_persisted_budget_state
+    input = budget_action_input("retry")
+    plan = JSON.parse(File.read(input.dig("budget_gate", "decision_receipt", "trusted_plan_path")))
+    FileUtils.rm_f(plan.fetch("state_path"))
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "trusted budget state rejected: state-required"
+  end
+
+  def test_fresh_delegation_and_budget_action_reject_admissions_absent_from_persisted_state
+    input_builders = {
+      "delegation" => lambda do
+        delegation_input(
+          target_state: "idle", context: 40_000, threshold: 50_000,
+          message_class: "new_evidence", human_approval: "UNKNOWN"
+        )
+      end,
+      "budget action" => -> { budget_action_input("retry") }
+    }
+    input_builders.each do |label, build_input|
+      input = build_input.call
+      gate = input.fetch("budget_gate")
+      forged_id = "#{gate.dig('decision_receipt', 'reservation_id')}-forged"
+      request = canonicalize(gate.dig("decision_receipt", "request"))
+      request["id"] = forged_id
+      gate.fetch("decision_receipt")["reservation_id"] = forged_id
+      gate.fetch("receipt")["reservation_id"] = forged_id
+      replace_budget_request!(gate, request)
+
+      _result, stderr, status = run_helper(input)
+
+      refute status.success?, label
+      assert_includes stderr, "budget decision is absent from trusted state", label
+    end
+  end
+
   def test_budget_action_requires_and_honors_an_explicit_multi_target_lane
     task = multi_target_task
     lane = task.fetch("lanes").last
@@ -1505,6 +1569,8 @@ class CanonicalTaskControlTest < Minitest::Test
     gate["status"] = "replayed"
     gate["decision_status"] = "admitted"
     gate["state_revision"] += 1
+    replay_plan = JSON.parse(File.read(gate.dig("decision_receipt", "trusted_plan_path")))
+    FileUtils.rm_f(replay_plan.fetch("state_path"))
 
     result, stderr, status = run_helper(input)
 
@@ -1913,7 +1979,7 @@ class CanonicalTaskControlTest < Minitest::Test
     _result, stderr, status = run_helper(input)
 
     refute status.success?
-    assert_includes stderr, "launch budget decision is absent from trusted state"
+    assert_includes stderr, "budget decision is absent from trusted state"
   end
 
   def test_launch_accepts_verified_active_reservation_after_partial_reconciliation
@@ -2035,8 +2101,9 @@ class CanonicalTaskControlTest < Minitest::Test
 
     assert status.success?, stderr
     assert_equal "allow", result.fetch("verdict")
-    assert_includes result.fetch("allowed_actions"), "worker_spawn"
-    assert_includes result.fetch("allowed_actions"), "record_budget_replay"
+    assert_equal [], result.fetch("allowed_actions")
+    assert_equal ["record_budget_replay"], result.dig("allowed_actions_by_lane", "lane-402")
+    assert_includes result.dig("allowed_actions_by_lane", "lane-403"), "worker_spawn"
     assert_equal ["lane-403"], result.fetch("launch_lane_ids")
     assert_equal ["lane-402"], result.fetch("replayed_lane_ids")
   end
@@ -2182,6 +2249,27 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "stage dependency results must agree"
   end
 
+  def test_multi_target_launch_intersects_flat_permissions_and_exposes_lane_scoped_permissions
+    task = multi_target_task
+    task.fetch("exception")["concurrency"] = 2
+    input = launch_input(task)
+    input.fetch("manifest").fetch("gates")["stage_dependency"] = "pending"
+    stage_records = input.fetch("typed_gates").select { |record| record["gate"] == "stage_dependency" }
+    stage_records.each { |record| record["result"] = "pending" }
+    stage_records.fetch(0)["permissions"] = %w[branch_worktree_create patch_edit]
+    stage_records.fetch(1)["permissions"] = ["commit"]
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "block", result.fetch("verdict")
+    assert_equal [], result.fetch("allowed_actions")
+    assert_equal(
+      { "lane-402" => %w[branch_worktree_create patch_edit], "lane-403" => ["commit"] },
+      result.fetch("allowed_actions_by_lane")
+    )
+  end
+
   private
 
   def launch_input(task = base_input.fetch("task"), launch_lanes: nil, real_budget_state: true)
@@ -2190,7 +2278,10 @@ class CanonicalTaskControlTest < Minitest::Test
                        real_launch_budget_results(task, lanes: lanes)
                      else
                        lanes.map.with_index do |lane, index|
-                         budget_result(action: "worker_spawn", task: task, lane: lane, revision: index + 2)
+                         budget_result(
+                           action: "worker_spawn", task: task, lane: lane, revision: index + 2,
+                           persisted_state: false
+                         )
                        end
                      end
     base_input.merge(
@@ -2389,7 +2480,9 @@ class CanonicalTaskControlTest < Minitest::Test
 
   def budget_manifest_binding(task = base_input.fetch("task"), results: nil)
     results ||= task.fetch("lanes").map.with_index do |lane, index|
-      budget_result(action: "worker_spawn", task: task, lane: lane, revision: index + 2)
+      budget_result(
+        action: "worker_spawn", task: task, lane: lane, revision: index + 2, persisted_state: false
+      )
     end
     {
       "contract" => "batch-token-budget-result-set", "version" => 1,
@@ -2401,7 +2494,11 @@ class CanonicalTaskControlTest < Minitest::Test
   end
 
   def budget_result(action:, task: base_input.fetch("task"), lane: task.fetch("lanes").first, revision: 2,
-                    status: "admitted")
+                    status: "admitted", persisted_state: true)
+    if persisted_state && status == "admitted" && !lane.fetch("target").start_with?("adhoc:")
+      return real_budget_action_result(action: action, task: task, lane: lane)
+    end
+
     admission_kind = {
       "worker_spawn" => "spawn", "delegation" => "cross-task-delegation",
       "resume" => "resume", "retry" => "retry", "review_wave" => "review-wave"
@@ -2463,6 +2560,33 @@ class CanonicalTaskControlTest < Minitest::Test
     elsif status == "blocked"
       result["reason"] = "paused-target-requires-resume-approval"
     end
+    result
+  end
+
+  def real_budget_action_result(action:, task:, lane:)
+    plan = budget_plan(task)
+    trusted_plan_path = install_budget_plan(plan, label: "#{action}-state")
+    anchor = { "path" => trusted_plan_path, "id" => plan.fetch("batch_id"), "digest" => findings_digest(plan) }
+    state_path = plan.fetch("state_path")
+    @budget_state_paths << state_path unless @budget_state_paths.include?(state_path)
+    FileUtils.rm_f(state_path)
+    FileUtils.rm_f("#{state_path}.lock")
+    now = Time.at(Time.now.to_i).utc
+    _initialized, initialize_stderr, initialize_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command("initialize", plan, { "budget" => plan }, evaluated_at: (now - 60).iso8601)
+    )
+    raise "budget action initialization failed: #{initialize_stderr}" unless initialize_status.success?
+
+    request = budget_request(action: action, task: task, lane: lane)
+    request.fetch("telemetry")["observed_at"] = (now - 30).iso8601
+    result, reserve_stderr, reserve_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command("reserve", plan, { "reservation" => request }, evaluated_at: (now - 20).iso8601)
+    )
+    raise "budget action reservation failed: #{reserve_stderr}" unless reserve_status.success?
+    raise "budget action reservation was not admitted: #{result['status']}" unless result["status"] == "admitted"
+
     result
   end
 

@@ -155,7 +155,12 @@ against its fresh lanes plus every lane with an already-active reservation in th
 `--state-snapshot` mode, which derives `state_path` only from the trusted plan; bind every submitted reservation ID, request digest, decision status, and decision revision to its persisted ledger entry, and fail closed on missing, corrupt, or stale state. Return fresh and replayed lane IDs separately;
 only fresh lane IDs whose own stage-dependency record permits `worker_spawn` may consume it, while replayed lanes receive the
 idempotent record-only action. A mixed result never suppresses a fresh lane or
-re-authorizes a replayed lane.
+re-authorizes a replayed lane. Apply the same locked state/decision/active-reservation
+binding before a fresh admitted delegation wake or `budget_action` side effect;
+blocked, coalesced, and replayed record-only decisions do not become fresh effects.
+Expose stage permissions in `allowed_actions_by_lane` keyed by canonical lane ID.
+The compatibility `allowed_actions` view is the intersection across relevant
+lanes, never their union, so a permission from one lane cannot authorize another.
 Reject nested `UNKNOWN`, malformed decision/checkpoint fields, or normalized
 duplicate ownership actors. Use `batch-token-budget --verify-plan-only` for the
 external exception plan; an expected state-path failure is not verification.

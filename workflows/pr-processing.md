@@ -1010,6 +1010,19 @@ snapshot mode. The helper emits the persisted complete receipt and charge-back
 sets plus their linked reservation source/target bindings; it never accepts a
 caller-selected state path or caller-recomputable state digest.
 
+Fresh admitted delegation wakes and direct budget actions use the same locked
+state snapshot as launch. Bind their decision and active reservation to the
+persisted ledger before authorizing retry, resume, review-wave, spawn, or wake
+effects; missing, corrupt, stale, absent, or mismatched state fails closed.
+Replayed admissions remain record-only, and blocked/coalesced decisions retain
+their existing no-fresh-effect semantics.
+
+For multi-lane launch, emit `allowed_actions_by_lane` keyed by canonical lane ID
+and keep each stage permission confined to that lane. The flattened
+`allowed_actions` compatibility view is the intersection across relevant lanes,
+not a union. Remove `worker_spawn` from any lane that is not a fresh admitted lane
+whose own gates and capability evidence authorize spawning.
+
 Before every coordinator or worker model turn, spawn, retry, review wave,
 scheduled continuation, monitor wake, resume, replacement, escalation, or
 cross-task delegation, reserve conservative target headroom. The helper's file
