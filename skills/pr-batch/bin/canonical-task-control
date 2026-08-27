@@ -2397,7 +2397,10 @@ module CanonicalTaskControl
       raise InvalidInput, "fresh launch reservation is absent from trusted state"
     end
 
-    active.values.map { |record| canonical_identity(record.fetch("scope_id")) }.uniq |
+    active.filter_map do |_reservation_id, record|
+      scope_id = canonical_identity(record.fetch("scope_id"))
+      scope_id if expected_lane_ids.include?(scope_id)
+    end.uniq |
       lane_reserved_tokens.filter_map do |lane_id, tokens|
         canonical_identity(lane_id) if tokens.positive?
       end
@@ -2441,7 +2444,9 @@ module CanonicalTaskControl
     lane_ids = lane_reserved_tokens.keys.map { |lane_id| canonical_identity(lane_id) }
     active.each_value do |record|
       scope_id = canonical_identity(record.fetch("scope_id"))
-      raise InvalidInput, "trusted budget state active reservation lane is invalid" unless lane_ids.include?(scope_id)
+      unless scope_id == "coordinator" || lane_ids.include?(scope_id)
+        raise InvalidInput, "trusted budget state active reservation scope is invalid"
+      end
     end
 
     active

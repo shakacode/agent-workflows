@@ -1941,6 +1941,50 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_equal "allow", result.fetch("verdict")
   end
 
+  def test_launch_accepts_a_production_coordinator_reservation_without_counting_it_as_a_lane
+    input = launch_input
+    gate = input.fetch("budget_gate").first
+    decision = gate.fetch("decision_receipt")
+    plan = JSON.parse(File.read(decision.fetch("trusted_plan_path")))
+    anchor = {
+      "path" => decision.fetch("trusted_plan_path"),
+      "id" => decision.fetch("trusted_plan_id"),
+      "digest" => decision.fetch("trusted_plan_digest")
+    }
+    coordinator_request = canonicalize(gate.dig("receipt", "request"))
+    coordinator_request.merge!(
+      "id" => "coordinator-model-turn-reservation",
+      "scope_id" => "coordinator",
+      "admission_kind" => "model-turn",
+      "tokens" => 1_000,
+      "message_fingerprint" => "coordinator-model-turn"
+    )
+    coordinator_request.fetch("target")["lane_id"] = "coordinator"
+    coordinator_request.fetch("telemetry").merge!(
+      "observed_at" => (Time.now.utc - 10).iso8601,
+      "self_estimate_tokens" => 1_000
+    )
+    admitted, admission_stderr, admission_status = run_budget_helper(
+      BUDGET_HELPER, plan.fetch("state_path"), anchor,
+      budget_command(
+        "reserve", plan, { "reservation" => coordinator_request },
+        evaluated_at: (Time.now.utc - 5).iso8601
+      )
+    )
+    assert admission_status.success?, admission_stderr
+    assert_equal "admitted", admitted.fetch("status")
+    snapshot, snapshot_stderr, snapshot_status = run_budget_state_snapshot(anchor)
+    assert snapshot_status.success?, snapshot_stderr
+    assert_equal %w[aw-i402 coordinator],
+                 snapshot.fetch("active_reservations").map { |record| record.fetch("scope_id") }.sort
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "allow", result.fetch("verdict")
+    assert_equal ["aw-i402"], result.fetch("launch_lane_ids")
+  end
+
   def test_launch_allows_one_lane_under_serial_multi_target_exception
     task = multi_target_task
     input = launch_input(task, launch_lanes: [task.fetch("lanes").first])
