@@ -38,8 +38,7 @@ module BatchPlanPreflight
     version
   ].freeze
   OVERRIDE_NAME_PATTERN = /\A[a-z0-9][a-z0-9_.-]*\z/
-  GENERIC_OVERRIDE_NAMES = %w[fix-it pr-batch publish-pr].freeze
-  GENERIC_PROVENANCE_VALUES = %w[fix-it pr-batch publish-pr].freeze
+  GENERIC_INTENT_VALUES = %w[fix-it pr-batch publish-pr].freeze
   AD_HOC_TARGET_PATTERN = /\Aadhoc:(\d{8})-([a-z0-9][a-z0-9_.-]*)\z/
   REPOSITORY_SEGMENT_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
   REPOSITORY_NAME_PATTERN = /\A[A-Za-z0-9._-]{1,100}\z/
@@ -391,7 +390,8 @@ module BatchPlanPreflight
                         "#{target.fetch('repository')}:#{target.fetch('target')}"
     return false unless target["override_name"].is_a?(String) &&
                         target["override_name"].match?(OVERRIDE_NAME_PATTERN)
-    return false if GENERIC_OVERRIDE_NAMES.include?(target["override_name"].downcase)
+    return false if target["override_name"].casecmp?("UNKNOWN") ||
+                    GENERIC_INTENT_VALUES.include?(target["override_name"].downcase)
     return false unless %w[trusted_authorizer original_task_identity].all? do |field|
       valid_provenance_identity?(target[field])
     end
@@ -403,7 +403,7 @@ module BatchPlanPreflight
     return false unless value.is_a?(String) && value.match?(PROVENANCE_IDENTITY_PATTERN)
 
     component = value.split(":", 2).last
-    !component.casecmp?("UNKNOWN") && !GENERIC_PROVENANCE_VALUES.include?(component.downcase)
+    !component.casecmp?("UNKNOWN") && !GENERIC_INTENT_VALUES.include?(component.downcase)
   end
 
   def valid_ad_hoc_target_identity?(value)

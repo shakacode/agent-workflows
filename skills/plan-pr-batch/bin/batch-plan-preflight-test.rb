@@ -576,6 +576,18 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_unknown_override_names_are_not_task_specific
+    %w[UNKNOWN unknown UnKnOwN].each do |override_name|
+      target = durable_ad_hoc_target.merge("override_name" => override_name)
+      result, _stderr, status = evaluate(input_for(lanes: [lane(target: target)]))
+
+      refute status.success?, override_name
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "durable-ad-hoc-override-invalid"
+      assert_empty result.dig("launch", "eligible_lane_ids")
+    end
+  end
+
   def test_ad_hoc_provenance_rejects_unknown_labeled_components
     {
       "trusted_authorizer" => "maintainer:UNKNOWN",

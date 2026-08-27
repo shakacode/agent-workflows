@@ -230,7 +230,6 @@ GOAL_PROMPT_LAUNCH_LINE =
   "none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop"
 GOAL_PROMPT_PREFLIGHT_LINE =
   "PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security"
-TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE = GOAL_PROMPT_PREFLIGHT_LINE
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
     Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
@@ -1023,7 +1022,7 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
-  TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE,
+  GOAL_PROMPT_PREFLIGHT_LINE,
   1,
   "triage generated-prompt preflight contract"
 )
