@@ -6,8 +6,9 @@ base_branch: main
 # titles and thread handles. Use 1-6 uppercase ASCII letters or digits. Omit
 # repo_prefix when unset; this optional key does not accept the "n/a" sentinel.
 # repo_prefix: "APP"
-# Optional repository house-style Markdown file. Keep this commented when unset
-# so the user-global ~/.agents/agent-workflow.yml preference can apply.
+# Optional project writing guide. First create docs/writing-style.md in this
+# project, then uncomment the key. The path is relative to the project root and
+# overrides an optional ~/.agents/agent-workflow.yml personal fallback.
 # writing_style: docs/writing-style.md
 follow_up_prefix: "Follow-up:"
 review_gate: "n/a"

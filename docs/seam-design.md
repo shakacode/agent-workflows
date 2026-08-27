@@ -103,16 +103,18 @@ Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 
 ### Writing Style
 
-`writing_style` is an optional nonblank repository-relative Markdown-file path:
+`writing_style` is an optional nonblank Markdown-file path in the repository
+policy:
 
 ```yaml
 writing_style: docs/writing-style.md
 ```
 
+The path is relative to the repository root, and the repository setting wins.
 The same scalar key may appear in the user-global
-`~/.agents/agent-workflow.yml`. `agent-workflow-writing-style` resolves one
-complete file without merging prose. Resolution is repo → user-global →
-portable default:
+`~/.agents/agent-workflow.yml` as an optional personal fallback for repositories
+that do not set it. `agent-workflow-writing-style` resolves one complete file
+without merging prose. Resolution is repo → user-global → portable default:
 
 1. repository `.agents/agent-workflow.yml`
 2. user-global `~/.agents/agent-workflow.yml`
@@ -133,13 +135,13 @@ uses the portable default. User-global configuration contributes only
 `writing_style`; branch, merge, CI, trust, coordination, and every other policy
 remain repository-owned.
 
-The initializer and example configuration do not enable a repository guide.
-That negative default is intentional: seeding one would mask a user's global
-preference. Teams opt in only when they need a repository house style. The
-packaged prose lives once in the linked Markdown file and the resolver loads
-that file. A company-wide or shared guide could be added later only as a future
-explicitly trusted distribution/source layer. The current resolver does not
-perform network or cross-repository lookup.
+The initializer and example configuration do not enable a repository guide;
+the commented example tells a project to create its guide before enabling the
+key. The packaged prose lives once in the linked Markdown file and the resolver
+loads that file. A company-wide or common guide could be added later only as a
+future explicitly trusted distribution/source layer. The current resolver does
+not fetch a company repository and does not perform network or cross-repository
+lookup.
 
 The resolved guide applies only to human-facing prose. Repository PR and issue
 templates, required evidence, machine-readable receipts, and exact protocol

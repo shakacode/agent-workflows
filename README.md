@@ -92,6 +92,10 @@ bin/install-agent-workflows --host codex
 Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
 explicit shared agent home.
 
+To configure writing guidance, follow the
+[project writing-style instructions](docs/adoption.md#configure-project-writing-style); the
+[packaged writing-style file](docs/writing-style.md) remains the default.
+
 Ordinary batches require no project-generated signing keys, fixed trust
 anchors, signed launch or lifecycle receipts, or human waivers. Model and
 reasoning-effort values are advisory preferences; hosts may report observed
