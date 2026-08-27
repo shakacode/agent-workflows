@@ -7372,6 +7372,48 @@ RUBY
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
 }
 
+test_persistent_recovery_payload_close_failure_preserves_committed_cleanup() {
+  local tmp target staging receipt injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-payload-close"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-recovery-payload-close.rb"; marker="$tmp/payload-close-failed"
+  mkdir -p "$staging/user-owned-skill"; printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailRecoveryPayloadClose
+  class << self
+    attr_accessor :payload_id
+  end
+
+  def close(*)
+    if ARGV.length == 6 && ARGV.fetch(1).start_with?(".agent-workflows-install.json.recovery-") &&
+       !closed? && stat.file?
+      FailRecoveryPayloadClose.payload_id ||= object_id
+      if object_id == FailRecoveryPayloadClose.payload_id
+        File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n") unless File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        raise Errno::EIO
+      end
+    end
+    super
+  end
+end
+IO.prepend(FailRecoveryPayloadClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 0 ]] || fail "recovery payload close failure exited $status: $output"
+  assert_not_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  [[ ! -e "$receipt" ]] || fail "recovery payload close failure retained migration receipt"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "recovery payload close failure retained holder"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.cleanup-complete-*' -print -quit)" ]] || \
+    fail "recovery payload close failure retained completion receipt"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
 main() {
   TEST_SOURCE_ROOT="$(mktemp -d)"
   new_source_repo "$TEST_SOURCE_ROOT"
@@ -7387,6 +7429,7 @@ main() {
     test_prebind_guard_close_failure_does_not_leak_lock
     test_metadata_probe_close_failure_cleans_lock_and_allows_retry
     test_persistent_recovery_holder_close_failure_removes_committed_empty_holder
+    test_persistent_recovery_payload_close_failure_preserves_committed_cleanup
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_existing_symlink_target_is_canonicalized_before_install

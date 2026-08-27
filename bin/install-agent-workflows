@@ -1573,7 +1573,7 @@ remove_bound_recovery_metadata_artifacts() {
         begin
           io.close unless io.closed?
         rescue StandardError
-          close_failed = true
+          close_failed = true unless deletion_committed && holder_name.nil?
         end
       end
     end
