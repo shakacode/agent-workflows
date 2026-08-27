@@ -940,6 +940,25 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_multidocument_policy_is_reported_as_invalid_shared_policy
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      File.write(
+        File.join(root, ".agents/agent-workflow.yml"),
+        "#{POLICY.to_yaml}---\nwriting_style: docs/hidden.md\n"
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?, out
+      assert_includes out,
+                      "invalid policy config: .agents/agent-workflow.yml " \
+                      "(expected one YAML document)"
+      refute_includes out, "invalid writing_style policy"
+    end
+  end
+
   def test_coordination_backend_contract_accepts_an_exact_selected_identifier
     with_repo do |root|
       write_valid_binstub_contract(root)

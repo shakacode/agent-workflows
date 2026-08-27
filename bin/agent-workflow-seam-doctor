@@ -1734,6 +1734,11 @@ module AgentWorkflowSeamDoctor
     return ["missing policy config: #{POLICY_CONFIG}"] unless File.file?(path)
 
     yaml = File.read(path, encoding: "UTF-8")
+    structure_error = AgentWorkflowWritingStyle.policy_structure_error(yaml)
+    if structure_error
+      return ["invalid policy config: #{POLICY_CONFIG} (#{structure_error})"]
+    end
+
     config = parse_policy_config(yaml)
     return ["invalid policy config: #{POLICY_CONFIG}"] unless config.is_a?(Hash)
 

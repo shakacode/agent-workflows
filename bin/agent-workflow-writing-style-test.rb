@@ -46,6 +46,29 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
     end
   end
 
+  def test_empty_packaged_default_fails_cleanly
+    Dir.mktmpdir do |directory|
+      script = File.join(directory, "bin", "agent-workflow-writing-style")
+      default_guide = File.join(directory, "docs", "writing-style.md")
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.dirname(script))
+      FileUtils.mkdir_p(File.dirname(default_guide))
+      Dir.mkdir(repo_root)
+      Dir.mkdir(home)
+      FileUtils.cp(SCRIPT, script)
+      File.write(default_guide, " \n\t")
+
+      stdout, stderr, status = run_resolver(repo_root:, home:, script:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid packaged writing style"
+      assert_includes stderr, "must not be empty"
+      refute_includes stderr, script
+    end
+  end
+
   def test_no_configuration_returns_the_packaged_default_with_provenance
     Dir.mktmpdir do |directory|
       repo_root = File.join(directory, "repo")
@@ -613,7 +636,7 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       assert_equal 1, result.fetch("warnings").length
       assert_includes result.fetch("warnings").first, "invalid user-global writing_style"
       assert_includes stderr, "WARNING: invalid user-global writing_style"
-      assert_includes stderr, "Fix or remove"
+      assert_includes stderr, "Fix the user-global configuration"
       assert_includes stderr, File.join(home, ".agents", "agent-workflow.yml")
     end
   end
@@ -786,7 +809,64 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       result = JSON.parse(stdout)
       assert_equal "portable-default", result.fetch("provenance")
       assert_equal 1, result.fetch("warnings").length
+      assert_includes stderr, "invalid user-global policy configuration"
       assert_includes stderr, "expected one YAML document"
+      assert_includes stderr, "Fix the user-global configuration"
+      refute_includes stderr, "invalid user-global writing_style"
+      refute_includes stderr, "Fix or remove writing_style"
+    end
+  end
+
+  def test_multidocument_user_global_config_without_writing_style_warns_generically
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      Dir.mkdir(repo_root)
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "---\nbase_branch: ignored\n---\nmetadata: trailing\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "portable-default", result.fetch("provenance")
+      assert_equal 1, result.fetch("warnings").length
+      assert_includes stderr, "invalid user-global policy configuration"
+      assert_includes stderr, "expected one YAML document"
+      assert_includes stderr, "Fix the user-global configuration"
+      refute_includes stderr, "invalid user-global writing_style"
+      refute_includes stderr, "Fix or remove writing_style"
+    end
+  end
+
+  def test_multidocument_repository_config_blocks_as_invalid_shared_policy
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      FileUtils.mkdir_p(File.join(home, ".agents", "styles"))
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "---\nbase_branch: main\n---\nmetadata: trailing\n"
+      )
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style: styles/writing-style.md\n"
+      )
+      File.write(File.join(home, ".agents", "styles", "writing-style.md"), "Must not fall through.\n")
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository policy configuration"
+      assert_includes stderr, "expected one YAML document"
+      refute_includes stderr, "invalid repository writing_style"
+      refute_includes stdout, "Must not fall through"
     end
   end
 end

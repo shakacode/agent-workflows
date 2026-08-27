@@ -40,7 +40,7 @@ module AgentWorkflowWritingStyle
         return Result.new(guide:, provenance: "user-global", warnings: []) if guide
       end
     rescue ConfigurationError => e
-      warning = "WARNING: #{e.message} at #{user_path}. Fix or remove writing_style; using portable default."
+      warning = "WARNING: #{e.message} at #{user_path}. Fix the user-global configuration; using portable default."
       return Result.new(guide: portable_default, provenance: "portable-default", warnings: [warning])
     end
 
@@ -53,7 +53,12 @@ module AgentWorkflowWritingStyle
       raise ConfigurationError, "invalid packaged writing style: must contain valid UTF-8"
     end
 
-    guide.strip
+    guide = guide.strip
+    if guide.empty?
+      raise ConfigurationError, "invalid packaged writing style: must not be empty"
+    end
+
+    guide
   rescue EncodingError, SystemCallError => e
     raise ConfigurationError, "invalid packaged writing style: #{e.class}"
   end
@@ -104,6 +109,9 @@ module AgentWorkflowWritingStyle
     end
 
     yaml = File.read(path, encoding: "UTF-8")
+    policy_error = policy_structure_error(yaml)
+    raise ConfigurationError, "invalid #{label} policy configuration: #{policy_error}" if policy_error
+
     structure_error = writing_style_structure_error(yaml)
     raise ConfigurationError, "invalid #{label} writing_style: #{structure_error}" if structure_error
 
@@ -113,9 +121,14 @@ module AgentWorkflowWritingStyle
     raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
   end
 
+  def policy_structure_error(yaml)
+    documents = Psych.parse_stream(yaml).children
+    "expected one YAML document" if documents.length > 1
+  end
+
   def writing_style_structure_error(yaml)
     documents = Psych.parse_stream(yaml).children
-    return "expected one YAML document" if documents.length > 1
+    return policy_structure_error(yaml) if documents.length > 1
 
     root = documents.first&.root
     return unless root.is_a?(Psych::Nodes::Mapping)
