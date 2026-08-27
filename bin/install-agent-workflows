@@ -278,7 +278,7 @@ read_installed_metadata_value() {
 }
 
 capture_bound_recovery_metadata() {
-  ruby -rdigest -rfiddle/import -rtempfile -e '
+  ruby -rdigest -rfiddle/import -rtempfile -rsecurerandom -e '
     module RecoverySyscalls
       extend Fiddle::Importer
       dlload Fiddle.dlopen(nil)
@@ -383,6 +383,19 @@ capture_bound_recovery_metadata() {
       temporary&.close unless temporary&.closed?
       temporary&.unlink
     end
+    remove_exact = lambda do |directory, name, held, expected|
+      RecoveryCaptureCleanupHook.call(name) if defined?(RecoveryCaptureCleanupHook)
+      private_name = "cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
+      raise BindingChanged unless RecoverySyscalls.no_replace(
+        directory.fileno, name, directory.fileno, private_name
+      ) == 0
+      moved = open_at.call(directory, private_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      held_stat = held.stat
+      moved_stat = moved.stat
+      raise BindingChanged unless attestation.call(moved) == expected &&
+                                  held_stat.dev == moved_stat.dev && held_stat.ino == moved_stat.ino
+      raise BindingChanged unless RecoverySyscalls.unlinkat(directory.fileno, private_name, 0) == 0
+    end
 
     begin
       target = File.expand_path(ARGV.fetch(0))
@@ -455,8 +468,8 @@ capture_bound_recovery_metadata() {
       displaced_destination_attestation = attestation.call(displaced_destination)
       raise BindingChanged unless displaced_destination_attestation == expected_original
       RecoveryCaptureHook.call(:after_rename) if defined?(RecoveryCaptureHook)
-
-      raise BindingChanged unless RecoverySyscalls.unlinkat(quarantine_file.fileno, "sentinel", 0) == 0
+      RecoveryCaptureHook.call(:before_sentinel_cleanup) if defined?(RecoveryCaptureHook)
+      remove_exact.call(quarantine_file, "sentinel", displaced_destination, expected_original)
       created.delete("sentinel")
       sentinel_installed = false
 
@@ -627,6 +640,15 @@ installed_metadata_blocking_recovery_residue_exists() {
     return 0
   done
   return 1
+}
+
+report_blocking_recovery_quarantines() {
+  local residue
+  for residue in "$target/$metadata_name".recovery-*; do
+    [[ -e "$residue" || -L "$residue" ]] || continue
+    echo "Preserved recovery metadata quarantine $residue blocks automatic recovery." >&2
+  done
+  echo "Verify the quarantined artifacts against a trusted metadata backup; move the entire quarantine aside only after preserving it, then retry." >&2
 }
 
 recovery_metadata_cleanup_receipt_valid() {
@@ -924,12 +946,23 @@ prebind_install_metadata_rollback_guard() {
 
 remove_install_metadata_rollback_guard() {
   [[ -n "${install_metadata_rollback_guard:-}" && -e "$install_metadata_rollback_guard" ]] || return 0
-  ruby -rdigest -rfiddle/import -e '
+  ruby -rdigest -rfiddle/import -rsecurerandom -e '
     module AtomicMetadataGuardCleanup
       extend Fiddle::Importer
       dlload Fiddle.dlopen(nil)
       extern "int openat(int, const char *, int)"
       extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x4)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x1)
+        end
+      end
     end
     lock, expected = ARGV
     lock_path_stat = File.lstat(lock)
@@ -948,8 +981,25 @@ remove_install_metadata_rollback_guard() {
       digest.update(chunk)
     end
     abort unless stat.file? && "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}" == expected
+    cleanup_name = "metadata-commit-old.cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
+    AtomicMetadataGuardCleanupHook.call if defined?(AtomicMetadataGuardCleanupHook)
+    abort unless AtomicMetadataGuardCleanup.no_replace(
+      lock_file.fileno, "metadata-commit-old.guard", cleanup_name
+    ) == 0
+    moved_fd = AtomicMetadataGuardCleanup.openat(
+      lock_file.fileno, cleanup_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+    )
+    abort if moved_fd == -1
+    moved = File.for_fd(moved_fd)
+    moved_stat = moved.stat
+    moved_digest = Digest::SHA256.new
+    while (chunk = moved.read(64 * 1024))
+      moved_digest.update(chunk)
+    end
+    abort unless "#{moved_stat.dev}:#{moved_stat.ino}|#{moved_digest.hexdigest}" == expected &&
+                 moved_stat.dev == stat.dev && moved_stat.ino == stat.ino
     abort unless AtomicMetadataGuardCleanup.unlinkat(
-      lock_file.fileno, "metadata-commit-old.guard", 0
+      lock_file.fileno, cleanup_name, 0
     ) == 0
   ' "$install_lock" "$install_metadata_binding_attestation" 2>/dev/null
 }
@@ -1028,7 +1078,7 @@ recovery_metadata_sentinel_intact() {
 }
 
 replace_bound_recovery_metadata() {
-  ruby -rdigest -rfiddle/import -e '
+  ruby -rdigest -rfiddle/import -rsecurerandom -e '
     module RecoveryRestoreSyscalls
       extend Fiddle::Importer
       dlload Fiddle.dlopen(nil)
@@ -1040,10 +1090,16 @@ replace_bound_recovery_metadata() {
         def self.exchange(source_fd, source, destination_fd, destination)
           renameatx_np(source_fd, source, destination_fd, destination, 0x2)
         end
+        def self.no_replace(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x4)
+        end
       else
         extern "int renameat2(int, const char *, int, const char *, unsigned int)"
         def self.exchange(source_fd, source, destination_fd, destination)
           renameat2(source_fd, source, destination_fd, destination, 0x2)
+        end
+        def self.no_replace(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x1)
         end
       end
     end
@@ -1111,6 +1167,24 @@ replace_bound_recovery_metadata() {
              end
       "#{stat.dev}:#{stat.ino}|#{type}"
     end
+    remove_exact = lambda do |directory, name, held, expected_attestation|
+      RecoveryRestoreCleanupHook.call(name) if defined?(RecoveryRestoreCleanupHook)
+      private_name = "restore-cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
+      raise "cleanup move failed" unless RecoveryRestoreSyscalls.no_replace(
+        directory.fileno, name, private_name
+      ) == 0
+      moved = open_entry.call(directory, private_name)
+      held_stat = held.stat
+      moved_stat = moved.stat
+      raise "cleanup identity changed" unless held_stat.dev == moved_stat.dev && held_stat.ino == moved_stat.ino
+      if expected_attestation
+        raise "cleanup attestation changed" unless moved_stat.file? &&
+                                                     attestation.call(moved) == expected_attestation
+      end
+      raise "cleanup unlink failed" unless RecoveryRestoreSyscalls.unlinkat(
+        directory.fileno, private_name, 0
+      ) == 0
+    end
     begin
       source = File.expand_path(ARGV.fetch(0))
       destination = File.expand_path(ARGV.fetch(1))
@@ -1177,9 +1251,10 @@ replace_bound_recovery_metadata() {
       displaced_stat = displaced_destination_file.stat
       raise "displaced metadata identity changed" unless guard_stat.dev == displaced_stat.dev &&
                                                           guard_stat.ino == displaced_stat.ino
-      exit 67 unless RecoveryRestoreSyscalls.unlinkat(quarantine_file.fileno, source_name, 0) == 0
+      RecoveryRestoreHook.call(:before_success_cleanup) if defined?(RecoveryRestoreHook)
+      remove_exact.call(quarantine_file, source_name, displaced_destination_file, expected_destination)
       exit 67 unless attestation.call(guard_file) == expected_destination
-      exit 67 unless RecoveryRestoreSyscalls.unlinkat(quarantine_file.fileno, "restore-guard", 0) == 0
+      remove_exact.call(quarantine_file, "restore-guard", guard_file, expected_destination)
       guard_created = false
       exchanged = false
       completed = true
@@ -1776,7 +1851,7 @@ commit_metadata() {
   local metadata_tmp="$metadata_path.tmp"
   local commit_status=0
 
-  ruby -rdigest -rfiddle/import -e '
+  ruby -rdigest -rfiddle/import -rsecurerandom -e '
     module AtomicMetadataRename
       extend Fiddle::Importer
       dlload Fiddle.dlopen(nil)
@@ -1850,6 +1925,24 @@ commit_metadata() {
       left_stat = left.stat
       right_stat = right.stat
       left_stat.dev == right_stat.dev && left_stat.ino == right_stat.ino
+    end
+    remove_exact = lambda do |owner, name, held, expected_attestation|
+      AtomicMetadataCommitCleanupHook.call(name) if defined?(AtomicMetadataCommitCleanupHook)
+      private_name = "metadata-cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
+      raise MetadataBindingChanged unless AtomicMetadataRename.no_replace(
+        owner.fileno, name, private_name
+      ) == 0
+      fd = AtomicMetadataRename.openat(
+        owner.fileno, private_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      raise MetadataBindingChanged if fd == -1
+      moved = File.for_fd(fd)
+      held_stat = held.stat
+      moved_stat = moved.stat
+      raise MetadataBindingChanged unless attestation.call(moved) == expected_attestation &&
+                                          held_stat.dev == moved_stat.dev && held_stat.ino == moved_stat.ino
+      raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(owner.fileno, private_name, 0) == 0
+      moved.close
     end
 
     begin
@@ -1935,19 +2028,12 @@ commit_metadata() {
           cleanup_candidate = open_at.call(temporary_name)
           raise MetadataBindingChanged unless attestation.call(cleanup_candidate) == expected &&
                                               same_identity.call(cleanup_candidate, cleanup_guard)
-          raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(
-            directory.fileno,
-            temporary_name,
-            0
-          ) == 0
+          AtomicMetadataCommitHook.call(:before_success_cleanup) if defined?(AtomicMetadataCommitHook)
+          remove_exact.call(directory, temporary_name, cleanup_candidate, expected)
           cleanup_candidate.close
           cleanup_candidate = nil
           raise MetadataBindingChanged unless attestation.call(cleanup_guard) == expected
-          raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(
-            lock_directory.fileno,
-            cleanup_guard_name,
-            0
-          ) == 0
+          remove_exact.call(lock_directory, cleanup_guard_name, cleanup_guard, expected)
           cleanup_guard.close
           cleanup_guard = nil
           exchanged = false
@@ -3078,11 +3164,13 @@ if [[ -f "$migration_receipt" ]]; then
     68) prior_delivery_mode="flat" ;;
     66)
       report_corrupt_install_metadata true
+      report_blocking_recovery_quarantines
       echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
       exit 65
       ;;
     70)
       echo "RECOVERY_METADATA_CAPTURE_UNAVAILABLE: this filesystem could not create a bound metadata snapshot; preserved $migration_receipt and $recovered_staging." >&2
+      report_blocking_recovery_quarantines
       exit 1
       ;;
     *)

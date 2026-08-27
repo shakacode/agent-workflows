@@ -3247,8 +3247,8 @@ RUBY
     fail "recovery capture destination race mutated the recovery target"
 }
 
-test_recovery_partial_backup_copy_failure_removes_quarantine() {
-  local tmp target staging receipt metadata injection output status quarantine
+test_recovery_partial_backup_copy_failure_preserves_quarantine() {
+  local tmp target staging receipt metadata injection output status quarantine retry_output retry_status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-partial-copy"
@@ -3282,6 +3282,14 @@ RUBY
   assert_file "$metadata"
   assert_file "$receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
+  assert_contains "$output" "$quarantine"
+  set +e
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  retry_status=$?
+  set -e
+  [[ "$retry_status" -eq 65 ]] || fail "partial backup retry exited $retry_status: $retry_output"
+  assert_contains "$retry_output" "$quarantine"
+  assert_contains "$retry_output" "move the entire quarantine aside"
 }
 
 test_recovery_capture_cleanup_preserves_replaced_created_artifact() {
@@ -3328,6 +3336,122 @@ RUBY
   assert_file "$staging/user-owned-skill/SKILL.md"
 }
 
+test_recovery_capture_post_attestation_cleanup_preserves_replacement() {
+  local tmp target staging receipt metadata injection output status quarantine
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-sentinel-cleanup-race"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/swap-sentinel-at-cleanup.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureCleanupHook
+  def self.call(name)
+    return unless name == "sentinel"
+    quarantine = Dir.glob("#{ENV.fetch("QA_METADATA")}.recovery-*").fetch(0)
+    path = File.join(quarantine, name)
+    File.rename(path, "#{path}.attested")
+    File.write(path, "foreign sentinel replacement\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_METADATA="$metadata" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "capture cleanup replacement unexpectedly succeeded"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  grep -Rql "foreign sentinel replacement" "$quarantine" || \
+    fail "capture cleanup deleted foreign sentinel replacement"
+  assert_file "$quarantine/sentinel.attested"
+}
+
+test_commit_post_attestation_cleanup_preserves_tmp_replacement() {
+  local tmp target metadata injection output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/swap-tmp-at-cleanup.rb"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  cat > "$injection" <<'RUBY'
+module AtomicMetadataCommitCleanupHook
+  def self.call(name)
+    return unless name.end_with?(".tmp")
+    path = "#{ENV.fetch("QA_METADATA")}.tmp"
+    File.rename(path, "#{path}.attested")
+    File.write(path, "foreign tmp replacement\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_METADATA="$metadata" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "commit cleanup replacement unexpectedly succeeded"
+  grep -Rql "foreign tmp replacement" "$target" || fail "commit cleanup deleted foreign tmp replacement"
+  assert_file "$metadata.tmp.attested"
+}
+
+test_normal_guard_cleanup_preserves_post_attestation_replacement() {
+  local tmp target lock guard injection output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; lock="$target/.agent-workflows-install.lock"
+  guard="$lock/metadata-commit-old.guard"; injection="$tmp/swap-normal-guard-cleanup.rb"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  cat > "$injection" <<'RUBY'
+module AtomicMetadataGuardCleanupHook
+  def self.call
+    path = ENV.fetch("QA_GUARD")
+    File.rename(path, "#{path}.attested")
+    File.write(path, "foreign normal guard replacement\n")
+  end
+end
+module ChangeMetadataAfterPreparation
+  def open(path, *args, **kwargs, &block)
+    result = super
+    if path == "#{ENV.fetch("QA_METADATA")}.tmp" && !Thread.current[:qa_changed_metadata]
+      Thread.current[:qa_changed_metadata] = true
+      at_exit { File.unlink(path) if File.exist?(path) }
+    end
+    result
+  end
+end
+File.singleton_class.prepend(ChangeMetadataAfterPreparation)
+RUBY
+  set +e
+  output="$(QA_GUARD="$guard" QA_METADATA="$target/.agent-workflows-install.json" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "normal guard cleanup replacement unexpectedly succeeded"
+  grep -Rql "foreign normal guard replacement" "$lock" || \
+    fail "normal guard cleanup deleted foreign replacement"
+  assert_file "$guard.attested"
+}
+
+test_restore_post_attestation_cleanup_preserves_source_replacement() {
+  local tmp target staging receipt metadata injection output status quarantine
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-restore-cleanup-race"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/swap-restore-source-at-cleanup.rb"
+  mkdir -p "$staging/user-owned-skill"; printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreCleanupHook
+  def self.call(name)
+    return unless name == "metadata"
+    quarantine = Dir.glob("#{ENV.fetch("QA_METADATA")}.recovery-*").fetch(0)
+    path = File.join(quarantine, name)
+    File.rename(path, "#{path}.attested")
+    File.write(path, "foreign restore replacement\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_METADATA="$metadata" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "restore cleanup replacement unexpectedly succeeded"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  grep -Rql "foreign restore replacement" "$quarantine" || \
+    fail "restore cleanup deleted foreign source replacement"
+  assert_file "$quarantine/metadata.attested"
+}
+
 test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance() {
   local tmp target staging receipt metadata injection output status
   tmp="$(mktemp -d)"
@@ -3358,7 +3482,7 @@ RUBY
 
   [[ "$status" -eq 65 ]] || fail "late capture corruption exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
-  assert_not_contains "$output" "Preserved recovery metadata quarantine"
+  assert_contains "$output" "Preserved recovery metadata quarantine"
   assert_file "$metadata"
   assert_file "$receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
@@ -3394,9 +3518,7 @@ RUBY
   set -e
 
   [[ "$status" -eq 65 ]] || fail "late capture restore failure exited $status: $output"
-  assert_contains "$output" "RECOVERY_METADATA_RESTORE_FAILED"
-  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
-  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
   assert_file "$receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
   quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
@@ -6578,6 +6700,7 @@ main() {
     test_metadata_actual_source_prebind_failure_stops_before_managed_mutation
     test_metadata_partial_prebind_failure_cleans_guard_and_allows_retry
     test_metadata_prebind_cleanup_preserves_replacement_guard
+    test_normal_guard_cleanup_preserves_post_attestation_replacement
     test_metadata_commit_link_capability_failure_stops_before_managed_mutation
     test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation
     test_atomic_rename_capability_failure_stops_before_recovery_mutation
@@ -6615,8 +6738,11 @@ main() {
     test_capture_failure_after_sentinel_install_restores_original_metadata
     test_capture_undo_uses_original_guard_when_displaced_sentinel_changes
     test_recovery_capture_exchange_restores_competing_destination
-    test_recovery_partial_backup_copy_failure_removes_quarantine
+    test_recovery_partial_backup_copy_failure_preserves_quarantine
     test_recovery_capture_cleanup_preserves_replaced_created_artifact
+    test_recovery_capture_post_attestation_cleanup_preserves_replacement
+    test_commit_post_attestation_cleanup_preserves_tmp_replacement
+    test_restore_post_attestation_cleanup_preserves_source_replacement
     test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance
     test_late_capture_restore_failure_does_not_blame_intact_metadata
     test_snapshot_only_corruption_restores_before_reporting
