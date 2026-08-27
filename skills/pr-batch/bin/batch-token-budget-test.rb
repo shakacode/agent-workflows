@@ -80,6 +80,17 @@ class BatchTokenBudgetTest < Minitest::Test
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
   end
 
+  def run_state_snapshot(state_path, anchor: trusted_anchor_binding(state_path))
+    stdout, stderr, status = Open3.capture3(
+      HELPER,
+      "--state-snapshot",
+      "--trusted-plan", anchor.fetch("path"),
+      "--trusted-plan-id", anchor.fetch("id"),
+      "--trusted-plan-digest", anchor.fetch("digest")
+    )
+    [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
+  end
+
   def with_state
     Dir.mktmpdir("batch-token-budget-test") do |directory|
       yield File.join(directory, "state.json")
@@ -92,6 +103,60 @@ class BatchTokenBudgetTest < Minitest::Test
       state_path,
       command("initialize", "evaluated_at" => evaluated_at, "budget" => budget(state_path: state_path))
     )
+  end
+
+  def test_state_snapshot_reads_verified_reservation_ledger_without_mutation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "active-lane-a", lane_id: "lane-a", tokens: 100)
+      reserve(state_path, id: "active-lane-b", lane_id: "lane-b", tokens: 200)
+      before = File.binread(state_path)
+
+      snapshot, stderr, status = run_state_snapshot(state_path)
+
+      assert status.success?, stderr
+      assert_equal before, File.binread(state_path)
+      assert_equal "batch-token-budget-state-snapshot", snapshot.fetch("type")
+      assert_equal "verified", snapshot.fetch("status")
+      assert_equal %w[active-lane-a active-lane-b],
+                   snapshot.fetch("active_reservations").map { |record| record.fetch("reservation_id") }.sort
+      assert_equal %w[active-lane-a active-lane-b],
+                   snapshot.fetch("reservation_decisions").map { |record| record.fetch("reservation_id") }.sort
+      assert_equal({ "lane-a" => 100, "lane-b" => 200 }, snapshot.fetch("lane_reserved_tokens"))
+    end
+  end
+
+  def test_state_snapshot_fails_closed_for_missing_or_corrupt_persisted_state
+    with_state do |state_path|
+      install_trusted_plan(state_path)
+
+      _snapshot, stderr, status = run_state_snapshot(state_path)
+
+      refute status.success?
+      assert_includes stderr, "state-required"
+
+      File.write(state_path, "{")
+      _snapshot, stderr, status = run_state_snapshot(state_path)
+
+      refute status.success?
+      assert_includes stderr, "corrupt-persisted-state"
+    end
+  end
+
+  def test_state_snapshot_rejects_a_caller_supplied_state_path
+    with_state do |state_path|
+      anchor = trusted_anchor_binding(state_path)
+      _stdout, stderr, status = Open3.capture3(
+        HELPER,
+        "--state-snapshot", "--state", state_path,
+        "--trusted-plan", anchor.fetch("path"),
+        "--trusted-plan-id", anchor.fetch("id"),
+        "--trusted-plan-digest", anchor.fetch("digest")
+      )
+
+      refute status.success?
+      assert_equal "state-snapshot-forbids-other-modes", JSON.parse(stderr).fetch("reason")
+    end
   end
 
   def reservation(id:, lane_id: "lane-a", tokens: 100, target_id: nil, kind: "model-turn", overrides: {})

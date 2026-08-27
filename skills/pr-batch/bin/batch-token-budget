@@ -2587,14 +2587,54 @@ module BatchTokenBudget
   ensure
     File.delete(temporary) if defined?(temporary) && File.exist?(temporary)
   end
+
+  def state_snapshot(state)
+    active_reservations = state.fetch("reservations").filter_map do |reservation_id, record|
+      next unless record["status"] == "active"
+
+      {
+        "reservation_id" => reservation_id,
+        "request_digest" => record.fetch("request_digest"),
+        "scope_id" => record.dig("request", "scope_id"),
+        "tokens" => record.fetch("reserved_tokens")
+      }
+    end
+    active_reservations.sort_by! { |record| record.fetch("reservation_id") }
+    reservation_decisions = state.fetch("reservation_decisions").map do |reservation_id, fence|
+      outcome = fence.fetch("outcomes").last
+      {
+        "reservation_id" => reservation_id,
+        "request_digest" => fence.fetch("request_digest"),
+        "decision_status" => outcome.fetch("status"),
+        "state_revision" => outcome.dig("receipt", "state_revision")
+      }
+    end
+    reservation_decisions.sort_by! { |record| record.fetch("reservation_id") }
+    {
+      "type" => "batch-token-budget-state-snapshot", "version" => 1, "status" => "verified",
+      "batch_id" => state.fetch("batch_id"), "state_revision" => state.fetch("revision"),
+      "last_evaluated_at" => state.fetch("last_evaluated_at"),
+      "trusted_plan_path" => state.dig("trusted_plan_binding", "path"),
+      "trusted_plan_id" => state.dig("trusted_plan_binding", "id"),
+      "trusted_plan_digest" => state.dig("trusted_plan_binding", "digest"),
+      "active_reservations" => active_reservations,
+      "reservation_decisions" => reservation_decisions,
+      "lane_reserved_tokens" => state.dig("scopes", "lanes").transform_values do |scope|
+        scope.fetch("reserved_tokens")
+      end
+    }
+  end
 end
 
 options = {}
 OptionParser.new do |parser|
-  parser.banner = "Usage: batch-token-budget [--verify-plan-only | --state PATH] --trusted-plan PATH " \
+  parser.banner = "Usage: batch-token-budget [--verify-plan-only | --state-snapshot | --state PATH] --trusted-plan PATH " \
                   "--trusted-plan-id ID --trusted-plan-digest SHA256 < command.json"
   parser.on("--verify-plan-only", "Verify and emit the canonical trusted plan without state mutation") do
     options[:verify_plan_only] = true
+  end
+  parser.on("--state-snapshot", "Verify and emit the coordinator-owned state snapshot without mutation") do
+    options[:state_snapshot] = true
   end
   parser.on("--state PATH", "Durable batch budget state path") { |value| options[:state_path] = value }
   parser.on("--trusted-plan PATH", "Immutable batch-token-budget v1 plan path") do |value|
@@ -2610,6 +2650,49 @@ unless options.values_at(:trusted_plan_path, :trusted_plan_id, :trusted_plan_dig
   warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input",
                      "reason" => "trusted-plan-required")
   exit 1
+end
+
+if options[:state_snapshot]
+  if options.key?(:state_path) || options[:verify_plan_only]
+    warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input",
+                       "reason" => "state-snapshot-forbids-other-modes")
+    exit 1
+  end
+
+  begin
+    trusted_budget = BatchTokenBudget.load_trusted_plan(
+      options.fetch(:trusted_plan_path), options.fetch(:trusted_plan_id), options.fetch(:trusted_plan_digest)
+    )
+    trusted_plan_binding = {
+      "path" => File.expand_path(options.fetch(:trusted_plan_path)),
+      "id" => options.fetch(:trusted_plan_id),
+      "digest" => options.fetch(:trusted_plan_digest)
+    }
+    state_path = File.expand_path(trusted_budget.fetch("state_path"))
+    if BatchTokenBudget.artifact_path_collision?(trusted_plan_binding.fetch("path"), state_path)
+      raise BatchTokenBudget::InvalidInput, "trusted-plan-state-path-collision"
+    end
+
+    File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
+      lock.flock(File::LOCK_SH)
+      raise BatchTokenBudget::InvalidInput, "state-required" unless File.file?(state_path)
+
+      state = begin
+        BatchTokenBudget.parse_json_strict(File.read(state_path))
+      rescue JSON::ParserError
+        raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state"
+      end
+      unless BatchTokenBudget.valid_state?(state, trusted_budget, trusted_plan_binding)
+        raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state"
+      end
+
+      puts JSON.generate(BatchTokenBudget.state_snapshot(state))
+    end
+    exit 0
+  rescue BatchTokenBudget::InvalidInput => e
+    warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => e.message)
+    exit 1
+  end
 end
 
 if options[:verify_plan_only]

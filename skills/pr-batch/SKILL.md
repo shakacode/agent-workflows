@@ -151,7 +151,8 @@ privacy contract. Bind every budget action to an explicit declared lane; a
 multi-target delegation uses the lane corresponding to its matched target, and
 multi-lane result arrays bind by canonical lane ID rather than position.
 At launch, admit only the selected nonempty lane set and enforce the recorded exception concurrency
-against its fresh lanes plus every lane with an already-active reservation in the verified budget totals. Return fresh and replayed lane IDs separately;
+against its fresh lanes plus every lane with an already-active reservation in the coordinator-owned budget state. Read that state through the production helper's locked, verified
+`--state-snapshot` mode, which derives `state_path` only from the trusted plan; bind every submitted reservation ID, request digest, decision status, and decision revision to its persisted ledger entry, and fail closed on missing, corrupt, or stale state. Return fresh and replayed lane IDs separately;
 only fresh lane IDs whose own stage-dependency record permits `worker_spawn` may consume it, while replayed lanes receive the
 idempotent record-only action. A mixed result never suppresses a fresh lane or
 re-authorizes a replayed lane.
@@ -619,7 +620,11 @@ Plans with no budget metadata retain legacy behavior.
 Reserve conservative headroom before every coordinator/worker model turn,
 spawn, retry, review wave, scheduled continuation, monitor wake, resume,
 replacement, escalation, or cross-task delegation. The locked helper prevents
-concurrent over-allocation and replays reservation/release ids safely. Exact
+concurrent over-allocation and replays reservation/release ids safely. For launch
+concurrency checks, use `--state-snapshot` with the trusted plan anchor and no
+caller-supplied state path or state digest. It verifies the state under the
+existing lock and emits only the plan binding, revision/time watermark, decision
+ledger bindings, active reservation bindings, and per-lane reserved totals. Exact
 existing reservation IDs replay their durable outcome before telemetry freshness
 is considered; changed payloads fail the digest fence. At most one reservation
 is active per accounting scope: same-scope nested work coalesces while different

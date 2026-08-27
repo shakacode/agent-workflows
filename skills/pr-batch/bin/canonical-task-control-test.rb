@@ -32,12 +32,17 @@ class CanonicalTaskControlTest < Minitest::Test
     @temporary_roots = []
     @trusted_plan_sequence = 0
     @usage_receipt_sequence = 0
+    @budget_state_paths = []
   end
 
   def teardown
     @trusted_plan_paths.each { |path| FileUtils.rm_f(path) }
     @usage_receipt_paths.each { |path| FileUtils.rm_f(path) }
     @temporary_roots.each { |path| FileUtils.rm_rf(path) }
+    @budget_state_paths.each do |path|
+      FileUtils.rm_f(path)
+      FileUtils.rm_f("#{path}.lock")
+    end
   end
 
   def test_launch_rejects_a_bare_task_without_composite_gate_evidence
@@ -360,7 +365,7 @@ class CanonicalTaskControlTest < Minitest::Test
   def test_multi_target_exception_rejects_arbitrary_approval_and_budget_assertions
     task = multi_target_task
     task["exception"]["human_approvals"][0] = "https://example.test/arbitrary-approval"
-    input = launch_input(task)
+    input = launch_input(task, real_budget_state: false)
 
     _result, stderr, status = run_helper(input)
 
@@ -369,7 +374,7 @@ class CanonicalTaskControlTest < Minitest::Test
 
     task = multi_target_task
     task["exception"]["budget_plan_anchor"]["trusted_plan_digest"] = "sha256:#{'0' * 64}"
-    _result, stderr, status = run_helper(launch_input(task))
+    _result, stderr, status = run_helper(launch_input(task, real_budget_state: false))
 
     refute status.success?, "mismatched hierarchical budget digest unexpectedly allowed multi-target launch"
     assert_includes stderr, "trusted-plan-digest-mismatch"
@@ -379,7 +384,7 @@ class CanonicalTaskControlTest < Minitest::Test
     task = multi_target_task
     FileUtils.rm_f(task.dig("exception", "budget_plan_anchor", "trusted_plan_path"))
 
-    _result, stderr, status = run_helper(launch_input(task))
+    _result, stderr, status = run_helper(launch_input(task, real_budget_state: false))
 
     refute status.success?, "nonexistent external budget plan unexpectedly allowed multi-target launch"
     assert_includes stderr, "trusted budget plan unreadable"
@@ -390,7 +395,7 @@ class CanonicalTaskControlTest < Minitest::Test
       task["exception"]["budget_plan"]
     )
 
-    _result, stderr, status = run_helper(launch_input(task))
+    _result, stderr, status = run_helper(launch_input(task, real_budget_state: false))
 
     refute status.success?, "caller-substituted embedded budget plan unexpectedly allowed multi-target launch"
     assert_includes stderr, "trusted budget plan rejected"
@@ -401,7 +406,7 @@ class CanonicalTaskControlTest < Minitest::Test
       outside.flush
       task["exception"]["budget_plan_anchor"]["trusted_plan_path"] = outside.path
 
-      _result, stderr, status = run_helper(launch_input(task))
+      _result, stderr, status = run_helper(launch_input(task, real_budget_state: false))
 
       refute status.success?, "outside-root substituted plan path unexpectedly allowed multi-target launch"
       assert_includes stderr, "inside trusted evidence root"
@@ -414,7 +419,7 @@ class CanonicalTaskControlTest < Minitest::Test
     @trusted_plan_paths << symlink_path
     task["exception"]["budget_plan_anchor"]["trusted_plan_path"] = symlink_path
 
-    _result, stderr, status = run_helper(launch_input(task))
+    _result, stderr, status = run_helper(launch_input(task, real_budget_state: false))
 
     refute status.success?, "symlink-substituted plan path unexpectedly allowed multi-target launch"
     assert_includes stderr, "may not be a symlink"
@@ -428,7 +433,7 @@ class CanonicalTaskControlTest < Minitest::Test
     File.write(plan_path, JSON.generate(canonicalize(plan)))
     task["exception"]["budget_plan_anchor"]["trusted_plan_digest"] = findings_digest(plan)
 
-    _result, stderr, status = run_helper(launch_input(task))
+    _result, stderr, status = run_helper(launch_input(task, real_budget_state: false))
 
     refute status.success?
     assert_includes stderr, "trusted-plan-state-path-collision"
@@ -457,7 +462,7 @@ class CanonicalTaskControlTest < Minitest::Test
         "trusted_plan_digest" => findings_digest(plan)
       }
 
-      _result, stderr, status = run_helper(launch_input(task))
+      _result, stderr, status = run_helper(launch_input(task, real_budget_state: false))
 
       refute status.success?, "#{name} external verifier contract unexpectedly allowed multi-target launch"
       assert_includes stderr, "trusted budget plan rejected", name
@@ -502,13 +507,20 @@ class CanonicalTaskControlTest < Minitest::Test
       action: "authorize_adhoc_task", role: "maintainer"
     )
 
-    result, stderr, status = run_helper(launch_input(task))
+    lane = task.fetch("lanes").first
+    input = base_input.merge(
+      "operation" => "budget_action", "task" => task,
+      "budget_action" => "retry", "budget_lane_id" => lane.fetch("id"),
+      "budget_gate" => budget_result(action: "retry", task: task, lane: lane)
+    )
+    result, stderr, status = run_helper(input)
 
     assert status.success?, stderr
     assert_equal "allow", result.fetch("verdict")
 
     task.delete("adhoc_override")
-    _result, stderr, status = run_helper(launch_input(task))
+    input = input.merge("task" => task)
+    _result, stderr, status = run_helper(input)
     refute status.success?
     assert_includes stderr, "ad-hoc target requires trusted task-specific override"
   end
@@ -1445,9 +1457,23 @@ class CanonicalTaskControlTest < Minitest::Test
   def test_replayed_admitted_launch_does_not_authorize_worker_spawn
     input = launch_input
     gate = input.fetch("budget_gate").first
-    gate["status"] = "replayed"
-    gate["decision_status"] = "admitted"
-    gate["state_revision"] += 1
+    decision = gate.fetch("decision_receipt")
+    plan = JSON.parse(File.read(decision.fetch("trusted_plan_path")))
+    anchor = {
+      "path" => decision.fetch("trusted_plan_path"),
+      "id" => decision.fetch("trusted_plan_id"),
+      "digest" => decision.fetch("trusted_plan_digest")
+    }
+    replayed, replay_stderr, replay_status = run_budget_helper(
+      BUDGET_HELPER, plan.fetch("state_path"), anchor,
+      budget_command(
+        "reserve", plan, { "reservation" => gate.dig("receipt", "request") },
+        evaluated_at: (Time.now.utc - 5).iso8601
+      )
+    )
+    assert replay_status.success?, replay_stderr
+    assert_equal "replayed", replayed.fetch("status")
+    input["budget_gate"] = [replayed]
     input["manifest"]["budgets"] = budget_manifest_binding(input.fetch("task"), results: input.fetch("budget_gate"))
 
     result, stderr, status = run_helper(input)
@@ -1748,12 +1774,6 @@ class CanonicalTaskControlTest < Minitest::Test
   def test_launch_counts_active_reservations_from_prior_decisions_against_exception_concurrency
     input = launch_input(multi_target_task)
     result = input.fetch("budget_gate").last
-    prior_lane = result.dig("totals", "lanes", "lane-402")
-    prior_lane["allocated_tokens"] = 10_000
-    prior_lane["reserved_tokens"] = 10_000
-    aggregate = result.dig("totals", "aggregate")
-    aggregate["allocated_tokens"] += 10_000
-    aggregate["reserved_tokens"] += 10_000
     input["budget_gate"] = [result]
     input["manifest"]["budgets"] = budget_manifest_binding(input.fetch("task"), results: [result])
 
@@ -1763,10 +1783,77 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "active launch lane count exceeds approved exception concurrency"
   end
 
+  def test_launch_rejects_caller_erasure_of_prior_active_lane_from_submitted_totals
+    task = multi_target_task
+    input = launch_input(task)
+    erased = canonicalize(input.fetch("budget_gate").last)
+    prior_lane = erased.dig("totals", "lanes", "lane-402")
+    %w[allocated_tokens consumed_tokens reserved_tokens released_tokens unattributed_tokens].each do |counter|
+      erased.dig("totals", "aggregate")[counter] -= prior_lane[counter]
+      prior_lane[counter] = 0
+    end
+    input["budget_gate"] = [erased]
+    input["manifest"]["budgets"] = budget_manifest_binding(task, results: [erased])
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "active launch lane count exceeds approved exception concurrency"
+  end
+
+  def test_launch_fails_closed_when_trusted_budget_state_is_missing_corrupt_or_stale
+    input = launch_input
+    decision = input.dig("budget_gate", 0, "decision_receipt")
+    state_path = JSON.parse(File.read(decision.fetch("trusted_plan_path"))).fetch("state_path")
+    FileUtils.rm_f(state_path)
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "trusted budget state rejected: state-required"
+
+    input = launch_input
+    decision = input.dig("budget_gate", 0, "decision_receipt")
+    state_path = JSON.parse(File.read(decision.fetch("trusted_plan_path"))).fetch("state_path")
+    File.write(state_path, "{")
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "trusted budget state rejected: corrupt-persisted-state"
+
+    input = launch_input
+    gate = input.fetch("budget_gate").first
+    gate["state_revision"] += 1
+    gate.fetch("decision_receipt")["state_revision"] += 1
+    input["manifest"]["budgets"] = budget_manifest_binding(input.fetch("task"), results: [gate])
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "trusted budget state snapshot is stale"
+  end
+
+  def test_launch_rejects_a_submitted_decision_absent_from_trusted_state
+    input = launch_input
+    gate = input.fetch("budget_gate").first
+    forged_id = "forged-worker-spawn-reservation"
+    gate.fetch("receipt")["reservation_id"] = forged_id
+    gate.fetch("decision_receipt")["reservation_id"] = forged_id
+    request = canonicalize(gate.dig("receipt", "request"))
+    request["id"] = forged_id
+    replace_budget_request!(gate, request)
+    input["manifest"]["budgets"] = budget_manifest_binding(input.fetch("task"), results: [gate])
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "launch budget decision is absent from trusted state"
+  end
+
   def test_launch_allows_one_lane_under_serial_multi_target_exception
-    input = launch_input(multi_target_task)
-    input["budget_gate"] = [input.fetch("budget_gate").first]
-    input["manifest"]["budgets"] = budget_manifest_binding(input.fetch("task"), results: input.fetch("budget_gate"))
+    task = multi_target_task
+    input = launch_input(task, launch_lanes: [task.fetch("lanes").first])
 
     result, stderr, status = run_helper(input)
 
@@ -1938,10 +2025,15 @@ class CanonicalTaskControlTest < Minitest::Test
 
   private
 
-  def launch_input(task = base_input.fetch("task"))
-    budget_results = task.fetch("lanes").map.with_index do |lane, index|
-      budget_result(action: "worker_spawn", task: task, lane: lane, revision: index + 2)
-    end
+  def launch_input(task = base_input.fetch("task"), launch_lanes: nil, real_budget_state: true)
+    lanes = launch_lanes || task.fetch("lanes")
+    budget_results = if real_budget_state
+                       real_launch_budget_results(task, lanes: lanes)
+                     else
+                       lanes.map.with_index do |lane, index|
+                         budget_result(action: "worker_spawn", task: task, lane: lane, revision: index + 2)
+                       end
+                     end
     base_input.merge(
       "task" => task,
       "policy" => {
@@ -1988,6 +2080,44 @@ class CanonicalTaskControlTest < Minitest::Test
         end
       end
     )
+  end
+
+  def real_launch_budget_results(task, lanes:)
+    if task.dig("exception", "budget_plan_anchor")
+      plan = task.dig("exception", "budget_plan")
+      plan_anchor = task.dig("exception", "budget_plan_anchor")
+      anchor = {
+        "path" => plan_anchor.fetch("trusted_plan_path"),
+        "id" => plan_anchor.fetch("trusted_plan_id"),
+        "digest" => plan_anchor.fetch("trusted_plan_digest")
+      }
+    else
+      plan = budget_plan(task)
+      path = install_budget_plan(plan, label: "launch-state")
+      anchor = { "path" => path, "id" => plan.fetch("batch_id"), "digest" => findings_digest(plan) }
+    end
+    state_path = plan.fetch("state_path")
+    @budget_state_paths << state_path unless @budget_state_paths.include?(state_path)
+    FileUtils.rm_f(state_path)
+    FileUtils.rm_f("#{state_path}.lock")
+    now = Time.now.utc
+    _initialized, stderr, status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command("initialize", plan, { "budget" => plan }, evaluated_at: (now - 60).iso8601)
+    )
+    raise "launch budget initialization failed: #{stderr}" unless status.success?
+
+    lanes.map.with_index do |lane, index|
+      request = budget_request(action: "worker_spawn", task: task, lane: lane)
+      request.fetch("telemetry")["observed_at"] = (now - 30 + index).iso8601
+      result, reserve_stderr, reserve_status = run_budget_helper(
+        BUDGET_HELPER, state_path, anchor,
+        budget_command("reserve", plan, { "reservation" => request }, evaluated_at: (now - 20 + index).iso8601)
+      )
+      raise "launch budget reservation failed: #{reserve_stderr}" unless reserve_status.success?
+
+      result
+    end
   end
 
   def base_input

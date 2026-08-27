@@ -516,8 +516,7 @@ to production `idle`, and its approval binds the exact selected repository-quali
 target. A terminal target returns its deterministic block before budget
 validation. Validate external plans through the production verify-only collision fence.
 Multi-lane result sets bind by canonical lane ID, never array position. A
-multi-target launch selects a nonempty lane set whose fresh lanes plus lanes with active reservations in verified
-budget totals do not exceed the approved exception concurrency. The decision returns fresh and replayed lane IDs
+multi-target launch selects a nonempty lane set whose fresh lanes plus lanes with active reservations in the verified coordinator-owned budget state do not exceed the approved exception concurrency. The production helper reads that state under its lock through a read-only snapshot mode derived solely from the trusted plan, and canonical control binds submitted reservation IDs, request digests, statuses, and decision revisions to the persisted ledger while rejecting missing, corrupt, or stale state. The decision returns fresh and replayed lane IDs
 separately, authorizes `worker_spawn` only when every fresh lane's own stage record permits it, and keeps mixed
 fresh/replay batches lane-scoped instead of collapsing the entire batch. An admitted replay authorizes only the idempotent
 `record_budget_replay` no-op; it never launches, wakes, retries, or repeats another

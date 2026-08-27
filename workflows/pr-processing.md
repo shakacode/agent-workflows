@@ -730,7 +730,7 @@ amounts, units, URLs, nested `UNKNOWN`, or `status: passed` objects are not budg
 authority. Multi-target actions may select any declared lane, but never default
 silently to the first lane. Bind multi-lane result sets by canonical lane ID,
 not array position. For a multi-target launch, the selected result set must be
-nonempty, and its fresh lanes plus lanes with active reservations in verified budget totals must not exceed
+nonempty, and its fresh lanes plus lanes with active reservations in verified coordinator-owned budget state must not exceed
 the exception's approved concurrency. Return fresh
 and replayed lane IDs separately; `worker_spawn` applies only when every fresh
 lane's own stage-dependency record permits it, while replayed lanes remain record-only. A mixed set must not suppress a
@@ -988,6 +988,14 @@ Compare the trusted budget's expanded `state_path` to CLI `--state` and reject
 plan/state artifact collisions before creating a state directory or lock.
 Initialization requires an exact duplicate projection of the externally trusted
 budget; null or omitted projections are invalid.
+For launch concurrency checks, invoke the production helper's read-only
+`--state-snapshot` mode with only the trusted plan anchor. It derives the state
+path from that plan, validates the persisted state under the existing lock, and
+emits a bounded ledger/totals snapshot without accepting a caller-supplied state
+path or digest. Bind every submitted reservation ID, request digest, decision
+status, and decision revision to that ledger; derive active lane IDs from active
+reservations and positive lane reserved totals, and reject missing, corrupt, or
+stale state.
 
 Before every coordinator or worker model turn, spawn, retry, review wave,
 scheduled continuation, monitor wake, resume, replacement, escalation, or
