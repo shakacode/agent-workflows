@@ -423,7 +423,42 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
-  def test_launch_target_must_match_its_file_touch_provenance_kind_repository_and_number
+  def test_verified_pr_map_for_issue_or_ad_hoc_origin_preserves_target_and_matches_repository
+    [issue_target(1), durable_ad_hoc_target].each do |target|
+      maps = { "lane-a" => touch_map(88, ["lib/lane-a.rb"]) }
+
+      result, stderr, status = evaluate(input_for(lanes: [lane(target: target)], maps: maps))
+
+      assert status.success?, "#{target.fetch('type')}: #{stderr}"
+      assert_equal "accepted", result.fetch("status")
+      assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+    end
+  end
+
+  def test_verified_pr_map_for_issue_or_ad_hoc_origin_rejects_another_repository
+    [issue_target(1), durable_ad_hoc_target].each do |target|
+      maps = { "lane-a" => touch_map(88, ["lib/lane-a.rb"], repository: "elsewhere/project") }
+
+      result, _stderr, status = evaluate(input_for(lanes: [lane(target: target)], maps: maps))
+
+      refute status.success?, target.fetch("type")
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "launch-target-file-touch-provenance-mismatch"
+    end
+  end
+
+  def test_existing_pr_target_requires_its_exact_verified_pr_map
+    target = pull_request_target(88)
+    maps = { "lane-a" => touch_map(89, ["lib/lane-a.rb"]) }
+
+    result, _stderr, status = evaluate(input_for(lanes: [lane(target: target)], maps: maps))
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "launch-target-file-touch-provenance-mismatch"
+  end
+
+  def test_launch_target_must_match_its_file_touch_provenance_repository
     target = issue_target(1, repository: "elsewhere/project")
     maps = { "lane-a" => touch_map(1, ["lib/lane-a.rb"]) }
 

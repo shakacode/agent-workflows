@@ -763,10 +763,10 @@ module BatchPlanPreflight
 
       map = maps[lane["id"]]
       matches =
-        if target["type"] == "github-pull-request"
-          valid_file_touch_map_shape?(map) && map["source"] == "verified" &&
-            map["repo"].casecmp?(target["repository"]) &&
-            map["pr"] == target["number"]
+        if map.is_a?(Hash) && map["source"] == "verified"
+          verified_pr_map_matches_target?(map, target)
+        elsif target["type"] == "github-pull-request"
+          false
         else
           planned_path_evidence_matches_target?(map, target)
         end
@@ -775,11 +775,18 @@ module BatchPlanPreflight
       violation(
         "launch-target-file-touch-provenance-mismatch",
         "$.file_touch_map.#{lane['id']}",
-        "Existing pull-request targets require the matching verified repository and PR map; " \
-        "issue and trusted ad-hoc targets require durable planned-path evidence.",
+        "Verified PR maps require the target repository and, for PR-origin targets, exact target PR; " \
+        "issue and trusted ad-hoc targets without an implementation PR require durable planned-path evidence.",
         lane_ids: [lane["id"]].compact
       )
     end
+  end
+
+  def verified_pr_map_matches_target?(map, target)
+    return false unless valid_file_touch_map_shape?(map) && map["source"] == "verified"
+    return false unless map["repo"].casecmp?(target["repository"])
+
+    target["type"] != "github-pull-request" || map["pr"] == target["number"]
   end
 
   def planned_path_evidence_matches_target?(map, target)
@@ -812,7 +819,7 @@ module BatchPlanPreflight
 
   def valid_planned_path_evidence_shape?(map)
     expected_keys = %w[evidence_ref paths renames source_kind type version]
-    return false unless map.keys.sort == expected_keys
+    return false unless map.is_a?(Hash) && map.keys.sort == expected_keys
     return false unless map["type"] == "planned-path-evidence" && map["version"] == 1
     return false unless PLANNED_PATH_SOURCE_KINDS.include?(map["source_kind"])
     return false unless durable_evidence_ref?(map["evidence_ref"], map["source_kind"])

@@ -702,7 +702,9 @@ repository and number through `issue://OWNER/REPO/N` or an exact lowercase-host
 `https://github.com/OWNER/REPO/issues/N` reference. Both reject userinfo and
 query, HTTPS requires port 443, `issue://` requires the exact canonical
 authority/path shape, and fragments remain permitted; other source kinds prove
-durability only and do not invent target identity. Supply separate ordinary durable
+durability only and do not invent target identity.
+After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
+Supply separate ordinary durable
 `lane_lifecycle_states`; inline completion, duplicates, unknown identities, and
 unsupported states are invalid. A rejected result launches nothing; an accepted
 result permits only `launch.eligible_lane_ids` and leaves

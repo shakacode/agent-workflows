@@ -514,6 +514,7 @@ the whole launch before dispatch.
      requires the exact canonical authority/path shape, and fragments remain
      permitted;
      other source kinds prove durability only and do not invent target identity.
+     After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
      A rejected result launches no
      worker; an accepted result permits only its eligible lanes and keeps its
      held lanes unlaunched.

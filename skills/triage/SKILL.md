@@ -225,7 +225,9 @@ precise blocker.
    in the lane envelope when one is present; otherwise use a durable
    coordinator-owned lane record or Lane Card that the coordinator can read.
    Every added path not yet reflected in its verified file-touch map must have
-   an active typed `expansion-path-reservation` before edit. When a lane is the
+   an active typed `expansion-path-reservation` before edit.
+   After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
+   When a lane is the
    sole active editor, the coordinator durably records the reservation,
    refreshes authoritative file-touch maps, lane lifecycle state, and
    active-lane claim and collision checks, and reruns `batch-plan-preflight`;

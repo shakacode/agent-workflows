@@ -248,6 +248,10 @@ CANONICAL_REPOSITORY_GRAMMAR_SOURCE_PIN =
   "parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`."
 REPOSITORY_NAME_PATTERN_SOURCE_PIN =
   'REPOSITORY_NAME_PATTERN = /\A[A-Za-z0-9._-]{1,100}\z/'
+IMPLEMENTATION_PR_FILE_TOUCH_REPLAY_SOURCE_PIN =
+  "After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical " \
+  "target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; " \
+  "its repository must match the target, while a PR-origin target also requires the exact target PR number."
 TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target: <repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
     Original: <prompt|n/a>; ovr: <n/a|name/authorizer/ref/task>
@@ -867,6 +871,12 @@ host_aware_batch_sizing_text_by_path.each do |path, text|
     CANONICAL_REPOSITORY_GRAMMAR_SOURCE_PIN,
     1,
     "#{path} canonical repository grammar"
+  )
+  require_occurrence_count(
+    text,
+    IMPLEMENTATION_PR_FILE_TOUCH_REPLAY_SOURCE_PIN,
+    1,
+    "#{path} implementation PR file-touch replay"
   )
 end
 
