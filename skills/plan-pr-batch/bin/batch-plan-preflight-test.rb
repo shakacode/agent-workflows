@@ -396,6 +396,16 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_launch_target_repository_accepts_dot_prefixed_repository_name
+    result, stderr, status = evaluate(
+      input_for(lanes: [lane(target: issue_target(1, repository: "OWNER/.github"))])
+    )
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+  end
+
   def test_launch_target_repository_rejects_invalid_or_unknown_components
     repositories = %w[owner:bad/repo owner/repo! UNKNOWN/repo owner/UNKNOWN]
 

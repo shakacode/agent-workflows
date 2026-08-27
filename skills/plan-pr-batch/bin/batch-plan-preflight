@@ -42,6 +42,7 @@ module BatchPlanPreflight
   GENERIC_PROVENANCE_VALUES = %w[fix-it pr-batch publish-pr].freeze
   AD_HOC_TARGET_PATTERN = /\Aadhoc:(\d{8})-([a-z0-9][a-z0-9_.-]*)\z/
   REPOSITORY_SEGMENT_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
+  REPOSITORY_NAME_PATTERN = /\A(?:[A-Za-z0-9]|\.[A-Za-z0-9])[A-Za-z0-9._-]*\z/
   PROVENANCE_IDENTITY_PATTERN = %r{\A[a-z][a-z0-9_.-]*:[A-Za-z0-9][A-Za-z0-9_.:@/-]*\z}
   EXTERNAL_SUPPORT = %w[supported unsupported UNKNOWN].freeze
   APPLICABILITY = %w[applicable not-applicable].freeze
@@ -459,10 +460,13 @@ module BatchPlanPreflight
   def canonical_repository?(value)
     return false unless nonempty_identity?(value)
 
-    segments = value.split("/", -1)
-    segments.length == 2 && segments.all? do |segment|
-      segment.match?(REPOSITORY_SEGMENT_PATTERN) && !segment.casecmp?("UNKNOWN")
-    end
+    owner, repository, extra = value.split("/", -1)
+    return false unless owner && repository && !extra
+
+    owner.match?(REPOSITORY_SEGMENT_PATTERN) &&
+      repository.match?(REPOSITORY_NAME_PATTERN) &&
+      !owner.casecmp?("UNKNOWN") &&
+      !repository.casecmp?("UNKNOWN")
   end
 
   def validate_lane_lifecycle_states(states, plan, stage_dependency_plan_id)
