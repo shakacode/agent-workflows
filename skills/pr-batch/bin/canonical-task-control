@@ -3,6 +3,7 @@
 
 require "json"
 require "digest"
+require "date"
 require "open3"
 require "rbconfig"
 require "time"
@@ -28,6 +29,8 @@ module CanonicalTaskControl
   BATCH_TOKEN_BUDGET_HELPER = File.expand_path("batch-token-budget", __dir__)
   PRESERVED_GATES = %w[security review qa exact-head ownership merge].freeze
   REQUIRED_CAPABILITIES = %w[hierarchical_token_budgets replay_safe_usage_receipts].freeze
+  CREDIT_EQUIVALENTS_DISCLAIMER =
+    "Analytical credit equivalents only; this is not a bill, invoice, charge, or authoritative provider cost."
   PILOT_DEPENDENCY_CAPABILITIES = %w[evaluation_runner execution_provenance replay_safe_usage_receipts].freeze
   FRESH_EVIDENCE_CONTRACTS = %w[
     authority-evidence adhoc-authority-evidence budget-evidence typed-gate-evidence
@@ -265,14 +268,17 @@ module CanonicalTaskControl
       allowed_actions = launch.fetch("permissions")
       launch_lane_ids = launch.fetch("launch_lane_ids")
       replayed_lane_ids = launch.fetch("replayed_lane_ids")
+      fresh_lanes_permit_spawn = launch_lane_ids.all? do |lane_id|
+        launch.fetch("permissions_by_lane").fetch(canonical_identity(lane_id)).include?("worker_spawn")
+      end
       unless launch.fetch("all_gates_passed") && launch.fetch("stage_result") == "passed" &&
-             allowed_actions.include?("worker_spawn") &&
+             fresh_lanes_permit_spawn &&
              capabilities["hierarchical_token_budgets"] == "available" && launch_lane_ids.any?
         verdict = "block"
         allowed_actions -= ["worker_spawn"]
         blockers << "typed_gate_pending_or_blocked" unless launch.fetch("all_gates_passed")
         blockers << "stage_dependency_pending_or_worker_spawn_not_permitted" unless launch.fetch("stage_result") == "passed" &&
-                                                                                    launch.fetch("permissions").include?("worker_spawn")
+                                                                                    fresh_lanes_permit_spawn
         if capabilities["hierarchical_token_budgets"] != "available"
           blockers << "hierarchical_token_budget_evidence_UNKNOWN"
           unknowns << "budget_evidence"
@@ -296,26 +302,10 @@ module CanonicalTaskControl
         input.fetch("delegation"), task, lifecycle["context_threshold"], context: context
       )
       unless delegation_decision.fetch("blockers").include?("target_terminal")
-        budget_outcome = validate_budget_gate!(
-          input.fetch("budget_gate"), task: task, lane: delegation_lane, action: "delegation", context: context,
-                                      delegation: input.fetch("delegation")
+        delegation_decision = apply_delegation_budget_gate!(
+          delegation_decision, input, task: task, lane: delegation_lane, context: context,
+                                      budget_available: capabilities["hierarchical_token_budgets"] == "available"
         )
-        budget_status = budget_outcome.fetch("status")
-        target_active = input.dig("delegation", "target_state") == "active"
-        if (target_active && budget_status != "coalesced") || (!target_active && budget_status == "coalesced")
-          raise InvalidInput, "delegation target state contradicts batch-token-budget decision"
-        end
-
-        if budget_outcome.fetch("replayed")
-          delegation_decision = delegation_decision.merge(
-            "allowed_actions" => ["record_budget_replay"], "wake_target" => false
-          )
-        elsif budget_status == "blocked"
-          delegation_decision = {
-            "verdict" => "block", "allowed_actions" => [], "wake_target" => false,
-            "blockers" => ["budget_admission_blocked"], "unknowns" => []
-          }
-        end
       end
       verdict = delegation_decision.fetch("verdict")
       allowed_actions = delegation_decision.fetch("allowed_actions")
@@ -596,7 +586,10 @@ module CanonicalTaskControl
     {
       "stage_result" => stage_records.first["result"],
       "all_gates_passed" => records.all? { |record| record["result"] == "passed" },
-      "permissions" => stage_records.flat_map { |record| record["permissions"] }.uniq.sort
+      "permissions" => stage_records.flat_map { |record| record["permissions"] }.uniq.sort,
+      "permissions_by_lane" => stage_records.to_h do |record|
+        [canonical_identity(record.fetch("lane_id")), record.fetch("permissions")]
+      end
     }
   end
 
@@ -1294,6 +1287,35 @@ module CanonicalTaskControl
     identity
   end
 
+  def apply_delegation_budget_gate!(decision, input, task:, lane:, context:, budget_available:)
+    unless budget_available
+      return decision unless decision.fetch("wake_target")
+
+      return {
+        "verdict" => "block", "allowed_actions" => [], "wake_target" => false,
+        "blockers" => ["hierarchical_token_budget_evidence_UNKNOWN"], "unknowns" => ["budget_evidence"]
+      }
+    end
+
+    outcome = validate_budget_gate!(
+      input.fetch("budget_gate"), task: task, lane: lane, action: "delegation", context: context,
+                                  delegation: input.fetch("delegation")
+    )
+    budget_status = outcome.fetch("status")
+    target_active = input.dig("delegation", "target_state") == "active"
+    if (target_active && budget_status != "coalesced") || (!target_active && budget_status == "coalesced")
+      raise InvalidInput, "delegation target state contradicts batch-token-budget decision"
+    end
+
+    return decision.merge("allowed_actions" => ["record_budget_replay"], "wake_target" => false) if outcome.fetch("replayed")
+    return decision unless budget_status == "blocked"
+
+    {
+      "verdict" => "block", "allowed_actions" => [], "wake_target" => false,
+      "blockers" => ["budget_admission_blocked"], "unknowns" => []
+    }
+  end
+
   def validate_foreign_target_packet!(packet, task)
     require_exact_keys!(packet, %w[
                           contract version source recipient evidence_kind summary evidence_ref evidence_digest disposition
@@ -1606,7 +1628,7 @@ module CanonicalTaskControl
 
     evidence = receipt["evidence"]
     unknowns = evidence.is_a?(Hash) && evidence["status"] == "complete" && evidence["unknown"] == [] ? [] : ["usage_telemetry"]
-    credits = credit_total(receipt["credit_equivalents"])
+    credits = credit_total(receipt["credit_equivalents"], receipt)
     unknowns << "credit_equivalents" if credits == "UNKNOWN"
     { "tokens" => batch_tokens, "turns" => batch_turns, "credits" => credits, "unknowns" => unknowns.uniq.sort }
   end
@@ -1728,15 +1750,100 @@ module CanonicalTaskControl
       (tokens.zero? ? turns.zero? : turns.between?(1, tokens))
   end
 
-  def credit_total(credit_equivalents)
-    return "UNKNOWN" unless credit_equivalents.is_a?(Hash) && credit_equivalents["status"] == "available"
+  def credit_total(credit_equivalents, receipt)
+    return "UNKNOWN" if credit_equivalents.nil?
 
-    values = credit_equivalents["model_values"]
-    return "UNKNOWN" unless values.is_a?(Array) && !values.empty? && values.all? do |value|
-      value.is_a?(Hash) && value["status"] == "available" && nonnegative_number?(value["credits"])
+    required_keys = %w[status source effective_date model_values disclaimer]
+    unless credit_equivalents.is_a?(Hash) && credit_equivalents.keys.sort == required_keys.sort
+      raise InvalidInput, "usage receipt credit equivalents keys are invalid"
     end
 
-    values.sum { |value| value["credits"] }
+    unless %w[available UNKNOWN].include?(credit_equivalents["status"]) &&
+           known_string?(credit_equivalents["source"]) &&
+           credit_equivalents["disclaimer"] == CREDIT_EQUIVALENTS_DISCLAIMER
+      raise InvalidInput, "usage receipt credit equivalents metadata is invalid"
+    end
+
+    effective_date = credit_equivalents["effective_date"]
+    unless effective_date.is_a?(String) && effective_date.match?(/\A\d{4}-\d{2}-\d{2}\z/) &&
+           Date.iso8601(effective_date).iso8601 == effective_date
+      raise InvalidInput, "usage receipt credit equivalents effective date is invalid"
+    end
+
+    values = credit_equivalents["model_values"]
+    unless values.is_a?(Array) && !values.empty?
+      raise InvalidInput, "usage receipt credit equivalents model values are invalid"
+    end
+
+    values.each do |value|
+      raise InvalidInput, "usage receipt credit equivalents model value is invalid" unless value.is_a?(Hash)
+
+      case value["status"]
+      when "available"
+        unless value.keys.sort == %w[host model status credits].sort
+          raise InvalidInput, "usage receipt credit equivalents available model keys are invalid"
+        end
+
+        credits = value["credits"]
+        unless nonnegative_number?(credits) && (!credits.respond_to?(:finite?) || credits.finite?)
+          raise InvalidInput, "usage receipt credit equivalents credits are invalid"
+        end
+      when "UNKNOWN"
+        unless value.keys.sort == %w[host model status code].sort
+          raise InvalidInput, "usage receipt credit equivalents unknown model keys are invalid"
+        end
+        unless %w[rate_mapping_missing route_identity_unknown usage_unknown].include?(value["code"])
+          raise InvalidInput, "usage receipt credit equivalents unknown code is invalid"
+        end
+      else
+        raise InvalidInput, "usage receipt credit equivalents model status is invalid"
+      end
+      unless [value["host"], value["model"]].all? { |identity| identity.is_a?(String) && !identity.strip.empty? }
+        raise InvalidInput, "usage receipt credit equivalents route identity is invalid"
+      end
+    end
+
+    identities = values.map { |value| [canonical_identity(value["host"]), canonical_identity(value["model"])] }
+    unless identities.uniq.length == values.length
+      raise InvalidInput, "usage receipt credit equivalents routes must be unique"
+    end
+
+    expected_routes = credit_equivalent_routes(receipt)
+    unless identities.sort == expected_routes.sort
+      raise InvalidInput, "usage receipt credit equivalents routes do not match observed routes"
+    end
+    if credit_equivalents["status"] == "available" && values.any? { |value| value["status"] != "available" }
+      raise InvalidInput, "available credit equivalents must contain only available model values"
+    end
+
+    return "UNKNOWN" unless credit_equivalents["status"] == "available"
+
+    values.sum { |value| value.fetch("credits") }
+  rescue ArgumentError
+    raise InvalidInput, "usage receipt credit equivalents effective date is invalid"
+  end
+
+  def credit_equivalent_routes(receipt)
+    scopes = [receipt["coordinator"]]
+    receipt.fetch("lanes").each do |lane|
+      scopes << lane
+      scopes.concat(lane.fetch("workers"))
+    end
+    routes = scopes.flat_map do |scope|
+      observed = scope["observed_routes"]
+      raise InvalidInput, "usage receipt observed routes are invalid" unless observed.is_a?(Array)
+
+      observed.map do |route|
+        unless route.is_a?(Hash) && [route["host"], route["model"]].all? do |identity|
+          identity.is_a?(String) && !identity.strip.empty?
+        end
+          raise InvalidInput, "usage receipt observed route identity is invalid"
+        end
+
+        [canonical_identity(route["host"]), canonical_identity(route["model"])]
+      end
+    end
+    routes.uniq
   end
 
   def validate_manifest!(manifest, task:, reject_unknown:)

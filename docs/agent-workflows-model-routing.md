@@ -466,7 +466,8 @@ rollback. The matched
 pilot has at least ten representative pairs with distinct exact task/batch
 identities, matching task class/context facts, and verified replay-safe v2 usage
 artifacts bound to reconciled hierarchical budget results. It derives total tokens,
-contributing turns, and optional rate-card credit equivalents independently: missing credits keep
+contributing turns, and optional production-shaped rate-card credit equivalents independently. Credit rows
+must carry the producer metadata and disclaimer exactly once per observed host/model route; missing credits keep
 only the credit reduction `UNKNOWN` while complete token evidence still reports token reduction. Any arm with incomplete
 usage telemetry keeps the token reduction `UNKNOWN`, even when its known total-token
 counter remains acceptable for production accounting. It reports elapsed time, human
@@ -517,7 +518,7 @@ validation. Validate external plans through the production verify-only collision
 Multi-lane result sets bind by canonical lane ID, never array position. A
 multi-target launch selects a nonempty lane set no larger than the approved
 exception concurrency. The decision returns fresh and replayed lane IDs
-separately, authorizes `worker_spawn` only for fresh lanes, and keeps mixed
+separately, authorizes `worker_spawn` only when every fresh lane's own stage record permits it, and keeps mixed
 fresh/replay batches lane-scoped instead of collapsing the entire batch. An admitted replay authorizes only the idempotent
 `record_budget_replay` no-op; it never launches, wakes, retries, or repeats another
 side effect, and a replayed launch exposes no held-local actions. Record-only

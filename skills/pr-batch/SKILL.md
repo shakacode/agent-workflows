@@ -142,7 +142,8 @@ execution through a separate operation that consumes the exact
 hierarchical budget helper's matching reconciled `batch-token-budget-result` v1. Recompute token and
 contributing-turn equations and use its no-double-count charge backs. Missing
 or `UNKNOWN` replay-safe usage evidence blocks reconciliation, not a separately admitted
-delegation. Unavailable hierarchical-token-budget evidence likewise blocks context-amplifying actions
+delegation. Unavailable hierarchical-token-budget evidence likewise blocks launch and delegation wakes as
+context-amplifying actions
 while preserving independently authorized held-local stage permissions.
 Securely read each referenced receipt beneath the trusted root with a 1 MiB
 bound, require canonical content/digest equality, and enforce its metadata-only
@@ -151,7 +152,7 @@ multi-target delegation uses the lane corresponding to its matched target, and
 multi-lane result arrays bind by canonical lane ID rather than position.
 At launch, admit only the selected nonempty lane set and enforce its size against
 the recorded exception concurrency. Return fresh and replayed lane IDs separately;
-only fresh lane IDs may consume `worker_spawn`, while replayed lanes receive the
+only fresh lane IDs whose own stage-dependency record permits `worker_spawn` may consume it, while replayed lanes receive the
 idempotent record-only action. A mixed result never suppresses a fresh lane or
 re-authorizes a replayed lane.
 Reject nested `UNKNOWN`, malformed decision/checkpoint fields, or normalized

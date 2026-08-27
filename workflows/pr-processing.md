@@ -731,8 +731,8 @@ authority. Multi-target actions may select any declared lane, but never default
 silently to the first lane. Bind multi-lane result sets by canonical lane ID,
 not array position. For a multi-target launch, the selected result set must be
 nonempty and no larger than the exception's approved concurrency. Return fresh
-and replayed lane IDs separately; `worker_spawn` applies only to the fresh lane
-IDs, while replayed lanes remain record-only. A mixed set must not suppress a
+and replayed lane IDs separately; `worker_spawn` applies only when every fresh
+lane's own stage-dependency record permits it, while replayed lanes remain record-only. A mixed set must not suppress a
 fresh admission or repeat a replayed side effect.
 Before waking another task, also bind source and target task plus
 repository-qualified identities; classify target state as active, idle, paused,
@@ -776,8 +776,8 @@ the physical total for a charge-back. Require the production source pair,
 bounded full-history window, nonnegative accounting, and each lane's exact
 unattributed-plus-worker token and turn equations. Missing, `UNKNOWN`, unbalanced, rebound,
 or digest-mismatched evidence blocks reconciliation. Unavailable replay-safe
-usage receipts report `usage_telemetry` as `UNKNOWN`; unavailable hierarchical-token-budget evidence blocks context-amplifying
-actions without erasing independently permitted held-local stage work.
+usage receipts report `usage_telemetry` as `UNKNOWN`; unavailable hierarchical-token-budget evidence blocks launch and
+delegation wakes as context-amplifying actions without erasing independently permitted held-local stage work.
 Each hierarchical-budget reconciliation receipt must be completed and bind the exact usage
 window, canonical digest/reference, a unique production revision ending at the
 result revision, nonnegative interval/actual/released/overshoot counters, and
@@ -815,7 +815,8 @@ pair/task/batch identities and bind each arm to an exact
 `batch-usage-receipt-v2` plus its digest, absolute artifact reference, and the
 matching reconciled `batch-token-budget-result` v1; relabelled or reused
 task/batch identities or receipt references fail closed. Derive total tokens,
-contributing turns, and optional rate-card credit equivalents from the receipts.
+contributing turns, and optional rate-card credit equivalents from the receipts. Before summing credits,
+require the producer's exact metadata and disclaimer plus one unique row for every observed host/model route.
 Compute complete token evidence independently from optional credit evidence, so
 missing credits keep only the credit reduction `UNKNOWN`. Any arm with incomplete
 usage telemetry keeps token reduction `UNKNOWN`, even when its known total-token

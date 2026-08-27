@@ -285,6 +285,40 @@ class CanonicalTaskControlTest < Minitest::Test
     assert result.fetch("wake_target")
   end
 
+  def test_delegation_blocks_wake_when_hierarchical_token_budgets_are_unavailable
+    input = delegation_input(
+      target_state: "idle", context: 40_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    bundle = trusted_bundle_for(input)
+    bundle["capabilities"]["hierarchical_token_budgets"] = "unavailable"
+
+    result, stderr, status = run_helper(input, trusted_bundle: bundle)
+
+    assert status.success?, stderr
+    assert_equal "block", result.fetch("verdict")
+    assert_empty result.fetch("allowed_actions")
+    refute result.fetch("wake_target")
+    assert_includes result.fetch("blockers"), "hierarchical_token_budget_evidence_UNKNOWN"
+    assert_includes result.fetch("unknowns"), "budget_evidence"
+
+    coalesced = delegation_input(
+      target_state: "active", context: 40_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    coalesced["delegation"]["queued_messages"] = 2
+    coalesced["delegation"]["coalesced"] = true
+    bundle = trusted_bundle_for(coalesced)
+    bundle["capabilities"]["hierarchical_token_budgets"] = "unavailable"
+
+    result, stderr, status = run_helper(coalesced, trusted_bundle: bundle)
+
+    assert status.success?, stderr
+    assert_equal "coalesce", result.fetch("verdict")
+    assert_equal ["queue_coalesced_message"], result.fetch("allowed_actions")
+    refute result.fetch("wake_target")
+  end
+
   def test_old_nested_evidence_fails_even_inside_a_current_trusted_bundle
     input = launch_input
     evidence = input["policy"]["evidence"].first
@@ -1130,6 +1164,48 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes result.fetch("unknowns"), "credit_equivalents"
   end
 
+  def test_pilot_rejects_credit_equivalents_without_production_metadata
+    pilot = pilot_input
+    arm = pilot.fetch("pairs").first.fetch("ordinary")
+    values = arm.dig("usage_receipt", "credit_equivalents", "model_values")
+    arm.fetch("usage_receipt")["credit_equivalents"] = {
+      "status" => "available", "model_values" => values
+    }
+    refresh_usage_artifact!(arm)
+
+    _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    refute status.success?
+    assert_includes stderr, "credit equivalents"
+  end
+
+  def test_pilot_rejects_nonproduction_credit_equivalent_metadata_and_routes
+    mutations = {
+      "duplicate-route" => lambda do |credits|
+        credits.fetch("model_values") << canonicalize(credits.fetch("model_values").first)
+      end,
+      "invented-route" => lambda do |credits|
+        credits.dig("model_values", 0)["model"] = "invented-model"
+      end,
+      "empty-source" => ->(credits) { credits["source"] = " " },
+      "invalid-effective-date" => ->(credits) { credits["effective_date"] = "2026-02-30" },
+      "nonproduction-disclaimer" => ->(credits) { credits["disclaimer"] = "Estimated equivalent; not a bill." },
+      "extra-field" => ->(credits) { credits["caller_note"] = "trusted" }
+    }
+
+    mutations.each do |name, mutate|
+      pilot = pilot_input
+      arm = pilot.fetch("pairs").first.fetch("ordinary")
+      mutate.call(arm.dig("usage_receipt", "credit_equivalents"))
+      refresh_usage_artifact!(arm)
+
+      _result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+      refute status.success?, "#{name} credit equivalents unexpectedly passed"
+      assert_includes stderr, "credit equivalents", name
+    end
+  end
+
   def test_pilot_with_unavailable_replay_safe_usage_receipts_is_publishable_unknown_not_false_promotion
     input = base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot_input)
     bundle = trusted_bundle_for(input)
@@ -1618,6 +1694,22 @@ class CanonicalTaskControlTest < Minitest::Test
     assert status.success?, stderr
     assert_equal "allow", result.fetch("verdict")
     assert_includes result.fetch("allowed_actions"), "worker_spawn"
+  end
+
+  def test_launch_requires_worker_spawn_permission_for_every_fresh_lane
+    input = launch_input(multi_target_task)
+    input["task"]["exception"]["concurrency"] = 2
+    stage = input.fetch("typed_gates").find do |record|
+      record["gate"] == "stage_dependency" && record["lane_id"] == "lane-402"
+    end
+    stage["permissions"] = %w[branch_worktree_create patch_edit commit]
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "block", result.fetch("verdict")
+    refute_includes result.fetch("allowed_actions"), "worker_spawn"
+    assert_includes result.fetch("blockers"), "stage_dependency_pending_or_worker_spawn_not_permitted"
   end
 
   def test_launch_enforces_multi_target_exception_concurrency
@@ -2328,7 +2420,8 @@ class CanonicalTaskControlTest < Minitest::Test
         "status" => "available", "source" => "https://example.test/rates/2026-08-01",
         "effective_date" => "2026-08-01",
         "model_values" => [{ "host" => "codex", "model" => "gpt-5.6-sol", "status" => "available", "credits" => credits }],
-        "disclaimer" => "Estimated equivalent; not a bill."
+        "disclaimer" =>
+          "Analytical credit equivalents only; this is not a bill, invoice, charge, or authoritative provider cost."
       }
     }
   end
