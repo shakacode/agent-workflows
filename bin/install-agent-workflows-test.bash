@@ -877,7 +877,7 @@ RUBY
   set -e
 
   assert_file "$marker"
-  [[ "$status" -eq 1 ]] || fail "post-preflight metadata change exited $status: $output"
+  [[ "$status" -eq 65 ]] || fail "post-preflight metadata change exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
   [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
     fail "post-preflight metadata change mutated a managed file"
@@ -977,7 +977,7 @@ RUBY
   set -e
 
   assert_file "$marker"
-  [[ "$status" -eq 1 ]] || fail "bound metadata ownership race exited $status: $output"
+  [[ "$status" -eq 65 ]] || fail "bound metadata ownership race exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
   [[ "$(readlink "$target/bin/agent_doctor")" = "$outside/bin/agent_doctor" ]] || \
     fail "changed live metadata granted ownership of an unmanaged doctor symlink"
@@ -1371,7 +1371,7 @@ RUBY
   set -e
 
   assert_file "$marker"
-  [[ "$status" -eq 1 ]] || fail "replaced prepared metadata exited $status: $output"
+  [[ "$status" -eq 65 ]] || fail "replaced prepared metadata exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
   [[ ! -e "$metadata" ]] || fail "replaced prepared metadata was committed"
   assert_file "$target/skills/pr-batch/SKILL.md"
@@ -1416,6 +1416,8 @@ RUBY
 
   [[ "$status" -ne 0 ]] || fail "missing metadata commit capability unexpectedly succeeded"
   assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $target/.agent-workflows-install.lock"
+  assert_contains "$output" "move the entire preserved path aside"
   [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
     fail "missing metadata commit capability mutated a managed file"
   [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
@@ -3423,6 +3425,27 @@ RUBY
   grep -Rql "foreign normal guard replacement" "$lock" || \
     fail "normal guard cleanup deleted foreign replacement"
   assert_file "$guard.attested"
+}
+
+test_successful_install_reports_retained_lock_cleanup_pending() {
+  local tmp target lock injection output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; lock="$target/.agent-workflows-install.lock"
+  injection="$tmp/fail-lock-detach.rb"
+  cat > "$injection" <<'RUBY'
+module BoundDirCleanupHook
+  def self.call(path)
+    raise Errno::EIO if path.end_with?(".agent-workflows-install.lock")
+  end
+end
+RUBY
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "lock cleanup failure reported successful install"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $lock"
+  assert_contains "$output" "move the entire preserved path aside"
+  assert_file "$target/.agent-workflows-install.json"
+  [[ -d "$lock" ]] || fail "lock cleanup failure did not preserve lock"
 }
 
 test_restore_post_attestation_cleanup_preserves_source_replacement() {
@@ -6703,6 +6726,7 @@ main() {
     test_metadata_partial_prebind_failure_cleans_guard_and_allows_retry
     test_metadata_prebind_cleanup_preserves_replacement_guard
     test_normal_guard_cleanup_preserves_post_attestation_replacement
+    test_successful_install_reports_retained_lock_cleanup_pending
     test_metadata_commit_link_capability_failure_stops_before_managed_mutation
     test_metadata_commit_capability_cleanup_failure_stops_before_managed_mutation
     test_atomic_rename_capability_failure_stops_before_recovery_mutation

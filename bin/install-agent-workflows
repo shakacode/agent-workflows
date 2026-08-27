@@ -2194,6 +2194,12 @@ remove_bound_empty_directory() {
   ' "$path" "$expected" 2>/dev/null
 }
 
+report_metadata_cleanup_pending() {
+  local path="$1"
+  echo "METADATA_CLEANUP_PENDING: preserved $path because identity-safe cleanup could not be completed." >&2
+  echo "Verify the preserved path and its parent against trusted state; move the entire preserved path aside only after retaining evidence, then retry." >&2
+}
+
 recovery_path_identity() {
   ruby -e '
     path = ARGV.fetch(0)
@@ -3183,10 +3189,16 @@ release_install_lock() {
     status=65
   fi
   if [[ -n "${install_metadata_snapshot_attestation:-}" ]]; then
-    remove_attested_metadata_file "$install_metadata_snapshot_path" \
-      "$install_metadata_snapshot_attestation" 2>/dev/null || status=1
+    if ! remove_attested_metadata_file "$install_metadata_snapshot_path" \
+      "$install_metadata_snapshot_attestation" 2>/dev/null; then
+      report_metadata_cleanup_pending "$install_metadata_snapshot_path"
+      [[ "$status" -ne 0 ]] || status=1
+    fi
   fi
-  remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null || true
+  if ! remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null; then
+    report_metadata_cleanup_pending "$install_lock"
+    [[ "$status" -ne 0 ]] || status=1
+  fi
   exit "$status"
 }
 trap release_install_lock EXIT
@@ -3348,17 +3360,29 @@ release_install_transaction() {
   fi
   if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" &&
         -n "${prepared_metadata_attestation:-}" ]]; then
-    remove_attested_metadata_file "$target/$metadata_name.tmp" \
-      "$prepared_metadata_attestation" 2>/dev/null || status=1
+    if ! remove_attested_metadata_file "$target/$metadata_name.tmp" \
+      "$prepared_metadata_attestation" 2>/dev/null; then
+      report_metadata_cleanup_pending "$target/$metadata_name.tmp"
+      [[ "$status" -ne 0 ]] || status=1
+    fi
   fi
   if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" ]]; then
-    remove_install_metadata_rollback_guard || status=1
+    if ! remove_install_metadata_rollback_guard; then
+      report_metadata_cleanup_pending "$install_lock/metadata-commit-old.guard"
+      [[ "$status" -ne 0 ]] || status=1
+    fi
   fi
   if [[ -n "${install_metadata_snapshot_attestation:-}" ]]; then
-    remove_attested_metadata_file "$install_metadata_snapshot_path" \
-      "$install_metadata_snapshot_attestation" 2>/dev/null || status=1
+    if ! remove_attested_metadata_file "$install_metadata_snapshot_path" \
+      "$install_metadata_snapshot_attestation" 2>/dev/null; then
+      report_metadata_cleanup_pending "$install_metadata_snapshot_path"
+      [[ "$status" -ne 0 ]] || status=1
+    fi
   fi
-  remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null || true
+  if ! remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null; then
+    report_metadata_cleanup_pending "$install_lock"
+    [[ "$status" -ne 0 ]] || status=1
+  fi
   exit "$status"
 }
 trap release_install_transaction EXIT
