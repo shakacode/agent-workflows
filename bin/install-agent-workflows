@@ -1820,7 +1820,7 @@ preflight_metadata_commit_capability() {
     module AtomicMetadataRenameProbe
       extend Fiddle::Importer
       dlload Fiddle.dlopen(nil)
-      extern "int openat(int, const char *, int)"
+      extern "int openat(int, const char *, int, unsigned int)"
       extern "int linkat(int, const char *, int, const char *, int)"
       extern "int unlinkat(int, const char *, int)"
       if RUBY_PLATFORM.include?("darwin")
@@ -1852,8 +1852,6 @@ preflight_metadata_commit_capability() {
     first_name = "metadata-rename-probe-a"
     second_name = "metadata-rename-probe-b"
     link_name = "metadata-rename-probe-link"
-    first_path = File.join(lock, first_name)
-    second_path = File.join(lock, second_name)
     directory = nil
     ios = []
     cleanup_failed = false
@@ -1861,19 +1859,31 @@ preflight_metadata_commit_capability() {
       fd = AtomicMetadataRenameProbe.openat(
         directory.fileno,
         name,
-        File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW,
+        0
       )
       raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
       io = File.for_fd(fd)
       ios << io
       io
     end
-    create = lambda do |path, content|
-      file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
-      file.write(content)
-      file.flush
-      file.fsync
-      file.close
+    create = lambda do |name, content|
+      fd = AtomicMetadataRenameProbe.openat(
+        directory.fileno,
+        name,
+        File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+        0o600
+      )
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      file = File.for_fd(fd)
+      begin
+        file.chmod(0o600)
+        file.write(content)
+        file.flush
+        file.fsync
+      ensure
+        file.close
+      end
     end
 
     begin
@@ -1885,13 +1895,14 @@ preflight_metadata_commit_capability() {
       abort unless directory_stat.directory? &&
                    directory_stat.dev == lock_path_stat.dev && directory_stat.ino == lock_path_stat.ino
 
-      create.call(first_path, "first")
+      MetadataRenameProbeHook.call(:after_directory_attestation) if defined?(MetadataRenameProbeHook)
+      create.call(first_name, "first")
       abort unless AtomicMetadataRenameProbe.no_replace(
         directory.fileno,
         first_name,
         second_name
       ) == 0
-      create.call(first_path, "second")
+      create.call(first_name, "second")
       abort unless AtomicMetadataRenameProbe.exchange(
         directory.fileno,
         first_name,
@@ -1933,7 +1944,8 @@ preflight_metadata_commit_capability() {
           missing_fd = AtomicMetadataRenameProbe.openat(
             directory.fileno,
             name,
-            File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+            File::RDONLY | File::NONBLOCK | File::NOFOLLOW,
+            0
           )
           if missing_fd == -1 && Fiddle.last_error == Errno::ENOENT::Errno
             next
