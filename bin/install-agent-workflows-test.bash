@@ -887,6 +887,64 @@ RUBY
   assert_file "$target/.agent-workflows-install.lock/metadata-commit-old.guard"
 }
 
+test_implicit_delivery_mode_change_before_lock_fails_closed() {
+  local tmp target metadata fake_bin real_mkdir marker output status metadata_before license_before
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"; real_mkdir="$(command -v mkdir)"; marker="$tmp/mode-changed-before-lock"
+  write_native_scw_state codex "$target"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode plugin-companion >/dev/null
+  metadata_before="$(cat "$metadata")"; license_before="$(shasum "$target/LICENSE")"
+  mkdir -p "$fake_bin"
+  cat > "$fake_bin/mkdir" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$QA_REAL_MKDIR" "$@"
+if [[ "$*" == *"$QA_INSTALL_LOCK"* && ! -e "$QA_RACE_MARKER" ]]; then
+  ruby -rjson -e 'path = ARGV.fetch(0); data = JSON.parse(File.read(path)); data["delivery_mode"] = "flat"; File.write(path, JSON.generate(data) + "\n")' "$QA_INSTALL_METADATA"
+  : > "$QA_RACE_MARKER"
+fi
+SH
+  chmod +x "$fake_bin/mkdir"
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKDIR="$real_mkdir" QA_INSTALL_LOCK="$target/.agent-workflows-install.lock" \
+    QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "stale implicit delivery mode exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode")' "$metadata")" = "flat" ]] || \
+    fail "stale implicit delivery mode overwrote bound metadata"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || fail "stale implicit delivery mode mutated managed files"
+}
+
+test_uncertain_metadata_commit_preserves_migration_staging_and_receipt() {
+  local tmp target metadata staging receipt injection output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-committed-metadata-cleanup.rb"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+module AtomicMetadataCommitHook
+  def self.call(phase)
+    raise Errno::EIO if phase == :before_success_cleanup
+  end
+end
+RUBY
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"; status=$?
+  set -e
+  [[ "$status" -eq 68 ]] || fail "uncertain committed metadata exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_CLEANUP_FAILED"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode")' "$metadata")" = "plugin-companion" ]] || \
+    fail "uncertain commit did not retain committed metadata"
+  assert_file "$receipt"
+  IFS= read -r staging < "$receipt"
+  [[ -n "$(find "$staging" -mindepth 1 -print -quit)" ]] || fail "uncertain commit did not retain staged flat skills"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "uncertain commit restored staging into a plugin-companion layout"
+}
+
 test_present_metadata_deleted_after_binding_reports_backup_recovery_guidance() {
   local tmp target metadata injection marker output status
   tmp="$(mktemp -d)"
@@ -6835,6 +6893,8 @@ main() {
     test_metadata_appearing_before_lock_is_not_treated_as_absent_recovery
     test_metadata_disappearing_before_lock_is_not_treated_as_still_present
     test_metadata_change_after_locked_preflight_fails_before_managed_file_mutation
+    test_implicit_delivery_mode_change_before_lock_fails_closed
+    test_uncertain_metadata_commit_preserves_migration_staging_and_receipt
     test_present_metadata_deleted_after_binding_reports_backup_recovery_guidance
     test_bound_metadata_change_cannot_grant_symlink_ownership
     test_bound_absent_metadata_short_circuits_snapshot_read_to_key_absent

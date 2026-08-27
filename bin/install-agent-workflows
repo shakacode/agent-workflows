@@ -812,9 +812,11 @@ capture_install_metadata_binding() {
   install_metadata_binding_attestation=""
   install_metadata_snapshot_path="$install_lock/install-metadata.snapshot"
   install_metadata_snapshot_attestation=""
+  install_metadata_bound_delivery_mode=""
 
   if [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]; then
     install_metadata_binding_state="absent"
+    install_metadata_bound_delivery_mode="flat"
     return 0
   fi
 
@@ -860,6 +862,10 @@ capture_install_metadata_binding() {
   install_metadata_binding_state="present"
   install_metadata_binding_attestation="$first_attestation"
   install_metadata_snapshot_attestation="$snapshot_attestation"
+  case "$first_state" in
+    valid) install_metadata_bound_delivery_mode="$first_value" ;;
+    key_absent) install_metadata_bound_delivery_mode="flat" ;;
+  esac
 }
 
 prebind_install_metadata_rollback_guard() {
@@ -3172,6 +3178,8 @@ validate_delivery_mode "--delivery-mode"
 resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
+delivery_mode_was_explicit=false
+[[ -z "$delivery_mode" ]] || delivery_mode_was_explicit=true
 resolve_delivery_mode
 validate_delivery_mode "Installed metadata delivery_mode"
 
@@ -3234,6 +3242,7 @@ install_metadata_binding_state=""
 install_metadata_binding_attestation=""
 install_metadata_snapshot_path=""
 install_metadata_snapshot_attestation=""
+install_metadata_bound_delivery_mode=""
 install_metadata_rollback_guard=""
 metadata_absent_under_lock=false
 if ! preflight_metadata_commit_capability; then
@@ -3368,6 +3377,11 @@ fi
 binding_status=0
 capture_install_metadata_binding || binding_status=$?
 [[ "$binding_status" -eq 0 ]] || exit "$binding_status"
+if [[ "$delivery_mode_was_explicit" != "true" &&
+      "$delivery_mode" != "$install_metadata_bound_delivery_mode" ]]; then
+  report_install_metadata_binding_changed
+  exit 65
+fi
 prebind_install_metadata_rollback_guard || exit 1
 metadata_committed=false
 metadata_commit_rollback_failed=false
@@ -3377,13 +3391,17 @@ release_install_transaction() {
   if [[ -z "$migration_staging" && -f "$migration_receipt" ]]; then
     IFS= read -r migration_staging < "$migration_receipt" || true
   fi
-  if [[ "$metadata_committed" != "true" && -n "$migration_staging" ]]; then
+  if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" &&
+        -n "$migration_staging" ]]; then
     if rollback_migration_staging "$migration_staging"; then
       rm -f "$migration_receipt"
     else
       echo "RECOVERY_FAILED: rollback incomplete; preserved $migration_receipt for $migration_staging" >&2
       status=1
     fi
+  elif [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" = "true" &&
+          -n "$migration_staging" ]]; then
+    echo "CLEANUP_PENDING: metadata commit outcome is uncertain; preserved $migration_receipt for $migration_staging without restoring the staged flat layout." >&2
   fi
   if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" &&
         -n "${prepared_metadata_attestation:-}" ]]; then
