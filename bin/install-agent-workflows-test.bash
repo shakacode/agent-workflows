@@ -5545,7 +5545,7 @@ RUBY
 }
 
 test_crashed_recovery_quarantine_is_named_on_next_run() {
-  local tmp target staging receipt metadata quarantine output status receipt_before
+  local tmp target canonical_target staging receipt metadata quarantine canonical_quarantine output status receipt_before
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-crash-residue"
@@ -5553,6 +5553,8 @@ test_crashed_recovery_quarantine_is_named_on_next_run() {
   metadata="$target/.agent-workflows-install.json"
   quarantine="$metadata.recovery-A1b2C3"
   mkdir -p "$staging/user-owned-skill" "$quarantine"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_quarantine="$canonical_target/.agent-workflows-install.json.recovery-A1b2C3"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
   printf '{"delivery_mode":"flat"}\n' > "$quarantine/metadata"
@@ -5567,7 +5569,7 @@ test_crashed_recovery_quarantine_is_named_on_next_run() {
 
   [[ "$status" -eq 65 ]] || fail "crashed recovery residue exited $status: $output"
   assert_not_contains "$output" "cannot read valid install metadata"
-  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine"
+  assert_contains "$output" "Preserved recovery metadata quarantine $canonical_quarantine"
   assert_file "$receipt"
   [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "crash residue changed pending receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
@@ -5577,7 +5579,7 @@ test_crashed_recovery_quarantine_is_named_on_next_run() {
 }
 
 test_unexpected_recovery_residue_is_named_without_blaming_metadata() {
-  local tmp target staging receipt metadata residue output status
+  local tmp target canonical_target staging receipt metadata residue canonical_residue output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-unexpected-residue"
@@ -5585,6 +5587,8 @@ test_unexpected_recovery_residue_is_named_without_blaming_metadata() {
   metadata="$target/.agent-workflows-install.json"
   residue="$metadata.recovery-unexpected"
   mkdir -p "$staging/user-owned-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_residue="$canonical_target/.agent-workflows-install.json.recovery-unexpected"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
   printf 'unknown residue\n' > "$residue"
@@ -5596,7 +5600,7 @@ test_unexpected_recovery_residue_is_named_without_blaming_metadata() {
   set -e
 
   [[ "$status" -eq 65 ]] || fail "unexpected recovery residue exited $status: $output"
-  assert_contains "$output" "Unexpected recovery residue $residue blocks recovery"
+  assert_contains "$output" "Unexpected recovery residue $canonical_residue blocks recovery"
   assert_not_contains "$output" "cannot read valid install metadata"
   assert_file "$metadata"
   assert_file "$residue"
@@ -5605,12 +5609,14 @@ test_unexpected_recovery_residue_is_named_without_blaming_metadata() {
 }
 
 test_corrupt_metadata_with_residue_reports_both_problems() {
-  local tmp target metadata residue output status
+  local tmp target canonical_target metadata residue canonical_residue output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   metadata="$target/.agent-workflows-install.json"
   residue="$metadata.recovery-archived"
   mkdir -p "$target"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_residue="$canonical_target/.agent-workflows-install.json.recovery-archived"
   printf 'not json\n' > "$metadata"
   printf 'archived residue\n' > "$residue"
 
@@ -5620,7 +5626,7 @@ test_corrupt_metadata_with_residue_reports_both_problems() {
   set -e
 
   [[ "$status" -eq 65 ]] || fail "corrupt metadata with residue exited $status: $output"
-  assert_contains "$output" "Unexpected recovery residue $residue blocks recovery"
+  assert_contains "$output" "Unexpected recovery residue $canonical_residue blocks recovery"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
   assert_contains "$output" "Restore a valid backup"
   assert_file "$metadata"
