@@ -615,10 +615,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       write_policy(
         root,
         POLICY.merge(
-          "writing_style" => {
-            "guide" => "Lead with the outcome.",
-            "extra" => "not part of the closed mapping"
-          }
+          "writing_style" => { "guide" => "Inline prose is no longer accepted." }
         )
       )
       write_skill(root, "No commands here.\n")
@@ -627,7 +624,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "invalid writing_style policy"
-      assert_includes out, "closed mapping containing only a nonblank string guide"
+      assert_includes out, "expected a nonblank relative Markdown-file path"
     end
   end
 
@@ -728,12 +725,14 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
-  def test_writing_style_accepts_the_complete_closed_mapping
+  def test_writing_style_accepts_a_repository_relative_markdown_file
     with_repo do |root|
       write_valid_binstub_contract(root)
+      FileUtils.mkdir_p(File.join(root, "docs"))
+      File.write(File.join(root, "docs/writing-style.md"), "Lead with the outcome.\nPreserve evidence.\n")
       write_policy(
         root,
-        POLICY.merge("writing_style" => { "guide" => "Lead with the outcome.\nPreserve evidence." })
+        POLICY.merge("writing_style" => "docs/writing-style.md")
       )
       write_skill(root, "No commands here.\n")
 
@@ -744,12 +743,28 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
-  def test_writing_style_accepts_legacy_angle_bracket_phrases_in_the_guide
+  def test_writing_style_rejects_a_missing_repository_markdown_file
     with_repo do |root|
       write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("writing_style" => "docs/missing.md"))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid writing_style policy file"
+      assert_includes out, "expected a readable regular Markdown file"
+    end
+  end
+
+  def test_writing_style_file_accepts_legacy_angle_bracket_phrases
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      FileUtils.mkdir_p(File.join(root, "docs"))
+      File.write(File.join(root, "docs/writing-style.md"), "Write the <main branch> in angle brackets.\n")
       write_policy(
         root,
-        POLICY.merge("writing_style" => { "guide" => "Write the <main branch> in angle brackets." })
+        POLICY.merge("writing_style" => "docs/writing-style.md")
       )
       write_skill(root, "No commands here.\n")
 
@@ -911,9 +926,9 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   def test_writing_style_rejects_duplicate_yaml_keys
     with_repo do |root|
       write_valid_binstub_contract(root)
-      yaml = POLICY.merge("writing_style" => { "guide" => "First." }).to_yaml.sub(
-        "  guide: First.\n",
-        "  guide: First.\n  guide: Last.\n"
+      yaml = POLICY.merge("writing_style" => "docs/first.md").to_yaml.sub(
+        "writing_style: docs/first.md\n",
+        "writing_style: docs/first.md\nwriting_style: docs/last.md\n"
       )
       File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
       write_skill(root, "No commands here.\n")
@@ -921,7 +936,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       out, status = run_doctor(root)
 
       refute status.success?
-      assert_includes out, "invalid writing_style policy: duplicate key \"guide\""
+      assert_includes out, "invalid writing_style policy: duplicate key \"writing_style\""
     end
   end
 

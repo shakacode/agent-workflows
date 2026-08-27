@@ -91,6 +91,43 @@ class WritingStyleContractTest < Minitest::Test
     refute source_policy.key?("writing_style"), "source repo must remain a fallback negative control"
     refute fixture_policy.key?("writing_style"), "consumer fixture must exercise fallback compatibility"
     refute parsed_example.key?("writing_style"), "example must not seed a repository override"
-    assert_includes example, "# writing_style:"
+    assert_includes example, "# writing_style: docs/writing-style.md"
+    refute_includes example, "# writing_style:\n"
+  end
+
+  def test_packaged_default_prose_lives_only_in_the_installed_markdown_document
+    default_path = "docs/writing-style.md"
+    default_lines = read(default_path).lines.map(&:strip).reject(&:empty?)
+    prose_paths = [
+      default_path,
+      "bin/agent-workflow-writing-style",
+      "docs/adoption.md",
+      "docs/installation-and-upgrades.md",
+      "docs/seam-design.md",
+      "examples/agent-workflow.yml"
+    ]
+
+    assert_equal 5, default_lines.length
+    default_lines.each do |line|
+      assert_equal [default_path], prose_paths.select { |path| read(path).include?(line) }, line
+    end
+    assert_includes read("bin/agent-workflow-writing-style"), "../docs/writing-style.md"
+  end
+
+  def test_docs_describe_path_roots_precedence_and_future_trusted_distribution_layer
+    adoption = read("docs/adoption.md")
+    installation = read("docs/installation-and-upgrades.md")
+    seam_design = read("docs/seam-design.md")
+
+    [adoption, installation, seam_design].each do |document|
+      normalized = document.gsub(/\s+/, " ")
+      assert_includes normalized, "writing-style.md"
+      assert_includes normalized, "repo → user-global → portable default"
+    end
+    normalized_seam_design = seam_design.gsub(/\s+/, " ")
+    assert_includes normalized_seam_design, "beneath the repository root"
+    assert_includes normalized_seam_design, "beneath `~/.agents`"
+    assert_includes normalized_seam_design, "future explicitly trusted distribution/source layer"
+    assert_includes normalized_seam_design, "does not perform network or cross-repository lookup"
   end
 end

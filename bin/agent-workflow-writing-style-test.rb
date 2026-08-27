@@ -8,6 +8,7 @@ require "open3"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflow-writing-style", __dir__)
+DEFAULT_GUIDE = File.expand_path("../docs/writing-style.md", __dir__)
 
 class AgentWorkflowWritingStyleTest < Minitest::Test
   def run_resolver(repo_root:, home:)
@@ -34,8 +35,7 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       assert status.success?, stderr
       result = JSON.parse(stdout)
       assert_equal "portable-default", result.fetch("provenance")
-      assert_includes result.fetch("guide"), "Lead with the outcome"
-      assert_includes result.fetch("guide"), "preserving required evidence"
+      assert_equal File.read(DEFAULT_GUIDE, encoding: "UTF-8").strip, result.fetch("guide")
       assert_equal [], result.fetch("warnings")
       assert_empty stderr
     end
@@ -46,10 +46,12 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       repo_root = File.join(directory, "repo")
       home = File.join(directory, "home")
       FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(repo_root, "docs"))
       FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.write(File.join(repo_root, "docs", "writing-style.md"), "Repository house style.\n")
       File.write(
         File.join(repo_root, ".agents", "agent-workflow.yml"),
-        "writing_style:\n  guide: Repository house style.\n"
+        "writing_style: docs/writing-style.md\n"
       )
       File.write(File.join(home, ".agents", "agent-workflow.yml"), "writing_style: [broken\n")
 
@@ -64,16 +66,304 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
     end
   end
 
+  def test_repository_guide_rejects_an_absolute_path
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      outside_path = File.join(directory, "outside.md")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      Dir.mkdir(home)
+      File.write(outside_path, "Outside style must not load.\n")
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: #{outside_path}\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style"
+      assert_includes stderr, "expected a nonblank relative Markdown-file path"
+      refute_includes stderr, "Outside style must not load"
+    end
+  end
+
+  def test_repository_guide_rejects_parent_traversal_even_when_the_target_exists
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      Dir.mkdir(home)
+      File.write(File.join(directory, "outside.md"), "Outside style must not load.\n")
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: ../outside.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style path"
+      assert_includes stderr, "must not contain '..' traversal"
+      refute_includes stderr, "Outside style must not load"
+    end
+  end
+
+  def test_repository_guide_rejects_a_symlink_escape
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      outside_path = File.join(directory, "outside.md")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(repo_root, "docs"))
+      Dir.mkdir(home)
+      File.write(outside_path, "Outside style must not load.\n")
+      File.symlink(outside_path, File.join(repo_root, "docs", "writing-style.md"))
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/writing-style.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style path"
+      assert_includes stderr, "resolves outside its trusted root"
+      refute_includes stderr, "Outside style must not load"
+    end
+  end
+
+  def test_missing_repository_guide_blocks_instead_of_falling_back
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      Dir.mkdir(home)
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/missing.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style file"
+      assert_includes stderr, "expected a readable regular Markdown file"
+      refute_includes stderr, "agent-workflow-writing-style:"
+    end
+  end
+
+  def test_empty_repository_guide_blocks_instead_of_falling_back
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(repo_root, "docs"))
+      Dir.mkdir(home)
+      File.write(File.join(repo_root, "docs", "writing-style.md"), " \n\t")
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/writing-style.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style file"
+      assert_includes stderr, "must not be empty"
+    end
+  end
+
+  def test_invalid_utf8_repository_guide_blocks_instead_of_falling_back
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(repo_root, "docs"))
+      Dir.mkdir(home)
+      File.binwrite(File.join(repo_root, "docs", "writing-style.md"), "Valid\n\xFF".b)
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/writing-style.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style file"
+      assert_includes stderr, "must contain valid UTF-8"
+      refute_includes stderr, "agent-workflow-writing-style:"
+    end
+  end
+
+  def test_repository_guide_requires_a_markdown_file_path
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(repo_root, "docs"))
+      Dir.mkdir(home)
+      File.write(File.join(repo_root, "docs", "writing-style.txt"), "Plain text is not the contract.\n")
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/writing-style.txt\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style path"
+      assert_includes stderr, "must end in .md"
+    end
+  end
+
+  def test_repository_guide_must_be_a_regular_file
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(repo_root, "docs", "writing-style.md"))
+      Dir.mkdir(home)
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/writing-style.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style file"
+      assert_includes stderr, "expected a readable regular Markdown file"
+    end
+  end
+
+  def test_unreadable_repository_guide_blocks_instead_of_falling_back
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      guide_path = File.join(repo_root, "docs", "writing-style.md")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.dirname(guide_path))
+      Dir.mkdir(home)
+      File.write(guide_path, "Unreadable repository style.\n")
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/writing-style.md\n"
+      )
+
+      stdout = stderr = status = nil
+      File.chmod(0o000, guide_path)
+      begin
+        if File.readable?(guide_path)
+          skip "filesystem does not enforce owner read permissions"
+        end
+        stdout, stderr, status = run_resolver(repo_root:, home:)
+      ensure
+        File.chmod(0o600, guide_path)
+      end
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style file"
+      assert_includes stderr, "expected a readable regular Markdown file"
+      refute_includes stderr, "Unreadable repository style"
+    end
+  end
+
+  def test_repository_guide_allows_a_symlink_that_stays_beneath_the_repository_root
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(repo_root, "docs"))
+      Dir.mkdir(home)
+      File.write(File.join(repo_root, "docs", "shared.md"), "Trusted shared style.\n")
+      File.symlink("shared.md", File.join(repo_root, "docs", "writing-style.md"))
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/writing-style.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "repo", result.fetch("provenance")
+      assert_equal "Trusted shared style.", result.fetch("guide")
+    end
+  end
+
+  def test_missing_user_global_guide_warns_and_uses_the_packaged_default
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      Dir.mkdir(repo_root)
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/missing.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "portable-default", result.fetch("provenance")
+      assert_equal File.read(DEFAULT_GUIDE, encoding: "UTF-8").strip, result.fetch("guide")
+      assert_equal 1, result.fetch("warnings").length
+      assert_includes stderr, "invalid user-global writing_style file"
+      assert_includes stderr, "using portable default"
+    end
+  end
+
+  def test_user_global_guide_symlink_escape_warns_and_uses_the_packaged_default
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      outside_path = File.join(directory, "outside.md")
+      Dir.mkdir(repo_root)
+      FileUtils.mkdir_p(File.join(home, ".agents", "docs"))
+      File.write(outside_path, "Outside style must not load.\n")
+      File.symlink(outside_path, File.join(home, ".agents", "docs", "writing-style.md"))
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/writing-style.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "portable-default", result.fetch("provenance")
+      assert_equal 1, result.fetch("warnings").length
+      assert_includes stderr, "invalid user-global writing_style path"
+      assert_includes stderr, "resolves outside its trusted root"
+      refute_includes stdout, "Outside style must not load"
+    end
+  end
+
   def test_missing_repository_key_falls_back_to_user_global_guide_and_ignores_other_user_policy
     Dir.mktmpdir do |directory|
       repo_root = File.join(directory, "repo")
       home = File.join(directory, "home")
       FileUtils.mkdir_p(File.join(repo_root, ".agents"))
-      FileUtils.mkdir_p(File.join(home, ".agents"))
+      FileUtils.mkdir_p(File.join(home, ".agents", "docs"))
       File.write(File.join(repo_root, ".agents", "agent-workflow.yml"), "base_branch: main\n")
       File.write(
+        File.join(home, ".agents", "docs", "writing-style.md"),
+        "Personal readable style.\n"
+      )
+      File.write(
         File.join(home, ".agents", "agent-workflow.yml"),
-        "base_branch: should-not-inherit\nwriting_style:\n  guide: Personal readable style.\n"
+        "base_branch: should-not-inherit\nwriting_style: docs/writing-style.md\n"
       )
 
       stdout, stderr, status = run_resolver(repo_root:, home:)
@@ -92,11 +382,15 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       repo_root = File.join(directory, "repo")
       home = File.join(directory, "home")
       FileUtils.mkdir_p(File.join(repo_root, ".agents"))
-      FileUtils.mkdir_p(File.join(home, ".agents"))
+      FileUtils.mkdir_p(File.join(home, ".agents", "docs"))
       File.write(File.join(repo_root, ".agents", "agent-workflow.yml"), "")
       File.write(
+        File.join(home, ".agents", "docs", "writing-style.md"),
+        "Personal readable style.\n"
+      )
+      File.write(
         File.join(home, ".agents", "agent-workflow.yml"),
-        "writing_style:\n  guide: Personal readable style.\n"
+        "writing_style: docs/writing-style.md\n"
       )
 
       stdout, stderr, status = run_resolver(repo_root:, home:)
@@ -130,7 +424,7 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       refute status.success?
       assert_empty stdout
       assert_includes stderr, "invalid repository writing_style"
-      assert_includes stderr, "closed mapping containing only a nonblank string guide"
+      assert_includes stderr, "expected a nonblank relative Markdown-file path"
       refute_includes stderr, "User fallback must not be used"
     end
   end
@@ -310,14 +604,14 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       Dir.mkdir(home)
       File.write(
         File.join(repo_root, ".agents", "agent-workflow.yml"),
-        "writing_style:\n  guide: First.\n  guide: Last.\n"
+        "writing_style: docs/first.md\nwriting_style: docs/last.md\n"
       )
 
       stdout, stderr, status = run_resolver(repo_root:, home:)
 
       refute status.success?
       assert_empty stdout
-      assert_includes stderr, "duplicate key \"guide\""
+      assert_includes stderr, "duplicate key \"writing_style\""
     end
   end
 

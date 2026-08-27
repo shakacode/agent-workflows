@@ -85,24 +85,26 @@ notes.
    and thread handles. The initializer does not add this optional key.
 
    Writing style is the one policy with a user-global fallback. Resolution is
-   repo → user-global → portable default, and one complete guide wins without
-   merging prose. Put a personal preference in
+   repo → user-global → portable default, and one complete Markdown file wins
+   without merging prose. Put a personal preference in
    `~/.agents/agent-workflow.yml`:
 
    ```yaml
-   writing_style:
-     guide: |
-       Lead with the outcome and explain why.
-       Use plain language and keep detail proportional.
+   writing_style: docs/writing-style.md
    ```
 
-   Add the same closed mapping to the repository seam only when the team wants
-   a shared house style. The initializer and example do not enable it because a
-   seeded repository value would mask the user-global fallback. The global file
-   supplies no other policy: base branch, merge, CI, trust, and coordination
-   values remain repository-owned. A malformed repository mapping blocks seam
-   validation; a malformed or unreadable global style warns and uses the
-   packaged default.
+   That path resolves beneath `~/.agents`; create the example file at
+   `~/.agents/docs/writing-style.md`. A repository can set the same scalar key
+   to a Markdown path beneath its own root when the team wants a shared house
+   style. The repository value wins. The initializer leaves the key absent and
+   the example keeps it commented because a seeded repository value would mask
+   the user-global fallback.
+
+   The shipped fallback is [the portable writing-style guide](writing-style.md).
+   A malformed repository config, path, or guide file blocks seam validation.
+   A malformed or unreadable user-global config, path, or file warns and uses
+   the packaged default. The global file supplies no other policy: base branch,
+   merge, CI, trust, coordination, and all other values remain repository-owned.
 
    Repositories that use repository-based GitHub Actions and reusable workflows
    must also add a closed, exact `trusted_actions` allowlist. Its entries are

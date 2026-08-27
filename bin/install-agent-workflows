@@ -21,6 +21,7 @@ Installed paths:
   <target>/docs/review-finding-schema.md
   <target>/docs/agent-workflows-model-routing.md
   <target>/docs/user-facing-coordination.md
+  <target>/docs/writing-style.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflow-writing-style
@@ -60,6 +61,7 @@ pack_docs=(
   review-finding-schema.md
   agent-workflows-model-routing.md
   user-facing-coordination.md
+  writing-style.md
 )
 for solution_path in "$repo_root"/docs/solutions/*; do
   [[ -f "$solution_path" && ! -L "$solution_path" ]] || continue

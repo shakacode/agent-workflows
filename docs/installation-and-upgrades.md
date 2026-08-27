@@ -34,18 +34,21 @@ Claude:
 | `claude` | `${CLAUDE_HOME:-$HOME/.claude}` |
 | `auto` | An existing Codex or Claude home, only when exactly one is detectable |
 
-The installer also supplies `agent-workflow-writing-style`. Shared authoring
-workflows run it with the trusted repository root before composing human-facing
-prose. It resolves repository `.agents/agent-workflow.yml`, then the personal
-`~/.agents/agent-workflow.yml`, then its packaged default, and reports the
-selected provenance. The user-global file contributes only `writing_style`;
-all other workflow policy remains repository-owned.
+The installer also supplies `agent-workflow-writing-style` and
+[the packaged default guide](writing-style.md). Shared authoring workflows run
+the resolver with the trusted repository root before composing human-facing
+prose. Resolution is repo → user-global → portable default, with provenance
+reported as `repo`, `user-global`, or `portable-default`.
 
-After upgrading, malformed repository style remains a blocking seam error.
-Malformed or unreadable user-global style is nonblocking: the resolver prints
-an actionable warning and uses its packaged default. Existing repositories need
-no configuration change, and install/upgrade never writes the user-global file
-or seeds a repository style.
+`writing_style` is one nonblank relative Markdown path. A repository value
+resolves beneath the repository root. A value in
+`~/.agents/agent-workflow.yml` resolves beneath `~/.agents`; that file
+contributes no other workflow policy. Malformed repository config, unsafe or
+missing paths, and invalid guide files block. The same user-global failures are
+nonblocking: the resolver prints an actionable warning and uses the packaged
+default. Install and upgrade deliver the default in copy, symlink, and
+plugin-companion layouts, but never write the user-global config or enable a
+repository override.
 
 Use `--target DIR` for custom homes such as `~/.agents`. The host name controls
 the default target and metadata; it does not change the shared workflow text.
@@ -417,6 +420,7 @@ The installer writes:
 - `<target>/docs/review-finding-schema.md`
 - `<target>/docs/agent-workflows-model-routing.md`
 - `<target>/docs/user-facing-coordination.md`
+- `<target>/docs/writing-style.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflow-writing-style`

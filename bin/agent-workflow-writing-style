@@ -3,16 +3,11 @@
 
 require "json"
 require "optparse"
+require "pathname"
 require "yaml"
 
 module AgentWorkflowWritingStyle
-  PORTABLE_DEFAULT = <<~GUIDE.strip.freeze
-    Lead with the outcome, decision, or request.
-    Explain why and intent; do not narrate obvious file changes.
-    Use plain, direct language and short paragraphs or bullets.
-    Remove filler, repeated context, excessive headings, and decorative emphasis.
-    Keep detail proportional to the change while preserving required evidence.
-  GUIDE
+  PORTABLE_DEFAULT_PATH = File.expand_path("../docs/writing-style.md", __dir__)
 
   Result = Struct.new(:guide, :provenance, :warnings, keyword_init: true) do
     def to_h
@@ -27,7 +22,7 @@ module AgentWorkflowWritingStyle
     repo_path = File.join(repo_root, ".agents", "agent-workflow.yml")
     if configuration_path_present?(repo_path, label: "repository")
       config = load_mapping(repo_path, label: "repository")
-      guide = extract_guide(config, label: "repository")
+      guide = extract_guide(config, label: "repository", owner_root: repo_root)
       if guide
         return Result.new(guide:, provenance: "repo", warnings: [])
       end
@@ -37,15 +32,21 @@ module AgentWorkflowWritingStyle
     begin
       if configuration_path_present?(user_path, label: "user-global")
         config = load_mapping(user_path, label: "user-global")
-        guide = extract_guide(config, label: "user-global")
+        guide = extract_guide(config, label: "user-global", owner_root: File.dirname(user_path))
         return Result.new(guide:, provenance: "user-global", warnings: []) if guide
       end
     rescue ConfigurationError => e
       warning = "WARNING: #{e.message} at #{user_path}. Fix or remove writing_style; using portable default."
-      return Result.new(guide: PORTABLE_DEFAULT, provenance: "portable-default", warnings: [warning])
+      return Result.new(guide: portable_default, provenance: "portable-default", warnings: [warning])
     end
 
-    Result.new(guide: PORTABLE_DEFAULT, provenance: "portable-default", warnings: [])
+    Result.new(guide: portable_default, provenance: "portable-default", warnings: [])
+  end
+
+  def portable_default
+    File.read(PORTABLE_DEFAULT_PATH, encoding: "UTF-8").strip
+  rescue EncodingError, SystemCallError => e
+    raise ConfigurationError, "invalid packaged writing style: #{e.class}"
   end
 
   def configuration_path_present?(path, label:)
@@ -113,37 +114,57 @@ module AgentWorkflowWritingStyle
     style_pairs = root.children.each_slice(2).select do |key, _value|
       key.is_a?(Psych::Nodes::Scalar) && key.value == "writing_style"
     end
-    return 'duplicate key "writing_style"' if style_pairs.length > 1
-
-    style = style_pairs.first&.last
-    return unless style.is_a?(Psych::Nodes::Mapping)
-
-    keys = style.children.each_slice(2).filter_map do |key, _value|
-      key.value if key.is_a?(Psych::Nodes::Scalar)
-    end
-    duplicate = keys.group_by(&:itself).find { |_key, values| values.length > 1 }&.first
-    %(duplicate key #{duplicate.inspect}) if duplicate
+    'duplicate key "writing_style"' if style_pairs.length > 1
   end
 
-  def extract_guide(config, label:)
+  def extract_guide(config, label:, owner_root: nil)
     unless config.is_a?(Hash)
       raise ConfigurationError, "invalid #{label} writing_style configuration: expected a top-level mapping"
     end
     return unless config.key?("writing_style")
 
     style = config.fetch("writing_style")
-    unless style.is_a?(Hash) && style.keys == ["guide"]
+    unless style.is_a?(String) && !style.strip.empty?
       raise ConfigurationError,
-            "invalid #{label} writing_style: expected a closed mapping containing only a nonblank string guide"
+            "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
+    end
+    relative_path = Pathname.new(style.strip)
+    if relative_path.absolute?
+      raise ConfigurationError,
+            "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
+    end
+    if relative_path.each_filename.include?("..")
+      raise ConfigurationError, "invalid #{label} writing_style path: must not contain '..' traversal"
+    end
+    unless relative_path.extname.casecmp(".md").zero?
+      raise ConfigurationError, "invalid #{label} writing_style path: must end in .md"
+    end
+    return style.strip unless owner_root
+
+    trusted_root = File.realpath(owner_root)
+    guide_path = File.realpath(File.expand_path(relative_path.to_s, owner_root))
+    unless guide_path == trusted_root || guide_path.start_with?("#{trusted_root}#{File::SEPARATOR}")
+      raise ConfigurationError, "invalid #{label} writing_style path: resolves outside its trusted root"
+    end
+    unless File.file?(guide_path) && File.readable?(guide_path)
+      raise ConfigurationError,
+            "invalid #{label} writing_style file: expected a readable regular Markdown file"
     end
 
-    guide = style.fetch("guide")
-    unless guide.is_a?(String) && !guide.strip.empty?
-      raise ConfigurationError,
-            "invalid #{label} writing_style: expected a closed mapping containing only a nonblank string guide"
+    guide = File.binread(guide_path).force_encoding(Encoding::UTF_8)
+    unless guide.valid_encoding?
+      raise ConfigurationError, "invalid #{label} writing_style file: must contain valid UTF-8"
     end
 
-    guide.strip
+    guide = guide.strip
+    if guide.empty?
+      raise ConfigurationError, "invalid #{label} writing_style file: must not be empty"
+    end
+
+    guide
+  rescue EncodingError, SystemCallError => e
+    raise ConfigurationError,
+          "invalid #{label} writing_style file: expected a readable regular Markdown file (#{e.class})"
   end
 
   def run(argv)

@@ -1770,7 +1770,7 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(coordination_backend_policy_issues(yaml))
-    issues.concat(writing_style_policy_issues(config, yaml))
+    issues.concat(writing_style_policy_issues(root, config, yaml))
     issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
@@ -1788,13 +1788,13 @@ module AgentWorkflowSeamDoctor
     ["invalid policy config: #{POLICY_CONFIG}"]
   end
 
-  def writing_style_policy_issues(config, yaml)
+  def writing_style_policy_issues(root, config, yaml)
     return [] unless config.key?("writing_style")
 
     structure_error = AgentWorkflowWritingStyle.writing_style_structure_error(yaml)
     return ["invalid writing_style policy: #{structure_error}"] if structure_error
 
-    AgentWorkflowWritingStyle.extract_guide(config, label: "repository")
+    AgentWorkflowWritingStyle.extract_guide(config, label: "repository", owner_root: root)
     []
   rescue AgentWorkflowWritingStyle::ConfigurationError => e
     [e.message.sub("invalid repository writing_style", "invalid writing_style policy")]

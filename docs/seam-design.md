@@ -103,41 +103,43 @@ Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 
 ### Writing Style
 
-`writing_style` is an optional closed mapping with exactly one key:
+`writing_style` is an optional nonblank repository-relative Markdown-file path:
 
 ```yaml
-writing_style:
-  guide: |
-    Lead with the outcome, decision, or request.
-    Explain why and intent; do not narrate obvious file changes.
-    Use plain, direct language and short paragraphs or bullets.
-    Remove filler, repeated context, excessive headings, and decorative emphasis.
-    Keep detail proportional to the change while preserving required evidence.
+writing_style: docs/writing-style.md
 ```
 
-The same mapping may appear in the user-global
+The same scalar key may appear in the user-global
 `~/.agents/agent-workflow.yml`. `agent-workflow-writing-style` resolves one
-complete guide without merging prose:
+complete file without merging prose. Resolution is repo → user-global →
+portable default:
 
 1. repository `.agents/agent-workflow.yml`
 2. user-global `~/.agents/agent-workflow.yml`
-3. the packaged portable default
+3. [the packaged portable default](writing-style.md)
 
 The task's explicit audience or format instructions remain outside this
 configuration resolver and may impose a more-specific constraint. The resolver
 returns provenance as exactly `repo`, `user-global`, or `portable-default`.
 Repository omission falls through per key even when the repository seam file
-exists. An explicitly present malformed repository value is a blocking seam
-error. A malformed or unreadable user-global value produces an actionable
-warning and uses the portable default. User-global configuration contributes
-only `writing_style`; branch, merge, CI, trust, coordination, and every other
-policy remain repository-owned.
+exists. Repository paths resolve beneath the repository root; user-global paths
+resolve beneath `~/.agents`. Absolute paths, parent traversal, paths that escape
+through symlinks, non-Markdown paths, and missing, unreadable, nonregular,
+empty, or invalid-UTF-8 files are invalid.
+
+An explicitly present malformed repository config, path, or file is a blocking
+seam error. The same user-global failure produces an actionable warning and
+uses the portable default. User-global configuration contributes only
+`writing_style`; branch, merge, CI, trust, coordination, and every other policy
+remain repository-owned.
 
 The initializer and example configuration do not enable a repository guide.
 That negative default is intentional: seeding one would mask a user's global
-preference. Teams opt in only when they need a shared house style. The packaged
-guide is defined once by the resolver and does not claim conformance to or
-vendor an external writing standard.
+preference. Teams opt in only when they need a repository house style. The
+packaged prose lives once in the linked Markdown file and the resolver loads
+that file. A company-wide or shared guide could be added later only as a future
+explicitly trusted distribution/source layer. The current resolver does not
+perform network or cross-repository lookup.
 
 The resolved guide applies only to human-facing prose. Repository PR and issue
 templates, required evidence, machine-readable receipts, and exact protocol
