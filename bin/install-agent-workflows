@@ -3279,6 +3279,10 @@ if [[ -f "$migration_receipt" ]]; then
       if [[ "$recovery_metadata_restore_reported" != "true" ]]; then
         report_corrupt_install_metadata
       fi
+      if [[ -n "$recovery_metadata_quarantine" &&
+            ( -e "$recovery_metadata_quarantine" || -L "$recovery_metadata_quarantine" ) ]]; then
+        report_blocking_recovery_quarantines "$recovery_metadata_quarantine"
+      fi
       echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
       exit 65
       ;;

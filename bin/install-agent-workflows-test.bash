@@ -3115,12 +3115,13 @@ RUBY
 }
 
 test_capture_failure_reports_private_quarantine_after_cleanup_detach() {
-  local tmp target staging receipt metadata injection output status quarantine
+  local tmp target staging receipt metadata injection output status quarantine marker
   tmp="$(mktemp -d)"; target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-private-quarantine"
   receipt="$target/.agent-workflows-migration-staging"
   metadata="$target/.agent-workflows-install.json"
   injection="$tmp/fail-capture-and-detached-cleanup.rb"
+  marker="$tmp/quarantine-cleanup-failed-once"
   mkdir -p "$staging/user-owned-skill"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
@@ -3128,6 +3129,9 @@ test_capture_failure_reports_private_quarantine_after_cleanup_detach() {
   cat > "$injection" <<'RUBY'
 module BoundDirCleanupPostDetachHook
   def self.call(path)
+    marker = ENV.fetch("QA_DIR_FAILURE_MARKER")
+    return if File.exist?(marker)
+    File.write(marker, "failed\n")
     raise Errno::EIO if path.include?(".cleanup-dir-")
   end
 end
@@ -3135,16 +3139,68 @@ raise LoadError, "capture helper unavailable" if ARGV.length == 5 &&
                                                  ARGV.fetch(1) == ".agent-workflows-install.json"
 RUBY
   set +e
-  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  output="$(QA_DIR_FAILURE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
   set -e
   [[ "$status" -ne 0 && "$status" -ne 65 ]] || fail "combined capture cleanup failure exited $status: $output"
   assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
   [[ -z "$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
     fail "combined capture cleanup failure left canonical quarantine"
-  quarantine="$(find "$target" -maxdepth 1 -type d -name '.cleanup-dir-*' -print -quit)"
+  quarantine="$(printf '%s\n' "$output" | sed -n 's/^Preserved recovery metadata quarantine \(.*\) blocks automatic recovery\.$/\1/p' | head -1)"
   [[ -n "$quarantine" ]] || fail "combined capture cleanup failure lost private quarantine"
+  [[ -d "$quarantine" ]] || fail "reported private quarantine does not exist: $quarantine"
+  [[ "$(printf '%s\n' "$output" | grep -Fxc "Preserved recovery metadata quarantine $quarantine blocks automatic recovery.")" -eq 1 ]] || \
+    fail "combined capture cleanup diagnostic was duplicated: $output"
   assert_contains "$output" "Preserved recovery metadata quarantine $quarantine blocks automatic recovery."
+  assert_file "$metadata"
+  assert_file "$receipt"
+}
+
+test_capture_binding_change_reports_private_quarantine_after_cleanup_detach() {
+  local tmp target staging receipt metadata injection output status quarantine marker
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-binding-private-quarantine"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-binding-and-detached-cleanup.rb"; marker="$tmp/quarantine-cleanup-failed-once"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+require "fiddle"
+trace = TracePoint.new(:end) do |event|
+  next unless event.self.respond_to?(:name) && event.self.name == "RecoverySyscalls"
+  event.self.define_singleton_method(:openat) do |*|
+    Fiddle.last_error = Errno::ELOOP::Errno
+    -1
+  end
+  trace.disable
+end
+trace.enable
+module BoundDirCleanupPostDetachHook
+  def self.call(path)
+    marker = ENV.fetch("QA_DIR_FAILURE_MARKER")
+    return if File.exist?(marker)
+    File.write(marker, "failed\n")
+    raise Errno::EIO if path.include?(".cleanup-dir-")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_DIR_FAILURE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 65 ]] || fail "binding-change private quarantine exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ -z "$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "binding-change cleanup left canonical quarantine"
+  quarantine="$(printf '%s\n' "$output" | sed -n 's/^Preserved recovery metadata quarantine \(.*\) blocks automatic recovery\.$/\1/p' | head -1)"
+  [[ -n "$quarantine" && -d "$quarantine" ]] || fail "binding-change output lost private quarantine: $output"
+  [[ "$(printf '%s\n' "$output" | grep -Fxc "Preserved recovery metadata quarantine $quarantine blocks automatic recovery.")" -eq 1 ]] || \
+    fail "binding-change quarantine diagnostic was duplicated: $output"
   assert_file "$metadata"
   assert_file "$receipt"
 }
@@ -6831,6 +6887,7 @@ main() {
     test_recovery_capture_supports_system_ruby_2_6
     test_capture_runtime_load_failure_removes_empty_quarantine
     test_capture_failure_reports_private_quarantine_after_cleanup_detach
+    test_capture_binding_change_reports_private_quarantine_after_cleanup_detach
     test_capture_failure_after_sentinel_install_restores_original_metadata
     test_capture_undo_uses_original_guard_when_displaced_sentinel_changes
     test_recovery_capture_exchange_restores_competing_destination
