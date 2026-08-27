@@ -353,12 +353,15 @@ class ConfiguredReviewGateTest < Minitest::Test
 
   def test_completed_claude_workflow_publishes_an_exact_head_gate_accepted_review
     source = File.read(CLAUDE_REVIEW_WORKFLOW)
+    duplicate_key_errors = []
+    ConfiguredReviewGate.walk_for_duplicate_keys(Psych.parse_stream(source), "$", duplicate_key_errors)
     workflow = YAML.safe_load(source, aliases: false)
     steps = workflow.dig("jobs", "claude-review", "steps")
     checkout = steps.find { |step| step["name"] == "Checkout repository" }
     verification = steps.find { |step| step["name"] == "Verify review completed (fail on invalid/expired token)" }
     publisher = steps.find { |step| step["name"] == "Publish exact-head review artifact" }
 
+    assert_empty duplicate_key_errors
     assert_equal false, checkout.dig("with", "persist-credentials")
     assert_equal "verify-review", verification.fetch("id")
     assert_includes verification.fetch("run"), 'echo "completed=true" >> "$GITHUB_OUTPUT"'
