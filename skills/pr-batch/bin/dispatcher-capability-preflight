@@ -425,9 +425,6 @@ def replacement_lane_state_classification(lane_state)
   return :unknown unless closed_at.nil? || nonempty_string?(closed_at)
   return :unknown if [status, terminal, closed_at, target_state].compact.any? { |value| unknown_sentinel?(value) }
 
-  return :terminal if terminal || closed_at
-  return :terminal if %w[done abandoned superseded ready-no-merge-authority].include?(normalized_status)
-  return :terminal if %w[closed merged].include?(target_state)
   return :nonterminal if target_state == "open"
 
   :unknown
