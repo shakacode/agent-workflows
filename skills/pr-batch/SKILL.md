@@ -213,6 +213,8 @@ anchor through the production helper's locked reconciliation snapshot keyed by
 `usage_receipt_digest`, and require its submitted receipts, charge-backs, and
 reservation bindings to equal the complete persisted set. Bind representative
 targets to that arm's task, batch, and receipt lane IDs, not the outer pilot task.
+Report `gate_compliance` once in pilot unknowns when any arm records literal
+`UNKNOWN`; known `weakened` compliance remains adverse without being relabelled unknown.
 
 ## Single-Target Mode
 

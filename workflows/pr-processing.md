@@ -834,6 +834,9 @@ Compute complete token evidence independently from optional credit evidence, so
 missing credits keep only the credit reduction `UNKNOWN`. Any arm with incomplete
 usage telemetry keeps token reduction `UNKNOWN`, even when its known total-token
 counter remains acceptable for production accounting.
+When any arm records literal `UNKNOWN` gate compliance, include one stable
+`gate_compliance` reason in the published unknowns; known `weakened` compliance
+remains adverse rather than unknown.
 Record elapsed
 time, human coordination time, correction turns, first-pass acceptance,
 escaped P0/P1 defects, and gate compliance. Bind the material threshold to

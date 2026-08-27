@@ -819,6 +819,9 @@ module CanonicalTaskControl
         execution_refs << arm["usage_receipt_ref"]
       end
       unknowns.concat(ordinary.fetch("unknowns") + multi.fetch("unknowns"))
+      if [ordinary, multi].any? { |arm| arm.dig("metrics", "gate_compliance") == "UNKNOWN" }
+        unknowns << "gate_compliance"
+      end
       if [ordinary, multi].any? do |arm|
         arm["total_tokens"] == "UNKNOWN" || arm.fetch("unknowns").include?("usage_telemetry")
       end
@@ -1019,8 +1022,10 @@ module CanonicalTaskControl
         "resume" => "resume", "retry" => "retry", "review_wave" => "review-wave"
       }.fetch(action)
       unless receipt["type"] == "batch-token-budget-reservation-receipt" && receipt["version"] == 1 &&
-             receipt["batch_id"] == result["batch_id"] && receipt["scope_id"] == lane["id"] &&
-             receipt["target_id"] == task["id"] && receipt["admission_kind"] == expected_kind &&
+             receipt["batch_id"] == result["batch_id"] &&
+             canonical_identity(receipt["scope_id"]) == canonical_identity(lane["id"]) &&
+             canonical_identity(receipt["target_id"]) == canonical_identity(task["id"]) &&
+             receipt["admission_kind"] == expected_kind &&
              receipt["tokens"] == decision.dig("request", "tokens") && positive_integer?(receipt["tokens"]) &&
              nonnegative_integer?(receipt["state_revision"]) &&
              receipt["state_revision"] < decision["state_revision"] && portable_id?(receipt["reservation_id"]) &&
@@ -2540,7 +2545,8 @@ module CanonicalTaskControl
                           reservation_decisions lane_reserved_tokens
                         ])
     unless snapshot["type"] == "batch-token-budget-state-snapshot" && snapshot["version"] == 1 &&
-           snapshot["status"] == "verified" && snapshot["batch_id"] == task["id"] &&
+           snapshot["status"] == "verified" &&
+           canonical_identity(snapshot["batch_id"]) == canonical_identity(task["id"]) &&
            nonnegative_integer?(snapshot["state_revision"]) && rfc3339_utc?(snapshot["last_evaluated_at"]) &&
            snapshot.values_at("trusted_plan_path", "trusted_plan_id", "trusted_plan_digest") ==
            anchor.values_at("trusted_plan_path", "trusted_plan_id", "trusted_plan_digest")

@@ -476,7 +476,9 @@ contributing turns, and optional production-shaped rate-card credit equivalents 
 must carry the producer metadata and disclaimer exactly once per observed host/model route; missing credits keep
 only the credit reduction `UNKNOWN` while complete token evidence still reports token reduction. Any arm with incomplete
 usage telemetry keeps the token reduction `UNKNOWN`, even when its known total-token
-counter remains acceptable for production accounting. It reports elapsed time, human
+counter remains acceptable for production accounting. Literal `UNKNOWN` gate
+compliance adds one stable `gate_compliance` reason to the published unknowns;
+known `weakened` compliance remains adverse rather than unknown. It reports elapsed time, human
 coordination time, correction turns, first-pass acceptance, escaped P0/P1
 defects, and gate compliance for both arms. Promotion requires configured
 materially lower token and credit usage with structured policy/publication

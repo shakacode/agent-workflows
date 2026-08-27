@@ -1328,6 +1328,28 @@ class CanonicalTaskControlTest < Minitest::Test
     end
   end
 
+  def test_pilot_reports_unknown_gate_compliance_without_misclassifying_known_weakening
+    pilot = pilot_input
+    pilot.dig("pairs", 0, "ordinary", "metrics")["gate_compliance"] = "UNKNOWN"
+    pilot.dig("pairs", 1, "multi_target", "metrics")["gate_compliance"] = "UNKNOWN"
+
+    result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    assert status.success?, stderr
+    assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict")
+    assert_equal 1, result.fetch("unknowns").count("gate_compliance")
+
+    weakened = pilot_input
+    weakened.dig("pairs", 0, "ordinary", "metrics")["gate_compliance"] = "weakened"
+    result, stderr, status = run_helper(
+      base_input.merge("operation" => "pilot_evaluation", "pilot" => weakened)
+    )
+
+    assert status.success?, stderr
+    assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict")
+    refute_includes result.fetch("unknowns"), "gate_compliance"
+  end
+
   def test_pilot_preserves_multi_target_rollback_when_receipts_are_unsupported
     pilot = pilot_input(variant: :cache_read_unknown)
     input = base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot)
@@ -1546,6 +1568,18 @@ class CanonicalTaskControlTest < Minitest::Test
       "budget_action" => "retry", "budget_lane_id" => lane.fetch("id"),
       "budget_gate" => budget_result(action: "retry", task: task, lane: lane)
     )
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal ["retry"], result.fetch("allowed_actions")
+  end
+
+  def test_budget_action_accepts_canonical_task_and_lane_identity_variants_from_a_production_receipt
+    input = budget_action_input("retry")
+    input.fetch("task")["id"] = "TASK-402"
+    input.dig("task", "lanes", 0)["id"] = "AW-I402"
+    input["budget_lane_id"] = "AW-I402"
 
     result, stderr, status = run_helper(input)
 
