@@ -752,8 +752,8 @@ test_recovery_normalization_failure_releases_install_lock() {
   printf '%s\n' "$staging" > "$receipt"
   cat > "$injection" <<'RUBY'
 module FailRecoveredStagingNormalization
-  def expand_path(path, *)
-    raise "injected recovered-staging normalization failure" if path == ENV["QA_RECOVERED_STAGING"] && ARGV == [path]
+  def realpath(path, *)
+    raise "injected recovered-staging normalization failure" if path == ENV["QA_RECOVERED_STAGING"]
 
     super
   end
@@ -768,7 +768,7 @@ RUBY
   set -e
 
   [[ "$status" -ne 0 ]] || fail "recovered-staging normalization failure unexpectedly succeeded"
-  assert_contains "$output" "injected recovered-staging normalization failure"
+  assert_contains "$output" "RECOVERY_FAILED: unsafe migration staging receipt"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "normalization failure leaked install lock"
   assert_file "$receipt"
   [[ -d "$staging" ]] || fail "normalization failure removed staged recovery data"
@@ -828,7 +828,7 @@ test_first_install_crash_with_absent_metadata_recovers_as_flat() {
 }
 
 test_metadata_appearing_before_lock_is_not_treated_as_absent_recovery() {
-  local tmp target staging receipt metadata fake_bin real_mkdir marker output status
+  local tmp target canonical_target staging receipt metadata fake_bin real_mkdir marker output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-metadata-appeared-before-lock"
@@ -838,6 +838,7 @@ test_metadata_appearing_before_lock_is_not_treated_as_absent_recovery() {
   real_mkdir="$(command -v mkdir)"
   marker="$tmp/metadata-appeared-before-lock"
   mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '%s\n' "$staging" > "$receipt"
   cat > "$fake_bin/mkdir" <<'SH'
@@ -852,7 +853,8 @@ SH
   chmod +x "$fake_bin/mkdir"
   set +e
   output="$(PATH="$fake_bin:$PATH" QA_REAL_MKDIR="$real_mkdir" \
-    QA_INSTALL_LOCK="$target/.agent-workflows-install.lock" QA_INSTALL_METADATA="$metadata" \
+    QA_INSTALL_LOCK="$canonical_target/.agent-workflows-install.lock" \
+    QA_INSTALL_METADATA="$canonical_target/.agent-workflows-install.json" \
     QA_RACE_MARKER="$marker" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
   set -e
@@ -865,7 +867,7 @@ SH
 }
 
 test_metadata_disappearing_before_lock_is_not_treated_as_still_present() {
-  local tmp target staging receipt metadata fake_bin real_mkdir marker output status
+  local tmp target canonical_target staging receipt metadata fake_bin real_mkdir marker output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-metadata-disappeared-before-lock"
@@ -875,6 +877,7 @@ test_metadata_disappearing_before_lock_is_not_treated_as_still_present() {
   real_mkdir="$(command -v mkdir)"
   marker="$tmp/metadata-disappeared-before-lock"
   mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
   printf '%s\n' "$staging" > "$receipt"
@@ -891,7 +894,8 @@ SH
 
   set +e
   output="$(PATH="$fake_bin:$PATH" QA_REAL_MKDIR="$real_mkdir" \
-    QA_INSTALL_LOCK="$target/.agent-workflows-install.lock" QA_INSTALL_METADATA="$metadata" \
+    QA_INSTALL_LOCK="$canonical_target/.agent-workflows-install.lock" \
+    QA_INSTALL_METADATA="$canonical_target/.agent-workflows-install.json" \
     QA_RACE_MARKER="$marker" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
   set -e
@@ -905,7 +909,7 @@ SH
 }
 
 test_metadata_change_after_locked_preflight_fails_before_managed_file_mutation() {
-  local tmp target metadata injection marker output status license_before
+  local tmp target metadata canonical_metadata injection marker output status license_before
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   metadata="$target/.agent-workflows-install.json"
@@ -913,6 +917,7 @@ test_metadata_change_after_locked_preflight_fails_before_managed_file_mutation()
   marker="$tmp/metadata-corrupted-after-temp-write"
   "$ROOT/bin/install-agent-workflows" --host claude --target "$target" --mode copy \
     --delivery-mode flat >"$tmp/initial-install.out"
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
   license_before="$(shasum "$target/LICENSE")"
 
   cat > "$injection" <<'RUBY'
@@ -932,7 +937,7 @@ File.singleton_class.prepend(CorruptMetadataAfterTempWrite)
 RUBY
 
   set +e
-  output="$(QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+  output="$(QA_INSTALL_METADATA="$canonical_metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host claude --target "$target" --mode copy \
     --delivery-mode flat 2>&1)"
   status=$?
@@ -1234,7 +1239,7 @@ RUBY
 }
 
 test_metadata_commit_rolls_back_failed_present_compare_and_swap() {
-  local tmp target metadata preserved injection marker output status metadata_before
+  local tmp target canonical_target metadata canonical_metadata preserved injection marker output status metadata_before
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   metadata="$target/.agent-workflows-install.json"
@@ -1243,6 +1248,8 @@ test_metadata_commit_rolls_back_failed_present_compare_and_swap() {
   marker="$tmp/metadata-replaced-inside-present-commit"
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
     --delivery-mode flat >"$tmp/initial-install.out"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_metadata="$canonical_target/.agent-workflows-install.json"
   metadata_before="$(shasum "$metadata")"
 
   cat > "$injection" <<'RUBY'
@@ -1270,7 +1277,7 @@ end
 RUBY
 
   set +e
-  output="$(QA_TARGET="$target" QA_INSTALL_METADATA="$metadata" \
+  output="$(QA_TARGET="$canonical_target" QA_INSTALL_METADATA="$canonical_metadata" \
     QA_PRESERVED_METADATA="$preserved" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
     --delivery-mode flat 2>&1)"
@@ -1411,7 +1418,7 @@ RUBY
 }
 
 test_metadata_commit_does_not_unlink_replaced_attested_old_destination() {
-  local tmp target metadata preserved injection marker output status
+  local tmp target canonical_target metadata canonical_metadata preserved injection marker output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   metadata="$target/.agent-workflows-install.json"
@@ -1420,6 +1427,8 @@ test_metadata_commit_does_not_unlink_replaced_attested_old_destination() {
   marker="$tmp/attested-old-metadata-replaced"
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
     --delivery-mode flat >"$tmp/initial-install.out"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_metadata="$canonical_target/.agent-workflows-install.json"
 
   cat > "$injection" <<'RUBY'
 if ARGV.length >= 5 && ARGV[0] == ENV.fetch("QA_TARGET") && ARGV[2] == "present"
@@ -1444,7 +1453,7 @@ end
 RUBY
 
   set +e
-  output="$(QA_TARGET="$target" QA_INSTALL_METADATA="$metadata" \
+  output="$(QA_TARGET="$canonical_target" QA_INSTALL_METADATA="$canonical_metadata" \
     QA_PRESERVED_METADATA="$preserved" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
     --delivery-mode flat 2>&1)"
@@ -2080,7 +2089,7 @@ RUBY
 }
 
 test_recovery_metadata_change_during_rollback_preserves_staging_and_tree() {
-  local tmp target staging receipt metadata fake_bin real_mv injection marker output status
+  local tmp target canonical_target staging canonical_staging receipt metadata fake_bin real_mv injection marker output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-binding-race"
@@ -2091,6 +2100,8 @@ test_recovery_metadata_change_during_rollback_preserves_staging_and_tree() {
   injection="$tmp/change-metadata-before-bound-staged-move.rb"
   marker="$tmp/metadata-changed-before-staged-move"
   mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
   printf '%s\n' "$staging" > "$receipt"
@@ -2114,7 +2125,7 @@ RUBY
 
   set +e
   output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" \
-    QA_STAGED_SKILL="$staging/user-owned-skill" QA_SKILLS_ROOT="$target/skills" \
+    QA_STAGED_SKILL="$canonical_staging/user-owned-skill" QA_SKILLS_ROOT="$canonical_target/skills" \
     QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" \
     RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
@@ -2133,7 +2144,7 @@ RUBY
 }
 
 test_recovery_metadata_change_during_companion_cleanup_preserves_staging() {
-  local tmp target staging receipt metadata fake_bin real_mv injection marker output status
+  local tmp target canonical_target staging canonical_staging receipt metadata fake_bin real_mv injection marker output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-cleanup-binding-race"
@@ -2144,6 +2155,8 @@ test_recovery_metadata_change_during_companion_cleanup_preserves_staging() {
   injection="$tmp/change-metadata-before-bound-staging-cleanup.rb"
   marker="$tmp/metadata-changed-before-staging-cleanup"
   mkdir -p "$staging/old-flat-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
   printf 'old flat skill\n' > "$staging/old-flat-skill/SKILL.md"
   printf '{"delivery_mode":"plugin-companion"}\n' > "$metadata"
   printf '%s\n' "$staging" > "$receipt"
@@ -2167,8 +2180,8 @@ end
 RUBY
 
   set +e
-  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_STAGING="$staging" \
-    QA_TARGET="$target" QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" \
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_STAGING="$canonical_staging" \
+    QA_TARGET="$canonical_target" QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" \
     RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
@@ -2184,7 +2197,7 @@ RUBY
 }
 
 test_recovery_staging_replacement_during_rollback_preserves_artifacts() {
-  local tmp target staging preserved receipt outside fake_bin real_mv injection marker output status
+  local tmp target canonical_target staging canonical_staging preserved receipt outside fake_bin real_mv injection marker output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-staging-replacement"
@@ -2196,6 +2209,8 @@ test_recovery_staging_replacement_during_rollback_preserves_artifacts() {
   injection="$tmp/replace-staging-before-bound-rollback-move.rb"
   marker="$tmp/staging-replaced"
   mkdir -p "$staging/user-owned-skill" "$outside/user-owned-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
   printf 'original staged skill\n' > "$staging/user-owned-skill/SKILL.md"
   printf 'outside skill\n' > "$outside/user-owned-skill/SKILL.md"
   printf 'outside sentinel\n' > "$outside/SENTINEL"
@@ -2223,8 +2238,8 @@ end
 RUBY
 
   set +e
-  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_TARGET="$target" \
-    QA_STAGING="$staging" QA_PRESERVED_STAGING="$preserved" QA_OUTSIDE_STAGING="$outside" \
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_TARGET="$canonical_target" \
+    QA_STAGING="$canonical_staging" QA_PRESERVED_STAGING="$preserved" QA_OUTSIDE_STAGING="$outside" \
     QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
@@ -2243,7 +2258,7 @@ RUBY
 }
 
 test_recovery_staging_replacement_during_companion_cleanup_preserves_artifacts() {
-  local tmp target staging preserved receipt outside fake_bin real_mv injection marker output status
+  local tmp target canonical_target staging canonical_staging preserved receipt outside fake_bin real_mv injection marker output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-cleanup-replacement"
@@ -2255,6 +2270,8 @@ test_recovery_staging_replacement_during_companion_cleanup_preserves_artifacts()
   injection="$tmp/replace-staging-before-bound-cleanup-move.rb"
   marker="$tmp/staging-replaced"
   mkdir -p "$staging/old-flat-skill" "$outside" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
   write_native_scw_state codex "$target"
   printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
   printf 'outside sentinel\n' > "$outside/SENTINEL"
@@ -2284,8 +2301,8 @@ end
 RUBY
 
   set +e
-  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_TARGET="$target" \
-    QA_STAGING="$staging" QA_PRESERVED_STAGING="$preserved" QA_OUTSIDE_STAGING="$outside" \
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_TARGET="$canonical_target" \
+    QA_STAGING="$canonical_staging" QA_PRESERVED_STAGING="$preserved" QA_OUTSIDE_STAGING="$outside" \
     QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
@@ -2303,7 +2320,7 @@ RUBY
 }
 
 test_recovery_staging_disappearing_after_identity_capture_fails_closed() {
-  local tmp target staging preserved receipt injection marker counter output status
+  local tmp target staging canonical_staging preserved receipt injection marker counter output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-identity-disappears"
@@ -2313,6 +2330,7 @@ test_recovery_staging_disappearing_after_identity_capture_fails_closed() {
   marker="$tmp/staging-replaced"
   counter="$tmp/staging-lstat-count"
   mkdir -p "$staging/user-owned-skill"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
   printf 'original staged skill\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
   printf '%s\n' "$staging" > "$receipt"
@@ -2339,7 +2357,7 @@ end
 RUBY
 
   set +e
-  output="$(QA_STAGING="$staging" QA_PRESERVED_STAGING="$preserved" QA_RACE_MARKER="$marker" \
+  output="$(QA_STAGING="$canonical_staging" QA_PRESERVED_STAGING="$preserved" QA_RACE_MARKER="$marker" \
     QA_LSTAT_COUNTER="$counter" \
     RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
@@ -2357,7 +2375,7 @@ RUBY
 }
 
 test_recovery_skills_root_replacement_during_reversal_preserves_outside_data() {
-  local tmp target staging receipt outside preserved_skills injection marker output status
+  local tmp target canonical_target staging canonical_staging receipt outside canonical_outside preserved_skills injection marker output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-skills-reversal"
@@ -2367,6 +2385,9 @@ test_recovery_skills_root_replacement_during_reversal_preserves_outside_data() {
   injection="$tmp/replace-skills-root-after-first-move.rb"
   marker="$tmp/skills-root-replaced"
   mkdir -p "$staging/a-first-skill" "$staging/b-second-skill" "$outside/a-first-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  canonical_outside="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$outside")"
   printf 'original first skill\n' > "$staging/a-first-skill/SKILL.md"
   printf 'original second skill\n' > "$staging/b-second-skill/SKILL.md"
   printf 'outside private data\n' > "$outside/a-first-skill/SKILL.md"
@@ -2384,8 +2405,8 @@ end
 RUBY
 
   set +e
-  output="$(QA_STAGING="$staging" QA_SKILLS_ROOT="$target/skills" \
-    QA_PRESERVED_SKILLS="$preserved_skills" QA_OUTSIDE_SKILLS="$outside" \
+  output="$(QA_STAGING="$canonical_staging" QA_SKILLS_ROOT="$canonical_target/skills" \
+    QA_PRESERVED_SKILLS="$preserved_skills" QA_OUTSIDE_SKILLS="$canonical_outside" \
     QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
@@ -2669,7 +2690,7 @@ RUBY
 }
 
 test_companion_cleanup_post_move_replacement_has_named_retry_failure() {
-  local tmp target staging preserved receipt injection marker output retry_output status retry_status
+  local tmp target staging canonical_staging preserved receipt injection marker output retry_output status retry_status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-cleanup-post-move"
@@ -2678,6 +2699,7 @@ test_companion_cleanup_post_move_replacement_has_named_retry_failure() {
   injection="$tmp/replace-cleanup-staging-after-move.rb"
   marker="$tmp/cleanup-staging-replaced"
   mkdir -p "$staging/old-flat-skill"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
   write_native_scw_state codex "$target"
   printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
   printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
@@ -2695,7 +2717,7 @@ end
 RUBY
 
   set +e
-  output="$(QA_STAGING="$staging" QA_PRESERVED_STAGING="$preserved" QA_RACE_MARKER="$marker" \
+  output="$(QA_STAGING="$canonical_staging" QA_PRESERVED_STAGING="$preserved" QA_RACE_MARKER="$marker" \
     RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
@@ -2720,7 +2742,7 @@ RUBY
 }
 
 test_companion_cleanup_post_move_exception_restores_receipted_staging() {
-  local tmp target staging receipt injection marker output status cleanup_root
+  local tmp target canonical_target staging receipt injection marker output status cleanup_root
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-cleanup-post-move-exception"
@@ -2728,6 +2750,7 @@ test_companion_cleanup_post_move_exception_restores_receipted_staging() {
   injection="$tmp/fail-cleanup-post-move-verify.rb"
   marker="$tmp/cleanup-post-move-exception"
   mkdir -p "$staging/old-flat-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
   write_native_scw_state codex "$target"
   printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
   printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
@@ -2747,7 +2770,7 @@ end
 RUBY
 
   set +e
-  output="$(QA_TARGET="$target" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+  output="$(QA_TARGET="$canonical_target" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
   set -e
@@ -2766,7 +2789,7 @@ RUBY
 }
 
 test_companion_cleanup_root_replacement_cannot_move_staging_outside_target() {
-  local tmp target staging receipt outside preserved_root injection marker output status
+  local tmp target staging canonical_staging receipt outside canonical_outside preserved_root injection marker output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-cleanup-root-replacement"
@@ -2776,6 +2799,8 @@ test_companion_cleanup_root_replacement_cannot_move_staging_outside_target() {
   injection="$tmp/replace-cleanup-root-before-move.rb"
   marker="$tmp/cleanup-root-replaced"
   mkdir -p "$staging/old-flat-skill" "$outside"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  canonical_outside="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$outside")"
   write_native_scw_state codex "$target"
   printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
   printf 'outside sentinel\n' > "$outside/SENTINEL"
@@ -2796,7 +2821,7 @@ end
 RUBY
 
   set +e
-  output="$(QA_STAGING="$staging" QA_OUTSIDE_CLEANUP="$outside" \
+  output="$(QA_STAGING="$canonical_staging" QA_OUTSIDE_CLEANUP="$canonical_outside" \
     QA_PRESERVED_CLEANUP_ROOT="$preserved_root" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
@@ -2978,7 +3003,7 @@ RUBY
 }
 
 test_mid_rollback_backup_change_does_not_blame_intact_metadata() {
-  local tmp target staging receipt metadata injection marker output status quarantine
+  local tmp target canonical_target staging canonical_staging receipt metadata injection marker output status quarantine
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-backup-change"
@@ -2987,6 +3012,8 @@ test_mid_rollback_backup_change_does_not_blame_intact_metadata() {
   injection="$tmp/change-backup-after-first-move.rb"
   marker="$tmp/backup-changed"
   mkdir -p "$staging/user-owned-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
   printf '%s\n' "$staging" > "$receipt"
@@ -2999,7 +3026,7 @@ end
 RUBY
 
   set +e
-  output="$(QA_STAGED_SKILL="$staging/user-owned-skill" QA_TARGET="$target" QA_RACE_MARKER="$marker" \
+  output="$(QA_STAGED_SKILL="$canonical_staging/user-owned-skill" QA_TARGET="$canonical_target" QA_RACE_MARKER="$marker" \
     RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
@@ -3630,10 +3657,14 @@ RUBY
 }
 
 test_normal_guard_cleanup_preserves_post_attestation_replacement() {
-  local tmp target lock guard injection output status preserved
+  local tmp target lock guard metadata canonical_metadata canonical_lock canonical_guard injection output status preserved
   tmp="$(mktemp -d)"; target="$tmp/codex-home"; lock="$target/.agent-workflows-install.lock"
-  guard="$lock/metadata-commit-old.guard"; injection="$tmp/swap-normal-guard-cleanup.rb"
+  guard="$lock/metadata-commit-old.guard"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/swap-normal-guard-cleanup.rb"
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
+  canonical_lock="$(dirname "$canonical_metadata")/.agent-workflows-install.lock"
+  canonical_guard="$canonical_lock/metadata-commit-old.guard"
   cat > "$injection" <<'RUBY'
 module AtomicMetadataGuardCleanupHook
   def self.call
@@ -3655,16 +3686,16 @@ end
 File.singleton_class.prepend(ChangeMetadataAfterPreparation)
 RUBY
   set +e
-  output="$(QA_GUARD="$guard" QA_METADATA="$target/.agent-workflows-install.json" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  output="$(QA_GUARD="$canonical_guard" QA_METADATA="$canonical_metadata" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
   set -e
   [[ "$status" -ne 0 ]] || fail "normal guard cleanup replacement unexpectedly succeeded"
   grep -Rql "foreign normal guard replacement" "$lock" || \
     fail "normal guard cleanup deleted foreign replacement"
   assert_file "$guard.attested"
-  preserved="$(find "$lock" -maxdepth 1 -type f -name 'metadata-commit-old.cleanup-*' -print -quit)"
+  preserved="$(find "$canonical_lock" -maxdepth 1 -type f -name 'metadata-commit-old.cleanup-*' -print -quit)"
   [[ -n "$preserved" ]] || fail "normal guard cleanup did not retain private evidence"
   assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $preserved"
-  assert_not_contains "$output" "METADATA_CLEANUP_PENDING: preserved $guard because"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING: preserved $canonical_guard because"
 }
 
 test_successful_install_reports_retained_lock_cleanup_pending() {
@@ -3817,7 +3848,7 @@ RUBY
 }
 
 test_snapshot_only_corruption_restores_before_reporting() {
-  local tmp target staging receipt metadata fake_bin real_mv injection output status
+  local tmp target canonical_target staging canonical_staging receipt metadata fake_bin real_mv injection output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-snapshot-corrupt"
@@ -3827,6 +3858,8 @@ test_snapshot_only_corruption_restores_before_reporting() {
   real_mv="$(command -v mv)"
   injection="$tmp/corrupt-snapshot-before-bound-staged-move.rb"
   mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
   printf '%s\n' "$staging" > "$receipt"
@@ -3849,8 +3882,8 @@ end
 RUBY
 
   set +e
-  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_TARGET="$target" \
-    QA_STAGED_SKILL="$staging/user-owned-skill" QA_SKILLS_ROOT="$target/skills" \
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_TARGET="$canonical_target" \
+    QA_STAGED_SKILL="$canonical_staging/user-owned-skill" QA_SKILLS_ROOT="$canonical_target/skills" \
     RUBYOPT="-r$injection" \
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
@@ -5024,7 +5057,7 @@ RUBY
 }
 
 test_metadata_attestation_hashes_opened_inode_without_reopening_path() {
-  local tmp target staging receipt metadata replacement injection marker fake_bin real_mktemp
+  local tmp target staging receipt metadata canonical_metadata replacement injection marker fake_bin real_mktemp
   local quarantine_attempt output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
@@ -5040,6 +5073,7 @@ test_metadata_attestation_hashes_opened_inode_without_reopening_path() {
   mkdir -p "$staging/user-owned-skill" "$fake_bin"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
   printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
   printf '[]\n' > "$replacement"
   printf '%s\n' "$staging" > "$receipt"
   cat > "$injection" <<'RUBY'
@@ -5068,7 +5102,7 @@ SH
 
   set +e
   output="$(PATH="$fake_bin:$PATH" QA_REAL_MKTEMP="$real_mktemp" QA_QUARANTINE_ATTEMPT="$quarantine_attempt" \
-    QA_METADATA_PATH="$metadata" QA_REPLACEMENT_PATH="$replacement" QA_RACE_MARKER="$marker" \
+    QA_METADATA_PATH="$canonical_metadata" QA_REPLACEMENT_PATH="$replacement" QA_RACE_MARKER="$marker" \
     RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
   set -e
@@ -6034,16 +6068,18 @@ RUBY
 }
 
 test_recovery_unsupported_string_between_reads_preserves_receipt() {
-  local tmp target staging receipt injection counter output status receipt_before
+  local tmp target staging receipt metadata canonical_metadata injection counter output status receipt_before
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-invalid-between-reads"
   receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
   injection="$tmp/write-invalid-metadata-after-first-reader-exits.rb"
   counter="$tmp/metadata-reader-count"
   mkdir -p "$staging/user-owned-skill"
   printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
-  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
   printf '%s\n' "$staging" > "$receipt"
   receipt_before="$(shasum "$receipt")"
   cat > "$injection" <<'RUBY'
@@ -6061,7 +6097,7 @@ end
 RUBY
 
   set +e
-  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$canonical_metadata" \
     RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
   set -e
