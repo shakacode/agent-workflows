@@ -1500,9 +1500,22 @@ class MergeAssuranceTest < Minitest::Test
     runner = MergeAssurance::Runner.new
     termination_attempts = 0
     real_termination = runner.method(:terminate_selected_hosted_ci_process_group)
+    real_group_alive = runner.method(:selected_hosted_ci_process_group_alive?)
+    force_post_cleanup_liveness_probe = false
+    # Model a stale post-cleanup liveness observation so the old ensure retry
+    # stays observable while every termination attempt still runs real cleanup.
+    runner.define_singleton_method(:selected_hosted_ci_process_group_alive?) do |pid|
+      if force_post_cleanup_liveness_probe
+        force_post_cleanup_liveness_probe = false
+        true
+      else
+        real_group_alive.call(pid)
+      end
+    end
     runner.define_singleton_method(:terminate_selected_hosted_ci_process_group) do |pid|
       termination_attempts += 1
       status, _cleanup_complete = real_termination.call(pid)
+      force_post_cleanup_liveness_probe = true
       [status, false]
     end
     Dir.mktmpdir("merge-assurance-hosted-cleanup-failure") do |directory|
