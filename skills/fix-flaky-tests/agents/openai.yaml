@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Fix Flaky Tests"
+  short_description: "Diagnose and fix intermittent CI tests"
+  default_prompt: "Use $fix-flaky-tests to investigate a test that fails intermittently in CI."
