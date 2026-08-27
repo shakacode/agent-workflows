@@ -226,7 +226,6 @@ precise blocker.
    coordinator-owned lane record or Lane Card that the coordinator can read.
    Every added path not yet reflected in its verified file-touch map must have
    an active typed `expansion-path-reservation` before edit.
-   After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
    When a lane is the
    sole active editor, the coordinator durably records the reservation,
    refreshes authoritative file-touch maps, lane lifecycle state, and
@@ -250,6 +249,7 @@ precise blocker.
    and it is removed once reflected or cancelled. A collision or `UNKNOWN`
    collision state remains stopped until then. A missing path alone is not
    material scope growth and must not produce `blocked-user-input`.
+   After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
    Directory renames use a distinct `expansion-rename-reservation` v1 record
    with canonical, distinct `old` and `new` endpoints; only this typed rename
    form adds ancestor/descendant collision checks, while scalar path
