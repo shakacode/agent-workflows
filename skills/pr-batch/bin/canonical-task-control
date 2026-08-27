@@ -2618,7 +2618,7 @@ module CanonicalTaskControl
   end
 
   def rfc3339_utc?(value)
-    value.to_s.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/)
+    value.to_s.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\z/)
   end
 end
 

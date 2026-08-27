@@ -116,7 +116,7 @@ Retain at most 16 children and 64 KiB per
 receipt. Emit a digest-bound child closure receipt and close completed children
 with `resumable: false`; resume only when explicit decision continuity justifies it
 and all ordinary budget/ownership/replacement gates pass.
-Packet, receipt, closed state, and trusted #392 result bind the exact
+Packet, receipt, closed state, and trusted `exact-diff-review-result` v1 record bind the exact
 batch/task/plan/spec, lane/target/role/scope, diff identity, base/head, package,
 and review round. Findings require a trusted schema-validator result for their
 exact digest plus a successful in-memory call to the identity-checked repository

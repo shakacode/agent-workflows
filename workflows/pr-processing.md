@@ -687,9 +687,10 @@ verification, and stop conditions. Accept only one matching
 verification, and open decisions. Packet, receipt, and closed state bind one to
 one across child/lane/target/role/scope plus the exact manifest head; each
 record's actor must equal the corresponding checker/reviewer/QA actor in
-manifest ownership. They also bind
-one #392-compatible batch/task/plan/spec identity, exact diff identity, base/head,
-review package, review round, and findings-result record. Findings require a
+manifest ownership. They also bind one batch/task/plan/spec identity, exact diff
+identity, base/head, review package, and review round across the packet, receipt,
+and closed state; the receipt's trusted `exact-diff-review-result` v1 record
+binds that same identity plus the exact findings. Findings require a
 trusted schema-validator result bound to their exact digest. Nested `UNKNOWN`
 evidence fails closed. Retain at most 16 children, 32 items in each compact
 child array, 512 bytes per string, and 64 KiB per receipt. After accepting a

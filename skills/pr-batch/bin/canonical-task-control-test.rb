@@ -886,6 +886,32 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_equal 3, result.fetch("usage_reconciliation").fetch("contributing_turns")
   end
 
+  def test_usage_reconciliation_accepts_batch_usage_producer_fractional_utc_window
+    input = usage_reconciliation_input
+    apply_producer_fractional_window!(input.fetch("usage_reconciliation"))
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal ["record_usage_reconciliation"], result.fetch("allowed_actions")
+  end
+
+  def test_usage_reconciliation_rejects_empty_fraction_or_utc_offset
+    ["2026-08-12T00:00:00.Z", "2026-08-12T00:00:00+00:00"].each do |invalid_time|
+      input = usage_reconciliation_input
+      reconciliation = input.fetch("usage_reconciliation")
+      reconciliation.dig("usage_receipt", "window")["from_inclusive"] = invalid_time
+      reconciliation.dig("budget_result", "receipts").each do |record|
+        record["from_inclusive"] = invalid_time
+      end
+      refresh_usage_artifact!(reconciliation)
+
+      _result, _stderr, status = run_helper(input)
+
+      refute status.success?, "invalid UTC timestamp passed: #{invalid_time}"
+    end
+  end
+
   def test_usage_reconciliation_rejects_digest_or_balancing_mismatch
     input = usage_reconciliation_input
     input["usage_reconciliation"]["usage_receipt_digest"] = "sha256:#{'0' * 64}"
@@ -1145,6 +1171,20 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_equal "allow", result.fetch("verdict")
     assert_empty result.fetch("unknowns")
     assert_equal 10, result.fetch("matched_pair_count")
+  end
+
+  def test_pilot_accepts_batch_usage_producer_fractional_utc_windows
+    pilot = pilot_input
+    pilot.fetch("pairs").each do |pair|
+      %w[ordinary multi_target].each do |arm_name|
+        apply_producer_fractional_window!(pair.fetch(arm_name))
+      end
+    end
+
+    result, stderr, status = run_helper(base_input.merge("operation" => "pilot_evaluation", "pilot" => pilot))
+
+    assert status.success?, stderr
+    assert_equal "promote_ordinary_default", result.fetch("pilot_verdict")
   end
 
   def test_pilot_requires_satisfied_bound_execution_capabilities_before_promotion
@@ -2556,6 +2596,18 @@ class CanonicalTaskControlTest < Minitest::Test
       record["usage_receipt_digest"] = digest
       record["receipt_ref"] = reference
     end
+  end
+
+  def apply_producer_fractional_window!(container)
+    window = container.fetch("usage_receipt").fetch("window")
+    %w[from_inclusive to_exclusive].each do |field|
+      window[field] = Time.iso8601(window.fetch(field)).utc.iso8601(9)
+    end
+    container.fetch("budget_result").fetch("receipts").each do |record|
+      record["from_inclusive"] = window.fetch("from_inclusive")
+      record["to_exclusive"] = window.fetch("to_exclusive")
+    end
+    refresh_usage_artifact!(container)
   end
 
   def delegation_approval
