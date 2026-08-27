@@ -7559,7 +7559,8 @@ RUBY
   [[ -n "$(find "$moved" -type f -name 'agent-workflows-metadata-*.tmp' -print -quit)" ]] || fail "held quarantine did not preserve temporary evidence"
   assert_file "$receipt"; assert_file "$metadata"
   rm "$(find "$target" -maxdepth 1 -type l -name '.agent-workflows-install.json.recovery-*' -print -quit)"
-  rm -rf "$moved"
+  find "$moved" -mindepth 1 -maxdepth 1 -type f -delete
+  rmdir "$moved"
   retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
 }
