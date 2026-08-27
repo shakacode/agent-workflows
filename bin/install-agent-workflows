@@ -78,6 +78,21 @@ default_target_for_host() {
   esac
 }
 
+canonicalize_target_path() {
+  ruby -e '
+    path = File.expand_path(ARGV.fetch(0))
+    begin
+      File.lstat(path)
+    rescue Errno::ENOENT
+      print path
+      exit
+    end
+    path = File.realpath(path)
+    abort unless File.directory?(path)
+    print path
+  ' "$1" 2>/dev/null
+}
+
 resolve_auto_target() {
   local codex_home="${CODEX_HOME:-$HOME/.codex}"
   local claude_home="${CLAUDE_HOME:-$HOME/.claude}"
@@ -106,11 +121,18 @@ resolve_auto_target() {
 
 resolve_host_and_target() {
   if [[ -n "$target" ]]; then
-    target="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$target")"
+    local requested_target="$target" canonical_target
+    if ! canonical_target="$(canonicalize_target_path "$requested_target")"; then
+      echo "Refusing target that cannot be resolved to an existing directory: $requested_target" >&2
+      return 1
+    fi
+    target="$canonical_target"
     if [[ "$host" = "auto" ]]; then
       local codex_home claude_home
-      codex_home="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "${CODEX_HOME:-$HOME/.codex}")"
-      claude_home="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "${CLAUDE_HOME:-$HOME/.claude}")"
+      codex_home="$(canonicalize_target_path "${CODEX_HOME:-$HOME/.codex}")" || \
+        codex_home="$(ruby -e 'print File.expand_path(ARGV.fetch(0))' "${CODEX_HOME:-$HOME/.codex}")"
+      claude_home="$(canonicalize_target_path "${CLAUDE_HOME:-$HOME/.claude}")" || \
+        claude_home="$(ruby -e 'print File.expand_path(ARGV.fetch(0))' "${CLAUDE_HOME:-$HOME/.claude}")"
       local codex_marker=false claude_marker=false
       [[ "$target" = "$codex_home" || -f "$target/config.toml" ]] && codex_marker=true
       [[ "$target" = "$claude_home" || -f "$target/settings.json" || -f "$target/plugins/installed_plugins.json" ]] && claude_marker=true
@@ -3178,6 +3200,14 @@ validate_delivery_mode "--delivery-mode"
 resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
+if [[ -e "$target" || -L "$target" ]]; then
+  requested_target="$target"
+  if ! canonical_target="$(canonicalize_target_path "$requested_target")"; then
+    echo "Refusing target that cannot be resolved to an existing directory: $requested_target" >&2
+    exit 1
+  fi
+  target="$canonical_target"
+fi
 delivery_mode_was_explicit=false
 [[ -z "$delivery_mode" ]] || delivery_mode_was_explicit=true
 resolve_delivery_mode

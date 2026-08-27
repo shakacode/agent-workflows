@@ -331,6 +331,66 @@ test_native_plugin_plus_default_flat_install_fails_before_mutation() {
   done
 }
 
+test_existing_symlink_target_is_canonicalized_before_install() {
+  local tmp actual target output status
+  tmp="$(mktemp -d)"; actual="$tmp/actual-codex-home"; target="$tmp/codex-home"
+  mkdir -p "$actual"; ln -s "$actual" "$target"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "symlink target install exited $status: $output"
+  assert_symlink "$target"
+  assert_file "$actual/.agent-workflows-install.json"
+  assert_file "$actual/skills/pr-batch/SKILL.md"
+  [[ ! -e "$actual/.agent-workflows-install.lock" ]] || fail "symlink target install retained lock"
+}
+
+test_auto_host_classifies_configured_home_symlink_aliases() {
+  local tmp codex_home claude_home codex_alias claude_alias
+  tmp="$(mktemp -d)"; codex_home="$tmp/codex-home"; claude_home="$tmp/claude-home"
+  codex_alias="$tmp/codex-alias"; claude_alias="$tmp/claude-alias"
+  mkdir -p "$codex_home" "$claude_home"; ln -s "$codex_home" "$codex_alias"; ln -s "$claude_home" "$claude_alias"
+  CODEX_HOME="$codex_home" CLAUDE_HOME="$tmp/unused-claude" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$codex_alias" --mode copy --delivery-mode flat >/dev/null
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("host")' "$codex_home/.agent-workflows-install.json")" = codex ]] || \
+    fail "auto host misclassified configured Codex home alias"
+  CODEX_HOME="$tmp/unused-codex" CLAUDE_HOME="$claude_home" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$claude_alias" --mode copy --delivery-mode flat >/dev/null
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("host")' "$claude_home/.agent-workflows-install.json")" = claude ]] || \
+    fail "auto host misclassified configured Claude home alias"
+}
+
+test_auto_host_ignores_invalid_unrelated_configured_home() {
+  local tmp codex_home claude_home codex_alias claude_alias dangling_claude file_codex
+  tmp="$(mktemp -d)"; codex_home="$tmp/codex-home"; claude_home="$tmp/claude-home"
+  codex_alias="$tmp/codex-alias"; claude_alias="$tmp/claude-alias"
+  dangling_claude="$tmp/dangling-claude"; file_codex="$tmp/file-codex"
+  mkdir -p "$codex_home" "$claude_home"; ln -s "$codex_home" "$codex_alias"; ln -s "$claude_home" "$claude_alias"
+  ln -s "$tmp/missing-claude" "$dangling_claude"; printf 'not a home\n' > "$file_codex"
+  CODEX_HOME="$codex_home" CLAUDE_HOME="$dangling_claude" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$codex_alias" --mode copy --delivery-mode flat >/dev/null
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("host")' "$codex_home/.agent-workflows-install.json")" = codex ]] || \
+    fail "dangling unrelated Claude home blocked Codex alias classification"
+  CODEX_HOME="$file_codex" CLAUDE_HOME="$claude_home" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$claude_alias" --mode copy --delivery-mode flat >/dev/null
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("host")' "$claude_home/.agent-workflows-install.json")" = claude ]] || \
+    fail "file unrelated Codex home blocked Claude alias classification"
+}
+
+test_invalid_explicit_target_diagnostics_preserve_exact_path() {
+  local tmp dangling file output status
+  tmp="$(mktemp -d)"; dangling="$tmp/dangling-target"; file="$tmp/file-target"
+  ln -s "$tmp/missing-target" "$dangling"; printf 'not a directory\n' > "$file"
+  for target in "$dangling" "$file"; do
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+    set -e
+    [[ "$status" -ne 0 ]] || fail "invalid explicit target succeeded: $target"
+    assert_contains "$output" "Refusing target that cannot be resolved to an existing directory: $target"
+  done
+}
+
 test_plugin_companion_installs_non_skill_assets_and_records_mode() {
   local tmp target consumer host output
 
@@ -6878,6 +6938,10 @@ main() {
   local tests=(
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
+    test_existing_symlink_target_is_canonicalized_before_install
+    test_auto_host_classifies_configured_home_symlink_aliases
+    test_auto_host_ignores_invalid_unrelated_configured_home
+    test_invalid_explicit_target_diagnostics_preserve_exact_path
     test_plugin_companion_installs_non_skill_assets_and_records_mode
     test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
