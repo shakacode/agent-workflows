@@ -2200,14 +2200,18 @@ commit_metadata() {
           begin
             restored_temporary = open_at.call(temporary_name)
             raise MetadataBindingChanged unless attestation.call(restored_temporary) == expected_prepared
-            close_descriptor.call(restored_temporary)
             begin
               stale_destination = open_at.call(metadata_name)
               raise MetadataBindingChanged
             rescue Errno::ENOENT
+              remove_exact.call(directory, temporary_name, restored_temporary, expected_prepared)
+              close_descriptor.call(restored_temporary)
+              restored_temporary = nil
               absent_moved = false
+              rollback_succeeded = true
             ensure
               close_descriptor.call(stale_destination)
+              close_descriptor.call(restored_temporary)
             end
           rescue StandardError
             rollback_failed = true

@@ -1231,8 +1231,11 @@ RUBY
   set -e
 
   assert_file "$marker"
-  [[ "$status" -eq 65 ]] || fail "absent post-rename metadata failure exited $status: $output"
-  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$status" -eq 69 ]] || fail "absent post-rename metadata failure exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_ROLLED_BACK"
+  assert_contains "$output" "may be retried"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING"
   assert_not_contains "$output" "preserved $metadata without overwriting it"
   [[ ! -e "$metadata" && ! -L "$metadata" ]] || \
     fail "absent metadata commit was not reversed after post-rename failure"
