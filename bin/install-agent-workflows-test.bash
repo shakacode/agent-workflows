@@ -7278,7 +7278,7 @@ RUBY
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
 }
 
-test_recovery_holder_close_failure_removes_committed_empty_holder() {
+test_persistent_recovery_holder_close_failure_removes_committed_empty_holder() {
   local tmp target staging receipt injection marker output status retry_output
   tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-holder-close"
   receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-recovery-holder-close.rb"; marker="$tmp/holder-close-failed"
@@ -7286,11 +7286,18 @@ test_recovery_holder_close_failure_removes_committed_empty_holder() {
   printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"; printf '%s\n' "$staging" > "$receipt"
   cat > "$injection" <<'RUBY'
 module FailRecoveryHolderClose
+  class << self
+    attr_accessor :holder_id
+  end
+
   def close(*)
     if ARGV.length == 6 && ARGV.fetch(1).start_with?(".agent-workflows-install.json.recovery-") &&
-       !File.exist?(ENV.fetch("QA_RACE_MARKER"))
-      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
-      raise Errno::EIO
+       !closed? && stat.directory?
+      FailRecoveryHolderClose.holder_id ||= object_id
+      if object_id == FailRecoveryHolderClose.holder_id
+        File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n") unless File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        raise Errno::EIO
+      end
     end
     super
   end
@@ -7327,7 +7334,7 @@ main() {
     test_recovery_cleanup_close_failure_finalizes_deleted_staging
     test_prebind_guard_close_failure_does_not_leak_lock
     test_metadata_probe_close_failure_cleans_lock_and_allows_retry
-    test_recovery_holder_close_failure_removes_committed_empty_holder
+    test_persistent_recovery_holder_close_failure_removes_committed_empty_holder
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_existing_symlink_target_is_canonicalized_before_install

@@ -1542,6 +1542,7 @@ remove_bound_recovery_metadata_artifacts() {
       rescue StandardError
         holder_close_failed = true
       end
+      ios.delete_if { |io| io.equal?(holder_file) }
       remove_directory = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
       raise CleanupFailed unless RecoveryCleanupSyscalls.unlinkat(target_file.fileno, holder_name, remove_directory) == 0
       holder_name = nil
