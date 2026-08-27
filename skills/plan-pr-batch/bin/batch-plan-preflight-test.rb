@@ -585,6 +585,20 @@ class BatchPlanPreflightTest < Minitest::Test
                     "durable-ad-hoc-override-invalid"
   end
 
+  def test_unknown_ad_hoc_target_slug_is_not_task_specific
+    target = durable_ad_hoc_target.merge(
+      "target" => "adhoc:20260824-unknown",
+      "stable_coordination_identity" => "owner/repo:adhoc:20260824-unknown"
+    )
+
+    result, _stderr, status = evaluate(input_for(lanes: [lane(target: target)]))
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "durable-ad-hoc-override-invalid"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
   def test_generic_intent_cannot_fill_durable_ad_hoc_override_provenance
     generic_target = durable_ad_hoc_target.merge(
       "override_name" => "$pr-batch",

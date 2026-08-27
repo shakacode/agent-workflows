@@ -409,6 +409,7 @@ module BatchPlanPreflight
   def valid_ad_hoc_target_identity?(value)
     match = AD_HOC_TARGET_PATTERN.match(value.to_s)
     return false unless match
+    return false if match[2].casecmp?("UNKNOWN")
 
     Date.strptime(match[1], "%Y%m%d").strftime("%Y%m%d") == match[1]
   rescue Date::Error
