@@ -7249,6 +7249,70 @@ RUBY
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
 }
 
+test_metadata_probe_close_failure_cleans_lock_and_allows_retry() {
+  local tmp target injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-probe-close.rb"; marker="$tmp/probe-close-failed"
+  cat > "$injection" <<'RUBY'
+module FailProbeDescriptorClose
+  def close(*)
+    Thread.current[:qa_probe_close_count] = Thread.current.fetch(:qa_probe_close_count, 0) + 1
+    if ARGV.length == 1 && ARGV.fetch(0).end_with?("/.agent-workflows-install.lock") &&
+       Thread.current[:qa_probe_close_count] == 3 && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailProbeDescriptorClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 1 ]] || fail "metadata probe close failure exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "metadata probe close failure leaked install lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_recovery_holder_close_failure_removes_committed_empty_holder() {
+  local tmp target staging receipt injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-holder-close"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-recovery-holder-close.rb"; marker="$tmp/holder-close-failed"
+  mkdir -p "$staging/user-owned-skill"; printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailRecoveryHolderClose
+  def close(*)
+    if ARGV.length == 6 && ARGV.fetch(1).start_with?(".agent-workflows-install.json.recovery-") &&
+       !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailRecoveryHolderClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 0 ]] || fail "recovery holder close failure exited $status: $output"
+  assert_not_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  [[ ! -e "$receipt" ]] || fail "recovery holder close failure retained migration receipt"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "recovery holder close failure retained holder"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.cleanup-complete-*' -print -quit)" ]] || \
+    fail "recovery holder close failure retained completion receipt"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
 main() {
   TEST_SOURCE_ROOT="$(mktemp -d)"
   new_source_repo "$TEST_SOURCE_ROOT"
@@ -7262,6 +7326,8 @@ main() {
     test_recovery_move_close_failure_reverses_committed_move
     test_recovery_cleanup_close_failure_finalizes_deleted_staging
     test_prebind_guard_close_failure_does_not_leak_lock
+    test_metadata_probe_close_failure_cleans_lock_and_allows_retry
+    test_recovery_holder_close_failure_removes_committed_empty_holder
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_existing_symlink_target_is_canonicalized_before_install

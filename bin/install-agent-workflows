@@ -1376,6 +1376,8 @@ remove_bound_recovery_metadata_artifacts() {
     mode_restore_failed = false
     close_failed = false
     detached = false
+    deletion_committed = false
+    holder_close_failed = false
     cleanup_status = 67
     identity = lambda { |stat| "#{stat.dev}:#{stat.ino}" }
     open_at = lambda do |directory, name|
@@ -1534,7 +1536,12 @@ remove_bound_recovery_metadata_artifacts() {
       if receipt_name
         raise CleanupFailed unless RecoveryCleanupSyscalls.unlinkat(holder_file.fileno, "cleanup-receipt", 0) == 0
       end
-      holder_file.close
+      deletion_committed = true
+      begin
+        holder_file.close
+      rescue StandardError
+        holder_close_failed = true
+      end
       remove_directory = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
       raise CleanupFailed unless RecoveryCleanupSyscalls.unlinkat(target_file.fileno, holder_name, remove_directory) == 0
       holder_name = nil
@@ -1571,7 +1578,7 @@ remove_bound_recovery_metadata_artifacts() {
     end
     puts(holder_path || File.join(target, holder_name)) if cleanup_status == 67 && holder_name
     puts(File.join(target, quarantine_name)) if cleanup_status == 68
-    exit 67 if mode_restore_failed || close_failed
+    exit 67 if mode_restore_failed || close_failed || (holder_close_failed && (!deletion_committed || holder_name))
     exit cleanup_status
   ' "$target" "${recovery_metadata_quarantine##*/}" "$recovery_metadata_quarantine_identity" \
     "$recovery_metadata_snapshot_identity" "$recovery_metadata_backup_identity" \
@@ -1874,7 +1881,13 @@ preflight_metadata_commit_capability() {
       abort unless named_lock_stat.directory? && !named_lock_stat.symlink? &&
                    named_lock_stat.dev == directory_stat.dev && named_lock_stat.ino == directory_stat.ino
     ensure
-      ios.reverse_each { |io| io.close unless io.closed? }
+      ios.reverse_each do |io|
+        begin
+          io.close unless io.closed?
+        rescue StandardError
+          cleanup_failed = true
+        end
+      end
       if directory
         [first_name, second_name, link_name].each do |name|
           next if AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0) == 0
@@ -1883,7 +1896,11 @@ preflight_metadata_commit_capability() {
           AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0)
         end
       end
-      directory&.close
+      begin
+        directory&.close unless directory&.closed?
+      rescue StandardError
+        cleanup_failed = true
+      end
       raise "atomic metadata rename probe cleanup failed" if cleanup_failed
     end
   ' "$install_lock" 2>/dev/null || probe_status=$?
