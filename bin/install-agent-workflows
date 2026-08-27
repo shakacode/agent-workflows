@@ -300,11 +300,12 @@ read_installed_metadata_value() {
 }
 
 capture_bound_recovery_metadata() {
-  ruby -rdigest -rfiddle/import -rtempfile -rsecurerandom -e '
+  ruby -rdigest -rfiddle/import -rsecurerandom -e '
     module RecoverySyscalls
       extend Fiddle::Importer
       dlload Fiddle.dlopen(nil)
-      extern "int openat(int, const char *, int)"
+      extern "int openat(int, const char *, int, unsigned int)"
+      extern "int fchmod(int, unsigned int)"
       extern "int linkat(int, const char *, int, const char *, int)"
       extern "int unlinkat(int, const char *, int)"
       if RUBY_PLATFORM.include?("darwin")
@@ -344,7 +345,7 @@ capture_bound_recovery_metadata() {
       result
     end
     open_at = lambda do |directory, name, flags|
-      result = RecoverySyscalls.openat(directory.fileno, name, flags)
+      result = RecoverySyscalls.openat(directory.fileno, name, flags, 0)
       fd = syscall.call(result, "openat #{name}")
       io = IO.new(fd, flags & File::WRONLY == File::WRONLY ? "w" : "r")
       ios << io
@@ -370,24 +371,36 @@ capture_bound_recovery_metadata() {
       directory
     end
     create_copy = lambda do |source, name, expected_digest, mode|
-      quarantine_path = File.join(target, quarantine_name)
-      named_quarantine_stat = File.lstat(quarantine_path)
-      raise BindingChanged unless named_quarantine_stat.directory? &&
-                                  identity.call(named_quarantine_stat) == expected_quarantine
-      temporary = Tempfile.new(["agent-workflows-metadata-", ".tmp"], quarantine_path)
+      temporary = nil
+      RecoveryCaptureHook.call(:before_temporary_create) if defined?(RecoveryCaptureHook)
+      temporary_name = nil
+      10.times do
+        candidate = "agent-workflows-metadata-#{SecureRandom.hex(16)}.tmp"
+        fd = RecoverySyscalls.openat(
+          quarantine_file.fileno,
+          candidate,
+          File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW,
+          0o600
+        )
+        next if fd == -1 && Fiddle.last_error == Errno::EEXIST::Errno
+        syscall.call(fd, "openat temporary metadata")
+        temporary_name = candidate
+        temporary = IO.new(fd, "w+")
+        break
+      end
+      raise BindingChanged unless temporary && temporary_name
       temporary.binmode
       source.rewind
       IO.copy_stream(source, temporary)
       temporary.flush
       temporary.fsync
-      temporary.chmod(mode & 0o7777)
+      syscall.call(RecoverySyscalls.fchmod(temporary.fileno, mode & 0o7777), "fchmod temporary metadata")
       temporary.rewind
       temporary_attestation = attestation.call(temporary)
       raise BindingChanged unless temporary_attestation.split("|", 2).fetch(1) == expected_digest
-      temporary_path = temporary.path
-      temporary_name = File.basename(temporary_path)
-      named_temporary = File.open(temporary_path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
-      ios << named_temporary
+      named_temporary = open_at.call(
+        quarantine_file, temporary_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
       raise BindingChanged unless identity.call(named_temporary.stat) == identity.call(temporary.stat)
       rebound_quarantine = named_directory.call(target_file, quarantine_name, expected_quarantine)
       rebound_quarantine.close
@@ -1410,7 +1423,6 @@ remove_bound_recovery_metadata_artifacts() {
     mode_restore_failed = false
     close_failed = false
     detached = false
-    deletion_committed = false
     holder_close_failed = false
     cleanup_status = 67
     identity = lambda { |stat| "#{stat.dev}:#{stat.ino}" }
@@ -2670,6 +2682,7 @@ remove_recovery_cleanup_root() {
     original_target_mode = nil
     captured = nil
     cleanup_captured = false
+    deletion_committed = false
     begin
       target = File.realpath(ARGV.fetch(0))
       cleanup_root = File.expand_path(ARGV.fetch(1))
@@ -2717,7 +2730,20 @@ remove_recovery_cleanup_root() {
         puts captured
         exit 67
       end
+      if original_target_mode
+        deletion_parent_mode = original_target_mode
+        deletion_parent_mode |= 0o1000 if (deletion_parent_mode & 0o022) != 0
+        target_file.chmod(deletion_parent_mode)
+        restored_target_stat = target_file.stat
+        abort unless (restored_target_stat.mode & 0o7777) == deletion_parent_mode
+      end
       FileUtils.remove_entry_secure(captured)
+      if original_target_mode
+        target_file.chmod(original_target_mode)
+        restored_target_stat = target_file.stat
+        abort unless (restored_target_stat.mode & 0o7777) == original_target_mode
+        original_target_mode = nil
+      end
     rescue StandardError
       puts captured if cleanup_captured && captured
       exit(cleanup_captured ? 69 : 1)
@@ -2800,11 +2826,19 @@ cleanup_recovery_staging() {
   fi
   remove_status=0
   remove_artifact="$(remove_recovery_cleanup_root "$cleanup_root")" || remove_status=$?
+  remove_artifact="${remove_artifact%%$'\n'*}"
   if [[ "$remove_status" -eq 67 ]]; then
     echo "RECOVERY_CLEANUP_BINDING_CHANGED: preserved ${remove_artifact:-$cleanup_root} and recovery receipt after cleanup path replacement." >&2
     return 67
   elif [[ "$remove_status" -eq 69 ]]; then
-    echo "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: preserved ${remove_artifact:-$cleanup_root} and recovery receipt; recovery staging was not restored." >&2
+    remove_artifact="${remove_artifact:-$cleanup_root}"
+    if move_bound_recovery_path "$remove_artifact/staging" "$staging" "$remove_artifact" "$cleanup_root_identity" \
+      "$target" "$target_identity" "$staging_identity"; then
+      rmdir "$remove_artifact" 2>/dev/null || true
+      echo "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: restored receipted recovery staging at $staging because target permissions could not be restored before deletion." >&2
+    else
+      echo "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: preserved ${remove_artifact:-$cleanup_root} and recovery receipt; recovery staging could not be restored." >&2
+    fi
     return 1
   elif [[ "$remove_status" -ne 0 ]]; then
     if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_root" "$cleanup_root_identity" \
@@ -3358,7 +3392,14 @@ if ! mkdir "$install_lock" 2>/dev/null; then
   echo "DELIVERY_MODE_CONFLICT: another agent-workflows install or migration holds $install_lock" >&2
   exit 1
 fi
-install_lock_identity="$(recovery_directory_identity "$install_lock")" || exit 1
+if ! install_lock_identity="$(recovery_directory_identity "$install_lock")"; then
+  if rmdir "$install_lock" 2>/dev/null; then
+    echo "INSTALL_LOCK_IDENTITY_FAILED: could not attest the newly created install lock; removed the verified-empty lock and refused to continue." >&2
+  else
+    echo "METADATA_CLEANUP_PENDING: could not attest or safely remove $install_lock; preserve and verify it before retrying." >&2
+  fi
+  exit 1
+fi
 release_install_lock() {
   local status=$? cleanup_path
   trap - EXIT

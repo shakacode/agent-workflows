@@ -7531,6 +7531,96 @@ RUBY
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
 }
 
+test_recovery_capture_temporary_creation_stays_in_held_quarantine() {
+  local tmp target staging receipt metadata outside moved injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-temp-parent"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  outside="$tmp/outside"; moved="$target/.agent-workflows-install.json.recovery-moved"
+  injection="$tmp/swap-quarantine-before-temp.rb"; marker="$tmp/quarantine-swapped"
+  mkdir -p "$staging/user-owned-skill" "$outside"; printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :before_temporary_create
+    quarantine = Dir.glob("#{ENV.fetch("QA_INSTALL_METADATA")}.recovery-*").fetch(0)
+    File.rename(quarantine, ENV.fetch("QA_MOVED_QUARANTINE"))
+    File.symlink(ENV.fetch("QA_OUTSIDE"), quarantine)
+    File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_MOVED_QUARANTINE="$moved" QA_OUTSIDE="$outside" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "replaced quarantine path unexpectedly succeeded"
+  [[ -z "$(find "$outside" -mindepth 1 -print -quit)" ]] || fail "recovery temp creation wrote through replaced quarantine ancestor"
+  [[ -n "$(find "$moved" -type f -name 'agent-workflows-metadata-*.tmp' -print -quit)" ]] || fail "held quarantine did not preserve temporary evidence"
+  assert_file "$receipt"; assert_file "$metadata"
+  rm "$(find "$target" -maxdepth 1 -type l -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  rm -rf "$moved"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_committed_recovery_cleanup_mode_restore_failure_does_not_wedge_receipt() {
+  local tmp target canonical_target staging receipt injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-mode-close"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-target-mode-restore.rb"; marker="$tmp/mode-restore-failed"
+  mkdir -p "$staging/old-flat-skill"; write_native_scw_state codex "$target"; chmod 0777 "$target"
+  canonical_target="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'old\n' > "$staging/old-flat-skill/SKILL.md"; printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailCommittedCleanupModeRestore
+  def chmod(mode)
+    if ARGV.length == 2 && stat.directory? && (mode & 0o022) != 0
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+File.prepend(FailCommittedCleanupModeRestore)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "cleanup mode restore failure unexpectedly succeeded"
+  assert_contains "$output" "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: restored receipted recovery staging at $canonical_target/${staging##*/}"
+  assert_file "$receipt"; assert_file "$staging/old-flat-skill/SKILL.md"
+  [[ "$(stat -f '%Lp' "$target")" = "755" ]] || fail "cleanup mode restore failure left unexpected target mode"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+  [[ ! -e "$receipt" && ! -e "$staging" ]] || fail "cleanup mode restore retry retained recovery state"
+}
+
+test_install_lock_identity_failure_removes_empty_lock_and_allows_retry() {
+  local tmp target injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-lock-identity-once.rb"; marker="$tmp/identity-failed"
+  cat > "$injection" <<'RUBY'
+class << File
+  alias_method :qa_original_lstat, :lstat
+  def lstat(path)
+    if ARGV.length == 1 && path.end_with?("/.agent-workflows-install.lock") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    qa_original_lstat(path)
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "lock identity failure unexpectedly succeeded"
+  assert_contains "$output" "INSTALL_LOCK_IDENTITY_FAILED"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "lock identity failure retained empty lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
 main() {
   TEST_SOURCE_ROOT="$(mktemp -d)"
   new_source_repo "$TEST_SOURCE_ROOT"
@@ -7549,6 +7639,9 @@ main() {
     test_persistent_completed_snapshot_close_failure_cleans_lock_and_allows_retry
     test_persistent_recovery_holder_close_failure_removes_committed_empty_holder
     test_persistent_recovery_payload_close_failure_preserves_committed_cleanup
+    test_recovery_capture_temporary_creation_stays_in_held_quarantine
+    test_committed_recovery_cleanup_mode_restore_failure_does_not_wedge_receipt
+    test_install_lock_identity_failure_removes_empty_lock_and_allows_retry
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_existing_symlink_target_is_canonicalized_before_install
