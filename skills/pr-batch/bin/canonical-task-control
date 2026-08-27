@@ -510,9 +510,19 @@ module CanonicalTaskControl
     end
 
     replayed_lane_ids = seen.zip(outcomes).filter_map { |lane_id, outcome| lane_id if outcome.fetch("replayed") }
+    launch_lane_ids = seen - replayed_lane_ids
+    active_reservation_lane_ids = records.flat_map do |record|
+      record.fetch("totals").fetch("lanes").filter_map do |lane_id, totals|
+        canonical_identity(lane_id) if totals.fetch("reserved_tokens").positive?
+      end
+    end
+    if (active_reservation_lane_ids | launch_lane_ids).length > concurrency
+      raise InvalidInput, "active launch lane count exceeds approved exception concurrency"
+    end
+
     {
       "records" => records,
-      "launch_lane_ids" => seen - replayed_lane_ids,
+      "launch_lane_ids" => launch_lane_ids,
       "replayed_lane_ids" => replayed_lane_ids
     }
   end
@@ -1307,13 +1317,16 @@ module CanonicalTaskControl
       raise InvalidInput, "delegation target state contradicts batch-token-budget decision"
     end
 
+    if budget_status == "blocked"
+      return {
+        "verdict" => "block",
+        "allowed_actions" => outcome.fetch("replayed") ? ["record_budget_replay"] : [],
+        "wake_target" => false, "blockers" => ["budget_admission_blocked"], "unknowns" => []
+      }
+    end
     return decision.merge("allowed_actions" => ["record_budget_replay"], "wake_target" => false) if outcome.fetch("replayed")
-    return decision unless budget_status == "blocked"
 
-    {
-      "verdict" => "block", "allowed_actions" => [], "wake_target" => false,
-      "blockers" => ["budget_admission_blocked"], "unknowns" => []
-    }
+    decision
   end
 
   def validate_foreign_target_packet!(packet, task)

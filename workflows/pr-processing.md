@@ -723,14 +723,15 @@ reconstruct the exact digest-matching original request in both emitted receipt
 copies without rewriting persisted history. Replayed admission is an idempotent record-only outcome:
 permit only `record_budget_replay`, never a second launch, wake, retry, or other
 side effect or held-local launch action. Record-only handling never erases an
-independently required human-approval block or reason. For a fresh admission, bind receipt
+independently required human-approval or budget-denial block and reason. For a fresh admission, bind receipt
 tokens, aggregate/lane allocation totals, and the overshoot target set to the
 request. Caller-authored
 amounts, units, URLs, nested `UNKNOWN`, or `status: passed` objects are not budget
 authority. Multi-target actions may select any declared lane, but never default
 silently to the first lane. Bind multi-lane result sets by canonical lane ID,
 not array position. For a multi-target launch, the selected result set must be
-nonempty and no larger than the exception's approved concurrency. Return fresh
+nonempty, and its fresh lanes plus lanes with active reservations in verified budget totals must not exceed
+the exception's approved concurrency. Return fresh
 and replayed lane IDs separately; `worker_spawn` applies only when every fresh
 lane's own stage-dependency record permits it, while replayed lanes remain record-only. A mixed set must not suppress a
 fresh admission or repeat a replayed side effect.

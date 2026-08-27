@@ -150,8 +150,8 @@ bound, require canonical content/digest equality, and enforce its metadata-only
 privacy contract. Bind every budget action to an explicit declared lane; a
 multi-target delegation uses the lane corresponding to its matched target, and
 multi-lane result arrays bind by canonical lane ID rather than position.
-At launch, admit only the selected nonempty lane set and enforce its size against
-the recorded exception concurrency. Return fresh and replayed lane IDs separately;
+At launch, admit only the selected nonempty lane set and enforce the recorded exception concurrency
+against its fresh lanes plus every lane with an already-active reservation in the verified budget totals. Return fresh and replayed lane IDs separately;
 only fresh lane IDs whose own stage-dependency record permits `worker_spawn` may consume it, while replayed lanes receive the
 idempotent record-only action. A mixed result never suppresses a fresh lane or
 re-authorizes a replayed lane.
@@ -179,7 +179,7 @@ For a verified a556 replay, reconstruct the exact digest-matching original
 request in both emitted receipt copies without rewriting persisted history. A replayed admission permits
 only the idempotent `record_budget_replay` no-op and never repeats launch, wake,
 retry, held-local launch work, or another side effect. Record-only handling never
-erases an independently required human-approval block or reason. Normalize case-insensitive
+erases an independently required human-approval or budget-denial block and reason. Normalize case-insensitive
 control identities with Unicode NFKC plus full case folding and trimming, and
 apply that normalization before nested `UNKNOWN` rejection.
 Usage reconciliation binds top-level, receipt, charge-back target, and other

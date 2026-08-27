@@ -822,6 +822,30 @@ class CanonicalTaskControlTest < Minitest::Test
     refute result.fetch("wake_target")
   end
 
+  def test_replayed_blocked_delegation_preserves_budget_denial_verdict
+    input = delegation_input(
+      target_state: "idle", context: 40_000, threshold: 50_000,
+      message_class: "new_evidence", human_approval: "UNKNOWN"
+    )
+    gate = input.fetch("budget_gate")
+    gate["status"] = "replayed"
+    gate["decision_status"] = "blocked"
+    gate["state_revision"] += 1
+    gate["decision_receipt"]["status"] = "blocked"
+    gate["decision_receipt"]["reason"] = "aggregate-budget-exceeded"
+    gate["reason"] = "aggregate-budget-exceeded"
+    gate.delete("receipt")
+    gate.delete("checkpoint")
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "block", result.fetch("verdict")
+    assert_equal ["record_budget_replay"], result.fetch("allowed_actions")
+    assert_includes result.fetch("blockers"), "budget_admission_blocked"
+    refute result.fetch("wake_target")
+  end
+
   def test_active_target_suppresses_unchanged_acknowledgement_and_deterministic_handoff_noise
     %w[unchanged acknowledgement deterministic_handoff].each do |message_class|
       input = delegation_input(
@@ -1719,6 +1743,24 @@ class CanonicalTaskControlTest < Minitest::Test
 
     refute status.success?
     assert_includes stderr, "launch lane count exceeds approved exception concurrency"
+  end
+
+  def test_launch_counts_active_reservations_from_prior_decisions_against_exception_concurrency
+    input = launch_input(multi_target_task)
+    result = input.fetch("budget_gate").last
+    prior_lane = result.dig("totals", "lanes", "lane-402")
+    prior_lane["allocated_tokens"] = 10_000
+    prior_lane["reserved_tokens"] = 10_000
+    aggregate = result.dig("totals", "aggregate")
+    aggregate["allocated_tokens"] += 10_000
+    aggregate["reserved_tokens"] += 10_000
+    input["budget_gate"] = [result]
+    input["manifest"]["budgets"] = budget_manifest_binding(input.fetch("task"), results: [result])
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "active launch lane count exceeds approved exception concurrency"
   end
 
   def test_launch_allows_one_lane_under_serial_multi_target_exception
