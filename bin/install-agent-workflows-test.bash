@@ -433,12 +433,13 @@ YAML
 }
 
 test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation() {
-  local tmp target outside output status mode variant unsafe_ancestor outside_scanner
+  local tmp target canonical_target outside output status mode variant unsafe_ancestor expected_ancestor outside_scanner
 
   for mode in copy symlink; do
     for variant in lib-symlink companion-symlink lib-file companion-file; do
       tmp="$(mktemp -d)"
       target="$tmp/claude-home"
+      canonical_target="$(ruby -e 'print File.realpath(File.dirname(ARGV.fetch(0))) + "/" + File.basename(ARGV.fetch(0))' "$target")"
       outside="$tmp/outside"
       write_native_scw_state claude "$target"
       mkdir -p "$outside"
@@ -474,7 +475,8 @@ test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation() {
       set -e
 
       [[ "$status" -ne 0 ]] || fail "$mode companion install accepted unsafe ancestor variant $variant"
-      assert_contains "$output" "Refusing unsafe scanner companion ancestor: $unsafe_ancestor"
+      expected_ancestor="${unsafe_ancestor/#$target/$canonical_target}"
+      assert_contains "$output" "Refusing unsafe scanner companion ancestor: $expected_ancestor"
       [[ -L "$unsafe_ancestor" || -f "$unsafe_ancestor" ]] || \
         fail "$mode companion install replaced unsafe ancestor variant $variant"
       [[ ! -e "$outside_scanner" ]] || \
@@ -2470,6 +2472,27 @@ test_flat_crash_recovery_restores_staged_symlink_skill() {
     fail "recovery changed the staged symlink target"
   [[ ! -e "$receipt" ]] || fail "successful symlink recovery preserved receipt"
   [[ ! -e "$staging" ]] || fail "successful symlink recovery preserved staging"
+}
+
+test_pending_recovery_accepts_prior_target_symlink_staging_receipt() {
+  local tmp actual target staging receipt output status
+  tmp="$(mktemp -d)"; actual="$tmp/actual-codex-home"; target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-prior-target-alias"
+  receipt="$actual/.agent-workflows-migration-staging"
+  mkdir -p "$actual/.agent-workflows-flat-migration-prior-target-alias/user-owned-skill"
+  ln -s "$actual" "$target"
+  printf 'user-owned\n' > "$actual/.agent-workflows-flat-migration-prior-target-alias/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$actual/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"; status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "prior target symlink receipt recovery exited $status: $output"
+  assert_file "$actual/skills/user-owned-skill/SKILL.md"
+  [[ ! -e "$receipt" ]] || fail "prior target symlink receipt was not removed"
+  [[ ! -e "$actual/.agent-workflows-flat-migration-prior-target-alias" ]] || \
+    fail "prior target symlink staging was not removed"
+  assert_symlink "$target"
 }
 
 test_recovery_source_replacement_after_inventory_is_not_moved() {
@@ -6993,6 +7016,7 @@ main() {
     test_recovery_skills_root_replacement_during_reversal_preserves_outside_data
     test_recovery_destination_appearing_at_move_is_not_replaced
     test_flat_crash_recovery_restores_staged_symlink_skill
+    test_pending_recovery_accepts_prior_target_symlink_staging_receipt
     test_recovery_source_replacement_after_inventory_is_not_moved
     test_recovery_identity_failure_reverses_earlier_moves
     test_recovery_post_move_verification_failure_reverses_committed_move
