@@ -17,10 +17,43 @@ class AgentWorkflowsStatusTest < Minitest::Test
   def setup
     @fake_codex_dir = Dir.mktmpdir("status-fake-codex")
     @fake_codex = File.join(@fake_codex_dir, "codex")
+    @superpowers_catalog_root = File.join(@fake_codex_dir, "superpowers-catalog")
+    FileUtils.mkdir_p(File.join(@superpowers_catalog_root, ".codex-plugin"))
+    File.write(
+      File.join(@superpowers_catalog_root, ".codex-plugin/plugin.json"),
+      "#{JSON.generate('name' => 'superpowers', 'version' => '5.1.3', 'repository' => 'https://github.com/obra/superpowers')}\n"
+    )
     File.write(@fake_codex, <<~RUBY)
       #!#{RbConfig.ruby}
-      puts "PLUGIN STATUS VERSION PATH"
-      puts "scw@agent-workflows  installed, enabled  0.1.0  https://github.com/shakacode/agent-workflows.git"
+      abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV[0, 3] == %w[plugin list --marketplace] && ARGV.length == 4
+      marketplace = ARGV.fetch(3)
+      case marketplace
+      when "agent-workflows"
+        puts "PLUGIN STATUS VERSION PATH"
+        puts "scw@agent-workflows  installed, enabled  0.1.0  https://github.com/shakacode/agent-workflows.git"
+      when "openai-curated"
+        selected = marketplace == ENV.fetch("QA_SUPERPOWERS_MARKETPLACE", "openai-curated")
+        if selected
+          state = ENV.fetch("QA_SUPERPOWERS_STATE", "installed-disabled")
+          puts "PLUGIN STATUS VERSION PATH"
+          status = state == "active" ? "installed, enabled" : "installed, disabled"
+          puts "superpowers@\#{marketplace}  \#{status}  host-version  \#{ENV.fetch('QA_SUPERPOWERS_CATALOG_ROOT')}"
+        else
+          puts "No plugins found in marketplace `\#{marketplace}`."
+        end
+      when "openai-curated-remote", "superpowers-dev"
+        selected = marketplace == ENV.fetch("QA_SUPERPOWERS_MARKETPLACE", "openai-curated")
+        if selected
+          state = ENV.fetch("QA_SUPERPOWERS_STATE", "installed-disabled")
+          puts "PLUGIN STATUS VERSION PATH"
+          status = state == "active" ? "installed, enabled" : "installed, disabled"
+          puts "superpowers@\#{marketplace}  \#{status}  host-version  \#{ENV.fetch('QA_SUPERPOWERS_CATALOG_ROOT')}"
+        else
+          puts "No plugins found in marketplace `\#{marketplace}`."
+        end
+      else
+        abort "unexpected marketplace: \#{marketplace}"
+      end
     RUBY
     FileUtils.chmod(0o755, @fake_codex)
   end
@@ -30,7 +63,11 @@ class AgentWorkflowsStatusTest < Minitest::Test
   end
 
   def run_status(env, *)
-    Open3.capture2e({ "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex }.merge(env), "ruby", SCRIPT, *)
+    defaults = {
+      "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex,
+      "QA_SUPERPOWERS_CATALOG_ROOT" => @superpowers_catalog_root
+    }
+    Open3.capture2e(defaults.merge(env), "ruby", SCRIPT, *)
   end
 
   def write_metadata(target, metadata)
@@ -53,16 +90,110 @@ class AgentWorkflowsStatusTest < Minitest::Test
     File.write(File.join(plugin_root, "plugin.json"), "#{JSON.generate(manifest)}\n")
   end
 
-  def test_not_installed_target_reports_not_installed
+  def test_claude_not_installed_text_omits_superpowers_diagnostic
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       out, status = run_status({}, "--target", target, "--host", "claude")
 
       assert_equal 2, status.exitstatus, out
       assert_includes out, "NOT_INSTALLED"
+      refute_includes out, "superpowers"
     end
   end
 
-  def test_up_to_date_with_non_git_source
+  def test_claude_not_installed_json_omits_superpowers_diagnostic
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+      payload = JSON.parse(out)
+
+      assert_equal 2, status.exitstatus, out
+      assert_equal "NOT_INSTALLED", payload.fetch("status")
+      refute payload.key?("superpowers"), out
+    end
+  end
+
+  def test_not_installed_json_reports_active_superpowers_advisory
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      out, status = run_status(
+        { "QA_SUPERPOWERS_STATE" => "active", "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev" },
+        "--target", target, "--host", "codex", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert_equal 2, status.exitstatus, out
+      assert_equal "NOT_INSTALLED", payload.fetch("status")
+      assert_equal "active", payload.dig("superpowers", "state")
+      assert_equal "superpowers@superpowers-dev", payload.dig("superpowers", "catalog_entries", 0, "plugin_id")
+      assert_equal "host-version", payload.dig("superpowers", "catalog_entries", 0, "installed_version")
+      assert_equal "5.1.3", payload.dig("superpowers", "catalog_entries", 0, "catalog_version")
+    end
+  end
+
+  def test_not_installed_text_warns_when_superpowers_is_active
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      out, status = run_status(
+        { "QA_SUPERPOWERS_STATE" => "active", "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev" },
+        "--target", target, "--host", "codex"
+      )
+
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "NOT_INSTALLED"
+      assert_includes out, "superpowers=active"
+      assert_includes out, "superpowers_catalog_versions=5.1.3"
+      assert_includes out, "WARNING Agent Workflows remains the sole delivery orchestrator"
+    end
+  end
+
+  def test_malformed_metadata_preserves_active_superpowers_advisory_in_check_failed_output
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      File.write(File.join(target, ".agent-workflows-install.json"), "{not-json")
+      environment = {
+        "QA_SUPERPOWERS_STATE" => "active",
+        "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev"
+      }
+
+      json_out, json_status = run_status(environment, "--target", target, "--host", "codex", "--json")
+      payload = JSON.parse(json_out)
+
+      assert_equal 3, json_status.exitstatus, json_out
+      assert_equal "CHECK_FAILED", payload.fetch("status")
+      assert_includes payload.fetch("reason"), "invalid metadata"
+      assert_equal "active", payload.dig("superpowers", "state")
+
+      text_out, text_status = run_status(environment, "--target", target, "--host", "codex")
+
+      assert_equal 3, text_status.exitstatus, text_out
+      assert_includes text_out, "CHECK_FAILED"
+      assert_includes text_out, "superpowers=active"
+      assert_includes text_out, "WARNING Agent Workflows remains the sole delivery orchestrator"
+    end
+  end
+
+  def test_wrong_shaped_metadata_preserves_active_superpowers_advisory_in_check_failed_output
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      File.write(File.join(target, ".agent-workflows-install.json"), "[]\n")
+      environment = {
+        "QA_SUPERPOWERS_STATE" => "active",
+        "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev"
+      }
+
+      json_out, json_status = run_status(environment, "--target", target, "--host", "codex", "--json")
+      payload = JSON.parse(json_out)
+
+      assert_equal 3, json_status.exitstatus, json_out
+      assert_equal "CHECK_FAILED", payload.fetch("status")
+      assert_includes payload.fetch("reason"), "invalid metadata"
+      assert_equal "active", payload.dig("superpowers", "state")
+
+      text_out, text_status = run_status(environment, "--target", target, "--host", "codex")
+
+      assert_equal 3, text_status.exitstatus, text_out
+      assert_includes text_out, "CHECK_FAILED"
+      assert_includes text_out, "superpowers=active"
+      assert_includes text_out, "WARNING Agent Workflows remains the sole delivery orchestrator"
+    end
+  end
+
+  def test_claude_up_to_date_text_omits_superpowers_diagnostic
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|
         File.write(File.join(source, "VERSION"), "9.9.9\n")
@@ -72,6 +203,23 @@ class AgentWorkflowsStatusTest < Minitest::Test
 
         assert_equal 0, status.exitstatus, out
         assert_includes out, "UP_TO_DATE"
+        refute_includes out, "superpowers"
+      end
+    end
+  end
+
+  def test_claude_up_to_date_json_omits_superpowers_diagnostic
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+
+        out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UP_TO_DATE", payload.fetch("status")
+        refute payload.key?("superpowers"), out
       end
     end
   end
@@ -96,6 +244,61 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal "plugin-companion", payload.fetch("delivery_mode")
         assert_equal "active", payload.dig("native", "state")
         assert_equal "absent", payload.dig("flat", "state")
+      end
+    end
+  end
+
+  def test_json_status_reports_active_superpowers_advisory_without_changing_exit_status
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_codex_native_state(target)
+        write_metadata(
+          target,
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "",
+          "delivery_mode" => "plugin-companion"
+        )
+
+        out, status = run_status(
+          { "QA_SUPERPOWERS_STATE" => "active", "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev" },
+          "--target", target, "--host", "codex", "--json"
+        )
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UP_TO_DATE", payload.fetch("status")
+        assert_equal "active", payload.dig("superpowers", "state")
+        assert_equal "superpowers@superpowers-dev", payload.dig("superpowers", "catalog_entries", 0, "plugin_id")
+        assert_equal "5.1.3", payload.dig("superpowers", "catalog_entries", 0, "catalog_version")
+      end
+    end
+  end
+
+  def test_text_status_warns_when_superpowers_is_active
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_codex_native_state(target)
+        write_metadata(
+          target,
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "",
+          "delivery_mode" => "plugin-companion"
+        )
+
+        out, status = run_status(
+          { "QA_SUPERPOWERS_STATE" => "active", "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev" },
+          "--target", target, "--host", "codex"
+        )
+
+        assert_equal 0, status.exitstatus, out
+        assert_includes out, "superpowers=active"
+        assert_includes out, "superpowers_catalog_versions=5.1.3"
+        assert_includes out, "superpowers_upstream_version=not-queried"
+        assert_includes out, "WARNING Agent Workflows remains the sole delivery orchestrator"
       end
     end
   end

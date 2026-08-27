@@ -44,6 +44,11 @@ Print operator prompts for safe agent-runner restarts.
 - Include the new-chat restart prompt when the user asks how to restart,
   resume after an app restart, move to a new chat, or preserve copy/paste
   handoff state.
+- Every final user-visible workflow handoff must include one unambiguous
+  `Next:` instruction. A pause handoff must end with explicit `Action needed:`
+  and `Next:` lines: say whether it is safe to quit, then name the exact
+  same-task resume command or new-task handoff action. Do not leave the next
+  action implicit in the status inventory.
 
 ## Non-Batch Pause Prompt
 
@@ -58,7 +63,9 @@ only the minimal read-only status checks needed for a handoff.
 Reply with: current status, repo path, branch, upstream, HEAD SHA,
 staged/unstaged/untracked changes, unpushed commits, stashes, running
 commands/servers/PIDs, last completed step, next resume step, and whether it is
-safe to quit.
+safe to quit. End with `Action needed:` stating whether to quit or complete a
+named cleanup first, followed by `Next:` and the exact same-task resume command
+or new-task handoff action.
 
 After the handoff, do not run more tools until I explicitly resume.
 ```
@@ -147,6 +154,9 @@ Reply with a restart handoff:
   they were stopped or must be restarted after the agent-runner relaunch.
 - Safety: whether it is safe to quit the agent runner now, and any cleanup
   needed before resuming or relaunching.
+- Terminal guidance: end with `Action needed:` stating whether to quit or
+  complete a named cleanup first, followed by `Next:` and the exact same-task
+  resume command or new-task handoff action.
 
 After the claim-preservation step above (or immediately, if this lane held no
 claim), send this handoff reply and then do not run more tools or continue work

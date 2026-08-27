@@ -101,6 +101,45 @@ script means that capability is n/a in that repo.
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
 
+`hosted_qa_gate` is an optional closed mapping during first-phase adoption.
+Omission or the exact string `n/a` means that no hosted runtime gate is
+configured. A mapping has exactly these fields:
+
+```yaml
+hosted_qa_gate:
+  version: 1
+  change_paths:
+    - "app/**"
+    - "config/runtime/**"
+  target: "production"
+  deployment_verifier: ".agents/bin/verify-hosted-deployment"
+  acceptance_criteria:
+    - "sign-in"
+    - "checkout"
+  waiver_mode: "forbidden" # or maintainer
+```
+
+`change_paths` uses the same validated repository-relative glob grammar as the
+autonomous-merge policy. The target and criterion IDs are closed scalar IDs;
+criterion IDs and path patterns are unique. `deployment_verifier` names one
+tracked executable under `.agents/bin`. Unknown keys, wrong types, unsafe
+paths or globs, duplicates, unsupported versions, and any waiver mode other
+than `forbidden` or `maintainer` fail closed. The verifier and policy used for
+runtime readiness always come from the trusted base. The two-phase bootstrap
+and exact verifier receipt contracts are canonical in
+[`workflows/pr-processing.md`](../workflows/pr-processing.md).
+The readiness runtime itself must be an outside-repository trusted-base
+materialization or an externally digest-verified installed pack; repository-head
+fallback, missing provenance, and an incomplete eight-file runtime stay
+`UNKNOWN`. The trusted verifier receives ordered policy criterion IDs and must
+return exact ordered closed criterion rows identical to the hosted marker.
+Version 1 exposes no ambient environment or file credential channel and
+supports public or otherwise credential-free immutable deployment verification;
+private-provider credentials require a separately designed and approved seam
+and currently block. Repository-excluded
+interpreters and system tools are trusted host OS/toolchain state; arbitrary
+same-user replacement outside the repository is out of scope for this helper.
+
 `autonomous_merge` is an optional closed mapping. When absent, the shared
 workflow uses its portable thresholds and common hard-risk categories. When
 present, it may tighten or explicitly justify relaxing the four thresholds,
@@ -172,9 +211,12 @@ untrusted_contributor_intake:
 ```
 
 `merge_submission` is an optional closed mapping. Its portable default is
-queue-only whether the mapping is absent or explicitly selects
-`merge_queue_only`. The sole direct-submit exception is an explicit
-`merge_queue_or_guarded_direct` opt-in whose executable is one fixed
+`direct` when the mapping is absent or explicitly selects `direct`. A
+queue-enabled repository must explicitly select `merge_queue_only` or
+`merge_queue_or_guarded_direct`; both modes use canonical enqueue while queue
+control is active. Live queue control under direct mode fails before mutation
+with a configuration error. Repositories that also need a repository-owned
+direct guard may select the latter mode, whose executable is one fixed
 repository-root-relative file under `.agents/bin`:
 
 ```yaml
@@ -232,9 +274,11 @@ do not prove a merge: the portable helper re-fetches GitHub and succeeds only
 when the authorized head is an exact terminal merge on the expected base. This
 exception explicitly acknowledges that GitHub direct merge has no atomic
 expected-base OID; it does not make direct merge equivalent to the merge queue.
-Queue-enabled PRs always use canonical enqueue and never invoke the guard.
-On a queue-disabled base, an absent or queue-only seam is a deterministic
-configuration error (exit 1), not an `UNKNOWN` mutation outcome.
+Queue-enabled PRs use canonical enqueue only in a queue-capable mode and never
+invoke the guard; direct mode instead reports the required seam opt-in before
+mutation. On a queue-disabled base, only explicit `merge_queue_only` is a
+deterministic configuration error (exit 1), not an `UNKNOWN` mutation outcome.
+An absent seam uses the portable direct path.
 
 ## AGENTS Pointer
 
@@ -273,7 +317,7 @@ and `env --split-string` commands are likewise caller-controlled because their
 split payload owns argument placement. Missing
 policy or trust keys are appended to existing block mappings so comments and
 formatting remain intact. Initialization also adds an explicit
-`merge_submission.mode: merge_queue_only` default. It fails closed before
+`merge_submission.mode: direct` default. It fails closed before
 writing when a safe append is not possible.
 
 The init marker is the ownership boundary for generated wrappers. Explicit
@@ -294,7 +338,7 @@ remove the marker deliberately before taking direct ownership.
   resolved values
 - an optional `autonomous_merge` mapping conforms to the shared closed schema;
   malformed policy is reported instead of silently falling back
-- an optional `merge_submission` mapping uses the closed queue-only or
+- an optional `merge_submission` mapping uses the closed direct, queue-only, or
   guarded-direct schema, and any configured guard is a present executable
   regular file under `.agents/bin`
 - an optional `.agents/trusted-github-actors.yml` parses as a mapping and has no

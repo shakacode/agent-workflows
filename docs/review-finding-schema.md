@@ -136,6 +136,11 @@ workflow into the same shape:
 `review-finding-v0` reports without it remain valid. The `model`, `effort`, and
 `usage` provenance extensions are additive.
 
+This review invocation metadata does not replace a lane execution-provenance receipt.
+Use the
+[execution-provenance receipt](execution-provenance-schema.md) to record
+requested-versus-observed route evidence and influenced commits.
+
 Older receipts that omit all three fields remain valid.
 
 The receipt includes:
