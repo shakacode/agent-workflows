@@ -32,92 +32,6 @@ module AutonomousMergePolicy
   ].freeze
   SAFE_PATH_GROUP_KEYS = %w[include exclude].freeze
 
-  # Built-in autonomous-merge policy surface, in both the source and installed
-  # (`.agents/`) layouts. Consumer `policy_paths` add repository-specific policy
-  # documents and helpers; they can never remove a built-in entry.
-  BUILTIN_POLICY_PATTERNS = [
-    "AGENTS.md",
-    "**/AGENTS.md",
-    ".agents/agent-workflow.yml",
-    "workflows/pr-processing.md",
-    ".agents/workflows/pr-processing.md",
-    "skills/pr-batch/SKILL.md",
-    "skills/pr-monitoring/SKILL.md",
-    "skills/plan-pr-batch/SKILL.md",
-    "skills/triage/SKILL.md",
-    ".agents/skills/pr-batch/SKILL.md",
-    ".agents/skills/pr-monitoring/SKILL.md",
-    ".agents/skills/plan-pr-batch/SKILL.md",
-    ".agents/skills/triage/SKILL.md",
-    "bin/agent_doctor/autonomous_merge_policy.rb",
-    "bin/agent_doctor/autonomous_merge_policy_globs.rb",
-    "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
-    ".agents/bin/agent_doctor/autonomous_merge_policy.rb",
-    ".agents/bin/agent_doctor/autonomous_merge_policy_globs.rb",
-    ".agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb",
-    "skills/pr-batch/bin/autonomous-merge-eligibility",
-    "skills/pr-batch/bin/autonomous-merge-calibrate",
-    "skills/pr-batch/bin/autonomous-merge-closeout",
-    "skills/pr-batch/lib/autonomous_merge_*.rb",
-    "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json",
-    ".agents/skills/pr-batch/bin/autonomous-merge-eligibility",
-    ".agents/skills/pr-batch/bin/autonomous-merge-calibrate",
-    ".agents/skills/pr-batch/bin/autonomous-merge-closeout",
-    ".agents/skills/pr-batch/lib/autonomous_merge_*.rb",
-    ".agents/skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json",
-    "skills/pr-batch/bin/*contract-test.rb",
-    ".agents/skills/pr-batch/bin/*contract-test.rb",
-    "skills/plan-pr-batch/scripts/check_goal_prompt_size.rb",
-    ".agents/skills/plan-pr-batch/scripts/check_goal_prompt_size.rb",
-    "docs/adr/0003-smarter-autonomous-merge-gates.md"
-  ].freeze
-
-  # Portable safe-path-group excludes. Every portable safe group carries them,
-  # and they cover every BUILTIN_POLICY_PATTERNS path in both layouts, so no
-  # safe classification can ever contradict the built-in policy surface -
-  # including when a consumer adds includes, because a consumer can only add to
-  # these excludes and never remove one.
-  PORTABLE_POLICY_EXCLUDES = [
-    "AGENTS.md",
-    "**/AGENTS.md",
-    "CLAUDE.md",
-    "**/CLAUDE.md",
-    "**/SKILL.md",
-    "**/autonomous_merge_*.rb",
-    "**/autonomous-merge-*",
-    "**/check_goal_prompt_size.rb",
-    "**/*contract-test.rb",
-    "workflows/**",
-    ".agents/**",
-    "docs/adr/**"
-  ].freeze
-
-  # Portable safe path groups. Absent, empty, or partial consumer configuration
-  # inherits these; consumer patterns are added to them.
-  PORTABLE_SAFE_PATH_GROUPS = {
-    "documentation" => {
-      "include" => ["**/*.md", "**/*.mdx", "docs/**", "**/*.txt"].freeze,
-      "exclude" => (
-        PORTABLE_POLICY_EXCLUDES + ["**/CHANGELOG.md", "SECURITY.md", "**/SECURITY.md", "**/README.md"]
-      ).freeze
-    }.freeze,
-    "tests" => {
-      "include" => [
-        "test/**",
-        "spec/**",
-        "**/*_test.rb",
-        "**/*_spec.rb",
-        "**/*.test.ts",
-        "**/*.test.js",
-        "**/__tests__/**"
-      ].freeze,
-      "exclude" => (
-        PORTABLE_POLICY_EXCLUDES +
-          ["**/fixtures/**", "**/*fixture*", "spec/dummy/**", "test/dummy/**", "**/*.snap"]
-      ).freeze
-    }.freeze
-  }.freeze
-
   Result = Struct.new(
     :thresholds, :human_review_paths, :policy_paths, :safe_path_groups, :generated_paths, :errors,
     keyword_init: true
@@ -177,14 +91,6 @@ module AutonomousMergePolicy
       generated_paths: [],
       errors: errors.flatten.compact
     )
-  end
-
-  # Mutable deep copy of the portable safe path groups, so callers can merge
-  # consumer patterns into it without mutating the frozen defaults.
-  def portable_safe_path_groups
-    PORTABLE_SAFE_PATH_GROUPS.transform_values do |group|
-      { "include" => group.fetch("include").dup, "exclude" => group.fetch("exclude").dup }
-    end
   end
 
   def parse_thresholds(value)

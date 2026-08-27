@@ -207,6 +207,23 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_equal AutonomousMergePolicy.portable_safe_path_groups, policy.safe_path_groups
   end
 
+  def test_builtin_policy_patterns_carry_both_source_and_installed_layouts
+    builtin = AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS
+
+    refute_empty AutonomousMergePolicy::SOURCE_POLICY_PATTERNS
+    AutonomousMergePolicy::SOURCE_POLICY_PATTERNS.each do |pattern|
+      assert_includes builtin, pattern
+      assert_includes builtin, ".agents/#{pattern}"
+    end
+    %w[
+      AGENTS.md
+      **/AGENTS.md
+      .agents/agent-workflow.yml
+      docs/adr/0003-smarter-autonomous-merge-gates.md
+    ].each { |pattern| assert_includes builtin, pattern }
+    assert_equal builtin.uniq, builtin
+  end
+
   def test_portable_safe_path_group_constants_are_frozen_and_not_mutated_by_callers
     groups = AutonomousMergePolicy.portable_safe_path_groups
     groups.fetch("documentation").fetch("include") << "mutated/**"
