@@ -955,6 +955,19 @@ class CanonicalTaskControlTest < Minitest::Test
     assert_includes stderr, "charge back binding or no-double-count invariant mismatch"
   end
 
+  def test_usage_reconciliation_binds_each_charge_back_amount_to_a_reservation_receipt
+    input = usage_reconciliation_input
+    charge_back = input.dig("usage_reconciliation", "budget_result", "charge_backs").first
+    receipt = input.dig("usage_reconciliation", "budget_result", "receipts").first
+    assert_equal receipt.fetch("actual_tokens"), charge_back.fetch("tokens")
+    charge_back["tokens"] = 1
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "charge back amount"
+  end
+
   def test_usage_reconciliation_binds_task_batch_and_exact_lane_hierarchy
     input = usage_reconciliation_input
     reconciliation = input.fetch("usage_reconciliation")
@@ -1094,6 +1107,7 @@ class CanonicalTaskControlTest < Minitest::Test
     assert status.success?, stderr
     assert_equal "retain_multi_target_rollback", result.fetch("pilot_verdict")
     assert_equal "allow", result.fetch("verdict")
+    assert_equal "UNKNOWN", result.fetch("token_reduction_percent")
     assert_includes result.fetch("unknowns"), "usage_telemetry"
   end
 
@@ -2358,6 +2372,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "charge_backs" => [{
         "id" => "charge-back-402", "source" => task_identity("source-task", "batch-source", "source-lane", "issue", 401),
         "target" => task_identity("task-402", batch_id, "aw-i402", "issue", 402),
+        "reservation_id" => "aw-i402-delegation-reservation",
         "tokens" => 35, "physical_total_incremented" => false
       }]
     }

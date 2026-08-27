@@ -467,7 +467,9 @@ pilot has at least ten representative pairs with distinct exact task/batch
 identities, matching task class/context facts, and verified replay-safe v2 usage
 artifacts bound to reconciled hierarchical budget results. It derives total tokens,
 contributing turns, and optional rate-card credit equivalents independently: missing credits keep
-only the credit reduction `UNKNOWN` while complete token evidence still reports token reduction. It reports elapsed time, human
+only the credit reduction `UNKNOWN` while complete token evidence still reports token reduction. Any arm with incomplete
+usage telemetry keeps the token reduction `UNKNOWN`, even when its known total-token
+counter remains acceptable for production accounting. It reports elapsed time, human
 coordination time, correction turns, first-pass acceptance, escaped P0/P1
 defects, and gate compliance for both arms. Promotion requires configured
 materially lower token and credit usage with structured policy/publication

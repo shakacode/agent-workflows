@@ -184,7 +184,9 @@ apply that normalization before nested `UNKNOWN` rejection.
 Usage reconciliation binds top-level, receipt, charge-back target, and other
 task-owned nested batch IDs to the canonical task; requires portable IDs, the exact coordinator and
 task-lane hierarchy, valid scope-counter equations, and overshoot-turn evidence
-consistent with both overshoot tokens and contributing turns.
+consistent with both overshoot tokens and contributing turns. Every emitted
+charge-back names a unique reservation ID and exactly matches that reservation
+receipt's `actual_tokens`.
 Carry cross-target facts only in `canonical-task-foreign-target-packet` v1 with
 literal `evidence_only` disposition. Persist the emitted
 `foreign-target-evidence-receipt`; its only action is
@@ -192,7 +194,9 @@ literal `evidence_only` disposition. Persist the emitted
 Promote the ordinary pilot default only with current task-bound `satisfied`
 dependency evidence for the replay-safe usage receipt, execution-provenance,
 and evaluation-runner capabilities. Retain/adverse/`UNKNOWN` evidence
-remains publishable without promotion.
+remains publishable without promotion. An arm with incomplete usage telemetry
+keeps token reduction `UNKNOWN`; absent optional credits affect only the credit
+reduction.
 
 ## Single-Target Mode
 
@@ -647,7 +651,7 @@ observed use becomes unattributed and blocks closeout. Never use worker
 self-attestation as authoritative. Cross-task causal charge-back includes
 target self plus descendant use without incrementing a physical aggregate
 twice and retains an exact one-to-one reverse link to its reconciled
-reservation. Replacement/escalation waits until its predecessor is released or
+reservation through the reservation ID and exact `actual_tokens`. Replacement/escalation waits until its predecessor is released or
 reconciled.
 
 Warning persists a compact checkpoint and continues. Approval and override

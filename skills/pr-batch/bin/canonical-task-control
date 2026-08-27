@@ -776,7 +776,9 @@ module CanonicalTaskControl
         execution_refs << arm["usage_receipt_ref"]
       end
       unknowns.concat(ordinary.fetch("unknowns") + multi.fetch("unknowns"))
-      if [ordinary, multi].any? { |metrics| metrics["total_tokens"] == "UNKNOWN" }
+      if [ordinary, multi].any? do |arm|
+        arm["total_tokens"] == "UNKNOWN" || arm.fetch("unknowns").include?("usage_telemetry")
+      end
         token_metrics_known = false
       else
         ordinary_tokens += ordinary.fetch("total_tokens")
@@ -1360,7 +1362,9 @@ module CanonicalTaskControl
     )
     charge_backs = validate_charge_backs!(
       reconciliation["budget_result"].fetch("charge_backs", []), source: source, target: target,
-                                                                 batch_id: reconciliation.dig("budget_result", "batch_id"), physical_tokens: projection.fetch("tokens")
+                                                                 batch_id: reconciliation.dig("budget_result", "batch_id"),
+                                                                 physical_tokens: projection.fetch("tokens"),
+                                                                 receipts: reconciliation["budget_result"].fetch("receipts")
     )
     {
       "receipt_digest" => reconciliation["usage_receipt_digest"],
@@ -1370,20 +1374,29 @@ module CanonicalTaskControl
     }
   end
 
-  def validate_charge_backs!(charge_backs, source:, target:, batch_id:, physical_tokens:)
+  def validate_charge_backs!(charge_backs, source:, target:, batch_id:, physical_tokens:, receipts:)
     unless charge_backs.is_a?(Array) && !charge_backs.empty? &&
-           charge_backs.map { |charge_back| charge_back["id"] if charge_back.is_a?(Hash) }.uniq.length == charge_backs.length
+           charge_backs.map { |charge_back| charge_back["id"] if charge_back.is_a?(Hash) }.uniq.length == charge_backs.length &&
+           charge_backs.map { |charge_back| charge_back["reservation_id"] if charge_back.is_a?(Hash) }.uniq.length == charge_backs.length
       raise InvalidInput, "usage reconciliation requires unique charge backs"
     end
 
+    receipts_by_reservation = receipts.to_h { |receipt| [receipt.fetch("reservation_id"), receipt] }
+    if receipts_by_reservation.length != receipts.length
+      raise InvalidInput, "charge back reservation receipts must be unique"
+    end
+
     charge_backs.each do |charge_back|
-      require_exact_keys!(charge_back, %w[id source target tokens physical_total_incremented])
+      require_exact_keys!(charge_back, %w[id reservation_id source target tokens physical_total_incremented])
+      reservation_receipt = receipts_by_reservation[charge_back["reservation_id"]]
       next if known_portable_id?(charge_back["id"]) && nonnegative_integer?(charge_back["tokens"]) &&
+              known_portable_id?(charge_back["reservation_id"]) && reservation_receipt &&
+              charge_back["tokens"] == reservation_receipt["actual_tokens"] &&
               charge_back["physical_total_incremented"] == false &&
               valid_budget_task_identity?(charge_back["source"], source) &&
               valid_budget_task_identity?(charge_back["target"], target, expected_batch_id: batch_id)
 
-      raise InvalidInput, "charge back binding or no-double-count invariant mismatch"
+      raise InvalidInput, "charge back binding or no-double-count invariant mismatch; charge back amount mismatch"
     end
     if charge_backs.sum { |charge_back| charge_back["tokens"] } > physical_tokens
       raise InvalidInput, "charge backs exceed physical usage"

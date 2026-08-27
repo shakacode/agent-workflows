@@ -2455,7 +2455,7 @@ module BatchTokenBudget
         "summary" => summary
       }
       reservation["charge_back_id"] = charge_back.fetch("id")
-      summary
+      summary.merge("reservation_id" => reservation_id)
     end
 
     state["usage_receipts"][receipt_digest] = {

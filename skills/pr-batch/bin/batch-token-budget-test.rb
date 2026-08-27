@@ -1748,6 +1748,7 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "reconciled", reconciled.fetch("status")
       assert_equal 80, reconciled.dig("totals", "aggregate", "consumed_tokens")
       assert_equal 80, reconciled.dig("totals", "lanes", "lane-a", "consumed_tokens")
+      assert_equal "window-delegation", reconciled.dig("charge_backs", 0, "reservation_id")
       assert_equal 80, reconciled.dig("charge_backs", 0, "tokens")
       assert_equal false, reconciled.dig("charge_backs", 0, "physical_total_incremented")
       assert_equal 80, JSON.parse(File.read(state_path)).dig("charge_backs", "window-cause", "summary", "tokens")

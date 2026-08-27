@@ -787,7 +787,9 @@ Bind the budget result, every receipt, and every task-owned charge-back/nested
 target identity to the canonical task batch ID. Require portable reconciliation IDs, an exact
 coordinator plus task-lane hierarchy, valid aggregate/coordinator/lane counter
 equations, and an overshoot turn count that is zero exactly when overshoot tokens
-are zero and never exceeds the receipt's contributing turns.
+are zero and never exceeds the receipt's contributing turns. Every emitted
+charge-back names a unique reservation ID and exactly matches that reservation
+receipt's `actual_tokens`.
 Resolve the review-findings validator path through the repository's portable
 workflow seam; do not hardcode a root `bin` identity. Do not accept the schema
 result's `valid` string alone: require its validator identity to equal the
@@ -815,7 +817,9 @@ matching reconciled `batch-token-budget-result` v1; relabelled or reused
 task/batch identities or receipt references fail closed. Derive total tokens,
 contributing turns, and optional rate-card credit equivalents from the receipts.
 Compute complete token evidence independently from optional credit evidence, so
-missing credits keep only the credit reduction `UNKNOWN`.
+missing credits keep only the credit reduction `UNKNOWN`. Any arm with incomplete
+usage telemetry keeps token reduction `UNKNOWN`, even when its known total-token
+counter remains acceptable for production accounting.
 Record elapsed
 time, human coordination time, correction turns, first-pass acceptance,
 escaped P0/P1 defects, and gate compliance. Bind the material threshold to
@@ -1027,7 +1031,8 @@ completed reservations release their remaining headroom. Observed use without
 an active scope reservation is unattributed and blocks clean closeout.
 Cross-task charge-back records source causality for actual target self plus
 descendant use without incrementing physical aggregate totals twice. It retains
-an exact bidirectional link to the matching reconciled reservation.
+an exact bidirectional link to the matching reconciled reservation through the
+reservation ID and exact `actual_tokens`.
 Replacement or escalation waits for predecessor release/reconciliation.
 
 Warning persists a compact checkpoint and continues. Approval and override
