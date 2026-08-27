@@ -2285,7 +2285,10 @@ module BatchTokenBudget
         original_state,
         "replayed",
         "usage_receipt_digest" => receipt_digest,
-        "receipt_ref" => receipt_ref
+        "receipt_ref" => receipt_ref,
+        "trusted_plan_path" => original_state.dig("trusted_plan_binding", "path"),
+        "trusted_plan_id" => original_state.dig("trusted_plan_binding", "id"),
+        "trusted_plan_digest" => original_state.dig("trusted_plan_binding", "digest")
       )]
     end
 
@@ -2477,7 +2480,10 @@ module BatchTokenBudget
       "usage_receipt_digest" => receipt_digest,
       "receipt_ref" => receipt_ref,
       "receipts" => reconciliation_receipts,
-      "charge_backs" => charge_back_summaries
+      "charge_backs" => charge_back_summaries,
+      "trusted_plan_path" => state.dig("trusted_plan_binding", "path"),
+      "trusted_plan_id" => state.dig("trusted_plan_binding", "id"),
+      "trusted_plan_digest" => state.dig("trusted_plan_binding", "digest")
     )]
   rescue Date::Error
     blocked_usage_result(original_state, "usage-telemetry-malformed-or-unknown")
@@ -2624,6 +2630,52 @@ module BatchTokenBudget
       end
     }
   end
+
+  def reconciliation_snapshot(state, usage_receipt_digest)
+    unless usage_receipt_digest.is_a?(String) && usage_receipt_digest.match?(/\Asha256:[0-9a-f]{64}\z/)
+      raise InvalidInput, "usage-receipt-digest-invalid"
+    end
+
+    usage_receipt = state.dig("usage_receipts", usage_receipt_digest)
+    raise InvalidInput, "usage-receipt-not-found" unless usage_receipt
+
+    receipts = state.fetch("receipts").select do |receipt|
+      receipt["type"] == "batch-token-budget-reconciliation-receipt" &&
+        receipt["usage_receipt_digest"] == usage_receipt_digest
+    end
+    reservation_ids = receipts.map { |receipt| receipt.fetch("reservation_id") }
+    charge_backs = state.fetch("charge_backs").values.filter_map do |entry|
+      next unless reservation_ids.include?(entry.fetch("reservation_id"))
+
+      entry.fetch("summary").merge("reservation_id" => entry.fetch("reservation_id"))
+    end
+    charge_backs.sort_by! { |charge_back| charge_back.fetch("reservation_id") }
+    reservation_bindings = charge_backs.map do |charge_back|
+      reservation_id = charge_back.fetch("reservation_id")
+      reservation = state.dig("reservations", reservation_id)
+      raise InvalidInput, "corrupt-persisted-state" unless reservation
+
+      {
+        "reservation_id" => reservation_id,
+        "request_digest" => reservation.fetch("request_digest"),
+        "source" => reservation.dig("request", "source"),
+        "target" => reservation.dig("request", "target")
+      }
+    end
+    {
+      "type" => "batch-token-budget-reconciliation-snapshot", "version" => 1, "status" => "verified",
+      "batch_id" => state.fetch("batch_id"), "state_revision" => state.fetch("revision"),
+      "last_evaluated_at" => state.fetch("last_evaluated_at"),
+      "trusted_plan_path" => state.dig("trusted_plan_binding", "path"),
+      "trusted_plan_id" => state.dig("trusted_plan_binding", "id"),
+      "trusted_plan_digest" => state.dig("trusted_plan_binding", "digest"),
+      "usage_receipt_digest" => usage_receipt_digest,
+      "receipt_ref" => usage_receipt.fetch("reference"),
+      "receipts" => receipts.sort_by { |receipt| receipt.fetch("reservation_id") },
+      "charge_backs" => charge_backs,
+      "reservation_bindings" => reservation_bindings
+    }
+  end
 end
 
 options = {}
@@ -2635,6 +2687,9 @@ OptionParser.new do |parser|
   end
   parser.on("--state-snapshot", "Verify and emit the coordinator-owned state snapshot without mutation") do
     options[:state_snapshot] = true
+  end
+  parser.on("--usage-receipt-digest SHA256", "Emit the complete persisted reconciliation for this usage receipt") do |value|
+    options[:usage_receipt_digest] = value
   end
   parser.on("--state PATH", "Durable batch budget state path") { |value| options[:state_path] = value }
   parser.on("--trusted-plan PATH", "Immutable batch-token-budget v1 plan path") do |value|
@@ -2686,13 +2741,24 @@ if options[:state_snapshot]
         raise BatchTokenBudget::InvalidInput, "corrupt-persisted-state"
       end
 
-      puts JSON.generate(BatchTokenBudget.state_snapshot(state))
+      snapshot = if options[:usage_receipt_digest]
+                   BatchTokenBudget.reconciliation_snapshot(state, options[:usage_receipt_digest])
+                 else
+                   BatchTokenBudget.state_snapshot(state)
+                 end
+      puts JSON.generate(snapshot)
     end
     exit 0
   rescue BatchTokenBudget::InvalidInput => e
     warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => e.message)
     exit 1
   end
+end
+
+if options[:usage_receipt_digest]
+  warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input",
+                     "reason" => "usage-receipt-digest-requires-state-snapshot")
+  exit 1
 end
 
 if options[:verify_plan_only]

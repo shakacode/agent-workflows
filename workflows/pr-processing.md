@@ -791,7 +791,12 @@ coordinator plus task-lane hierarchy, valid aggregate/coordinator/lane counter
 equations, and an overshoot turn count that is zero exactly when overshoot tokens
 are zero and never exceeds the receipt's contributing turns. Every emitted
 charge-back names a unique reservation ID and exactly matches that reservation
-receipt's `actual_tokens`.
+receipt's `actual_tokens`. Require the reconciled result's trusted-plan path, ID,
+and digest, then query the production helper's locked read-only state with that
+anchor and `usage_receipt_digest`. The submitted receipt and charge-back sets
+must exactly equal the complete persisted causal set. Validate each charge-back
+source and target against its linked persisted reservation; every target must
+belong to the canonical task, but legitimate contributing sources may differ.
 Resolve the review-findings validator path through the repository's portable
 workflow seam; do not hardcode a root `bin` identity. Do not accept the schema
 result's `valid` string alone: require its validator identity to equal the
@@ -1000,6 +1005,10 @@ stale state. Keep each active reservation's original admitted token amount for
 receipt binding and treat the lane reserved total as its current remaining
 amount after reconciliation. Do not require those values to be equal, and count
 persisted active reservations even when the current remaining amount is zero.
+For reconciliation verification, add `--usage-receipt-digest` to the same locked
+snapshot mode. The helper emits the persisted complete receipt and charge-back
+sets plus their linked reservation source/target bindings; it never accepts a
+caller-selected state path or caller-recomputable state digest.
 
 Before every coordinator or worker model turn, spawn, retry, review wave,
 scheduled continuation, monitor wake, resume, replacement, escalation, or

@@ -80,13 +80,17 @@ class BatchTokenBudgetTest < Minitest::Test
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
   end
 
-  def run_state_snapshot(state_path, anchor: trusted_anchor_binding(state_path))
-    stdout, stderr, status = Open3.capture3(
+  def run_state_snapshot(state_path, anchor: trusted_anchor_binding(state_path), usage_receipt_digest: nil)
+    arguments = [
       HELPER,
       "--state-snapshot",
       "--trusted-plan", anchor.fetch("path"),
       "--trusted-plan-id", anchor.fetch("id"),
       "--trusted-plan-digest", anchor.fetch("digest")
+    ]
+    arguments.concat(["--usage-receipt-digest", usage_receipt_digest]) if usage_receipt_digest
+    stdout, stderr, status = Open3.capture3(
+      *arguments
     )
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
   end
@@ -1825,6 +1829,84 @@ class BatchTokenBudgetTest < Minitest::Test
       assert replay_status.success?, replay_stderr
       assert_equal "replayed", replayed.fetch("status")
       assert_equal 80, replayed.dig("totals", "aggregate", "consumed_tokens")
+    end
+  end
+
+  def test_reconciled_result_and_locked_snapshot_bind_the_complete_persisted_causal_set
+    with_state do |state_path|
+      initialize_budget(state_path)
+      sources = %w[source-task-a source-task-b]
+      reservations = %w[lane-a lane-b].map.with_index do |lane_id, index|
+        source = task_identity(task_id: sources.fetch(index), lane_id: "source-lane-#{index + 1}")
+        source["batch_id"] = "source-batch-#{index + 1}"
+        target = task_identity(task_id: "task-#{lane_id}", lane_id: lane_id)
+        reservation_id = "window-delegation-#{lane_id}"
+        admitted, admitted_stderr, admitted_status = run_helper(
+          state_path,
+          command(
+            "reserve",
+            "reservation" => reservation(
+              id: reservation_id,
+              lane_id: lane_id,
+              tokens: 100,
+              kind: "cross-task-delegation",
+              overrides: { "source" => source, "target" => target }
+            )
+          )
+        )
+        assert admitted_status.success?, admitted_stderr
+        assert_equal "admitted", admitted.fetch("status")
+        [reservation_id, source, target]
+      end
+
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 80, "lane-b" => 7 }
+      )
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "complete-causal-set")
+      charge_backs = reservations.map.with_index do |(reservation_id, source, target), index|
+        {
+          "reservation_id" => reservation_id,
+          "charge_back" => {
+            "type" => "batch-token-charge-back", "version" => 1,
+            "id" => "window-cause-#{index + 1}", "source" => source, "target" => target
+          }
+        }
+      end
+      reconciled, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => reservations.map(&:first),
+          "charge_backs" => charge_backs
+        )
+      )
+      assert status.success?, stderr
+
+      anchor = trusted_anchor_binding(state_path)
+      assert_equal anchor.fetch("path"), reconciled.fetch("trusted_plan_path")
+      assert_equal anchor.fetch("id"), reconciled.fetch("trusted_plan_id")
+      assert_equal anchor.fetch("digest"), reconciled.fetch("trusted_plan_digest")
+
+      snapshot, snapshot_stderr, snapshot_status = run_state_snapshot(
+        state_path, usage_receipt_digest: receipt_digest
+      )
+      assert snapshot_status.success?, snapshot_stderr
+      assert_equal "batch-token-budget-reconciliation-snapshot", snapshot.fetch("type")
+      assert_equal receipt_digest, snapshot.fetch("usage_receipt_digest")
+      assert_equal reconciled.fetch("receipts"), snapshot.fetch("receipts")
+      assert_equal reconciled.fetch("charge_backs"), snapshot.fetch("charge_backs")
+      assert_equal reservations.map(&:first).sort,
+                   snapshot.fetch("reservation_bindings").map { |binding| binding.fetch("reservation_id") }.sort
+      assert_equal sources.sort,
+                   snapshot.fetch("reservation_bindings").map { |binding| binding.dig("source", "task_id") }.sort
     end
   end
 

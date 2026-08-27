@@ -188,7 +188,12 @@ task-owned nested batch IDs to the canonical task; requires portable IDs, the ex
 task-lane hierarchy, valid scope-counter equations, and overshoot-turn evidence
 consistent with both overshoot tokens and contributing turns. Every emitted
 charge-back names a unique reservation ID and exactly matches that reservation
-receipt's `actual_tokens`.
+receipt's `actual_tokens`. Require the reconciled result's trusted-plan anchor
+and query the production helper's locked read-only snapshot by
+`usage_receipt_digest`; the submitted receipt and charge-back sets must exactly
+match the complete persisted causal set. Bind each charge-back source and target
+to its linked persisted reservation. Every target remains inside the canonical
+task, while distinct production-recorded cross-task sources are valid.
 Carry cross-target facts only in `canonical-task-foreign-target-packet` v1 with
 literal `evidence_only` disposition. Persist the emitted
 `foreign-target-evidence-receipt`; its only action is

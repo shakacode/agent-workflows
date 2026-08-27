@@ -887,8 +887,7 @@ class CanonicalTaskControlTest < Minitest::Test
   end
 
   def test_usage_reconciliation_accepts_batch_usage_producer_fractional_utc_window
-    input = usage_reconciliation_input
-    apply_producer_fractional_window!(input.fetch("usage_reconciliation"))
+    input = usage_reconciliation_input(fractional_window: true)
 
     result, stderr, status = run_helper(input)
 
@@ -1048,7 +1047,7 @@ class CanonicalTaskControlTest < Minitest::Test
     _result, stderr, status = run_helper(input)
 
     refute status.success?
-    assert_includes stderr, "charge back binding or no-double-count invariant mismatch"
+    assert_includes stderr, "complete persisted reconciliation set mismatch"
   end
 
   def test_usage_reconciliation_binds_each_charge_back_amount_to_a_reservation_receipt
@@ -1061,7 +1060,33 @@ class CanonicalTaskControlTest < Minitest::Test
     _result, stderr, status = run_helper(input)
 
     refute status.success?
-    assert_includes stderr, "charge back amount"
+    assert_includes stderr, "complete persisted reconciliation set mismatch"
+  end
+
+  def test_usage_reconciliation_rejects_a_truncated_persisted_receipt_and_charge_back_set
+    input = real_multi_source_usage_reconciliation_input(shared_source: true)
+    budget_result = input.dig("usage_reconciliation", "budget_result")
+    omitted_reservation_id = budget_result.fetch("receipts").first.fetch("reservation_id")
+    budget_result.fetch("receipts").shift
+    budget_result.fetch("charge_backs").reject! do |charge_back|
+      charge_back.fetch("reservation_id") == omitted_reservation_id
+    end
+
+    _result, stderr, status = run_helper(input)
+
+    refute status.success?
+    assert_includes stderr, "complete persisted reconciliation set mismatch"
+  end
+
+  def test_usage_reconciliation_accepts_genuine_production_charge_backs_from_multiple_sources
+    input = real_multi_source_usage_reconciliation_input
+
+    result, stderr, status = run_helper(input)
+
+    assert status.success?, stderr
+    assert_equal "allow", result.fetch("verdict")
+    assert_equal %w[source-task-a source-task-b],
+                 result.dig("usage_reconciliation", "charge_backs").map { |record| record.dig("source", "task_id") }.sort
   end
 
   def test_usage_reconciliation_binds_task_batch_and_exact_lane_hierarchy
@@ -1089,7 +1114,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "foreign-batch"
     _result, stderr, status = run_helper(input)
     refute status.success?
-    assert_includes stderr, "charge back binding"
+    assert_includes stderr, "complete persisted reconciliation set mismatch"
 
     input = usage_reconciliation_input
     reconciliation = input.fetch("usage_reconciliation")
@@ -1538,7 +1563,7 @@ class CanonicalTaskControlTest < Minitest::Test
       "digest" => findings_digest(plan)
     }
     legacy_helper = install_stacked_base_budget_helper(root)
-    now = Time.now.utc
+    now = Time.at(Time.now.to_i).utc
     initialize_command = budget_command(
       "initialize", plan,
       { "budget" => plan },
@@ -2599,13 +2624,67 @@ class CanonicalTaskControlTest < Minitest::Test
     )
   end
 
-  def usage_reconciliation_input
+  def usage_reconciliation_input(fractional_window: false)
+    task = base_input.fetch("task")
+    plan = budget_plan(task)
+    trusted_plan_path = install_budget_plan(plan, label: "reconciliation")
+    anchor = { "path" => trusted_plan_path, "id" => plan.fetch("batch_id"), "digest" => findings_digest(plan) }
+    state_path = plan.fetch("state_path")
+    @budget_state_paths << state_path unless @budget_state_paths.include?(state_path)
+    FileUtils.rm_f(state_path)
+    FileUtils.rm_f("#{state_path}.lock")
+    now = Time.at(Time.now.to_i).utc
+    initialized_at = now - 120
+    _initialized, initialize_stderr, initialize_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command("initialize", plan, { "budget" => plan }, evaluated_at: initialized_at.iso8601)
+    )
+    raise "reconciliation budget initialization failed: #{initialize_stderr}" unless initialize_status.success?
+
+    request = budget_request(action: "delegation", task: task, lane: task.fetch("lanes").first)
+    request.fetch("telemetry")["observed_at"] = (now - 100).iso8601
+    admitted, admission_stderr, admission_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command("reserve", plan, { "reservation" => request }, evaluated_at: (now - 90).iso8601)
+    )
+    raise "reconciliation reservation failed: #{admission_stderr}" unless admission_status.success?
+    raise "reconciliation reservation was not admitted" unless admitted["status"] == "admitted"
+
     receipt = usage_receipt(batch_id: "task-402", lane_id: "aw-i402", total_tokens: 35,
                             coordinator_tokens: 10, lane_tokens: 25, total_turns: 3,
                             coordinator_turns: 1, lane_turns: 2, credits: 3.5)
+    from_inclusive = initialized_at.iso8601
+    to_exclusive = (now - 10).iso8601
+    if fractional_window
+      from_inclusive = initialized_at.iso8601(9)
+      to_exclusive = (now - 10).iso8601(9)
+    end
+    receipt.fetch("window").merge!("from_inclusive" => from_inclusive, "to_exclusive" => to_exclusive)
     digest = findings_digest(receipt)
     reference = install_usage_receipt(receipt, label: "task-402")
-    result = budget_reconciliation_result(receipt_digest: digest, receipt_ref: reference)
+    result, reconcile_stderr, reconcile_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command(
+        "reconcile", plan,
+        {
+          "usage_receipt" => receipt, "usage_receipt_ref" => reference, "usage_receipt_digest" => digest,
+          "completed_reservation_ids" => [request.fetch("id")],
+          "charge_backs" => [{
+            "reservation_id" => request.fetch("id"),
+            "charge_back" => {
+              "type" => "batch-token-charge-back", "version" => 1, "id" => "charge-back-402",
+              "source" => request.fetch("source"), "target" => request.fetch("target")
+            }
+          }]
+        },
+        evaluated_at: now.iso8601
+      )
+    )
+    raise "usage reconciliation failed: #{reconcile_stderr}" unless reconcile_status.success?
+    unless result["status"] == "reconciled"
+      raise "usage reconciliation was not admitted: #{result['status']}: #{result['reason']}"
+    end
+
     base_input.merge(
       "operation" => "usage_reconciliation",
       "usage_reconciliation" => {
@@ -2615,6 +2694,107 @@ class CanonicalTaskControlTest < Minitest::Test
         "usage_receipt_ref" => reference,
         "usage_receipt_digest" => digest,
         "budget_result" => result
+      }
+    )
+  end
+
+  def real_multi_source_usage_reconciliation_input(shared_source: false)
+    task = multi_target_task
+    plan = task.dig("exception", "budget_plan")
+    plan_anchor = task.dig("exception", "budget_plan_anchor")
+    anchor = {
+      "path" => plan_anchor.fetch("trusted_plan_path"),
+      "id" => plan_anchor.fetch("trusted_plan_id"),
+      "digest" => plan_anchor.fetch("trusted_plan_digest")
+    }
+    state_path = plan.fetch("state_path")
+    @budget_state_paths << state_path unless @budget_state_paths.include?(state_path)
+    FileUtils.rm_f(state_path)
+    FileUtils.rm_f("#{state_path}.lock")
+    now = Time.now.utc
+    initialized_at = now - 120
+    _initialized, initialize_stderr, initialize_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command("initialize", plan, { "budget" => plan }, evaluated_at: initialized_at.iso8601)
+    )
+    raise "reconciliation budget initialization failed: #{initialize_stderr}" unless initialize_status.success?
+
+    reservation_rows = task.fetch("lanes").map.with_index do |lane, index|
+      request = budget_request(action: "delegation", task: task, lane: lane)
+      source_number = shared_source ? 401 : 401 + index
+      source_task_id = shared_source ? "source-task-a" : "source-task-#{('a'.ord + index).chr}"
+      request["source"] = task_identity(
+        source_task_id, "source-batch-#{index + 1}", "source-lane-#{index + 1}", "issue", source_number
+      )
+      request.fetch("telemetry")["observed_at"] = (now - 100 + index).iso8601
+      admitted, admission_stderr, admission_status = run_budget_helper(
+        BUDGET_HELPER, state_path, anchor,
+        budget_command(
+          "reserve", plan, { "reservation" => request }, evaluated_at: (now - 90 + index).iso8601
+        )
+      )
+      raise "reconciliation reservation failed: #{admission_stderr}" unless admission_status.success?
+      raise "reconciliation reservation was not admitted" unless admitted["status"] == "admitted"
+
+      [request, lane, index]
+    end
+
+    receipt = usage_receipt(
+      batch_id: task.fetch("id"), lane_id: "lane-402", total_tokens: 35,
+      coordinator_tokens: 0, lane_tokens: 15, total_turns: 2,
+      coordinator_turns: 0, lane_turns: 1, credits: 3.5
+    )
+    second_lane = usage_receipt(
+      batch_id: task.fetch("id"), lane_id: "lane-403", total_tokens: 20,
+      coordinator_tokens: 0, lane_tokens: 20, total_turns: 1,
+      coordinator_turns: 0, lane_turns: 1, credits: 2.0
+    ).fetch("lanes").first
+    receipt.fetch("lanes") << second_lane
+    receipt.fetch("window").merge!(
+      "from_inclusive" => initialized_at.iso8601,
+      "to_exclusive" => (now - 10).iso8601
+    )
+    receipt_ref = install_usage_receipt(receipt, label: "multi-source-production")
+    receipt_digest = findings_digest(receipt)
+    charge_backs = reservation_rows.map do |request, _lane, index|
+      {
+        "reservation_id" => request.fetch("id"),
+        "charge_back" => {
+          "type" => "batch-token-charge-back", "version" => 1,
+          "id" => "multi-source-charge-back-#{index + 1}",
+          "source" => request.fetch("source"), "target" => request.fetch("target")
+        }
+      }
+    end
+    reconciled, reconcile_stderr, reconcile_status = run_budget_helper(
+      BUDGET_HELPER, state_path, anchor,
+      budget_command(
+        "reconcile", plan,
+        {
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => reservation_rows.map { |request, _lane, _index| request.fetch("id") },
+          "charge_backs" => charge_backs
+        },
+        evaluated_at: now.iso8601
+      )
+    )
+    raise "usage reconciliation failed: #{reconcile_stderr}" unless reconcile_status.success?
+    raise "usage reconciliation was not admitted" unless reconciled["status"] == "reconciled"
+
+    base_input.merge(
+      "operation" => "usage_reconciliation", "task" => task,
+      "usage_reconciliation" => {
+        "source" => {
+          "task_id" => "source-task-a", "repository" => "shakacode/agent-workflows", "target" => "issue:401"
+        },
+        "target" => {
+          "task_id" => task.fetch("id"), "repository" => "shakacode/agent-workflows",
+          "target" => shared_source ? "issue:403" : "issue:402"
+        },
+        "usage_receipt" => receipt, "usage_receipt_ref" => receipt_ref,
+        "usage_receipt_digest" => receipt_digest, "budget_result" => reconciled
       }
     )
   end
@@ -2770,6 +2950,9 @@ class CanonicalTaskControlTest < Minitest::Test
       },
       "preserved_gates" => %w[security review qa exact-head ownership merge],
       "usage_receipt_digest" => receipt_digest, "receipt_ref" => receipt_ref,
+      "trusted_plan_path" => File.join(TEST_TMP_ROOT, "synthetic-reconciliation-plan.json"),
+      "trusted_plan_id" => batch_id,
+      "trusted_plan_digest" => "sha256:#{'0' * 64}",
       "receipts" => [{
         "type" => "batch-token-budget-reconciliation-receipt", "version" => 1,
         "batch_id" => batch_id, "state_revision" => 3,
