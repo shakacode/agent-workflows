@@ -1109,31 +1109,21 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
 
   def test_git_probes_fail_closed_when_they_time_out
     with_fixture do |fixture|
-      wrapper_dir = File.join(File.dirname(fixture.fetch(:source_root)), "hanging-git")
-      pid_path = File.join(wrapper_dir, "git.pid")
-      FileUtils.mkdir_p(wrapper_dir)
-      File.write(File.join(wrapper_dir, "git"), <<~SH)
-        #!/bin/sh
-        printf '%s' "$$" >#{Shellwords.escape(pid_path)}
-        sleep 10
-      SH
-      FileUtils.chmod(0o755, File.join(wrapper_dir, "git"))
-      PrBatchGitProbeEnv.local_env_vars
-      original_path = ENV.fetch("PATH")
-      ENV["PATH"] = "#{wrapper_dir}:#{original_path}"
-      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      error = begin
-        assert_raises(AgentWorkflowDrift::ManifestError) do
-          AgentWorkflowDrift.git_capture(fixture.fetch(:source_root), "status", timeout_seconds: 0.5)
-        end
-      ensure
-        ENV["PATH"] = original_path
+      # A nil pid means the hanging-git stub never reached its printf line
+      # before the 0.5s deadline killed it -- a precondition miss caused by
+      # macOS's first-exec assessment of a freshly written script (#239), not
+      # a product failure. warm_hanging_git pays that cost before anything is
+      # timed, so this should not retry in practice; the bounded retry is a
+      # safety net, mirroring #231, not the fix itself.
+      pid = error = elapsed = nil
+      3.times do
+        pid, error, elapsed = run_hanging_git_probe(fixture)
+        break if pid
       end
-      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
 
       assert_equal "Git probe timed out after 0.5 seconds", error.message
       assert_operator elapsed, :<, 2
-      pid = File.read(pid_path).to_i
+      refute_nil pid, "expected the hanging-git stub to record a pid after warm-up + retries"
       assert_raises(Errno::ESRCH) { Process.kill(0, pid) }
     end
   end
@@ -1468,6 +1458,80 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
   end
 
   private
+
+  # One attempt at the hanging-git scenario. Returns [pid, error, elapsed] so
+  # the caller can tell "the stub never got to write its pid before the
+  # deadline killed it" (nil pid -> retry, nothing was tested) from "the stub
+  # wrote its pid and the process was genuinely terminated" (the real
+  # assertion). Writes and warms a fresh stub every call, since each attempt
+  # needs its own pid file cleared of any prior attempt's content.
+  def run_hanging_git_probe(fixture)
+    wrapper_dir = File.join(File.dirname(fixture.fetch(:source_root)), "hanging-git")
+    pid_path = File.join(wrapper_dir, "git.pid")
+    FileUtils.mkdir_p(wrapper_dir)
+    git_path = File.join(wrapper_dir, "git")
+    File.write(git_path, <<~SH)
+      #!/bin/sh
+      if [ "$1" = "--warmup" ]; then
+        exit 0
+      fi
+      # The trailing newline is a completion terminator, not formatting: the
+      # reader requires it, so a read that catches this write mid-flight is
+      # distinguishable from a finished one. Without it a truncated pid is
+      # still all digits and would be indistinguishable from a real one.
+      printf '%s\\n' "$$" >#{Shellwords.escape(pid_path)}
+      sleep 10
+    SH
+    FileUtils.chmod(0o755, git_path)
+    FileUtils.rm_f(pid_path)
+    warm_hanging_git(git_path)
+
+    # Memoize local_env_vars against the real system git before PATH points
+    # at the hanging stub. Otherwise the first call below to git_capture would
+    # trigger this lookup lazily through the hanging stub itself, adding a
+    # second, uncounted hang inside the timed window.
+    PrBatchGitProbeEnv.local_env_vars
+    original_path = ENV.fetch("PATH")
+    ENV["PATH"] = "#{wrapper_dir}:#{original_path}"
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    error = begin
+      assert_raises(AgentWorkflowDrift::ManifestError) do
+        AgentWorkflowDrift.git_capture(fixture.fetch(:source_root), "status", timeout_seconds: 0.5)
+      end
+    ensure
+      ENV["PATH"] = original_path
+    end
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+    # File.exist? only proves the stub created the file, not that its write
+    # finished, and `to_i` accepts both halves of that race: an empty read
+    # yields 0 -- truthy in Ruby, so it satisfies the caller's `break if pid`
+    # and refute_nil, then sends Process.kill(0, 0) to this process's own
+    # group (which exists, so no ESRCH) and fails confusingly -- while a
+    # truncated read yields a plausible but wrong pid.
+    #
+    # A digits-only check does not close the truncated case: half of "42917"
+    # is "4", which is still all digits. The stub therefore terminates its
+    # write with a newline and we require it, so an unterminated file means
+    # "still being written" and the caller retries instead.
+    recorded = File.exist?(pid_path) ? File.read(pid_path) : nil
+    pid = recorded&.match?(/\A\d+\n\z/) ? recorded.to_i : nil
+    pid = nil unless pid&.positive?
+    [pid, error, elapsed]
+  end
+
+  # Pay the stub's first-execution cost before anything is being timed.
+  #
+  # macOS assesses a newly written executable the first time it runs. Measured
+  # on an equivalent stub, spawned exactly as the product spawns git: the
+  # first exec of a fresh file has a multi-second tail on a loaded machine,
+  # while re-executing the same file afterward is tightly bounded (see #239,
+  # and `warm_stub` in skills/pr-batch/bin/pr-merge-submit-test.rb for the
+  # same technique). The warmup branch exits immediately without writing the
+  # pid file, so it cannot race the real, timed invocation below.
+  def warm_hanging_git(git_path)
+    system(git_path, "--warmup", out: File::NULL, err: File::NULL)
+  end
 
   def git_supports_attribute_source?
     _out, _err, status = Open3.capture3("git", "--attr-source=HEAD", "--version")

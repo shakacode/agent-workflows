@@ -33,6 +33,18 @@ Before committing, run:
 bin/validate
 ```
 
+When `skills/` has meaningful uncommitted changes, `bin/validate` reports
+partial coverage: it skips the installer and stack suites, which contain tests
+that stamp the checkout revision, while still running the doctor tests, other
+checks, helper tests, and RuboCop. Commit or stash those changes and rerun the
+command for full coverage. In CI, partial coverage fails after those unrelated
+checks finish so a dirty checkout cannot report a reduced validation run as
+green.
+Common untracked scratch files under `skills/` (`.DS_Store`, `*.orig`,
+`*.rej`, editor swap files, and backup files ending in `~`) do not cause this
+partial mode, even without a global Git ignore configuration. Staged or
+tracked files with those names still cause partial mode.
+
 For changes to a specific helper, run the relevant helper test directly as well.
 Examples:
 

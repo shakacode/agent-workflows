@@ -108,6 +108,16 @@ For every issue mentioned, include:
 - Whether you posted a comment
 ```
 
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. Keep `Action needed:` separate: name the exact user action or
+`none`. For the default prompt-only handoff, use `Action needed: Start a new
+task with the fenced prompt.` and `Next: Paste the prompt into the named
+recipient task, then archive this planning task.` If the user explicitly
+authorized this task to launch or continue the triage instead, name that exact
+task-owned continuation. If no downstream work or decision remains, use `Next:
+Archive this task.` The fenced prompt is evidence for the handoff, not a next
+step by itself.
+
 ## Common Mistakes
 
 - Do not turn an issue-triage prompt into an implementation batch.
