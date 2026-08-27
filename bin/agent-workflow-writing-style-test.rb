@@ -64,6 +64,22 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
     end
   end
 
+  def test_nonexistent_repository_root_fails_instead_of_falling_back
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "missing-repo")
+      home = File.join(directory, "home")
+      Dir.mkdir(home)
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository root"
+      assert_includes stderr, "expected an existing directory"
+      refute_includes stderr, SCRIPT
+    end
+  end
+
   def test_repository_guide_wins_without_reading_malformed_user_config
     Dir.mktmpdir do |directory|
       repo_root = File.join(directory, "repo")
