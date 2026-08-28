@@ -260,13 +260,44 @@ module AgentWorkflowsStatus
         end
 
         path = File.join(target, directory, name)
+        file = nil
         begin
           stat = File.lstat(path)
         rescue Errno::ENOENT, Errno::ENOTDIR
           return "installed #{label} is missing: #{name}"
         end
-        return "installed #{label} is not a regular file: #{name}" unless stat.file? && !stat.symlink?
-        return "installed #{label} fingerprint changed: #{name}" unless Digest::SHA256.file(path).hexdigest == expected.downcase
+        unless stat.file? && !stat.symlink? && File.const_defined?(:NOFOLLOW)
+          return "installed #{label} is not a safely readable regular file: #{name}"
+        end
+
+        begin
+          file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+          opened_stat = file.stat
+          unless opened_stat.file? && opened_stat.dev == stat.dev && opened_stat.ino == stat.ino
+            return "installed #{label} changed during check: #{name}"
+          end
+          if directory == "bin" && (opened_stat.mode & 0o111).zero?
+            return "installed #{label} executable mode is missing: #{name}"
+          end
+
+          digest = Digest::SHA256.new
+          while (chunk = file.read(64 * 1024))
+            digest.update(chunk)
+          end
+          final_stat = file.stat
+          final_path_stat = File.lstat(path)
+          unless final_stat.file? && final_stat.dev == opened_stat.dev && final_stat.ino == opened_stat.ino &&
+                 final_path_stat.file? && !final_path_stat.symlink? &&
+                 final_path_stat.dev == opened_stat.dev && final_path_stat.ino == opened_stat.ino
+            return "installed #{label} changed during check: #{name}"
+          end
+          if directory == "bin" && ((final_stat.mode & 0o111).zero? || (final_path_stat.mode & 0o111).zero?)
+            return "installed #{label} executable mode is missing: #{name}"
+          end
+          return "installed #{label} fingerprint changed: #{name}" unless digest.hexdigest == expected.downcase
+        ensure
+          file&.close
+        end
       end
     end
     nil

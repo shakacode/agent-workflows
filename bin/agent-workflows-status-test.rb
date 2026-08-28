@@ -300,7 +300,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
-  def test_stable_status_fails_closed_when_recorded_managed_files_are_missing_or_changed
+  def test_stable_status_fails_closed_when_recorded_managed_files_are_missing_changed_or_not_executable
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|
         FileUtils.mkdir_p(File.join(source, ".claude-plugin"))
@@ -360,14 +360,25 @@ class AgentWorkflowsStatusTest < Minitest::Test
           {}, "--target", target, "--host", "claude", "--source", source,
           "--channel", "stable", "--release", "v1.2.3", "--json"
         )
+        FileUtils.cp(File.join(source, "docs/release-doc.md"), doc)
+        FileUtils.chmod(0o644, helper)
+        mode_out, mode_status = run_status(
+          {}, "--target", target, "--host", "claude", "--source", source,
+          "--channel", "stable", "--release", "v1.2.3", "--json"
+        )
 
         failures = []
         missing_payload = JSON.parse(missing_out)
         changed_payload = JSON.parse(changed_out)
+        mode_payload = JSON.parse(mode_out)
         failures << "missing helper reported #{missing_payload.fetch('status')}" unless missing_status.exitstatus == 3
         failures << "missing helper reason was not useful" unless missing_payload["reason"].to_s.include?("release-helper")
         failures << "changed document reported #{changed_payload.fetch('status')}" unless changed_status.exitstatus == 3
         failures << "changed document reason was not useful" unless changed_payload["reason"].to_s.include?("release-doc.md")
+        failures << "non-executable helper reported #{mode_payload.fetch('status')}" unless mode_status.exitstatus == 3
+        unless mode_payload["reason"].to_s.include?("release-helper") && mode_payload["reason"].to_s.include?("executable mode")
+          failures << "non-executable helper reason was not useful"
+        end
         assert_empty failures, failures.join("\n")
       end
     end
