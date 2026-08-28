@@ -38,6 +38,34 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
     end
   end
 
+  def test_stable_upgrade_and_rollback_use_the_selected_release_asset_inventory
+    with_release_repository(add_release_two_assets: true) do |source, target, _commits|
+      install_stable_with_release_installer(source, target, "v0.1.0")
+
+      upgrade_output, upgrade_status = run_command(
+        File.join(target, "bin/upgrade-agent-workflows"),
+        "--target", target, "--source", source,
+        "--release", "v0.1.1", "--no-fetch"
+      )
+      rollback_output, rollback_status = run_command(
+        File.join(target, "bin/upgrade-agent-workflows"),
+        "--target", target, "--source", source,
+        "--release", "v0.1.0", "--no-fetch"
+      )
+
+      failures = []
+      failures << "upgrade failed: #{upgrade_output}" unless upgrade_status.success?
+      release_two_doc = File.join(target, "docs/release-two-only.md")
+      release_two_helper = File.join(target, "bin/agent-workflows-release-two-only")
+      failures << "upgrade omitted the selected release's new pack document" unless File.file?(release_two_doc)
+      failures << "upgrade omitted the selected release's new helper" unless File.file?(release_two_helper)
+      failures << "rollback failed: #{rollback_output}" unless rollback_status.success?
+      failures << "rollback did not report completion" unless rollback_output.include?("ROLLBACK_COMPLETE")
+
+      assert_empty failures, failures.join("\n")
+    end
+  end
+
   def test_upgrade_refuses_to_cross_between_stable_and_development_channels
     with_release_repository do |source, target, _commits|
       install_stable(source, target, "v0.1.0")
@@ -92,7 +120,7 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
 
   private
 
-  def with_release_repository
+  def with_release_repository(add_release_two_assets: false)
     Dir.mktmpdir("upgrade-agent-workflows-test") do |tmp|
       source = File.join(tmp, "source")
       target = File.join(tmp, "codex-home")
@@ -110,6 +138,7 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
 
       write_version(source, "0.1.1")
       File.write(File.join(source, "docs/release-channel.md"), "release two\n")
+      add_release_two_only_assets(source) if add_release_two_assets
       git(source, "add", ".")
       git(source, "commit", "--quiet", "-m", "release two")
       commit_two = git(source, "rev-parse", "HEAD")
@@ -127,6 +156,29 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
       @release_receipt_dir = nil
       @fake_bin = nil
     end
+  end
+
+  def add_release_two_only_assets(source)
+    File.write(File.join(source, "docs/release-two-only.md"), "release two only\n")
+    helper = File.join(source, "bin/agent-workflows-release-two-only")
+    File.write(helper, "#!/usr/bin/env bash\nprintf 'release two helper\\n'\n")
+    FileUtils.chmod(0o755, helper)
+
+    installer = File.join(source, "bin/install-agent-workflows")
+    content = File.read(installer)
+    unless content.sub!(
+      "  validate-execution-provenance\n)",
+      "  validate-execution-provenance\n  agent-workflows-release-two-only\n)"
+    )
+      raise "missing helper inventory insertion point"
+    end
+    unless content.sub!(
+      "  release-channel.md\n)",
+      "  release-channel.md\n  release-two-only.md\n)"
+    )
+      raise "missing pack document inventory insertion point"
+    end
+    File.write(installer, content)
   end
 
   def write_release_receipt(source, release)
@@ -256,6 +308,20 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
       "--host", host, "--target", target, "--release", release
     )
     assert status.success?, output
+  end
+
+  def install_stable_with_release_installer(source, target, release, host: "codex")
+    Dir.mktmpdir("materialized-release-installer") do |materialized|
+      archive = File.join(materialized, "release.tar")
+      system("git", "-C", source, "archive", "--output", archive, release, exception: true)
+      system("tar", "-xf", archive, "-C", materialized, exception: true)
+      FileUtils.rm_f(archive)
+      output, status = run_command(
+        File.join(materialized, "bin/install-agent-workflows"),
+        "--host", host, "--target", target, "--source", source, "--release", release
+      )
+      assert status.success?, output
+    end
   end
 
   def assert_install_metadata(target, release_ref:, revision:)

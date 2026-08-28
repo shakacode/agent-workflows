@@ -43,6 +43,15 @@ Installed paths:
 USAGE
 }
 
+emit_install_inventory() {
+  ruby -rjson -e '
+    separator = ARGV.index("__AGENT_WORKFLOWS_DOCS__") or abort
+    helpers = ARGV[0...separator]
+    docs = ARGV[(separator + 1)..]
+    puts JSON.generate({"version" => 1, "bin_helpers" => helpers, "pack_docs" => docs})
+  ' -- "${bin_helpers[@]}" __AGENT_WORKFLOWS_DOCS__ "${pack_docs[@]}"
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_root="$repo_root"
 release_verifier="$repo_root/bin/agent-workflows-release"
@@ -3921,15 +3930,95 @@ materialize_stable_release() {
   fi
 
   repo_root="$materialized_root"
+  load_materialized_release_inventory "$materialized_root"
   doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
   delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
   trap cleanup_materialized_release EXIT
+}
+
+load_materialized_release_inventory() {
+  local materialized_root="$1" installer inventory_path helpers_path docs_path
+  installer="$materialized_root/bin/install-agent-workflows"
+  inventory_path="$materialized_temp_root/install-inventory.json"
+  helpers_path="$materialized_temp_root/install-inventory-helpers"
+  docs_path="$materialized_temp_root/install-inventory-docs"
+
+  if [[ ! -f "$installer" || -L "$installer" ]]; then
+    cleanup_materialized_release
+    echo "Stable release lacks a regular-file installer inventory provider: $release_ref" >&2
+    exit 1
+  fi
+  if ! BASH_ENV=/dev/null ENV=/dev/null "$BASH" --noprofile --norc \
+    "$installer" --print-install-inventory > "$inventory_path"; then
+    cleanup_materialized_release
+    echo "Stable release installer inventory could not be read: $release_ref" >&2
+    exit 1
+  fi
+
+  if ! ruby -rjson -e '
+    root, inventory_path, helpers_path, docs_path = ARGV
+    payload = JSON.parse(File.binread(inventory_path))
+    abort unless payload.is_a?(Hash) && payload.keys.sort == %w[bin_helpers pack_docs version]
+    abort unless payload["version"] == 1
+
+    validate_entry = lambda do |relative, kind|
+      abort unless relative.is_a?(String) && !relative.empty?
+      abort if relative.include?("\0") || relative.match?(/[\r\n]/)
+      parts = relative.split("/", -1)
+      abort if parts.any? { |part| part.empty? || part == "." || part == ".." }
+      if kind == :helper
+        abort unless parts.length == 1 && relative.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/)
+        parts = ["bin", relative]
+      else
+        abort if relative.start_with?("/")
+        parts = ["docs", *parts]
+      end
+
+      current = root
+      parts.each_with_index do |part, index|
+        current = File.join(current, part)
+        stat = File.lstat(current)
+        abort if stat.symlink?
+        if index == parts.length - 1
+          abort unless stat.file?
+          abort if kind == :helper && !File.executable?(current)
+        else
+          abort unless stat.directory?
+        end
+      end
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      abort
+    end
+
+    helpers = payload["bin_helpers"]
+    docs = payload["pack_docs"]
+    abort unless helpers.is_a?(Array) && !helpers.empty? && helpers.uniq == helpers
+    abort unless docs.is_a?(Array) && !docs.empty? && docs.uniq == docs
+    helpers.each { |entry| validate_entry.call(entry, :helper) }
+    docs.each { |entry| validate_entry.call(entry, :doc) }
+    File.binwrite(helpers_path, helpers.join("\n") + "\n")
+    File.binwrite(docs_path, docs.join("\n") + "\n")
+  ' "$materialized_root" "$inventory_path" "$helpers_path" "$docs_path"; then
+    cleanup_materialized_release
+    echo "Stable release installer inventory is invalid: $release_ref" >&2
+    exit 1
+  fi
+
+  bin_helpers=()
+  while IFS= read -r helper; do
+    [[ -z "$helper" ]] || bin_helpers+=("$helper")
+  done < "$helpers_path"
+  pack_docs=()
+  while IFS= read -r doc_name; do
+    [[ -z "$doc_name" ]] || pack_docs+=("$doc_name")
+  done < "$docs_path"
 }
 
 cleanup_materialized_release() {
   [[ -z "$materialized_temp_root" ]] || rm -rf "$materialized_temp_root"
 }
 
+print_install_inventory=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
@@ -3961,6 +4050,10 @@ while [[ $# -gt 0 ]]; do
       [[ -n "$channel" ]] || channel="stable"
       shift 2
       ;;
+    --print-install-inventory)
+      print_install_inventory=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -3972,6 +4065,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$print_install_inventory" = true ]]; then
+  emit_install_inventory
+  exit 0
+fi
 
 case "$host" in
   codex|claude|auto) ;;

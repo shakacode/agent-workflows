@@ -266,12 +266,16 @@ Modified, mismatched, ambiguous, and unowned paths are preserved; the migration
 stops with exact manual cleanup guidance. Unrelated skill names are never
 removed.
 
-Then initialize and validate the seam from a consumer repository:
+Then initialize and validate the seam from a consumer repository against the
+installed exact-release target (use `$HOME/.claude` for a Claude install):
 
 ```bash
 cd /path/to/consumer/repo
-agent-workflow-seam-doctor --init --shared "$HOME/src/agent-workflows"
+agent-workflow-seam-doctor --init --shared "$HOME/.codex"
 ```
+
+Only development-channel installs should point `--shared` at a mutable source
+checkout.
 
 The initializer detects only unambiguous root binstubs or exact JavaScript
 scripts with one recognized package-manager lockfile. If it reports
