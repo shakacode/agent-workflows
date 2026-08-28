@@ -1800,12 +1800,19 @@ covers authorization capture, preparation, the entire publication job including
 its protected expose action, and every denial or threshold-failure
 `finalize-standalone-closeout.yml` job. A merged negative
 evidence PR remains a candidate rather than an accepted terminal verdict until
-that serialized finalizer revalidates current `main` and the no-public-release
-condition. A terminal-candidate closeout merged after authorization capture therefore
+that serialized finalizer revalidates current `main`, the no-public-release
+condition, and the absence of any draft release or uploaded asset for the
+evaluated tag. A staged but unexposed draft is not a public release, so the
+finalizer queries the tag's release and asset state directly and requires either
+that no exporter-owned draft or asset exists or a recorded authorized cleanup
+that removed it; a surviving draft blocks terminal acceptance rather than being
+stranded by a terminal namespace that would reject every later mutator.
+A terminal-candidate closeout merged after authorization capture therefore
 either invalidates the authorization before staging/exposure or waits for
 publication and is rejected by the finalizer after exposure. Tests cover
 forged identity inputs, cross-workflow serialization, finalizer/check/toggle
-interleavings, terminal acceptance between preparation and `stage-draft`, and
+interleavings, terminal acceptance between preparation and `stage-draft`, a
+staged-but-unexposed draft or orphaned asset at the finalizer boundary, and
 the plan-fixed tag path for no-authorization negative cases,
 as well as merge denial,
 stale-authorization, and threshold-failure closeouts at each race boundary.
@@ -1960,8 +1967,14 @@ denial/stale decision,
 candidate terminal `NOT_ADOPTED` evaluation, closed manifest, and—only for
 `authorization-stale`—the exact expired authorization. After merge,
 `finalize-standalone-closeout.yml` revalidates those files from the exact commit,
+re-fetches the bound decision object and the exact-commit approver allowlist
+under the same `issues: read` and `pull-requests: read` object-type permissions
+and requires an unchanged object ID, derived author, creation/update timestamps,
+canonical body SHA-256, and allowlist SHA-256 against the committed decision,
 proves the no-public-artifact condition, and accepts/reports `NOT_ADOPTED` only
-from that immutable `main` evidence. Loss, mismatch, or an unmerged PR leaves the
+from that immutable `main` evidence. A decision object edited, deleted, or
+rescinded after `finalize-decision` fails closed at this terminal acceptance
+boundary instead of being accepted from the committed snapshot alone. Loss, mismatch, or an unmerged PR leaves the
 state `ADOPTED_PENDING_RELEASE_AUTHORIZATION`; temporary files and Actions
 artifacts never complete the negative path.
 
