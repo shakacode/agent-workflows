@@ -31,14 +31,23 @@ class AgentCoordBoundedTest < Minitest::Test
       RUBY
         clock = ManualClock.new
         polls_while_ready = 0
+        readiness_deadline = monotonic_now + 5
         sleeper = lambda do |seconds|
-          if clock.now.zero? && File.size?(child_pid_file)
+          if clock.now.zero?
+            unless File.size?(child_pid_file)
+              raise "fake child did not become ready" if monotonic_now >= readiness_deadline
+
+              sleep 0.01
+              next
+            end
+
             polls_while_ready += 1
             clock.advance(1) if polls_while_ready == 3
-          else
-            sleep seconds
-            clock.advance(seconds) unless clock.now.zero?
+            next
           end
+
+          sleep seconds
+          clock.advance(seconds)
         end
         stdout = StringIO.new
         stderr = StringIO.new
@@ -77,9 +86,14 @@ class AgentCoordBoundedTest < Minitest::Test
       RUBY
         readiness_polls = 0
         injected_failure = false
+        readiness_deadline = monotonic_now + 5
         sleeper = lambda do |_seconds|
           sleep 0.01
-          next unless File.size?(child_pid_file) && File.size?(helper_pid_file)
+          unless File.size?(child_pid_file) && File.size?(helper_pid_file)
+            raise "fake process group did not become ready" if monotonic_now >= readiness_deadline
+
+            next
+          end
 
           readiness_polls += 1
           if readiness_polls == 3
@@ -466,7 +480,7 @@ class AgentCoordBoundedTest < Minitest::Test
     runner = AgentCoordBoundedRunner.new(clock: clock.method(:now), sleeper:, stdout:, stderr:)
     exit_code = runner.run(["agent-coord", *command], timeout: 1.0, env:)
 
-    assert advanced, "logical timeout advanced before fake helper readiness"
+    assert advanced, "logical timeout did not advance after fake helper readiness"
     assert_equal 1.0, clock.first_advance
 
     [exit_code, stdout.string, stderr.string]
