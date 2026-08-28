@@ -2211,7 +2211,10 @@ reproducing the block.
 **Proportional corrections.** A self-correction that changes what the maintainer
 would decide or do is stated once, in one or two sentences, at the point it
 matters. A correction that changes nothing for the reader is made silently and
-appears only in the `Agent details` decision log of the final handoff. No
+recorded in exactly one durable place: the PR description's `Agent details`
+decision log when the target has a PR, and otherwise the final handoff's
+**FYI / decisions made** section, which is where a no-PR or ad-hoc target keeps
+its decision record. Silently does not mean unrecorded. No
 running tallies of prior errors, no re-opening a correction in a later message,
 and no mid-flight cross-round retrospectives. Correcting the record stays
 mandatory; only repeating the narration is bounded.
@@ -2256,14 +2259,17 @@ and key separators, `:` separates each checkpoint name from its count, and `<`
 or `>` can terminate the surrounding HTML comment and corrupt or expose the rest
 of the telemetry. `batch_id` is therefore percent-encoded over the complete set
 `% ; : = < >`, as `%25`, `%3B`, `%3A`, `%3D`, `%3C`, and `%3E`. Encode `%` first
-so the other escapes are unambiguous, and decode each field only after splitting
-on `;`. A `batch_id` whose rendered form still contains any unencoded character
+so the other escapes are unambiguous. Then apply one further rule, because the
+set above cannot otherwise touch a batch ID that is exactly the reserved
+sentinel: a `batch_id` whose value after the substitutions above is exactly
+`UNKNOWN` is rendered `%55NKNOWN`, percent-encoding its leading `U`. Decode each
+field only after splitting on `;`, and decode before any comparison against the
+sentinel. A `batch_id` whose rendered form still contains any unencoded character
 from that set is malformed: fail closed and record `batch_id` as `UNKNOWN`
 rather than emitting a marker that cannot be parsed. Bare `UNKNOWN` is reserved
-for exactly that unavailable-or-malformed case, so a backend whose real batch ID
-is the literal string `UNKNOWN` renders it as `%55NKNOWN`; a reader decodes the
-field before comparing, and only an undecodable bare `UNKNOWN` means the ID was
-unavailable.
+for exactly that unavailable-or-malformed case; a real batch ID of `UNKNOWN`
+reaches the reader as `%55NKNOWN` under the rule above, so a rendered bare
+`UNKNOWN` always means the ID was unavailable.
 
 Every count accepts exact `UNKNOWN` independently, and each checkpoint count is
 serialized as its own `<name>:<value>` pair so one unavailable bucket never

@@ -144,8 +144,9 @@ Emit user-visible text only at one of five typed checkpoints:
 
 Everything between checkpoints is silent; a tool-call preamble is not a
 checkpoint. An HST-v1 actionable notification is not a separate category: it is
-emitted at the `decision-required` or `merge-decision` checkpoint whose state it
-reports. A direct answer, an explicitly requested status report, a turn of a
+emitted at the `decision-required`, `merge-decision`, or `final-handoff`
+checkpoint whose state it reports; closeout and archive completion is a
+`final-handoff`. A direct answer, an explicitly requested status report, a turn of a
 required interactive exchange such as the `ask` merge-authority walkthrough, and
 a required safety stop are always allowed without being checkpoints. Every
 user-visible message counts in exactly one bucket of the closeout marker.
