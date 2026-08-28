@@ -129,6 +129,37 @@ Plan a PR batch
 
 ## Workflow
 
+### Canonical Launch Target Gate
+
+Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target.
+Pass the repository-qualified canonical issue/PR identity unchanged through planning, plan preflight, dispatch, coordination claims, the Lane Card, and final handoff.
+A direct prompt without either target must stop before branch creation, editing, implementation or coordination mutation, or worker dispatch and route to planning/reconciliation.
+Planning/reconciliation searches the repository for the exact existing issue or PR and reuses that identity, so equivalent prompt wording cannot create independently claimable synthetic lanes.
+When search finds no canonical issue or existing PR, create the canonical issue with explicit planning-time issue-creation authority, or ask for that authority; do not create a branch, edit, or dispatch until the persisted issue identity is rebound into the plan and preflight passes.
+
+The only exception is a named, trusted, task-specific durable ad-hoc override.
+Generic instructions, `$pr-batch` invocation, fix-it intent, or PR-publication authority do not create this override.
+Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff.
+All override fields must be explicit, trusted, task-matched, durable, and non-`UNKNOWN`. Use `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` as the stable coordination identity and preserve it unchanged in durable evidence; coordination derives the backend-safe raw pair of lowercase repository plus exact `adhoc:<yyyymmdd>-<short-slug>` target token. Fail closed to planning/reconciliation when any override evidence is missing or inferred. An existing PR is sufficient and never requires a retroactive issue.
+A labeled authorizer or task identity whose complete value component is `UNKNOWN` is incomplete and also fails closed.
+Complete labeled component values `fix-it`, `pr-batch`, and `publish-pr` are generic intent and fail closed in either provenance field, even when the override name is task-specific.
+The exact override names `fix-it`, `pr-batch`, and `publish-pr` are likewise generic and invalid.
+For this override field only, `durable_authorization_ref` must use `issue://OWNER/REPO/N`, `plan-state://<id>/<path>`, `batch://<id>`, or `https://github.com/OWNER/REPO/{issues|pull}/N`; any other scheme or chat-local reference fails closed.
+Parseable `issue://` and GitHub HTTPS authorization references must match `target.repository` case-insensitively; opaque `plan-state://` and `batch://` references remain trusted without invented repository parsing.
+Parseable authorization refs reject userinfo and query; GitHub HTTPS requires port 443, `issue://` requires the exact canonical authority/path shape, and fragments remain permitted.
+Every typed target repository has exactly two ASCII components separated by `/`: the owner matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from `[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
+
+Every preflight lane carries one exact `target` v1 record. GitHub targets use
+`type`, `version`, `repository`, positive `number`, and a matching
+`stable_coordination_identity`; their types are `github-issue` and
+`github-pull-request`, with identities `OWNER/REPO:issue:N` and
+`OWNER/REPO:pull-request:N`. The sole ad-hoc form uses type
+`trusted-ad-hoc-override`, `repository`, `target: adhoc:<yyyymmdd>-<short-slug>`, matching stable
+identity, a lowercase slug `override_name`, labeled `kind:value` authorizer and
+task identities, and the durable reference. Missing,
+malformed, unknown, or duplicate identities make `batch-plan-preflight` reject
+the whole launch before dispatch.
+
 1. Intake
    - Before reading GitHub targets or shaping the batch, record future
      coordinator, worker, and checker model/effort preferences separately from
@@ -166,7 +197,7 @@ Plan a PR batch
      placeholder in the generated prompt. Explain that `ask` automatically
      walks through the exact-diff PR one conceptual change at a time before its
      one final merge decision.
-   - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list.
+   - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list. Treat an unbound direct prompt as planning/reconciliation input only; do not turn it into an implementation lane unless the complete durable ad-hoc override record is already present in trusted input.
 
 2. Verify
    - Determine repo with `gh repo view --json nameWithOwner -q .nameWithOwner` unless refs include repo URLs.
@@ -476,7 +507,15 @@ Plan a PR batch
      the verified PR map reflects its path or exact rename pair.
      Preserve real PR `pr-file-touch-map` verified results unchanged; represent
      explicit pre-PR paths with the helper's typed `planned-path-evidence` v1
-     record and durable evidence reference. A rejected result launches no
+     record and durable evidence reference. An `issue` source must bind to the
+     target's exact repository and number through `issue://OWNER/REPO/N` or an
+     exact lowercase-host `https://github.com/OWNER/REPO/issues/N` reference;
+     both reject userinfo and query, HTTPS requires port 443, `issue://`
+     requires the exact canonical authority/path shape, and fragments remain
+     permitted;
+     other source kinds prove durability only and do not invent target identity.
+     After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
+     A rejected result launches no
      worker; an accepted result permits only its eligible lanes and keeps its
      held lanes unlaunched.
      Before launch, resolve `PR_BATCH_SKILL_DIR` through the explicit env-var /
@@ -569,8 +608,11 @@ Plan a PR batch
      after a successful claim, on blocked/cancelled state, and as the final
      handoff header. The actor that opens or updates the PR emits the PR-open
      Lane Card when the PR is opened. It records preferred model/effort,
-     observed host/model/effort, and the execution-envelope receipt; unavailable
-     observations are `UNKNOWN`. The claim holder and `dashboard_url`
+     observed host/model/effort, the execution-envelope receipt, the unchanged
+     repository-qualified canonical launch identity, and `Ad-hoc override:
+     none` or the complete accepted durable override record; unavailable route
+     observations are `UNKNOWN`, while canonical launch or override evidence
+     may not be. The claim holder and `dashboard_url`
      degrade to `UNKNOWN` when the backend does not provide them, while `pr_url`
      may use the verified GitHub PR URL from PR-open/current PR state.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
@@ -662,6 +704,7 @@ backend must say so in the declaration.
 - Batch title(s):
 - Included items:
   - `PR #N` or `Issue #N`: title, URL, state, role in batch
+  - Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch
 - Excluded or deferred:
 - File-touch map and path evidence:
 - Dependencies and sequencing:
@@ -789,8 +832,9 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
-Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
-Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
+Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
+Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
+PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
 Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
@@ -799,18 +843,18 @@ Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
+Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
-Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
+Batch QA Lane:<owner/scope+evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
-- Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original:trusted ad-hoc prompt|n/a
-  Goal:one-line outcome
-  Notes:scope/branch/deps
-  Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
+- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+  Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
+  Goal:outcome
+  Notes:scope/deps
+  Done:req auth+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
@@ -820,7 +864,7 @@ Current wave:each target/disjoint lane exactly once;one target/lane/worker;share
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
-merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
+merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 ```
