@@ -37,6 +37,7 @@ Commands below use one stable placeholder set:
 | `PRE_BATCH_SHA` | the base-branch state before the closure landed |
 | `BATCH_ID`, `LANE`, `TARGET` | coordination identifiers for the lane that produced `PR` |
 | `AGENT_ID` | stable identifier of the agent claiming the repair lane |
+| `REPAIR_BATCH_ID`, `REPAIR_LANE` | coordination identifiers for the **repair** lane — always distinct from `BATCH_ID`/`LANE` |
 | `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
 
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA,
@@ -389,23 +390,6 @@ dependency has been removed.
 
 ### Build the revert on a branch
 
-Claim the repair lane before you build anything, so the lane owns the branch,
-the PR, and the heartbeat while the work happens rather than being backfilled
-afterwards:
-
-```bash
-agent-coord claim --repo "${REPO}" --target "${PR}" \
-  --batch-id "${BATCH_ID}" --lane "${LANE}" \
-  --agent-id "${AGENT_ID}" --branch "${REVERT_BRANCH}"
-```
-
-As in section 3, `agent-coord` is *this* repo's `coordination_backend` seam and
-this invocation is illustrative of that seam, not a portable requirement; a
-consumer repo claims through its own configured backend, and backend `n/a` skips
-the claim and records the ownership in the durable handoff instead. The lane is
-closed `done` at [checkpoint B](#coordination-events-and-terminal-state), after
-the repair merges.
-
 Do not embed a raw `batch_id` in the branch name. A coordination-backed
 `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`.
 `:` is rejected outright as a ref component — `git check-ref-format --branch
@@ -460,6 +444,36 @@ The branch is created from `${BASE_TIP}` — the exact commit scope analysis rea
 construction, so this changes nothing at runtime; it removes the last place a
 base reference could be re-resolved, which is what let a stale ref diverge from
 the analysed tree in the first place.
+
+#### Claim the repair lane
+
+With the branch name derived and the branch created, but **before any revert
+commit exists**, claim the repair lane through the repo's coordination backend.
+Ordering matters in both directions: the claim records the branch it owns, so
+the name must be derived first; and the lane must exist before the work does, or
+it cannot claim the target, cannot heartbeat while the repair is built, and
+records its history backwards.
+
+The repair lane is **not** the lane that produced the suspect PR. Claim it under
+its own `REPAIR_BATCH_ID` and `REPAIR_LANE`, distinct from the `BATCH_ID` and
+`LANE` in the placeholder table, and use those same repair identifiers for the
+heartbeat and for the repair lane's own closeout. Reusing the original lane's
+identifiers cannot produce the "genuinely new lane" the already-`done` path in
+section 3 requires — it reopens history against a lane whose first terminal
+event is immutable.
+
+The claim carries: the repository, the suspect PR as the target, the repair
+batch and lane identifiers, the acting agent identity, and `REVERT_BRANCH`. As
+with every coordination command in section 3, this is *this* repo's
+`coordination_backend` seam rather than a portable requirement — a consumer repo
+claims through its own configured backend, and backend `n/a` skips the claim and
+records ownership in the durable handoff instead. No invocation is given here on
+purpose: it cannot be exercised by the replay harness, and an unreplayable
+recipe in this document has a poor track record.
+
+The repair lane is released at
+[checkpoint B](#coordination-events-and-terminal-state) — `done` once the repair
+merges, or terminally released on the no-repair path. It is never left open.
 
 Order matters in that pipeline. `tr` runs before `cut`, so everything is ASCII
 by the time it is truncated and a multibyte character cannot be split in half.
@@ -822,6 +836,11 @@ Everything below — the terminal closeout and the already-`done` path — also
 belongs to checkpoint B. A lane is not closed out on the strength of a *proposed*
 repair.
 
+Checkpoint B closes **two** lanes, and they are not the same lane: the original
+lane that produced the suspect PR (per the terminal-state rules below), and the
+repair lane claimed in section 2, released `done` under `REPAIR_BATCH_ID` /
+`REPAIR_LANE` now that its PR has merged.
+
 **If no repair lands at all** — the operator declines both the revert and a
 forward fix and accepts the risk — checkpoint B does not fire, but the lane must
 still reach a defensible state rather than dangling with an open
@@ -849,6 +868,19 @@ still reach a defensible state rather than dangling with an open
 - An already-`done` lane stays `done` and receives no new event, but the
   worked-issue outcome is still `regressed` — the harm is real and now
   knowingly unrepaired.
+- **Terminally release the repair lane too**, under `REPAIR_BATCH_ID` /
+  `REPAIR_LANE`, by the same `superseded`-if-a-named-successor-exists rule.
+  Section 2 claimed that lane; checkpoint B is the only place that closes it, so
+  a no-repair outcome that skips checkpoint B leaves it active or decaying to
+  stale, where it obstructs later claims on the same target. The same
+  `--evidence-url` rule applies: a real accepted-risk URL, or omit the flag.
+- **Close the draft revert PR.** The procedure opened it at checkpoint A and no
+  repair is landing, so it is now a permanently open PR proposing a change the
+  operator has declined. Close it with a comment naming the accepted-risk
+  decision, and delete or leave the unpushed revert branch as the repo's
+  convention prefers — it holds only revert commits.
+- If you enabled `rerere.enabled` for the closure, unset it. It is repo-local
+  git configuration this procedure turned on, and nothing else turns it off.
 - Record the accepted-risk decision and the deciding operator in the durable
   handoff. An accepted risk that is written down is a decision; one that is not
   is an unexplained dangling lane.
@@ -874,6 +906,15 @@ agent-coord release --terminal superseded --pr-state "${PR_STATE}" \
 - Rule: `superseded` if and only if a named successor exists at closeout time;
   otherwise `abandoned`.
 
+A terminal release has preconditions, and failing them leaves the lane open —
+the dangling state these rules exist to prevent. Verified against this repo's
+seam: the release refuses with `terminal release requires a claim with batch_id`
+unless the claim carried one, and with `terminal closeout does not match exactly
+one lane in batch <id>` unless it resolves to exactly one registered lane. Claim
+both lanes under their batch and lane identifiers from the start, and treat a
+closeout that cannot resolve as `UNKNOWN`: reconcile the lane and retry rather
+than moving on with it open.
+
 *Lane already closed `done`* — you cannot rewrite it. **The first terminal
 event is immutable.** Later authenticated completion may reconcile an
 `abandoned` lane or a `superseded` issue, but there is no reconciliation that
@@ -885,11 +926,12 @@ violation rather than a correction. Instead:
    when it is proposed — so dashboards reading lane history stop presenting the
    outcome as cleanly `done`. If no repair lands, emit nothing here and follow
    the accepted-risk bullets above instead.
-2. The repair runs as a **new lane** — but **establish that lane before you
-   build the repair**, not here. A lane created after its own work merged
-   cannot claim the target, cannot heartbeat while the work happens, and
-   records coordination history backwards. Claim it when you start section 2
-   (the `agent-coord claim` invocation is shown there),
+2. The repair runs as a **new lane** under its own `REPAIR_BATCH_ID` /
+   `REPAIR_LANE` — but **establish that lane before you build the repair**, not
+   here. A lane created after its own work merged cannot claim the target,
+   cannot heartbeat while the work happens, and records coordination history
+   backwards. Claim it when you start section 2 (see
+   [Claim the repair lane](#claim-the-repair-lane)),
    let it own the branch and the PR, and close it `done` here once the repair
    merges. This step is the closeout of a lane that already exists, not the
    creation of one.
@@ -974,10 +1016,11 @@ An agent **may not**, without an explicit operator decision:
    Fix `PRE_BATCH_SHA` as `<oldest-in-scope-sha>^1`.
 5. Decide revert versus forward fix, and write down why.
 6. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
-   recovery if it moved. Claim the repair lane now, before building anything.
-   Derive a slug branch from the batch id, check it with
+   recovery if it moved. Derive a slug branch from the batch id, check it with
    `git check-ref-format --branch`, and create it from `${BASE_TIP}`; never work
-   on `BASE`.
+   on `BASE`. Then claim the repair lane under its own `REPAIR_BATCH_ID` /
+   `REPAIR_LANE` — after the branch name exists, because the claim records it,
+   and before the first revert commit.
 7. Revert **every commit in every in-scope list**, newest first, by handing the
    whole list to one `git revert` invocation (`-m 1` on a merge commit, alone).
    On conflict: resolve and `--continue`, or `--abort` and re-scope — never
@@ -996,9 +1039,11 @@ An agent **may not**, without an explicit operator decision:
     the merge decision. Record nothing here that claims a repair landed.
 13. **Checkpoint B, only after a repair PR actually merges** — the revert *or* a
     forward fix, whichever the operator took — record `human_intervention --kind
-    manual-fix` naming that PR; close a non-terminal lane `superseded` or
-    `abandoned`; close the repair lane claimed in step 6 as `done`; reclassify
-    the worked issue as `regressed`. If no repair lands at all, skip checkpoint
-    B, still close a non-terminal lane (omitting `--evidence-url` when no repair
-    URL exists), still reclassify the worked issue `regressed`, and record the
-    accepted-risk decision and its operator in the durable handoff.
+    manual-fix` naming that PR; close a non-terminal original lane `superseded`
+    or `abandoned`; release the repair lane claimed in step 6 as `done` under
+    `REPAIR_BATCH_ID` / `REPAIR_LANE`; reclassify the worked issue as
+    `regressed`. If no repair lands at all, skip checkpoint B but still close
+    **both** lanes terminally (omitting `--evidence-url` when no repair URL
+    exists), close the draft revert PR, unset `rerere.enabled` if you set it,
+    reclassify the worked issue `regressed`, and record the accepted-risk
+    decision and its operator in the durable handoff.
