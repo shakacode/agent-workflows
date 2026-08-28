@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Added the evidence-first `fix-flaky-tests` workflow and retained `structural-review` and `fix-flaky-tests` as accepted replayable review-receipt sources while continuing to reject arbitrary sources.** [PR 346](https://github.com/shakacode/agent-workflows/pull/346) and [PR 347](https://github.com/shakacode/agent-workflows/pull/347) by [justin808](https://github.com/justin808).
 - **Add a versioned, fail-closed execution-provenance receipt schema, validator, representative routing-disposition fixtures, and source-pack validation wiring for requested-versus-observed routes, fallback authority, commit attribution, and exact `UNKNOWN` evidence.** [PR 418](https://github.com/shakacode/agent-workflows/pull/418) by [justin808](https://github.com/justin808).
 - **Define Agent Workflows as the sole delivery orchestrator when Superpowers coexists on any host, document an exact-revision disposable Codex pilot with MIT attribution, and add a Codex-only advisory non-mutating diagnostic for `active`, `installed-disabled`, `available-not-installed`, and `UNKNOWN` states with separate catalog provenance.** [issue 389](https://github.com/shakacode/agent-workflows/issues/389).
 - **Add an opt-in Claude Code `SessionEnd` adapter that conditionally records a non-terminal lane drain event only while the advertised backend atomically verifies the session's current live claim, without releasing it.** [issue 268](https://github.com/shakacode/agent-workflows/issues/268).
