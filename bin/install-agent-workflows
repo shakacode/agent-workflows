@@ -823,6 +823,8 @@ capture_regular_file_snapshot() {
     source_file = nil
     snapshot_file = nil
     lock_file = nil
+    snapshot_stat = nil
+    completed = false
     begin
       source, snapshot, expected, expected_lock = ARGV
       lock_path = File.dirname(snapshot)
@@ -854,12 +856,15 @@ capture_regular_file_snapshot() {
       snapshot_fd = MetadataSnapshotSyscalls.openat(
         lock_file.fileno,
         snapshot_name,
-        File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+        File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW,
         0o600
       )
       abort if snapshot_fd == -1
       snapshot_file = File.for_fd(snapshot_fd)
+      snapshot_stat = snapshot_file.stat
+      abort unless snapshot_stat.file?
       snapshot_file.chmod(0o600)
+      MetadataSnapshotHook.call(:after_snapshot_create) if defined?(MetadataSnapshotHook)
       snapshot_file.write(content)
       snapshot_file.flush
       snapshot_file.fsync
@@ -874,7 +879,20 @@ capture_regular_file_snapshot() {
         snapshot_file = nil
       end
       print "#{snapshot_stat.dev}:#{snapshot_stat.ino}|#{digest}"
+      completed = true
     ensure
+      if !completed && snapshot_file && snapshot_stat && lock_file
+        begin
+          snapshot_file.flush
+          cleanup_stat = snapshot_file.stat
+          if cleanup_stat.file? && cleanup_stat.dev == snapshot_stat.dev && cleanup_stat.ino == snapshot_stat.ino
+            $stdout.write("#{cleanup_stat.dev}:#{cleanup_stat.ino}")
+            $stdout.flush
+          end
+        rescue StandardError
+          nil
+        end
+      end
       [snapshot_file, source_file, lock_file].each do |file|
         begin
           file&.close
@@ -931,6 +949,7 @@ capture_install_metadata_binding() {
 
   snapshot_attestation="$(capture_regular_file_snapshot \
     "$metadata_path" "$install_metadata_snapshot_path" "$first_attestation")" || {
+    install_metadata_snapshot_attestation="$snapshot_attestation"
     report_install_metadata_binding_changed
     return 65
   }
@@ -1628,6 +1647,7 @@ remove_bound_recovery_metadata_artifacts() {
       end
       if target_file && original_target_mode
         begin
+          RecoveryCleanupHook.call(:before_target_mode_restore, nil) if defined?(RecoveryCleanupHook)
           target_file.chmod(original_target_mode)
         rescue StandardError
           mode_restore_failed = true
@@ -1643,6 +1663,7 @@ remove_bound_recovery_metadata_artifacts() {
     end
     puts(holder_path || File.join(target, holder_name)) if cleanup_status == 67 && holder_name
     puts(File.join(target, quarantine_name)) if cleanup_status == 68
+    exit 70 if mode_restore_failed && deletion_committed && holder_name.nil?
     exit 67 if mode_restore_failed || close_failed || (holder_close_failed && (!deletion_committed || holder_name))
     exit cleanup_status
   ' "$target" "${recovery_metadata_quarantine##*/}" "$recovery_metadata_quarantine_identity" \
@@ -1682,6 +1703,8 @@ restore_captured_recovery_metadata() {
   if [[ "$cleanup_status" -eq 68 ]]; then
     [[ -n "$cleanup_artifact" ]] || cleanup_artifact="$recovery_metadata_quarantine"
     echo "RECOVERY_METADATA_CLEANUP_PENDING: preserved $cleanup_artifact" >&2
+  elif [[ "$cleanup_status" -eq 70 ]]; then
+    echo "RECOVERY_TARGET_MODE_RESTORE_PENDING: recovery metadata cleanup committed, but exact target permissions could not be restored; no recovery quarantine remains." >&2
   elif [[ "$cleanup_status" -ne 0 ]]; then
     [[ -n "$cleanup_artifact" ]] || cleanup_artifact="$recovery_metadata_quarantine"
     echo "RECOVERY_METADATA_CLEANUP_PENDING: preserved recovery state at $cleanup_artifact" >&2
@@ -1775,7 +1798,24 @@ prepare_metadata() {
   source_remote="$(metadata_value source_remote)"
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-  prepared_metadata_attestation="$(ruby -rjson -rdigest -rfind -e '
+  prepared_metadata_attestation="$(ruby -rjson -rdigest -rfind -rfiddle/import -rsecurerandom -e '
+    module PreparedMetadataSyscalls
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int, unsigned int)"
+      extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, source, destination)
+          renameatx_np(fd, source, fd, destination, 0x4)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, source, destination)
+          renameat2(fd, source, fd, destination, 0x1)
+        end
+      end
+    end
     path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, *pack_docs = ARGV
     directory_fingerprint = lambda do |root|
       entries = []
@@ -1830,16 +1870,49 @@ prepare_metadata() {
     }
     serialized_metadata = JSON.pretty_generate(metadata) + "\n"
     abort unless File.const_defined?(:NOFOLLOW)
+    file = nil
+    file_stat = nil
+    completed = false
     file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
     begin
+      file_stat = file.stat
+      abort unless file_stat.file?
+      PreparedMetadataHook.call(:after_create) if defined?(PreparedMetadataHook)
       file.write(serialized_metadata)
       file.flush
       file.fsync
       stat = file.stat
       abort unless stat.file?
       print "#{stat.dev}:#{stat.ino}|#{Digest::SHA256.hexdigest(serialized_metadata)}"
+      completed = true
     ensure
-      file.close
+      begin
+        file.close unless file.closed?
+      rescue StandardError
+        nil
+      end
+      if !completed && file_stat
+        begin
+          parent = File.open(File.dirname(path), File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+          cleanup_name = "#{File.basename(path)}.cleanup-#{Process.pid}-#{SecureRandom.hex(8)}"
+          if PreparedMetadataSyscalls.no_replace(parent.fileno, File.basename(path), cleanup_name) == 0
+            cleanup_fd = PreparedMetadataSyscalls.openat(
+              parent.fileno, cleanup_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW, 0
+            )
+            if cleanup_fd != -1
+              cleanup_file = File.for_fd(cleanup_fd)
+              cleanup_stat = cleanup_file.stat
+              cleanup_file.close
+              if cleanup_stat.dev == file_stat.dev && cleanup_stat.ino == file_stat.ino
+                PreparedMetadataSyscalls.unlinkat(parent.fileno, cleanup_name, 0)
+              end
+            end
+          end
+          parent.close
+        rescue StandardError
+          nil
+        end
+      end
     end
   ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}")"
 }
@@ -1852,6 +1925,7 @@ preflight_metadata_commit_capability() {
       dlload Fiddle.dlopen(nil)
       extern "int openat(int, const char *, int, unsigned int)"
       extern "int linkat(int, const char *, int, const char *, int)"
+      extern "int mkdirat(int, const char *, unsigned int)"
       extern "int unlinkat(int, const char *, int)"
       if RUBY_PLATFORM.include?("darwin")
         extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
@@ -1882,7 +1956,11 @@ preflight_metadata_commit_capability() {
     first_name = "metadata-rename-probe-a"
     second_name = "metadata-rename-probe-b"
     link_name = "metadata-rename-probe-link"
+    cross_directory_name = "metadata-rename-probe-directory"
+    cross_source_name = "metadata-rename-probe-cross-source"
+    cross_destination_name = "metadata-rename-probe-cross-destination"
     directory = nil
+    cross_directory = nil
     ios = []
     cleanup_failed = false
     open_at = lambda do |name|
@@ -1900,6 +1978,24 @@ preflight_metadata_commit_capability() {
     create = lambda do |name, content|
       fd = AtomicMetadataRenameProbe.openat(
         directory.fileno,
+        name,
+        File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+        0o600
+      )
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      file = File.for_fd(fd)
+      begin
+        file.chmod(0o600)
+        file.write(content)
+        file.flush
+        file.fsync
+      ensure
+        file.close
+      end
+    end
+    create_at = lambda do |owner, name, content|
+      fd = AtomicMetadataRenameProbe.openat(
+        owner.fileno,
         name,
         File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
         0o600
@@ -1953,6 +2049,33 @@ preflight_metadata_commit_capability() {
       linked_stat = linked.stat
       abort unless linked.read == "first" &&
                    first_stat.dev == linked_stat.dev && first_stat.ino == linked_stat.ino
+      abort unless AtomicMetadataRenameProbe.mkdirat(directory.fileno, cross_directory_name, 0o700) == 0
+      cross_directory_fd = AtomicMetadataRenameProbe.openat(
+        directory.fileno,
+        cross_directory_name,
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW,
+        0
+      )
+      abort if cross_directory_fd == -1
+      cross_directory = File.for_fd(cross_directory_fd)
+      abort unless cross_directory.stat.directory?
+      create_at.call(cross_directory, cross_source_name, "cross-source")
+      create_at.call(directory, cross_destination_name, "cross-destination")
+      MetadataRenameProbeHook.call(:before_cross_directory_exchange) if defined?(MetadataRenameProbeHook)
+      abort unless AtomicMetadataRenameProbe.exchange_between(
+        cross_directory.fileno,
+        cross_source_name,
+        directory.fileno,
+        cross_destination_name
+      ) == 0
+      cross_source = open_at.call(cross_destination_name)
+      cross_fd = AtomicMetadataRenameProbe.openat(
+        cross_directory.fileno, cross_source_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW, 0
+      )
+      abort if cross_fd == -1
+      cross_destination = File.for_fd(cross_fd)
+      ios << cross_destination
+      abort unless cross_source.read == "cross-source" && cross_destination.read == "cross-destination"
       named_lock_stat = File.lstat(lock)
       abort unless named_lock_stat.directory? && !named_lock_stat.symlink? &&
                    named_lock_stat.dev == directory_stat.dev && named_lock_stat.ino == directory_stat.ino
@@ -1965,7 +2088,7 @@ preflight_metadata_commit_capability() {
         end
       end
       if directory
-        [first_name, second_name, link_name].each do |name|
+        [first_name, second_name, link_name, cross_destination_name].each do |name|
           next if AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0) == 0
 
           retry_result = AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0)
@@ -1982,6 +2105,21 @@ preflight_metadata_commit_capability() {
           end
           File.for_fd(missing_fd).close unless missing_fd == -1
           cleanup_failed = true
+        end
+        if cross_directory
+          if AtomicMetadataRenameProbe.unlinkat(cross_directory.fileno, cross_source_name, 0) != 0 &&
+             Fiddle.last_error != Errno::ENOENT::Errno
+            cleanup_failed = true
+          end
+          begin
+            cross_directory.close unless cross_directory.closed?
+          rescue StandardError
+            cleanup_failed = true
+          end
+          remove_directory = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
+          cleanup_failed = true unless AtomicMetadataRenameProbe.unlinkat(
+            directory.fileno, cross_directory_name, remove_directory
+          ) == 0
         end
       end
       begin
@@ -2355,7 +2493,9 @@ remove_attested_metadata_file() {
     fd = BoundCleanup.openat(parent.fileno, private_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW); abort if fd == -1
     file = File.for_fd(fd); stat = file.stat; digest = Digest::SHA256.new
     while (chunk = file.read(64 * 1024)); digest.update(chunk); end
-    abort unless stat.file? && "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}" == expected
+    actual_identity = "#{stat.dev}:#{stat.ino}"
+    actual_attestation = "#{actual_identity}|#{digest.hexdigest}"
+    abort unless stat.file? && (actual_attestation == expected || actual_identity == expected)
     abort unless BoundCleanup.unlinkat(parent.fileno, private_name, 0) == 0
     success = true
   ' "$path" "$expected" 2>/dev/null
@@ -2700,42 +2840,43 @@ validate_recovery_cleanup_root() {
 
 remove_recovery_cleanup_root() {
   ruby -rfileutils -rsecurerandom -e '
+    class CleanupFailed < StandardError; end
     target_file = nil
     original_target_mode = nil
     captured = nil
     cleanup_captured = false
     deletion_committed = false
-    deletion_committed = false
+    cleanup_status = 0
     begin
       target = File.realpath(ARGV.fetch(0))
       cleanup_root = File.expand_path(ARGV.fetch(1))
       target_parent = File.realpath(File.dirname(target))
       target_parent_stat = File.lstat(target_parent)
-      abort unless target_parent_stat.directory? && !target_parent_stat.symlink?
+      raise CleanupFailed unless target_parent_stat.directory? && !target_parent_stat.symlink?
       target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
       target_stat = target_file.stat
       named_target_stat = File.lstat(target)
-      abort unless target_stat.directory? &&
+      raise CleanupFailed unless target_stat.directory? &&
                    target_stat.dev == named_target_stat.dev && target_stat.ino == named_target_stat.ino
       parent_writable_by_others = (target_parent_stat.mode & 0o022) != 0
-      abort if parent_writable_by_others &&
+      raise CleanupFailed if parent_writable_by_others &&
                (!target_parent_stat.sticky? || target_stat.uid != Process.euid)
       original_target_mode = target_stat.mode & 0o7777
       if (original_target_mode & 0o022) != 0
-        abort unless target_stat.uid == Process.euid
+        raise CleanupFailed unless target_stat.uid == Process.euid
         target_file.chmod(original_target_mode & ~0o022)
       end
       secured_target_stat = File.lstat(target)
-      abort unless secured_target_stat.dev == target_stat.dev && secured_target_stat.ino == target_stat.ino
-      abort unless File.basename(cleanup_root).match?(/\A\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+\z/)
-      abort unless File.realpath(File.dirname(cleanup_root)) == target
+      raise CleanupFailed unless secured_target_stat.dev == target_stat.dev && secured_target_stat.ino == target_stat.ino
+      raise CleanupFailed unless File.basename(cleanup_root).match?(/\A\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+\z/)
+      raise CleanupFailed unless File.realpath(File.dirname(cleanup_root)) == target
       cleanup_stat = File.lstat(cleanup_root)
-      abort unless cleanup_stat.directory? && !cleanup_stat.symlink? && cleanup_stat.uid == Process.euid
+      raise CleanupFailed unless cleanup_stat.directory? && !cleanup_stat.symlink? && cleanup_stat.uid == Process.euid
       cleanup_realpath = File.realpath(cleanup_root)
-      abort unless File.dirname(cleanup_realpath) == target &&
+      raise CleanupFailed unless File.dirname(cleanup_realpath) == target &&
                    File.basename(cleanup_realpath) == File.basename(cleanup_root)
       verified_stat = File.lstat(cleanup_root)
-      abort unless verified_stat.dev == cleanup_stat.dev && verified_stat.ino == cleanup_stat.ino
+      raise CleanupFailed unless verified_stat.dev == cleanup_stat.dev && verified_stat.ino == cleanup_stat.ino
       10.times do
         candidate = File.join(target, ".agent-workflows-recovery-delete-#{SecureRandom.hex(16)}")
         begin
@@ -2745,7 +2886,7 @@ remove_recovery_cleanup_root() {
           break
         end
       end
-      abort unless captured
+      raise CleanupFailed unless captured
       File.rename(cleanup_root, captured)
       cleanup_captured = true
       captured_stat = File.lstat(captured)
@@ -2764,20 +2905,21 @@ remove_recovery_cleanup_root() {
       deletion_committed = true
       if original_target_mode
         target_file.chmod(original_target_mode)
+        RecoveryCleanupRootHook.call(:after_deletion_mode_restore) if defined?(RecoveryCleanupRootHook)
         restored_target_stat = target_file.stat
-        abort unless (restored_target_stat.mode & 0o7777) == original_target_mode
+        raise CleanupFailed unless (restored_target_stat.mode & 0o7777) == original_target_mode
         original_target_mode = nil
       end
     rescue StandardError
       puts captured if cleanup_captured && captured
-      exit(cleanup_captured ? 69 : 1)
+      cleanup_status = deletion_committed ? 70 : (cleanup_captured ? 69 : 1)
     ensure
       if target_file
         begin
           target_file.chmod(original_target_mode) if original_target_mode
         rescue StandardError
           puts captured if cleanup_captured && captured
-          exit(deletion_committed ? 70 : 69)
+          cleanup_status = deletion_committed ? 70 : 69
         ensure
           begin
             target_file.close
@@ -2787,6 +2929,7 @@ remove_recovery_cleanup_root() {
         end
       end
     end
+    exit cleanup_status
   ' "$target" "$1" 2>/dev/null
 }
 

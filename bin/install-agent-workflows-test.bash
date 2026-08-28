@@ -7776,6 +7776,131 @@ RUBY
   assert_contains "$output" "Installed ShakaCode agent workflows"
 }
 
+test_post_deletion_verification_failure_finalizes_recovery_receipt() {
+  local tmp target staging receipt injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-post-delete-verify"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-post-delete-verification.rb"; marker="$tmp/verify-failed"
+  mkdir -p "$staging/old-flat-skill"; write_native_scw_state codex "$target"; chmod 0777 "$target"
+  printf 'old\n' > "$staging/old-flat-skill/SKILL.md"; printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCleanupRootHook
+  def self.call(phase)
+    return unless phase == :after_deletion_mode_restore
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 0 ]] || fail "post-deletion verification failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_TARGET_MODE_RESTORE_PENDING"
+  [[ ! -e "$receipt" && ! -e "$staging" ]] || fail "post-deletion verification failure retained committed recovery state"
+  [[ "$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0o7777' "$target")" = "777" ]] || \
+    fail "post-deletion verification failure did not restore target mode"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_completed_recovery_metadata_cleanup_mode_failure_has_no_stale_pending_path() {
+  local tmp target staging receipt injection marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-metadata-mode"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-metadata-cleanup-mode.rb"; marker="$tmp/mode-failed"
+  mkdir -p "$staging/user-owned-skill"; chmod 0777 "$target"
+  printf 'user\n' > "$staging/user-owned-skill/SKILL.md"; printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCleanupHook
+  def self.call(phase, _name)
+    return unless phase == :before_target_mode_restore
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  assert_file "$marker"; [[ "$status" -eq 0 ]] || fail "committed metadata cleanup mode failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_TARGET_MODE_RESTORE_PENDING"
+  assert_not_contains "$output" "preserved recovery state at"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "committed metadata cleanup mode failure retained quarantine"
+}
+
+test_cross_directory_exchange_capability_failure_stops_before_recovery_mutation() {
+  local tmp target staging receipt metadata injection marker output status before
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-cross-probe"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-cross-directory-probe.rb"; marker="$tmp/cross-probe-failed"
+  mkdir -p "$staging/user-owned-skill"; printf 'user\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"; before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module MetadataRenameProbeHook
+  def self.call(phase)
+    return unless phase == :before_cross_directory_exchange
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::ENOTSUP
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 1 ]] || fail "cross-directory capability failure exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$before" = "$(shasum "$metadata")" ]] || fail "cross-directory capability failure changed metadata"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "cross-directory capability failure mutated recovery state"
+}
+
+test_partial_snapshot_write_failure_cleans_lock_and_allows_retry() {
+  local tmp target metadata injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-snapshot-write.rb"; marker="$tmp/snapshot-write-failed"
+  mkdir -p "$target"; printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  cat > "$injection" <<'RUBY'
+module MetadataSnapshotHook
+  def self.call(phase)
+    return unless phase == :after_snapshot_create && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "partial snapshot failure unexpectedly succeeded"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "partial snapshot failure retained install lock: $(find "$target/.agent-workflows-install.lock" -maxdepth 1 -print)"
+  retry_output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_partial_prepared_metadata_write_failure_cleans_tmp_and_allows_retry() {
+  local tmp target injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-prepared-write.rb"; marker="$tmp/prepared-write-failed"
+  cat > "$injection" <<'RUBY'
+module PreparedMetadataHook
+  def self.call(phase)
+    return unless phase == :after_create && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "partial prepared metadata failure unexpectedly succeeded"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || fail "partial prepared metadata failure retained tmp"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "partial prepared metadata failure retained install lock"
+  retry_output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
 test_install_lock_identity_failure_removes_empty_lock_and_allows_retry() {
   local tmp target injection marker output status retry_output
   tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-lock-identity-once.rb"; marker="$tmp/identity-failed"
@@ -7825,6 +7950,11 @@ main() {
     test_default_staging_rollback_reverses_partial_moves
     test_cleanup_receipt_rechecks_replaced_residue_before_acceptance
     test_recovery_capture_target_fifo_race_fails_without_hanging
+    test_post_deletion_verification_failure_finalizes_recovery_receipt
+    test_completed_recovery_metadata_cleanup_mode_failure_has_no_stale_pending_path
+    test_cross_directory_exchange_capability_failure_stops_before_recovery_mutation
+    test_partial_snapshot_write_failure_cleans_lock_and_allows_retry
+    test_partial_prepared_metadata_write_failure_cleans_tmp_and_allows_retry
     test_install_lock_identity_failure_removes_empty_lock_and_allows_retry
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
