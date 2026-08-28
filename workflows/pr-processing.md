@@ -2168,8 +2168,9 @@ one of exactly these five checkpoints:
 Everything between checkpoints is silent. A tool-call preamble is not a
 checkpoint, and "here is what I'll do next" narration is not a checkpoint. An
 HST-v1 actionable notification is not a separate category: it is emitted at the
-`decision-required` or `merge-decision` checkpoint whose state it reports, and
-it counts in that checkpoint's bucket. Four message kinds are always allowed and
+`decision-required`, `merge-decision`, or `final-handoff` checkpoint whose state
+it reports — closeout and archive completion is a `final-handoff` — and it
+counts in that checkpoint's bucket. Four message kinds are always allowed and
 are not checkpoints: a direct answer to a user question; an explicitly requested
 status report, such as `$status` or `$batch-status`; a turn of an interactive
 exchange another contract requires, including every orientation and
@@ -2191,10 +2192,11 @@ because no previous state exists, and a changed row still carries its complete
 required evidence.
 
 **Single-surface findings.** Each review finding has exactly one durable
-surface: the PR body findings table, or the repository's configured findings
-destination. The coordinator message reports counts by severity, names only the
-findings that changed a decision and why in at most one sentence each, and links
-to that surface. It never restates the table, and it never narrates a finding a
+surface: the review-thread reply that dispositions it, or the finding record in
+the PR description's `Agent details` disclosure, including its
+`priority-finding-dispositions v1` marker where one is required. The coordinator
+message reports counts by severity, names only the findings that changed a
+decision and why in at most one sentence each, and links to that surface. It never restates the table, and it never narrates a finding a
 second time at greater length.
 
 This reduction governs chat narration only. It never deletes a durable copy that
@@ -2230,7 +2232,12 @@ author, such as tool output and quoted reviewer bodies, and it excludes this
 marker itself, which cannot count itself. `messages` uses the same inclusion
 boundary. `always_allowed` counts the four always-allowed non-checkpoint kinds.
 `unclassified_messages` counts user-visible messages that matched no checkpoint
-and no always-allowed category. A tool-call preamble is such a message: `OC-v1`
+and no always-allowed category. Only text the coordinator shows the user is in
+scope at all: a worker's Lane Card at claim, block, or cancel is internal
+telemetry that reaches the coordinator, not chat, so it is neither a checkpoint
+nor a counted message. When the coordinator does surface lane claim state to the
+user, that text belongs to the `dispatch` checkpoint. A tool-call preamble is a
+counted message: `OC-v1`
 says not to emit one, so a compliant task reports `unclassified_messages=0`, and
 a nonzero value is exactly the drift signal this counter exists to expose.
 
@@ -2252,7 +2259,11 @@ of the telemetry. `batch_id` is therefore percent-encoded over the complete set
 so the other escapes are unambiguous, and decode each field only after splitting
 on `;`. A `batch_id` whose rendered form still contains any unencoded character
 from that set is malformed: fail closed and record `batch_id` as `UNKNOWN`
-rather than emitting a marker that cannot be parsed.
+rather than emitting a marker that cannot be parsed. Bare `UNKNOWN` is reserved
+for exactly that unavailable-or-malformed case, so a backend whose real batch ID
+is the literal string `UNKNOWN` renders it as `%55NKNOWN`; a reader decodes the
+field before comparing, and only an undecodable bare `UNKNOWN` means the ID was
+unavailable.
 
 Every count accepts exact `UNKNOWN` independently, and each checkpoint count is
 serialized as its own `<name>:<value>` pair so one unavailable bucket never
