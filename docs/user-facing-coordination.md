@@ -169,8 +169,9 @@ At closeout, report a shadow-only `coordinator-narration-volume v1` marker of
 self-counted message and character volume. It gates nothing, blocks no handoff,
 and records exact `UNKNOWN` per unavailable count.
 
-The canonical normative text is the Coordinator Output Contract in
-`workflows/pr-processing.md`.
+The canonical normative text is the
+[Coordinator Output Contract](../workflows/pr-processing.md#coordinator-output-contract)
+in `workflows/pr-processing.md`.
 
 ## Ambiguity Guard
 
