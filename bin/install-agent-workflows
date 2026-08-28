@@ -240,6 +240,24 @@ read_installed_metadata_value() {
         puts "corrupt"
         exit
       end
+      if metadata.key?("delivery_mode")
+        string_fields = %w[host mode delivery_mode source version source_revision source_branch source_remote installed_at]
+        invalid_string = string_fields.any? do |field|
+          metadata.key?(field) && (!metadata[field].is_a?(String) || metadata[field].include?("\0"))
+        end
+        invalid_required_value = %w[host mode source source_revision installed_at].any? do |field|
+          metadata.key?(field) && metadata[field].is_a?(String) && metadata[field].empty?
+        end
+        invalid_enum = (metadata.key?("host") && !%w[codex claude].include?(metadata["host"])) ||
+                       (metadata.key?("mode") && !%w[copy symlink].include?(metadata["mode"]))
+        invalid_fingerprints = %w[managed_skill_copy_fingerprints managed_pack_doc_copy_fingerprints].any? do |field|
+          metadata.key?(field) && !metadata[field].is_a?(Hash)
+        end
+        if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints
+          puts "corrupt"
+          exit
+        end
+      end
       key = ARGV.fetch(1)
       unless metadata.key?(key)
         puts "key_absent"
@@ -2890,6 +2908,17 @@ remove_recovery_cleanup_root() {
     cleanup_captured = false
     deletion_committed = false
     cleanup_status = 0
+    failure_reported = false
+    report_failure = lambda do
+      next if failure_reported
+
+      if deletion_committed && original_target_mode
+        puts "mode\t#{format("%04o", original_target_mode)}"
+      elsif cleanup_captured && captured
+        puts captured
+      end
+      failure_reported = true
+    end
     begin
       target = File.realpath(ARGV.fetch(0))
       cleanup_root = File.expand_path(ARGV.fetch(1))
@@ -2954,15 +2983,15 @@ remove_recovery_cleanup_root() {
         original_target_mode = nil
       end
     rescue StandardError
-      puts captured if cleanup_captured && captured
       cleanup_status = deletion_committed ? 70 : (cleanup_captured ? 69 : 1)
+      report_failure.call
     ensure
       if target_file
         begin
           target_file.chmod(original_target_mode) if original_target_mode
         rescue StandardError
-          puts captured if cleanup_captured && captured
           cleanup_status = deletion_committed ? 70 : 69
+          report_failure.call
         ensure
           begin
             target_file.close
@@ -2979,7 +3008,7 @@ remove_recovery_cleanup_root() {
 cleanup_recovery_staging() {
   local staging="$1"
   local staging_identity="$2"
-  local cleanup_root cleanup_staging move_status restore_status remove_status remove_artifact cleanup_root_identity target_identity
+  local cleanup_root cleanup_staging move_status restore_status remove_status remove_artifact cleanup_root_identity target_identity quoted_target
   target_identity="$(recovery_directory_identity "$target")" || return 1
   cleanup_root="$(mktemp -d "$target/.agent-workflows-recovery-cleanup-XXXXXX")" || return 1
   cleanup_staging="$cleanup_root/staging"
@@ -3055,8 +3084,15 @@ cleanup_recovery_staging() {
     fi
     return 1
   elif [[ "$remove_status" -eq 70 ]]; then
-    echo "RECOVERY_TARGET_MODE_RESTORE_PENDING: recovery staging deletion committed, but exact target permissions could not be restored; removed the completed recovery receipt so retry is not wedged." >&2
-    return 0
+    remove_artifact="${remove_artifact#mode$'\t'}"
+    echo "RECOVERY_TARGET_MODE_RESTORE_PENDING: recovery staging deletion committed, but exact permissions on $target could not be verified." >&2
+    if [[ "$remove_artifact" =~ ^[0-7]{4}$ ]]; then
+      printf -v quoted_target '%q' "$target"
+      echo "Verify $target still names the intended agent home, then restore its trusted mode with: chmod $remove_artifact -- $quoted_target" >&2
+    else
+      echo "Verify $target still names the intended agent home, then restore its permissions from trusted policy before retrying." >&2
+    fi
+    return 70
   elif [[ "$remove_status" -ne 0 ]]; then
     if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_root" "$cleanup_root_identity" \
       "$target" "$target_identity" "$staging_identity"; then
@@ -3755,6 +3791,13 @@ if [[ -f "$migration_receipt" ]]; then
     elif [[ "$recovery_status" -eq 67 ]]; then
       report_pending_recovery_integrity_failure "$migration_receipt" "$recovered_staging"
       exit 65
+    elif [[ "$recovery_status" -eq 70 ]]; then
+      if rm -f "$migration_receipt"; then
+        echo "RECOVERY_TARGET_MODE_RESTORE_PENDING: removed the completed recovery receipt; restore the target permissions as directed before retrying." >&2
+      else
+        echo "RECOVERY_TARGET_MODE_RESTORE_PENDING: remove stale completed recovery receipt $migration_receipt only after verifying $recovered_staging remains absent." >&2
+      fi
+      exit 70
     elif [[ "$recovery_status" -ne 0 ]]; then
       echo "CLEANUP_PENDING: committed plugin-companion mode; preserved $migration_receipt for $recovered_staging" >&2
       exit 1

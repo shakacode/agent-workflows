@@ -3096,6 +3096,7 @@ RUBY
   ruby -rjson -e 'JSON.parse(File.read(ARGV.fetch(0)))' "$metadata"
   assert_file "$receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "missing metadata backup restored a staged skill"
   quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
   [[ -n "$quarantine" ]] || fail "missing backup did not preserve recovery quarantine"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "missing backup leaked install lock"
@@ -3966,7 +3967,7 @@ RUBY
 }
 
 test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance() {
-  local tmp target staging receipt metadata injection output status
+  local tmp target staging receipt metadata injection output status quarantine
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   staging="$target/.agent-workflows-flat-migration-late-capture"
@@ -3995,7 +3996,12 @@ RUBY
 
   [[ "$status" -eq 65 ]] || fail "late capture corruption exited $status: $output"
   assert_contains "$output" "CORRUPT_INSTALL_METADATA"
-  assert_contains "$output" "Preserved recovery metadata quarantine"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "late capture corruption did not preserve quarantine"
+  quarantine="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$quarantine")"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine; do not delete it while recovering the target."
+  assert_contains "$output" "blocks automatic recovery"
   assert_file "$metadata"
   assert_file "$receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
@@ -4036,6 +4042,11 @@ RUBY
   assert_file "$staging/user-owned-skill/SKILL.md"
   quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
   [[ -n "$quarantine" ]] || fail "late capture restore failure did not preserve quarantine"
+  quarantine="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$quarantine")"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine; do not delete it while recovering the target."
+  assert_contains "$output" "blocks automatic recovery"
+  assert_contains "$output" "Preserved pending recovery receipt $(ruby -e 'print File.realpath(ARGV.fetch(0))' "$receipt") for staging directory"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "late capture restore failure leaked install lock"
 }
 
@@ -4942,6 +4953,36 @@ test_invalid_recorded_delivery_mode_fails_before_mutation() {
     [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "invalid recorded delivery mode created staging receipt"
     [[ ! -e "$target/skills" ]] || fail "invalid recorded delivery mode created a flat skill layout"
   done
+}
+
+test_schema_invalid_mode_fails_before_managed_mutation() {
+  local tmp target metadata output status metadata_before license_before target_paths_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    value = JSON.parse(File.read(path))
+    value["mode"] = nil
+    File.write(path, JSON.pretty_generate(value) + "\n")
+  ' "$metadata"
+  metadata_before="$(shasum "$metadata")"
+  license_before="$(shasum "$target/LICENSE")"
+  target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "schema-invalid mode exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "schema-invalid mode rewrote install metadata"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || fail "schema-invalid mode mutated a managed file"
+  [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+    fail "schema-invalid mode changed the target tree"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "schema-invalid mode created install lock"
 }
 
 test_newline_recorded_delivery_modes_fail_before_mutation() {
@@ -7754,11 +7795,15 @@ RUBY
   set +e
   output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
   set -e
-  assert_file "$marker"; [[ "$status" -eq 0 ]] || fail "post-deletion mode restore failure exited $status: $output"
+  assert_file "$marker"; [[ "$status" -eq 70 ]] || fail "post-deletion mode restore failure exited $status: $output"
   assert_contains "$output" "RECOVERY_TARGET_MODE_RESTORE_PENDING"
+  assert_contains "$output" "$target"
+  assert_contains "$output" "chmod 0777"
+  assert_not_contains "$output" "preserved $receipt"
   [[ ! -e "$receipt" && ! -e "$staging" ]] || fail "post-deletion mode restore failure retained nonexistent recovery state"
   mode="$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0o7777' "$target")"
   [[ "$mode" = "1777" ]] || fail "post-deletion mode restore failure left unexpected target mode $mode"
+  chmod 0777 "$target"
   retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
 }
@@ -7921,8 +7966,9 @@ RUBY
   set +e
   output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
   set -e
-  assert_file "$marker"; [[ "$status" -eq 0 ]] || fail "post-deletion verification failure exited $status: $output"
+  assert_file "$marker"; [[ "$status" -eq 70 ]] || fail "post-deletion verification failure exited $status: $output"
   assert_contains "$output" "RECOVERY_TARGET_MODE_RESTORE_PENDING"
+  assert_contains "$output" "$target"
   [[ ! -e "$receipt" && ! -e "$staging" ]] || fail "post-deletion verification failure retained committed recovery state"
   [[ "$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0o7777' "$target")" = "777" ]] || \
     fail "post-deletion verification failure did not restore target mode"
@@ -8194,6 +8240,7 @@ main() {
     test_repeat_companion_install_blocks_native_skill_removed_from_current_source
     test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots
     test_invalid_recorded_delivery_mode_fails_before_mutation
+    test_schema_invalid_mode_fails_before_managed_mutation
     test_newline_recorded_delivery_modes_fail_before_mutation
     test_corrupt_install_metadata_fails_closed_with_recovery_guidance
     test_non_object_install_metadata_is_corrupt
