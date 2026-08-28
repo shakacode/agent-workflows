@@ -250,7 +250,18 @@ read_installed_metadata_value() {
       invalid_enum = (metadata.key?("host") && !%w[codex claude].include?(metadata["host"])) ||
                      (metadata.key?("mode") && !%w[copy symlink].include?(metadata["mode"]))
       invalid_fingerprints = %w[managed_skill_copy_fingerprints managed_pack_doc_copy_fingerprints].any? do |field|
-        metadata.key?(field) && !metadata[field].is_a?(Hash)
+        next false unless metadata.key?(field)
+        fingerprints = metadata[field]
+        !fingerprints.is_a?(Hash) || fingerprints.any? do |name, digest|
+          valid_name = if field == "managed_skill_copy_fingerprints"
+                         name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
+                       else
+                         segments = name.is_a?(String) ? name.split("/", -1) : []
+                         name.is_a?(String) && !name.empty? && !name.start_with?("/") && !name.include?("\0") &&
+                           segments.none? { |segment| segment.empty? || segment == "." || segment == ".." }
+                       end
+          !valid_name || !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/i)
+        end
       end
       if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints
         puts "corrupt"

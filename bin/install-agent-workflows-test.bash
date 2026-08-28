@@ -5020,6 +5020,54 @@ test_legacy_metadata_with_corrupt_newer_schema_field_fails_before_mutation() {
   [[ "$paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || fail "corrupt legacy sibling mutated target"
 }
 
+test_invalid_fingerprint_entry_fails_before_managed_mutation() {
+  local tmp target metadata pristine variant output status metadata_before license_before target_paths_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  pristine="$tmp/pristine-metadata.json"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  cp "$metadata" "$pristine"
+  license_before="$(shasum "$target/LICENSE")"
+
+  for variant in null_digest short_digest nonhex_digest empty_name nested_skill_name traversal_name absolute_doc_name; do
+    cp "$pristine" "$metadata"
+    ruby -rjson -e '
+      path, variant = ARGV
+      value = JSON.parse(File.read(path))
+      skill_fingerprints = value.fetch("managed_skill_copy_fingerprints")
+      doc_fingerprints = value.fetch("managed_pack_doc_copy_fingerprints")
+      key = skill_fingerprints.keys.fetch(0)
+      case variant
+      when "null_digest" then skill_fingerprints[key] = nil
+      when "short_digest" then skill_fingerprints[key] = "abc123"
+      when "nonhex_digest" then skill_fingerprints[key] = "g" * 64
+      when "empty_name" then skill_fingerprints[""] = "a" * 64
+      when "nested_skill_name" then skill_fingerprints["nested/name"] = "a" * 64
+      when "traversal_name" then skill_fingerprints["../outside"] = "a" * 64
+      when "absolute_doc_name" then doc_fingerprints["/outside"] = "a" * 64
+      else abort variant
+      end
+      File.write(path, JSON.pretty_generate(value) + "\n")
+    ' "$metadata" "$variant"
+    metadata_before="$(shasum "$metadata")"
+    target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -eq 65 ]] || fail "invalid fingerprint entry $variant exited $status: $output"
+    assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+    [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "invalid fingerprint entry $variant rewrote install metadata"
+    [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || fail "invalid fingerprint entry $variant mutated a managed file"
+    [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+      fail "invalid fingerprint entry $variant changed the target tree"
+    [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "invalid fingerprint entry $variant created install lock"
+  done
+}
+
 test_recovery_capture_persistent_descriptor_close_failure_is_not_success() {
   local tmp target staging receipt metadata injection marker output status quarantine preserved retry_output
   tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-capture-close"
@@ -8374,6 +8422,7 @@ main() {
     test_invalid_recorded_delivery_mode_fails_before_mutation
     test_schema_invalid_mode_fails_before_managed_mutation
     test_legacy_metadata_with_corrupt_newer_schema_field_fails_before_mutation
+    test_invalid_fingerprint_entry_fails_before_managed_mutation
     test_recovery_capture_persistent_descriptor_close_failure_is_not_success
     test_absent_metadata_appearance_during_flat_recovery_preserves_staging
     test_cross_directory_probe_open_failure_removes_created_directory
