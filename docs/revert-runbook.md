@@ -38,6 +38,7 @@ Commands below use one stable placeholder set:
 | `BATCH_ID`, `LANE`, `TARGET` | coordination identifiers for the lane that produced `PR` |
 | `AGENT_ID` | stable identifier of the agent claiming the repair lane |
 | `REPAIR_BATCH_ID`, `REPAIR_LANE` | coordination identifiers for the **repair** lane — always distinct from `BATCH_ID`/`LANE` |
+| `REPAIR_TARGET` | the repair lane's canonical target — the audit child issue, never the suspect PR |
 | `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
 
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA,
@@ -298,9 +299,10 @@ Two artifacts declare lane dependency, and both are authoritative for scope:
   lane owns the failing target and which other lanes shipped in the same batch.
 - The `stage-dependency-plan` v1 file (see
   [pr-processing](../workflows/pr-processing.md#stage-typed-dependency-gate))
-  carries `edges[]` with `type: merge_order`. Every lane reachable from the
-  failing lane by following `merge_order` edges forward is a candidate for
-  joint revert. Take the transitive closure, not just direct successors.
+  carries `edges[]`, each binding `from` (predecessor lane), `to` (dependent
+  lane), and `type`. Every lane reachable from the failing lane by following
+  edges forward — **of any type** — is a candidate for joint revert. Take the
+  transitive closure, not just direct successors.
 
 Read `type` from the **immutable `stage-dependency-plan` file**, which is the
 only one of the two artifacts whose edges carry it; the mutable
@@ -320,9 +322,28 @@ jq -e --arg id "${STAGE_DEPENDENCY_PLAN_ID}" \
   "${STAGE_DEPENDENCY_PLAN_PATH}" >/dev/null \
   || { echo "plan id mismatch: UNKNOWN"; exit 1; }
 
-jq '.edges[] | select(.type == "merge_order")' "${STAGE_DEPENDENCY_PLAN_PATH}"
+jq '.edges[]' "${STAGE_DEPENDENCY_PLAN_PATH}"
 agent-coord status --batch-id "${BATCH_ID}" --json
 ```
+
+**Do not filter to `merge_order`.** `stage-dependency-plan` v1 has three edge
+types — `edit`, `validation_open`, `merge_order` — and per
+[pr-processing](../workflows/pr-processing.md#stage-typed-dependency-gate) all
+three bind `from` as the predecessor and `to` as the dependent. The types differ
+only in how much the dependent lane is *permitted to do* while the edge is
+pending: `edit` allows read-only discovery only, `validation_open` allows local
+commits but blocks push and PR open, `merge_order` blocks merge alone. That is a
+scheduling distinction, not a dependency-direction one. For revert scope all
+three mean the same thing — the `to` lane's landed work was produced or
+validated in a world where the `from` lane exists — so all three belong in the
+closure.
+
+`edit` is the most dangerous type to omit, not the least. A lane blocked on an
+`edit` edge could not create a branch until its predecessor was satisfied, so it
+is the case where a later PR most likely builds on the suspect PR's *behavior*
+without touching the suspect PR's *files* — which means it also passes the
+disjoint-file check in [Decision rule](#decision-rule). Filtering the edges and
+relying on file overlap therefore misses it twice.
 
 `STAGE_DEPENDENCY_PLAN_PATH` and `STAGE_DEPENDENCY_PLAN_ID` both come from the
 trusted coordinator handoff, per
@@ -359,7 +380,7 @@ git log --first-parent --format='%h %s' "${BASE_TIP}" -- ${PATHS}
 
 Revert **one PR** when all of the following hold:
 
-- no `merge_order` edge names its lane as a `from`; and
+- no edge of **any** type names its lane as a `from`; and
 - the union of the file sets across the PR's **entire landed range** is disjoint
   from the file set of every later landed commit on `BASE`; and
 - no later landed commit's content depends on symbols, files, or schema any
@@ -436,44 +457,10 @@ BATCH_SLUG=$(printf '%s' "${BATCH_ID}" \
 BATCH_DIGEST=$(printf '%s' "${BATCH_ID}" | git hash-object --stdin | cut -c1-8)
 REVERT_BRANCH="revert/${BATCH_SLUG}-${BATCH_DIGEST}-$(git rev-parse --short "${SHA}")"
 git check-ref-format --branch "${REVERT_BRANCH}" || exit 1
-git checkout -b "${REVERT_BRANCH}" "${BASE_TIP}"
 ```
 
-The branch is created from `${BASE_TIP}` — the exact commit scope analysis read
-— not from `origin/${BASE}`. Past the equality check the two are the same SHA by
-construction, so this changes nothing at runtime; it removes the last place a
-base reference could be re-resolved, which is what let a stale ref diverge from
-the analysed tree in the first place.
-
-#### Claim the repair lane
-
-With the branch name derived and the branch created, but **before any revert
-commit exists**, claim the repair lane through the repo's coordination backend.
-Ordering matters in both directions: the claim records the branch it owns, so
-the name must be derived first; and the lane must exist before the work does, or
-it cannot claim the target, cannot heartbeat while the repair is built, and
-records its history backwards.
-
-The repair lane is **not** the lane that produced the suspect PR. Claim it under
-its own `REPAIR_BATCH_ID` and `REPAIR_LANE`, distinct from the `BATCH_ID` and
-`LANE` in the placeholder table, and use those same repair identifiers for the
-heartbeat and for the repair lane's own closeout. Reusing the original lane's
-identifiers cannot produce the "genuinely new lane" the already-`done` path in
-section 3 requires — it reopens history against a lane whose first terminal
-event is immutable.
-
-The claim carries: the repository, the suspect PR as the target, the repair
-batch and lane identifiers, the acting agent identity, and `REVERT_BRANCH`. As
-with every coordination command in section 3, this is *this* repo's
-`coordination_backend` seam rather than a portable requirement — a consumer repo
-claims through its own configured backend, and backend `n/a` skips the claim and
-records ownership in the durable handoff instead. No invocation is given here on
-purpose: it cannot be exercised by the replay harness, and an unreplayable
-recipe in this document has a poor track record.
-
-The repair lane is released at
-[checkpoint B](#coordination-events-and-terminal-state) — `done` once the repair
-merges, or terminally released on the no-repair path. It is never left open.
+This block derives and validates the name; it does **not** create the branch.
+Creation comes after the claim below.
 
 Order matters in that pipeline. `tr` runs before `cut`, so everything is ASCII
 by the time it is truncated and a multibyte character cannot be split in half.
@@ -487,9 +474,75 @@ operation — no `shasum`/`sha256sum` portability question. Any `batch_id`,
 however long, yields a name under ~65 characters.
 
 Keep the `check-ref-format` guard: it still catches the character class, and it
-runs before `git checkout -b` because it is the cheap fail-closed check. Where
-the batch has no `batch_id` at all, name the branch from the suspect PR number
-and short SHA by the same rule.
+runs before any checkout because it is the cheap fail-closed check. Where the
+batch has no `batch_id` at all, name the branch from the suspect PR number and
+short SHA by the same rule.
+
+#### Claim the repair lane
+
+**Claim before the branch exists, not after.** Per
+[pr-processing](../workflows/pr-processing.md#canonical-launch-target-gate), the
+bounded status-then-claim sequence runs *before* branch creation, editing, or
+dispatch, and a refused claim must not reach branch creation at all. Deriving
+the name first and creating the branch after the claim satisfies both
+constraints: the claim can record the branch it will own, and a refusal leaves
+the checkout unmutated with no orphaned revert branch to clean up.
+
+**The repair lane needs its own canonical target, not the suspect PR.** The
+Canonical Launch Target Gate requires an exact GitHub issue or existing PR per
+lane, and refuses a second claim on a target that is already claimed with
+`CLAIM_REFUSED` / exit 3. Whenever the original lane is still non-terminal —
+`planned`, `claimed`, `active`, or `blocked`, all of which section 3 handles —
+it still owns the suspect PR, so a repair claim naming that PR is refused and
+the documented path cannot start.
+
+Use the `post-merge-audit` child issue filed for the revert consideration. It is
+an exact GitHub issue, it is distinct from the suspect PR, and it is the issue
+that authorised this work — so it is the canonical target in the ordinary sense
+rather than a synthetic one. Where the revert was initiated without an audit,
+follow the gate's own rule for a missing target: search for an existing issue or
+PR first, and otherwise create the canonical issue under planning-time
+issue-creation authority *before* branch creation. The revert PR cannot serve as
+the target, because it does not exist yet at claim time.
+
+The repair lane is **not** the lane that produced the suspect PR. Claim it under
+its own `REPAIR_BATCH_ID`, `REPAIR_LANE`, and `REPAIR_TARGET`, distinct from the
+`BATCH_ID`, `LANE`, and `TARGET` in the placeholder table, and use those repair
+identifiers for the heartbeat and for the repair lane's own closeout. Reusing
+the original lane's identifiers cannot produce the "genuinely new lane" the
+already-`done` path in section 3 requires — it reopens history against a lane
+whose first terminal event is immutable.
+
+The claim carries: the repository, `REPAIR_TARGET` as the canonical target, the
+repair batch and lane identifiers, the acting agent identity, and
+`REVERT_BRANCH`. Run the bounded status check first, then claim. As with every
+coordination command in section 3, this is *this* repo's `coordination_backend`
+seam rather than a portable requirement — a consumer repo claims through its own
+configured backend, and backend `n/a` skips the claim and records ownership in
+the durable handoff instead. No invocation is given here on purpose: it cannot
+be exercised by the replay harness, and an unreplayable recipe in this document
+has a poor track record.
+
+On `CLAIM_REFUSED` / exit 3, stop. Do not create the branch, and do not retarget
+onto a different canonical identity to get around the refusal — a refusal means
+someone or something already owns that work, which is a coordination question,
+not a scope question.
+
+Only once the claim holds, create the branch:
+
+```bash
+git checkout -b "${REVERT_BRANCH}" "${BASE_TIP}"
+```
+
+The branch is created from `${BASE_TIP}` — the exact commit scope analysis read
+— not from `origin/${BASE}`. Past the equality check the two are the same SHA by
+construction, so this changes nothing at runtime; it removes the last place a
+base reference could be re-resolved, which is what let a stale ref diverge from
+the analysed tree in the first place.
+
+The repair lane is released at
+[checkpoint B](#coordination-events-and-terminal-state) — `done` once the repair
+merges, or terminally released on the no-repair path. It is never left open.
 
 The revert goes through the repo's normal PR path. It is never pushed straight
 to `BASE`, and never merged by an agent (see [4. Authority](#4-authority)).
@@ -1011,16 +1064,19 @@ An agent **may not**, without an explicit operator decision:
    rebase — matching on subject and patch-id, never SHA. Build it with
    `git log --first-parent -n N`, never with an `A..B` range. Read the list
    before using it. An unverifiable list is `UNKNOWN`: widen or stop.
-4. Compute the revert closure from the batch manifest, `merge_order` edges, and
+4. Compute the revert closure from the batch manifest, dependency-plan edges of
+   **every** type, and
    git, comparing whole ranges. Fail closed to the wider scope on any `UNKNOWN`.
    Fix `PRE_BATCH_SHA` as `<oldest-in-scope-sha>^1`.
 5. Decide revert versus forward fix, and write down why.
 6. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
-   recovery if it moved. Derive a slug branch from the batch id, check it with
-   `git check-ref-format --branch`, and create it from `${BASE_TIP}`; never work
-   on `BASE`. Then claim the repair lane under its own `REPAIR_BATCH_ID` /
-   `REPAIR_LANE` — after the branch name exists, because the claim records it,
-   and before the first revert commit.
+   recovery if it moved. Derive and validate the slug branch name with
+   `git check-ref-format --branch` — but do not create the branch yet. Run the
+   bounded status check, then claim the repair lane under its own
+   `REPAIR_BATCH_ID` / `REPAIR_LANE` / `REPAIR_TARGET`, where `REPAIR_TARGET` is
+   the audit child issue and never the suspect PR. Stop on `CLAIM_REFUSED`
+   without creating anything. Only once the claim holds, create the branch from
+   `${BASE_TIP}`; never work on `BASE`.
 7. Revert **every commit in every in-scope list**, newest first, by handing the
    whole list to one `git revert` invocation (`-m 1` on a merge commit, alone).
    On conflict: resolve and `--continue`, or `--abort` and re-scope — never
