@@ -5963,12 +5963,12 @@ RUBY
   status=$?
   set -e
 
-  [[ "$status" -eq 65 ]] || fail "changed displaced restore source exited $status: $output"
+  [[ "$status" -eq 69 ]] || fail "changed displaced restore source exited $status: $output"
   [[ "$before" = "$(shasum "$metadata")" ]] || \
     fail "restore undo did not restore canonical metadata from restore guard"
   quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
   [[ -n "$quarantine" ]] || fail "restore source race did not preserve quarantine"
-  assert_file "$quarantine/restore-guard"
+  [[ ! -e "$quarantine/restore-guard" ]] || fail "verified restore rollback retained restore guard"
   assert_file "$quarantine/metadata"
   assert_file "$quarantine/metadata-displaced"
   assert_file "$receipt"
@@ -7601,6 +7601,83 @@ RUBY
   [[ ! -e "$receipt" && ! -e "$staging" ]] || fail "cleanup mode restore retry retained recovery state"
 }
 
+test_post_deletion_target_mode_restore_failure_finalizes_recovery_receipt() {
+  local tmp target staging receipt injection marker output status retry_output mode
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-post-delete-mode"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-exact-mode-after-delete.rb"; marker="$tmp/exact-mode-failed"
+  mkdir -p "$staging/old-flat-skill"; write_native_scw_state codex "$target"; chmod 0777 "$target"
+  printf 'old\n' > "$staging/old-flat-skill/SKILL.md"; printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailExactModeAfterDeletion
+  def chmod(mode)
+    if ARGV.length == 2 && stat.directory? && mode == 0o777
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+File.prepend(FailExactModeAfterDeletion)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 0 ]] || fail "post-deletion mode restore failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_TARGET_MODE_RESTORE_PENDING"
+  [[ ! -e "$receipt" && ! -e "$staging" ]] || fail "post-deletion mode restore failure retained nonexistent recovery state"
+  mode="$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0o7777' "$target")"
+  [[ "$mode" = "1777" ]] || fail "post-deletion mode restore failure left unexpected target mode $mode"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_default_staging_rollback_reverses_partial_moves() {
+  local tmp target injection marker counter output status receipt staging first_moved competing
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/block-second-default-rollback.rb"; marker="$tmp/rollback-blocked"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  write_native_scw_state codex "$target"; counter="$tmp/check-count"
+  cat > "$injection" <<'RUBY'
+require "fileutils"
+require "json"
+if ARGV.first == "check" && ENV["QA_CHECK_COUNTER"]
+  counter = ENV.fetch("QA_CHECK_COUNTER")
+  count = File.file?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count.to_s)
+  if count == 3
+    target = ARGV[ARGV.index("--target") + 1]
+    raced = File.join(target, "skills/final-raced-child")
+    FileUtils.mkdir_p(raced)
+    File.write(File.join(raced, "SKILL.md"), "raced\n")
+  end
+end
+module RecoveryMoveHook
+  def self.call(phase, source_parent, source_name, destination_parent, _destination_name)
+    return unless phase == :after_rename_before_verify
+    return unless File.basename(source_parent).start_with?(".agent-workflows-flat-migration-")
+    return unless File.basename(destination_parent) == "skills"
+    return if File.exist?(ENV.fetch("QA_RACE_MARKER"))
+    next_name = Dir.children(source_parent).sort.fetch(0)
+    competing = File.join(destination_parent, next_name)
+    Dir.mkdir(competing)
+    File.write(File.join(competing, "FOREIGN.md"), "foreign\n")
+    File.write(ENV.fetch("QA_RACE_MARKER"), "#{source_name}|#{next_name}\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" QA_CHECK_COUNTER="$counter" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "partial default staging rollback unexpectedly succeeded"
+  IFS='|' read -r first_moved competing < "$marker"
+  receipt="$target/.agent-workflows-migration-staging"; assert_file "$receipt"; IFS= read -r staging < "$receipt"
+  assert_file "$staging/$first_moved/SKILL.md"
+  assert_file "$target/skills/$competing/FOREIGN.md"
+  [[ ! -e "$target/skills/$first_moved" ]] || fail "default rollback left its first moved entry live"
+  assert_contains "$output" "ROLLBACK_FAILED"
+}
+
 test_install_lock_identity_failure_removes_empty_lock_and_allows_retry() {
   local tmp target injection marker output status retry_output
   tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-lock-identity-once.rb"; marker="$tmp/identity-failed"
@@ -7646,6 +7723,8 @@ main() {
     test_persistent_recovery_payload_close_failure_preserves_committed_cleanup
     test_recovery_capture_temporary_creation_stays_in_held_quarantine
     test_committed_recovery_cleanup_mode_restore_failure_does_not_wedge_receipt
+    test_post_deletion_target_mode_restore_failure_finalizes_recovery_receipt
+    test_default_staging_rollback_reverses_partial_moves
     test_install_lock_identity_failure_removes_empty_lock_and_allows_retry
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation

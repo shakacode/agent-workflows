@@ -1204,6 +1204,7 @@ replace_bound_recovery_metadata() {
     guard_created = false
     completed = false
     rollback_failed = false
+    rollback_succeeded = false
     displaced_destination_attestation = nil
     displaced_destination_identity = nil
     open_at = lambda do |directory, name|
@@ -1369,7 +1370,11 @@ replace_bound_recovery_metadata() {
             exchanged = false
             rollback_destination = open_entry.call(target_file, ".agent-workflows-install.json")
             raise "restore guard rollback changed" unless attestation.call(rollback_destination) == expected_destination
-            rollback_failed = true
+            guard_file = open_at.call(quarantine_file, "restore-guard")
+            raise "restore source rollback changed" unless attestation.call(guard_file) == expected_source
+            remove_exact.call(quarantine_file, "restore-guard", guard_file, expected_source)
+            guard_created = false
+            rollback_succeeded = true
           else
             rollback_failed = true
           end
@@ -1395,6 +1400,7 @@ replace_bound_recovery_metadata() {
       end
     end
     exit 67 if rollback_failed || exchanged || guard_created
+    exit 69 if rollback_succeeded
     exit 65 unless completed
   ' "$1" "$2" "$3" "$4" "$target" "$recovery_metadata_quarantine" \
     "$recovery_metadata_quarantine_identity" 2>/dev/null
@@ -2572,7 +2578,7 @@ rollback_migration_staging() {
     [[ -e "$staged_path" || -L "$staged_path" ]] || continue
     if [[ -L "$skills_root" || ! -d "$skills_root" ]]; then
       echo "ROLLBACK_FAILED: skills root changed during rollback: $skills_root" >&2
-      if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
+      if [[ "$moved_count" -gt 0 ]]; then
         restore_status=0
         restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
           "${moved_records[@]}" || restore_status=$?
@@ -2583,7 +2589,7 @@ rollback_migration_staging() {
     destination="$target/skills/$(basename "$staged_path")"
     if [[ -e "$destination" || -L "$destination" ]]; then
       echo "ROLLBACK_FAILED: destination appeared during migration: $destination" >&2
-      if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
+      if [[ "$moved_count" -gt 0 ]]; then
         restore_status=0
         restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
           "${moved_records[@]}" || restore_status=$?
@@ -2610,7 +2616,7 @@ rollback_migration_staging() {
       moved_count=$((moved_count + 1))
     fi
     if [[ "$move_status" -ne 0 ]]; then
-      if [[ "$move_status" -eq 68 || "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
+      if [[ "$move_status" -eq 68 || "$moved_count" -gt 0 ]]; then
         restore_status=0
         restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
           "${moved_records[@]}" || restore_status=$?
@@ -2652,7 +2658,7 @@ rollback_migration_staging() {
     return "$restore_status"
   fi
   if ! rmdir "$staging"; then
-    if [[ "$bind_recovery_metadata" = "true" && "$moved_count" -gt 0 ]]; then
+    if [[ "$moved_count" -gt 0 ]]; then
       restore_status=0
       restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
         "${moved_records[@]}" || restore_status=$?
@@ -2686,6 +2692,7 @@ remove_recovery_cleanup_root() {
     original_target_mode = nil
     captured = nil
     cleanup_captured = false
+    deletion_committed = false
     deletion_committed = false
     begin
       target = File.realpath(ARGV.fetch(0))
@@ -2742,6 +2749,7 @@ remove_recovery_cleanup_root() {
         abort unless (restored_target_stat.mode & 0o7777) == deletion_parent_mode
       end
       FileUtils.remove_entry_secure(captured)
+      deletion_committed = true
       if original_target_mode
         target_file.chmod(original_target_mode)
         restored_target_stat = target_file.stat
@@ -2757,7 +2765,7 @@ remove_recovery_cleanup_root() {
           target_file.chmod(original_target_mode) if original_target_mode
         rescue StandardError
           puts captured if cleanup_captured && captured
-          exit 69
+          exit(deletion_committed ? 70 : 69)
         ensure
           begin
             target_file.close
@@ -2844,6 +2852,9 @@ cleanup_recovery_staging() {
       echo "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: preserved ${remove_artifact:-$cleanup_root} and recovery receipt; recovery staging could not be restored." >&2
     fi
     return 1
+  elif [[ "$remove_status" -eq 70 ]]; then
+    echo "RECOVERY_TARGET_MODE_RESTORE_PENDING: recovery staging deletion committed, but exact target permissions could not be restored; removed the completed recovery receipt so retry is not wedged." >&2
+    return 0
   elif [[ "$remove_status" -ne 0 ]]; then
     if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_root" "$cleanup_root_identity" \
       "$target" "$target_identity" "$staging_identity"; then
@@ -3405,13 +3416,19 @@ if ! install_lock_identity="$(recovery_directory_identity "$install_lock")"; the
   exit 1
 fi
 release_install_lock() {
-  local status=$? cleanup_path
+  local status=$? cleanup_path restore_status=0
   trap - EXIT
   if [[ "${recovery_metadata_captured:-false}" = "true" &&
-        "${recovery_metadata_restore_reported:-false}" != "true" ]] &&
-     ! restore_captured_recovery_metadata; then
-    report_recovery_metadata_restore_failure
-    status=65
+        "${recovery_metadata_restore_reported:-false}" != "true" ]]; then
+    restore_captured_recovery_metadata || restore_status=$?
+    if [[ "$restore_status" -ne 0 ]]; then
+      report_recovery_metadata_restore_failure
+      if [[ "$restore_status" -eq 69 ]]; then
+        status=69
+      else
+        status=65
+      fi
+    fi
   fi
   if [[ -n "${install_metadata_snapshot_attestation:-}" ]]; then
     if ! cleanup_path="$(remove_attested_metadata_file "$install_metadata_snapshot_path" \
