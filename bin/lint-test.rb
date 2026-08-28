@@ -161,8 +161,12 @@ class LintCommandTest < Minitest::Test
   end
 
   def test_validation_and_contributor_docs_expose_the_lint_command
+    contributing = File.read(File.join(ROOT, "CONTRIBUTING.md"))
     assert_includes File.read(VALIDATE), "ruby bin/lint-test.rb"
-    assert_includes File.read(File.join(ROOT, "CONTRIBUTING.md")), ".agents/bin/lint"
+    # The backticked form pins the contributor instruction: "`.agents/bin/lint`"
+    # contains the substring "bin/lint" but not "`bin/lint`".
+    assert_includes contributing, "`bin/lint`"
+    assert_includes contributing, ".agents/bin/lint"
     assert_includes File.read(File.join(ROOT, ".agents/bin/README.md")), "`bin/lint`"
   end
 
