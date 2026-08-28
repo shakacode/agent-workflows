@@ -28,9 +28,18 @@ writing_style: docs/writing-style.md
 ```
 
 The path is relative to the project root, and the repository setting wins. As
-an optional personal fallback for projects that do not set the key, add the
-same YAML to `~/.agents/agent-workflow.yml` and create
-`~/.agents/docs/writing-style.md`; that path is relative to `~/.agents`.
+an optional personal fallback for projects that do not set the key, create
+`~/.agents/personal/my-writing-style.md`, then add this key to
+`~/.agents/agent-workflow.yml`:
+
+```yaml
+writing_style: personal/my-writing-style.md
+```
+
+That path is relative to `~/.agents`. The file
+`~/.agents/docs/writing-style.md` is the packaged default managed by
+installation and upgrades; do not edit it or use it for personal
+customization.
 
 An invalid repository configuration, path, or guide blocks resolution. An
 invalid user-global configuration, path, or guide emits a warning and falls
