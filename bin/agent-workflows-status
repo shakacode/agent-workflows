@@ -236,6 +236,20 @@ module AgentWorkflowsStatus
     end
   end
 
+  def managed_surface_stat_identity(stat)
+    [
+      stat.ftype,
+      stat.dev,
+      stat.ino,
+      stat.mode,
+      stat.size,
+      stat.mtime.to_i,
+      stat.mtime.nsec,
+      stat.ctime.to_i,
+      stat.ctime.nsec
+    ]
+  end
+
   def stable_managed_surface_error(target, metadata)
     fields = {
       "managed helper" => ["managed_bin_helper_copy_fingerprints", "bin"],
@@ -273,7 +287,8 @@ module AgentWorkflowsStatus
         begin
           file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
           opened_stat = file.stat
-          unless opened_stat.file? && opened_stat.dev == stat.dev && opened_stat.ino == stat.ino
+          opened_identity = managed_surface_stat_identity(opened_stat)
+          unless opened_stat.file? && opened_identity == managed_surface_stat_identity(stat)
             return "installed #{label} changed during check: #{name}"
           end
           if directory == "bin" && (opened_stat.mode & 0o111).zero?
@@ -284,14 +299,14 @@ module AgentWorkflowsStatus
           while (chunk = file.read(64 * 1024))
             digest.update(chunk)
           end
-          final_stat = file.stat
+          post_hash_stat = file.stat
           final_path_stat = File.lstat(path)
-          unless final_stat.file? && final_stat.dev == opened_stat.dev && final_stat.ino == opened_stat.ino &&
+          unless post_hash_stat.file? && managed_surface_stat_identity(post_hash_stat) == opened_identity &&
                  final_path_stat.file? && !final_path_stat.symlink? &&
-                 final_path_stat.dev == opened_stat.dev && final_path_stat.ino == opened_stat.ino
+                 managed_surface_stat_identity(final_path_stat) == opened_identity
             return "installed #{label} changed during check: #{name}"
           end
-          if directory == "bin" && ((final_stat.mode & 0o111).zero? || (final_path_stat.mode & 0o111).zero?)
+          if directory == "bin" && ((post_hash_stat.mode & 0o111).zero? || (final_path_stat.mode & 0o111).zero?)
             return "installed #{label} executable mode is missing: #{name}"
           end
           return "installed #{label} fingerprint changed: #{name}" unless digest.hexdigest == expected.downcase

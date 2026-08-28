@@ -14,6 +14,7 @@ require "shellwords"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflows-status", __dir__)
+load SCRIPT
 
 class AgentWorkflowsStatusTest < Minitest::Test
   def setup
@@ -381,6 +382,40 @@ class AgentWorkflowsStatusTest < Minitest::Test
         end
         assert_empty failures, failures.join("\n")
       end
+    end
+  end
+
+  def test_stable_managed_surface_detects_same_inode_mutation_after_hash_read
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      FileUtils.mkdir_p(File.join(target, "bin"))
+      helper = File.join(target, "bin/release-helper")
+      File.binwrite(helper, "#!/usr/bin/env bash\nexit 0\n")
+      FileUtils.chmod(0o755, helper)
+      metadata = {
+        "managed_bin_helper_copy_fingerprints" => {
+          "release-helper" => Digest::SHA256.file(helper).hexdigest
+        },
+        "managed_pack_doc_copy_fingerprints" => {}
+      }
+      mutated = false
+      trace = TracePoint.new(:c_return) do |event|
+        next unless !mutated && event.method_id == :read && event.self.is_a?(File) && event.self.path == helper
+
+        before = File.stat(helper)
+        File.open(helper, "r+b") { |file| file.write("X") }
+        File.utime(before.atime, before.mtime + 1, helper)
+        mutated = true
+      end
+
+      error = trace.enable do
+        AgentWorkflowsStatus.stable_managed_surface_error(target, metadata)
+      end
+
+      assert mutated, "fixture did not mutate the helper after its bytes were read"
+      assert_includes error.to_s, "release-helper"
+      assert_includes error.to_s, "changed during check"
+    ensure
+      trace&.disable
     end
   end
 
