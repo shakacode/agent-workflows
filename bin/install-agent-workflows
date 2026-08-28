@@ -1845,12 +1845,12 @@ prepare_metadata() {
       Digest::SHA256.hexdigest(JSON.generate(entries.sort_by { |fingerprint_entry| fingerprint_entry.fetch(1) }))
     end
     skill_fingerprints = if mode == "copy" && delivery_mode == "flat"
-                           Dir.children(File.join(source, "skills")).sort.filter_map do |name|
+                           Dir.children(File.join(source, "skills")).sort.each_with_object({}) do |name, fingerprints|
                              root = File.join(source, "skills", name)
                              next unless File.directory?(root) && !File.symlink?(root)
 
-                             [name, directory_fingerprint.call(root)]
-                           end.to_h
+                             fingerprints[name] = directory_fingerprint.call(root)
+                           end
                          else
                            {}
                          end
