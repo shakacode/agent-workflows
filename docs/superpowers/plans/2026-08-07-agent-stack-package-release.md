@@ -1229,8 +1229,19 @@ live. The trap logs out and verifies the isolated store is credential-free;
 destroy the VM/user/home on both success and failure. A retry starts from a new
 environment and session. Tests prove the command uses only the isolated user
 config, rejects a pre-populated home, exercises every trap path, and destroys the
-environment even when logout/read-back is ambiguous. Publish the exact
-reviewed tarball interactively with 2FA only after the tag is verified. Verify
+environment even when logout/read-back is ambiguous. Immediately before
+`npm publish`, and again before each later owner-grant, team-access,
+trusted-publisher, or Settings mutation, re-fetch the bound approval object and
+the exact-commit `release/approvers/package-release.v1.json` allowlist through
+the GitHub API, require the same object ID, derived approver login,
+creation/update timestamps, canonical body SHA-256, and allowlist SHA-256 that
+the authorization bound, and compare its own canonical UTC clock with
+`expires_at`; expiry equality or a past value fails closed. An edited, deleted, or revoked approval,
+a changed allowlist, or a session that outlived the authorization stops the
+bootstrap before the irreversible upload and before every later mutation. Tests
+race approval edit, deletion, and expiry between the pre-login validation and
+each mutation boundary. Publish the exact reviewed tarball interactively with
+2FA only after the tag is verified and that revalidation passes. Verify
 npm registry metadata, owners, and tarball integrity; install the downloaded
 `agent-coordination-dashboard@0.1.0` tarball whose integrity matches the reviewed
 artifact, then run its installed `--help` and lifecycle smoke without resolving
@@ -1250,14 +1261,17 @@ the required selection, save/2FA confirmation, logout, and fresh-login read-back
 steps. Capture only a non-secret evidence reference plus its digest.
 `write-npm-postpublish-receipt.mjs` consumes the exact release authorization,
 grant manifest, reviewed tarball integrity/SHA-256, commit, tag, observed setting,
-trusted-publisher identity, actor handle, timestamp, and evidence reference/digest
+trusted-publisher identity, actor handle, timestamp, evidence reference/digest,
+and every pre-mutation revalidation's re-fetched approval-object and allowlist
+digests plus its `authorization_checked_at`
 to write `release/receipts/agent-coordination-dashboard-0.1.0.postpublish.v1.json`.
 `verify-npm-postpublish-receipt.mjs` validates it against
 `npm-postpublish-receipt-v1.schema.json`, independently supplied expected
 authorization/artifact/commit values, and the exact token-disallowing setting;
 it rejects credential values, cookies, headers, query strings, response bodies,
-wrong artifacts, stale observations, and mismatched actors or publishers. Test
-every rejection plus a fresh-login matching receipt. The release is incomplete if either
+wrong artifacts, stale observations, mismatched actors or publishers, and any
+missing, stale, or mismatched pre-publish or later pre-mutation revalidation.
+Test every rejection plus a fresh-login matching receipt. The release is incomplete if either
 the trusted-publisher attachment, setting write/read-back, or validated
 postpublication receipt fails. The cleanup trap logs out or revokes the interactive session before
 Step 5 returns on either success or failure; read back the absence of reusable
@@ -1683,7 +1697,9 @@ and branch rules requiring two-person review. The verifier binds that allowlist
 digest and writes a canonical verified approval-object record in `RUNNER_TEMP`;
 the record uses the fixed `standalone-approval-object-v1` schema and binds its
 own schema path/version/digest, object type, repository, URL/node ID, derived
-author, timestamps, canonical body digest, and validated release payload;
+author, timestamps, canonical body digest, and, for an approval record, the
+validated release payload; the schema requires that payload only for an approval
+record and forbids it for the decision record below;
 it records `github.triggering_actor` separately and never treats the dispatcher
 as the approver. Before invoking the writer, the same read-only job
 queries the complete artifact inventory for the exact mutator-provenance
@@ -1830,7 +1846,9 @@ ruby packaging/tebako/write-release-decision.rb \
   --evaluation "$VERIFIED_EVALUATION_PATH" \
   --decision authorization-denied \
   --decision-source-url "$BINARY_DECISION_SOURCE_URL" \
-  --decided-by "$BINARY_DECISION_PRINCIPAL" \
+  --decision-object "$VERIFIED_STANDALONE_DECISION_OBJECT_PATH" \
+  --approver-allowlist "$VERIFIED_STANDALONE_APPROVER_ALLOWLIST_PATH" \
+  --decided-by "$EXPECTED_BINARY_DECISION_PRINCIPAL" \
   --output "$RUNNER_TEMP/standalone-release-decision-v1.json"
 ```
 
@@ -1842,7 +1860,9 @@ ruby packaging/tebako/write-release-decision.rb \
   --evaluation "$VERIFIED_EVALUATION_PATH" \
   --decision authorization-stale \
   --decision-source-url "$BINARY_DECISION_SOURCE_URL" \
-  --decided-by "$BINARY_DECISION_PRINCIPAL" \
+  --decision-object "$VERIFIED_STANDALONE_DECISION_OBJECT_PATH" \
+  --approver-allowlist "$VERIFIED_STANDALONE_APPROVER_ALLOWLIST_PATH" \
+  --decided-by "$EXPECTED_BINARY_DECISION_PRINCIPAL" \
   --authorization "$VERIFIED_AUTHORIZATION_PATH" \
   --output "$RUNNER_TEMP/standalone-release-decision-v1.json"
 ```
@@ -1851,10 +1871,42 @@ The authorization is required for `authorization-stale` and forbidden for an
 initial `authorization-denied` decision. The authorization schema binds the
 human-approved rollback disposition and evidence; neither may be synthesized or
 defaulted by the writer. The decision writer validates the decision
-against `standalone-release-decision-v1.schema.json`, including deciding
-principal, decision timestamp, source URL, source-evaluation producer
+against `standalone-release-decision-v1.schema.json`, including the derived
+deciding principal and its source decision-object URL/node ID, derived login,
+creation/update timestamps, canonical body SHA-256, and allowlist SHA-256, the
+decision timestamp, source URL, source-evaluation producer
 run/artifact ID/artifact digest/file digest, and either the explicit denial or
 the authorization expiry plus its producer-run/artifact identity.
+
+The deciding principal is derived, never supplied. As in
+`authorize-standalone.yml`, the read-only `capture-decision` and
+`finalize-decision` jobs defined below each declare the `issues: read` and
+`pull-requests: read` object-type permissions the shared verifier needs.
+`capture-decision` parses `--decision-source-url` as an exact object ID in
+`shakacode/agent-workflows`, accepts only a pull-request review or an issue
+comment on that pull request, fetches that object through the GitHub API, and
+writes a canonical verified decision-object record in `RUNNER_TEMP` under the
+same fixed `standalone-approval-object-v1` object-record schema, binding its
+own schema path/version/digest, object type, repository, URL/node ID, derived
+author, creation/update timestamps, and canonical body SHA-256, and carrying no
+release payload because a denial authorizes nothing. The derived
+login must appear in the schema-validated
+`release/approvers/standalone-release.v1.json` allowlist read at the source
+evaluation's bound commit through the GitHub Contents API; no checkout-relative
+allowlist is accepted. The writer takes the
+deciding principal only from that record and binds the canonical object
+URL/node ID, derived login, creation/update timestamps, body SHA-256, and
+allowlist SHA-256 into the decision; it records `github.triggering_actor`
+separately and never treats the dispatcher as the decider. `--decided-by` is at
+most an expectation cross-checked against the derived login; any disagreement
+fails closed. `finalize-decision` re-fetches the same object and requires an
+unchanged ID, derived author, timestamps, body digest, and allowlist digest
+before writing the candidate terminal `NOT_ADOPTED` evaluation. Tests reject
+forged or cross-repository URLs, dispatcher/decider substitution, edited or
+deleted decision objects, unlisted deciders, object-type substitution, an
+altered allowlist, missing object-read permissions or any broader
+issue/pull-request permission, and a `--decided-by` value that disagrees with
+the derived author.
 
 The decision writer also derives and binds an immutable `closeout_key`; callers
 cannot supply it. For `authorization-stale`, it is
@@ -1868,11 +1920,13 @@ caller-selected, truncated, or mismatched key.
 Run this path only through
 `.github/workflows/record-standalone-release-decision.yml`, a read-only workflow
 with separate `capture-decision` and `finalize-decision` jobs. Exact dispatch
-selectors name the source-evaluation run/artifact ID/service digest and, only for
+selectors name the source-evaluation run/artifact ID/service digest, the
+decision-object URL, the expected deciding principal, and, only for
 `authorization-stale`, the authorization producer run/artifact ID/service
 digest. `capture-decision` proves those selectors through the GitHub API,
 downloads each artifact into a separate fresh directory, verifies its bytes and
-schema, runs the writer with only those verified paths, and uploads the single
+schema, runs the writer with only those verified paths plus the `RUNNER_TEMP`
+decision-object record and the fetched approver allowlist, and uploads the single
 decision JSON as an artifact named by the derived closeout key and capture run.
 It queries and records
 that artifact's exact ID/service digest, freshly downloads it, and verifies its
