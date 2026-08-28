@@ -22,6 +22,13 @@
           "id": "lane-4813-changelog-171",
           "wave": "wave-a",
           "purpose": "implementation",
+          "target": {
+            "type": "github-issue",
+            "version": 1,
+            "repository": "shakacode/react_on_rails",
+            "number": 4813,
+            "stable_coordination_identity": "shakacode/react_on_rails:issue:4813"
+          },
           "changed_surfaces": [
             "release_behavior",
             "generated_output"
@@ -35,6 +42,13 @@
           "id": "lane-4753-guardrail-hook",
           "wave": "wave-a",
           "purpose": "implementation",
+          "target": {
+            "type": "github-issue",
+            "version": 1,
+            "repository": "shakacode/react_on_rails",
+            "number": 4753,
+            "stable_coordination_identity": "shakacode/react_on_rails:issue:4753"
+          },
           "changed_surfaces": [
             "developer_tooling"
           ],
@@ -47,6 +61,13 @@
           "id": "lane-4756-ci-mergebase",
           "wave": "wave-a",
           "purpose": "implementation",
+          "target": {
+            "type": "github-issue",
+            "version": 1,
+            "repository": "shakacode/react_on_rails",
+            "number": 4756,
+            "stable_coordination_identity": "shakacode/react_on_rails:issue:4756"
+          },
           "changed_surfaces": [
             "ci_workflow"
           ],
@@ -59,6 +80,13 @@
           "id": "lane-4584-ssr-bundle-http",
           "wave": "wave-a",
           "purpose": "implementation",
+          "target": {
+            "type": "github-issue",
+            "version": 1,
+            "repository": "shakacode/react_on_rails",
+            "number": 4584,
+            "stable_coordination_identity": "shakacode/react_on_rails:issue:4584"
+          },
           "changed_surfaces": [
             "broad_runtime"
           ],
@@ -71,6 +99,13 @@
           "id": "lane-4736-rsc-error-redact",
           "wave": "wave-a",
           "purpose": "implementation",
+          "target": {
+            "type": "github-issue",
+            "version": 1,
+            "repository": "shakacode/react_on_rails",
+            "number": 4736,
+            "stable_coordination_identity": "shakacode/react_on_rails:issue:4736"
+          },
           "changed_surfaces": [
             "security_boundary"
           ],

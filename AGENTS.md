@@ -11,6 +11,15 @@ Portable shared skills resolve this repo's commands and policy through:
 - **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
 - **Policy / config** — `.agents/agent-workflow.yml`.
 
+## Changelog Ownership
+
+Only dedicated `/update-changelog` or release lanes may edit `CHANGELOG.md`.
+Ordinary feature and bug PRs must use `deferred_to_update_changelog`. Missing
+entries and overlap with other work are nonblocking for those PRs.
+
+When integrating current `main` into an ordinary PR, keep the current-base
+`CHANGELOG.md` exactly and discard branch-local changes to it.
+
 ## Editing Rules
 
 - Keep `skills/*/SKILL.md` concise and portable.

@@ -34,6 +34,14 @@ class PostMergeAuditPolicyTest < Minitest::Test
     "workflows/pr-processing.md",
     "skills/pr-batch/SKILL.md"
   ].freeze
+  REQUIRED_REPLACEMENT_PRECLOSE_GUARD = "Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation."
+  REQUIRED_REPLACEMENT_CHANGELOG_RULE = "Ordinary authenticated later-target reconciliation applies to an immutable terminal `abandoned` lane; a terminal `superseded` lane may reconcile only for an issue with typed no-PR evidence, while code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation."
+  REPLACEMENT_PRECLOSE_GUARD_FILES = [
+    "skills/pr-batch/SKILL.md",
+    "workflows/pr-processing.md",
+    "skills/post-merge-audit/SKILL.md",
+    "workflows/post-merge-audit.md"
+  ].freeze
   REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line."
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
   COMPLETED_BATCH_AUDIT_MARKER_HEADER = "<!-- completed-batch-audit v1"
@@ -128,6 +136,22 @@ class PostMergeAuditPolicyTest < Minitest::Test
       assert_equal [COMPLETED_BATCH_AUDIT_PLACEMENT_RULE], text.scan(placement_pattern),
                    "#{relative_path} should use the canonical completed-batch audit placement rule"
     end
+  end
+
+  def test_replacement_preclose_guard_is_mirrored
+    REPLACEMENT_PRECLOSE_GUARD_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_REPLACEMENT_PRECLOSE_GUARD,
+                      "#{relative_path} should use the canonical replacement pre-close guard"
+    end
+  end
+
+  def test_changelog_uses_narrow_terminal_reconciliation_semantics
+    changelog = File.read(File.join(ROOT, "CHANGELOG.md"), encoding: "UTF-8")
+
+    assert_includes changelog, REQUIRED_REPLACEMENT_CHANGELOG_RULE
+    refute_includes changelog, "terminal `abandoned` or `superseded` lane"
   end
 
   def test_release_gate_ledger_append_is_not_blocked_by_comment_ban

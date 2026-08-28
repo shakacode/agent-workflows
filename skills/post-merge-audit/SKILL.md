@@ -449,13 +449,11 @@ the configured coordination seam is unavailable. `unknown`, `in_progress`,
 missing, stale-head, and malformed QA evidence block completion.
 
 A normal terminal `done` lane still requires its coordination target state and
-terminal evidence. An immutable terminal `abandoned` or `superseded` lane may
-instead reconcile only when the helper independently authenticates that the
-same exact target reached `merged` or `closed` at an authenticated completion
-timestamp later than the lane closeout. The publication snapshot
-preserves the original coordination terminal and records the later-target
-completion mode. Active/nonterminal lanes, open targets, unauthenticated target
-facts, and malformed terminal timestamps remain blocked.
+terminal evidence. Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation.
+The publication snapshot preserves the original coordination terminal and records
+the later-target completion mode for accepted reconciliation. Active/nonterminal
+lanes, open targets, unauthenticated target facts, and malformed terminal
+timestamps remain blocked.
 
 Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
