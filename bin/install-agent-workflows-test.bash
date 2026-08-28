@@ -378,6 +378,34 @@ test_auto_host_ignores_invalid_unrelated_configured_home() {
     fail "file unrelated Codex home blocked Claude alias classification"
 }
 
+test_auto_host_skips_unresolved_configured_home_equality_marker() {
+  local tmp target injection counter output status
+  tmp="$(mktemp -d)"; target="$tmp/shared-home"; injection="$tmp/fail-second-realpath.rb"; counter="$tmp/realpath-count"
+  mkdir -p "$target"; printf '{}\n' > "$target/settings.json"
+  cat > "$injection" <<'RUBY'
+class << File
+  alias_method :qa_original_realpath, :realpath
+  def realpath(path, *args)
+    if path == ENV.fetch("QA_CONFIGURED_HOME")
+      counter = ENV.fetch("QA_REALPATH_COUNTER")
+      count = File.file?(counter) ? File.read(counter).to_i + 1 : 1
+      File.write(counter, count.to_s)
+      raise Errno::EIO if count == 2
+    end
+    qa_original_realpath(path, *args)
+  end
+end
+RUBY
+  set +e
+  output="$(CODEX_HOME="$target" CLAUDE_HOME="$tmp/unset-claude" QA_CONFIGURED_HOME="$target" \
+    QA_REALPATH_COUNTER="$counter" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "unresolved configured-home equality marker exited $status: $output"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("host")' "$target/.agent-workflows-install.json")" = claude ]] || \
+    fail "unresolved Codex home equality marker overrode the proven Claude marker"
+}
+
 test_invalid_explicit_target_diagnostics_preserve_exact_path() {
   local tmp dangling file output status
   tmp="$(mktemp -d)"; dangling="$tmp/dangling-target"; file="$tmp/file-target"
@@ -3837,6 +3865,47 @@ RUBY
   grep -Rql "foreign restore replacement" "$quarantine" || \
     fail "restore cleanup deleted foreign source replacement"
   assert_file "$quarantine/metadata.attested"
+}
+
+test_restore_cleanup_failure_does_not_reexchange_verified_content() {
+  local tmp target staging receipt metadata injection marker output status restored_inode current_inode retry_output retry_status quarantine
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-late-cleanup"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-after-verified-restore.rb"; marker="$tmp/restored-inode"
+  mkdir -p "$staging/user-owned-skill"; printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    metadata = ENV.fetch("QA_INSTALL_METADATA")
+    File.write(ENV.fetch("QA_RACE_MARKER"), File.stat(metadata).ino.to_s)
+  end
+end
+module RecoveryRestoreCleanupHook
+  def self.call(name)
+    raise Errno::EIO if name == "metadata"
+  end
+end
+RUBY
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "late restore cleanup failure unexpectedly succeeded"
+  restored_inode="$(cat "$marker")"; current_inode="$(ruby -e 'print File.stat(ARGV.fetch(0)).ino' "$metadata")"
+  [[ "$current_inode" = "$restored_inode" ]] || fail "late cleanup failure re-exchanged verified restored metadata"
+  assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "late restore cleanup failure lost recovery evidence"
+  set +e
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; retry_status=$?
+  set -e
+  [[ "$retry_status" -ne 0 ]] || fail "late restore cleanup retry ignored preserved recovery evidence"
+  assert_contains "$retry_output" "$quarantine"
 }
 
 test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance() {
@@ -7961,6 +8030,7 @@ main() {
     test_existing_symlink_target_is_canonicalized_before_install
     test_auto_host_classifies_configured_home_symlink_aliases
     test_auto_host_ignores_invalid_unrelated_configured_home
+    test_auto_host_skips_unresolved_configured_home_equality_marker
     test_invalid_explicit_target_diagnostics_preserve_exact_path
     test_plugin_companion_installs_non_skill_assets_and_records_mode
     test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation
@@ -8042,6 +8112,7 @@ main() {
     test_recovery_capture_post_attestation_cleanup_preserves_replacement
     test_commit_post_attestation_cleanup_preserves_tmp_replacement
     test_restore_post_attestation_cleanup_preserves_source_replacement
+    test_restore_cleanup_failure_does_not_reexchange_verified_content
     test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance
     test_late_capture_restore_failure_does_not_blame_intact_metadata
     test_snapshot_only_corruption_restores_before_reporting

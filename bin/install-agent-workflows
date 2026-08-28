@@ -129,13 +129,11 @@ resolve_host_and_target() {
     target="$canonical_target"
     if [[ "$host" = "auto" ]]; then
       local codex_home claude_home
-      codex_home="$(canonicalize_target_path "${CODEX_HOME:-$HOME/.codex}")" || \
-        codex_home="$(ruby -e 'print File.expand_path(ARGV.fetch(0))' "${CODEX_HOME:-$HOME/.codex}")"
-      claude_home="$(canonicalize_target_path "${CLAUDE_HOME:-$HOME/.claude}")" || \
-        claude_home="$(ruby -e 'print File.expand_path(ARGV.fetch(0))' "${CLAUDE_HOME:-$HOME/.claude}")"
+      codex_home="$(canonicalize_target_path "${CODEX_HOME:-$HOME/.codex}")" || codex_home=""
+      claude_home="$(canonicalize_target_path "${CLAUDE_HOME:-$HOME/.claude}")" || claude_home=""
       local codex_marker=false claude_marker=false
-      [[ "$target" = "$codex_home" || -f "$target/config.toml" ]] && codex_marker=true
-      [[ "$target" = "$claude_home" || -f "$target/settings.json" || -f "$target/plugins/installed_plugins.json" ]] && claude_marker=true
+      [[ ( -n "$codex_home" && "$target" = "$codex_home" ) || -f "$target/config.toml" ]] && codex_marker=true
+      [[ ( -n "$claude_home" && "$target" = "$claude_home" ) || -f "$target/settings.json" || -f "$target/plugins/installed_plugins.json" ]] && claude_marker=true
       if [[ "$codex_marker" = true && "$claude_marker" = true ]]; then
         echo "Explicit target has both Codex and Claude markers; pass --host codex or --host claude." >&2
         return 64
@@ -1234,6 +1232,8 @@ replace_bound_recovery_metadata() {
     exchanged = false
     guard_created = false
     completed = false
+    content_restored = false
+    cleanup_uncertain = false
     rollback_failed = false
     rollback_succeeded = false
     displaced_destination_attestation = nil
@@ -1378,15 +1378,16 @@ replace_bound_recovery_metadata() {
       displaced_stat = displaced_destination_file.stat
       raise "displaced metadata identity changed" unless guard_stat.dev == displaced_stat.dev &&
                                                           guard_stat.ino == displaced_stat.ino
+      exchanged = false
+      content_restored = true
       RecoveryRestoreHook.call(:before_success_cleanup) if defined?(RecoveryRestoreHook)
       remove_exact.call(quarantine_file, source_name, displaced_destination_file, expected_destination)
       exit 67 unless attestation.call(guard_file) == expected_destination
       remove_exact.call(quarantine_file, "restore-guard", guard_file, expected_destination)
       guard_created = false
-      exchanged = false
       completed = true
     rescue StandardError
-      nil
+      cleanup_uncertain = true if content_restored
     ensure
       if exchanged
         begin
@@ -1430,7 +1431,7 @@ replace_bound_recovery_metadata() {
         end
       end
     end
-    exit 67 if rollback_failed || exchanged || guard_created
+    exit 67 if cleanup_uncertain || rollback_failed || exchanged || guard_created
     exit 69 if rollback_succeeded
     exit 65 unless completed
   ' "$1" "$2" "$3" "$4" "$target" "$recovery_metadata_quarantine" \
@@ -1689,7 +1690,15 @@ restore_captured_recovery_metadata() {
   replace_status=0
   replace_bound_recovery_metadata "$restore_source" "$recovery_metadata_path" \
     "$expected_restore_attestation" "$recovery_metadata_sentinel_identity|$recovery_metadata_digest" || replace_status=$?
-  [[ "$replace_status" -eq 0 ]] || return "$replace_status"
+  if [[ "$replace_status" -ne 0 ]]; then
+    restored_attestation="$(regular_file_attestation "$recovery_metadata_path" 2>/dev/null || true)"
+    if [[ "$replace_status" -eq 67 && "$restored_attestation" = "$expected_restore_attestation" ]]; then
+      recovery_metadata_captured=false
+      recovery_metadata_restore_reported=true
+      echo "RECOVERY_METADATA_CLEANUP_PENDING: restored and verified install metadata; preserved recovery state at $recovery_metadata_quarantine for manual cleanup." >&2
+    fi
+    return "$replace_status"
+  fi
   restored_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 65
   [[ "$restored_attestation" = "$expected_restore_attestation" ]] || return 65
   if ! write_recovery_metadata_cleanup_receipt; then
