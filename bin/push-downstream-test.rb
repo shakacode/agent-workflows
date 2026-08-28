@@ -53,6 +53,94 @@ class PushDownstreamPointerTest < Minitest::Test
   end
 end
 
+class PushDownstreamAuditWorkflowTest < Minitest::Test
+  ROOT = File.expand_path("..", __dir__)
+  WORKFLOW = File.join(ROOT, ".github/workflows/downstream-seam-audit.yml")
+
+  def test_workflow_is_a_read_only_audit_without_a_publisher_surface
+    text = File.read(WORKFLOW)
+    workflow = YAML.safe_load(text, aliases: true)
+    triggers = workflow["on"] || workflow[true]
+
+    push = triggers.fetch("push")
+    assert_equal ["main"], push.fetch("branches")
+    assert_equal [
+      ".github/workflows/downstream-seam-audit.yml",
+      "bin/push-downstream",
+      "bin/push-downstream-test.rb",
+      "bin/agent-workflow-seam-doctor",
+      "bin/agent-workflow-writing-style",
+      "bin/agent-workflow-seam-doctor-test.rb",
+      "bin/agent_doctor/**",
+      "skills/secure-github-actions/lib/**",
+      "downstream.yml",
+      "seam-presets.yml"
+    ], push.fetch("paths")
+    refute_empty triggers.fetch("schedule")
+    assert triggers.key?("workflow_dispatch")
+    assert_nil triggers.fetch("workflow_dispatch"), "manual dispatch must expose no publishing inputs"
+    assert_equal ["audit"], workflow.fetch("jobs").keys
+    assert_equal({ "contents" => "read" }, workflow.fetch("permissions"))
+
+    steps = workflow.dig("jobs", "audit", "steps")
+    checkout = steps.find { |step| step["uses"]&.start_with?("actions/checkout@") }
+    audit = steps.find { |step| step["id"] == "audit" }
+    upload = steps.find { |step| step["uses"]&.start_with?("actions/upload-artifact@") }
+    enforce = steps.find { |step| step["name"] == "Preserve audit exit status" }
+
+    assert_equal false, checkout.dig("with", "persist-credentials")
+    assert_includes audit.fetch("run"), 'ruby bin/push-downstream --audit | tee "$AUDIT_REPORT"'
+    assert_includes audit.fetch("run"), "audit_exit=${PIPESTATUS[0]}"
+    assert_includes audit.fetch("run"), 'report_json = File.binread(ENV.fetch("AUDIT_REPORT"))'
+    assert_includes audit.fetch("run"), "JSON.parse(report_json)"
+    assert_includes audit.fetch("run"), 'source.fetch("sha") == ENV.fetch("GITHUB_SHA")'
+    assert_includes audit.fetch("run"), 'consumer.fetch("status") == "blocked"'
+    assert_includes audit.fetch("run"), 'value == "UNKNOWN"'
+    assert_includes audit.fetch("run"), 'abort "audit consumers are empty" if consumers.empty?'
+    assert_includes audit.fetch("run"), 'expected_exit == Integer(ENV.fetch("AUDIT_EXIT"), 10)'
+    assert_includes audit.fetch("run"), "CGI.escapeHTML(report_json)"
+    assert_includes audit.fetch("run"), 'ENV.fetch("GITHUB_STEP_SUMMARY")'
+    assert_nil upload, "audit reports must not depend on an untrusted artifact action"
+    assert_equal "always()", enforce.fetch("if")
+    assert_includes enforce.fetch("run"), 'exit "$AUDIT_EXIT_CODE"'
+
+    refute_match(/DOWNSTREAM_SEAM_PUBLISH_TOKEN|--apply|--confirm-publish|--publish-report/, text)
+    refute_match(/\bgh\s+pr\s+create\b|\bgit\s+push\b|contents:\s*write/, text)
+  end
+
+  def test_workflow_validator_rejects_an_empty_consumer_report
+    workflow = YAML.safe_load_file(WORKFLOW, aliases: true)
+    run = workflow.dig("jobs", "audit", "steps").find { |step| step["id"] == "audit" }.fetch("run")
+    validator = run.match(/AUDIT_EXIT="\$audit_exit" ruby <<'RUBY'\n(.*?)\nRUBY/m)&.captures&.fetch(0)
+    refute_nil validator, "expected to extract the embedded audit validator"
+
+    Dir.mktmpdir("downstream-seam-audit-validator") do |dir|
+      sha = "a" * 40
+      report = {
+        "schema" => PushDownstream::AUDIT_SCHEMA,
+        "source" => { "sha" => sha, "worktree_clean" => true },
+        "summary" => { "total" => 0, "clean" => 0, "drifted" => 0, "blocked" => 0 },
+        "consumers" => []
+      }
+      report_path = File.join(dir, "report.json")
+      File.write(report_path, JSON.generate(report))
+      environment = {
+        "AUDIT_REPORT" => report_path,
+        "AUDIT_EXIT" => "0",
+        "GITHUB_SHA" => sha,
+        "GITHUB_OUTPUT" => File.join(dir, "output"),
+        "GITHUB_STEP_SUMMARY" => File.join(dir, "summary")
+      }
+
+      _stdout, stderr, status = Open3.capture3(environment, RbConfig.ruby, stdin_data: validator)
+
+      refute status.success?
+      assert_includes stderr, "audit consumers are empty"
+      refute_path_exists environment.fetch("GITHUB_OUTPUT")
+    end
+  end
+end
+
 class PushDownstreamConfigTest < Minitest::Test
   def with_config(yaml)
     Dir.mktmpdir("push-downstream-config") do |dir|
@@ -1067,6 +1155,88 @@ class PushDownstreamScaffoldTest < Minitest::Test
     end
   end
 
+  def test_apply_scaffold_rejects_managed_path_symlink_without_following_external_target
+    Dir.mktmpdir("push-downstream-apply-symlink") do |dir|
+      root = File.join(dir, "consumer")
+      FileUtils.mkdir_p(root)
+      external_target = File.join(dir, "external-agents.md")
+      File.binwrite(external_target, "unchanged\n")
+      File.symlink(external_target, File.join(root, "AGENTS.md"))
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.reconcile_scaffold(root, CONTRACT)
+      end
+
+      assert_includes error.message, "managed scaffold path contains a symlink"
+      assert_equal "unchanged\n", File.binread(external_target)
+      refute Dir.exist?(File.join(root, ".agents")), "validation must run before the first managed write"
+    end
+  end
+
+  def test_apply_scaffold_rejects_doctor_read_symlink_before_writing
+    Dir.mktmpdir("push-downstream-apply-doctor-symlink") do |root|
+      skill_dir = File.join(root, ".agents/skills/hostile")
+      FileUtils.mkdir_p(skill_dir)
+      File.symlink("/dev/zero", File.join(skill_dir, "SKILL.md"))
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.reconcile_scaffold(root, CONTRACT)
+      end
+
+      assert_includes error.message, "audit read path contains a symlink"
+      refute_path_exists File.join(root, "AGENTS.md")
+      refute Dir.exist?(File.join(root, ".agents/bin")), "validation must run before the first managed write"
+    end
+  end
+
+  def test_apply_scaffold_rejects_managed_path_fifo_before_writing
+    Dir.mktmpdir("push-downstream-apply-fifo") do |root|
+      agents_path = File.join(root, "AGENTS.md")
+      system("mkfifo", agents_path) || raise("mkfifo failed")
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.reconcile_scaffold(root, CONTRACT)
+      end
+
+      assert_includes error.message, "managed scaffold path is not a regular file"
+      refute Dir.exist?(File.join(root, ".agents")), "validation must run before the first managed write"
+    ensure
+      File.unlink(agents_path) if agents_path && File.exist?(agents_path)
+    end
+  end
+
+  def test_apply_scaffold_rejects_doctor_read_fifo_before_writing
+    Dir.mktmpdir("push-downstream-apply-doctor-fifo") do |root|
+      skill_dir = File.join(root, ".agents/skills/hostile")
+      FileUtils.mkdir_p(skill_dir)
+      skill_path = File.join(skill_dir, "SKILL.md")
+      system("mkfifo", skill_path) || raise("mkfifo failed")
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.reconcile_scaffold(root, CONTRACT)
+      end
+
+      assert_includes error.message, "audit read path is not a regular file"
+      refute_path_exists File.join(root, "AGENTS.md")
+      refute Dir.exist?(File.join(root, ".agents/bin")), "validation must run before the first managed write"
+    ensure
+      File.unlink(skill_path) if skill_path && File.exist?(skill_path)
+    end
+  end
+
+  def test_apply_scaffold_allows_non_markdown_symlink_the_doctor_does_not_read
+    Dir.mktmpdir("push-downstream-apply-helper-symlink") do |root|
+      skill_dir = File.join(root, ".agents/skills/example")
+      FileUtils.mkdir_p(skill_dir)
+      File.symlink("/dev/null", File.join(skill_dir, "helper.rb"))
+
+      result = PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      assert_predicate result, :changed?
+      assert_path_exists File.join(root, "AGENTS.md")
+    end
+  end
+
   def test_apply_scaffold_migrates_legacy_agents_command_values
     Dir.mktmpdir("push-downstream-scaffold") do |root|
       File.write(File.join(root, "AGENTS.md"), <<~MARKDOWN)
@@ -1495,6 +1665,32 @@ class PushDownstreamAuditTest < Minitest::Test
     end
   end
 
+  def test_run_audit_fails_when_no_consumers_are_selected
+    Dir.mktmpdir("push-downstream-empty-audit") do |dir|
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        defaults:
+          owner: local
+          base_branch: main
+          pr_branch: agent-workflows/seam-sync
+        repos:
+          - { repo: disabled, enabled: false }
+      YAML
+
+      output, = capture_io do
+        @status = PushDownstream.run_audit(
+          config, File.join(dir, "missing-presets.yml"), only: nil, include_disabled: false
+        )
+      end
+
+      report = JSON.parse(output)
+      assert_equal 1, @status
+      assert_equal [], report.fetch("consumers")
+      assert_equal({ "total" => 0, "clean" => 0, "drifted" => 0, "blocked" => 0 },
+                   report.fetch("summary"))
+    end
+  end
+
   def test_audit_reports_drifted_consumer_with_exact_changed_managed_paths
     Dir.mktmpdir("push-downstream-audit") do |dir|
       remote, = seed_bare_consumer(dir)
@@ -1515,6 +1711,103 @@ class PushDownstreamAuditTest < Minitest::Test
       # untouched and no sync branch is ever pushed.
       branches = `git --git-dir=#{remote.shellescape} branch --list`.split.reject { |token| token == "*" }
       assert_equal ["main"], branches
+    end
+  end
+
+  def test_audit_rejects_same_named_tag_when_configured_base_branch_is_missing
+    Dir.mktmpdir("push-downstream-audit-detached-tag") do |dir|
+      remote, seed = seed_bare_consumer(dir)
+      system("git", "-C", seed, "tag", "main")
+      system("git", "-C", seed, "push", "origin", "refs/tags/main", out: File::NULL)
+      system("git", "--git-dir", remote, "config", "receive.denyDeleteCurrent", "ignore")
+      system("git", "-C", seed, "push", "origin", ":refs/heads/main", out: File::NULL)
+
+      entry = audit(remote)
+
+      assert_equal "blocked", entry.fetch("status")
+      assert_includes entry.fetch("reason"), "configured base branch is not the tracked remote branch"
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("base_sha")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("seam_doctor_issues")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("changed_managed_paths")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("follow_ups")
+    end
+  end
+
+  def test_audit_display_path_is_valid_utf8_for_json_errors
+    displayed = PushDownstream.audit_display_path(".agents/skills/bad-\xFF.md".b)
+
+    assert_equal Encoding::UTF_8, displayed.encoding
+    assert_predicate displayed, :valid_encoding?
+    assert JSON.generate("reason" => displayed)
+  end
+
+  def test_audit_json_safe_scrubs_nested_strings_and_preserves_unknown
+    report = {
+      "consumers" => [
+        {
+          "seam_doctor_issues" => ["invalid path bad-\xFF.md".b],
+          "changed_managed_paths" => ["bad-\xFE.md".b],
+          "repo" => "local/caf\xC3\xA9".b,
+          "follow_ups" => PushDownstream::AUDIT_UNKNOWN
+        }
+      ]
+    }
+
+    safe = PushDownstream.audit_json_safe(report)
+    consumer = safe.fetch("consumers").fetch(0)
+
+    assert_predicate consumer.fetch("seam_doctor_issues").fetch(0), :valid_encoding?
+    assert_predicate consumer.fetch("changed_managed_paths").fetch(0), :valid_encoding?
+    assert_equal "local/café", consumer.fetch("repo")
+    assert_equal PushDownstream::AUDIT_UNKNOWN, consumer.fetch("follow_ups")
+    assert JSON.generate(safe)
+  end
+
+  def test_audit_blocks_managed_path_symlink_without_following_external_target
+    Dir.mktmpdir("push-downstream-audit-symlink") do |dir|
+      remote, seed = seed_bare_consumer(dir)
+      external_target = File.join(dir, "external-agents.md")
+      File.binwrite(external_target, "unchanged\n")
+      File.symlink(external_target, File.join(seed, "AGENTS.md"))
+      system("git", "-C", seed, "add", "AGENTS.md")
+      system("git", "-C", seed, "commit", "-m", "add managed path symlink", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+
+      entry = audit(remote)
+
+      assert_equal "blocked", entry.fetch("status")
+      assert_includes entry.fetch("reason"), "managed scaffold path contains a symlink"
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("seam_doctor_issues")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("changed_managed_paths")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("follow_ups")
+      assert_equal "unchanged\n", File.binread(external_target)
+    end
+  end
+
+  def test_audit_blocks_discovered_markdown_symlink_before_running_the_doctor
+    Dir.mktmpdir("push-downstream-audit-markdown-symlink") do |dir|
+      remote, seed = seed_bare_consumer(dir)
+      skill_dir = File.join(seed, ".agents/skills/hostile")
+      FileUtils.mkdir_p(skill_dir)
+      File.symlink("/dev/zero", File.join(skill_dir, "SKILL.md"))
+      system("git", "-C", seed, "add", ".agents/skills/hostile/SKILL.md")
+      system("git", "-C", seed, "commit", "-m", "add hostile Markdown symlink", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+
+      doctor_called = false
+      entry = with_module_stub(AgentWorkflowSeamDoctor, :check, lambda { |_root, **_kwargs|
+        doctor_called = true
+        []
+      }) do
+        audit(remote)
+      end
+
+      refute doctor_called, "the audit must reject unsafe doctor inputs before reading them"
+      assert_equal "blocked", entry.fetch("status")
+      assert_includes entry.fetch("reason"), "audit read path contains a symlink"
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("seam_doctor_issues")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("changed_managed_paths")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("follow_ups")
     end
   end
 
@@ -1784,7 +2077,8 @@ class PushDownstreamAuditTest < Minitest::Test
                  contract.fetch("polymorphic_fields")
     assert_includes contract.fetch("polymorphic_note"), "Type-check before iterating"
     assert_includes contract.fetch("polymorphic_note"), "\"UNKNOWN\""
-    assert_equal "at least one consumer is drifted or blocked", contract.fetch("exit_codes").fetch("1")
+    assert_equal "at least one consumer is drifted or blocked, or no consumers were selected",
+                 contract.fetch("exit_codes").fetch("1")
   end
 
   private
@@ -3502,6 +3796,14 @@ class PushDownstreamCliTest < Minitest::Test
       assert_includes out, "would reconcile binstub scaffold"
       refute File.exist?(File.join(root, ".agents/bin/validate"))
     end
+  end
+
+  def test_audit_help_documents_empty_selection_as_failure
+    out, status = run_cli("--help")
+
+    assert status.success?, out
+    assert_includes out,
+                    "Exit 0 when every selected consumer is clean; 1 when any is drifted or blocked, or none are selected."
   end
 
   def test_policy_fleet_apply_rejects_explicit_empty_only_without_syncing
