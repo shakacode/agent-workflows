@@ -49,6 +49,13 @@ default.
 - Installer, status, upgrade, trust-audit, and seam-doctor helpers under `bin/`.
 - Security preflight for public issue and PR batches so untrusted GitHub text
   cannot quietly become agent instructions.
+- A `secure-github-actions` skill and executable seam-doctor gate that reject
+  shell-interpolated expressions, inherited secrets, mutable external action
+  refs, missing version comments, and repository-based GitHub Actions and
+  reusable workflows outside a repo-owned closed `trusted_actions` allowlist.
+  For `docker://` references, the scanner enforces digest immutability, but
+  `trusted_actions` does not mechanically approve the container. Maintainers
+  must manually review the exact registry, image, and digest.
 - Full-SHA GitHub Action pins, automated update proposals, and an explicit
   development-versus-stable trust model. See
   [Repository Supply-Chain Policy](docs/repository-supply-chain.md).
@@ -202,6 +209,15 @@ the marketplace, and reinstall it as `scw`; keeping both would
 create two names for the same skill tree. The repository, source pack, helper
 commands, marketplace name, and install metadata remain `agent-workflows`.
 
+When Superpowers is also present, Agent Workflows remains the sole delivery
+orchestrator on every host, including Claude. Automated Superpowers state
+detection is Codex-only: `agent-workflows-status --host codex --json` reports
+`active`, `installed-disabled`, `available-not-installed`, or `UNKNOWN` without
+changing plugin configuration, while Claude JSON and text output omit the
+diagnostic rather than guessing. Keep the complete Superpowers plugin disabled
+in the normal profile; use the [pinned disposable pilot](docs/superpowers.md) to
+evaluate one bounded technique.
+
 Use a native plugin path for a host-qualified skill surface. Pair it with
 `--delivery-mode plugin-companion` when you also need installer-managed helper
 binaries, workflows, docs, metadata, status, or upgrades. The installer fails
@@ -298,8 +314,11 @@ This project is available under the MIT License.
 | `adversarial-pr-review` | Run a skeptical pre-merge or post-merge PR review. |
 | `autoreview` | Run a structured second-model local diff review. |
 | `benchmark-verification` | Verify performance-sensitive changes with benchmark evidence. |
+| `close-batch` | Recover a stale PR batch, route required walkthroughs or decisions, and archive only after canonical closeout. |
+| `close-session` | Close active work with verified handoff and archive readiness. |
 | `continue` | Resume an in-progress task with a structured checkpoint. |
 | `evaluate-issue` | Decide whether an issue or proposed fix is worth doing. |
+| `fix-flaky-tests` | Use when a test fails intermittently in CI — classify the intermittency, work from the real CI error, fix the root cause systemically, and verify with a green CI build rather than local runs. |
 | `manual-testing` | Verify changed behavior in a real running app or service. |
 | `pause` | Print restart-safe pause and resume prompts for copy/paste handoffs. |
 | `plan-issue-triage` | Produce a ready prompt for review-only issue triage. |
@@ -312,8 +331,10 @@ This project is available under the MIT License.
 | `qa-stress` | Run destructive QA stress campaigns against repo-owned targets. |
 | `replicate-ci` | Reproduce hosted-CI/local parity gaps. |
 | `run-ci` | Choose and run repo-local CI checks. |
+| `secure-github-actions` | Audit repository-based workflows and composite actions mechanically; enforce `docker://` digest immutability for manual container review. |
 | `spec` | Turn vague implementation intent into requirements, design, and tasks. |
 | `status` | Report tight progress (done/in-progress/blocked/next) without starting new work. |
+| `structural-review` | Use when a diff is correct but may still be making the codebase worse — file growth, scattered conditionals, thin abstractions, layer violations, or feature-flag branching debt. |
 | `task-observer` | Optionally capture sanitized observations for later skill or workflow improvement review. |
 | `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
 | `triage` | Build a whole-surface issue/PR inventory and batch split. |
@@ -382,9 +403,10 @@ bin/validate
 ```
 
 The gate checks skill frontmatter, helper script tests, prompt-size invariants,
-and the seam doctor against a fixture consumer repo while scanning this shared
-repo as an installed pack. Validate both native plugin surfaces directly
-with:
+the GitHub Actions policy scanner, and the seam doctor against a fixture
+consumer repo while scanning this shared repo as an installed pack. A clean
+mechanical scan is necessary but not sufficient for security review. Validate
+both native plugin surfaces directly with:
 
 ```bash
 ruby bin/codex-plugin-manifest-check

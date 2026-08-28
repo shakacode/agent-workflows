@@ -33,7 +33,7 @@ module PrMergeSubmit
   GRAPHQL_FEATURE_HEADER = "GraphQL-Features: merge_queue"
   METHODS = %w[merge rebase squash].freeze
   POLICY_CONFIG = ".agents/agent-workflow.yml"
-  MERGE_SUBMISSION_MODES = %w[merge_queue_only merge_queue_or_guarded_direct].freeze
+  MERGE_SUBMISSION_MODES = %w[direct merge_queue_only merge_queue_or_guarded_direct].freeze
   MERGE_SUBMISSION_KEYS = %w[mode guarded_direct].freeze
   GUARDED_DIRECT_KEYS = %w[executable method non_atomic_base].freeze
   NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
@@ -124,6 +124,35 @@ module PrMergeSubmit
       }
     GRAPHQL
 
+    MERGE_MUTATION = <<~GRAPHQL
+      mutation(
+        $pullRequestId: ID!,
+        $expectedHeadOid: GitObjectID!,
+        $mergeMethod: PullRequestMergeMethod!,
+        $commitHeadline: String,
+        $commitBody: String
+      ) {
+        mergePullRequest(input: {
+          pullRequestId: $pullRequestId,
+          expectedHeadOid: $expectedHeadOid,
+          mergeMethod: $mergeMethod,
+          commitHeadline: $commitHeadline,
+          commitBody: $commitBody
+        }) {
+          pullRequest {
+            headRefOid
+            baseRefName
+            baseRefOid
+            state
+            merged
+            mergedAt
+            url
+            mergeCommit { oid }
+          }
+        }
+      }
+    GRAPHQL
+
     def initialize(system_tools: {})
       @system_tools = system_tools
     end
@@ -186,11 +215,11 @@ module PrMergeSubmit
         opts.on("--merge-assurance-receipt FILE", "Fresh eligible merge-assurance receipt") do |value|
           options[:merge_assurance_receipt] = value
         end
-        opts.on("--method METHOD", METHODS, "Guarded-direct method; merge queue configuration controls queued merges") do |value|
+        opts.on("--method METHOD", METHODS, "Direct method; merge queue configuration controls queued merges") do |value|
           options[:method] = value
         end
-        opts.on("--subject SUBJECT", "Guarded-direct merge commit subject") { |value| options[:subject] = value }
-        opts.on("--body BODY", "Guarded-direct merge commit body") { |value| options[:body] = value }
+        opts.on("--subject SUBJECT", "Direct merge commit subject") { |value| options[:subject] = value }
+        opts.on("--body BODY", "Direct merge commit body") { |value| options[:body] = value }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
       end
       remaining = parser.parse(argv)
@@ -208,14 +237,13 @@ module PrMergeSubmit
 
         #{usage_parser}
 
-        The helper reads GitHub's live isMergeQueueEnabled value for the target
-        PR and uses enqueuePullRequest for a queue-controlled base. Queue-disabled
-        submission fails closed by default. A trusted-base merge_submission seam
-        may explicitly delegate to one repository-owned executable guard under
-        .agents/bin. The helper invokes that guard with fixed argv and trusts only
-        a subsequent exact live merged-state reconciliation. It never performs a
-        generic direct merge, enables auto-merge, or enables a merge queue. Exit 2
-        means a mutation outcome remains UNKNOWN and must not be retried blindly.
+        The portable default uses an expected-head-bound mergePullRequest mutation
+        for a queue-disabled base. Merge Queue is used only when the trusted-base
+        merge_submission seam explicitly selects merge_queue_only or
+        merge_queue_or_guarded_direct. The guarded-direct mode may delegate to one
+        repository-owned executable guard under .agents/bin. The helper never
+        enables auto-merge or a merge queue. Exit 2 means a mutation outcome remains
+        UNKNOWN and must not be retried blindly.
       HELP
       0
     end
@@ -225,8 +253,8 @@ module PrMergeSubmit
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
                       "--merge-assurance-receipt FILE [options]"
-        opts.separator "        --subject SUBJECT  Guarded-direct merge commit subject"
-        opts.separator "        --body BODY        Guarded-direct merge commit body"
+        opts.separator "        --subject SUBJECT  Direct merge commit subject"
+        opts.separator "        --body BODY        Direct merge commit body"
         opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v1 receipt"
       end
     end
@@ -259,6 +287,7 @@ module PrMergeSubmit
     ].freeze
     RECEIPT_EVIDENCE_KEYS = %w[
       authenticated_tracker_reads autonomous_result ci_result context
+      selected_hosted_ci_receipts
     ].freeze
     AUTHENTICATED_TRACKER_READ_KEYS = %w[
       checked_at contract diff_identity head_sha host issue issue_metadata
@@ -294,6 +323,7 @@ module PrMergeSubmit
         ci_result: evidence["ci_result"],
         autonomous_result: evidence["autonomous_result"],
         context: evidence["context"],
+        selected_hosted_ci_receipts: evidence["selected_hosted_ci_receipts"],
         now:
       )
       unless reassessed["eligible"] == true
@@ -322,7 +352,8 @@ module PrMergeSubmit
     def validate_receipt_evidence!(receipt, evidence)
       unless evidence.is_a?(Hash) && evidence.keys.sort == RECEIPT_EVIDENCE_KEYS.sort &&
              evidence["context"].is_a?(Hash) &&
-             evidence["authenticated_tracker_reads"].is_a?(Array)
+             evidence["authenticated_tracker_reads"].is_a?(Array) &&
+             evidence["selected_hosted_ci_receipts"].is_a?(Hash)
         raise Error, "merge-assurance receipt evidence is malformed"
       end
       if MergeAssurance.contains_unknown?(evidence["authenticated_tracker_reads"])
@@ -428,7 +459,7 @@ module PrMergeSubmit
       raw = trusted_blob!(
         base_sha, POLICY_CONFIG, "trusted-base merge-submission policy", allow_missing: true
       )
-      return { "mode" => "merge_queue_only", "source" => "portable_default" } if raw.nil?
+      return { "mode" => "direct", "source" => "portable_default" } if raw.nil?
 
       config = YAML.safe_load(
         raw, permitted_classes: [], permitted_symbols: [], aliases: false
@@ -436,10 +467,10 @@ module PrMergeSubmit
       raise Error, "trusted-base policy is not a mapping" unless config.is_a?(Hash)
 
       seam = config["merge_submission"]
-      return { "mode" => "merge_queue_only", "source" => "portable_default" } if seam.nil?
+      return { "mode" => "direct", "source" => "portable_default" } if seam.nil?
 
       validate_merge_submission_mapping!(seam)
-      if seam["mode"] == "merge_queue_only"
+      if %w[direct merge_queue_only].include?(seam["mode"])
         return { "mode" => seam["mode"], "source" => "trusted_base" }
       end
 
@@ -468,11 +499,11 @@ module PrMergeSubmit
       mode = seam["mode"]
       raise Error, "merge_submission.mode is invalid" unless MERGE_SUBMISSION_MODES.include?(mode)
 
-      expected_keys = mode == "merge_queue_only" ? ["mode"] : MERGE_SUBMISSION_KEYS
+      expected_keys = %w[direct merge_queue_only].include?(mode) ? ["mode"] : MERGE_SUBMISSION_KEYS
       unless exact_string_keys?(seam, expected_keys)
         raise Error, "merge_submission keys must be exactly: #{expected_keys.sort.join(', ')}"
       end
-      return if mode == "merge_queue_only"
+      return if %w[direct merge_queue_only].include?(mode)
 
       guarded_direct = seam["guarded_direct"]
       unless exact_string_keys?(guarded_direct, GUARDED_DIRECT_KEYS)
@@ -714,7 +745,11 @@ module PrMergeSubmit
     end
 
     def submit(pull_request, options)
+      mode = @merge_submission.fetch("mode")
       if pull_request["isInMergeQueue"] == true
+        if mode == "direct"
+          raise Error, direct_queue_configuration_error
+        end
         return existing_queue_result(pull_request, options) if exact_queue?(pull_request, options)
 
         raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof"
@@ -723,17 +758,29 @@ module PrMergeSubmit
         raise UnknownOutcome, "PR merge-queue membership is inconsistent or UNKNOWN"
       end
 
-      return enqueue_result(pull_request, options) if pull_request["isMergeQueueEnabled"] == true
+      if pull_request["isMergeQueueEnabled"] == true
+        raise Error, direct_queue_configuration_error if mode == "direct"
+
+        return enqueue_result(pull_request, options)
+      end
       unless pull_request["isMergeQueueEnabled"] == false
         raise Error, "PR merge-queue state is missing or UNKNOWN"
       end
 
-      unless @merge_submission["mode"] == "merge_queue_or_guarded_direct"
+      if mode == "merge_queue_only"
         raise Error, "queue-disabled submission is unsupported by the trusted-base merge_submission " \
-                     "policy; configure an explicit repository-owned guarded-direct exception or use a merge queue"
+                     "policy; configure mode: direct, configure an explicit repository-owned guarded-direct " \
+                     "exception, or enable the repository merge queue"
       end
 
-      guarded_direct_result(options)
+      return guarded_direct_result(options) if mode == "merge_queue_or_guarded_direct"
+
+      direct_merge_result(options)
+    end
+
+    def direct_queue_configuration_error
+      "live repository merge queue is enabled but merge_submission mode is direct; configure " \
+        "merge_submission.mode: merge_queue_only (or merge_queue_or_guarded_direct) to opt into Merge Queue"
     end
 
     def validate_pr!(pull_request, options, require_open: true)
@@ -757,6 +804,106 @@ module PrMergeSubmit
       return if pull_request["baseRefOid"].to_s.casecmp?(expected.to_s)
 
       raise Error, "merge-assurance receipt base SHA mismatch: expected #{expected}, found #{pull_request['baseRefOid']}"
+    end
+
+    def direct_merge_result(options)
+      # Re-read immediately before mutation so the receipt-bound base and exact
+      # head are checked at the narrowest practical point. GitHub's direct merge
+      # mutation binds the expected head OID but has no expected-base OID field.
+      refreshed = fetch_pr(options)
+      validate_receipt_live_bindings!(refreshed, options)
+      validate_pr!(refreshed, options)
+      if refreshed["isInMergeQueue"] == true || refreshed["isMergeQueueEnabled"] == true
+        raise Error, direct_queue_configuration_error
+      end
+      unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil? &&
+             refreshed["isMergeQueueEnabled"] == false
+        raise Error, "PR merge-queue state became missing, inconsistent, or UNKNOWN before direct submission"
+      end
+
+      stdout, stderr, status = run_gh(
+        *direct_merge_args(refreshed, options), host: options[:host], mutation: true
+      )
+      diagnostics = failure_output(stdout, stderr)
+      unless status.success?
+        errors = PrMergeSubmit.graphql_errors(stdout)
+        return reconcile_direct_graphql_errors!(options, errors) if errors
+
+        return reconcile_mutation_outcome!(
+          options, "direct merge submission", diagnostics, route: :direct
+        )
+      end
+
+      payload = begin
+        PrMergeSubmit.parse_json!(stdout, "direct merge")
+      rescue Error => e
+        return reconcile_mutation_outcome!(
+          options, "direct merge", failure_output(e.message, stderr), route: :direct
+        )
+      end
+      errors = Array(payload["errors"])
+      return reconcile_direct_graphql_errors!(options, errors) if errors.any?
+
+      merged_pull_request = payload.dig("data", "mergePullRequest", "pullRequest")
+      begin
+        validate_merged_pr!(merged_pull_request, options)
+      rescue Error => e
+        return reconcile_mutation_outcome!(
+          options, "direct merge response validation", failure_output(e.message, stderr), route: :direct
+        )
+      end
+      direct_result(merged_pull_request, options, stderr)
+    end
+
+    def direct_merge_args(pull_request, options)
+      args = [
+        "api", "graphql",
+        "-H", GRAPHQL_FEATURE_HEADER,
+        "-f", "query=#{MERGE_MUTATION}",
+        "-f", "pullRequestId=#{pull_request.fetch('id')}",
+        "-f", "expectedHeadOid=#{options[:expected_head]}",
+        "-f", "mergeMethod=#{options[:method].upcase}"
+      ]
+      args.concat(["-f", "commitHeadline=#{options[:subject]}"]) if options[:subject]
+      args.concat(["-f", "commitBody=#{options[:body]}"]) if options[:body]
+      args
+    end
+
+    def validate_merged_pr!(pull_request, options)
+      raise Error, "direct merge submission returned no pull request" unless pull_request.is_a?(Hash)
+
+      validate_url_host!(pull_request["url"], options[:host])
+      expected_url = "https://#{options[:host]}/#{options[:repo]}/pull/#{options[:pr]}"
+      raise Error, "direct merge response PR URL mismatch" unless pull_request["url"] == expected_url
+      raise Error, "direct merge response did not report MERGED state" unless pull_request["state"] == "MERGED"
+      raise Error, "direct merge did not report a merged PR" unless pull_request["merged"] == true
+      unless valid_merge_commit_oid?(pull_request.dig("mergeCommit", "oid"))
+        raise Error, "direct merge did not report a merge commit"
+      end
+      unless pull_request["baseRefName"] == options[:expected_base]
+        raise Error, "PR base moved during direct merge: expected #{options[:expected_base]}, " \
+                     "found #{pull_request['baseRefName']}"
+      end
+      return if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+
+      raise Error, "PR head moved during direct merge: expected #{options[:expected_head]}, " \
+                   "found #{pull_request['headRefOid']}"
+    end
+
+    def direct_result(pull_request, options, diagnostics)
+      {
+        "pr" => options[:pr].to_i,
+        "repo" => options[:repo],
+        "url" => pull_request["url"],
+        "expected_head" => options[:expected_head],
+        "expected_base" => options[:expected_base],
+        "submission" => "direct",
+        "method" => options[:method],
+        "atomic_expected_base_oid" => false,
+        "merged_at" => pull_request["mergedAt"],
+        "merge_commit" => pull_request.dig("mergeCommit", "oid"),
+        "diagnostics" => diagnostics.strip
+      }.reject { |_key, value| value.nil? || value == "" }
     end
 
     def guarded_direct_result(options)
@@ -1185,10 +1332,14 @@ module PrMergeSubmit
         )
       end
       if exact_queue?(pull_request, options)
+        if route == :direct
+          raise UnknownOutcome, "direct merge submission outcome is UNKNOWN because the PR is now in the merge " \
+                                "queue; do not retry blindly"
+        end
         return existing_queue_result(pull_request, options, reconciled: true)
       end
 
-      reject_mismatched_queue!(pull_request, options)
+      reject_mismatched_queue!(pull_request, options) if route == :merge_queue
 
       raise UnknownOutcome, "#{context} outcome could not be proven after an ambiguous response; do not retry blindly: #{diagnostics}"
     end
@@ -1210,6 +1361,26 @@ module PrMergeSubmit
 
       reject_mismatched_queue!(pull_request, options)
       raise UnknownOutcome, "merge-queue submission outcome could not be proven after GraphQL errors; " \
+                            "do not retry blindly: #{diagnostics}"
+    end
+
+    def reconcile_direct_graphql_errors!(options, errors)
+      diagnostics = JSON.generate(errors)
+      pull_request = fetch_pr_for_reconciliation!(options, "direct merge GraphQL error outcome")
+      if exact_merge?(pull_request, options)
+        return already_merged_result(pull_request, options).merge(
+          "reconciled_after_failure" => true,
+          "attempted_submission" => "direct",
+          "diagnostics" => diagnostics
+        )
+      end
+
+      if pull_request["state"] == "OPEN" &&
+         (pull_request["isMergeQueueEnabled"] == true || pull_request["isInMergeQueue"] == true)
+        raise Error, direct_queue_configuration_error
+      end
+
+      raise UnknownOutcome, "direct merge submission outcome could not be proven after GraphQL errors; " \
                             "do not retry blindly: #{diagnostics}"
     end
 

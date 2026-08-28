@@ -1,6 +1,6 @@
 ---
 name: pr-batch
-description: Plan and safely run one or more issue, PR, or ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Use for a single direct-prompt task as well as multi-lane batches, worktree or machine splits, and goal prompts.
+description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch.
 argument-hint: '[task, exact issue/PR numbers, or filters]'
 ---
 
@@ -23,6 +23,10 @@ test intentionally loads the production receipt parser from the sibling
 `post-merge-audit` skill; an isolated pinned copy must include that companion
 or stop with a precise missing-companion blocker.
 
+Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
+contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract here.
+
 Memorable invocation:
 
 ```text
@@ -33,12 +37,61 @@ Run a Codex batch
 Run a Claude batch
 ```
 
+## User-Facing Coordination Contract
+
+The current task is the sole user-facing coordinator. Subagents, lane workers,
+reviewers, and QA agents are internal workers owned by the current task, never
+separate chats whose mechanics the user must coordinate. External tasks may
+send evidence or requests without gaining ownership, and automations only wake
+the current task. Apply authority decisions and separate-scope routing through
+the shared
+[user-facing coordination contract](../../docs/user-facing-coordination.md).
+
+For a heartbeat or monitor, a no-change wake produces no user-visible
+notification. Notify only for an HST-v1 actionable material state change: a
+decision or action is required, a target is ready for walkthrough or approval,
+a blocker exhausted its bounded retries and needs intervention, or
+closeout/archive completed; delete the heartbeat when its gate clears or
+becomes durably terminal. The automation never owns the task or next action.
+
 ## Single-Target Mode
 
-Use this mode for one direct-prompt task, GitHub issue, or pull request. It keeps
+Use this mode for one GitHub issue, existing pull request, or durably overridden
+direct-prompt task after the Canonical Launch Target Gate passes. It keeps
 the same security, coordination, validation, review, QA, readiness, handoff, and
 closeout gates as a multi-target batch; only batch packing and collision analysis
 collapse to one lane.
+
+### Canonical Launch Target Gate
+
+Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target.
+Pass the repository-qualified canonical issue/PR identity unchanged through planning, plan preflight, dispatch, coordination claims, the Lane Card, and final handoff.
+A direct prompt without either target must stop before branch creation, editing, implementation or coordination mutation, or worker dispatch and route to planning/reconciliation.
+The planning/reconciliation step searches for and reuses the exact existing issue or PR; equivalent wording cannot create another synthetic coordination lane. A claim refusal for that canonical repository-qualified target remains the duplicate-work stop.
+When search finds no canonical issue or existing PR, create the canonical issue with explicit planning-time issue-creation authority, or ask for that authority; do not create a branch, edit, or dispatch until the persisted issue identity is rebound into the plan and preflight passes.
+Before branch creation, editing, or dispatch, every bounded status and claim invocation binds `--repo` to lowercase `target.repository` and `--target` to the backend-safe canonical token derived from target v1: decimal `target.number` for either GitHub target type, or exact `target.target` for trusted ad-hoc; this raw pair is the canonical repository-qualified claim identity. Run status before claim; a second claim for the same canonical target, including a repository-casing alias or issue/PR type alias at the same number, must stop on `CLAIM_REFUSED` / exit 3 and cannot reach branch creation or dispatch.
+
+The only exception is a named, trusted, task-specific durable ad-hoc override.
+Generic instructions, `$pr-batch` invocation, fix-it intent, or PR-publication authority do not create this override.
+Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff.
+Every override field must be explicit and non-`UNKNOWN`; the stable coordination identity uses the repository-qualified `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` form and remains unchanged in dispatch and closeout evidence, while coordination derives its backend-safe raw repo/target pair as specified above. Missing, generic, chat-only, inferred, or task-mismatched evidence fails closed into planning/reconciliation. Existing PRs remain valid canonical launch targets and do not need retroactive issues.
+A labeled authorizer or task identity whose complete value component is `UNKNOWN` is incomplete and also fails closed.
+Complete labeled component values `fix-it`, `pr-batch`, and `publish-pr` are generic intent and fail closed in either provenance field, even when the override name is task-specific.
+The exact override names `fix-it`, `pr-batch`, and `publish-pr` are likewise generic and invalid.
+For this override field only, `durable_authorization_ref` must use `issue://OWNER/REPO/N`, `plan-state://<id>/<path>`, `batch://<id>`, or `https://github.com/OWNER/REPO/{issues|pull}/N`; any other scheme or chat-local reference fails closed.
+Parseable `issue://` and GitHub HTTPS authorization references must match `target.repository` case-insensitively; opaque `plan-state://` and `batch://` references remain trusted without invented repository parsing.
+Parseable authorization refs reject userinfo and query; GitHub HTTPS requires port 443, `issue://` requires the exact canonical authority/path shape, and fragments remain permitted.
+Every typed target repository has exactly two ASCII components separated by `/`: the owner matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from `[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
+
+Require one exact `target` v1 object on every preflight lane. A GitHub object
+uses type `github-issue` or `github-pull-request`, `version`, `repository`, a
+positive `number`, and the matching `OWNER/REPO:issue:N` or
+`OWNER/REPO:pull-request:N` stable identity. The only ad-hoc object type is
+`trusted-ad-hoc-override`; it includes `repository`, `target: adhoc:<yyyymmdd>-<short-slug>`, the
+matching stable identity, a lowercase slug override name, labeled `kind:value`
+authorizer and task identities, and the durable reference. The batch
+preflight rejects a missing, malformed, unknown, or duplicate target identity
+before any dispatcher selection.
 
 When no planner/triage handoff supplies dependency artifacts, synthesize and
 persist a verified one-lane `stage-dependency-plan` v1 file with a known plan id
@@ -52,9 +105,11 @@ facts remain fail-closed and stop before mutation.
   branch instead of creating a competing branch unless a maintainer requests one
   or the verified head branch cannot be pushed. For an unpushable head, create a
   replacement branch/PR and document the original PR, limitation, and rationale.
-- **Ad-hoc task**: derive a safe target such as
-  `adhoc:<yyyymmdd>-<short-slug>` using only letters, digits, `_`, `:`, `.`, and
-  `-`; preserve the user's original wording in the PR body or no-PR evidence.
+- **Trusted overridden ad-hoc task only**: after the Canonical Launch Target
+  Gate accepts the durable override, reuse the accepted exact `target.target` value unchanged as the coordination target.
+  Never derive, rename, or regenerate it after preflight.
+  Use its already accepted repository-qualified stable coordination identity unchanged and preserve the user's original wording plus override provenance
+  in the PR body or no-PR evidence.
 - **Worker shape**: when the host supports isolated subagents, dispatch one
   worker subagent for the lane and keep the parent as coordinator and closeout
   owner. Do not have the parent silently implement the lane. If the host lacks
@@ -76,28 +131,48 @@ facts remain fail-closed and stop before mutation.
   Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
 - **Recommended Codex GPT-5.6 profile**: apply only after verifying the exact
   routes on the actual host; portable classes remain the fallback elsewhere.
-  - Multi-lane coordinator: Sol/xhigh
+  - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
   - Simple, positively classified worker: Terra/high
   - Unknown or uncertain worker: Sol/high
-  - High-risk or escalated work: Sol/xhigh
+  - Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
   - Independent adversarial QA: Sol/xhigh
   - Routine deterministic QA: Sol/high
-- **Provisional Claude profile** (`claude-profile v0`): apply only after
+- **Provisional Claude profile** (`claude-profile v1`): apply only after
   verifying the exact routes on the actual host; portable classes remain the
   fallback elsewhere.
-  - Multi-lane coordinator: Opus 4.8/xhigh
+  - Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
   - Simple, positively classified worker: Sonnet 5/high
-  - Unknown or uncertain worker: Opus 4.8/xhigh
-  - High-risk or escalated work: Opus 4.8/xhigh
-  - Independent adversarial QA: Opus 4.8/xhigh
-  - Routine deterministic QA: Opus 4.8/high
+  - Unknown or uncertain worker: Opus 5/high
+  - Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+  - Independent adversarial QA: Opus 5/xhigh
+  - Routine deterministic QA: Opus 5/high
 - **Batch plan preflight**: before dispatcher selection or worker launch, run
   the resolved plan skill's `bin/batch-plan-preflight` with a v1 envelope. It
   owns schema and launch scheduling, including the required active wave and
   max-one serialization. Preserve real PR verified `pr-file-touch-map` results
   unchanged; encode explicit pre-PR paths as typed `planned-path-evidence` v1
-  records with durable evidence references. A rejection launches nothing; an
-  acceptance permits only the returned eligible lanes.
+  records with durable evidence references. An `issue` source must bind to the
+  target's exact repository and number through `issue://OWNER/REPO/N` or an
+  exact lowercase-host `https://github.com/OWNER/REPO/issues/N` reference;
+  both reject userinfo and query, HTTPS requires port 443, `issue://` requires
+  the exact canonical authority/path shape, and fragments remain permitted;
+  other source kinds prove durability only and do not invent target identity.
+  After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
+  Optional additive
+  `expansion_path_reservations` entries use exact
+  `expansion-path-reservation` v1 records bound to the batch, dependency plan,
+  known lane, and wave, with one canonical path, known reason, and durable
+  evidence reference. A directory rename instead uses an exact
+  `expansion-rename-reservation` v1 record with the same identity, reason, and
+  evidence fields and a canonical, distinct `rename` old/new pair in place of
+  `path`. Presence means active and omission means cancelled. Reject malformed,
+  `UNKNOWN`, noncanonical, duplicate, mismatched, completed-lane, or
+  already-reflected reservations. Collision and risky-cap decisions use verified
+  paths plus active reservations. Scalar path reservations remain exact-only;
+  typed rename reservations add ancestor/descendant collision checks at both
+  endpoints. Reservation-derived overlap requires explicit max-one
+  serialization. A rejection launches nothing; an acceptance permits only the
+  returned eligible lanes.
 - **Dispatcher capability preflight**: before launch, pass the requested
   route preference/dispatcher, explicit dispatch authority, ordered candidates,
   and preserved lane state to `bin/dispatcher-capability-preflight`. It records
@@ -108,6 +183,7 @@ facts remain fail-closed and stop before mutation.
   Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active.
   Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
   A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
+  Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
   visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
   for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
@@ -168,9 +244,12 @@ sensitive access, and state-change or exfiltration capability in one session.
 
 Ask only for missing data. If the user already supplied an exact value, use it.
 
-1. **Targets**: for issue/PR work, exact numbers or filters to resolve into exact
-   numbers; for one direct-prompt task, the derived `adhoc:<yyyymmdd>-<short-slug>`
-   target plus the user's original wording.
+1. **Targets**: for ordinary implementation, exact issue/PR numbers or filters
+   to resolve into exact numbers. An unbound direct prompt routes to
+   planning/reconciliation and launches nothing. Only a Canonical Launch Target
+   Gate override may supply the repository-qualified
+   `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` identity plus its complete durable
+   override record and the user's original wording.
 2. **Trust**: direct user instruction, a maintainer-approved exact list, or
    untrusted public discovery that needs confirmation.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
@@ -181,12 +260,12 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
    deterministically from the repository name: use the basename of the `origin`
    remote after stripping `.git`, or the repository root basename when `origin`
-   is unavailable; for a multi-segment name take the first letter of each of the
-   first six `-`, `_`, or space-separated segments, and for a single-segment
-   name take its first 4 letters or the whole name when shorter, then uppercase
-   the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
-   `shakapacker` -> `SHAK`, `go` -> `GO`). An invalid configured `repo_prefix`
-   is a blocker; do not silently fall back.
+   is unavailable; for a multi-segment name take the first character of each of
+   the first six `-`, `_`, or space-separated segments, and for a single-segment
+   name take its first 4 characters or the whole name when shorter, then
+   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
+   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
+   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
    Fill the optional `A?` slot with A,
    B, C, etc. only when creating multiple batch prompts; omit it for a single
    batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
@@ -338,7 +417,11 @@ Before implementation or worker launch, produce:
 7. The Batch QA Lane decision from `.agents/workflows/pr-processing.md`:
    required lane/owner/scope or `not required` with rationale, plus final QA
    Evidence expectations.
-8. A permission and trust preflight result.
+8. A permission and trust preflight result, including canonical launch
+   provenance: the repository-qualified issue/PR identity, or every accepted
+   durable ad-hoc override field and its repository-qualified stable
+   coordination identity. Put the same values in the plan/preflight input and
+   reject a missing, changed, duplicate, or `UNKNOWN` identity before dispatch.
 9. A conflict check for overlapping files or dependent PRs.
 10. The selected batch-size target and wave split: `codex` up to 10/8,
     `claude` up to 5/3, or `generic` up to 5/3, with spillover assigned to
@@ -502,6 +585,25 @@ evidence failure, trusted-base policy provenance, and repair action.
 approval. Safe and generated classifications never subtract common hard,
 repository path, size, churn, rollback, or maintainer-concern gates.
 
+Render either blocking verdict for the human closeout with the resolved
+`autonomous-merge-closeout` helper from the same authenticated evaluator
+runtime before presenting technical gate IDs; never resolve it from the PR
+checkout:
+
+```bash
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout" \
+  --input "${AUTONOMOUS_RESULT_PATH}"
+```
+
+Use its plain-English summary, PR-specific gate explanations, authorized actor,
+durable location, repair or approval action, and exact-head invalidation text
+without substituting a generic blocker sentence. Keep the original evaluator
+JSON unchanged as the automation input to merge assurance; the renderer is a
+deterministic presentation layer and its optional `--format json` output repeats
+the exact verdict, head, sorted gates, rollback, policy provenance, and evidence
+failure facts. Malformed renderer input fails closed. An `UNKNOWN` closeout must
+direct evidence repair and reevaluation and must never be worded as approvable.
+
 ## Merge Assurance Gate
 
 After ordinary readiness and any required walkthrough or human decision, capture
@@ -509,6 +611,33 @@ the resolved `pr-ci-readiness` v2 result, the autonomous eligibility result, and
 a trusted coordinator-owned merge context. `pr-ci-readiness` v2 owns the scoped,
 exact-head required-status, GitHub Actions, Dependabot, and other CI evidence;
 legacy v1 CI output is not sufficient.
+
+When a hosted workflow outside the ordinary GitHub check scopes is explicitly
+selected, add its exact `{provider, run_id}` to merge-context
+`selected_hosted_runs`. A nonempty selection requires the trusted-base
+`selected_hosted_ci_receipts` seam with exact `executable` and `credential_env`
+keys. `credential_env` is a unique array of uppercase names ending in exactly
+one of `_TOKEN`, `_API_KEY`, `_SECRET`, `_PASSWORD`, `_CREDENTIALS`,
+`_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, or `_PRIVATE_KEY`; every declared value
+must be present and nonempty. Loader controls and arbitrary names are rejected.
+Only declared credential environment values are forwarded, and target-binding
+or hardened runtime variables cannot be declared. `merge-assurance` runs the
+one repository-owned `.agents/bin` executable from a private materialization of
+the trusted base, never from PR-head bytes. The seam process alone receives a
+fresh empty `0700` `HOME` inside that private temp directory, distinct from the
+account home; raw trusted-base Git-object materialization does not receive it.
+Account dotfiles and provider credential files are therefore absent from that
+private `HOME`.
+Credential values copied into the seam environment enter only through declared
+`credential_env` names. Its provider-neutral records bind repository, PR,
+exact head, run ID, selection time, and terminal result.
+Seam execution defaults to a 60-second bound, configurable only as a positive
+finite `MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS` value. Timeout or a
+surviving descendant terminates the entire process group and blocks without a
+receipt.
+Missing, mismatched, cancelled, failed, nonterminal, malformed, or `UNKNOWN`
+selected-run evidence blocks. `success` is the only passing result. An empty
+selection invokes no seam and gates no incidental hosted run.
 
 Run:
 
@@ -522,9 +651,10 @@ Run:
 `merge-assurance` alone owns merge-authority, follow-up accounting, and
 `UNKNOWN` policy at this final boundary. Every merge caller must generate a
 fresh eligible receipt and pass it to `pr-merge-submit`; the submit helper
-requires it unconditionally. `merge_authority: none` remains a no-merge state
-and can never produce an eligible receipt. Keep this gate conceptually separate
-from batch-plan preflight.
+requires it unconditionally and replays the selected-run records before either
+queue or guarded-direct submission. `merge_authority: none` remains a no-merge
+state and can never produce an eligible receipt. Keep this gate conceptually
+separate from batch-plan preflight.
 
 ## Goal Prompt Template
 
@@ -532,7 +662,8 @@ Keep this template aligned with the matching plan-to-goal prompt in the
 resolved `pr-processing.md`, including the review/audit gate
 paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
-`GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
 Use this template when creating Codex goal text:
 
@@ -540,8 +671,9 @@ Use this template when creating Codex goal text:
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
-Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
-Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
+Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
+Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
+PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
 Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
@@ -550,27 +682,28 @@ Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
+Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
-Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+HST-v1
+Batch QA Lane:<owner/scope+evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
-- Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original:trusted ad-hoc prompt|n/a
-  Goal:one-line outcome
-  Notes:scope/branch/dependency
-  Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
+- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+  Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
+  Goal:outcome
+  Notes:scope/deps
+  Done:req auth+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
-Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
-merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
+merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 
@@ -651,6 +784,22 @@ requests already handled, no-PR rationales, autonomous nit outcomes,
 confidence notes, decision-point counts per PR, QA Evidence blocks, and per-PR
 merge-ledger summaries.
 
+At terminal closeout, use the resolved sibling
+`bin/batch-usage-receipt` helper for supported Codex rollout JSONL plus
+`state_5.sqlite` evidence, following
+[Batch Usage Receipt v1](../../docs/batch-usage-receipt.md). Put the compact
+batch total or a durable artifact reference in FYI / decisions made. Preserve
+structured `UNKNOWN` for unavailable evidence, keep requested and observed
+routes separate, and never attach raw rollout/database data or emit prompt,
+response, tool-result, auth, secret, or environment content. Usage telemetry is
+informational and never replaces a closeout gate.
+
+Every target handoff repeats the repository-qualified canonical launch identity
+from plan/preflight and claim evidence. A durably overridden ad-hoc handoff also
+repeats the accepted override name, trusted authorizer, durable authorization
+reference, original task identity, and unchanged stable coordination identity.
+A missing, changed, duplicate, or `UNKNOWN` identity is a non-ready blocker.
+
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
 Batch Coordination Declaration: every final batch handoff must carry exactly one
@@ -700,7 +849,20 @@ evidence is otherwise complete.
 Record the selected `merge_authority` value in the handoff and use the canonical
 split final states from `.agents/workflows/pr-processing.md`.
 
-End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
+End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them.
+
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. When the applicable archive gate passes, use
+`Next: Archive this task.` When user input blocks progress, state the smallest
+action that clears the blocker and whether to reply here or start a new task.
+When the current task will continue without input, state its exact next action.
+A durable issue, receipt, or blocker list is evidence, not a next step. Place
+this guidance before any receipt that is required to immediately precede the
+final `Conversation status:` line.
+
+Keep `Action needed:` separate: name the exact user action or `none`. Do not
+make the operator infer whether action is required from the readiness state,
+durable references, or the `Next:` instruction.
 
 ## Coordination State
 
@@ -744,8 +906,10 @@ or updates the PR emits the PR-open Lane Card when the PR is opened. The card
 shows claim holder and `dashboard_url` from backend metadata or `UNKNOWN`;
 `pr_url` comes from backend metadata, verified GitHub PR state, or `UNKNOWN`.
 It also records preferred model/effort, optional observed host/model/effort, and
-whether a coordinator-role-approved execution envelope was received when lane
-risk or bounded delegation required one. Unavailable
+whether a coordinator-role-approved execution envelope was received, the
+unchanged repository-qualified canonical launch identity, and `Ad-hoc
+override: none` or every accepted durable override field when lane
+risk or bounded delegation required one. Unavailable route
 observations remain field-granular `UNKNOWN`.
 For host-aware sizing, Codex-targeted waves may use up to 10 independent
 file-disjoint lanes, or 8 when shared/risky conditions apply.
@@ -763,9 +927,52 @@ Alongside that packet, a private-backend worker emits
 `escalation_requested` with `from_route`, `to_route`, and `evidence`.
 Before editing, workers in lanes whose risk or bounded delegation requires an
 execution envelope restate the coordinator-role-approved envelope regardless of
-route. Contradictory evidence, ambiguous criteria, scope/risk
-growth, weakened verification, or consequential judgment returns control to the
-coordinator immediately rather than authorizing worker re-planning.
+route. Necessary in-repository path expansion defaults to allowed when
+repository evidence shows an added path is reasonably necessary to complete the
+already-authorized goal or its required validation. Treat owned paths and the
+execution envelope as coordination and collision controls, not as a
+user-permission boundary. Before editing, record each added path and reason in
+the lane envelope when one is present; otherwise use a durable coordinator-owned
+lane record or Lane Card that the coordinator can read. Every added path not yet
+reflected in its verified file-touch map must have an active typed
+`expansion-path-reservation` before edit. When a lane is the sole active editor,
+the coordinator durably records the reservation, refreshes authoritative
+file-touch maps, lane lifecycle state, and active-lane claim and collision checks,
+and reruns `batch-plan-preflight`; the worker continues without user approval or
+a blocked lifecycle only after the preflight accepts. Before a worker in a multi-editor wave
+changes an added path, it persists a typed expansion request, marks its durable
+lane lifecycle blocked, refreshes its heartbeat, emits a Lane Card with the path,
+reason, and request evidence reference, and pauses at a safe checkpoint. The
+coordinator processes expansion requests serially, records an active
+`expansion_path_reservations` entry, refreshes authoritative file-touch maps and
+lane lifecycle state, and reruns `batch-plan-preflight`. For every multi-editor
+request, acceptance alone does not authorize resume: the requester must durably
+transition out of `blocked`, a fresh preflight must accept, and the requester
+must be absent from `launch.held_lane_ids`; when launch or relaunch is needed, it
+must also be present in `launch.eligible_lane_ids`. Under
+maximum-concurrency-one serialization, the current holder must also release the
+slot before resume. The reservation persists until the verified PR file-touch map
+contains the path or the request is cancelled, and it is removed once reflected
+or cancelled. A collision or `UNKNOWN` collision state remains stopped until
+then. A missing path alone is not material scope growth and must not produce
+`blocked-user-input`.
+Directory renames use a distinct `expansion-rename-reservation` v1 record with
+canonical, distinct `old` and `new` endpoints; only this typed rename form adds
+ancestor/descendant collision checks, while scalar path reservations remain
+exact-path collision controls.
+Necessary additions can include contract or type files, tests or fixtures,
+offline demo stubs, and build or generated integration surfaces when repository
+evidence makes them necessary.
+Contradictory evidence remains an immediate stop. Stop and return control when
+any of the following applies: the approved goal, accepted behavior, or acceptance
+criteria changes; the work adds unrelated work; it crosses a repository or trust
+boundary; it requires a destructive or difficult-to-reverse action; it introduces
+secrets, permissions, deployments, billing, or other external effects; it
+requires consequential architecture, performance, compatibility, or product
+judgment; it materially changes security, privacy, compliance, or release policy;
+it collides with another active lane and cannot be safely coordinated; it exposes
+consequential ambiguity; or it weakens verification. An omitted path alone is not
+such a condition.
 
 ## Pausing Or Stopping A Batch
 
@@ -834,6 +1041,22 @@ termination and claim release, without waiting further on the drain event.
 
 ## Coordinator Closeout Lane
 
+The current task remains the sole user-facing coordinator through closeout. If
+ownership is ambiguous or the user asks who is working, emit only:
+
+```text
+Current task: <responsibility and scoped outcome>
+Internal workers: <owned implementation, review, QA, or audit roles; or none>
+External tasks: <request or evidence role only; ownership did not transfer; or none>
+Next: <current-task action or exact required decision>
+```
+
+Do not append raw cross-task messages, coordination backend events, heartbeat
+logs, worker transcripts, or claim telemetry. For an approval or readiness
+handoff, report `Technical readiness:`, `Ownership:`, `Repository submission
+policy:`, and `Merge authority:` separately. Act under existing authority; ask
+one exact question only when new authority or a product decision is required.
+
 Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
 
 For the complete numbered sequence, follow the canonical closeout lane in
@@ -892,6 +1115,11 @@ Clean/none permits no records or only fully evidenced terminal records. A blocke
 
 A marker has separate well-formed, archive-ready, and blocker-union outputs. Clean/none accepts only no records or fully evidenced terminal records; blocked/follow-ups/OUTSTANDING accepts non-ready records. `UNKNOWN` current status is never ready and cannot appear in a clean/none marker.
 
+Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it. This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed.
+
+The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number.
+Before publication, bind `original_receipt_sha256` to the exact local blocked marker and use `not-published` for its URL plus `not-applicable` for author and both timestamps. After publication, copy those five bindings from the verified compact predecessor reference; the decision timestamp must be later than the original receipt.
+
 Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union.
 
 When `merge_authority` is `auto_merge_when_gates_pass`, definition of done for a
@@ -921,13 +1149,12 @@ When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
 then submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
 receipt unconditionally. The helper preserves read-only, idempotent observation
-of an exact terminal merge and uses GitHub's `enqueuePullRequest` only when the
-base is queue-controlled. Queue-disabled submission without an enabled
-guarded-direct seam fails before mutation as a deterministic configuration
-error (exit 1), not an `UNKNOWN` mutation outcome.
-Only a validated trusted-base `merge_submission` opt-in may delegate direct
-submission to one repository-owned executable guard under `.agents/bin`; the
-portable helper never performs a generic direct merge. The fixed-argv guard is
+of an exact terminal merge. Absent policy and explicit `mode: direct` use an
+expected-head-bound direct merge on a queue-disabled base; a queue-enabled base
+fails before mutation until the repository explicitly opts into
+`merge_queue_only` or `merge_queue_or_guarded_direct`. The latter may delegate
+queue-disabled submission to one repository-owned executable guard under
+`.agents/bin`. The fixed-argv guard is
 executed from private identity-bound trusted bytes in an isolated Git root
 whose detached `HEAD`, index, and working files all bind the receipt-base
 commit and tree. This is HEAD/index/worktree isolation, not object/ref
@@ -1006,6 +1233,52 @@ In short, `waiting-on-checks-or-review` is per-target progress, not an overall
 terminal state; keep polling, triaging, and fixing, or report NOT COMPLETE /
 blocked with exact resume instructions only after a watch window or real
 external blocker.
+
+For autonomously clearable blockers, prefer a deterministic state-change
+watcher that can run without a model continuation. Bind one stable monitor
+identity and persisted state, reduce sanitized observations through
+the `goal-state-change-monitor` helper in this skill's `bin` directory, and do not wake this parent task for
+`baseline-recorded`, `suppress-unchanged`, `suppress-stale-probe`,
+`suppress-replayed-probe`, or `suppress-acknowledgement-retry`. Treat
+`wake_parent: true` as authoritative and resume on `wake-state-change`,
+`fallback-model-poll`, `stop-dependency-terminal`, or `redeliver-pending-wake` with its compact delta
+when present, durably enqueue that resume, and then acknowledge its `wake_id`;
+acknowledgement retries are idempotent. Redeliver an unacknowledged pending
+wake after restart; its returned `acknowledgement_payload` is the exact bounded
+payload to submit after durable enqueue, not a payload rebuilt from a newer live
+observation. Then rerun every
+security, origin, coordination, overlap, review, readiness, and exact-head gate.
+Keep acknowledgement state bounded: a delayed retry replays its original
+canonical observation and probe sequence so the reducer can derive and verify
+the exact waking identity without retaining an ever-growing membership ledger.
+If only model-mediated same-thread polling is available, use the bounded
+15-minute fast window, exponential backoff, and finite unchanged-run/call/token
+ceilings from the canonical contract; conservatively count every fallback
+continuation as at least one model call. Use the least-expensive safe configured
+route for each unavoidable probe; reserve the coordinator route for an actual
+transition or recovery decision. Stop or pause on terminal, non-resumable,
+user-input, or budget outcomes; for user input, preserve the exact question and
+manual-resume instruction in the restart-safe handoff. Rollback
+to that bounded fallback, never an indefinite 15-minute wake loop. This trades
+some detection latency for avoiding repeated full-context model work while the
+authoritative state is unchanged.
+
+When that external blocker publishes an exact future retry time and the host can
+re-enter this same thread on schedule, schedule one same-thread heartbeat for
+that time before handing off, because neither the deterministic watcher nor the
+bounded fallback cadence guarantees a probe at that exact published time.
+Use it as the single scheduled mechanism for that blocker and gate; do not start
+or retain either watcher mode for the same gate, and create or update its durable
+record before stopping or replacing any existing watcher so no wake is lost.
+Update the existing heartbeat instead of
+duplicating it, stop it once the target is terminal, and report in the handoff
+whether one was created, its exact scheduled time, and its durable identifier,
+or else the exact scheduling blocker. An `UNKNOWN` or absent retry time, a
+`blocked-user-input` blocker, or no scheduling capability creates no automation
+and preserves the exact manual resume instructions. A heartbeat never widens
+target scope, permissions, merge authority, dependency gates, or the retry
+count, and never becomes an unbounded polling loop. The canonical rule is the
+Scheduled Retry Heartbeat paragraph in that contract.
 
 Converge the review loop instead of chasing it: each push re-triggers every configured
 review bot on the new head, so resolve advisory threads in-thread (reply + resolve)

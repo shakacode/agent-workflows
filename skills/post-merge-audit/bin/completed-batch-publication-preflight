@@ -8,9 +8,11 @@
 # helper is deliberately read-only and replayable.
 
 require "digest"
+require "etc"
 require "json"
 require "open3"
 require "optparse"
+require "tmpdir"
 require "timeout"
 require "time"
 require "uri"
@@ -28,8 +30,10 @@ module CompletedBatchPublicationPreflight
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
   TRUSTED_HUMAN_TYPES = %w[User].freeze
   WRITE_PERMISSIONS = %w[write maintain admin].freeze
+  QA_WAIVER_MARKER = "qa-maintainer-waiver v1"
+  HOSTED_QA_WAIVER_MARKER = "hosted-qa-maintainer-waiver v1"
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
-  RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned superseded].freeze
+  RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
   DEFAULT_GH_TIMEOUT_SECONDS = 60
   COORDINATION_TIMEOUT_SECONDS = 20
@@ -37,6 +41,14 @@ module CompletedBatchPublicationPreflight
   PROCESS_TERMINATION_GRACE_SECONDS = 0.25
   PROCESS_CLEANUP_TIMEOUT_SECONDS = PROCESS_TERMINATION_GRACE_SECONDS * 4
   AGENT_COORD_BOUNDED = File.expand_path("../../pr-batch/bin/agent-coord-bounded", __dir__)
+  SYSTEM_TOOL_DIRS = %w[/opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin].freeze
+  SYSTEM_TEMP_ROOTS = %w[/private/tmp /tmp /var/tmp].freeze
+  GH_CREDENTIAL_ENV_KEYS = %w[
+    GH_TOKEN
+    GITHUB_TOKEN
+    GH_ENTERPRISE_TOKEN
+    GITHUB_ENTERPRISE_TOKEN
+  ].freeze
 
   module_function
 
@@ -581,9 +593,15 @@ module CompletedBatchPublicationPreflight
         "target" => target,
         "state" => state,
         "completed_at" => verified_shape ? verified.fetch("completed_at") : nil,
-        "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
+        "verification_source" => verified_shape ? verified.fetch("verification_source") : nil,
+        "no_pr_evidence" => no_pr_evidence
       }
       authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
+      if lane&.fetch("terminal", nil) == "superseded" &&
+         authenticated_terminal_completion?(verified_target_facts) &&
+         !authenticated_later_typed_no_pr_issue_supersession?(lane, verified_target_facts)
+        blockers << "#{target_label(target)} premature terminal supersession / replacement protocol violation"
+      end
       if lane_state && state && lane_state != state && !authenticated_later_completion
         blockers << "#{target_label(target)} coordination and target state disagree"
       end
@@ -693,7 +711,15 @@ module CompletedBatchPublicationPreflight
     { "url" => value.fetch("url"), "rationale" => rationale, "target" => evidence_target }
   end
 
-  def canonical_waiver(value, target, evidence, head_sha:, verifier:)
+  def canonical_waiver(
+    value,
+    target,
+    evidence,
+    head_sha:,
+    verifier:,
+    marker_name: QA_WAIVER_MARKER,
+    marker_bindings: {}
+  )
     return unless value.is_a?(Hash)
     return unless value.keys == ["url"]
     return unless verifier.respond_to?(:call)
@@ -706,9 +732,21 @@ module CompletedBatchPublicationPreflight
       repo: target.fetch("repo"),
       comment_id: reference.fetch("comment_id")
     )
-    verified_waiver_comment(comment, reference:, target:, head_sha:)
+    verified_waiver_comment(comment, reference:, target:, head_sha:, marker_name:, marker_bindings:)
   rescue KeyError, URI::InvalidURIError, ArgumentError
     nil
+  end
+
+  def canonical_hosted_qa_waiver(value, target, evidence, head_sha:, hosted_target:, verifier:)
+    canonical_waiver(
+      value,
+      target,
+      evidence,
+      head_sha:,
+      verifier:,
+      marker_name: HOSTED_QA_WAIVER_MARKER,
+      marker_bindings: { "hosted_target" => hosted_target }
+    )
   end
 
   def waiver_comment_reference(value, target)
@@ -733,7 +771,14 @@ module CompletedBatchPublicationPreflight
     nil
   end
 
-  def verified_waiver_comment(comment, reference:, target:, head_sha:)
+  def verified_waiver_comment(
+    comment,
+    reference:,
+    target:,
+    head_sha:,
+    marker_name: QA_WAIVER_MARKER,
+    marker_bindings: {}
+  )
     return unless comment.is_a?(Hash)
     return unless Integer(comment["id"], exception: false) == reference.fetch("comment_id")
     return unless comment["html_url"] == reference.fetch("url")
@@ -749,13 +794,14 @@ module CompletedBatchPublicationPreflight
     body = comment["body"]
     return unless body.is_a?(String) && !body.empty?
 
-    fields = waiver_marker_fields(body)
+    fields = waiver_marker_fields(body, marker_name:, marker_bindings:)
     return unless fields
     return unless fields.fetch("target") == target_base_url(target)
     return unless fields.fetch("head_sha").casecmp?(head_sha)
     return unless fields.fetch("decision") == "waived"
+    return unless marker_bindings.all? { |key, value| fields.fetch(key) == value }
 
-    {
+    canonical = {
       "url" => reference.fetch("url"),
       "comment_id" => reference.fetch("comment_id"),
       "author" => author,
@@ -768,26 +814,29 @@ module CompletedBatchPublicationPreflight
       "decision" => "waived",
       "verification_source" => "authenticated gh api"
     }
+    canonical.merge(marker_bindings)
   rescue KeyError, NoMethodError, TypeError
     nil
   end
 
-  def waiver_marker_fields(body)
-    return unless body.scan("<!-- qa-maintainer-waiver v1").length == 1
+  def waiver_marker_fields(body, marker_name: QA_WAIVER_MARKER, marker_bindings: {})
+    return unless body.scan("<!-- #{marker_name}").length == 1
 
-    matches = body.scan(/<!-- qa-maintainer-waiver v1\n(.*?)\n-->/m)
+    matches = body.scan(/<!-- #{Regexp.escape(marker_name)}\n(.*?)\n-->/m)
     return unless matches.one?
 
     lines = matches.first.fetch(0).lines(chomp: true)
     return if lines.empty? || lines.any? { |line| line.include?("<!--") || line.include?("-->") }
 
+    expected_fields = %w[target head_sha decision] + marker_bindings.keys
+    field_pattern = Regexp.union(expected_fields)
     fields = lines.each_with_object({}) do |line, parsed|
-      match = line.match(/\A(target|head_sha|decision): (.+)\z/)
+      match = line.match(/\A(#{field_pattern}): (.+)\z/)
       break unless match && !parsed.key?(match[1])
 
       parsed[match[1]] = match[2]
     end
-    fields if fields&.keys&.sort == %w[decision head_sha target]
+    fields if fields&.keys&.sort == expected_fields.sort
   end
 
   def issue_api_url_matches_target?(value, target)
@@ -907,7 +956,38 @@ module CompletedBatchPublicationPreflight
 
   def authenticated_later_target_completion?(lane, target_snapshot)
     return false unless valid_terminal_lane?(lane)
-    return false unless RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"])
+    return false unless RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"]) ||
+                        typed_no_pr_issue_supersession?(lane, target_snapshot)
+
+    authenticated_target_completed_after_lane?(lane, target_snapshot)
+  end
+
+  def typed_no_pr_issue_supersession?(lane, target_snapshot)
+    target = validated_target(target_snapshot&.fetch("target", nil))
+    lane&.fetch("terminal", nil) == "superseded" &&
+      target&.fetch("type", nil) == "issue" &&
+      target_snapshot["no_pr_evidence"].is_a?(Hash)
+  end
+
+  def authenticated_later_typed_no_pr_issue_supersession?(lane, target_snapshot)
+    typed_no_pr_issue_supersession?(lane, target_snapshot) &&
+      authenticated_target_completed_after_lane?(lane, target_snapshot)
+  end
+
+  def authenticated_terminal_completion?(target_snapshot)
+    return false unless target_snapshot.is_a?(Hash)
+
+    target = validated_target(target_snapshot["target"])
+    return false unless target
+
+    expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+    target_snapshot["state"] == expected_state &&
+      target_snapshot["verification_source"] == "authenticated gh api" &&
+      valid_timestamp?(target_snapshot["completed_at"])
+  end
+
+  def authenticated_target_completed_after_lane?(lane, target_snapshot)
+    return false unless valid_terminal_lane?(lane)
     return false unless target_snapshot.is_a?(Hash)
 
     target = validated_target(target_snapshot["target"])
@@ -943,12 +1023,20 @@ module CompletedBatchPublicationPreflight
     "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(value)))}"
   end
 
-  def authenticated_waiver_comment(host:, repo:, comment_id:)
-    comment = authenticated_gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
+  def authenticated_waiver_comment(host:, repo:, comment_id:, repository_root: Dir.pwd)
+    comment = authenticated_gh_api(
+      host,
+      "repos/#{repo}/issues/comments/#{comment_id}",
+      repository_root:
+    )
     author = waiver_comment_author(comment)
     return unless author
 
-    permission = authenticated_gh_api(host, "repos/#{repo}/collaborators/#{author}/permission")
+    permission = authenticated_gh_api(
+      host,
+      "repos/#{repo}/collaborators/#{author}/permission",
+      repository_root:
+    )
     comment if verified_waiver_author_permission?(comment, permission)
   end
 
@@ -976,11 +1064,12 @@ module CompletedBatchPublicationPreflight
     author
   end
 
-  def authenticated_target_snapshot(target:)
+  def authenticated_target_snapshot(target:, repository_root: Dir.pwd)
     endpoint_type = target.fetch("type") == "pull_request" ? "pulls" : "issues"
     payload = authenticated_gh_api(
       target.fetch("host"),
-      "repos/#{target.fetch('repo')}/#{endpoint_type}/#{target.fetch('number')}"
+      "repos/#{target.fetch('repo')}/#{endpoint_type}/#{target.fetch('number')}",
+      repository_root:
     )
     verified_target_api_snapshot(payload, target)
   rescue KeyError, NoMethodError, TypeError
@@ -1042,9 +1131,38 @@ module CompletedBatchPublicationPreflight
     nil
   end
 
-  def authenticated_gh_api(host, endpoint)
-    command = ["gh", "api", "--hostname", host, endpoint]
-    stdout, _stderr, status = capture_process(command, input: "", timeout: gh_timeout_seconds)
+  def authenticated_gh_api(host, endpoint, repository_root: Dir.pwd)
+    executable = trusted_system_tool("gh", outside_root: repository_root)
+    account = trusted_local_account(repository_root)
+    return unless executable && account
+
+    environment = {
+      "GH_HOST" => host,
+      "HOME" => account.dir,
+      "USER" => account.name,
+      "LOGNAME" => account.name,
+      "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+      "GH_PROMPT_DISABLED" => "1",
+      "GIT_TERMINAL_PROMPT" => "0"
+    }
+    GH_CREDENTIAL_ENV_KEYS.each do |name|
+      value = ENV[name]
+      environment[name] = value if value && !value.empty?
+    end
+    command = [executable, "api", "--hostname", host, endpoint]
+    result = with_safe_gh_directory(repository_root) do |directory|
+      capture_process(
+        command,
+        input: "",
+        timeout: gh_timeout_seconds,
+        environment:,
+        chdir: directory,
+        unsetenv_others: true
+      )
+    end
+    return unless result
+
+    stdout, _stderr, status = result
     return unless status.success?
 
     payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
@@ -1053,12 +1171,69 @@ module CompletedBatchPublicationPreflight
     nil
   end
 
-  def capture_process(command, input:, timeout:)
+  def trusted_system_tool(name, outside_root:)
+    candidate = SYSTEM_TOOL_DIRS
+                .map { |directory| File.join(directory, name) }
+                .find { |path| File.file?(path) && File.executable?(path) }
+    trusted_external_executable(candidate, outside_root:)
+  end
+
+  def trusted_external_executable(candidate, outside_root:)
+    return unless candidate && File.file?(candidate) && File.executable?(candidate)
+
+    realpath = File.realpath(candidate)
+    return unless path_outside_repository?(candidate, outside_root)
+    return unless path_outside_repository?(realpath, outside_root)
+
+    stat = File.stat(realpath)
+    realpath if stat.file? && File.executable?(realpath)
+  rescue Errno::ENOENT, Errno::EACCES
+    nil
+  end
+
+  def trusted_local_account(repository_root)
+    account = Etc.getpwuid
+    return unless account.name.match?(SAFE_LOGIN_PATTERN)
+    return unless File.directory?(account.dir)
+    return unless path_outside_repository?(account.dir, repository_root)
+
+    account
+  rescue ArgumentError, SystemCallError
+    nil
+  end
+
+  def path_outside_repository?(path, repository_root)
+    repository_realpath = File.realpath(repository_root)
+    repository_prefix = "#{repository_realpath}#{File::SEPARATOR}"
+    path_realpath = File.realpath(path)
+    path_realpath != repository_realpath && !path_realpath.start_with?(repository_prefix)
+  rescue Errno::ENOENT, Errno::EACCES
+    false
+  end
+
+  def with_safe_gh_directory(repository_root)
+    temporary_root = SYSTEM_TEMP_ROOTS.find do |path|
+      File.directory?(path) && path_outside_repository?(path, repository_root)
+    end
+    return unless temporary_root
+
+    Dir.mktmpdir("completed-batch-authenticated-gh", temporary_root) do |directory|
+      File.chmod(0o700, directory)
+      yield directory
+    end
+  rescue SystemCallError
+    nil
+  end
+
+  def capture_process(command, input:, timeout:, environment: nil, chdir: nil, unsetenv_others: false)
     stdin = stdout = stderr = wait_thread = nil
     workers = []
     process_group_id = nil
     completed = false
-    stdin, stdout, stderr, wait_thread = Open3.popen3(*command, pgroup: true)
+    popen_arguments = environment ? [environment, *command] : command
+    popen_options = { pgroup: true, unsetenv_others: }
+    popen_options[:chdir] = chdir if chdir
+    stdin, stdout, stderr, wait_thread = Open3.popen3(*popen_arguments, **popen_options)
     process_group_id = wait_thread.pid
     writer = Thread.new do
       stdin.write(input)

@@ -18,6 +18,31 @@ module BatchPlanPreflight
     broad_runtime
   ].freeze
   QA_DISPOSITIONS = %w[required not-required].freeze
+  GITHUB_TARGET_TYPES = %w[github-issue github-pull-request].freeze
+  GITHUB_TARGET_KEYS = %w[
+    number
+    repository
+    stable_coordination_identity
+    type
+    version
+  ].freeze
+  DURABLE_AD_HOC_TARGET_KEYS = %w[
+    durable_authorization_ref
+    original_task_identity
+    override_name
+    repository
+    stable_coordination_identity
+    target
+    trusted_authorizer
+    type
+    version
+  ].freeze
+  OVERRIDE_NAME_PATTERN = /\A[a-z0-9][a-z0-9_.-]*\z/
+  GENERIC_INTENT_VALUES = %w[fix-it pr-batch publish-pr].freeze
+  AD_HOC_TARGET_PATTERN = /\Aadhoc:(\d{8})-([a-z0-9][a-z0-9_.-]*)\z/
+  REPOSITORY_SEGMENT_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
+  REPOSITORY_NAME_PATTERN = /\A[A-Za-z0-9._-]{1,100}\z/
+  PROVENANCE_IDENTITY_PATTERN = %r{\A[a-z][a-z0-9_.-]*:[A-Za-z0-9][A-Za-z0-9_.:@/-]*\z}
   EXTERNAL_SUPPORT = %w[supported unsupported UNKNOWN].freeze
   APPLICABILITY = %w[applicable not-applicable].freeze
   EDGE_TYPES = %w[edit validation_open merge_order].freeze
@@ -49,6 +74,28 @@ module BatchPlanPreflight
     wave
   ].freeze
   LIFECYCLE_STATES = %w[planned claimed active blocked completed].freeze
+  EXPANSION_PATH_RESERVATION_KEYS = %w[
+    batch_plan_id
+    evidence_ref
+    lane_id
+    path
+    reason
+    stage_dependency_plan_id
+    type
+    version
+    wave
+  ].freeze
+  EXPANSION_RENAME_RESERVATION_KEYS = %w[
+    batch_plan_id
+    evidence_ref
+    lane_id
+    reason
+    rename
+    stage_dependency_plan_id
+    type
+    version
+    wave
+  ].freeze
   GATE_PERMISSIONS = %w[
     read_only_discovery
     branch_worktree_create
@@ -104,6 +151,8 @@ module BatchPlanPreflight
     plan_violation_codes = plan_violations.map { |item| item["code"] }
     lane_ids_valid = !plan_violation_codes.include?("lane-id-invalid-or-duplicate")
     changed_surfaces_valid = !plan_violation_codes.include?("changed-surfaces-invalid")
+    stage_dependency_plan = input["stage_dependency_plan"]
+    stage_dependency_plan_id = stage_dependency_plan["id"] if stage_dependency_plan.is_a?(Hash)
     completed_lane_ids = []
     active_lane_ids = []
     blocked_lane_ids = []
@@ -111,32 +160,53 @@ module BatchPlanPreflight
       lifecycle_violations, completed_lane_ids, active_lane_ids, blocked_lane_ids = validate_lane_lifecycle_states(
         input["lane_lifecycle_states"],
         input["plan"],
-        input["stage_dependency_plan"]
+        stage_dependency_plan_id
       )
       violations.concat(lifecycle_violations)
     end
     file_touch_violations = validate_file_touch_maps(input["file_touch_map"], lane_ids)
     violations.concat(file_touch_violations)
+    if file_touch_violations.empty? && lane_ids_valid
+      violations.concat(validate_launch_target_file_touch_provenance(
+                          lanes,
+                          input["file_touch_map"]
+                        ))
+    end
+    reservation_violations, expansion_path_reservations =
+      if lane_ids_valid
+        validate_expansion_path_reservations(
+          input["expansion_path_reservations"],
+          input["plan"],
+          stage_dependency_plan_id,
+          input["file_touch_map"],
+          completed_lane_ids
+        )
+      else
+        [[], []]
+      end
+    violations.concat(reservation_violations)
     violations.concat(validate_stage_dependencies(
                         input["stage_dependency_plan"],
                         input["stage_dependency_gate"],
                         lane_ids
                       ))
-    if file_touch_violations.empty? && lane_ids_valid
+    if file_touch_violations.empty? && reservation_violations.empty? && lane_ids_valid
+      effective_maps = effective_file_touch_maps(input["file_touch_map"], expansion_path_reservations)
       violations.concat(validate_collisions(
                           lanes,
                           input["plan"]["serialization_groups"],
-                          input["file_touch_map"],
+                          effective_maps,
                           input["stage_dependency_plan"],
                           input["stage_dependency_gate"],
-                          completed_lane_ids
+                          completed_lane_ids,
+                          expansion_path_reservations
                         ))
       if changed_surfaces_valid
         violations.concat(validate_caps(
                             input["plan"]["backend"],
                             input["plan"]["active_wave"],
                             lanes,
-                            input["file_touch_map"]
+                            effective_maps
                           ))
       end
     end
@@ -197,6 +267,50 @@ module BatchPlanPreflight
         violations << violation("lane-record-invalid", path,
                                 "Lane requires id, wave, and purpose implementation or investigation.")
       end
+      target = lane["target"]
+      if target.nil?
+        violations << violation(
+          "canonical-launch-target-required",
+          "#{path}.target",
+          "Ordinary launch requires a typed canonical GitHub issue or existing pull request target; " \
+          "only a complete trusted task-specific durable ad-hoc override may use an ad-hoc target.",
+          lane_ids: [lane["id"]].compact
+        )
+      elsif !target.is_a?(Hash)
+        violations << violation(
+          "canonical-launch-target-invalid",
+          "#{path}.target",
+          "Synthetic or bare target values are not launch identities; provide a typed canonical target record.",
+          lane_ids: [lane["id"]].compact
+        )
+      elsif GITHUB_TARGET_TYPES.include?(target["type"])
+        unless valid_github_launch_target?(target)
+          violations << violation(
+            "canonical-launch-target-invalid",
+            "#{path}.target",
+            "Canonical GitHub targets require the exact v1 issue or pull-request shape and matching " \
+            "repository-qualified stable coordination identity.",
+            lane_ids: [lane["id"]].compact
+          )
+        end
+      elsif target["type"] == "trusted-ad-hoc-override"
+        unless valid_durable_ad_hoc_launch_target?(target)
+          violations << violation(
+            "durable-ad-hoc-override-invalid",
+            "#{path}.target",
+            "Ad-hoc launch requires the exact v1 trusted task-specific durable override shape, durable " \
+            "authorization provenance, and matching repository-qualified stable coordination identity.",
+            lane_ids: [lane["id"]].compact
+          )
+        end
+      else
+        violations << violation(
+          "canonical-launch-target-invalid",
+          "#{path}.target",
+          "Target type must be github-issue, github-pull-request, or trusted-ad-hoc-override.",
+          lane_ids: [lane["id"]].compact
+        )
+      end
       surfaces = lane["changed_surfaces"]
       unless surfaces.is_a?(Array) && surfaces.uniq.length == surfaces.length &&
              surfaces.all? { |surface| RISK_SURFACES.include?(surface) }
@@ -222,10 +336,142 @@ module BatchPlanPreflight
                                 lane_ids: [lane["id"]])
       end
     end
+    valid_target_identities = plan.fetch("lanes").filter_map do |lane|
+      target = lane["target"]
+      launch_target_identity_key(target) if valid_launch_target?(target)
+    end
+    if valid_target_identities.uniq.length != valid_target_identities.length
+      violations << violation(
+        "canonical-launch-target-duplicate",
+        "$.plan.lanes",
+        "Each repository-qualified canonical launch identity may appear in at most one lane."
+      )
+    end
     violations
   end
 
-  def validate_lane_lifecycle_states(states, plan, stage_dependency_plan)
+  def valid_launch_target?(target)
+    return false unless target.is_a?(Hash)
+
+    if GITHUB_TARGET_TYPES.include?(target["type"])
+      valid_github_launch_target?(target)
+    elsif target["type"] == "trusted-ad-hoc-override"
+      valid_durable_ad_hoc_launch_target?(target)
+    else
+      false
+    end
+  end
+
+  def launch_target_identity_key(target)
+    if GITHUB_TARGET_TYPES.include?(target["type"])
+      [target.fetch("repository").downcase, target.fetch("number")]
+    else
+      [target.fetch("repository").downcase, target.fetch("target")]
+    end
+  end
+
+  def valid_github_launch_target?(target)
+    return false unless target.keys.sort == GITHUB_TARGET_KEYS && target["version"] == 1
+    return false unless GITHUB_TARGET_TYPES.include?(target["type"])
+    return false unless canonical_repository?(target["repository"])
+    return false unless target["number"].is_a?(Integer) && target["number"].positive?
+
+    kind = target["type"] == "github-issue" ? "issue" : "pull-request"
+    target["stable_coordination_identity"] ==
+      "#{target.fetch('repository')}:#{kind}:#{target.fetch('number')}"
+  end
+
+  def valid_durable_ad_hoc_launch_target?(target)
+    return false unless target.keys.sort == DURABLE_AD_HOC_TARGET_KEYS && target["version"] == 1
+    return false unless target["type"] == "trusted-ad-hoc-override"
+    return false unless canonical_repository?(target["repository"])
+    return false unless valid_ad_hoc_target_identity?(target["target"])
+    return false unless target["stable_coordination_identity"] ==
+                        "#{target.fetch('repository')}:#{target.fetch('target')}"
+    return false unless target["override_name"].is_a?(String) &&
+                        target["override_name"].match?(OVERRIDE_NAME_PATTERN)
+    return false if target["override_name"].casecmp?("UNKNOWN") ||
+                    GENERIC_INTENT_VALUES.include?(target["override_name"].downcase)
+    return false unless %w[trusted_authorizer original_task_identity].all? do |field|
+      valid_provenance_identity?(target[field])
+    end
+
+    durable_authorization_ref?(target["durable_authorization_ref"], target["repository"])
+  end
+
+  def valid_provenance_identity?(value)
+    return false unless value.is_a?(String) && value.match?(PROVENANCE_IDENTITY_PATTERN)
+
+    component = value.split(":", 2).last
+    !component.casecmp?("UNKNOWN") && !GENERIC_INTENT_VALUES.include?(component.downcase)
+  end
+
+  def valid_ad_hoc_target_identity?(value)
+    match = AD_HOC_TARGET_PATTERN.match(value.to_s)
+    return false unless match
+    return false if match[2].casecmp?("UNKNOWN")
+
+    Date.strptime(match[1], "%Y%m%d").strftime("%Y%m%d") == match[1]
+  rescue Date::Error
+    false
+  end
+
+  def durable_authorization_ref?(value, repository)
+    return false unless durable_state_ref?(value)
+
+    parsed = URI.parse(value)
+    return false unless parsed.userinfo.nil? && parsed.query.nil?
+
+    parts = parsed.path.split("/").reject(&:empty?)
+
+    case parsed.scheme
+    when "https"
+      parsed.host == "github.com" && parsed.port == 443 &&
+        parsed.path == "/#{parts.join('/')}" && parts.length == 4 &&
+        %w[issues pull].include?(parts[2]) && parts[3].match?(/\A[1-9]\d*\z/) &&
+        "#{parts[0]}/#{parts[1]}".casecmp?(repository)
+    when "issue"
+      issue_target = issue_evidence_target(value)
+      issue_target&.first&.casecmp?(repository)
+    when "plan-state"
+      parsed.port.nil? && canonical_durable_ref_id?(parsed.host) &&
+        canonical_plan_state_path?(parsed.path)
+    when "batch"
+      parsed.port.nil? && canonical_durable_ref_id?(parsed.host) && parsed.path.to_s.empty?
+    else
+      false
+    end
+  rescue URI::InvalidURIError
+    false
+  end
+
+  def canonical_durable_ref_id?(value)
+    value.is_a?(String) && value.match?(/\A[a-zA-Z0-9][a-zA-Z0-9._-]*\z/) &&
+      !value.casecmp?("UNKNOWN")
+  end
+
+  def canonical_plan_state_path?(value)
+    return false unless value.match?(%r{\A/[^/\s]+(?:/[^/\s]+)*\z}) && !value.include?("%")
+
+    value.split("/").reject(&:empty?).none? do |part|
+      %w[. ..].include?(part) || part.casecmp?("UNKNOWN")
+    end
+  end
+
+  def canonical_repository?(value)
+    return false unless nonempty_identity?(value)
+
+    owner, repository, extra = value.split("/", -1)
+    return false unless owner && repository && !extra
+
+    owner.match?(REPOSITORY_SEGMENT_PATTERN) &&
+      repository.match?(REPOSITORY_NAME_PATTERN) &&
+      !%w[. ..].include?(repository) &&
+      !owner.casecmp?("UNKNOWN") &&
+      !repository.casecmp?("UNKNOWN")
+  end
+
+  def validate_lane_lifecycle_states(states, plan, stage_dependency_plan_id)
     unless states.is_a?(Array)
       return [
         [violation(
@@ -250,7 +496,7 @@ module BatchPlanPreflight
       unless valid_lane_lifecycle_state?(
         state,
         plan["id"],
-        stage_dependency_plan["id"],
+        stage_dependency_plan_id,
         lanes_by_id
       )
         violations << violation(
@@ -295,6 +541,135 @@ module BatchPlanPreflight
     !parsed.scheme.to_s.empty? && !parsed.host.to_s.empty?
   rescue URI::InvalidURIError
     false
+  end
+
+  def validate_expansion_path_reservations(reservations, plan, stage_dependency_plan_id, maps,
+                                           completed_lane_ids)
+    return [[], []] if reservations.nil?
+    unless reservations.is_a?(Array)
+      return [[violation(
+        "expansion-path-reservations-invalid",
+        "$.expansion_path_reservations",
+        "When present, expansion path reservations must be an array of typed durable records."
+      )], []]
+    end
+
+    lanes_by_id = plan.fetch("lanes").to_h { |lane| [lane["id"], lane] }
+    valid_reservations = []
+    violations = []
+    reservations.each_with_index do |reservation, index|
+      path = "$.expansion_path_reservations[#{index}]"
+      unless valid_expansion_path_reservation?(
+        reservation,
+        plan["id"],
+        stage_dependency_plan_id,
+        lanes_by_id
+      )
+        violations << violation(
+          "expansion-path-reservations-invalid",
+          path,
+          "Require the exact v1 shape with matching batch, dependency-plan, lane, and wave identities; " \
+          "one canonical path or a distinct canonical old/new rename pair; a known reason; and a durable " \
+          "evidence reference."
+        )
+        next
+      end
+
+      lane_id = reservation.fetch("lane_id")
+      reflected_map = maps.is_a?(Hash) && maps[lane_id].is_a?(Hash) ? maps[lane_id] : {}
+      if completed_lane_ids.include?(lane_id) || reservation_reflected?(reservation, reflected_map)
+        violations << violation(
+          "expansion-path-reservation-stale",
+          path,
+          "Remove a reservation when its lane completes or its verified file-touch map reflects the path or rename.",
+          lane_ids: [lane_id]
+        )
+        next
+      end
+      valid_reservations << reservation
+    end
+
+    reservation_keys = valid_reservations.map { |reservation| expansion_reservation_identity(reservation) }
+    if reservation_keys.uniq.length != reservation_keys.length
+      violations << violation(
+        "expansion-path-reservation-duplicate",
+        "$.expansion_path_reservations",
+        "Provide at most one active reservation for each lane and canonical path or rename pair."
+      )
+    end
+    [violations, valid_reservations]
+  end
+
+  def valid_expansion_path_reservation?(reservation, batch_plan_id, stage_dependency_plan_id, lanes_by_id)
+    return false unless reservation.is_a?(Hash) && reservation["version"] == 1
+
+    shape_valid = case reservation["type"]
+                  when "expansion-path-reservation"
+                    valid_expansion_path_reservation_shape?(reservation)
+                  when "expansion-rename-reservation"
+                    valid_expansion_rename_reservation_shape?(reservation)
+                  else
+                    false
+                  end
+    return false unless shape_valid
+    return false unless reservation["batch_plan_id"] == batch_plan_id &&
+                        reservation["stage_dependency_plan_id"] == stage_dependency_plan_id
+
+    lane = lanes_by_id[reservation["lane_id"]]
+    return false unless lane && reservation["wave"] == lane["wave"]
+    return false unless known_single_line_text?(reservation["reason"])
+
+    durable_state_ref?(reservation["evidence_ref"])
+  end
+
+  def valid_expansion_path_reservation_shape?(reservation)
+    reservation.keys.sort == EXPANSION_PATH_RESERVATION_KEYS &&
+      canonical_repository_relative_path?(reservation["path"])
+  end
+
+  def valid_expansion_rename_reservation_shape?(reservation)
+    rename = reservation["rename"]
+    reservation.keys.sort == EXPANSION_RENAME_RESERVATION_KEYS &&
+      rename.is_a?(Hash) && rename.keys.sort == %w[new old] &&
+      canonical_repository_relative_path?(rename["old"]) &&
+      canonical_repository_relative_path?(rename["new"]) &&
+      rename["old"] != rename["new"]
+  end
+
+  def expansion_reservation_identity(reservation)
+    if reservation["type"] == "expansion-rename-reservation"
+      [reservation["lane_id"], reservation["type"], reservation.dig("rename", "old"),
+       reservation.dig("rename", "new")]
+    else
+      [reservation["lane_id"], reservation["type"], reservation["path"]]
+    end
+  end
+
+  def reservation_reflected?(reservation, map)
+    return false unless valid_file_touch_map_shape?(map) && map["source"] == "verified"
+
+    if reservation["type"] == "expansion-rename-reservation"
+      Array(map["renames"]).include?(reservation["rename"])
+    else
+      Array(map["paths"]).include?(reservation["path"])
+    end
+  end
+
+  def effective_file_touch_maps(maps, reservations)
+    effective = maps.to_h do |lane_id, map|
+      [lane_id, map.merge("paths" => map.fetch("paths").dup, "renames" => map.fetch("renames").map(&:dup))]
+    end
+    reservations.each do |reservation|
+      map = effective.fetch(reservation.fetch("lane_id"))
+      if reservation["type"] == "expansion-rename-reservation"
+        rename = reservation.fetch("rename")
+        map.fetch("paths").concat(rename.values)
+        map.fetch("renames") << rename.dup
+      else
+        map.fetch("paths") << reservation.fetch("path")
+      end
+    end
+    effective
   end
 
   def canonicalize(value)
@@ -382,9 +757,70 @@ module BatchPlanPreflight
     map["source"].is_a?(String) && !map["source"].strip.empty?
   end
 
+  def validate_launch_target_file_touch_provenance(lanes, maps)
+    lanes.filter_map do |lane|
+      target = lane["target"]
+      next unless valid_launch_target?(target)
+
+      map = maps[lane["id"]]
+      matches =
+        if map.is_a?(Hash) && map["source"] == "verified"
+          verified_pr_map_matches_target?(map, target)
+        elsif target["type"] == "github-pull-request"
+          false
+        else
+          planned_path_evidence_matches_target?(map, target)
+        end
+      next if matches
+
+      violation(
+        "launch-target-file-touch-provenance-mismatch",
+        "$.file_touch_map.#{lane['id']}",
+        "Verified PR maps require the target repository and, for PR-origin targets, exact target PR; " \
+        "issue and trusted ad-hoc targets without an implementation PR require durable planned-path evidence.",
+        lane_ids: [lane["id"]].compact
+      )
+    end
+  end
+
+  def verified_pr_map_matches_target?(map, target)
+    return false unless valid_file_touch_map_shape?(map) && map["source"] == "verified"
+    return false unless map["repo"].casecmp?(target["repository"])
+
+    target["type"] != "github-pull-request" || map["pr"] == target["number"]
+  end
+
+  def planned_path_evidence_matches_target?(map, target)
+    return false unless valid_planned_path_evidence_shape?(map)
+    return true unless map["source_kind"] == "issue"
+    return false unless target["type"] == "github-issue"
+
+    issue_evidence_target(map["evidence_ref"]) ==
+      [target.fetch("repository").downcase, target.fetch("number")]
+  end
+
+  def issue_evidence_target(value)
+    parsed = URI.parse(value)
+    return nil unless parsed.userinfo.nil? && parsed.query.nil?
+
+    parts = parsed.path.split("/").reject(&:empty?)
+    if parsed.scheme == "issue" && parsed.port.nil? &&
+       parsed.path == "/#{parts.join('/')}" && parts.length == 2 &&
+       parts[1].match?(/\A[1-9]\d*\z/) && canonical_repository?("#{parsed.host}/#{parts[0]}")
+      ["#{parsed.host}/#{parts[0]}".downcase, Integer(parts[1], 10)]
+    elsif parsed.scheme == "https" && parsed.host == "github.com" && parsed.port == 443 &&
+          parsed.path == "/#{parts.join('/')}" && parts.length == 4 &&
+          parts[2] == "issues" && parts[3].match?(/\A[1-9]\d*\z/) &&
+          canonical_repository?("#{parts[0]}/#{parts[1]}")
+      ["#{parts[0]}/#{parts[1]}".downcase, Integer(parts[3], 10)]
+    end
+  rescue URI::InvalidURIError
+    nil
+  end
+
   def valid_planned_path_evidence_shape?(map)
     expected_keys = %w[evidence_ref paths renames source_kind type version]
-    return false unless map.keys.sort == expected_keys
+    return false unless map.is_a?(Hash) && map.keys.sort == expected_keys
     return false unless map["type"] == "planned-path-evidence" && map["version"] == 1
     return false unless PLANNED_PATH_SOURCE_KINDS.include?(map["source_kind"])
     return false unless durable_evidence_ref?(map["evidence_ref"], map["source_kind"])
@@ -412,13 +848,12 @@ module BatchPlanPreflight
 
   def durable_evidence_ref?(value, source_kind)
     return false unless nonempty_identity?(value)
+    return !issue_evidence_target(value).nil? if source_kind == "issue"
 
     parsed = URI.parse(value)
     return false if parsed.host.to_s.empty?
-    return true if PLANNED_PATH_REF_SCHEMES.fetch(source_kind, []).include?(parsed.scheme)
 
-    source_kind == "issue" && parsed.scheme == "https" &&
-      parsed.host == "github.com" && parsed.path.match?(%r{/issues/\d+\z})
+    PLANNED_PATH_REF_SCHEMES.fetch(source_kind, []).include?(parsed.scheme)
   rescue URI::InvalidURIError
     false
   end
@@ -519,7 +954,7 @@ module BatchPlanPreflight
       permissions.values.all? { |value| [true, false].include?(value) }
   end
 
-  def validate_collisions(lanes, groups, maps, dependency_plan, gate, completed_lane_ids)
+  def validate_collisions(lanes, groups, maps, dependency_plan, gate, completed_lane_ids, reservations)
     lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
     lane_ids = lanes_by_id.keys.sort
     gate_lanes = Array(gate.is_a?(Hash) ? gate["lanes"] : nil).filter_map do |lane|
@@ -531,7 +966,13 @@ module BatchPlanPreflight
       next if collision_paths.empty?
       next if lanes_by_id.fetch(left_id)["wave"] != lanes_by_id.fetch(right_id)["wave"]
       next if serialized_by_group?(lanes_by_id.fetch(left_id), lanes_by_id.fetch(right_id), groups)
-      next if serialized_by_edit_edge?(
+
+      reservation_collision = collision_paths.any? do |path|
+        reservations.any? do |reservation|
+          [left_id, right_id].include?(reservation["lane_id"]) && reservation_collides_with_path?(reservation, path)
+        end
+      end
+      next if !reservation_collision && serialized_by_edit_edge?(
         left_id,
         right_id,
         dependency_plan.fetch("edges"),
@@ -539,10 +980,15 @@ module BatchPlanPreflight
         completed_lane_ids
       )
 
+      serialization_requirement = if reservation_collision
+                                    "max-1 serialization"
+                                  else
+                                    "max-1 serialization or a typed edit edge"
+                                  end
       collisions << violation(
         "unsafe-concurrent-edit",
         "$.file_touch_map",
-        "Same-wave lanes share changed path(s) without max-1 serialization or a typed edit edge: " \
+        "Same-wave lanes share changed path(s) without #{serialization_requirement}: " \
         "#{collision_paths.sort.join(', ')}.",
         lane_ids: [left_id, right_id]
       )
@@ -561,6 +1007,14 @@ module BatchPlanPreflight
       paths.concat(left_paths.select { |path| rename.values.any? { |endpoint| path.start_with?("#{endpoint}/") } })
     end
     paths.uniq
+  end
+
+  def reservation_collides_with_path?(reservation, path)
+    return reservation["path"] == path unless reservation["type"] == "expansion-rename-reservation"
+
+    reservation.fetch("rename").values.any? do |endpoint|
+      path == endpoint || path.start_with?("#{endpoint}/")
+    end
   end
 
   def serialized_by_group?(left, right, groups)
@@ -742,6 +1196,10 @@ module BatchPlanPreflight
 
   def nonempty_identity?(value)
     value.is_a?(String) && !value.strip.empty? && value != "UNKNOWN"
+  end
+
+  def known_single_line_text?(value)
+    nonempty_identity?(value) && !value.match?(/[\r\n\0]/)
   end
 
   def iso_date?(value)
