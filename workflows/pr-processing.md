@@ -2169,15 +2169,19 @@ Everything between checkpoints is silent. A tool-call preamble is not a
 checkpoint, and "here is what I'll do next" narration is not a checkpoint. An
 HST-v1 actionable notification is not a separate category: it is emitted at the
 `decision-required` or `merge-decision` checkpoint whose state it reports, and
-it counts in that checkpoint's bucket. Three message kinds are always allowed
-and are not checkpoints: a direct answer to a user question; an explicitly
-requested status report, such as `$status` or `$batch-status`; and an immediate
-stop required by a non-negotiable safety rule in
+it counts in that checkpoint's bucket. Four message kinds are always allowed and
+are not checkpoints: a direct answer to a user question; an explicitly requested
+status report, such as `$status` or `$batch-status`; a turn of an interactive
+exchange another contract requires, including every orientation and
+one-conceptual-change turn of the
+[ask merge-authority walkthrough](#ask-merge-authority-walkthrough-gate); and an
+immediate stop required by a non-negotiable safety rule in
 `.agents/skills/pr-batch/SKILL.md` or by a [Worker Rules](#worker-rules) stop
-condition. Those three count in the marker's `always_allowed` bucket below, not
-in `unclassified_messages`. A single-target batch therefore produces roughly
-five coordinator messages, not twenty-five. Reducing message count never reduces
-what the final handoff must contain.
+condition. `OC-v1` never suppresses a required interactive exchange; those turns
+count in the marker's `always_allowed` bucket below, not in
+`unclassified_messages`. A single-target batch with no required walkthrough
+therefore produces roughly five coordinator messages, not twenty-five. Reducing
+message count never reduces what the final handoff must contain.
 
 **Delta recaps.** A recap after the first one in a task repeats only the rows
 whose state changed since the previous recap. Unchanged targets collapse into
@@ -2215,15 +2219,30 @@ this compact marker exactly once inside **FYI / decisions made**, self-counted
 over its own user-visible messages in the task:
 
 ```text
-<!-- coordinator-narration-volume v1 batch_id=<id>; messages=<int|UNKNOWN>; characters=<int|UNKNOWN>; checkpoints=dispatch:<int|UNKNOWN>,pr-open:<int|UNKNOWN>,decision-required:<int|UNKNOWN>,merge-decision:<int|UNKNOWN>,final-handoff:<int|UNKNOWN>; always_allowed=<int|UNKNOWN>; unclassified_messages=<int|UNKNOWN>; source=<coordinator-self-count|UNKNOWN> -->
+<!-- coordinator-narration-volume v1 batch_id=<percent-encoded-id>; messages=<int|UNKNOWN>; characters=<int|UNKNOWN>; checkpoints=dispatch:<int|UNKNOWN>,pr-open:<int|UNKNOWN>,decision-required:<int|UNKNOWN>,merge-decision:<int|UNKNOWN>,final-handoff:<int|UNKNOWN>; always_allowed=<int|UNKNOWN>; unclassified_messages=<int|UNKNOWN>; source=<coordinator-self-count|UNKNOWN> -->
 ```
 
 `characters` means user-visible characters the coordinator emitted in this task.
-`always_allowed` counts the three always-allowed non-checkpoint kinds.
+`always_allowed` counts the four always-allowed non-checkpoint kinds.
 `unclassified_messages` counts user-visible messages that matched no checkpoint
-and no always-allowed category. When every field is known, `messages` equals the
-five checkpoint counts plus `always_allowed` plus `unclassified_messages`;
-report a reconciliation mismatch rather than silently adjusting a field.
+and no always-allowed category. A tool-call preamble is such a message: `OC-v1`
+says not to emit one, so a compliant task reports `unclassified_messages=0`, and
+a nonzero value is exactly the drift signal this counter exists to expose.
+
+Every user-visible message counts in exactly one bucket. When a message would
+match more than one, take the first match in this order: `final-handoff`,
+`decision-required`, `merge-decision`, `pr-open`, `dispatch`, then
+`always_allowed`. A final handoff that also carries per-target merge verdicts is
+therefore one `final-handoff` message, not two. With that rule and every field
+known, `messages` equals the five checkpoint counts plus `always_allowed` plus
+`unclassified_messages`; report a reconciliation mismatch rather than silently
+adjusting a field.
+
+A coordination-backed `batch_id` is opaque and may legitimately contain `;` or
+`:`, which would otherwise collide with this marker's field and checkpoint
+separators, so `batch_id` is percent-encoded: `%25` for `%`, `%3B` for `;`, and
+`%3D` for `=`. Decode it after splitting fields; a `batch_id` carrying an
+unencoded `;` or `=` is malformed.
 
 Every count accepts exact `UNKNOWN` independently, and each checkpoint count is
 serialized as its own `<name>:<value>` pair so one unavailable bucket never
