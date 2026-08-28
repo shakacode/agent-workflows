@@ -10,6 +10,12 @@ Use this after a PR is opened or updated and the task requires current PR state,
 review-comment follow-up, check readiness, or final handoff. A PR being open is
 not itself a finished state.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the loaded `workflows/pr-processing.md` contract before writing a
+monitoring handoff or maintainer-facing explanation. Preserve current-head
+evidence, blockers, URLs, readiness vocabulary, and `UNKNOWN` facts.
+
 Default `merge_authority` is `none` unless the user, `AGENTS.md`, or a resolved
 batch plan grants more authority.
 

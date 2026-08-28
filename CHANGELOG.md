@@ -98,6 +98,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Fixed
 
+- **Make the bounded coordination wrapper preserve subprocess output and reliably reap its process group when termination races scheduler load.** [PR 448](https://github.com/shakacode/agent-workflows/pull/448) by [justin808](https://github.com/justin808).
 - **Suppress unchanged, stale, and replayed Goal monitor probes without re-entering parent task context, while preserving restart-safe transition delivery, terminal handoffs, and bounded fallback polling; updated the host-adapter and Goal completion contracts to GMCC-v4.** [PR 395](https://github.com/shakacode/agent-workflows/pull/395) by [justin808](https://github.com/justin808).
 - **Ordinary authenticated later-target reconciliation applies to an immutable terminal `abandoned` lane; a terminal `superseded` lane may reconcile only for an issue with typed no-PR evidence, while code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation.** [issue 10154](https://github.com/shakacode/hichee/issues/10154).
 - **Make `plugin-companion` delivery preserve unrelated personal flat skills while blocking any same-named skill advertised by the verified active native plugin—including source/native revision drift—and fail closed when native roots or provenance are ambiguous.** [issue 191](https://github.com/shakacode/agent-workflows/issues/191).

@@ -21,8 +21,10 @@ Installed paths:
   <target>/docs/review-finding-schema.md
   <target>/docs/agent-workflows-model-routing.md
   <target>/docs/user-facing-coordination.md
+  <target>/docs/writing-style.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
+  <target>/bin/agent-workflow-writing-style
   <target>/bin/validate-execution-provenance
   <target>/bin/agent-workflows-doctor
   <target>/bin/agent_doctor/*
@@ -44,6 +46,7 @@ doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
 delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
 bin_helpers=(
   agent-workflow-seam-doctor
+  agent-workflow-writing-style
   agent-workflows-delivery-state
   agent-workflows-doctor
   agent-workflows-status
@@ -58,6 +61,7 @@ pack_docs=(
   review-finding-schema.md
   agent-workflows-model-routing.md
   user-facing-coordination.md
+  writing-style.md
 )
 for solution_path in "$repo_root"/docs/solutions/*; do
   [[ -f "$solution_path" && ! -L "$solution_path" ]] || continue

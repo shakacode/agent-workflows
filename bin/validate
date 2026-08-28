@@ -79,6 +79,7 @@ echo "== host adapter syntax =="
 bin/validate-host-adapter-syntax
 
 echo "== validator unit tests =="
+ruby bin/agent-workflow-writing-style-test.rb
 ruby bin/agent-workflow-seam-doctor-test.rb
 ruby bin/codex-plugin-manifest-check-test.rb
 ruby bin/validate-openai-agent-metadata-test.rb
@@ -153,6 +154,7 @@ ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/batch-status/bin/batch-status-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
+ruby skills/pr-batch/bin/writing-style-contract-test.rb
 ruby skills/pr-batch/bin/user-facing-coordination-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/file-expansion-contract-test.rb
