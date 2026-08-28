@@ -77,9 +77,12 @@ class AgentCoordBoundedRunner
 
     flush_captured_output(stdout_file, stderr_file)
     exit_code_for_status(status)
-  rescue StandardError
-    emergency_cleanup_process_group(pid) if pid
-    raise
+  rescue StandardError => e
+    begin
+      emergency_cleanup_process_group(pid) if pid
+    ensure
+      raise e
+    end
   ensure
     restore_signal_handlers(previous_signal_handlers) if previous_signal_handlers
     stdout_file&.close!

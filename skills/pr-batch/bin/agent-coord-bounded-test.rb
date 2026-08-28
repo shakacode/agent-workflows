@@ -66,7 +66,7 @@ class AgentCoordBoundedTest < Minitest::Test
     end
   end
 
-  def test_runner_cleans_up_process_group_when_injected_readiness_wait_fails
+  def test_runner_cleans_up_process_group_and_preserves_original_readiness_failure
     Dir.mktmpdir("agent-coord-bounded-test") do |dir|
       child_pid_file = File.join(dir, "child.pid")
       helper_pid_file = File.join(dir, "helper.pid")
@@ -107,6 +107,11 @@ class AgentCoordBoundedTest < Minitest::Test
           stdout: StringIO.new,
           stderr: StringIO.new
         )
+        original_emergency_cleanup = runner.method(:emergency_cleanup_process_group)
+        runner.define_singleton_method(:emergency_cleanup_process_group) do |pid|
+          original_emergency_cleanup.call(pid)
+          raise Errno::EPERM, "injected cleanup failure"
+        end
 
         original_waitpid = Process.method(:waitpid)
         original_waitpid2 = Process.method(:waitpid2)
