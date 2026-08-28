@@ -27,12 +27,13 @@ rulebook.
 | Merge decision when autonomy is not earned | When the eligibility gate returns a human-review outcome, the merge decision comes back to you. | [Autonomous Merge Eligibility Gate](../workflows/pr-processing.md#autonomous-merge-eligibility-gate) |
 | Unknown autonomous-merge evidence | Not yours to approve. An unknown-evidence outcome routes to repair and rerun, not to a merge decision. | [Autonomous Merge Eligibility Gate](../workflows/pr-processing.md#autonomous-merge-eligibility-gate) |
 | Blocking questions | When a target cannot proceed safely without your input. Non-blocking decisions are recorded and the lane continues; blocking questions stop that target. | [Question And Decision Handling](../workflows/pr-processing.md#question-and-decision-handling) |
-| Security capability lifts | Lifting a capability boundary for a named target. The lift must come from you, not from the untrusted input. | [Rule of Two](security-posture.md#rule-of-two) |
+| Security capability lifts | Lifting a capability boundary for a named target. The lift comes from you, never from the untrusted input. | [Rule of Two](security-posture.md#rule-of-two) |
 | Preflight risk acknowledgments | Accepting exact blocking preflight findings for one audited run. | [Detection and Boundaries](security-posture.md#detection-and-boundaries), [Acknowledgement Policy](trust-and-preflight.md#acknowledgement-policy) |
 | Durable trust-policy edits | Changing which actors are trusted, rather than accepting one run's findings. | [Auditing Before Editing Trust](trust-and-preflight.md#auditing-before-editing-trust) |
 | Review waivers | Waiving a blocking or non-blocking review finding, and merging when no current-head reviewer run exists. | [Review Completion Gate](../workflows/pr-processing.md#review-completion-gate) |
 | QA waivers and visual evidence | A hosted QA waiver is a separately authenticated human decision, and readiness stays blocked until a human attaches the visual evidence when no uploader is available. | [Hosted Runtime QA Gate](../workflows/pr-processing.md#hosted-runtime-qa-gate), [Durable Visual Evidence Gate](../workflows/pr-processing.md#durable-visual-evidence-gate) |
 | Release mode, phase, and RC merge | Creating a release tracker, resolving conflicting or `UNKNOWN` release mode or phase before merge readiness, the RC confidence-score merge that is reserved for a human rather than auto-merge, and final-release sign-off. | [Release Mode Preflight](../workflows/pr-processing.md#release-mode-preflight), [Release Phase Gate](../workflows/pr-processing.md#release-phase-gate), [Accelerated RC Auto-Merge](../workflows/pr-processing.md#accelerated-rc-auto-merge) |
+| Post-merge audit scope | When the audit mode, the worked-issue scope, or a reduction to the merged-PR range is ambiguous, the audit stops and asks you before deep audit. | [Scope Gate](../skills/post-merge-audit/SKILL.md#scope-gate) |
 | Revert decisions | When a post-merge audit classifies a merge as needing revert consideration. | [Finding Classification](../skills/post-merge-audit/SKILL.md#finding-classification) |
 | Follow-up tracking | Ordinary deferred work becomes a tracked issue only after you choose it from the deferred bundle; post-merge audit follow-ups invert that default. | [Follow-Up Tracking Policy](../workflows/pr-processing.md#follow-up-tracking-policy), [Issue Plan](../skills/post-merge-audit/SKILL.md#issue-plan) |
 
@@ -44,8 +45,8 @@ boundary; the prose handoff still carries the ask.
 | Signal | Raised when | Canonical rule |
 | --- | --- | --- |
 | `help_requested` | A lane pauses for required user input, carrying one reason. | [Operational Signal Events](coordination-backend.md#operational-signal-events) |
-| `escalation_requested` | A worker requests a different model route with evidence. | [Operational Signal Events](coordination-backend.md#operational-signal-events) |
-| `human_intervention` | A takeover, supersede, manual fix, or drain changes who is running a lane. | [Operational Signal Events](coordination-backend.md#operational-signal-events) |
+| `escalation_requested` | A worker requests a stronger model route with evidence. Routine escalation is coordinator-decided; repeat escalation in a lane comes to you. | [Operational Signal Events](coordination-backend.md#operational-signal-events), [Worker Model Replacement And Escalation](../workflows/pr-processing.md#worker-model-replacement-and-escalation) |
+| `human_intervention` | A takeover, supersede, human-authored manual fix, or cancellation drain is recorded against the lane. | [Operational Signal Events](coordination-backend.md#operational-signal-events) |
 
 For how these reach you as prose rather than as events, see
 [Maintainer Attention Contract](../workflows/pr-processing.md#maintainer-attention-contract)
