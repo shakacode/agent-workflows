@@ -1820,8 +1820,13 @@ validate_delivery_mode() {
 prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
-  local version source_revision source_branch source_remote installed_at
+  local version source_revision source_branch source_remote installed_at prepare_status=0
   prepared_metadata_attestation=""
+  if [[ -e "$metadata_tmp" || -L "$metadata_tmp" ]]; then
+    echo "METADATA_PREPARE_BLOCKED: preserved existing untrusted metadata preparation path $metadata_tmp." >&2
+    echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite it." >&2
+    return 68
+  fi
   version="$(metadata_value version)"
   source_revision="$(metadata_value source_revision)"
   source_branch="$(metadata_value source_branch)"
@@ -1903,8 +1908,8 @@ prepare_metadata() {
     file = nil
     file_stat = nil
     completed = false
-    file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
     begin
+      file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
       file_stat = file.stat
       abort unless file_stat.file?
       PreparedMetadataHook.call(:after_create) if defined?(PreparedMetadataHook)
@@ -1944,7 +1949,12 @@ prepare_metadata() {
         end
       end
     end
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}")"
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}" 2>/dev/null)" || prepare_status=$?
+  if [[ "$prepare_status" -ne 0 ]]; then
+    echo "METADATA_PREPARE_BLOCKED: could not safely create $metadata_tmp; preserved any path that exists there." >&2
+    echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite an unverified path." >&2
+    return 68
+  fi
 }
 
 preflight_metadata_commit_capability() {
@@ -3218,12 +3228,14 @@ workflow_doctor_symlink_matches_recorded_source() {
   read_installed_metadata_value mode
   case "$installed_metadata_state" in
     valid) recorded_mode="$installed_metadata_value" ;;
-    key_absent|corrupt) return 1 ;;
+    invalid|key_absent|corrupt|absent) return 1 ;;
+    *) return 1 ;;
   esac
   read_installed_metadata_value source
   case "$installed_metadata_state" in
     valid) recorded_source="$installed_metadata_value" ;;
-    key_absent|corrupt) return 1 ;;
+    invalid|key_absent|corrupt|absent) return 1 ;;
+    *) return 1 ;;
   esac
   [[ "$recorded_mode" = symlink && -n "$recorded_source" &&
      "$link_target" = "$recorded_source/bin/agent_doctor" ]]

@@ -4124,10 +4124,29 @@ test_nul_in_recorded_source_is_corrupt_before_symlink_adoption() {
   status=$?
   set -e
 
-  [[ "$status" -ne 0 ]] || fail "NUL-coerced recorded source adopted an unmanaged symlink"
-  assert_contains "$output" "Refusing unmanaged workflow doctor symlink"
+  [[ "$status" -eq 65 ]] || fail "NUL-coerced recorded source exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Refusing unmanaged workflow doctor symlink"
   assert_symlink "$target/bin/agent_doctor"
   assert_file "$link_source/bin/agent_doctor/sentinel"
+}
+
+test_preexisting_metadata_tmp_is_preserved_with_actionable_failure() {
+  local tmp target metadata_tmp output status before paths_before
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata_tmp="$target/.agent-workflows-install.json.tmp"
+  mkdir -p "$target"; printf 'untrusted orphan\n' > "$metadata_tmp"
+  before="$(shasum "$metadata_tmp")"; paths_before="$(find "$target" -print | LC_ALL=C sort)"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  [[ "$status" -eq 68 ]] || fail "pre-existing metadata tmp exited $status: $output"
+  assert_contains "$output" "METADATA_PREPARE_BLOCKED"
+  assert_contains "$output" "$metadata_tmp"
+  assert_contains "$output" "preserve"
+  assert_not_contains "$output" "Errno::EEXIST"
+  assert_not_contains "$output" "from "
+  [[ "$before" = "$(shasum "$metadata_tmp")" ]] || fail "pre-existing metadata tmp was changed"
+  [[ "$paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || fail "pre-existing metadata tmp failure mutated target"
 }
 
 test_repeat_install_replays_recorded_companion_delivery_mode() {
@@ -8333,6 +8352,7 @@ main() {
     test_late_capture_restore_failure_does_not_blame_intact_metadata
     test_snapshot_only_corruption_restores_before_reporting
     test_nul_in_recorded_source_is_corrupt_before_symlink_adoption
+    test_preexisting_metadata_tmp_is_preserved_with_actionable_failure
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_repeat_flat_install_accepts_installer_created_uncommitted_skill
     test_repeat_flat_copy_install_blocks_modified_installer_created_uncommitted_skill
