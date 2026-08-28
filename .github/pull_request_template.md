@@ -49,9 +49,9 @@ point, not a fixed form.
 -->
 
 - [ ] `bin/validate` - result:
-- [ ] `.agents/bin/lint` - result:
+- [ ] `bin/lint` - result:
 - [ ] Behavior-level check for this change (command, test, or manual step) - result:
-- [ ] `CHANGELOG.md` entry added under `### [Unreleased]`.
+- [ ] Changelog classification recorded (`changelog_present`, `changelog_missing`, `deferred_to_update_changelog`, or `not_user_visible`). Ordinary feature and bug PRs leave `CHANGELOG.md` untouched and use `deferred_to_update_changelog`; only dedicated `/update-changelog` or release lanes edit the file.
 
 <!--
 Add a `## Maintainer attention` section here, immediately before the disclosure
