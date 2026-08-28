@@ -321,7 +321,7 @@ Classify each PR:
 - **Needs changelog update**: user-visible change is missing from the repo's changelog; recommend `/update-changelog`.
 - **Needs follow-up issue**: non-blocking work remains valuable and is actionable after release.
 - **Needs fix PR**: a real defect, missing test, missing compatibility note, or bad interaction should be fixed before release.
-- **Needs revert consideration**: the merge appears risky enough that reverting may be safer than patching.
+- **Needs revert consideration**: the merge appears risky enough that reverting may be safer than patching. The downstream procedure is [Unwinding A Bad Agent Merge](../../docs/revert-runbook.md), which covers revert scope, order, bookkeeping, and the operator-authority rule. Reference it in the child issue; it is a runbook for the operator, not a gate on this audit, and it never blocks or alters audit completion.
 
 Classify each worked issue separately so the audit can prove every coordinated
 lane was evaluated, even when the issue produced no merged PR:
