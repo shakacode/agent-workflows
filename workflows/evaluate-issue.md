@@ -2,6 +2,12 @@
 
 Use this workflow before fixing, batching, or assigning a GitHub issue when value is uncertain, especially when the issue was found by AI/code analysis rather than by real users.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under `pr-processing.md` → **Writing Style Resolution** before composing a
+no-PR evidence comment or disposition handoff. Style cannot remove required
+evidence, risks, mechanism decisions, or `UNKNOWN` facts.
+
 The authoritative rubric lives in `.agents/skills/evaluate-issue/SKILL.md`. Read and follow that file first; this workflow exists for agents that prefer workflow-file entry points over skill invocation syntax.
 
 ## Sequence

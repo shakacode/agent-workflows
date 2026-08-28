@@ -184,9 +184,10 @@ test_delivery_state_helper_unit_suite() {
 }
 
 test_codex_host_install_writes_helpers_and_metadata() {
-  local tmp target
+  local tmp target ruby_bin
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
+  ruby_bin="$(ruby -rrbconfig -e 'print RbConfig.ruby')"
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-agent-workflows-test.out"
 
@@ -205,8 +206,24 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/docs/review-finding-schema.md"
   assert_file "$target/docs/agent-workflows-model-routing.md"
   assert_file "$target/docs/user-facing-coordination.md"
+  assert_file "$target/docs/writing-style.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
+  assert_file "$target/bin/agent-workflow-writing-style"
+  mkdir -p "$tmp/.agents" "$tmp/docs" "$tmp/home"
+  printf 'Installed resolver smoke.\n' > "$tmp/docs/repository-style.md"
+  printf 'writing_style: docs/repository-style.md\n' > "$tmp/.agents/agent-workflow.yml"
+  writing_style_output="$(HOME="$tmp/home" "$ruby_bin" "$target/bin/agent-workflow-writing-style" --repo-root "$tmp" --format json)"
+  ruby -rjson -e 'result = JSON.parse(ARGV.fetch(0)); abort result.inspect unless result["provenance"] == "repo"' \
+    "$writing_style_output" || fail "installed writing-style resolver did not resolve the repository smoke guide"
+  rm "$tmp/.agents/agent-workflow.yml"
+  writing_style_output="$(HOME="$tmp/home" "$ruby_bin" "$target/bin/agent-workflow-writing-style" --repo-root "$tmp" --format json)"
+  ruby -rjson -e '
+    result = JSON.parse(ARGV.fetch(0))
+    expected = File.read(ARGV.fetch(1), encoding: "UTF-8").strip
+    abort result.inspect unless result["provenance"] == "portable-default" && result["guide"] == expected
+  ' "$writing_style_output" "$target/docs/writing-style.md" || \
+    fail "installed writing-style resolver did not load the packaged default document"
   assert_file "$target/bin/validate-execution-provenance"
   "$target/bin/validate-execution-provenance" >"$tmp/validate-execution-provenance.out"
   grep -Fqx 'PASS execution provenance schema' "$tmp/validate-execution-provenance.out" || \
@@ -349,6 +366,7 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/LICENSE"
     assert_file "$target/workflows/pr-processing.md"
     assert_file "$target/docs/coordination-backend.md"
+    assert_file "$target/docs/writing-style.md"
     assert_file "$target/bin/agent-workflow-seam-doctor"
     assert_file "$target/bin/agent-workflows-status"
     assert_file "$target/bin/agent-workflows-doctor"
@@ -1164,6 +1182,7 @@ test_installation_docs_describe_managed_coordination_doc_fingerprints() {
   changelog="$(cat "$ROOT/CHANGELOG.md")"
 
   assert_contains "$docs" '<target>/docs/user-facing-coordination.md'
+  assert_contains "$docs" '<target>/docs/writing-style.md'
   assert_contains "$docs" '<target>/docs/execution-provenance-schema.md'
   assert_contains "$docs" '<target>/bin/validate-execution-provenance'
   assert_contains "$docs" 'managed_skill_copy_fingerprints'
@@ -1187,8 +1206,8 @@ test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc()
   ruby -e '
     path = ARGV.fetch(0)
     text = File.read(path)
-    insertion = "  user-facing-coordination.md\n  uncommitted-pack-doc.md\n)"
-    abort "missing pack_docs insertion point" unless text.sub!("  user-facing-coordination.md\n)", insertion)
+    insertion = "  writing-style.md\n  uncommitted-pack-doc.md\n)"
+    abort "missing pack_docs insertion point" unless text.sub!("  writing-style.md\n)", insertion)
     File.write(path, text)
   ' "$source/bin/install-agent-workflows"
   printf 'managed-v1\n' > "$source/docs/$doc_name"
@@ -1988,6 +2007,7 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/docs/review-finding-schema.md"
   assert_symlink "$target/docs/agent-workflows-model-routing.md"
   assert_symlink "$target/docs/user-facing-coordination.md"
+  assert_symlink "$target/docs/writing-style.md"
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
