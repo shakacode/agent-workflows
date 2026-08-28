@@ -36,17 +36,34 @@ Commands below use one stable placeholder set:
 | `SHA` | whichever single commit a given command is about |
 | `PRE_BATCH_SHA` | the base-branch state before the closure landed |
 | `BATCH_ID`, `LANE`, `TARGET` | coordination identifiers for the lane that produced `PR` |
+| `AGENT_ID` | stable identifier of the agent claiming the repair lane |
 | `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
 
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA,
-  recorded as `BASE_TIP` — `git rev-parse "origin/${BASE}"`. Section 2 re-checks
-  it before creating a branch, so capture it *before* scope analysis, not after.
+  recorded as `BASE_TIP`:
+
+  ```bash
+  git fetch origin
+  BASE_TIP=$(git rev-parse "origin/${BASE}")
+  ```
+
+  Fetch first: `origin/${BASE}` is a remote-tracking ref, and without a fetch it
+  is as stale as the local branch. Capture `BASE_TIP` *before* scope analysis,
+  not after — section 2 re-checks it before creating a branch.
+
+  **`BASE_TIP` is the only base reference scope analysis reads.** Never pass the
+  local `${BASE}` to a scope query. A local branch that is clean but simply not
+  pulled is behind its remote, so analysis would run against an older tree than
+  the one you revert from, omit the commits that landed in between, and produce a
+  too-narrow revert with no error anywhere. The re-check in section 2 cannot
+  catch that: it compares two `origin/${BASE}` readings and never looks at the
+  local ref. One name for one fact is the fix.
 - The commit SHA on `BASE` that landed the suspect PR.
 - **The repo's merge style.** Establish it; do not assume it. It decides both
   how you enumerate landed work and how you revert it. Check with:
 
   ```bash
-  git --no-pager log --first-parent --format='%h parents=%p | %s' "${BASE}" | head -20
+  git --no-pager log --first-parent --format='%h parents=%p | %s' "${BASE_TIP}" | head -20
   ```
 
   Three styles land a PR three different ways, and the two single-parent styles
@@ -101,7 +118,7 @@ Enumerate landed work along the base branch's first-parent line **without a
 `--merges` filter**, and classify each commit's parent shape:
 
 ```bash
-git log --first-parent --format='%H %P%x09%s' "${BASE}" | head -40
+git log --first-parent --format='%H %P%x09%s' "${BASE_TIP}" | head -40
 ```
 
 `%P` lists the parents: one hash is a squash/rebase commit, two or more is a
@@ -121,7 +138,7 @@ is only fixed once the closure is — and widen it if the closure turns out to
 reach further back:
 
 ```bash
-git log --first-parent --format='%H' "${SHA}^1..${BASE}" | while read -r sha; do
+git log --first-parent --format='%H' "${SHA}^1..${BASE_TIP}" | while read -r sha; do
   if git rev-parse -q --verify "${sha}^2" >/dev/null; then
     printf 'merge-commit   %s  %s\n' "$sha" "$(git show -s --format='%s' "$sha")"
   else
@@ -331,10 +348,10 @@ Neither query filters on `--merges`, for the reason above.
 ```bash
 # Everything that landed after the suspect commit, on the base branch's
 # first-parent line. These are the commits a revert can collide with.
-git log --ancestry-path --first-parent --format='%h %s' "${SHA}..${BASE}"
+git log --ancestry-path --first-parent --format='%h %s' "${SHA}..${BASE_TIP}"
 
 # Everything that touched the same files, in either direction.
-git log --first-parent --format='%h %s' "${BASE}" -- ${PATHS}
+git log --first-parent --format='%h %s' "${BASE_TIP}" -- ${PATHS}
 ```
 
 ### Decision rule
@@ -372,6 +389,23 @@ dependency has been removed.
 
 ### Build the revert on a branch
 
+Claim the repair lane before you build anything, so the lane owns the branch,
+the PR, and the heartbeat while the work happens rather than being backfilled
+afterwards:
+
+```bash
+agent-coord claim --repo "${REPO}" --target "${PR}" \
+  --batch-id "${BATCH_ID}" --lane "${LANE}" \
+  --agent-id "${AGENT_ID}" --branch "${REVERT_BRANCH}"
+```
+
+As in section 3, `agent-coord` is *this* repo's `coordination_backend` seam and
+this invocation is illustrative of that seam, not a portable requirement; a
+consumer repo claims through its own configured backend, and backend `n/a` skips
+the claim and records the ownership in the durable handoff instead. The lane is
+closed `done` at [checkpoint B](#coordination-events-and-terminal-state), after
+the repair merges.
+
 Do not embed a raw `batch_id` in the branch name. A coordination-backed
 `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`.
 `:` is rejected outright as a ref component — `git check-ref-format --branch
@@ -397,9 +431,9 @@ of the **full** id so two ids that truncate identically still differ, and add th
 suspect short SHA:
 
 `git fetch origin` can move `origin/${BASE}` between the scope analysis and the
-branch creation. If it moved, the branch you create includes a commit the
-closure never considered, and `PRE_BATCH_SHA` no longer describes the tree you
-are about to validate against. Compare the tip you recorded in
+branch creation. If it moved, work landed that the closure never considered, and
+`PRE_BATCH_SHA` no longer describes the tree you are about to validate against.
+Compare the tip you recorded in
 [Before Anything Else](#before-anything-else) against the tip after fetching,
 and rerun section 1 if they differ:
 
@@ -418,8 +452,14 @@ BATCH_SLUG=$(printf '%s' "${BATCH_ID}" \
 BATCH_DIGEST=$(printf '%s' "${BATCH_ID}" | git hash-object --stdin | cut -c1-8)
 REVERT_BRANCH="revert/${BATCH_SLUG}-${BATCH_DIGEST}-$(git rev-parse --short "${SHA}")"
 git check-ref-format --branch "${REVERT_BRANCH}" || exit 1
-git checkout -b "${REVERT_BRANCH}" "origin/${BASE}"
+git checkout -b "${REVERT_BRANCH}" "${BASE_TIP}"
 ```
+
+The branch is created from `${BASE_TIP}` — the exact commit scope analysis read
+— not from `origin/${BASE}`. Past the equality check the two are the same SHA by
+construction, so this changes nothing at runtime; it removes the last place a
+base reference could be re-resolved, which is what let a stale ref diverge from
+the analysed tree in the first place.
 
 Order matters in that pipeline. `tr` runs before `cut`, so everything is ASCII
 by the time it is truncated and a multibyte character cannot be split in half.
@@ -554,6 +594,37 @@ commit stays applied while the rest of the sequence proceeds. That is a
 too-narrow revert reached by following the recovery path, which is the failure
 this runbook exists to prevent. If a commit's revert cannot be resolved, the
 scope decision was wrong: abort and return to section 1.
+
+#### Abandoning a multi-PR closure
+
+`git revert --abort` cancels **only the invocation it is run from**. A closure
+spanning several PRs runs one invocation per PR in series, so aborting the
+second one leaves the first PR's revert commits sitting on the branch. This is a
+consequence of the one-invocation-per-PR structure, not of `--abort` itself.
+
+Do not try to resume from that state. Re-running the closure newest-first hits
+the already-reverted PR and stops with `nothing to commit, working tree clean`
+and a nonzero status, before reaching the PRs that still need reverting —
+verified. It looks like an inexplicable failure and it hides the remaining work.
+
+Abandon the whole branch and rebuild it, which is safe precisely because the
+branch is disposable at this point — it holds nothing but revert commits and has
+not been pushed (the draft PR is not opened until the end of the procedure):
+
+```bash
+git revert --abort                                  # cancel the current sequencer
+git checkout -B "${REVERT_BRANCH}" "${BASE_TIP}"    # discard every revert so far
+```
+
+`${BASE_TIP}` is already the commit the branch was created from, so there is no
+second start-point to record and nothing to drift. After this the branch is zero
+commits ahead; return to section 1, re-derive the closure, and revert it from
+the beginning.
+
+What you lose is the conflict resolutions from the PRs that had already
+succeeded. If a closure is large enough that redoing them matters, enable
+`git config rerere.enabled true` **before** the first invocation, so resolutions
+are replayed automatically on the rebuild rather than reconstructed by hand.
 
 Do not rerun the range command after a conflict — that restarts it from the
 newest commit. `git revert --continue` is the only correct resume, and
@@ -817,7 +888,8 @@ violation rather than a correction. Instead:
 2. The repair runs as a **new lane** — but **establish that lane before you
    build the repair**, not here. A lane created after its own work merged
    cannot claim the target, cannot heartbeat while the work happens, and
-   records coordination history backwards. Claim it when you start section 2,
+   records coordination history backwards. Claim it when you start section 2
+   (the `agent-coord claim` invocation is shown there),
    let it own the branch and the PR, and close it `done` here once the repair
    merges. This step is the closeout of a lane that already exists, not the
    creation of one.
@@ -885,7 +957,8 @@ An agent **may not**, without an explicit operator decision:
 
 ## Checklist
 
-1. Record `REPO`, `BASE`, base tip, the suspect PR and its landing commit,
+1. Record `REPO`, `BASE`, `BASE_TIP` (fetch first; it is the only base ref scope
+   analysis reads), the suspect PR and its landing commit,
    **the repo's merge style (merge / squash / rebase)**, `batch_id`, lane,
    dependency plan path/id, and the observed failure. Unverifiable facts stay
    `UNKNOWN`.
@@ -903,12 +976,14 @@ An agent **may not**, without an explicit operator decision:
 6. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
    recovery if it moved. Claim the repair lane now, before building anything.
    Derive a slug branch from the batch id, check it with
-   `git check-ref-format --branch`, and create it from `origin/${BASE}`; never
-   work on `BASE`.
+   `git check-ref-format --branch`, and create it from `${BASE_TIP}`; never work
+   on `BASE`.
 7. Revert **every commit in every in-scope list**, newest first, by handing the
    whole list to one `git revert` invocation (`-m 1` on a merge commit, alone).
    On conflict: resolve and `--continue`, or `--abort` and re-scope — never
-   `--skip`, and never leave a partial sequence.
+   `--skip`, and never leave a partial sequence. Abandoning a multi-PR closure
+   also needs `git checkout -B "${REVERT_BRANCH}" "${BASE_TIP}"`, because
+   `--abort` only cancels the invocation it is run from.
 8. Classify every conflicting hunk as dependent or independent; stop and
    re-scope if an independent hunk cannot be preserved.
 9. Validate the branch, and diff the final tree against `PRE_BATCH_SHA`.
