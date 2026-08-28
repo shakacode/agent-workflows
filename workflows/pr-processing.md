@@ -2262,9 +2262,11 @@ of the telemetry. `batch_id` is therefore percent-encoded over the complete set
 so the other escapes are unambiguous. Then apply one further rule, because the
 set above cannot otherwise touch a batch ID that is exactly the reserved
 sentinel: a `batch_id` whose value after the substitutions above is exactly
-`UNKNOWN` is rendered `%55NKNOWN`, percent-encoding its leading `U`. Decode each
-field only after splitting on `;`, and decode before any comparison against the
-sentinel. A `batch_id` whose rendered form still contains any unencoded character
+`UNKNOWN` is rendered `%55NKNOWN`, percent-encoding its leading `U`. A reader
+splits on `;` first, then compares the still-encoded field against bare
+`UNKNOWN`, and decodes only a field that is not that sentinel. Decoding before
+the comparison would turn `%55NKNOWN` back into `UNKNOWN` and destroy the
+distinction this rule exists to create. A `batch_id` whose rendered form still contains any unencoded character
 from that set is malformed: fail closed and record `batch_id` as `UNKNOWN`
 rather than emitting a marker that cannot be parsed. Bare `UNKNOWN` is reserved
 for exactly that unavailable-or-malformed case; a real batch ID of `UNKNOWN`

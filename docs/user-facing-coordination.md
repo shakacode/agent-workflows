@@ -158,8 +158,9 @@ user-visible message counts in exactly one bucket of the closeout marker.
   link. This bounds chat narration only and never deletes a durable copy that
   another contract requires in both the PR description and the final handoff.
 - **Proportional corrections:** state a decision-changing correction once; a
-  correction that changes nothing for the reader goes only to the final
-  decision log.
+  correction that changes nothing for the reader is recorded in exactly one
+  durable place — the PR description's `Agent details` decision log when the
+  target has a PR, otherwise the final handoff's FYI / decisions made section.
 - **Unchanged closing stack:** `OC-v1` collapses no closing structure; that
   consolidation is tracked in
   [issue 484](https://github.com/shakacode/agent-workflows/issues/484).
