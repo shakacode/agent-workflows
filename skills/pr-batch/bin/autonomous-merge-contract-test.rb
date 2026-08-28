@@ -207,6 +207,42 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_equal AutonomousMergePolicy.portable_safe_path_groups, policy.safe_path_groups
   end
 
+  # A consumer that only wants to tighten the portable set writes a group with
+  # `exclude` and no `include`. That must parse clean: any nonempty
+  # policy.errors makes autonomous-merge-eligibility emit UNKNOWN for the whole
+  # PR, so rejecting this shape would fail every PR in that repository closed
+  # rather than declining one group.
+  def test_exclude_only_consumer_group_is_valid_and_inherits_the_portable_includes
+    policy = AutonomousMergePolicy.parse(<<~YAML)
+      autonomous_merge:
+        safe_path_groups:
+          documentation:
+            exclude:
+              - "handbook/runbooks/**"
+    YAML
+    portable = AutonomousMergePolicy::PORTABLE_SAFE_PATH_GROUPS.fetch("documentation")
+    documentation = policy.safe_path_groups.fetch("documentation")
+
+    assert_equal [], policy.errors
+    assert_equal portable.fetch("include"), documentation.fetch("include")
+    assert_equal portable.fetch("exclude") + ["handbook/runbooks/**"], documentation.fetch("exclude")
+    assert_equal AutonomousMergePolicy::PORTABLE_SAFE_PATH_GROUPS.fetch("tests").fetch("include"),
+                 policy.safe_path_groups.fetch("tests").fetch("include")
+  end
+
+  def test_a_consumer_group_whose_declared_includes_are_all_invalid_globs_still_fails
+    policy = AutonomousMergePolicy.parse(<<~YAML)
+      autonomous_merge:
+        safe_path_groups:
+          tests:
+            include:
+              - "../escape/**"
+    YAML
+
+    assert_includes policy.errors.join("; "), "autonomous_merge.safe_path_groups.tests.include[0] invalid glob"
+    refute_empty policy.errors
+  end
+
   def test_builtin_policy_patterns_carry_both_source_and_installed_layouts
     builtin = AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS
 

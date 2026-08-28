@@ -180,7 +180,9 @@ Portable `safe_path_groups` defaults ship for `documentation` and `tests`.
 Consumer `include` and `exclude` patterns are added to the portable sets; a
 consumer can never remove a portable exclude. An absent `safe_path_groups`
 mapping, an empty one, and one that declares a single group all keep the full
-portable defaults for every group the repository did not declare. ADR 0003 is
+portable defaults for every group the repository did not declare. A declared
+group may carry only `exclude` and no `include`: it then inherits the portable
+include list unchanged and only tightens that group. ADR 0003 is
 the source of truth for the exact portable include and exclude sets. Every
 portable group excludes the built-in autonomous-merge policy surface -
 `AGENTS.md`/`CLAUDE.md`, `**/SKILL.md`, `workflows/**`, `.agents/**`,

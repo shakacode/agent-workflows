@@ -44,10 +44,17 @@ module AutonomousMergePolicy
       excludes, exclude_errors = parse_glob_list(group["exclude"], "#{prefix}.exclude")
       errors.concat(include_errors)
       errors.concat(exclude_errors)
-      errors << "#{prefix}.include must contain at least one pattern" if includes.empty?
       portable = groups.fetch(name)
+      effective_includes = (portable.fetch("include") + includes).uniq
+      # The requirement is on the effective include list, not the declared one:
+      # a group that matches nothing is malformed, but a consumer that declares
+      # only `exclude` inherits the portable includes and is valid. The portable
+      # defaults make this unreachable for both valid group names; it stays as a
+      # defensive guard. Declared includes that are all invalid globs still fail
+      # through include_errors above.
+      errors << "#{prefix}.include must contain at least one pattern" if effective_includes.empty?
       groups[name] = {
-        "include" => (portable.fetch("include") + includes).uniq,
+        "include" => effective_includes,
         "exclude" => (portable.fetch("exclude") + excludes).uniq
       }
     end

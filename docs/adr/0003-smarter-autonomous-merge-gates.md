@@ -417,9 +417,12 @@ The mapping is a closed, versioned schema:
   be omitted otherwise;
 - `policy_paths` and `generated_paths` are lists of nonempty glob strings; and
 - each safe path group accepts only `include` and `exclude`, both lists of
-  nonempty glob strings, and must define at least one include pattern; a
-  declared group is merged additively onto the portable group of the same name,
-  and an undeclared group keeps the portable defaults unchanged.
+  nonempty glob strings; a declared group is merged additively onto the portable
+  group of the same name, and an undeclared group keeps the portable defaults
+  unchanged. The at-least-one-include requirement is on the group's *effective*
+  include list, which the portable defaults always satisfy, so a consumer may
+  declare a group with only `exclude` to tighten the portable set without
+  widening it. Declared include patterns must still be valid globs.
 
 Globs are repository-root-relative and match normalized `/`-separated paths.
 The portable grammar supports literals, `*` and `?` within a path component,
@@ -454,7 +457,7 @@ source.
 - Safe path groups cannot override common hard categories or numeric gates.
 - Safe path groups are additive: a configured `include` or `exclude` is added to
   the portable set for that group, and no configuration removes a portable
-  exclude.
+  exclude. A group declaring only `exclude` is valid and tightens that group.
 - `generated_paths` affect reporting only.
 - The current PR is evaluated using trusted-base policy. A PR cannot weaken its
   own gate by modifying the seam, workflow files, agent instructions, or

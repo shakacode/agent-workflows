@@ -45,7 +45,9 @@ ci_change_detector: "n/a"
 # Portable safe_path_groups defaults ship for documentation and tests. Consumer
 # include and exclude patterns are added to the portable sets; a consumer can
 # never remove a portable exclude. Omit safe_path_groups entirely to take the
-# portable groups unchanged, and declare only the group you need to widen.
+# portable groups unchanged, and declare only the group you need to adjust. A
+# group may declare only exclude, with no include, to tighten the portable set
+# without widening it.
 # autonomous_merge:
 #   thresholds:
 #     max_changed_files: 29
