@@ -10,6 +10,12 @@ argument-hint: '[PR URL or number]'
 Prove a bug-fix PR works by **reproducing the failure first, then showing the fix removes it**, with
 evidence a reader can check. A fix that "passes" means nothing unless you first showed the bug.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the loaded `workflows/pr-processing.md` contract before writing PR or
+issue comments. Apply it only to explanatory prose; keep the output template,
+captured proof, results table, caveat, and `UNKNOWN` evidence intact.
+
 This is behavioral verification, distinct from the local lint/test loop in `.agents/skills/verify/SKILL.md`
 (`$verify`) and from review skills (`$adversarial-pr-review`, `$post-merge-audit`). Use this when the
 question is "does the fix actually fix the reported problem?", not "does it lint and pass CI?".

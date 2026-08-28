@@ -13,6 +13,13 @@ require "shellwords"
 require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
 require_relative "agent_doctor/hosted_qa_policy"
+writing_style_resolver = File.expand_path("agent-workflow-writing-style", __dir__)
+unless File.file?(writing_style_resolver)
+  warn "agent-workflow-seam-doctor: missing required companion agent-workflow-writing-style; " \
+       "install or upgrade Agent Workflows and retry."
+  exit 1
+end
+load writing_style_resolver
 
 module AgentWorkflowSeamDoctor
   SECTION = "Agent Workflow Configuration"
@@ -1727,6 +1734,11 @@ module AgentWorkflowSeamDoctor
     return ["missing policy config: #{POLICY_CONFIG}"] unless File.file?(path)
 
     yaml = File.read(path, encoding: "UTF-8")
+    structure_error = AgentWorkflowWritingStyle.policy_structure_error(yaml)
+    if structure_error
+      return ["invalid policy config: #{POLICY_CONFIG} (#{structure_error})"]
+    end
+
     config = parse_policy_config(yaml)
     return ["invalid policy config: #{POLICY_CONFIG}"] unless config.is_a?(Hash)
 
@@ -1742,6 +1754,7 @@ module AgentWorkflowSeamDoctor
     config.each do |key, value|
       next if REQUIRED_POLICY_KEYS.include?(key)
       next if key == "trusted_actions" && value == []
+      next if key == "writing_style"
 
       closed_policy = ["autonomous_merge", SELECTED_HOSTED_CI_POLICY_KEY].include?(key)
       next unless unresolved_policy_value?(
@@ -1762,6 +1775,7 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(coordination_backend_policy_issues(yaml))
+    issues.concat(writing_style_policy_issues(root, config, yaml))
     issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
@@ -1777,6 +1791,18 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def writing_style_policy_issues(root, config, yaml)
+    return [] unless config.key?("writing_style")
+
+    structure_error = AgentWorkflowWritingStyle.writing_style_structure_error(yaml)
+    return ["invalid writing_style policy: #{structure_error}"] if structure_error
+
+    AgentWorkflowWritingStyle.extract_guide(config, label: "repository", owner_root: root)
+    []
+  rescue AgentWorkflowWritingStyle::ConfigurationError => e
+    [e.message.sub("invalid repository writing_style", "invalid writing_style policy")]
   end
 
   def coordination_backend_policy_issues(yaml)

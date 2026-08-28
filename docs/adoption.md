@@ -17,6 +17,38 @@ See [seam-design.md](seam-design.md) for the design rationale. See
 paths, upgrade commands, status states, rollback behavior, and Codex/Claude
 notes.
 
+## Configure Project Writing Style
+
+To give a project its own writing guidance, create
+`<project>/docs/writing-style.md`, then add this key to
+`<project>/.agents/agent-workflow.yml`:
+
+```yaml
+writing_style: docs/writing-style.md
+```
+
+The path is relative to the project root, and the repository setting wins. As
+an optional personal fallback for projects that do not set the key, create
+`~/.agents/personal/my-writing-style.md`, then add this key to
+`~/.agents/agent-workflow.yml`:
+
+```yaml
+writing_style: personal/my-writing-style.md
+```
+
+That path is relative to `~/.agents`. The file
+`~/.agents/docs/writing-style.md` is the packaged default managed by
+installation and upgrades; do not edit it or use it for personal
+customization.
+
+An invalid repository configuration, path, or guide blocks resolution. An
+invalid user-global configuration, path, or guide emits a warning and falls
+back to [the packaged portable default](writing-style.md). When `writing_style`
+is absent from both repository and user-global configuration, the resolver also
+uses that packaged default. Resolution is
+repo → user-global → portable default, and one complete Markdown file wins
+without merging prose.
+
 ## One-Time Adoption
 
 1. **Inventory the target repo.** Identify base branch, package managers,
@@ -83,6 +115,11 @@ notes.
    Optionally set `repo_prefix` to 1-6 uppercase ASCII letters or digits to
    override the deterministic repository-name abbreviation used in batch titles
    and thread handles. The initializer does not add this optional key.
+
+   Writing style is optional. Follow
+   [Configure Project Writing Style](#configure-project-writing-style) to add a
+   repository guide or personal fallback. The initializer leaves the optional
+   repository key absent until the project chooses to enable it.
 
    Repositories that use repository-based GitHub Actions and reusable workflows
    must also add a closed, exact `trusted_actions` allowlist. Its entries are
