@@ -2172,11 +2172,13 @@ HST-v1 actionable notification is not a separate category: it is emitted at the
 it reports — closeout and archive completion is a `final-handoff` — and it
 counts in that checkpoint's bucket. Four message kinds are always allowed and
 are not checkpoints: a direct answer to a user question; an explicitly requested
-status report, such as `$status` or `$batch-status`; a turn of an interactive
-exchange another contract requires, including every orientation and
+status report, such as `$status` or `$batch-status`; a turn or step another
+contract requires the coordinator to show, including every orientation and
 one-conceptual-change turn of the
-[ask merge-authority walkthrough](#ask-merge-authority-walkthrough-gate); and an
-immediate stop required by a non-negotiable safety rule in
+[ask merge-authority walkthrough](#ask-merge-authority-walkthrough-gate) and the
+verified review triage that
+[Review Comment Handling](#review-comment-handling) requires before action `f`;
+and an immediate stop required by a non-negotiable safety rule in
 `.agents/skills/pr-batch/SKILL.md` or by a [Worker Rules](#worker-rules) stop
 condition. `OC-v1` never suppresses a required interactive exchange; those turns
 count in the marker's `always_allowed` bucket below, not in
@@ -2184,8 +2186,11 @@ count in the marker's `always_allowed` bucket below, not in
 therefore produces roughly five coordinator messages, not twenty-five. Reducing
 message count never reduces what the final handoff must contain.
 
-**Delta recaps.** A recap after the first one in a task repeats only the rows
-whose state changed since the previous recap. Unchanged targets collapse into
+**Delta recaps.** A recap is content inside a checkpoint message, not its own
+occasion to speak: fold it into the `dispatch`, `decision-required`,
+`merge-decision`, or `final-handoff` message it accompanies, or emit it as an
+explicitly requested status report. A recap after the first one in a task
+repeats only the rows whose state changed since the previous recap. Unchanged targets collapse into
 one line naming their count and their shared state, not their evidence. Do not
 reprint a full table when one row moved. The first recap of a task is full
 because no previous state exists, and a changed row still carries its complete
@@ -2196,8 +2201,9 @@ surface: the review-thread reply that dispositions it, or the finding record in
 the PR description's `Agent details` disclosure, including its
 `priority-finding-dispositions v1` marker where one is required. The coordinator
 message reports counts by severity, names only the findings that changed a
-decision and why in at most one sentence each, and links to that surface. It never restates the table, and it never narrates a finding a
-second time at greater length.
+decision and why in at most one sentence each, and links to that surface. It
+never restates the table, and it never narrates a finding a second time at
+greater length.
 
 This reduction governs chat narration only. It never deletes a durable copy that
 another contract requires. When the QA Evidence block, a
@@ -2266,12 +2272,13 @@ sentinel: a `batch_id` whose value after the substitutions above is exactly
 splits on `;` first, then compares the still-encoded field against bare
 `UNKNOWN`, and decodes only a field that is not that sentinel. Decoding before
 the comparison would turn `%55NKNOWN` back into `UNKNOWN` and destroy the
-distinction this rule exists to create. A `batch_id` whose rendered form still contains any unencoded character
-from that set is malformed: fail closed and record `batch_id` as `UNKNOWN`
-rather than emitting a marker that cannot be parsed. Bare `UNKNOWN` is reserved
+distinction this rule exists to create. A `batch_id` whose rendered form still
+contains any unencoded character from that set is malformed: fail closed and
+record `batch_id` as `UNKNOWN` rather than emitting a marker that cannot be
+parsed. Bare `UNKNOWN` is reserved
 for exactly that unavailable-or-malformed case; a real batch ID of `UNKNOWN`
 reaches the reader as `%55NKNOWN` under the rule above, so a rendered bare
-`UNKNOWN` always means the ID was unavailable.
+`UNKNOWN` means the ID was unavailable or malformed.
 
 Every count accepts exact `UNKNOWN` independently, and each checkpoint count is
 serialized as its own `<name>:<value>` pair so one unavailable bucket never

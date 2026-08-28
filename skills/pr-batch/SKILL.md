@@ -68,11 +68,15 @@ becomes durably terminal. The automation never owns the task or next action.
 
 `OC-v1` bounds coordinator narration volume. Use the canonical
 [Coordinator Output Contract](../../workflows/pr-processing.md#coordinator-output-contract)
-instead of restating its rules here. In short: emit user-visible text only at
+instead of restating its rules here. In short: bound coordinator narration to
 the five typed checkpoints `dispatch`, `pr-open`, `decision-required`,
 `merge-decision`, and `final-handoff`; keep recaps delta-only, findings
 single-surface, and corrections proportional; and report the shadow-only
 `coordinator-narration-volume v1` marker in FYI / decisions made at closeout.
+Four message kinds stay allowed outside those checkpoints and count in the
+marker's `always_allowed` bucket: a direct answer, an explicitly requested
+status report, a turn another contract requires the coordinator to show, and a
+required safety stop.
 
 `OC-v1` is presentation only. It relaxes no evidence, verification, or
 `UNKNOWN`-honesty rule, drops no required exact string, deletes no durable copy
