@@ -1422,7 +1422,7 @@ RUBY
   set -e
 
   assert_file "$marker"
-  [[ "$status" -ne 0 ]] || fail "failed present metadata rollback unexpectedly succeeded"
+  [[ "$status" -eq 67 ]] || fail "failed present metadata rollback exited $status: $output"
   assert_contains "$output" "METADATA_COMMIT_ROLLBACK_FAILED"
   assert_contains "$output" "manual recovery"
   assert_file "$metadata"
@@ -5871,16 +5871,19 @@ RUBY
   status=$?
   set -e
 
-  [[ "$status" -eq 65 ]] || fail "restore directory race exited $status: $output"
+  [[ "$status" -eq 69 ]] || fail "restore directory race exited $status: $output"
   assert_contains "$(cat "$observer")" "restore-directory-race"
   assert_contains "$output" "RECOVERY_FAILED"
+  assert_contains "$output" "RECOVERY_METADATA_RESTORE_FAILED: verified install metadata remains in place"
   quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
   [[ -n "$quarantine" ]] || fail "restore directory race did not preserve quarantine: $output"
-  assert_file "$quarantine/original-backup"
+  assert_file "$quarantine/original-backup/metadata"
   assert_file "$metadata"
   ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
   assert_file "$quarantine/metadata/metadata"
-  assert_file "$quarantine/restore-guard"
+  [[ ! -e "$quarantine/restore-guard" ]] || fail "verified directory-race rollback retained restore guard"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
 }
 
 test_recovery_restore_exchange_restores_competing_destination() {
@@ -7678,6 +7681,99 @@ RUBY
   assert_contains "$output" "ROLLBACK_FAILED"
 }
 
+test_cleanup_receipt_rechecks_replaced_residue_before_acceptance() {
+  local tmp target canonical_target staging migration_receipt residue preserved receipt injection marker output status identity
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; residue="$target/.agent-workflows-install.json.recovery-ReceiptRace1"
+  staging="$target/.agent-workflows-flat-migration-receipt-race"; migration_receipt="$target/.agent-workflows-migration-staging"
+  preserved="$target/.agent-workflows-install.json.recovery-preserved"; receipt="$target/.agent-workflows-install.json.cleanup-complete-ReceiptRace1"
+  injection="$tmp/replace-recovery-residue-final-window.rb"; marker="$tmp/residue-replaced"
+  mkdir -p "$residue" "$staging/user-owned-skill"
+  canonical_target="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'user\n' > "$staging/user-owned-skill/SKILL.md"; printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$migration_receipt"
+  identity="$(ruby -e 's=File.stat(ARGV.fetch(0)); print "#{s.dev}:#{s.ino}"' "$residue")"; printf '%s' "$identity" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCleanupReceiptHook
+  def self.call(phase, residue)
+    return unless phase == :before_final_residue_check
+    File.rename(residue, ENV.fetch("QA_PRESERVED_RESIDUE"))
+    Dir.mkdir(residue)
+    File.write(File.join(residue, "metadata"), "replacement\n")
+    File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_PRESERVED_RESIDUE="$preserved" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "replaced cleanup residue was accepted"
+  assert_contains "$output" "Preserved recovery metadata quarantine $canonical_target/${residue##*/} blocks automatic recovery."
+  assert_file "$residue/metadata"; [[ -d "$preserved" ]] || fail "original cleanup residue was not preserved"
+}
+
+test_recovery_capture_target_fifo_race_fails_without_hanging() {
+  local tmp target canonical_target staging receipt metadata preserved injection marker output_file output status pid completed
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-target-fifo"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/codex-home-preserved"; injection="$tmp/replace-target-with-fifo.rb"; marker="$tmp/target-replaced"
+  output_file="$tmp/installer-output"
+  mkdir -p "$staging/user-owned-skill"; printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  canonical_target="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$target")"
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module RecoveryTargetFifo
+  extend Fiddle::Importer
+  dlload Fiddle.dlopen(nil)
+  extern "int mkfifo(const char *, unsigned int)"
+end
+class << File
+  alias_method :qa_original_open, :open
+  def open(path, *args, **kwargs, &block)
+    if ARGV.length == 5 && path == ENV.fetch("QA_TARGET") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.rename(path, ENV.fetch("QA_PRESERVED_TARGET"))
+      raise SystemCallError.new("mkfifo", Fiddle.last_error) if RecoveryTargetFifo.mkfifo(path, 0o600) == -1
+      File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+    end
+    qa_original_open(path, *args, **kwargs, &block)
+  end
+end
+RUBY
+
+  set +e
+  QA_TARGET="$canonical_target" QA_PRESERVED_TARGET="$preserved" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" > "$output_file" 2>&1 &
+  pid=$!
+  completed=false
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$pid" 2>/dev/null; then completed=true; break; fi
+    sleep 0.1
+  done
+  if [[ "$completed" != true ]]; then
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    set -e
+    fail "recovery capture blocked while opening a raced target FIFO"
+  fi
+  wait "$pid"; status=$?
+  set -e
+  output="$(cat "$output_file")"
+
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "recovery target FIFO race unexpectedly succeeded"
+  [[ -p "$canonical_target" ]] || fail "recovery target FIFO race did not retain the raced target pathname"
+  assert_file "$preserved/.agent-workflows-install.json"
+  assert_file "$preserved/.agent-workflows-migration-staging"
+  rm "$canonical_target"; mv "$preserved" "$canonical_target"
+  find "$canonical_target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -empty -exec rmdir {} \;
+  [[ -d "$canonical_target/.agent-workflows-install.lock" ]] || fail "recovery target FIFO race lost retained install lock"
+  [[ -z "$(find "$canonical_target/.agent-workflows-install.lock" -mindepth 1 -print -quit)" ]] || \
+    fail "recovery target FIFO race retained a nonempty install lock"
+  rmdir "$canonical_target/.agent-workflows-install.lock"
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$output" "Installed ShakaCode agent workflows"
+}
+
 test_install_lock_identity_failure_removes_empty_lock_and_allows_retry() {
   local tmp target injection marker output status retry_output
   tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-lock-identity-once.rb"; marker="$tmp/identity-failed"
@@ -7725,6 +7821,8 @@ main() {
     test_committed_recovery_cleanup_mode_restore_failure_does_not_wedge_receipt
     test_post_deletion_target_mode_restore_failure_finalizes_recovery_receipt
     test_default_staging_rollback_reverses_partial_moves
+    test_cleanup_receipt_rechecks_replaced_residue_before_acceptance
+    test_recovery_capture_target_fifo_race_fails_without_hanging
     test_install_lock_identity_failure_removes_empty_lock_and_allows_retry
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation

@@ -441,7 +441,7 @@ capture_bound_recovery_metadata() {
                                   quarantine_name.match?(/\A\.agent-workflows-install\.json\.recovery-[A-Za-z0-9]+\z/)
 
       target_path_stat = File.lstat(target)
-      target_file = File.open(target, File::RDONLY | File::NOFOLLOW)
+      target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
       target_stat = target_file.stat
       raise BindingChanged unless target_stat.directory? && target_stat.dev == target_path_stat.dev &&
                                   target_stat.ino == target_path_stat.ino
@@ -721,7 +721,19 @@ recovery_metadata_cleanup_receipt_valid() {
       abort unless final_stat.dev == opened_stat.dev && final_stat.ino == opened_stat.ino &&
                    named_stat.file? && !named_stat.symlink? &&
                    named_stat.dev == opened_stat.dev && named_stat.ino == opened_stat.ino
-      abort unless identity == "#{residue_stat.dev}:#{residue_stat.ino}"
+      RecoveryCleanupReceiptHook.call(:before_final_residue_check, residue) if defined?(RecoveryCleanupReceiptHook)
+      final_residue_stat = File.lstat(residue)
+      abort unless final_residue_stat.directory? && !final_residue_stat.symlink? &&
+                   final_residue_stat.dev == residue_stat.dev && final_residue_stat.ino == residue_stat.ino
+      %w[metadata original-backup sentinel].each do |name|
+        begin
+          File.lstat(File.join(residue, name))
+          abort
+        rescue Errno::ENOENT
+          nil
+        end
+      end
+      abort unless identity == "#{final_residue_stat.dev}:#{final_residue_stat.ino}"
     ensure
       receipt_file&.close
     end
@@ -1295,7 +1307,7 @@ replace_bound_recovery_metadata() {
                      File.dirname(source) == quarantine &&
                      %w[metadata original-backup].include?(source_name)
       target_path_stat = File.lstat(target)
-      target_file = File.open(target, File::RDONLY | File::NOFOLLOW)
+      target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
       ios << target_file
       target_stat = target_file.stat
       exit 67 unless target_stat.directory? && target_stat.dev == target_path_stat.dev &&
@@ -1458,7 +1470,7 @@ remove_bound_recovery_metadata_artifacts() {
       raise CleanupFailed unless quarantine_name.match?(/\A\.agent-workflows-install\.json\.recovery-[A-Za-z0-9]+\z/)
 
       target_path_stat = File.lstat(target)
-      target_file = File.open(target, File::RDONLY | File::NOFOLLOW)
+      target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
       ios << target_file
       target_stat = target_file.stat
       raise CleanupFailed unless target_stat.directory? && target_stat.dev == target_path_stat.dev &&
@@ -2334,7 +2346,7 @@ remove_attested_metadata_file() {
     end
     path, expected = ARGV; retained = path; success = false
     at_exit { print retained unless success }
-    parent = File.open(File.dirname(path), File::RDONLY | File::NOFOLLOW)
+    parent = File.open(File.dirname(path), File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
     name = File.basename(path); private_name = ".cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
     BoundCleanupHook.call(path) if defined?(BoundCleanupHook)
     abort unless BoundCleanup.no_replace(parent.fileno, name, private_name) == 0
@@ -2368,7 +2380,7 @@ remove_bound_empty_directory() {
     end
     path, expected = ARGV; retained = path; success = false
     at_exit { print retained unless success }
-    parent = File.open(File.dirname(path), File::RDONLY | File::NOFOLLOW)
+    parent = File.open(File.dirname(path), File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
     name = File.basename(path); private_name = ".cleanup-dir-#{Process.pid}-#{SecureRandom.hex(12)}"
     original_fd = BoundDirCleanup.openat(parent.fileno, name, File::RDONLY | File::NOFOLLOW); abort if original_fd == -1
     original = File.for_fd(original_fd); original_stat = original.stat
