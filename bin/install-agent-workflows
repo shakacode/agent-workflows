@@ -294,15 +294,19 @@ read_installed_metadata_value() {
         managed_pack_doc_copy_fingerprints
         managed_pack_helper_copy_fingerprints
         managed_pack_root_copy_fingerprints
+        managed_bin_helper_copy_fingerprints
       ].any? do |field|
         next false unless metadata.key?(field)
         fingerprints = metadata[field]
         !fingerprints.is_a?(Hash) || fingerprints.any? do |name, digest|
           valid_name = if field == "managed_skill_copy_fingerprints"
                          name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
+                       elsif field == "managed_bin_helper_copy_fingerprints"
+                         name.is_a?(String) && name.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/)
                        else
                          segments = name.is_a?(String) ? name.split("/", -1) : []
-                         name.is_a?(String) && !name.empty? && !name.start_with?("/") && !name.include?("\0") &&
+                         name.is_a?(String) && !name.empty? && !name.start_with?("/") &&
+                           !name.match?(/[\x00-\x1f\x7f]/) &&
                            segments.none? { |segment| segment.empty? || segment == "." || segment == ".." }
                        end
           !valid_name || !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/i)
@@ -1907,9 +1911,11 @@ prepare_metadata() {
         end
       end
     end
-    path, host, mode, delivery_mode, source, content_root, version, revision, branch, remote, installed_at, channel, release_ref, tag_object, doc_count, *assets = ARGV
-    pack_docs = assets.shift(Integer(doc_count))
-    bin_helpers = assets
+    path, host, mode, delivery_mode, source, content_root, version, revision, branch, remote, installed_at, channel, release_ref, tag_object, pack_doc_count, *inventory = ARGV
+    pack_doc_count = Integer(pack_doc_count, 10)
+    abort if pack_doc_count.negative? || pack_doc_count > inventory.length
+    pack_docs = inventory.shift(pack_doc_count)
+    bin_helpers = inventory
     directory_fingerprint = lambda do |root|
       entries = []
       Find.find(root) do |entry|
@@ -1961,10 +1967,9 @@ prepare_metadata() {
                         end
     helper_fingerprints = if mode == "copy"
                             bin_helpers.to_h do |name|
-                              helper = File.join(source, "bin", name)
-                              unless File.file?(helper) && !File.symlink?(helper)
-                                abort "missing pack helper while preparing install metadata: #{helper}"
-                              end
+                              helper = File.join(content_root, "bin", name)
+                              abort "missing helper while preparing install metadata: #{helper}" unless File.file?(helper) &&
+                                                                                                  !File.symlink?(helper)
 
                               [name, Digest::SHA256.file(helper).hexdigest]
                             end
@@ -1984,7 +1989,8 @@ prepare_metadata() {
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints,
       "managed_pack_helper_copy_fingerprints" => helper_fingerprints,
-      "managed_pack_root_copy_fingerprints" => root_fingerprints
+      "managed_pack_root_copy_fingerprints" => root_fingerprints,
+      "managed_bin_helper_copy_fingerprints" => helper_fingerprints
     }
     metadata["channel"] = channel
     metadata["release_ref"] = release_ref unless release_ref.empty?
@@ -3963,7 +3969,7 @@ load_materialized_release_inventory() {
 
     validate_entry = lambda do |relative, kind|
       abort unless relative.is_a?(String) && !relative.empty?
-      abort if relative.include?("\0") || relative.match?(/[\r\n]/)
+      abort if relative.match?(/[\x00-\x1f\x7f]/)
       parts = relative.split("/", -1)
       abort if parts.any? { |part| part.empty? || part == "." || part == ".." }
       if kind == :helper
@@ -4012,6 +4018,126 @@ load_materialized_release_inventory() {
   while IFS= read -r doc_name; do
     [[ -z "$doc_name" ]] || pack_docs+=("$doc_name")
   done < "$docs_path"
+}
+
+restore_obsolete_stable_copy_files() {
+  local index original staged expected_identity original_parent original_parent_identity attestation move_status
+  for ((index = ${#obsolete_managed_staging[@]} - 6; index >= 0; index -= 6)); do
+    original="${obsolete_managed_staging[$index]}"
+    staged="${obsolete_managed_staging[$((index + 1))]}"
+    expected_identity="${obsolete_managed_staging[$((index + 2))]}"
+    original_parent="${obsolete_managed_staging[$((index + 3))]}"
+    original_parent_identity="${obsolete_managed_staging[$((index + 4))]}"
+    attestation="${obsolete_managed_staging[$((index + 5))]}"
+    if [[ -e "$original" || -L "$original" ]] ||
+       [[ "$(regular_file_attestation "$staged" 2>/dev/null || true)" != "$attestation" ]]; then
+      echo "MANAGED_SURFACE_ROLLBACK_FAILED: preserved staged managed file: $staged" >&2
+      return 65
+    fi
+    move_status=0
+    move_bound_recovery_path "$staged" "$original" "$install_lock" "$install_lock_identity" \
+      "$original_parent" "$original_parent_identity" "$expected_identity" || move_status=$?
+    if [[ "$move_status" -ne 0 ]]; then
+      echo "MANAGED_SURFACE_ROLLBACK_FAILED: preserved staged managed file: $staged" >&2
+      return 65
+    fi
+  done
+  obsolete_managed_staging=()
+}
+
+finalize_obsolete_stable_copy_files() {
+  local index staged attestation cleanup_path
+  for ((index = 0; index < ${#obsolete_managed_staging[@]}; index += 6)); do
+    staged="${obsolete_managed_staging[$((index + 1))]}"
+    attestation="${obsolete_managed_staging[$((index + 5))]}"
+    if ! cleanup_path="$(remove_attested_metadata_file "$staged" "$attestation")"; then
+      report_metadata_cleanup_pending "${cleanup_path:-$staged}"
+      return 65
+    fi
+  done
+  obsolete_managed_staging=()
+}
+
+reconcile_obsolete_stable_copy_files() {
+  local obsolete_records kind name expected_digest destination attestation
+  local original_parent original_parent_identity expected_identity staged move_status
+  local -a removals=()
+  [[ "$channel" = "stable" && "$mode" = "copy" ]] || return 0
+  [[ "${install_metadata_binding_state:-}" = "present" ]] || return 0
+  require_install_metadata_binding
+
+  if ! obsolete_records="$(ruby -rjson -e '
+    metadata_path, separator, *selected = ARGV
+    abort unless separator == "__AGENT_WORKFLOWS_DOCS__"
+    helper_separator = selected.index("__AGENT_WORKFLOWS_HELPERS__") or abort
+    selected_docs = selected.shift(helper_separator)
+    selected.shift
+    selected_helpers = selected
+    metadata = JSON.parse(File.binread(metadata_path))
+    abort unless metadata.is_a?(Hash) && metadata["mode"] == "copy"
+    fields = {
+      "doc" => ["managed_pack_doc_copy_fingerprints", selected_docs],
+      "helper" => ["managed_bin_helper_copy_fingerprints", selected_helpers]
+    }
+    fields.each do |kind, (field, selected_names)|
+      fingerprints = metadata.fetch(field, {})
+      abort unless fingerprints.is_a?(Hash)
+      fingerprints.each do |name, digest|
+        abort unless name.is_a?(String) && !name.include?("\t") && !name.match?(/[\x00-\x1f\x7f]/)
+        abort unless digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/i)
+        puts [kind, name, digest].join("\t") unless selected_names.include?(name)
+      end
+    end
+  ' "$install_metadata_snapshot_path" __AGENT_WORKFLOWS_DOCS__ "${pack_docs[@]}" \
+    __AGENT_WORKFLOWS_HELPERS__ "${bin_helpers[@]}")"; then
+    echo "MANAGED_SURFACE_RECONCILIATION_FAILED: installed metadata inventory is invalid." >&2
+    return 65
+  fi
+  require_install_metadata_binding
+
+  while IFS=$'\t' read -r kind name expected_digest; do
+    [[ -n "$kind" ]] || continue
+    case "$kind" in
+      doc) destination="$target/docs/$name" ;;
+      helper) destination="$target/bin/$name" ;;
+      *) return 65 ;;
+    esac
+    [[ -e "$destination" || -L "$destination" ]] || continue
+    if ! attestation="$(regular_file_attestation "$destination")" ||
+       [[ "${attestation#*|}" != "$expected_digest" ]]; then
+      echo "MANAGED_SURFACE_RECONCILIATION_FAILED: preserved modified or replaced prior managed path: $destination" >&2
+      return 65
+    fi
+    removals+=("$destination" "$attestation")
+  done <<< "$obsolete_records"
+
+  local index record_index
+  for ((index = 0; index < ${#removals[@]}; index += 2)); do
+    destination="${removals[$index]}"
+    attestation="${removals[$((index + 1))]}"
+    original_parent="$(dirname "$destination")"
+    original_parent_identity="$(recovery_directory_identity "$original_parent")" || return 65
+    expected_identity="${attestation%%|*}"
+    record_index=$((index / 2))
+    staged="$install_lock/managed-surface-$record_index"
+    move_status=0
+    move_bound_recovery_path "$destination" "$staged" "$original_parent" "$original_parent_identity" \
+      "$install_lock" "$install_lock_identity" "$expected_identity" || move_status=$?
+    if [[ "$move_status" -ne 0 ]]; then
+      restore_obsolete_stable_copy_files || true
+      echo "MANAGED_SURFACE_RECONCILIATION_FAILED: preserved prior managed path: $destination" >&2
+      return 65
+    fi
+    obsolete_managed_staging+=(
+      "$destination" "$staged" "$expected_identity" "$original_parent" "$original_parent_identity" "$attestation"
+    )
+    if [[ "$(regular_file_attestation "$staged" 2>/dev/null || true)" != "$attestation" ]]; then
+      restore_obsolete_stable_copy_files || true
+      echo "MANAGED_SURFACE_RECONCILIATION_FAILED: staged managed path changed: $destination" >&2
+      return 65
+    fi
+    require_install_metadata_binding
+  done
 }
 
 cleanup_materialized_release() {
@@ -4353,6 +4479,7 @@ fi
 prebind_install_metadata_rollback_guard || exit 1
 metadata_committed=false
 metadata_commit_rollback_failed=false
+obsolete_managed_staging=()
 release_install_transaction() {
   local status=$? cleanup_path
   trap - EXIT
@@ -4370,6 +4497,11 @@ release_install_transaction() {
   elif [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" = "true" &&
           -n "$migration_staging" ]]; then
     echo "CLEANUP_PENDING: metadata commit outcome is uncertain; preserved $migration_receipt for $migration_staging without restoring the staged flat layout." >&2
+  fi
+  if [[ "$metadata_committed" != "true" && ${#obsolete_managed_staging[@]} -gt 0 ]]; then
+    if ! restore_obsolete_stable_copy_files; then
+      status=65
+    fi
   fi
   if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" &&
         -n "${prepared_metadata_attestation:-}" ]]; then
@@ -4445,6 +4577,7 @@ if [[ "$mode" = "copy" ]]; then
     fi
     install -m 0755 "$repo_root/bin/$helper" "$destination"
   done
+  reconcile_obsolete_stable_copy_files
 else
   if [[ -L "$target/bin/agent_doctor" ]] &&
      [[ "$(readlink "$target/bin/agent_doctor")" != "$repo_root/bin/agent_doctor" ]] &&
@@ -4529,6 +4662,7 @@ if ! verify_install_metadata_binding; then
 fi
 commit_metadata
 metadata_committed=true
+finalize_obsolete_stable_copy_files
 if [[ -n "$migration_staging" ]]; then
   if rm -rf "$migration_staging"; then
     rm -f "$migration_receipt"

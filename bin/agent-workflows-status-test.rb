@@ -5,6 +5,7 @@
 # Run with: ruby bin/agent-workflows-status-test.rb
 
 require "fileutils"
+require "digest"
 require "json"
 require "minitest/autorun"
 require "open3"
@@ -259,7 +260,9 @@ class AgentWorkflowsStatusTest < Minitest::Test
           "delivery_mode" => "flat",
           "channel" => "stable",
           "release_ref" => "v1.2.3",
-          "tag_object" => tag_object
+          "tag_object" => tag_object,
+          "managed_bin_helper_copy_fingerprints" => {},
+          "managed_pack_doc_copy_fingerprints" => {}
         )
 
         out, status = run_status(
@@ -293,6 +296,79 @@ class AgentWorkflowsStatusTest < Minitest::Test
 
         assert_equal 3, status.exitstatus, out
         assert_includes JSON.parse(out).fetch("reason"), "tag moved"
+      end
+    end
+  end
+
+  def test_stable_status_fails_closed_when_recorded_managed_files_are_missing_or_changed
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        FileUtils.mkdir_p(File.join(source, ".claude-plugin"))
+        FileUtils.mkdir_p(File.join(source, ".codex-plugin"))
+        FileUtils.mkdir_p(File.join(source, "skills/example"))
+        FileUtils.mkdir_p(File.join(source, "bin"))
+        FileUtils.mkdir_p(File.join(source, "docs"))
+        FileUtils.mkdir_p(File.join(target, "skills/example"))
+        FileUtils.mkdir_p(File.join(target, "bin"))
+        FileUtils.mkdir_p(File.join(target, "docs"))
+        File.write(File.join(source, "VERSION"), "1.2.3\n")
+        File.write(File.join(source, "skills/example/SKILL.md"), "stable skill\n")
+        File.write(File.join(target, "skills/example/SKILL.md"), "stable skill\n")
+        File.write(File.join(source, ".claude-plugin/plugin.json"), "{\"version\":\"1.2.3\"}\n")
+        File.write(File.join(source, ".codex-plugin/plugin.json"), "{\"version\":\"1.2.3\"}\n")
+        helper = File.join(target, "bin/release-helper")
+        doc = File.join(target, "docs/release-doc.md")
+        File.write(File.join(source, "bin/release-helper"), "#!/usr/bin/env bash\nexit 0\n")
+        FileUtils.chmod(0o755, File.join(source, "bin/release-helper"))
+        FileUtils.cp(File.join(source, "bin/release-helper"), helper)
+        FileUtils.chmod(0o755, helper)
+        File.write(File.join(source, "docs/release-doc.md"), "stable doc\n")
+        FileUtils.cp(File.join(source, "docs/release-doc.md"), doc)
+        system("git", "-C", source, "init", "--quiet", exception: true)
+        system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
+        system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
+        system("git", "-C", source, "add", ".", exception: true)
+        system("git", "-C", source, "commit", "--quiet", "-m", "stable release", exception: true)
+        commit = `git -C #{Shellwords.escape(source)} rev-parse HEAD`.strip
+        system("git", "-C", source, "tag", "-a", "v1.2.3", "-m", "stable release", exception: true)
+        tag_object = `git -C #{Shellwords.escape(source)} rev-parse refs/tags/v1.2.3`.strip
+        write_metadata(
+          target,
+          "version" => "1.2.3",
+          "source" => source,
+          "source_revision" => commit,
+          "delivery_mode" => "flat",
+          "channel" => "stable",
+          "release_ref" => "v1.2.3",
+          "tag_object" => tag_object,
+          "managed_bin_helper_copy_fingerprints" => {
+            "release-helper" => Digest::SHA256.file(helper).hexdigest
+          },
+          "managed_pack_doc_copy_fingerprints" => {
+            "release-doc.md" => Digest::SHA256.file(doc).hexdigest
+          }
+        )
+
+        FileUtils.rm_f(helper)
+        missing_out, missing_status = run_status(
+          {}, "--target", target, "--host", "claude", "--source", source,
+          "--channel", "stable", "--release", "v1.2.3", "--json"
+        )
+        FileUtils.cp(File.join(source, "bin/release-helper"), helper)
+        File.write(doc, "locally changed\n")
+        changed_out, changed_status = run_status(
+          {}, "--target", target, "--host", "claude", "--source", source,
+          "--channel", "stable", "--release", "v1.2.3", "--json"
+        )
+
+        failures = []
+        missing_payload = JSON.parse(missing_out)
+        changed_payload = JSON.parse(changed_out)
+        failures << "missing helper reported #{missing_payload.fetch('status')}" unless missing_status.exitstatus == 3
+        failures << "missing helper reason was not useful" unless missing_payload["reason"].to_s.include?("release-helper")
+        failures << "changed document reported #{changed_payload.fetch('status')}" unless changed_status.exitstatus == 3
+        failures << "changed document reason was not useful" unless changed_payload["reason"].to_s.include?("release-doc.md")
+        assert_empty failures, failures.join("\n")
       end
     end
   end

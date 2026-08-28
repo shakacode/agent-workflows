@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 require "optparse"
 require "open3"
 require "rbconfig"
@@ -235,6 +236,44 @@ module AgentWorkflowsStatus
     end
   end
 
+  def stable_managed_surface_error(target, metadata)
+    fields = {
+      "managed helper" => ["managed_bin_helper_copy_fingerprints", "bin"],
+      "managed pack document" => ["managed_pack_doc_copy_fingerprints", "docs"]
+    }
+    fields.each do |label, (field, directory)|
+      fingerprints = metadata[field]
+      return "installed stable metadata is missing #{field}" unless fingerprints.is_a?(Hash)
+
+      fingerprints.each do |name, expected|
+        valid_name = if directory == "bin"
+                       name.is_a?(String) && name.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/)
+                     else
+                       segments = name.is_a?(String) ? name.split("/", -1) : []
+                       name.is_a?(String) && !name.empty? && !name.start_with?("/") &&
+                         !name.match?(/[\x00-\x1f\x7f]/) &&
+                         segments.none? { |segment| segment.empty? || segment == "." || segment == ".." }
+                     end
+        return "installed stable metadata has invalid #{label} path" unless valid_name
+        unless expected.is_a?(String) && expected.match?(/\A[0-9a-f]{64}\z/i)
+          return "installed stable metadata has invalid fingerprint for #{name}"
+        end
+
+        path = File.join(target, directory, name)
+        begin
+          stat = File.lstat(path)
+        rescue Errno::ENOENT, Errno::ENOTDIR
+          return "installed #{label} is missing: #{name}"
+        end
+        return "installed #{label} is not a regular file: #{name}" unless stat.file? && !stat.symlink?
+        return "installed #{label} fingerprint changed: #{name}" unless Digest::SHA256.file(path).hexdigest == expected.downcase
+      end
+    end
+    nil
+  rescue SystemCallError => e
+    "installed stable managed-surface check failed: #{e.message}"
+  end
+
   def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, available_version: nil, available_release_ref: nil, checked_remote: false, reason: nil, delivery_state: nil)
     payload = {
       "status" => status,
@@ -377,6 +416,17 @@ module AgentWorkflowsStatus
         host:,
         metadata:,
         reason: delivery_error,
+        delivery_state: delivery
+      )
+    end
+    if requested_channel == "stable" && (surface_error = stable_managed_surface_error(target, metadata))
+      return status_payload(
+        "CHECK_FAILED",
+        target:,
+        source:,
+        host:,
+        metadata:,
+        reason: surface_error,
         delivery_state: delivery
       )
     end

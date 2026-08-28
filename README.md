@@ -244,11 +244,11 @@ Codex when an existing session must rediscover changed skills or instructions.
 
 ## Consumer Repo Adoption
 
-From each repository that should use these workflows, initialize and validate a
-starter seam in one command:
+For a stable install, initialize and validate each consumer repository against
+the installed exact-release target (`$HOME/.claude` for a Claude install):
 
 ```bash
-agent-workflow-seam-doctor --init --shared "$HOME/src/agent-workflows"
+agent-workflow-seam-doctor --init --shared "$HOME/.codex"
 ```
 
 The initializer preserves existing repo-owned seam content. It detects executable
@@ -261,8 +261,11 @@ configuration. Supply both commands explicitly to complete the seam in one run:
 agent-workflow-seam-doctor --init \
   --validate-command 'bin/validate' \
   --test-command 'bin/test' \
-  --shared "$HOME/src/agent-workflows"
+  --shared "$HOME/.codex"
 ```
+
+Only development-channel installs should instead use a mutable source checkout
+such as `--shared "$HOME/src/agent-workflows"`.
 
 Simple explicit commands forward wrapper arguments automatically. Explicit
 `npm run` commands add npm's `--` separator; `pnpm run` and `yarn run` pass the

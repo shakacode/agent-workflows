@@ -47,6 +47,12 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
         "--target", target, "--source", source,
         "--release", "v0.1.1", "--no-fetch"
       )
+      release_two_doc = File.join(target, "docs/release-two-only.md")
+      release_two_helper = File.join(target, "bin/agent-workflows-release-two-only")
+      upgrade_installed_release_two_doc = File.file?(release_two_doc)
+      upgrade_installed_release_two_helper = File.file?(release_two_helper)
+      unrelated = File.join(target, "docs/user-owned.md")
+      File.write(unrelated, "user owned\n")
       rollback_output, rollback_status = run_command(
         File.join(target, "bin/upgrade-agent-workflows"),
         "--target", target, "--source", source,
@@ -55,12 +61,13 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
 
       failures = []
       failures << "upgrade failed: #{upgrade_output}" unless upgrade_status.success?
-      release_two_doc = File.join(target, "docs/release-two-only.md")
-      release_two_helper = File.join(target, "bin/agent-workflows-release-two-only")
-      failures << "upgrade omitted the selected release's new pack document" unless File.file?(release_two_doc)
-      failures << "upgrade omitted the selected release's new helper" unless File.file?(release_two_helper)
+      failures << "upgrade omitted the selected release's new pack document" unless upgrade_installed_release_two_doc
+      failures << "upgrade omitted the selected release's new helper" unless upgrade_installed_release_two_helper
       failures << "rollback failed: #{rollback_output}" unless rollback_status.success?
       failures << "rollback did not report completion" unless rollback_output.include?("ROLLBACK_COMPLETE")
+      failures << "rollback retained the newer release's managed pack document" if File.exist?(release_two_doc)
+      failures << "rollback retained the newer release's managed helper" if File.exist?(release_two_helper)
+      failures << "rollback removed an unrelated user-owned path" unless File.read(unrelated) == "user owned\n"
 
       assert_empty failures, failures.join("\n")
     end
