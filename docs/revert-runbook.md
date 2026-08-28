@@ -24,18 +24,29 @@ being inferred.
 
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA.
 - The commit SHA on `BASE` that landed the suspect PR.
-- **The repo's merge style.** Establish it; do not assume it. A repo that
-  squash-merges or rebase-merges lands each PR as an ordinary single-parent
-  commit, not a merge commit, and that changes both how you enumerate landed
-  work and how you revert it. Check with:
+- **The repo's merge style.** Establish it; do not assume it. It decides both
+  how you enumerate landed work and how you revert it. Check with:
 
   ```bash
   git --no-pager log --first-parent --format='%h parents=%p | %s' "${BASE}" | head -20
   ```
 
-  One parent hash per line means squash/rebase merges; two means true merge
-  commits. A repo can contain both, so classify per commit rather than once for
-  the repo.
+  Three styles land a PR three different ways, and the two single-parent styles
+  are **not** interchangeable:
+
+  | Style | Parents | Commits per PR |
+  | --- | --- | --- |
+  | merge commit | two or more | one merge commit |
+  | squash merge | one | one commit |
+  | rebase merge | one | **N** — the PR's whole series, replayed |
+
+  Parent shape alone cannot tell squash from rebase: both land single-parent
+  commits. The difference is how many, and getting it wrong reverts part of a
+  PR. A repo can contain all three, so classify per PR rather than once for the
+  repo.
+- **The landed commit range for the suspect PR** — see
+  [Recover each PR's landed range](#recover-each-prs-landed-range). The unit of
+  revert is a PR's complete range, not a single SHA.
 - The `batch_id` and lane name that produced it, if any.
 - The `stage-dependency-plan` v1 path and id used by that batch, if any.
 - `PRE_BATCH_SHA`: the state the base branch was in before the closure landed,
@@ -110,6 +121,54 @@ and a classifier that misreports shape on one platform is worse than no
 classifier, because it reintroduces the too-narrow revert on exactly the repos
 that squash-merge.
 
+### Recover each PR's landed range
+
+Parent shape tells you *how* to revert a commit. It does not tell you *how many*
+commits a PR landed, and that is a separate way to revert too little. A rebase
+merge replays the PR's whole series onto the base, so a three-commit PR lands as
+three consecutive single-parent commits. Reverting only the newest of them
+leaves the rest of the change applied — the same too-narrow-revert failure as a
+`--merges` enumeration, one level down.
+
+**The unit of revert is a PR's complete landed range, not a single SHA.**
+
+Recover the range from GitHub plus git:
+
+```bash
+gh pr view "${PR}" --repo "${REPO}" --json mergeCommit,commits   --jq '{tip: .mergeCommit.oid, n: (.commits | length)}'
+```
+
+- **Merge commit**: the range is the merge commit alone; `-m 1` already brings
+  in the whole side branch.
+- **Squash merge**: `n` counts the PR's pre-squash commits, but only one commit
+  landed. The range is that one commit.
+- **Rebase merge**: the range is the `n` consecutive first-parent commits ending
+  at the tip — `<tip>~<n>..<tip>`.
+
+```bash
+git log --first-parent --format='%h %s' "${TIP}~${N}..${TIP}"
+```
+
+**Match on subject and patch-id, not SHA.** A rebase rewrites every commit, so
+the landed SHAs never equal the PR's original commit SHAs; comparing them finds
+nothing and silently yields an empty range. Compare subjects first, and fall
+back to `git patch-id --stable` when subjects were amended:
+
+```bash
+git show "${SHA}" | git patch-id --stable | cut -d' ' -f1
+```
+
+Verify the recovered range before reverting: its oldest commit's first parent
+must be the pre-PR state, and every commit in it must belong to this PR. If the
+count and the first-parent walk disagree — force-pushes, a later `main` merged
+back in, or a PR whose commits were not contiguous on landing — the range is
+`UNKNOWN`. Fail closed: widen to the enclosing batch closure or stop for the
+operator rather than reverting a guessed range.
+
+Treat the whole range as one unit in the disjointness test in
+[Decision rule](#decision-rule): a later commit that depends on *any* member of
+the range depends on the PR.
+
 Use `git diff <sha>^1 <sha>` to see what a commit actually put on the base
 branch. This single form is correct for both shapes — `^1` is the first parent
 of a merge and the only parent of a single-parent commit — so the diff needs no
@@ -179,13 +238,17 @@ git log --first-parent --format='%h %s' "${BASE}" -- ${PATHS}
 Revert **one PR** when all of the following hold:
 
 - no `merge_order` edge names its lane as a `from`; and
-- its first-parent file set is disjoint from the first-parent file set of every
-  later landed commit on `BASE`; and
-- no later landed commit's content depends on symbols, files, or schema the
-  suspect commit introduced.
+- the union of the file sets across the PR's **entire landed range** is disjoint
+  from the file set of every later landed commit on `BASE`; and
+- no later landed commit's content depends on symbols, files, or schema any
+  commit in that range introduced.
 
-Otherwise **unwind the closure**: the suspect commit plus every later landed
-commit that depends on it, transitively. If any input to that test is
+Compare whole ranges, not individual commits: a later commit that depends on any
+one member of a rebased series depends on the PR, and testing member-by-member
+can find each individual commit "independent" while the PR as a whole is not.
+
+Otherwise **unwind the closure**: the suspect PR's range plus every later PR
+whose range depends on it, transitively. If any input to that test is
 `UNKNOWN`, take the wider scope or stop for the operator. A too-wide revert is
 a review problem; a too-narrow revert leaves the base branch in a state that
 never existed and that nothing has ever validated.
@@ -263,7 +326,7 @@ parent shape from the commit and use the matching form, rather than letting git
 tell you when you guessed wrong.
 
 ```bash
-# single-parent (squash/rebase)
+# single-parent (squash commit, or one commit of a rebased series)
 git revert --no-edit "${SHA}"
 # true merge commit
 git revert -m 1 --no-edit "${SHA}"
@@ -274,7 +337,23 @@ git revert --continue --no-edit
 git revert --abort
 ```
 
-Repeat for each in-scope commit, newest to oldest.
+Revert every commit in every in-scope PR's landed range, newest to oldest. For
+a rebase-merged PR that is N commits, not one. `git log` already emits newest
+first, so walking its output is the correct order:
+
+```bash
+git log --first-parent --format='%H' "${TIP}~${N}..${TIP}" | while read -r sha; do
+  if git rev-parse -q --verify "${sha}^2" >/dev/null; then
+    git revert -m 1 --no-edit "$sha" || break
+  else
+    git revert --no-edit "$sha" || break
+  fi
+done
+```
+
+The loop stops on the first conflict so you can resolve it; rerun it for the
+remaining commits after `git revert --continue`. Do not let it run unattended
+past a conflict.
 
 ### Conflicts caused by later unrelated merges
 
@@ -401,19 +480,24 @@ A consumer repo resolves its own configured backend and its own invocation; do
 not assume the `agent-coord` binary exists, is on `PATH`, or is responsive. The
 events and terminal values are the portable part.
 
-```bash
-agent-coord record-event --type human_intervention --kind manual-fix \
-  --batch-id "${BATCH_ID}" --lane "${LANE}" \
-  --repo "${REPO}" --target "${TARGET}" \
-  --message "Merge of PR #${PR} reverted by PR #${REVERT_PR}"
+**These events happen at two different times, and conflating them writes a
+false record.** The revert has not merged when you open the draft PR, and the
+operator may reject or change it. A `manual-fix` event that already names a
+merged `${REVERT_PR}` claims a repair that has not happened — and since the
+first terminal event is immutable, a coordination history that overstates a
+completed repair cannot be corrected afterwards. Record only what is true at
+each checkpoint.
 
+**Checkpoint A — at escalation, before the operator decides.** The observed
+failure is a fact now, and so is the proposal. The merged revert is not.
+
+```bash
 agent-coord record-event --type error --severity "${P0_TO_P3}" \
   --category "${CATEGORY}" --message "${OBSERVED_FAILURE}" \
   --batch-id "${BATCH_ID}" --lane "${LANE}" --repo "${REPO}"
 ```
 
-While the operator decision on the revert is still outstanding, the lane is
-blocked on an approval, which is the `permission` branch of the
+The lane is now blocked on an approval, which is the `permission` branch of the
 `help_requested` precedence rule:
 
 ```bash
@@ -429,6 +513,24 @@ are exactly `help_requested`, `escalation_requested`, `error`, and
 `planned`, `claimed`, `active`, `blocked`, `completed`, and terminal closeout
 values are exactly `done`, `abandoned`, `superseded`. Keep the two apart: the
 lifecycle state says where the lane is, the closeout value says how it ended.
+
+**Checkpoint B — only after the revert PR has actually merged.** Confirm it is
+merged before emitting anything here (`gh pr view "${REVERT_PR}" --json state,
+mergedAt`); a closed-unmerged or still-open revert reaches neither this event
+nor the terminal closeout below. If the operator rejects the revert, or replaces
+it with a forward fix, nothing in checkpoint B is emitted — the checkpoint A
+`error` and `help_requested` records stand on their own and remain true.
+
+```bash
+agent-coord record-event --type human_intervention --kind manual-fix \
+  --batch-id "${BATCH_ID}" --lane "${LANE}" \
+  --repo "${REPO}" --target "${TARGET}" \
+  --message "Merge of PR #${PR} reverted by merged PR #${REVERT_PR}"
+```
+
+Everything below — the terminal closeout and the already-`done` path — also
+belongs to checkpoint B. A lane is not closed out on the strength of a proposed
+revert.
 
 **Terminal state depends on whether the lane has already closed.**
 
@@ -457,9 +559,10 @@ event is immutable.** Later authenticated completion may reconcile an
 turns a `done` lane into a not-done lane, and attempting one is a protocol
 violation rather than a correction. Instead:
 
-1. Record a lane-scoped `human_intervention --kind manual-fix` event on the
-   original lane (the command above), so dashboards reading lane history stop
-   presenting the outcome as cleanly `done`.
+1. Record the checkpoint B lane-scoped `human_intervention --kind manual-fix`
+   event on the original lane (the command above) — after the revert merges, not
+   when it is proposed — so dashboards reading lane history stop presenting the
+   outcome as cleanly `done`.
 2. Run the revert as a **new lane** with its own claim, its own target, and its
    own terminal closeout — `done` when the revert merges.
 3. Reclassify the *worked-issue outcome* as `regressed` in the
@@ -511,7 +614,7 @@ An agent **may**, without operator sign-off:
 - build the revert branch and resolve conflicts, documenting each resolution;
 - open the revert PR **as a draft**;
 - run full local validation, CI, and the ordinary readiness gates on it; and
-- record the coordination events in section 3 and escalate with
+- record the **checkpoint A** coordination events in section 3 and escalate with
   `help_requested --reason permission`.
 
 An agent **may not**, without an explicit operator decision:
@@ -520,34 +623,43 @@ An agent **may not**, without an explicit operator decision:
   autonomous-merge path;
 - push a revert directly to `BASE`;
 - force-push or rewrite `BASE` history to remove the merge; or
-- widen the revert scope past the closure the operator approved.
+- widen the revert scope past the closure the operator approved; or
+- emit any **checkpoint B** event or terminal closeout, which asserts a merged
+  revert the operator has not authorized.
 
 ## Checklist
 
-1. Record `REPO`, `BASE`, base tip, the suspect commit SHA, **the repo's merge
-   style**, `batch_id`, lane, dependency plan path/id, and the observed
-   failure. Unverifiable facts stay `UNKNOWN`.
+1. Record `REPO`, `BASE`, base tip, the suspect PR and its landing commit,
+   **the repo's merge style (merge / squash / rebase)**, `batch_id`, lane,
+   dependency plan path/id, and the observed failure. Unverifiable facts stay
+   `UNKNOWN`.
 2. Enumerate landed commits on the first-parent line **without `--merges`**,
    and classify each one's parent shape.
-3. Compute the revert closure from the batch manifest, `merge_order` edges, and
-   git. Fail closed to the wider scope on any `UNKNOWN`. Fix `PRE_BATCH_SHA` as
-   `<oldest-in-scope-sha>^1`.
-4. Decide revert versus forward fix, and write down why.
-5. Derive a slug branch from the batch id, check it with
+3. Recover each in-scope PR's **complete landed range** — one commit for a merge
+   or squash, `<tip>~N..<tip>` for a rebase merge — matching on subject and
+   patch-id, never SHA. An unverifiable range is `UNKNOWN`: widen or stop.
+4. Compute the revert closure from the batch manifest, `merge_order` edges, and
+   git, comparing whole ranges. Fail closed to the wider scope on any `UNKNOWN`.
+   Fix `PRE_BATCH_SHA` as `<oldest-in-scope-sha>^1`.
+5. Decide revert versus forward fix, and write down why.
+6. Derive a slug branch from the batch id, check it with
    `git check-ref-format --branch`, and create it from `origin/${BASE}`; never
    work on `BASE`.
-6. Revert each in-scope commit newest first, using the form its parent shape
-   requires: `git revert <sha>` for single-parent, `git revert -m 1 <sha>` for a
-   true merge commit.
-7. Classify every conflicting hunk as dependent or independent; stop and
+7. Revert **every commit in every in-scope range**, newest first, using the form
+   each commit's parent shape requires: `git revert <sha>` for single-parent,
+   `git revert -m 1 <sha>` for a true merge commit.
+8. Classify every conflicting hunk as dependent or independent; stop and
    re-scope if an independent hunk cannot be preserved.
-8. Validate the branch, and diff the final tree against `PRE_BATCH_SHA`.
-9. Correct the changelog: delete an `[Unreleased]` entry, or add a correcting
-   entry when the original shipped.
-10. Rerun the merge ledger, or record `merge_ledger: UNKNOWN` when the seam is
+9. Validate the branch, and diff the final tree against `PRE_BATCH_SHA`.
+10. Correct the changelog: delete an `[Unreleased]` entry, or add a correcting
+    entry when the original shipped.
+11. Rerun the merge ledger, or record `merge_ledger: UNKNOWN` when the seam is
     `n/a`.
-11. Record `human_intervention --kind manual-fix` plus the `error` event; close
-    a non-terminal lane `superseded` or `abandoned`; for an already-`done`
-    lane, open a new lane and reclassify the worked issue as `regressed`.
-12. Open the revert PR as a draft and escalate to the operator for the merge
-    decision.
+12. **Checkpoint A** — record the `error` event and `help_requested --reason
+    permission`. Open the revert PR as a draft and escalate to the operator for
+    the merge decision. Record nothing here that claims the revert landed.
+13. **Checkpoint B, only after the revert PR actually merges** — record
+    `human_intervention --kind manual-fix`; close a non-terminal lane
+    `superseded` or `abandoned`; for an already-`done` lane, open a new lane and
+    reclassify the worked issue as `regressed`. If the operator rejects the
+    revert, skip checkpoint B entirely.
