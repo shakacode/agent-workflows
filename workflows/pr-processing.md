@@ -2222,8 +2222,13 @@ over its own user-visible messages in the task:
 <!-- coordinator-narration-volume v1 batch_id=<percent-encoded-id>; messages=<int|UNKNOWN>; characters=<int|UNKNOWN>; checkpoints=dispatch:<int|UNKNOWN>,pr-open:<int|UNKNOWN>,decision-required:<int|UNKNOWN>,merge-decision:<int|UNKNOWN>,final-handoff:<int|UNKNOWN>; always_allowed=<int|UNKNOWN>; unclassified_messages=<int|UNKNOWN>; source=<coordinator-self-count|UNKNOWN> -->
 ```
 
-`characters` means user-visible characters the coordinator emitted in this task.
-`always_allowed` counts the four always-allowed non-checkpoint kinds.
+`characters` counts Unicode code points, not bytes or grapheme clusters, over
+the exact text the coordinator authored — raw Markdown source rather than
+rendered output — summed across every user-visible coordinator message in the
+task, including the final handoff. It excludes text the coordinator did not
+author, such as tool output and quoted reviewer bodies, and it excludes this
+marker itself, which cannot count itself. `messages` uses the same inclusion
+boundary. `always_allowed` counts the four always-allowed non-checkpoint kinds.
 `unclassified_messages` counts user-visible messages that matched no checkpoint
 and no always-allowed category. A tool-call preamble is such a message: `OC-v1`
 says not to emit one, so a compliant task reports `unclassified_messages=0`, and
@@ -2238,11 +2243,16 @@ known, `messages` equals the five checkpoint counts plus `always_allowed` plus
 `unclassified_messages`; report a reconciliation mismatch rather than silently
 adjusting a field.
 
-A coordination-backed `batch_id` is opaque and may legitimately contain `;` or
-`:`, which would otherwise collide with this marker's field and checkpoint
-separators, so `batch_id` is percent-encoded: `%25` for `%`, `%3B` for `;`, and
-`%3D` for `=`. Decode it after splitting fields; a `batch_id` carrying an
-unencoded `;` or `=` is malformed.
+A coordination-backed `batch_id` is opaque and may legitimately contain
+characters that collide with this marker's own syntax: `;` and `=` are its field
+and key separators, `:` separates each checkpoint name from its count, and `<`
+or `>` can terminate the surrounding HTML comment and corrupt or expose the rest
+of the telemetry. `batch_id` is therefore percent-encoded over the complete set
+`% ; : = < >`, as `%25`, `%3B`, `%3A`, `%3D`, `%3C`, and `%3E`. Encode `%` first
+so the other escapes are unambiguous, and decode each field only after splitting
+on `;`. A `batch_id` whose rendered form still contains any unencoded character
+from that set is malformed: fail closed and record `batch_id` as `UNKNOWN`
+rather than emitting a marker that cannot be parsed.
 
 Every count accepts exact `UNKNOWN` independently, and each checkpoint count is
 serialized as its own `<name>:<value>` pair so one unavailable bucket never
