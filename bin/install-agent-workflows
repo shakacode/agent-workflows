@@ -2574,6 +2574,7 @@ move_bound_recovery_path() {
       destination_parent = File.expand_path(ARGV.fetch(4))
       destination_parent_identity = ARGV.fetch(5)
       expected_source_identity = ARGV[6]
+      secure_destination_parent = ARGV[7] == "true"
       exit 67 unless File.dirname(source) == source_parent && File.dirname(destination) == destination_parent
       exit 67 unless File.const_defined?(:NOFOLLOW)
 
@@ -2586,6 +2587,10 @@ move_bound_recovery_path() {
                      "#{source_parent_stat.dev}:#{source_parent_stat.ino}" == source_parent_identity
       exit 67 unless destination_parent_stat.directory? &&
                      "#{destination_parent_stat.dev}:#{destination_parent_stat.ino}" == destination_parent_identity
+      if secure_destination_parent
+        exit 67 unless destination_parent_stat.uid == Process.euid &&
+                       (destination_parent_stat.mode & 0o022).zero?
+      end
 
       handle = Fiddle.dlopen(nil)
       openat = Fiddle::Function.new(handle["openat"],
@@ -2622,6 +2627,13 @@ move_bound_recovery_path() {
       exit 67 unless Fiddle.last_error == Errno::ENOENT::Errno
       RecoveryMoveHook.call(:before_rename, source_parent, source_name,
                             destination_parent, destination_name) if defined?(RecoveryMoveHook)
+      if secure_destination_parent
+        final_destination_parent_stat = destination_parent_file.stat
+        exit 67 unless final_destination_parent_stat.directory? &&
+                       "#{final_destination_parent_stat.dev}:#{final_destination_parent_stat.ino}" == destination_parent_identity &&
+                       final_destination_parent_stat.uid == Process.euid &&
+                       (final_destination_parent_stat.mode & 0o022).zero?
+      end
 
       if RUBY_PLATFORM.include?("darwin")
         rename = Fiddle::Function.new(handle["renameatx_np"],
@@ -2837,14 +2849,36 @@ validate_recovery_cleanup_root() {
     abort unless File.basename(cleanup_root).match?(/\A\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+\z/)
     abort unless File.realpath(File.dirname(cleanup_root)) == target
     cleanup_stat = File.lstat(cleanup_root)
-    abort unless cleanup_stat.directory? && !cleanup_stat.symlink?
+    abort unless cleanup_stat.directory? && !cleanup_stat.symlink? &&
+                 cleanup_stat.uid == Process.euid && (cleanup_stat.mode & 0o022).zero?
     cleanup_realpath = File.realpath(cleanup_root)
     abort unless File.dirname(cleanup_realpath) == target &&
                  File.basename(cleanup_realpath) == File.basename(cleanup_root)
     verified_stat = File.lstat(cleanup_root)
-    abort unless verified_stat.dev == cleanup_stat.dev && verified_stat.ino == cleanup_stat.ino
+    abort unless verified_stat.dev == cleanup_stat.dev && verified_stat.ino == cleanup_stat.ino &&
+                 verified_stat.uid == Process.euid && (verified_stat.mode & 0o022).zero?
     abort if require_empty && !Dir.empty?(cleanup_root)
   ' "$target" "$1" "${2:-false}" 2>/dev/null
+}
+
+validate_bound_recovery_cleanup_root() {
+  ruby -e '
+    path, expected = ARGV
+    file = nil
+    begin
+      stat = File.lstat(path)
+      abort unless stat.directory? && !stat.symlink? && stat.uid == Process.euid && (stat.mode & 0o022).zero?
+      file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      opened = file.stat
+      named = File.lstat(path)
+      abort unless opened.directory? && "#{opened.dev}:#{opened.ino}" == expected &&
+                   opened.uid == Process.euid && (opened.mode & 0o022).zero? &&
+                   named.directory? && !named.symlink? && named.dev == opened.dev && named.ino == opened.ino &&
+                   named.uid == Process.euid && (named.mode & 0o022).zero?
+    ensure
+      file&.close
+    end
+  ' "$1" "$2" 2>/dev/null
 }
 
 remove_recovery_cleanup_root() {
@@ -2954,9 +2988,13 @@ cleanup_recovery_staging() {
     return 1
   fi
   cleanup_root_identity="$(recovery_directory_identity "$cleanup_root")" || return 1
+  if ! validate_bound_recovery_cleanup_root "$cleanup_root" "$cleanup_root_identity"; then
+    echo "RECOVERY_CLEANUP_ROOT_REJECTED: preserved rejected cleanup path $cleanup_root without moving recovery staging." >&2
+    return 1
+  fi
   move_status=0
   move_bound_recovery_path "$staging" "$cleanup_staging" "$target" "$target_identity" \
-    "$cleanup_root" "$cleanup_root_identity" "$staging_identity" || move_status=$?
+    "$cleanup_root" "$cleanup_root_identity" "$staging_identity" true || move_status=$?
   if [[ "$move_status" -ne 0 ]]; then
     if [[ "$move_status" -eq 68 ]]; then
       restore_status=0

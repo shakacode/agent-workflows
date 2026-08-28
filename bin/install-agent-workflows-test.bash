@@ -2928,6 +2928,63 @@ RUBY
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "cleanup root replacement leaked install lock"
 }
 
+test_companion_cleanup_rejects_unsafe_root_replacement_before_staging_move() {
+  local tmp target staging canonical_staging receipt preserved_root injection marker output status cleanup_root
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-unsafe-cleanup-root"
+  receipt="$target/.agent-workflows-migration-staging"
+  preserved_root="$tmp/preserved-cleanup-root"
+  injection="$tmp/replace-cleanup-root-before-binding.rb"
+  marker="$tmp/cleanup-root-replaced"
+  mkdir -p "$staging/old-flat-skill"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  write_native_scw_state codex "$target"
+  printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 1 &&
+   File.basename(ARGV.fetch(0)).start_with?(".agent-workflows-recovery-cleanup-") &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  cleanup_root = ARGV.fetch(0)
+  File.rename(cleanup_root, ENV.fetch("QA_PRESERVED_CLEANUP_ROOT"))
+  Dir.mkdir(cleanup_root)
+  File.chmod(0o777, cleanup_root)
+  File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+end
+RUBY
+
+  set +e
+  output="$(QA_PRESERVED_CLEANUP_ROOT="$preserved_root" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "companion cleanup accepted an unsafe cleanup-root replacement"
+  assert_contains "$output" "RECOVERY_CLEANUP_ROOT_REJECTED"
+  assert_contains "$output" "CLEANUP_PENDING"
+  assert_file "$marker"
+  assert_file "$receipt"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  assert_contains "$(cat "$staging/old-flat-skill/SKILL.md")" "original staged skill"
+  cleanup_root="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-recovery-cleanup-*' -print -quit)"
+  [[ -n "$cleanup_root" ]] || fail "unsafe replacement cleanup root was not preserved"
+  [[ "$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0777' "$cleanup_root")" = "777" ]] || \
+    fail "unsafe replacement cleanup root mode changed"
+  [[ ! -e "$cleanup_root/staging" ]] || fail "receipted staging moved into unsafe cleanup root"
+  [[ -d "$preserved_root" ]] || fail "original cleanup root was not preserved"
+  [[ -z "$(find "$preserved_root" -mindepth 1 -print -quit)" ]] || fail "staging moved into the original cleanup root"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "unsafe cleanup-root rejection leaked install lock"
+
+  rmdir "$cleanup_root" "$preserved_root"
+  output="$(RUBYOPT= "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)" || \
+    fail "retry after removing unsafe cleanup roots failed: $output"
+  [[ ! -e "$receipt" ]] || fail "retry retained completed recovery receipt"
+  [[ ! -e "$canonical_staging" ]] || fail "retry retained completed recovery staging"
+}
+
 test_companion_cleanup_root_swap_during_deletion_preserves_all_entries() {
   local tmp target staging receipt preserved_root injection marker output status replacement
   tmp="$(mktemp -d)"
@@ -8092,6 +8149,7 @@ main() {
     test_companion_cleanup_post_move_replacement_has_named_retry_failure
     test_companion_cleanup_post_move_exception_restores_receipted_staging
     test_companion_cleanup_root_replacement_cannot_move_staging_outside_target
+    test_companion_cleanup_rejects_unsafe_root_replacement_before_staging_move
     test_companion_cleanup_root_swap_during_deletion_preserves_all_entries
     test_missing_metadata_backup_reports_restore_failure_without_corrupt_guidance
     test_transient_metadata_restore_failure_preserves_receipt_after_reversal
