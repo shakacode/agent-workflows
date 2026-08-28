@@ -4985,6 +4985,118 @@ test_schema_invalid_mode_fails_before_managed_mutation() {
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "schema-invalid mode created install lock"
 }
 
+test_legacy_metadata_with_corrupt_newer_schema_field_fails_before_mutation() {
+  local tmp target metadata output status before paths_before
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  mkdir -p "$target"
+  printf '{"host":"codex","mode":"copy","source":"%s","source_revision":"legacy","managed_skill_copy_fingerprints":"corrupt"}\n' \
+    "$ROOT" > "$metadata"
+  before="$(shasum "$metadata")"; paths_before="$(find "$target" -print | LC_ALL=C sort)"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  [[ "$status" -eq 65 ]] || fail "corrupt sibling in legacy metadata exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$before" = "$(shasum "$metadata")" ]] || fail "corrupt legacy sibling metadata was rewritten"
+  [[ "$paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || fail "corrupt legacy sibling mutated target"
+}
+
+test_recovery_capture_persistent_descriptor_close_failure_is_not_success() {
+  local tmp target staging receipt metadata injection marker output status quarantine preserved retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-capture-close"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-capture-close.rb"; marker="$tmp/capture-completed"; preserved="$tmp/preserved-quarantine"
+  mkdir -p "$staging/user-owned-skill"; printf 'user\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    File.write(ENV.fetch("QA_RACE_MARKER"), "completed\n") if phase == :after_rename
+  end
+end
+module PersistentCaptureCloseFailure
+  def close(*args)
+    if ARGV.length == 5 && File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(PersistentCaptureCloseFailure)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "capture close uncertainty reported success"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"; assert_file "$metadata"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "capture close uncertainty lost quarantine"
+  assert_contains "$output" "$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$quarantine")"
+  mv "$quarantine" "$preserved"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)" || fail "capture close retry wedged: $retry_output"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_absent_metadata_appearance_during_flat_recovery_preserves_staging() {
+  local tmp target canonical_target staging receipt metadata fake_bin real_mkdir marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-absent-race"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"; real_mkdir="$(command -v mkdir)"; marker="$tmp/metadata-appeared"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"; printf 'user\n' > "$staging/user-owned-skill/SKILL.md"; printf '%s\n' "$staging" > "$receipt"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  cat > "$fake_bin/mkdir" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"$QA_SKILLS_ROOT"* && ! -e "$QA_RACE_MARKER" ]]; then
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$QA_INSTALL_METADATA"
+  : > "$QA_RACE_MARKER"
+fi
+exec "$QA_REAL_MKDIR" "$@"
+SH
+  chmod +x "$fake_bin/mkdir"
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKDIR="$real_mkdir" QA_SKILLS_ROOT="$canonical_target/skills" \
+    QA_INSTALL_METADATA="$canonical_target/.agent-workflows-install.json" QA_RACE_MARKER="$marker" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "appeared metadata allowed absent-state recovery"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "appeared metadata left restored flat skill live"
+  assert_contains "$output" "RECOVERY"
+}
+
+test_cross_directory_probe_open_failure_removes_created_directory() {
+  local tmp target injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-cross-directory-open.rb"; marker="$tmp/open-failed"
+  cat > "$injection" <<'RUBY'
+module MetadataRenameProbeHook
+  def self.call(phase)
+    return unless phase == :after_directory_attestation
+    AtomicMetadataRenameProbe.singleton_class.class_eval do
+      alias_method :qa_original_openat, :openat
+      define_method(:openat) do |fd, name, flags, mode|
+        if name == "metadata-rename-probe-directory" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+          Fiddle.last_error = Errno::EMFILE::Errno
+          next -1
+        end
+        qa_original_openat(fd, name, flags, mode)
+      end
+    end
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "cross-directory open failure unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "cross-directory open failure retained install lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)" || fail "cross-directory open retry wedged: $retry_output"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
 test_newline_recorded_delivery_modes_fail_before_mutation() {
   local value variant tmp target output status metadata_before target_paths_before
   for value in '"\n"' '"flat\n"'; do
@@ -8241,6 +8353,10 @@ main() {
     test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots
     test_invalid_recorded_delivery_mode_fails_before_mutation
     test_schema_invalid_mode_fails_before_managed_mutation
+    test_legacy_metadata_with_corrupt_newer_schema_field_fails_before_mutation
+    test_recovery_capture_persistent_descriptor_close_failure_is_not_success
+    test_absent_metadata_appearance_during_flat_recovery_preserves_staging
+    test_cross_directory_probe_open_failure_removes_created_directory
     test_newline_recorded_delivery_modes_fail_before_mutation
     test_corrupt_install_metadata_fails_closed_with_recovery_guidance
     test_non_object_install_metadata_is_corrupt

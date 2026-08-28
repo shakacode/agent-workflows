@@ -240,23 +240,21 @@ read_installed_metadata_value() {
         puts "corrupt"
         exit
       end
-      if metadata.key?("delivery_mode")
-        string_fields = %w[host mode delivery_mode source version source_revision source_branch source_remote installed_at]
-        invalid_string = string_fields.any? do |field|
-          metadata.key?(field) && (!metadata[field].is_a?(String) || metadata[field].include?("\0"))
-        end
-        invalid_required_value = %w[host mode source source_revision installed_at].any? do |field|
-          metadata.key?(field) && metadata[field].is_a?(String) && metadata[field].empty?
-        end
-        invalid_enum = (metadata.key?("host") && !%w[codex claude].include?(metadata["host"])) ||
-                       (metadata.key?("mode") && !%w[copy symlink].include?(metadata["mode"]))
-        invalid_fingerprints = %w[managed_skill_copy_fingerprints managed_pack_doc_copy_fingerprints].any? do |field|
-          metadata.key?(field) && !metadata[field].is_a?(Hash)
-        end
-        if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints
-          puts "corrupt"
-          exit
-        end
+      string_fields = %w[host mode delivery_mode source version source_revision source_branch source_remote installed_at]
+      invalid_string = string_fields.any? do |field|
+        metadata.key?(field) && (!metadata[field].is_a?(String) || metadata[field].include?("\0"))
+      end
+      invalid_required_value = %w[host mode source source_revision installed_at].any? do |field|
+        metadata.key?(field) && metadata[field].is_a?(String) && metadata[field].empty?
+      end
+      invalid_enum = (metadata.key?("host") && !%w[codex claude].include?(metadata["host"])) ||
+                     (metadata.key?("mode") && !%w[copy symlink].include?(metadata["mode"]))
+      invalid_fingerprints = %w[managed_skill_copy_fingerprints managed_pack_doc_copy_fingerprints].any? do |field|
+        metadata.key?(field) && !metadata[field].is_a?(Hash)
+      end
+      if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints
+        puts "corrupt"
+        exit
       end
       key = ARGV.fetch(1)
       unless metadata.key?(key)
@@ -356,6 +354,7 @@ capture_bound_recovery_metadata() {
     completed = false
     sentinel_installed = false
     displaced_destination_attestation = nil
+    descriptor_close_failed = false
     syscall = lambda do |result, name|
       raise SystemCallError.new(name, Fiddle.last_error) if result == -1
       result
@@ -569,11 +568,15 @@ capture_bound_recovery_metadata() {
             begin
               io.close unless io.closed?
             rescue StandardError
-              nil
+              descriptor_close_failed = true
             end
           end
           if created.empty?
-            quarantine_file.close unless quarantine_file.closed?
+            begin
+              quarantine_file.close unless quarantine_file.closed?
+            rescue StandardError
+              descriptor_close_failed = true
+            end
           end
         rescue StandardError
           nil
@@ -583,22 +586,22 @@ capture_bound_recovery_metadata() {
         begin
           io.close unless io.closed?
         rescue StandardError
-          nil
+          descriptor_close_failed = true
         end
       end
       begin
         quarantine_file&.close unless quarantine_file&.closed?
       rescue StandardError
-        nil
+        descriptor_close_failed = true
       end
       begin
         target_file&.close unless target_file&.closed?
       rescue StandardError
-        nil
+        descriptor_close_failed = true
       end
     end
     exit 67 if binding_changed
-    exit 70 unless completed
+    exit 70 if !completed || descriptor_close_failed
   ' "$target" "$metadata_name" "${recovery_metadata_quarantine##*/}" \
     "$recovery_metadata_quarantine_identity" "$1" 2>/dev/null
 }
@@ -1988,6 +1991,7 @@ preflight_metadata_commit_capability() {
     cross_destination_name = "metadata-rename-probe-cross-destination"
     directory = nil
     cross_directory = nil
+    cross_directory_created = false
     ios = []
     cleanup_failed = false
     open_at = lambda do |name|
@@ -2077,6 +2081,7 @@ preflight_metadata_commit_capability() {
       abort unless linked.read == "first" &&
                    first_stat.dev == linked_stat.dev && first_stat.ino == linked_stat.ino
       abort unless AtomicMetadataRenameProbe.mkdirat(directory.fileno, cross_directory_name, 0o700) == 0
+      cross_directory_created = true
       cross_directory_fd = AtomicMetadataRenameProbe.openat(
         directory.fileno,
         cross_directory_name,
@@ -2143,6 +2148,8 @@ preflight_metadata_commit_capability() {
           rescue StandardError
             cleanup_failed = true
           end
+        end
+        if cross_directory_created
           remove_directory = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
           cleanup_failed = true unless AtomicMetadataRenameProbe.unlinkat(
             directory.fileno, cross_directory_name, remove_directory
@@ -2735,6 +2742,11 @@ restore_recovery_staging_moves() {
   done
 }
 
+recovery_metadata_absence_intact() {
+  [[ "$metadata_absent_under_lock" = "true" ]] || return 0
+  [[ ! -e "$target/$metadata_name" && ! -L "$target/$metadata_name" ]]
+}
+
 rollback_migration_staging() {
   local staging="$1"
   local bind_recovery_metadata="${2:-false}"
@@ -2832,6 +2844,12 @@ rollback_migration_staging() {
           "${moved_records[@]}" || restore_status=$?
         [[ "$restore_status" -eq 0 ]] || return "$restore_status"
         return 65
+      elif [[ "$recovery_metadata_captured" != "true" ]] && ! recovery_metadata_absence_intact; then
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_records[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+        return 65
       fi
     fi
   done
@@ -2847,6 +2865,16 @@ rollback_migration_staging() {
       [[ "$reversal_status" -eq 0 ]] || return "$reversal_status"
     fi
     return "$restore_status"
+  fi
+  if [[ "$bind_recovery_metadata" = "true" && "$recovery_metadata_captured" != "true" ]] &&
+     ! recovery_metadata_absence_intact; then
+    if [[ "$moved_count" -gt 0 ]]; then
+      restore_status=0
+      restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+        "${moved_records[@]}" || restore_status=$?
+      [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+    fi
+    return 65
   fi
   if ! rmdir "$staging"; then
     if [[ "$moved_count" -gt 0 ]]; then
@@ -3821,6 +3849,11 @@ if [[ -f "$migration_receipt" ]]; then
       echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
       exit 1
     fi
+  fi
+  if [[ "$capture_status" -eq 68 ]] && ! recovery_metadata_absence_intact; then
+    echo "RECOVERY_METADATA_BINDING_CHANGED: install metadata appeared during absent-state recovery; preserved the recovery receipt and refused to finalize it." >&2
+    report_pending_recovery_integrity_failure "$migration_receipt" "$recovered_staging"
+    exit 65
   fi
   if ! restore_captured_recovery_metadata; then
     report_recovery_metadata_restore_failure
