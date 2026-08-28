@@ -29,6 +29,7 @@ Commands below use one stable placeholder set:
 | `REPO` | `OWNER/REPO_NAME`, as `gh --repo` takes it |
 | `OWNER`, `REPO_NAME` | the two halves separately, for `gh api graphql` |
 | `BASE` | the repo's `base_branch` seam, e.g. `main` |
+| `BASE_TIP` | `origin/${BASE}` as it stood when scope analysis began |
 | `PR` | the suspect pull request number |
 | `TIP` | the commit on `BASE` that landed `PR` (for a merge PR, the merge commit itself) |
 | `N` | how many commits `PR` contains |
@@ -37,7 +38,9 @@ Commands below use one stable placeholder set:
 | `BATCH_ID`, `LANE`, `TARGET` | coordination identifiers for the lane that produced `PR` |
 | `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
 
-- `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA.
+- `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA,
+  recorded as `BASE_TIP` — `git rev-parse "origin/${BASE}"`. Section 2 re-checks
+  it before creating a branch, so capture it *before* scope analysis, not after.
 - The commit SHA on `BASE` that landed the suspect PR.
 - **The repo's merge style.** Establish it; do not assume it. It decides both
   how you enumerate landed work and how you revert it. Check with:
@@ -66,8 +69,8 @@ Commands below use one stable placeholder set:
 - The `stage-dependency-plan` v1 path and id used by that batch, if any.
 - `PRE_BATCH_SHA`: the state the base branch was in before the closure landed,
   used as the validation target in section 2. It is the first parent of the
-  **oldest** in-scope landed commit, so it is only final once section 1 has
-  fixed the closure:
+  **oldest** in-scope landed commit — the last entry of the oldest PR's
+  `REVERT_LIST` — so it is only final once section 1 has fixed the closure:
 
   ```bash
   PRE_BATCH_SHA=$(git rev-parse "${OLDEST_IN_SCOPE_SHA}^1")
@@ -147,7 +150,14 @@ three consecutive single-parent commits. Reverting only the newest of them
 leaves the rest of the change applied — the same too-narrow-revert failure as a
 `--merges` enumeration, one level down.
 
-**The unit of revert is a PR's complete landed range, not a single SHA.**
+**The unit of revert is a PR's complete set of landed commits, not a single
+SHA.**
+
+A terminology note, because conflating two senses of "range" caused a real bug
+in this document: *landed range* below means **the set of commits a PR put on
+`BASE`**, which you carry as an explicit list. It never means git's `A..B` range
+**operator**, which this runbook does not use for reverts at all — see the two
+bullets after the list construction for why.
 
 Recover the range from GitHub plus git. You need two facts: the landed tip, and
 how many commits the PR contains.
@@ -186,17 +196,43 @@ N=$(gh api "repos/${REPO}/pulls/${PR}/commits" --paginate --jq 'length' \
 Note `-F n=` for the PR number: GraphQL needs a JSON integer for `$n:Int!`, and
 `-f n=` would send a string.
 
-With `TIP` and `N` in hand:
+With `TIP` and `N` in hand, build the **ordered list of landed commits**,
+newest first. How many commits go in it depends on the merge style, and this is
+the single most dangerous place to get it wrong:
 
-- **Merge commit**: the range is the merge commit alone; `-m 1` already brings
-  in the whole side branch.
-- **Squash merge**: `N` counts the PR's pre-squash commits, but only one commit
-  landed. The range is that one commit.
-- **Rebase merge**: the range is the `N` consecutive first-parent commits ending
-  at the tip — `${TIP}~${N}..${TIP}`.
+- **Merge commit**: one commit — `TIP` itself. `-m 1` already brings in the
+  whole side branch.
+- **Squash merge**: **one** commit — `TIP` itself. `N` counts the PR's
+  *pre-squash* commits, and those commits never landed on `BASE`. Using `N`
+  here reverts `N-1` unrelated commits that landed *before* this PR.
+- **Rebase merge**: `N` commits — the `N` first-parent commits ending at `TIP`.
 
 ```bash
-git log --first-parent --format='%h %s' "${TIP}~${N}..${TIP}"
+# merge-commit PR or squash PR: exactly one landed commit
+REVERT_LIST="${TIP}"
+
+# rebase PR: the N first-parent commits ending at the tip, newest first
+REVERT_LIST=$(git log --first-parent -n "${N}" --format='%H' "${TIP}")
+```
+
+Two deliberate choices in that rebase form, both of which the `A..B` range
+operator gets wrong:
+
+- `-n "${N}"` walking back from `TIP`, rather than `${TIP}~${N}..${TIP}`. The
+  range operator is evaluated by `git rev-list`, which is **not** first-parent
+  limited: if any commit in the span is a merge, the range also selects that
+  merge's second-parent commits — commits your first-parent enumeration never
+  displayed. On a span containing one merge, `rev-list` returned 4 commits where
+  `--first-parent -n 3` returned the intended 3.
+- An explicit list rather than a range, so the commits reverted are exactly the
+  ones you just reviewed.
+
+Print the list and read it before going near section 2. If it contains anything
+you did not expect — a commit from another PR, a merge you did not account for —
+stop and re-run recovery.
+
+```bash
+printf '%s\n' ${REVERT_LIST} | while read -r c; do git --no-pager log -1 --format='%h %s' "$c"; done
 ```
 
 **Match on subject and patch-id, not SHA.** A rebase rewrites every commit, so
@@ -254,10 +290,28 @@ only one of the two artifacts whose edges carry it; the mutable
 `base_movement` per edge, and is where you check whether an edge is `pending` or
 `satisfied` — not what kind of edge it is.
 
+**Bind the plan file to its id before trusting a single edge.** A plan file on
+disk is not self-identifying: a stale or mismatched one parses cleanly and
+yields plausible edges for the wrong batch, which is a wrong closure arrived at
+with full confidence. Verify `contract`, `version`, and `id` first, and only
+then read edges:
+
 ```bash
-agent-coord status --batch-id "${BATCH_ID}" --json
+jq -e --arg id "${STAGE_DEPENDENCY_PLAN_ID}" \
+  '.contract == "stage-dependency-plan" and .version == 1 and .id == $id' \
+  "${STAGE_DEPENDENCY_PLAN_PATH}" >/dev/null \
+  || { echo "plan id mismatch: UNKNOWN"; exit 1; }
+
 jq '.edges[] | select(.type == "merge_order")' "${STAGE_DEPENDENCY_PLAN_PATH}"
+agent-coord status --batch-id "${BATCH_ID}" --json
 ```
+
+`STAGE_DEPENDENCY_PLAN_PATH` and `STAGE_DEPENDENCY_PLAN_ID` both come from the
+trusted coordinator handoff, per
+[pr-processing](../workflows/pr-processing.md#stage-typed-dependency-gate) —
+never from a file discovered by searching the worktree. A missing, malformed, or
+mismatched plan, or one whose id does not tie to `${BATCH_ID}`, is `UNKNOWN`:
+widen the scope or stop, exactly as for an absent plan.
 
 When the backend is `n/a`, the manifest lives in the durable coordinator
 handoff instead of a registration surface; read it there. When neither the
@@ -309,7 +363,7 @@ commits it should compare against.
 
 ## 2. Revert Order
 
-Revert in **reverse merge order**: newest in-scope merge first, oldest last.
+Revert in **reverse landing order**: newest in-scope commit first, oldest last.
 Every intermediate commit on the revert branch should be a state the code could
 plausibly have been in. Forward order does not merely conflict more — it
 produces intermediate trees that git reports as successful and that are
@@ -342,8 +396,21 @@ So bound the length too. Truncate the human-readable slug, append a short digest
 of the **full** id so two ids that truncate identically still differ, and add the
 suspect short SHA:
 
+`git fetch origin` can move `origin/${BASE}` between the scope analysis and the
+branch creation. If it moved, the branch you create includes a commit the
+closure never considered, and `PRE_BATCH_SHA` no longer describes the tree you
+are about to validate against. Compare the tip you recorded in
+[Before Anything Else](#before-anything-else) against the tip after fetching,
+and rerun section 1 if they differ:
+
 ```bash
 git fetch origin
+NEW_BASE_TIP=$(git rev-parse "origin/${BASE}")
+[ "${NEW_BASE_TIP}" = "${BASE_TIP}" ] || {
+  echo "origin/${BASE} moved ${BASE_TIP} -> ${NEW_BASE_TIP}: rerun scope recovery"
+  exit 1
+}
+
 BATCH_SLUG=$(printf '%s' "${BATCH_ID}" \
   | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40 \
   | sed 's/-\{2,\}/-/g; s/^[-.]*//; s/[-.]*$//')
@@ -414,8 +481,9 @@ git revert --continue --no-edit
 git revert --abort
 ```
 
-Revert every commit in every in-scope PR's landed range, newest to oldest. For
-a rebase-merged PR that is N commits, not one.
+Revert every commit in every in-scope PR's landed list, newest to oldest. For a
+rebase-merged PR that is N commits; for a squash or merge PR it is exactly one,
+regardless of how many commits the PR contained.
 
 **Give each PR's range to a single `git revert` invocation.** Do not loop
 one-SHA-at-a-time. `git revert` is a sequencer: handed a range it queues every
@@ -425,35 +493,49 @@ after you resolve a conflict. A per-commit loop passes one SHA per invocation,
 so there is no queued state to resume, and rerunning the loop restarts at the
 newest commit and tries to re-revert what is already reverted.
 
-Because a PR's landed range is shape-homogeneous — a rebase series is all
+Because a PR's landed list is shape-homogeneous — a rebase series is all
 single-parent, a squash is one single-parent commit, a merge PR is one merge
 commit — `-m` never has to apply to a mixed set:
 
 ```bash
-# squash or rebase PR: one invocation for the whole range, no -m
-git revert --no-edit "${TIP}~${N}..${TIP}"
+# squash PR, or a rebase PR's whole series: the reviewed list, newest first
+# shellcheck disable=SC2086
+git revert --no-edit ${REVERT_LIST}
 
 # merge-commit PR: one merge commit, -m names the mainline
 git revert -m 1 --no-edit "${TIP}"
 ```
 
+`${REVERT_LIST}` is deliberately unquoted — it must word-split into one argument
+per commit. That is the whole mechanism: `git revert` receives every commit at
+once, queues them in `.git/sequencer/todo`, and `--continue` resumes through the
+queue. It is also why the list is built with `--first-parent`, never with a
+`A..B` range.
+
 Run one such invocation per in-scope PR, taking the PRs newest-first. Keep `-m`
 scoped to a single merge commit; never hand a mixed-shape set to one invocation
 and rely on `-m` applying correctly across it.
 
-Confirm the homogeneity rather than assuming it — a mis-recovered range or
-hand-built history can break it:
+Confirm the list's shape rather than assuming it. The classifier in section 1
+already labelled every commit; the list handed to the bare form must be
+**all single-parent**. If any member is a merge commit, that member is its own
+merge PR and takes the `-m 1` form alone — never fold it into the bare
+invocation, which would apply one mainline choice to every commit.
+
+**Git does not fail closed here, and an earlier draft of this runbook said it
+did.** Handed a set whose *newer* members are single-parent and whose *older*
+member is a merge, `git revert` commits the newer reverts first and only then
+stops at the merge. The result is a **partially applied revert** — every
+single-parent member newer than the merge is already committed, and the rest sit
+in `.git/sequencer/todo`. So on this failure you must:
 
 ```bash
-git rev-list --merges "${TIP}~${N}..${TIP}"   # must print nothing for a squash/rebase range
+git revert --abort
 ```
 
-If it prints anything, the range mixes shapes and the single-invocation form is
-wrong for it. Git fails closed here — `git revert <range>` containing a merge
-stops with `is a merge but no -m option was given` and reverts nothing — so this
-is a correctness stop, not a silent error. Treat the range as `UNKNOWN`, re-run
-range recovery, and do not work around it by adding `-m 1` to the range
-invocation: that would apply mainline selection to every commit in the range.
+`--abort` unwinds the whole sequence, including the reverts already committed
+(verified: branch returns to zero commits ahead of the base). Then re-run range recovery. Never leave a
+partially reverted range on the branch and never try to press on from it.
 
 On a conflict the sequencer stops with the remaining commits still queued.
 Resolve, then:
@@ -461,9 +543,17 @@ Resolve, then:
 ```bash
 git add <resolved-paths>      # or git rm for a modify/delete conflict
 git revert --continue --no-edit   # resumes at the next queued commit
-git revert --skip                 # drop just this commit, keep going
-git revert --abort                # unwind the whole range
+git revert --abort                # unwind the whole sequence and re-scope
 ```
+
+**There are exactly two options: resolve and continue, or abort and re-scope.**
+
+`git revert --skip` is not a third one, despite being offered in git's own
+conflict hint. It skips the *revert*, not the commit's effect — the original
+commit stays applied while the rest of the sequence proceeds. That is a
+too-narrow revert reached by following the recovery path, which is the failure
+this runbook exists to prevent. If a commit's revert cannot be resolved, the
+scope decision was wrong: abort and return to section 1.
 
 Do not rerun the range command after a conflict — that restarts it from the
 newest commit. `git revert --continue` is the only correct resume, and
@@ -671,7 +761,20 @@ still reach a defensible state rather than dangling with an open
 - The checkpoint A `error` record stands as the durable statement of unrepaired
   harm. Do not retract it.
 - Close a non-terminal lane by the same rule as below (`superseded` when a named
-  successor will carry the work, otherwise `abandoned`).
+  successor will carry the work, otherwise `abandoned`) — but **do not pass
+  `--evidence-url "${REPAIR_PR_URL}"` on this path**. No repair PR exists, so
+  that variable is unset and expands to an empty argument, which
+  `agent-coord release` rejects outright:
+
+  ```text
+  --evidence-url must be an HTTP(S) URL with a host
+  ```
+
+  The closeout then fails and the lane stays open — the exact dangling state
+  this path is meant to avoid. Pass a real durable URL for the accepted-risk
+  decision if one exists (the tracking issue or handoff comment recording it),
+  and otherwise **omit the flag entirely**; an omitted `--evidence-url` is
+  accepted. Never pass an empty string.
 - An already-`done` lane stays `done` and receives no new event, but the
   worked-issue outcome is still `regressed` — the harm is real and now
   knowingly unrepaired.
@@ -711,9 +814,13 @@ violation rather than a correction. Instead:
    when it is proposed — so dashboards reading lane history stop presenting the
    outcome as cleanly `done`. If no repair lands, emit nothing here and follow
    the accepted-risk bullets above instead.
-2. Run the repair — revert or forward fix — as a **new lane** with its own
-   claim, its own target, and its own terminal closeout: `done` when that
-   repair PR merges.
+2. The repair runs as a **new lane** — but **establish that lane before you
+   build the repair**, not here. A lane created after its own work merged
+   cannot claim the target, cannot heartbeat while the work happens, and
+   records coordination history backwards. Claim it when you start section 2,
+   let it own the branch and the PR, and close it `done` here once the repair
+   merges. This step is the closeout of a lane that already exists, not the
+   creation of one.
 3. Reclassify the *worked-issue outcome* as `regressed` in the
    post-merge-audit / continuous-evaluation-loop record. That record, not the
    coordination terminal state, is where outcome truth lives. `regressed` is
@@ -784,19 +891,24 @@ An agent **may not**, without an explicit operator decision:
    `UNKNOWN`.
 2. Enumerate landed commits on the first-parent line **without `--merges`**,
    and classify each one's parent shape.
-3. Recover each in-scope PR's **complete landed range** — one commit for a merge
-   or squash, `<tip>~N..<tip>` for a rebase merge — matching on subject and
-   patch-id, never SHA. An unverifiable range is `UNKNOWN`: widen or stop.
+3. Recover each in-scope PR's **complete landed commit list**, newest first —
+   exactly one commit for a merge *or a squash*, `N` first-parent commits for a
+   rebase — matching on subject and patch-id, never SHA. Build it with
+   `git log --first-parent -n N`, never with an `A..B` range. Read the list
+   before using it. An unverifiable list is `UNKNOWN`: widen or stop.
 4. Compute the revert closure from the batch manifest, `merge_order` edges, and
    git, comparing whole ranges. Fail closed to the wider scope on any `UNKNOWN`.
    Fix `PRE_BATCH_SHA` as `<oldest-in-scope-sha>^1`.
 5. Decide revert versus forward fix, and write down why.
-6. Derive a slug branch from the batch id, check it with
+6. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
+   recovery if it moved. Claim the repair lane now, before building anything.
+   Derive a slug branch from the batch id, check it with
    `git check-ref-format --branch`, and create it from `origin/${BASE}`; never
    work on `BASE`.
-7. Revert **every commit in every in-scope range**, newest first, using the form
-   each commit's parent shape requires: `git revert <sha>` for single-parent,
-   `git revert -m 1 <sha>` for a true merge commit.
+7. Revert **every commit in every in-scope list**, newest first, by handing the
+   whole list to one `git revert` invocation (`-m 1` on a merge commit, alone).
+   On conflict: resolve and `--continue`, or `--abort` and re-scope — never
+   `--skip`, and never leave a partial sequence.
 8. Classify every conflicting hunk as dependent or independent; stop and
    re-scope if an independent hunk cannot be preserved.
 9. Validate the branch, and diff the final tree against `PRE_BATCH_SHA`.
@@ -810,8 +922,8 @@ An agent **may not**, without an explicit operator decision:
 13. **Checkpoint B, only after a repair PR actually merges** — the revert *or* a
     forward fix, whichever the operator took — record `human_intervention --kind
     manual-fix` naming that PR; close a non-terminal lane `superseded` or
-    `abandoned`; for an already-`done` lane, open a new lane for the repair and
-    reclassify the worked issue as `regressed`. If no repair lands at all, skip
-    checkpoint B, still close a non-terminal lane, still reclassify the worked
-    issue `regressed`, and record the accepted-risk decision and its operator in
-    the durable handoff.
+    `abandoned`; close the repair lane claimed in step 6 as `done`; reclassify
+    the worked issue as `regressed`. If no repair lands at all, skip checkpoint
+    B, still close a non-terminal lane (omitting `--evidence-url` when no repair
+    URL exists), still reclassify the worked issue `regressed`, and record the
+    accepted-risk decision and its operator in the durable handoff.
