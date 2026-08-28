@@ -22,6 +22,21 @@ Establish these facts and write them down. Every later decision depends on
 them, and a fact that cannot be verified stays literal `UNKNOWN` rather than
 being inferred.
 
+Commands below use one stable placeholder set:
+
+| Placeholder | Meaning |
+| --- | --- |
+| `REPO` | `OWNER/REPO_NAME`, as `gh --repo` takes it |
+| `OWNER`, `REPO_NAME` | the two halves separately, for `gh api graphql` |
+| `BASE` | the repo's `base_branch` seam, e.g. `main` |
+| `PR` | the suspect pull request number |
+| `TIP` | the commit on `BASE` that landed `PR` (for a merge PR, the merge commit itself) |
+| `N` | how many commits `PR` contains |
+| `SHA` | whichever single commit a given command is about |
+| `PRE_BATCH_SHA` | the base-branch state before the closure landed |
+| `BATCH_ID`, `LANE`, `TARGET` | coordination identifiers for the lane that produced `PR` |
+| `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
+
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA.
 - The commit SHA on `BASE` that landed the suspect PR.
 - **The repo's merge style.** Establish it; do not assume it. It decides both
@@ -97,22 +112,24 @@ independent, and produce exactly the too-narrow revert this runbook exists to
 prevent. On this repo, `git log --merges --first-parent origin/main` returns
 8 commits, none from the last several hundred PRs.
 
-This one-liner enumerates and classifies in the same pass, and prints the
-revert invocation each commit needs:
-
-Start the range at the suspect commit's own parent — that is knowable now,
-whereas `PRE_BATCH_SHA` is only fixed once the closure is, and widen the range
-if the closure turns out to reach further back:
+This one-liner enumerates and classifies in the same pass. Start the range at
+the suspect commit's own parent — that is knowable now, whereas `PRE_BATCH_SHA`
+is only fixed once the closure is — and widen it if the closure turns out to
+reach further back:
 
 ```bash
 git log --first-parent --format='%H' "${SHA}^1..${BASE}" | while read -r sha; do
   if git rev-parse -q --verify "${sha}^2" >/dev/null; then
-    printf 'merge-commit   %s  git revert -m 1 %s\n' "$sha" "$sha"
+    printf 'merge-commit   %s  %s\n' "$sha" "$(git show -s --format='%s' "$sha")"
   else
-    printf 'single-parent  %s  git revert %s\n' "$sha" "$sha"
+    printf 'single-parent  %s  %s\n' "$sha" "$(git show -s --format='%s' "$sha")"
   fi
 done
 ```
+
+This is a read-only survey: it reports shape, it does not prescribe a command
+per commit. The revert is issued per **PR range**, not per commit — see
+[Revert each landed commit](#revert-each-landed-commit).
 
 Test for the existence of a second parent (`^2`) rather than counting parents
 through `wc`. BSD/macOS `wc -w` left-pads its output, so a `$(… | wc -w)`
@@ -132,18 +149,51 @@ leaves the rest of the change applied — the same too-narrow-revert failure as 
 
 **The unit of revert is a PR's complete landed range, not a single SHA.**
 
-Recover the range from GitHub plus git:
+Recover the range from GitHub plus git. You need two facts: the landed tip, and
+how many commits the PR contains.
 
 ```bash
-gh pr view "${PR}" --repo "${REPO}" --json mergeCommit,commits   --jq '{tip: .mergeCommit.oid, n: (.commits | length)}'
+TIP=$(gh pr view "${PR}" --repo "${REPO}" --json mergeCommit --jq '.mergeCommit.oid')
 ```
+
+**Do not count commits with `gh pr view --json commits`.** That array is
+**capped at 100** and truncated *silently* — no error, no warning, no partial
+marker. Verified against `rails/rails#16485` (true count 230) and
+`rails/rails#34477` (true count 170): both return exactly 100. It fails in the
+under-count direction, so `<tip>~<n>..<tip>` yields a **short range**, part of
+the PR stays applied, and you get precisely the too-narrow revert this section
+exists to prevent — on the largest PRs, which are the ones where it is hardest
+to notice. The `UNKNOWN` guard below does not catch it either: a capped count
+still walks cleanly for those 100 commits.
+
+Use the authoritative `totalCount` instead:
+
+```bash
+N=$(gh api graphql \
+  -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){commits{totalCount}}}}' \
+  -f o="${OWNER}" -f r="${REPO_NAME}" -F n="${PR}" \
+  --jq '.data.repository.pullRequest.commits.totalCount')
+```
+
+Where GraphQL is unavailable, page the REST endpoint and sum — same answer, one
+request per 100 commits:
+
+```bash
+N=$(gh api "repos/${REPO}/pulls/${PR}/commits" --paginate --jq 'length' \
+  | awk '{s+=$1} END {print s}')
+```
+
+Note `-F n=` for the PR number: GraphQL needs a JSON integer for `$n:Int!`, and
+`-f n=` would send a string.
+
+With `TIP` and `N` in hand:
 
 - **Merge commit**: the range is the merge commit alone; `-m 1` already brings
   in the whole side branch.
-- **Squash merge**: `n` counts the PR's pre-squash commits, but only one commit
+- **Squash merge**: `N` counts the PR's pre-squash commits, but only one commit
   landed. The range is that one commit.
-- **Rebase merge**: the range is the `n` consecutive first-parent commits ending
-  at the tip — `<tip>~<n>..<tip>`.
+- **Rebase merge**: the range is the `N` consecutive first-parent commits ending
+  at the tip — `${TIP}~${N}..${TIP}`.
 
 ```bash
 git log --first-parent --format='%h %s' "${TIP}~${N}..${TIP}"
@@ -279,19 +329,46 @@ Slugging removes both classes of problem at once.
 Derive a validated slug instead, and keep it collision-resistant by appending
 the suspect commit's short SHA:
 
+Sanitising the character class is necessary but not sufficient: a `batch_id` is
+opaque and may also be *long*, and length is a separate failure. A 300-character
+component **passes** `git check-ref-format --branch` and then fails at creation:
+
+```text
+fatal: cannot lock ref 'refs/heads/revert/aaa…': Unable to create
+'…/.git/refs/heads/revert/aaa….lock': File name too long
+```
+
+So bound the length too. Truncate the human-readable slug, append a short digest
+of the **full** id so two ids that truncate identically still differ, and add the
+suspect short SHA:
+
 ```bash
 git fetch origin
 BATCH_SLUG=$(printf '%s' "${BATCH_ID}" \
-  | tr -c 'A-Za-z0-9._-' '-' | sed 's/-\{2,\}/-/g; s/^[-.]*//; s/[-.]*$//')
-REVERT_BRANCH="revert/${BATCH_SLUG}-$(git rev-parse --short "${SHA}")"
+  | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40 \
+  | sed 's/-\{2,\}/-/g; s/^[-.]*//; s/[-.]*$//')
+[ -n "${BATCH_SLUG}" ] || BATCH_SLUG="batch"
+BATCH_DIGEST=$(printf '%s' "${BATCH_ID}" | git hash-object --stdin | cut -c1-8)
+REVERT_BRANCH="revert/${BATCH_SLUG}-${BATCH_DIGEST}-$(git rev-parse --short "${SHA}")"
 git check-ref-format --branch "${REVERT_BRANCH}" || exit 1
 git checkout -b "${REVERT_BRANCH}" "origin/${BASE}"
 ```
 
-Validate with `git check-ref-format --branch` before `git checkout -b` rather
-than after: it is the cheap fail-closed check, and it costs nothing. Where the
-batch has no `batch_id` at all, name the branch from the suspect PR number and
-short SHA by the same rule.
+Order matters in that pipeline. `tr` runs before `cut`, so everything is ASCII
+by the time it is truncated and a multibyte character cannot be split in half.
+Truncating before the trailing-separator trim means a cut landing on `-` or `.`
+cannot leave an invalid ending. The empty-slug fallback covers a `batch_id` with
+no usable characters at all (`:::`): without it the name becomes
+`revert/-<digest>-…`, which **passes** `check-ref-format` — so the guard does not
+catch it — while producing a leading-hyphen component that later `git` commands
+parse as an option. `git hash-object --stdin` keeps the digest a pure git
+operation — no `shasum`/`sha256sum` portability question. Any `batch_id`,
+however long, yields a name under ~65 characters.
+
+Keep the `check-ref-format` guard: it still catches the character class, and it
+runs before `git checkout -b` because it is the cheap fail-closed check. Where
+the batch has no `batch_id` at all, name the branch from the suspect PR number
+and short SHA by the same rule.
 
 The revert goes through the repo's normal PR path. It is never pushed straight
 to `BASE`, and never merged by an agent (see [4. Authority](#4-authority)).
@@ -338,22 +415,59 @@ git revert --abort
 ```
 
 Revert every commit in every in-scope PR's landed range, newest to oldest. For
-a rebase-merged PR that is N commits, not one. `git log` already emits newest
-first, so walking its output is the correct order:
+a rebase-merged PR that is N commits, not one.
+
+**Give each PR's range to a single `git revert` invocation.** Do not loop
+one-SHA-at-a-time. `git revert` is a sequencer: handed a range it queues every
+commit in `.git/sequencer/todo`, reverts them newest-first on its own, and — the
+part that matters — `git revert --continue` resumes at the *next* queued commit
+after you resolve a conflict. A per-commit loop passes one SHA per invocation,
+so there is no queued state to resume, and rerunning the loop restarts at the
+newest commit and tries to re-revert what is already reverted.
+
+Because a PR's landed range is shape-homogeneous — a rebase series is all
+single-parent, a squash is one single-parent commit, a merge PR is one merge
+commit — `-m` never has to apply to a mixed set:
 
 ```bash
-git log --first-parent --format='%H' "${TIP}~${N}..${TIP}" | while read -r sha; do
-  if git rev-parse -q --verify "${sha}^2" >/dev/null; then
-    git revert -m 1 --no-edit "$sha" || break
-  else
-    git revert --no-edit "$sha" || break
-  fi
-done
+# squash or rebase PR: one invocation for the whole range, no -m
+git revert --no-edit "${TIP}~${N}..${TIP}"
+
+# merge-commit PR: one merge commit, -m names the mainline
+git revert -m 1 --no-edit "${TIP}"
 ```
 
-The loop stops on the first conflict so you can resolve it; rerun it for the
-remaining commits after `git revert --continue`. Do not let it run unattended
-past a conflict.
+Run one such invocation per in-scope PR, taking the PRs newest-first. Keep `-m`
+scoped to a single merge commit; never hand a mixed-shape set to one invocation
+and rely on `-m` applying correctly across it.
+
+Confirm the homogeneity rather than assuming it — a mis-recovered range or
+hand-built history can break it:
+
+```bash
+git rev-list --merges "${TIP}~${N}..${TIP}"   # must print nothing for a squash/rebase range
+```
+
+If it prints anything, the range mixes shapes and the single-invocation form is
+wrong for it. Git fails closed here — `git revert <range>` containing a merge
+stops with `is a merge but no -m option was given` and reverts nothing — so this
+is a correctness stop, not a silent error. Treat the range as `UNKNOWN`, re-run
+range recovery, and do not work around it by adding `-m 1` to the range
+invocation: that would apply mainline selection to every commit in the range.
+
+On a conflict the sequencer stops with the remaining commits still queued.
+Resolve, then:
+
+```bash
+git add <resolved-paths>      # or git rm for a modify/delete conflict
+git revert --continue --no-edit   # resumes at the next queued commit
+git revert --skip                 # drop just this commit, keep going
+git revert --abort                # unwind the whole range
+```
+
+Do not rerun the range command after a conflict — that restarts it from the
+newest commit. `git revert --continue` is the only correct resume, and
+`.git/sequencer/todo` shows what is still pending if you need to check.
 
 ### Conflicts caused by later unrelated merges
 
@@ -481,15 +595,15 @@ not assume the `agent-coord` binary exists, is on `PATH`, or is responsive. The
 events and terminal values are the portable part.
 
 **These events happen at two different times, and conflating them writes a
-false record.** The revert has not merged when you open the draft PR, and the
-operator may reject or change it. A `manual-fix` event that already names a
-merged `${REVERT_PR}` claims a repair that has not happened — and since the
-first terminal event is immutable, a coordination history that overstates a
-completed repair cannot be corrected afterwards. Record only what is true at
-each checkpoint.
+false record.** Nothing has merged when you open the draft PR, and the operator
+may reject the revert, replace it with a forward fix, or decline to repair at
+all. A `manual-fix` event that already names a merged repair claims something
+that has not happened — and since the first terminal event is immutable, a
+coordination history that overstates a completed repair cannot be corrected
+afterwards. Record only what is true at each checkpoint.
 
 **Checkpoint A — at escalation, before the operator decides.** The observed
-failure is a fact now, and so is the proposal. The merged revert is not.
+failure is a fact now, and so is the proposal. A merged repair is not.
 
 ```bash
 agent-coord record-event --type error --severity "${P0_TO_P3}" \
@@ -514,23 +628,56 @@ are exactly `help_requested`, `escalation_requested`, `error`, and
 values are exactly `done`, `abandoned`, `superseded`. Keep the two apart: the
 lifecycle state says where the lane is, the closeout value says how it ended.
 
-**Checkpoint B — only after the revert PR has actually merged.** Confirm it is
-merged before emitting anything here (`gh pr view "${REVERT_PR}" --json state,
-mergedAt`); a closed-unmerged or still-open revert reaches neither this event
-nor the terminal closeout below. If the operator rejects the revert, or replaces
-it with a forward fix, nothing in checkpoint B is emitted — the checkpoint A
-`error` and `help_requested` records stand on their own and remain true.
+**Checkpoint B — only after a repair has actually merged.** The gate is *a
+repair landed*, not *the revert landed*. Section 2 offers a forward fix as a
+legitimate alternative and the operator may take it; if checkpoint B fired only
+for reverts, a forward-fixed incident would leave the lane with an outstanding
+`help_requested`, never closed out, permanently mid-incident even though the
+incident was resolved.
+
+So `${REPAIR_PR}` is whichever PR actually merged — the revert **or** the
+forward fix. Confirm it merged before emitting anything here:
+
+```bash
+gh pr view "${REPAIR_PR}" --repo "${REPO}" --json state,mergedAt
+```
+
+A closed-unmerged or still-open repair reaches neither this event nor the
+terminal closeout below.
 
 ```bash
 agent-coord record-event --type human_intervention --kind manual-fix \
   --batch-id "${BATCH_ID}" --lane "${LANE}" \
   --repo "${REPO}" --target "${TARGET}" \
-  --message "Merge of PR #${PR} reverted by merged PR #${REVERT_PR}"
+  --message "Harm from PR #${PR} repaired by merged PR #${REPAIR_PR}"
 ```
 
+Word the message for the repair that actually happened — "reverted by" is wrong
+for a forward fix, and the message is the durable record a later audit reads.
+`manual-fix` is the correct kind either way: both are a human-directed repair
+outside the lane's own workflow.
+
 Everything below — the terminal closeout and the already-`done` path — also
-belongs to checkpoint B. A lane is not closed out on the strength of a proposed
-revert.
+belongs to checkpoint B. A lane is not closed out on the strength of a *proposed*
+repair.
+
+**If no repair lands at all** — the operator declines both the revert and a
+forward fix and accepts the risk — checkpoint B does not fire, but the lane must
+still reach a defensible state rather than dangling with an open
+`help_requested`:
+
+- Emit no `manual-fix`. Nothing was fixed, and claiming otherwise is the same
+  false record this split exists to prevent.
+- The checkpoint A `error` record stands as the durable statement of unrepaired
+  harm. Do not retract it.
+- Close a non-terminal lane by the same rule as below (`superseded` when a named
+  successor will carry the work, otherwise `abandoned`).
+- An already-`done` lane stays `done` and receives no new event, but the
+  worked-issue outcome is still `regressed` — the harm is real and now
+  knowingly unrepaired.
+- Record the accepted-risk decision and the deciding operator in the durable
+  handoff. An accepted risk that is written down is a decision; one that is not
+  is an unexplained dangling lane.
 
 **Terminal state depends on whether the lane has already closed.**
 
@@ -540,7 +687,7 @@ now, choosing between the two non-`done` terminal values:
 ```bash
 agent-coord release --terminal superseded --pr-state "${PR_STATE}" \
   --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}" \
-  --evidence-url "${REVERT_PR_URL}"
+  --evidence-url "${REPAIR_PR_URL}"
 ```
 
 - Use `superseded` when a named successor — a new lane, issue, or PR — will
@@ -560,11 +707,13 @@ turns a `done` lane into a not-done lane, and attempting one is a protocol
 violation rather than a correction. Instead:
 
 1. Record the checkpoint B lane-scoped `human_intervention --kind manual-fix`
-   event on the original lane (the command above) — after the revert merges, not
+   event on the original lane (the command above) — after the repair merges, not
    when it is proposed — so dashboards reading lane history stop presenting the
-   outcome as cleanly `done`.
-2. Run the revert as a **new lane** with its own claim, its own target, and its
-   own terminal closeout — `done` when the revert merges.
+   outcome as cleanly `done`. If no repair lands, emit nothing here and follow
+   the accepted-risk bullets above instead.
+2. Run the repair — revert or forward fix — as a **new lane** with its own
+   claim, its own target, and its own terminal closeout: `done` when that
+   repair PR merges.
 3. Reclassify the *worked-issue outcome* as `regressed` in the
    post-merge-audit / continuous-evaluation-loop record. That record, not the
    coordination terminal state, is where outcome truth lives. `regressed` is
@@ -625,7 +774,7 @@ An agent **may not**, without an explicit operator decision:
 - force-push or rewrite `BASE` history to remove the merge; or
 - widen the revert scope past the closure the operator approved; or
 - emit any **checkpoint B** event or terminal closeout, which asserts a merged
-  revert the operator has not authorized.
+  repair the operator has not authorized.
 
 ## Checklist
 
@@ -657,9 +806,12 @@ An agent **may not**, without an explicit operator decision:
     `n/a`.
 12. **Checkpoint A** — record the `error` event and `help_requested --reason
     permission`. Open the revert PR as a draft and escalate to the operator for
-    the merge decision. Record nothing here that claims the revert landed.
-13. **Checkpoint B, only after the revert PR actually merges** — record
-    `human_intervention --kind manual-fix`; close a non-terminal lane
-    `superseded` or `abandoned`; for an already-`done` lane, open a new lane and
-    reclassify the worked issue as `regressed`. If the operator rejects the
-    revert, skip checkpoint B entirely.
+    the merge decision. Record nothing here that claims a repair landed.
+13. **Checkpoint B, only after a repair PR actually merges** — the revert *or* a
+    forward fix, whichever the operator took — record `human_intervention --kind
+    manual-fix` naming that PR; close a non-terminal lane `superseded` or
+    `abandoned`; for an already-`done` lane, open a new lane for the repair and
+    reclassify the worked issue as `regressed`. If no repair lands at all, skip
+    checkpoint B, still close a non-terminal lane, still reclassify the worked
+    issue `regressed`, and record the accepted-risk decision and its operator in
+    the durable handoff.
