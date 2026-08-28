@@ -6142,7 +6142,9 @@ RUBY
   set -e
 
   assert_contains "$(cat "$observer")" "restore-symlink-race"
-  [[ "$status" -eq 65 ]] || fail "bound metadata restore exited $status: $output"
+  [[ "$status" -eq 1 ]] || fail "bound metadata restore exited $status: $output"
+  assert_contains "$output" "RECOVERY_FAILED: preserved"
+  assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING: preserved recovery state at"
   assert_file "$outside/SENTINEL"
   [[ -z "$(find "$outside" -mindepth 1 ! -name SENTINEL -print -quit)" ]] || \
     fail "metadata restoration wrote outside target"
@@ -6150,10 +6152,10 @@ RUBY
   ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
   quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
   [[ -n "$quarantine" ]] || fail "bound metadata restore did not preserve quarantine"
-  assert_symlink "$quarantine/metadata"
-  [[ "$(readlink "$quarantine/metadata")" = "$outside" ]] || \
+  assert_symlink "$quarantine/payload/metadata"
+  [[ "$(readlink "$quarantine/payload/metadata")" = "$outside" ]] || \
     fail "bound metadata restore did not preserve replacement symlink"
-  assert_file "$quarantine/restore-guard"
+  [[ ! -e "$quarantine/restore-guard" ]] || fail "bound metadata restore retained stale restore guard"
   assert_file "$receipt"
   assert_file "$staging/user-owned-skill/SKILL.md"
   [[ ! -e "$target/skills/user-owned-skill" ]] || fail "bound metadata restore mutated recovery target"
