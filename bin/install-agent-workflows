@@ -886,8 +886,8 @@ capture_regular_file_snapshot() {
           snapshot_file.flush
           cleanup_stat = snapshot_file.stat
           if cleanup_stat.file? && cleanup_stat.dev == snapshot_stat.dev && cleanup_stat.ino == snapshot_stat.ino
-            $stdout.write("#{cleanup_stat.dev}:#{cleanup_stat.ino}")
-            $stdout.flush
+            STDOUT.write("#{cleanup_stat.dev}:#{cleanup_stat.ino}")
+            STDOUT.flush
           end
         rescue StandardError
           nil
