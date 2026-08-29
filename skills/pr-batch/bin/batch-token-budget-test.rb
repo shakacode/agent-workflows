@@ -35,6 +35,17 @@ class BatchTokenBudgetTest < Minitest::Test
   File.write(DEFAULT_TRUSTED_CLOCK_PRELOADER, TRUSTED_CLOCK_SOURCE)
   Minitest.after_run { FileUtils.remove_entry(DEFAULT_TRUSTED_CLOCK_DIRECTORY) }
 
+  def load_batch_token_budget_module
+    return if defined?(BatchTokenBudget)
+
+    source = File.read(HELPER, encoding: "UTF-8").split("\noptions = {}\n", 2).fetch(0)
+    Dir.mktmpdir("batch-token-budget-module") do |directory|
+      module_path = File.join(directory, "batch-token-budget-module.rb")
+      File.write(module_path, source)
+      load module_path
+    end
+  end
+
   def test_triage_budget_abbreviation_names_the_coordinator_scope
     triage_skill = File.read(File.expand_path("../../triage/SKILL.md", __dir__), encoding: "UTF-8")
 
@@ -43,14 +54,7 @@ class BatchTokenBudgetTest < Minitest::Test
   end
 
   def test_linux_uses_suspend_aware_boottime_and_fails_closed_without_it
-    unless defined?(BatchTokenBudget)
-      source = File.read(HELPER, encoding: "UTF-8").split("\noptions = {}\n", 2).fetch(0)
-      Dir.mktmpdir("batch-token-budget-clock-module") do |directory|
-        module_path = File.join(directory, "batch-token-budget-module.rb")
-        File.write(module_path, source)
-        load module_path
-      end
-    end
+    load_batch_token_budget_module
     linux_process = Module.new
     linux_process.const_set(:CLOCK_BOOTTIME, :boottime)
     darwin_process = Module.new
@@ -4648,6 +4652,136 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_reconciled_threshold_replaces_a_stale_approval_decision_with_a_later_hard_stop
+    with_state do |state_path|
+      initialize_budget(state_path)
+      approval_id = "long-lived-threshold-approval"
+      approved, approval_stderr, approval_status = run_helper(
+        state_path,
+        command("approve", "approval" => approval(state_path, id: approval_id))
+      )
+      assert approval_status.success?, approval_stderr
+      assert_equal "approved", approved.fetch("status")
+
+      admitted, admitted_stderr, admitted_status = reserve(
+        state_path,
+        id: "long-lived-threshold-reservation",
+        tokens: 480,
+        overrides: { "approval_id" => approval_id }
+      )
+      assert admitted_status.success?, admitted_stderr
+      assert_equal "admitted-with-warning", admitted.fetch("status")
+
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      approval_window = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 480, "lane-b" => 0 }
+      )
+      reconciled, reconcile_stderr, reconcile_status = reconcile_receipt(
+        state_path,
+        approval_window,
+        "long-lived-approval"
+      )
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      approval_stop = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.find do |decision|
+        decision["reservation_id"] == "long-lived-threshold-reservation"
+      end
+      assert_equal "approval-required", approval_stop.fetch("status")
+      assert_equal "actual-approval-threshold", approval_stop.fetch("reason")
+
+      hard_window = usage_window(
+        base_receipt,
+        from: "2026-08-12T12:00:00Z",
+        to: "2026-08-12T13:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 120, "lane-b" => 0 }
+      )
+      hard_window, hard_ref, hard_digest = receipt_artifact(state_path, hard_window, "long-lived-hard")
+      hardened, hard_stderr, hard_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T13:00:00Z",
+          "usage_receipt" => hard_window,
+          "usage_receipt_ref" => hard_ref,
+          "usage_receipt_digest" => hard_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+      assert hard_status.success?, hard_stderr
+      assert_equal "reconciled", hardened.fetch("status")
+
+      saved = JSON.parse(File.read(state_path))
+      hard_stop = saved.fetch("admission_decisions").values.find do |decision|
+        decision["reservation_id"] == "long-lived-threshold-reservation"
+      end
+      assert_equal "budget-exhausted", hard_stop.fetch("status")
+      assert_equal "actual-hard-threshold", hard_stop.fetch("reason")
+      assert_equal ["lane-a"], hard_stop.fetch("blocking_scope_ids")
+      assert(saved.fetch("receipts").any? { |receipt| receipt == hard_stop.fetch("receipt") })
+      statuses = saved.dig("reservation_decisions", "long-lived-threshold-reservation", "outcomes").map do |outcome|
+        outcome.fetch("status")
+      end
+      assert_equal %w[approval-required budget-exhausted], statuses.last(2)
+
+      equivalent_window = usage_window(
+        base_receipt,
+        from: "2026-08-12T13:00:00Z",
+        to: "2026-08-12T14:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      equivalent_window, equivalent_ref, equivalent_digest = receipt_artifact(
+        state_path,
+        equivalent_window,
+        "long-lived-equivalent-hard"
+      )
+      equivalent, equivalent_stderr, equivalent_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T14:00:00Z",
+          "usage_receipt" => equivalent_window,
+          "usage_receipt_ref" => equivalent_ref,
+          "usage_receipt_digest" => equivalent_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+      assert equivalent_status.success?, equivalent_stderr
+      assert_equal "reconciled", equivalent.fetch("status")
+      equivalent_state = JSON.parse(File.read(state_path))
+      equivalent_stop = equivalent_state.fetch("admission_decisions").values.find do |decision|
+        decision["reservation_id"] == "long-lived-threshold-reservation"
+      end
+      assert_equal hard_stop.fetch("receipt"), equivalent_stop.fetch("receipt")
+      equivalent_statuses = equivalent_state.dig(
+        "reservation_decisions",
+        "long-lived-threshold-reservation",
+        "outcomes"
+      ).map { |outcome| outcome.fetch("status") }
+      assert_equal statuses, equivalent_statuses
+
+      next_request = reservation(id: "after-long-lived-hard-stop", tokens: 1)
+      next_request["telemetry"]["observed_at"] = "2026-08-12T13:59:59Z"
+      next_turn, next_stderr, next_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "evaluated_at" => "2026-08-12T14:00:01Z",
+          "reservation" => next_request
+        )
+      )
+      assert next_status.success?, next_stderr
+      assert_equal "budget-exhausted", next_turn.fetch("status")
+      assert_equal "persisted-hard-stop", next_turn.fetch("reason")
+    end
+  end
+
   def test_budget_exhausted_checkpoint_and_closeout_capture_exact_restart_evidence
     with_state do |state_path|
       initialize_budget(state_path)
@@ -5008,6 +5142,52 @@ class BatchTokenBudgetTest < Minitest::Test
       end
       assert_equal 2, expiration_receipts
     end
+  end
+
+  def test_override_expiration_hierarchy_deadlock_fails_closed_without_mutating_state
+    load_batch_token_budget_module
+    effective_budget = budget(state_path: "/tmp/deadlocked-batch-token-budget.json")
+    effective_budget.dig("scopes", "aggregate")["limit_tokens"] = 1_500
+    effective_budget.dig("scopes", "lanes", "lane-a")["limit_tokens"] = 1_300
+    state = {
+      "batch_id" => "batch-399",
+      "budget" => effective_budget,
+      "effective_budget_digest" => object_digest(effective_budget),
+      "revision" => 0,
+      "receipts" => [],
+      "scopes" => {
+        "aggregate" => { "limit_tokens" => 1_500 },
+        "coordinator" => { "limit_tokens" => 300 },
+        "lanes" => {
+          "lane-a" => { "limit_tokens" => 1_300 },
+          "lane-b" => { "limit_tokens" => 500 }
+        }
+      },
+      "overrides" => {
+        "aggregate-expiration" => {
+          "active" => true,
+          "scope_id" => "aggregate",
+          "old_limit_tokens" => 1_000,
+          "new_limit_tokens" => 1_500,
+          "expires_at" => "2026-08-12T12:05:00Z"
+        },
+        "lane-expiration" => {
+          "active" => true,
+          "scope_id" => "lane-a",
+          "old_limit_tokens" => 1_600,
+          "new_limit_tokens" => 1_300,
+          "expires_at" => "2026-08-12T12:05:00Z"
+        }
+      }
+    }
+    before = Marshal.load(Marshal.dump(state))
+
+    error = assert_raises(BatchTokenBudget::InvalidInput) do
+      BatchTokenBudget.expire_overrides(state, "2026-08-12T13:00:00Z")
+    end
+
+    assert_equal "override-expiration-hierarchy-deadlock", error.message
+    assert_equal before, state
   end
 
   def test_batch_usage_receipt_requires_a_durable_non_self_attested_matching_reference

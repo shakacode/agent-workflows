@@ -634,29 +634,43 @@ module BatchTokenBudget
 
   def valid_reservation_decision_ledgers?(state)
     valid_fences = state.fetch("reservation_decisions").all? do |reservation_id, fence|
-      nonempty_string?(reservation_id) && fence.is_a?(Hash) &&
-        fence.keys.sort == %w[outcomes request_digest] && nonempty_string?(fence["request_digest"]) &&
-        fence["outcomes"].is_a?(Array) && !fence["outcomes"].empty? && fence["outcomes"].all? do |outcome|
-          structurally_valid = outcome.is_a?(Hash) && outcome.keys.sort == %w[receipt result_fields status] &&
-                               nonempty_string?(outcome["status"]) && outcome["result_fields"].is_a?(Hash) &&
-                               ledger_receipt?(state, outcome["receipt"], "batch-token-budget-reservation-decision-receipt") &&
-                               outcome.dig("receipt", "reservation_id") == reservation_id &&
-                               outcome.dig("receipt", "request_digest") == fence["request_digest"] &&
-                               outcome.dig("receipt", "status") == outcome["status"]
-          next false unless structurally_valid
+      next false unless nonempty_string?(reservation_id) && fence.is_a?(Hash) &&
+                        fence.keys.sort == %w[outcomes request_digest] && nonempty_string?(fence["request_digest"]) &&
+                        fence["outcomes"].is_a?(Array) && !fence["outcomes"].empty?
 
-          if %w[approval-required budget-exhausted].include?(outcome["status"])
-            decision = state.dig("admission_decisions", fence["request_digest"]) ||
-                       state.fetch("admission_decisions").values.find do |candidate|
-                         candidate["receipt"] == outcome.dig("result_fields", "receipt")
-                       end
-            decision && decision["status"] == outcome["status"]
-          elsif %w[admitted admitted-with-warning].include?(outcome["status"])
-            state.dig("reservations", reservation_id, "request_digest") == fence["request_digest"]
-          else
-            %w[blocked coalesced].include?(outcome["status"])
+      threshold_outcomes = fence["outcomes"].select do |outcome|
+        outcome.is_a?(Hash) && %w[approval-required budget-exhausted].include?(outcome["status"])
+      end
+      latest_threshold_outcome = threshold_outcomes.last
+      fence["outcomes"].all? do |outcome|
+        structurally_valid = outcome.is_a?(Hash) && outcome.keys.sort == %w[receipt result_fields status] &&
+                             nonempty_string?(outcome["status"]) && outcome["result_fields"].is_a?(Hash) &&
+                             ledger_receipt?(state, outcome["receipt"], "batch-token-budget-reservation-decision-receipt") &&
+                             outcome.dig("receipt", "reservation_id") == reservation_id &&
+                             outcome.dig("receipt", "request_digest") == fence["request_digest"] &&
+                             outcome.dig("receipt", "status") == outcome["status"]
+        next false unless structurally_valid
+
+        if %w[approval-required budget-exhausted].include?(outcome["status"])
+          threshold_receipt = outcome.dig("result_fields", "receipt")
+          durable_threshold = ledger_receipt?(
+            state,
+            threshold_receipt,
+            "batch-token-budget-threshold-receipt"
+          ) && threshold_receipt["status"] == outcome["status"]
+          decision = state.fetch("admission_decisions").values.find do |candidate|
+            candidate["receipt"] == threshold_receipt
           end
+          persisted_stop = %w[persisted-approval-stop persisted-hard-stop].include?(outcome.dig("result_fields", "reason"))
+          receipt_bound = threshold_receipt["reservation_id"] == reservation_id || persisted_stop && decision
+          durable_threshold && receipt_bound && (decision && decision["status"] == outcome["status"] ||
+            !outcome.equal?(latest_threshold_outcome))
+        elsif %w[admitted admitted-with-warning].include?(outcome["status"])
+          state.dig("reservations", reservation_id, "request_digest") == fence["request_digest"]
+        else
+          %w[blocked coalesced].include?(outcome["status"])
         end
+      end
     end
     valid_fences && state.fetch("reservations").all? do |reservation_id, reservation|
       state.dig("reservation_decisions", reservation_id, "request_digest") == reservation["request_digest"]
@@ -1239,7 +1253,17 @@ module BatchTokenBudget
   )
     decision_digest = digest(reservation)
     existing = original_state.dig("admission_decisions", decision_digest)
-    if existing && existing["budget_digest"] == original_state["budget_digest"]
+    blocking_available_tokens = blocking_scope_ids.to_h do |scope_id|
+      [scope_id, available_tokens(original_state, scope_id)]
+    end
+    equivalent_decision = existing &&
+                          existing["budget_digest"] == original_state["budget_digest"] &&
+                          existing["status"] == status &&
+                          existing["reason"] == reason &&
+                          existing["allowed_actions"] == allowed_actions &&
+                          existing["blocking_scope_ids"] == blocking_scope_ids &&
+                          existing["blocking_available_tokens"] == blocking_available_tokens
+    if equivalent_decision
       return [original_state, result(
         original_state,
         "replayed",
@@ -1269,9 +1293,7 @@ module BatchTokenBudget
       "status" => status,
       "reason" => reason,
       "blocking_scope_ids" => blocking_scope_ids,
-      "blocking_available_tokens" => blocking_scope_ids.to_h do |scope_id|
-        [scope_id, available_tokens(state, scope_id)]
-      end,
+      "blocking_available_tokens" => blocking_available_tokens,
       "budget_digest" => state.fetch("budget_digest"),
       "allowed_actions" => allowed_actions,
       "receipt" => threshold_receipt
