@@ -374,7 +374,11 @@ and requires the same complete mapping from the fetched base commit. It emits
 `TRUSTED_BASE_HIGH_RISK_ACCEPTED` only for an exact closed merged
 same-repository PR whose matching REST/GraphQL merge result is an ancestor of
 that base, with complete trusted actors, interactions, API coverage, and no
-suspicious findings. The JSON receipt binds repository, PR, head, merge, base,
+suspicious findings. Complete coverage includes unique stable GraphQL node
+identities for participants, timeline events, and commit authors. Remote
+inspection, fetch, object inspection, and ancestry checks use one system Git
+executable pinned before task-scoped inputs, never a later inherited-`PATH`
+selection. The JSON receipt binds repository, PR, head, merge, base,
 policy source, remote/ref, and every high-risk path. This is not manual
 acknowledgement and cannot be inferred from PR text or green checks; every other
 blocker remains in force.

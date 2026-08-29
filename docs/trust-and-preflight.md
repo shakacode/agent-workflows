@@ -188,16 +188,21 @@ The helper treats worktree policy only as bootstrap. It verifies the configured
 remote's stored URL, then fetches that URL and exact ref into a new temporary
 bare repository. The fetch runs with system/global and repository/worktree Git
 configuration absent, a minimal inherited environment, URL rewrites absent,
-SSH user configuration disabled, and transport restricted to HTTPS/SSH. Known local or worktree transport
-overrides are also rejected so the operator can see why provenance would have
-been ambiguous outside the isolated fetch. The helper resolves the fetched
-commit, then reads `.agents/agent-workflow.yml` again from that commit. The
-fetched mapping must be complete and exactly match the bootstrap mapping.
-Acceptance additionally
+SSH user configuration disabled, and transport restricted to HTTPS/SSH. It
+resolves one absolute system Git executable before reading task-scoped inputs
+and uses that same executable for remote inspection, fetch, object inspection,
+and ancestry checks; later `PATH` changes cannot redirect provenance commands.
+Plain HTTP is rejected except when an explicit loopback `GH_HOST` is used for a
+local integration harness. Known local or worktree transport overrides are also
+rejected so the operator can see why provenance would have been ambiguous
+outside the isolated fetch. The helper resolves the fetched commit, then reads
+`.agents/agent-workflow.yml` again from that commit. The fetched mapping must be
+complete and exactly match the bootstrap mapping. Acceptance additionally
 requires a closed merged non-fork PR, matching complete REST and GraphQL
 repository/head/merge facts, trusted and fully visible actors/interactions,
-complete API coverage, no suspicious findings or warnings, and proof that the
-exact merge result is an ancestor of the freshly fetched base.
+complete API coverage with unique stable participant, timeline-event, and
+commit-author node identities, no suspicious findings or warnings, and proof
+that the exact merge result is an ancestor of the freshly fetched base.
 
 Success emits a separate one-line JSON receipt beginning with
 `TRUSTED_BASE_HIGH_RISK_ACCEPTED`. It binds the repository, PR number, head SHA,

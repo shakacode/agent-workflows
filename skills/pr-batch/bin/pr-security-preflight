@@ -15,6 +15,43 @@ require "yaml"
 
 require_relative "../lib/git_probe_env"
 
+def resolve_trusted_git_executable
+  prohibited_roots = [Dir.pwd, Dir.tmpdir].filter_map do |path|
+    File.realpath(path)
+  rescue SystemCallError
+    nil
+  end
+  candidates = %w[/usr/bin/git /bin/git /usr/local/bin/git /opt/homebrew/bin/git]
+  candidates.each do |candidate|
+    next unless File.absolute_path(candidate) == candidate
+    next unless File.file?(candidate) && File.executable?(candidate)
+
+    canonical = File.realpath(candidate)
+    next if prohibited_roots.any? { |root| canonical == root || canonical.start_with?("#{root}/") }
+
+    return canonical
+  rescue SystemCallError
+    next
+  end
+
+  abort "Refusing trusted-base provenance: no pinned system Git executable is available"
+end
+
+# Resolve this before options, repository metadata, or task-scoped executables are
+# consumed. Trusted-base provenance never selects Git through the inherited PATH.
+TRUSTED_GIT_EXECUTABLE = resolve_trusted_git_executable.freeze
+
+def pin_git_probe_metadata!
+  stdout, _stderr, status = Open3.capture3({}, TRUSTED_GIT_EXECUTABLE, "rev-parse", "--local-env-vars")
+  names = status.success? ? stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).reject(&:empty?) : []
+  names = PrBatchGitProbeEnv::LOCAL_ENV_VARS_FALLBACK if names.empty?
+  PrBatchGitProbeEnv.instance_variable_set(:@local_env_vars, names.freeze)
+rescue StandardError
+  PrBatchGitProbeEnv.instance_variable_set(:@local_env_vars, PrBatchGitProbeEnv::LOCAL_ENV_VARS_FALLBACK)
+end
+
+pin_git_probe_metadata!
+
 options = {
   acknowledged_risks: Hash.new { |hash, key| hash[key] = Set.new },
   repo: nil,
@@ -240,16 +277,17 @@ def git_probe_env
 end
 
 def capture_git_probe(*args)
+  args = args.drop(1) if args.first == "git"
   Timeout.timeout(GIT_TIMEOUT_SECONDS) do
-    Open3.capture3(git_probe_env, *args)
+    Open3.capture3(git_probe_env, TRUSTED_GIT_EXECUTABLE, *args)
   end
 rescue Timeout::Error
-  warn "WARN: git #{args.join(' ')} timed out after #{GIT_TIMEOUT_SECONDS}s"
+  warn "WARN: #{TRUSTED_GIT_EXECUTABLE} #{args.join(' ')} timed out after #{GIT_TIMEOUT_SECONDS}s"
   ["", "", nil]
 end
 
 def trusted_git_probe_env
-  inherited = %w[PATH LANG LC_ALL SSH_AUTH_SOCK].to_h do |name|
+  inherited = %w[LANG LC_ALL SSH_AUTH_SOCK].to_h do |name|
     [name, ENV[name]]
   end.compact
   safe_directory_config = git_probe_env.select do |name, value|
@@ -271,10 +309,10 @@ end
 
 def capture_trusted_git_probe(*args)
   Timeout.timeout(GIT_TIMEOUT_SECONDS) do
-    Open3.capture3(trusted_git_probe_env, *args, unsetenv_others: true)
+    Open3.capture3(trusted_git_probe_env, TRUSTED_GIT_EXECUTABLE, *args, unsetenv_others: true)
   end
 rescue Timeout::Error
-  ["", "git #{args.join(' ')} timed out after #{GIT_TIMEOUT_SECONDS}s", nil]
+  ["", "#{TRUSTED_GIT_EXECUTABLE} #{args.join(' ')} timed out after #{GIT_TIMEOUT_SECONDS}s", nil]
 end
 
 def resolved_trust_config(explicit_path, repo:, github_host:)
@@ -318,6 +356,19 @@ def git_toplevel(chdir: nil)
 
   stdout = stdout.force_encoding("UTF-8").scrub
   root = stdout.strip
+  root unless root.empty?
+rescue StandardError
+  nil
+end
+
+def trusted_git_toplevel(chdir: nil)
+  args = []
+  args.push("-C", chdir) if chdir
+  args.concat(["rev-parse", "--show-toplevel"])
+  stdout, _stderr, status = capture_trusted_git_probe(*args)
+  return unless status&.success?
+
+  root = stdout.force_encoding("UTF-8").scrub.strip
   root unless root.empty?
 rescue StandardError
   nil
@@ -370,6 +421,20 @@ rescue StandardError
   []
 end
 
+def trusted_git_remote_urls(root)
+  %w[--local --worktree].flat_map do |scope|
+    stdout, _stderr, status = capture_trusted_git_probe(
+      "-C", root, "config", scope, "--null", "--get-regexp", "^remote\\..*\\.url$"
+    )
+    next [] unless status&.success?
+
+    stdout.force_encoding("UTF-8").scrub.split("\0").filter_map do |entry|
+      _key, value = entry.split("\n", 2)
+      value unless value.to_s.empty?
+    end
+  end.uniq
+end
+
 def inferred_github_host_from_local_git(repo)
   root = git_toplevel
   return unless root
@@ -383,6 +448,11 @@ end
 
 def normalized_github_host(host)
   host.to_s.downcase
+end
+
+def loopback_github_host?(host)
+  hostname = host.to_s.sub(/:\d+\z/, "").delete_prefix("[").delete_suffix("]")
+  %w[localhost 127.0.0.1 ::1].include?(hostname.downcase)
 end
 
 def expected_github_host
@@ -473,6 +543,14 @@ def git_root_matches_repo?(root, repo, github_host:)
   end
 
   remote_repos.any? { |remote_repo| remote_repo.casecmp(repo).zero? }
+end
+
+def trusted_git_root_matches_repo?(root, repo, github_host:)
+  remote_repos = trusted_git_remote_urls(root).filter_map do |url|
+    remote = github_remote_from_remote_url(url)
+    remote[:repo] if remote && remote_matches_github_host?(remote, github_host)
+  end
+  !remote_repos.empty? && remote_repos.all? { |remote_repo| remote_repo.casecmp?(repo) }
 end
 
 def canonical_path(path)
@@ -1164,7 +1242,7 @@ UNSAFE_TRUSTED_FETCH_CONFIG_PATTERN =
 def unsafe_trusted_fetch_config(root)
   %w[local worktree].each do |scope|
     stdout, _stderr, status = capture_trusted_git_probe(
-      "git", "-C", root, "config", "--#{scope}", "--includes", "--name-only", "--get-regexp", ".*"
+      "-C", root, "config", "--#{scope}", "--includes", "--name-only", "--get-regexp", ".*"
     )
     next unless status&.success?
 
@@ -1180,7 +1258,7 @@ end
 def trusted_remote_url(root, policy, repo:, github_host:)
   remote = policy.fetch("remote")
   stdout, _stderr, status = capture_trusted_git_probe(
-    "git", "-C", root, "config", "--local", "--get-all", "remote.#{remote}.url"
+    "-C", root, "config", "--local", "--get-all", "remote.#{remote}.url"
   )
   urls = status&.success? ? stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).reject(&:empty?) : []
   return [nil, "trusted remote #{remote.inspect} must have exactly one local URL"] unless urls.one?
@@ -1192,9 +1270,11 @@ def trusted_remote_url(root, policy, repo:, github_host:)
   end
 
   remote_info = github_remote_from_remote_url(urls.first)
-  unless remote_info && %w[https ssh].include?(remote_info.fetch(:scheme)) &&
+  allowed_transport = %w[https ssh].include?(remote_info&.fetch(:scheme, nil)) ||
+                      (remote_info&.fetch(:scheme, nil) == "http" && loopback_github_host?(github_host))
+  unless remote_info && allowed_transport &&
          remote_matches_github_host?(remote_info, github_host) && remote_info.fetch(:repo).casecmp?(repo)
-    return [nil, "trusted remote #{remote.inspect} does not resolve to #{github_host}/#{repo} over HTTPS or SSH"]
+    return [nil, "trusted remote #{remote.inspect} does not resolve to #{github_host}/#{repo} over a trusted transport"]
   end
 
   [urls.first, nil]
@@ -1204,12 +1284,12 @@ end
 
 def fetch_trusted_base(root, remote_url, ref)
   _stdout, stderr, status = capture_trusted_git_probe(
-    "git", "-C", root, "fetch", "--no-tags", "--force", remote_url, ref
+    "-C", root, "fetch", "--no-tags", "--force", remote_url, ref
   )
   return [nil, "fetch of trusted remote/ref failed: #{stderr.to_s.lines.first&.strip}"] unless status&.success?
 
   stdout, verify_stderr, verify_status = capture_trusted_git_probe(
-    "git", "-C", root, "rev-parse", "--verify", "FETCH_HEAD^{commit}"
+    "-C", root, "rev-parse", "--verify", "FETCH_HEAD^{commit}"
   )
   base_sha = stdout.to_s.strip
   unless verify_status&.success? && base_sha.match?(/\A[0-9a-f]{40,64}\z/)
@@ -1222,7 +1302,7 @@ end
 def with_isolated_trusted_base(remote_url, ref)
   Dir.mktmpdir("pr-security-preflight-trusted-base") do |fetch_root|
     _stdout, stderr, status = capture_trusted_git_probe(
-      "git", "-C", fetch_root, "init", "--bare", "--quiet"
+      "-C", fetch_root, "init", "--bare", "--quiet"
     )
     unless status&.success?
       return [nil, "could not initialize isolated trusted-base repository: #{stderr.to_s.lines.first&.strip}"]
@@ -1239,7 +1319,7 @@ end
 
 def fetched_trusted_base_policy(root, base_sha, repo:)
   stdout, stderr, status = capture_trusted_git_probe(
-    "git", "-C", root, "show", "#{base_sha}:#{WORKFLOW_CONFIG_PATH}"
+    "-C", root, "show", "#{base_sha}:#{WORKFLOW_CONFIG_PATH}"
   )
   return [nil, "fetched trusted base lacks #{WORKFLOW_CONFIG_PATH}: #{stderr.to_s.lines.first&.strip}"] unless status&.success?
 
@@ -1287,15 +1367,75 @@ def clean_for_trusted_base_high_risk_acceptance?(result)
     result.fetch(:all_participants_visible) &&
     result.fetch(:graph_coverage_findings).empty? && result.fetch(:participant_findings).empty? &&
     result.fetch(:untrusted_interactions).empty? && result.fetch(:suspicious).empty? &&
-    result.fetch(:suspicious_warnings).empty?
+    result.fetch(:suspicious_warnings).empty? && trusted_graph_node_identity_findings(result.fetch(:target)).empty?
+end
+
+def complete_graph_identity?(value)
+  !value.to_s.empty? && !value.to_s.casecmp?("UNKNOWN")
+end
+
+def duplicate_or_unavailable_graph_identity?(nodes, &identity_for)
+  identities = nodes.map(&identity_for)
+  identities.any?(&:nil?) || identities.uniq.size != identities.size
+end
+
+def trusted_graph_node_identity_findings(target)
+  findings = []
+  participants = Array(target.dig("participants", "nodes"))
+  participant_ids = {}
+  participant_logins = {}
+  invalid_participants = duplicate_or_unavailable_graph_identity?(participants) do |node|
+    id = node&.[]("id")
+    login = node&.[]("login")
+    next unless complete_graph_identity?(id) && complete_graph_identity?(login)
+
+    normalized = normalized_login(login)
+    coherent = !participant_ids.key?(id) && !participant_logins.key?(normalized)
+    participant_ids[id] = normalized
+    participant_logins[normalized] = id
+    coherent ? [id, normalized] : nil
+  end
+  findings << "participants" if invalid_participants
+
+  timeline = Array(target.dig("timelineItems", "nodes"))
+  invalid_timeline = duplicate_or_unavailable_graph_identity?(timeline) do |node|
+    id = node&.[]("id")
+    typename = node&.[]("__typename")
+    [typename, id] if complete_graph_identity?(id) && complete_graph_identity?(typename)
+  end
+  findings << "timelineItems" if invalid_timeline
+
+  timeline.each do |item|
+    next unless item&.[]("__typename") == "PullRequestCommit"
+
+    authors = Array(item.dig("commit", "authors", "nodes"))
+    author_ids = {}
+    author_logins = {}
+    invalid_authors = duplicate_or_unavailable_graph_identity?(authors) do |author|
+      id = author&.dig("user", "id")
+      login = author&.dig("user", "login")
+      next unless complete_graph_identity?(id) && complete_graph_identity?(login)
+
+      normalized = normalized_login(login)
+      coherent = !author_ids.key?(id) && !author_logins.key?(normalized)
+      author_ids[id] = normalized
+      author_logins[normalized] = id
+      coherent ? [id, normalized] : nil
+    end
+    findings << "commit authors" if invalid_authors
+  end
+
+  findings
 end
 
 def trusted_base_high_risk_receipt(result, repo:, github_host:)
   return [nil, "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"] unless clean_for_trusted_base_high_risk_acceptance?(result)
 
-  root = git_toplevel
+  root = trusted_git_toplevel
   return [nil, "could not resolve the repository worktree"] unless root
-  return [nil, "current worktree remotes do not match #{github_host}/#{repo}"] unless git_root_matches_repo?(root, repo, github_host:)
+  unless trusted_git_root_matches_repo?(root, repo, github_host:)
+    return [nil, "current worktree remotes do not match #{github_host}/#{repo}"]
+  end
 
   bootstrap_policy, error = bootstrap_trusted_base_policy(root, repo:)
   return [nil, error] unless bootstrap_policy
@@ -1315,7 +1455,7 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:)
 
     merge_sha = pr_provenance.fetch(:merge_sha)
     _stdout, stderr, status = capture_trusted_git_probe(
-      "git", "-C", fetch_root, "merge-base", "--is-ancestor", merge_sha, base_sha
+      "-C", fetch_root, "merge-base", "--is-ancestor", merge_sha, base_sha
     )
     unless status&.success?
       next [nil, "PR merge result is not an ancestor of fetched trusted base: #{stderr.to_s.lines.first&.strip}"]
@@ -1354,22 +1494,23 @@ GRAPHQL
 
 PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
   __typename
-  ... on IssueComment { author { login } }
-  ... on PullRequestReview { author { login } }
-  ... on CrossReferencedEvent { actor { login } }
-  ... on ReadyForReviewEvent { actor { login } }
-  ... on ReviewRequestedEvent { actor { login } }
-  ... on MentionedEvent { actor { login } }
-  ... on SubscribedEvent { actor { login } }
-  ... on UnsubscribedEvent { actor { login } }
-  ... on ClosedEvent { actor { login } }
-  ... on ReopenedEvent { actor { login } }
+  ... on IssueComment { id author { login } }
+  ... on PullRequestReview { id author { login } }
+  ... on CrossReferencedEvent { id actor { login } }
+  ... on ReadyForReviewEvent { id actor { login } }
+  ... on ReviewRequestedEvent { id actor { login } }
+  ... on MentionedEvent { id actor { login } }
+  ... on SubscribedEvent { id actor { login } }
+  ... on UnsubscribedEvent { id actor { login } }
+  ... on ClosedEvent { id actor { login } }
+  ... on ReopenedEvent { id actor { login } }
   ... on PullRequestCommit {
+    id
     commit {
       authors(first:10) {
         totalCount
         pageInfo { hasNextPage endCursor }
-        nodes { user { login } }
+        nodes { user { id login } }
       }
     }
   }
@@ -1377,13 +1518,13 @@ GRAPHQL
 
 ISSUE_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
   __typename
-  ... on IssueComment { author { login } }
-  ... on CrossReferencedEvent { actor { login } }
-  ... on MentionedEvent { actor { login } }
-  ... on SubscribedEvent { actor { login } }
-  ... on UnsubscribedEvent { actor { login } }
-  ... on ClosedEvent { actor { login } }
-  ... on ReopenedEvent { actor { login } }
+  ... on IssueComment { id author { login } }
+  ... on CrossReferencedEvent { id actor { login } }
+  ... on MentionedEvent { id actor { login } }
+  ... on SubscribedEvent { id actor { login } }
+  ... on UnsubscribedEvent { id actor { login } }
+  ... on ClosedEvent { id actor { login } }
+  ... on ReopenedEvent { id actor { login } }
 GRAPHQL
 
 PAGINATED_CONNECTIONS = %w[participants timelineItems].freeze

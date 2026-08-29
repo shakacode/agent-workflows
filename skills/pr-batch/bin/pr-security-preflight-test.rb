@@ -9,7 +9,9 @@ require "json"
 require "minitest/autorun"
 require "open3"
 require "shellwords"
+require "socket"
 require "tmpdir"
+require "uri"
 require "yaml"
 
 require_relative "../lib/git_probe_env"
@@ -1842,6 +1844,89 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rejects_duplicate_graphql_node_identities
+    cases = {
+      "participant nodes" => {
+        "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"},' \
+          '{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+      },
+      "timeline nodes" => {
+        "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+        "PREFLIGHT_TEST_TIMELINE_NODES" =>
+          '[{"id":"event-1","__typename":"IssueComment","author":{"login":"justin808"}},' \
+          '{"id":"event-1","__typename":"IssueComment","author":{"login":"justin808"}}]'
+      },
+      "commit-author nodes" => {
+        "PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL" => "2",
+        "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" =>
+          '[{"user":{"id":"actor-1","login":"justin808"}},' \
+          '{"user":{"id":"actor-1","login":"justin808"}}]'
+      },
+      "participant identity unavailable" => {
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+      },
+      "participant login bound to conflicting IDs" => {
+        "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"},' \
+          '{"id":"participant-2","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+      },
+      "timeline identity unavailable" => {
+        "PREFLIGHT_TEST_TIMELINE_NODES" =>
+          '[{"id":"UNKNOWN","__typename":"IssueComment","author":{"login":"justin808"}}]'
+      },
+      "commit-author identity unavailable" => {
+        "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" => '[{"user":{"login":"justin808"}}]'
+      }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out,
+                        "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean",
+                        label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_duplicate_graphql_node_identities_across_pages
+    cases = {
+      "participant nodes" => {
+        "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+        "PREFLIGHT_TEST_PARTICIPANT_HAS_NEXT" => "true",
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]',
+        "PREFLIGHT_TEST_PARTICIPANT_PAGE_NODES" =>
+          '[{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+      },
+      "timeline nodes" => {
+        "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+        "PREFLIGHT_TEST_TIMELINE_HAS_NEXT" => "true",
+        "PREFLIGHT_TEST_TIMELINE_NODES" =>
+          '[{"id":"event-1","__typename":"IssueComment","author":{"login":"justin808"}}]',
+        "PREFLIGHT_TEST_TIMELINE_PAGE_NODES" =>
+          '[{"id":"event-1","__typename":"IssueComment","author":{"login":"justin808"}}]'
+      }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out,
+                        "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean",
+                        label
+      end
+    end
+  end
+
   def test_trusted_base_rejects_missing_or_malformed_graphql_connection_counts
     cases = {
       "missing participant count" => { "PREFLIGHT_TEST_MISSING_PARTICIPANT_TOTAL" => "1" },
@@ -2031,6 +2116,21 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rejects_plain_http_for_non_loopback_github_host
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      git! "-C", repo_root, "remote", "set-url", "origin", "http://github.com/owner/repo.git"
+      production_host_env = env.merge(
+        "GH_HOST" => "github.com",
+        "PREFLIGHT_TEST_REPO_URL" => "https://github.com/owner/repo"
+      )
+
+      out, status = run_trusted_base_preflight(production_host_env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "over a trusted transport"
+    end
+  end
+
   def test_trusted_base_rejects_local_or_worktree_proxy_configuration
     cases = {
       "local HTTP proxy" => ["--local", "http.proxy", "https://proxy.invalid"],
@@ -2088,10 +2188,33 @@ class PrSecurityPreflightTest < Minitest::Test
 
       assert status.success?, out
       assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
-      assert_empty File.read(provenance.fetch(:fetch_env_log)), out
-      fetch_root_evidence = File.read(provenance.fetch(:fetch_root_log))
-      refute_includes fetch_root_evidence, "root=#{repo_root}\n"
-      assert_includes fetch_root_evidence, "bare=true\n"
+      refute_includes File.read(provenance.fetch(:http_request_log)), "Authorization: attacker"
+    end
+  end
+
+  def test_trusted_base_does_not_execute_git_from_inherited_path
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      install_path_git_attacker(env, provenance.fetch(:path_git_marker))
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_empty File.read(provenance.fetch(:path_git_marker)), "inherited PATH git wrapper executed"
+    end
+  end
+
+  def test_trusted_base_keeps_pinned_git_after_path_changes
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      marker = provenance.fetch(:path_git_marker)
+      out, status = run_trusted_base_preflight(
+        env.merge("PREFLIGHT_TEST_REPLACE_PATH_GIT" => marker),
+        trust_config_path,
+        repo_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_empty File.read(marker), "PATH-selected git executed after bootstrap"
     end
   end
 
@@ -3032,10 +3155,11 @@ class PrSecurityPreflightTest < Minitest::Test
 
   def with_trusted_base_preflight(policy: trusted_base_policy, fetched_policy: policy, fixture_env_overrides: {})
     with_fake_gh("trusted-base-high-risk") do |env, trust_config_path, _log_path, dir|
-      remote_root = File.join(dir, "trusted-origin.git")
+      http_root = File.join(dir, "http")
+      remote_root = File.join(http_root, "owner", "repo.git")
       seed_root = File.join(dir, "seed")
       repo_root = File.join(dir, "consumer")
-      FileUtils.mkdir_p([seed_root, repo_root])
+      FileUtils.mkdir_p([File.dirname(remote_root), seed_root, repo_root])
 
       git! "init", "--bare", "--quiet", remote_root
       git! "-C", seed_root, "init", "--quiet"
@@ -3060,25 +3184,28 @@ class PrSecurityPreflightTest < Minitest::Test
       base_sha = git_output("-C", seed_root, "rev-parse", "HEAD")
       git! "-C", seed_root, "remote", "add", "fixture-origin", remote_root
       git! "-C", seed_root, "push", "--quiet", "fixture-origin", "main"
+      git! "--git-dir", remote_root, "update-server-info"
 
-      git! "-C", repo_root, "init", "--quiet"
-      git! "-C", repo_root, "remote", "add", "origin", "https://github.com/owner/repo.git"
-      write_workflow_policy(repo_root, policy)
-      fetch_env_log = File.join(dir, "fetch-env.log")
-      fetch_root_log = File.join(dir, "fetch-root.log")
-      fetch_fail_marker = File.join(dir, "fetch-fail")
-      File.write(fetch_env_log, "")
-      File.write(fetch_root_log, "")
-      File.write(fetch_fail_marker, "fail\n") if fixture_env_overrides["PREFLIGHT_TEST_FETCH_FAIL"] == "1"
-      install_fetch_wrapper(dir, remote_root, fetch_env_log:, fetch_root_log:, fetch_fail_marker:)
+      with_static_http_server(
+        http_root,
+        fail_requests: fixture_env_overrides["PREFLIGHT_TEST_FETCH_FAIL"] == "1"
+      ) do |port, http_request_log|
+        remote_url = "http://127.0.0.1:#{port}/owner/repo.git"
+        git! "-C", repo_root, "init", "--quiet"
+        git! "-C", repo_root, "remote", "add", "origin", remote_url
+        write_workflow_policy(repo_root, policy)
+        path_git_marker = File.join(dir, "path-git.log")
+        File.write(path_git_marker, "")
 
-      provenance = { base_sha:, head_sha:, merge_sha:, fetch_env_log:, fetch_root_log: }
-      fixture_env = env.merge(
-        "PREFLIGHT_TEST_FETCH_SOURCE" => remote_root,
-        "PREFLIGHT_TEST_HEAD_SHA" => head_sha,
-        "PREFLIGHT_TEST_MERGE_SHA" => merge_sha
-      ).merge(fixture_env_overrides)
-      yield fixture_env, trust_config_path, repo_root, provenance
+        provenance = { base_sha:, head_sha:, merge_sha:, http_request_log:, path_git_marker: }
+        fixture_env = env.merge(
+          "GH_HOST" => "127.0.0.1:#{port}",
+          "PREFLIGHT_TEST_REPO_URL" => remote_url,
+          "PREFLIGHT_TEST_HEAD_SHA" => head_sha,
+          "PREFLIGHT_TEST_MERGE_SHA" => merge_sha
+        ).merge(fixture_env_overrides.reject { |key, _value| key == "PREFLIGHT_TEST_FETCH_FAIL" })
+        yield fixture_env, trust_config_path, repo_root, provenance
+      end
     end
   end
 
@@ -3123,38 +3250,57 @@ class PrSecurityPreflightTest < Minitest::Test
     File.write(path, policy.is_a?(String) ? policy : YAML.dump(policy))
   end
 
-  def install_fetch_wrapper(dir, fetch_source, fetch_env_log:, fetch_root_log:, fetch_fail_marker:)
-    wrapper = File.join(dir, "git")
+  def install_path_git_attacker(env, marker)
+    clean_git_env # Resolve the test harness's own Git metadata before installing the attacker.
+    wrapper = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "git")
     File.write(wrapper, <<~SH)
       #!/usr/bin/env bash
-      set -e
-      if [ "$1" = "-C" ] && [ "$3" = "fetch" ]; then
-        for name in GIT_SSH GIT_SSH_COMMAND GIT_SSL_NO_VERIFY GIT_SSL_CAINFO GIT_ASKPASS SSH_ASKPASS \
-          HTTP_PROXY HTTPS_PROXY ALL_PROXY GIT_CONFIG_PARAMETERS; do
-          value="$(printenv "$name" 2>/dev/null || true)"
-          if [ -n "$value" ] && { [ "$name" != "GIT_SSH_COMMAND" ] || printf '%s' "$value" | grep -q attacker; }; then
-            printf '%s\n' "$name" >> #{Shellwords.shellescape(fetch_env_log)}
-          fi
-        done
-        if [ -f #{Shellwords.shellescape(fetch_fail_marker)} ]; then
-          printf 'simulated trusted-base fetch failure\n' >&2
-          exit 1
-        fi
-        repo_root="$2"
-        printf 'root=%s\n' "$repo_root" >> #{Shellwords.shellescape(fetch_root_log)}
-        printf 'bare=%s\n' "$(#{Shellwords.shellescape(REAL_GIT)} -C "$repo_root" rev-parse --is-bare-repository)" \
-          >> #{Shellwords.shellescape(fetch_root_log)}
-        last_arg=""
-        for arg in "$@"; do
-          last_arg="$arg"
-        done
-        export GIT_ALLOW_PROTOCOL=file
-        exec #{Shellwords.shellescape(REAL_GIT)} -C "$repo_root" fetch --no-tags --force \
-          #{Shellwords.shellescape(fetch_source)} "$last_arg"
-      fi
-      exec #{Shellwords.shellescape(REAL_GIT)} "$@"
+      printf 'executed %s\n' "$*" >> #{Shellwords.shellescape(marker)}
+      exit 91
     SH
     FileUtils.chmod(0o755, wrapper)
+  end
+
+  def with_static_http_server(root, fail_requests: false)
+    server = TCPServer.new("127.0.0.1", 0)
+    request_log = File.join(File.dirname(root), "http-requests.log")
+    File.write(request_log, "")
+    thread = Thread.new do
+      loop do
+        client = server.accept
+        request_line = client.gets.to_s
+        headers = []
+        while (line = client.gets)
+          break if line == "\r\n"
+
+          headers << line
+        end
+        File.open(request_log, "a") { |file| file.write(request_line, *headers) }
+        request_path = request_line.split[1].to_s.split("?", 2).first
+        decoded_path = URI.decode_www_form_component(request_path)
+        candidate = File.expand_path(".#{decoded_path}", root)
+        allowed = candidate.start_with?("#{File.expand_path(root)}/") && File.file?(candidate)
+
+        if fail_requests
+          client.write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        elsif allowed
+          body = File.binread(candidate)
+          client.write("HTTP/1.1 200 OK\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n")
+          client.write(body) unless request_line.start_with?("HEAD ")
+        else
+          client.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        end
+      ensure
+        client&.close
+      end
+    rescue IOError, Errno::EBADF
+      nil
+    end
+
+    yield server.addr[1], request_log
+  ensure
+    server&.close
+    thread&.join
   end
 
   def git!(*args)
@@ -3262,8 +3408,8 @@ class PrSecurityPreflightTest < Minitest::Test
             timelineItems: {
               totalCount: 101,
               pageInfo: { hasNextPage: true, endCursor: "timeline-page-1" },
-              nodes: Array.new(100) do
-                { __typename: "MentionedEvent", actor: { login: "issue-author" } }
+              nodes: Array.new(100) do |index|
+                { id: "timeline-event-#{index}", __typename: "MentionedEvent", actor: { login: "issue-author" } }
               end
             }
           }
@@ -3277,7 +3423,7 @@ class PrSecurityPreflightTest < Minitest::Test
             timelineItems: {
               totalCount: 101,
               pageInfo: { hasNextPage: false, endCursor: nil },
-              nodes: [{ __typename: "IssueComment", author: { login: "justin808" } }]
+              nodes: [{ id: "timeline-event-100", __typename: "IssueComment", author: { login: "justin808" } }]
             }
           }
         }
@@ -3296,7 +3442,7 @@ class PrSecurityPreflightTest < Minitest::Test
             timelineItems: {
               totalCount: 102,
               pageInfo: { hasNextPage: 0, endCursor: "timeline-page-2" },
-              nodes: [{ __typename: "IssueComment", author: { login: "justin808" } }]
+              nodes: [{ id: "timeline-event-100", __typename: "IssueComment", author: { login: "justin808" } }]
             }
           }
         }
@@ -3309,7 +3455,7 @@ class PrSecurityPreflightTest < Minitest::Test
             timelineItems: {
               totalCount: 102,
               pageInfo: { hasNextPage: false, endCursor: nil },
-              nodes: [{ __typename: "IssueComment", author: { login: "justin808" } }]
+              nodes: [{ id: "timeline-event-101", __typename: "IssueComment", author: { login: "justin808" } }]
             }
           }
         }
@@ -3351,8 +3497,8 @@ class PrSecurityPreflightTest < Minitest::Test
             timelineItems: {
               totalCount: 2501,
               pageInfo: { hasNextPage: true, endCursor: "timeline-page-0" },
-              nodes: Array.new(100) do
-                { __typename: "MentionedEvent", actor: { login: "justin808" } }
+              nodes: Array.new(100) do |index|
+                { id: "page-cap-event-#{index}", __typename: "MentionedEvent", actor: { login: "justin808" } }
               end
             }
           }
@@ -3370,8 +3516,13 @@ class PrSecurityPreflightTest < Minitest::Test
             participants: {
               totalCount: 101,
               pageInfo: { hasNextPage: true, endCursor: "participants-page-1" },
-              nodes: Array.new(100) do
-                { login: "coderabbitai[bot]", url: "https://github.com/apps/coderabbitai", __typename: "Bot" }
+              nodes: Array.new(100) do |index|
+                {
+                  id: "participant-#{index}",
+                  login: "coderabbitai[bot]",
+                  url: "https://github.com/apps/coderabbitai",
+                  __typename: "Bot"
+                }
               end
             },
             timelineItems: {
@@ -3390,7 +3541,7 @@ class PrSecurityPreflightTest < Minitest::Test
             participants: {
               totalCount: 101,
               pageInfo: { hasNextPage: false, endCursor: nil },
-              nodes: [{ login: "justin808", url: "https://github.com/justin808", __typename: "User" }]
+              nodes: [{ id: "participant-100", login: "justin808", url: "https://github.com/justin808", __typename: "User" }]
             }
           }
         }
@@ -3447,6 +3598,14 @@ class PrSecurityPreflightTest < Minitest::Test
       }
 
       if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        if [ -n "${PREFLIGHT_TEST_REPLACE_PATH_GIT:-}" ]; then
+          cat > "$(dirname "$0")/git" <<'GIT_WRAPPER'
+      #!/usr/bin/env bash
+      printf 'executed\n' >> "${PREFLIGHT_TEST_REPLACE_PATH_GIT}"
+      exit 91
+      GIT_WRAPPER
+          chmod +x "$(dirname "$0")/git"
+        fi
         if [ "$mode" = "repo-view-failure" ]; then
           printf 'simulated repo view failure\\n' >&2
           exit 1
@@ -3595,6 +3754,20 @@ class PrSecurityPreflightTest < Minitest::Test
       JSON
           fi
         elif [ "$mode" = "trusted-base-high-risk" ]; then
+          if [[ "$*" == *"after=participant-page-1"* ]]; then
+            participant_page_nodes="${PREFLIGHT_TEST_PARTICIPANT_PAGE_NODES}"
+            cat <<JSON
+      {"data":{"repository":{"pullRequest":{"participants":{"totalCount":${PREFLIGHT_TEST_PARTICIPANT_TOTAL},"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":${participant_page_nodes}}}}}}
+      JSON
+            exit 0
+          fi
+          if [[ "$*" == *"after=timeline-page-1"* ]]; then
+            timeline_page_nodes="${PREFLIGHT_TEST_TIMELINE_PAGE_NODES}"
+            cat <<JSON
+      {"data":{"repository":{"pullRequest":{"timelineItems":{"totalCount":${PREFLIGHT_TEST_TIMELINE_TOTAL},"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":${timeline_page_nodes}}}}}}
+      JSON
+            exit 0
+          fi
           head_sha="${PREFLIGHT_TEST_GRAPH_HEAD_SHA:-${PREFLIGHT_TEST_HEAD_SHA}}"
           merge_sha="${PREFLIGHT_TEST_GRAPH_MERGE_SHA:-${PREFLIGHT_TEST_MERGE_SHA}}"
           state="${PREFLIGHT_TEST_GRAPH_STATE:-MERGED}"
@@ -3609,20 +3782,38 @@ class PrSecurityPreflightTest < Minitest::Test
           fi
           participant_nodes="${PREFLIGHT_TEST_PARTICIPANT_NODES:-}"
           if [ -z "$participant_nodes" ]; then
-            participant_nodes='[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+            participant_nodes='[{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+          fi
+          participant_has_next="${PREFLIGHT_TEST_PARTICIPANT_HAS_NEXT:-false}"
+          participant_end_cursor=null
+          if [ "$participant_has_next" = "true" ]; then
+            participant_end_cursor='"participant-page-1"'
           fi
           commit_author_total="${PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL:-1}"
           commit_author_has_next="${PREFLIGHT_TEST_COMMIT_AUTHOR_HAS_NEXT:-false}"
+          commit_author_nodes="${PREFLIGHT_TEST_COMMIT_AUTHOR_NODES:-}"
           timeline_total="${PREFLIGHT_TEST_TIMELINE_TOTAL:-1}"
+          timeline_has_next="${PREFLIGHT_TEST_TIMELINE_HAS_NEXT:-false}"
+          timeline_end_cursor=null
+          if [ "$timeline_has_next" = "true" ]; then
+            timeline_end_cursor='"timeline-page-1"'
+          fi
           if [ "${PREFLIGHT_TEST_MISSING_ACTOR:-}" = "1" ]; then
             author_json=null
             commit_user_json=null
           else
             author_json="$(printf '{"login":"%s"}' "$author_login")"
-            commit_user_json="$(printf '{"login":"%s"}' "$author_login")"
+            commit_user_json="$(printf '{"id":"actor-1","login":"%s"}' "$author_login")"
+          fi
+          if [ -z "$commit_author_nodes" ]; then
+            commit_author_nodes="$(printf '[{"user":%s}]' "$commit_user_json")"
+          fi
+          timeline_nodes="${PREFLIGHT_TEST_TIMELINE_NODES:-}"
+          if [ -z "$timeline_nodes" ]; then
+            timeline_nodes="$(printf '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":%s,"pageInfo":{"hasNextPage":%s,"endCursor":null},"nodes":%s}}}]' "$commit_author_total" "$commit_author_has_next" "$commit_author_nodes")"
           fi
           cat <<JSON
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","state":"${state}","mergedAt":"2026-08-28T00:00:00Z","isCrossRepository":${cross_repository},"headRefOid":"${head_sha}","headRepository":{"nameWithOwner":"${head_repo}"},"mergeCommit":{"oid":"${merge_sha}"},"author":${author_json},"participants":{${participant_count_field}"pageInfo":{"hasNextPage":false},"nodes":${participant_nodes}},"timelineItems":{"totalCount":${timeline_total},"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":${commit_author_total},"pageInfo":{"hasNextPage":${commit_author_has_next},"endCursor":null},"nodes":[{"user":${commit_user_json}}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","state":"${state}","mergedAt":"2026-08-28T00:00:00Z","isCrossRepository":${cross_repository},"headRefOid":"${head_sha}","headRepository":{"nameWithOwner":"${head_repo}"},"mergeCommit":{"oid":"${merge_sha}"},"author":${author_json},"participants":{${participant_count_field}"pageInfo":{"hasNextPage":${participant_has_next},"endCursor":${participant_end_cursor}},"nodes":${participant_nodes}},"timelineItems":{"totalCount":${timeline_total},"pageInfo":{"hasNextPage":${timeline_has_next},"endCursor":${timeline_end_cursor}},"nodes":${timeline_nodes}}}}}}
       JSON
         elif [ "$mode" = "warning-diff" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
@@ -3688,7 +3879,7 @@ class PrSecurityPreflightTest < Minitest::Test
               end_cursor="$(printf '"timeline-page-%s"' "$next_cursor")"
             fi
             cat <<JSON
-      {"data":{"repository":{"issue":{"timelineItems":{"totalCount":2501,"pageInfo":{"hasNextPage":${has_next},"endCursor":${end_cursor}},"nodes":[{"__typename":"MentionedEvent","actor":{"login":"justin808"}}]}}}}}
+      {"data":{"repository":{"issue":{"timelineItems":{"totalCount":2501,"pageInfo":{"hasNextPage":${has_next},"endCursor":${end_cursor}},"nodes":[{"id":"page-cap-event-${next_cursor}00","__typename":"MentionedEvent","actor":{"login":"justin808"}}]}}}}}
       JSON
           else
             printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_page_cap_first)}
@@ -3704,7 +3895,7 @@ class PrSecurityPreflightTest < Minitest::Test
               exit 1
             elif [ "$mode" = "paginated-timeline-cursor-cycle" ]; then
               cat <<'JSON'
-      {"data":{"repository":{"issue":{"timelineItems":{"totalCount":101,"pageInfo":{"hasNextPage":true,"endCursor":"timeline-page-1"},"nodes":[{"__typename":"IssueComment","author":{"login":"justin808"}}]}}}}}
+      {"data":{"repository":{"issue":{"timelineItems":{"totalCount":101,"pageInfo":{"hasNextPage":true,"endCursor":"timeline-page-1"},"nodes":[{"id":"timeline-event-100","__typename":"IssueComment","author":{"login":"justin808"}}]}}}}}
       JSON
             elif [ "$mode" = "paginated-timeline-partial-error" ]; then
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_partial_error)}
