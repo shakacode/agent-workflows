@@ -9,6 +9,7 @@ require "optparse"
 require "set"
 # rubocop:enable Lint/RedundantRequireStatement
 require "timeout"
+require "tmpdir"
 require "uri"
 require "yaml"
 
@@ -248,20 +249,29 @@ rescue Timeout::Error
 end
 
 def trusted_git_probe_env
-  git_probe_env.merge(
+  inherited = %w[PATH LANG LC_ALL SSH_AUTH_SOCK].to_h do |name|
+    [name, ENV[name]]
+  end.compact
+  safe_directory_config = git_probe_env.select do |name, value|
+    value && name.match?(/\AGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)\z/)
+  end
+  ssh_executable = %w[/usr/bin/ssh /bin/ssh].find { |path| File.executable?(path) } || "/nonexistent/ssh"
+
+  inherited.merge(safe_directory_config).merge(
     "GIT_ALLOW_PROTOCOL" => "https:http:ssh",
     "GIT_CONFIG_GLOBAL" => File::NULL,
     "GIT_CONFIG_NOSYSTEM" => "1",
     "GIT_CONFIG_SYSTEM" => File::NULL,
     "GIT_NO_REPLACE_OBJECTS" => "1",
     "GIT_OPTIONAL_LOCKS" => "0",
+    "GIT_SSH_COMMAND" => "#{ssh_executable} -F #{File::NULL} -o ProxyCommand=none -o ProxyJump=none",
     "GIT_TERMINAL_PROMPT" => "0"
   )
 end
 
 def capture_trusted_git_probe(*args)
   Timeout.timeout(GIT_TIMEOUT_SECONDS) do
-    Open3.capture3(trusted_git_probe_env, *args)
+    Open3.capture3(trusted_git_probe_env, *args, unsetenv_others: true)
   end
 rescue Timeout::Error
   ["", "git #{args.join(' ')} timed out after #{GIT_TIMEOUT_SECONDS}s", nil]
@@ -1081,11 +1091,11 @@ def duplicate_yaml_mapping_key(node)
   if node.is_a?(Psych::Nodes::Mapping)
     seen = Set.new
     node.children.each_slice(2) do |key_node, value_node|
-      if key_node.is_a?(Psych::Nodes::Scalar)
-        return key_node.value if seen.include?(key_node.value)
+      return :non_scalar unless key_node.is_a?(Psych::Nodes::Scalar)
 
-        seen << key_node.value
-      end
+      return key_node.value if seen.include?(key_node.value)
+
+      seen << key_node.value
 
       duplicate = duplicate_yaml_mapping_key(key_node) || duplicate_yaml_mapping_key(value_node)
       return duplicate if duplicate
@@ -1102,6 +1112,9 @@ end
 
 def trusted_base_policy_from_yaml(yaml, repo:)
   duplicate_key = duplicate_yaml_mapping_key(Psych.parse_stream(yaml))
+  if duplicate_key == :non_scalar
+    return [nil, "workflow config YAML contains non-scalar mapping key"]
+  end
   return [nil, "workflow config YAML contains duplicate key #{duplicate_key.inspect}"] if duplicate_key
 
   data = YAML.safe_load(yaml, aliases: false)
@@ -1145,8 +1158,8 @@ rescue SystemCallError => e
 end
 
 UNSAFE_TRUSTED_FETCH_CONFIG_PATTERN =
-  /\A(?:url\..*\.insteadof|http(?:\..*)?\.(?:proxy|proxyauthmethod|curloptresolve|followredirects)|
-  remote\..*\.proxy|core\.gitproxy)\z/ix
+  /\A(?:url\..*\.insteadof|http(?:\..*)?\..*|credential\..*|
+  remote\..*\.(?:proxy|uploadpack)|core\.(?:askpass|gitproxy|sshcommand))\z/ix
 
 def unsafe_trusted_fetch_config(root)
   %w[local worktree].each do |scope|
@@ -1204,6 +1217,24 @@ def fetch_trusted_base(root, remote_url, ref)
   end
 
   [base_sha, nil]
+end
+
+def with_isolated_trusted_base(remote_url, ref)
+  Dir.mktmpdir("pr-security-preflight-trusted-base") do |fetch_root|
+    _stdout, stderr, status = capture_trusted_git_probe(
+      "git", "-C", fetch_root, "init", "--bare", "--quiet"
+    )
+    unless status&.success?
+      return [nil, "could not initialize isolated trusted-base repository: #{stderr.to_s.lines.first&.strip}"]
+    end
+
+    base_sha, error = fetch_trusted_base(fetch_root, remote_url, ref)
+    return [nil, error] unless base_sha
+
+    yield fetch_root, base_sha
+  end
+rescue StandardError => e
+  [nil, "isolated trusted-base fetch failed: #{e.message.lines.first&.strip}"]
 end
 
 def fetched_trusted_base_policy(root, base_sha, repo:)
@@ -1272,34 +1303,37 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:)
   remote_url, error = trusted_remote_url(root, bootstrap_policy, repo:, github_host:)
   return [nil, error] unless remote_url
 
-  base_sha, error = fetch_trusted_base(root, remote_url, bootstrap_policy.fetch("ref"))
-  return [nil, error] unless base_sha
+  with_isolated_trusted_base(remote_url, bootstrap_policy.fetch("ref")) do |fetch_root, base_sha|
+    fetched_policy, fetched_error = fetched_trusted_base_policy(fetch_root, base_sha, repo:)
+    next [nil, fetched_error] unless fetched_policy
+    unless fetched_policy == bootstrap_policy
+      next [nil, "bootstrap and fetched-base trusted-base policies do not match"]
+    end
 
-  fetched_policy, error = fetched_trusted_base_policy(root, base_sha, repo:)
-  return [nil, error] unless fetched_policy
-  return [nil, "bootstrap and fetched-base trusted-base policies do not match"] unless fetched_policy == bootstrap_policy
+    pr_provenance, provenance_error = exact_pr_provenance(result, repo:)
+    next [nil, provenance_error] unless pr_provenance
 
-  pr_provenance, error = exact_pr_provenance(result, repo:)
-  return [nil, error] unless pr_provenance
+    merge_sha = pr_provenance.fetch(:merge_sha)
+    _stdout, stderr, status = capture_trusted_git_probe(
+      "git", "-C", fetch_root, "merge-base", "--is-ancestor", merge_sha, base_sha
+    )
+    unless status&.success?
+      next [nil, "PR merge result is not an ancestor of fetched trusted base: #{stderr.to_s.lines.first&.strip}"]
+    end
 
-  merge_sha = pr_provenance.fetch(:merge_sha)
-  _stdout, stderr, status = capture_trusted_git_probe(
-    "git", "-C", root, "merge-base", "--is-ancestor", merge_sha, base_sha
-  )
-  return [nil, "PR merge result is not an ancestor of fetched trusted base: #{stderr.to_s.lines.first&.strip}"] unless status&.success?
-
-  receipt = {
-    repository: repo,
-    pr: result.fetch(:number),
-    head_sha: pr_provenance.fetch(:head_sha),
-    merge_sha:,
-    base_sha:,
-    policy_source: "#{base_sha}:#{WORKFLOW_CONFIG_PATH}",
-    policy_remote: bootstrap_policy.fetch("remote"),
-    policy_ref: bootstrap_policy.fetch("ref"),
-    high_risk_paths: result.fetch(:risky_files).sort.uniq
-  }
-  [receipt, nil]
+    receipt = {
+      repository: repo,
+      pr: result.fetch(:number),
+      head_sha: pr_provenance.fetch(:head_sha),
+      merge_sha:,
+      base_sha:,
+      policy_source: "#{base_sha}:#{WORKFLOW_CONFIG_PATH}",
+      policy_remote: bootstrap_policy.fetch("remote"),
+      policy_ref: bootstrap_policy.fetch("ref"),
+      high_risk_paths: result.fetch(:risky_files).sort.uniq
+    }
+    [receipt, nil]
+  end
 end
 
 PARTICIPANT_NODES_FRAGMENT = <<~GRAPHQL
@@ -1432,6 +1466,27 @@ def connection_page_query(graph_field, connection_name)
   end
 end
 
+def valid_graph_connection_page?(connection, expected_total_count:, accumulated_count:)
+  return false unless connection.is_a?(Hash)
+
+  total_count = connection["totalCount"]
+  nodes = connection["nodes"]
+  page_info = connection["pageInfo"]
+  return false unless total_count.is_a?(Integer) && total_count >= 0
+  return false if expected_total_count && total_count != expected_total_count
+  return false unless nodes.is_a?(Array)
+  return false unless page_info.is_a?(Hash) && [true, false].include?(page_info["hasNextPage"])
+
+  fetched_count = accumulated_count + nodes.size
+  return false if fetched_count > total_count
+
+  if page_info["hasNextPage"]
+    fetched_count < total_count && !page_info["endCursor"].to_s.empty?
+  else
+    fetched_count == total_count
+  end
+end
+
 def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:, connection_name:)
   connection = target[connection_name]
   return unless connection.is_a?(Hash)
@@ -1439,10 +1494,16 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
   nodes = connection["nodes"]
   return unless nodes.is_a?(Array)
 
+  unless valid_graph_connection_page?(connection, expected_total_count: nil, accumulated_count: 0)
+    connection["nodes"] = nil
+    return
+  end
+
   seen_cursors = Set.new
   pages_fetched = 0
   max_pages = max_graph_connection_pages
-  while connection.dig("pageInfo", "hasNextPage")
+  expected_total_count = connection.fetch("totalCount")
+  while connection.dig("pageInfo", "hasNextPage") == true
     return if pages_fetched >= max_pages
 
     cursor = connection.dig("pageInfo", "endCursor")
@@ -1468,26 +1529,18 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
     end
     pages_fetched += 1
     page_connection = page_graph.dig("data", "repository", graph_field, connection_name)
-    unless page_connection.is_a?(Hash)
+    unless valid_graph_connection_page?(
+      page_connection,
+      expected_total_count:,
+      accumulated_count: nodes.size
+    )
       connection["nodes"] = nil
       return
     end
 
-    page_nodes = page_connection["nodes"]
-    unless page_nodes.is_a?(Array)
-      connection["nodes"] = nil
-      return
-    end
-
+    page_nodes = page_connection.fetch("nodes")
     nodes.concat(page_nodes)
-    page_info = page_connection["pageInfo"]
-    unless page_info.is_a?(Hash)
-      connection["nodes"] = nil
-      return
-    end
-
-    connection["totalCount"] = [connection["totalCount"].to_i, page_connection["totalCount"].to_i].max
-    connection["pageInfo"] = page_info
+    connection["pageInfo"] = page_connection.fetch("pageInfo")
   end
 end
 

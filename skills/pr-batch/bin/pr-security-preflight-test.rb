@@ -1846,7 +1846,8 @@ class PrSecurityPreflightTest < Minitest::Test
     cases = {
       "missing participant count" => { "PREFLIGHT_TEST_MISSING_PARTICIPANT_TOTAL" => "1" },
       "null timeline count" => { "PREFLIGHT_TEST_TIMELINE_TOTAL" => "null" },
-      "string commit-author count" => { "PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL" => '"1"' }
+      "string commit-author count" => { "PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL" => '"1"' },
+      "nonboolean commit-author page metadata" => { "PREFLIGHT_TEST_COMMIT_AUTHOR_HAS_NEXT" => "0" }
     }
 
     cases.each do |label, overrides|
@@ -1924,24 +1925,76 @@ class PrSecurityPreflightTest < Minitest::Test
         pr_security_preflight:
           trusted_base_high_risk_acceptance: true
       YAML
-      "wrong field types" => <<~YAML
+      "wrong enabled type" => <<~YAML,
         pr_security_preflight:
           trusted_base_high_risk_acceptance:
             enabled: "true"
+            repository: owner/repo
+            remote: origin
+            ref: refs/heads/main
+      YAML
+      "wrong repository type" => <<~YAML,
+        pr_security_preflight:
+          trusted_base_high_risk_acceptance:
+            enabled: true
             repository: [owner/repo]
+            remote: origin
+            ref: refs/heads/main
+      YAML
+      "wrong remote type" => <<~YAML,
+        pr_security_preflight:
+          trusted_base_high_risk_acceptance:
+            enabled: true
+            repository: owner/repo
             remote: 1
+            ref: refs/heads/main
+      YAML
+      "wrong ref type" => <<~YAML
+        pr_security_preflight:
+          trusted_base_high_risk_acceptance:
+            enabled: true
+            repository: owner/repo
+            remote: origin
             ref: true
       YAML
     }
 
     cases.each do |label, policy_yaml|
-      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
-        File.write(File.join(repo_root, ".agents", "agent-workflow.yml"), policy_yaml)
-        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+      ["bootstrap", "fetched base"].each do |source|
+        options = source == "fetched base" ? { fetched_policy: policy_yaml } : {}
+        with_trusted_base_preflight(**options) do |env, trust_config_path, repo_root, _provenance|
+          if source == "bootstrap"
+            File.write(File.join(repo_root, ".agents", "agent-workflow.yml"), policy_yaml)
+          end
+          out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
 
-        assert_trusted_base_blocked(out, status)
-        assert_includes out, "Trusted-base high-risk acceptance unavailable:", label
+          assert_trusted_base_blocked(out, status)
+          assert_includes out, "Trusted-base high-risk acceptance unavailable:", "#{source}: #{label}"
+        end
       end
+    end
+  end
+
+  def test_trusted_base_rejects_duplicate_non_scalar_yaml_mapping_keys_before_load
+    policy_yaml = <<~YAML
+      pr_security_preflight:
+        trusted_base_high_risk_acceptance:
+          enabled: true
+          repository: owner/repo
+          ? [shadow]
+          : first
+          ? [shadow]
+          : second
+          remote: origin
+          ref: refs/heads/main
+    YAML
+
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      File.write(File.join(repo_root, ".agents", "agent-workflow.yml"), policy_yaml)
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "workflow config YAML contains non-scalar mapping key"
     end
   end
 
@@ -1993,6 +2046,52 @@ class PrSecurityPreflightTest < Minitest::Test
         assert_trusted_base_blocked(out, status)
         assert_includes out, "make trusted remote provenance ambiguous", label
       end
+    end
+  end
+
+  def test_trusted_base_rejects_additional_fetch_affecting_git_config
+    cases = {
+      "alternate SSH executable" => ["--local", "core.sshCommand", "/tmp/attacker-ssh"],
+      "disabled TLS verification" => ["--worktree", "http.sslVerify", "false"],
+      "alternate CA" => ["--local", "http.sslCAInfo", "/tmp/attacker-ca.pem"],
+      "extra authorization header" => ["--worktree", "http.extraHeader", "Authorization: attacker"]
+    }
+
+    cases.each do |label, (scope, key, value)|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "true" if scope == "--worktree"
+        git! "-C", repo_root, "config", scope, key, value
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "make trusted remote provenance ambiguous", label
+      end
+    end
+  end
+
+  def test_trusted_base_scrubs_inherited_fetch_environment
+    inherited = {
+      "GIT_SSH" => "/tmp/attacker-ssh",
+      "GIT_SSH_COMMAND" => "/tmp/attacker-ssh --capture",
+      "GIT_SSL_NO_VERIFY" => "1",
+      "GIT_SSL_CAINFO" => "/tmp/attacker-ca.pem",
+      "GIT_ASKPASS" => "/tmp/attacker-askpass",
+      "SSH_ASKPASS" => "/tmp/attacker-askpass",
+      "HTTP_PROXY" => "https://proxy.invalid",
+      "HTTPS_PROXY" => "https://proxy.invalid",
+      "ALL_PROXY" => "socks5://proxy.invalid",
+      "GIT_CONFIG_PARAMETERS" => "'http.extraHeader=Authorization: attacker'"
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: inherited) do |env, trust_config_path, repo_root, provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_empty File.read(provenance.fetch(:fetch_env_log)), out
+      fetch_root_evidence = File.read(provenance.fetch(:fetch_root_log))
+      refute_includes fetch_root_evidence, "root=#{repo_root}\n"
+      assert_includes fetch_root_evidence, "bare=true\n"
     end
   end
 
@@ -2306,6 +2405,26 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, "GitHub API coverage findings: none"
       assert_includes out, "Untrusted or hidden participant findings: none"
       assert_equal 2, graphql_call_count(log_path)
+    end
+  end
+
+  def test_every_paginated_graphql_page_requires_complete_consistent_metadata
+    modes = %w[
+      paginated-timeline-initial-null-count
+      paginated-timeline-fetched-null-count
+      paginated-timeline-intermediate-nonboolean-page-info
+      paginated-participants-fetched-null-count
+    ]
+
+    modes.each do |mode|
+      with_fake_gh(mode) do |env, trust_config_path, _log_path|
+        out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+        refute status.success?, "#{mode}:\n#{out}"
+        assert_equal 2, status.exitstatus, mode
+        assert_includes out, "SECURITY_PREFLIGHT_BLOCKED", mode
+        assert_includes out, "#123: GitHub API coverage truncated", mode
+      end
     end
   end
 
@@ -2945,9 +3064,15 @@ class PrSecurityPreflightTest < Minitest::Test
       git! "-C", repo_root, "init", "--quiet"
       git! "-C", repo_root, "remote", "add", "origin", "https://github.com/owner/repo.git"
       write_workflow_policy(repo_root, policy)
-      install_fetch_wrapper(dir)
+      fetch_env_log = File.join(dir, "fetch-env.log")
+      fetch_root_log = File.join(dir, "fetch-root.log")
+      fetch_fail_marker = File.join(dir, "fetch-fail")
+      File.write(fetch_env_log, "")
+      File.write(fetch_root_log, "")
+      File.write(fetch_fail_marker, "fail\n") if fixture_env_overrides["PREFLIGHT_TEST_FETCH_FAIL"] == "1"
+      install_fetch_wrapper(dir, remote_root, fetch_env_log:, fetch_root_log:, fetch_fail_marker:)
 
-      provenance = { base_sha:, head_sha:, merge_sha: }
+      provenance = { base_sha:, head_sha:, merge_sha:, fetch_env_log:, fetch_root_log: }
       fixture_env = env.merge(
         "PREFLIGHT_TEST_FETCH_SOURCE" => remote_root,
         "PREFLIGHT_TEST_HEAD_SHA" => head_sha,
@@ -2998,23 +3123,34 @@ class PrSecurityPreflightTest < Minitest::Test
     File.write(path, policy.is_a?(String) ? policy : YAML.dump(policy))
   end
 
-  def install_fetch_wrapper(dir)
+  def install_fetch_wrapper(dir, fetch_source, fetch_env_log:, fetch_root_log:, fetch_fail_marker:)
     wrapper = File.join(dir, "git")
     File.write(wrapper, <<~SH)
       #!/usr/bin/env bash
       set -e
-      if [ "$1" = "-C" ] && [ "$3" = "fetch" ] && [ -n "${PREFLIGHT_TEST_FETCH_SOURCE:-}" ]; then
-        if [ "${PREFLIGHT_TEST_FETCH_FAIL:-}" = "1" ]; then
+      if [ "$1" = "-C" ] && [ "$3" = "fetch" ]; then
+        for name in GIT_SSH GIT_SSH_COMMAND GIT_SSL_NO_VERIFY GIT_SSL_CAINFO GIT_ASKPASS SSH_ASKPASS \
+          HTTP_PROXY HTTPS_PROXY ALL_PROXY GIT_CONFIG_PARAMETERS; do
+          value="$(printenv "$name" 2>/dev/null || true)"
+          if [ -n "$value" ] && { [ "$name" != "GIT_SSH_COMMAND" ] || printf '%s' "$value" | grep -q attacker; }; then
+            printf '%s\n' "$name" >> #{Shellwords.shellescape(fetch_env_log)}
+          fi
+        done
+        if [ -f #{Shellwords.shellescape(fetch_fail_marker)} ]; then
           printf 'simulated trusted-base fetch failure\n' >&2
           exit 1
         fi
         repo_root="$2"
+        printf 'root=%s\n' "$repo_root" >> #{Shellwords.shellescape(fetch_root_log)}
+        printf 'bare=%s\n' "$(#{Shellwords.shellescape(REAL_GIT)} -C "$repo_root" rev-parse --is-bare-repository)" \
+          >> #{Shellwords.shellescape(fetch_root_log)}
         last_arg=""
         for arg in "$@"; do
           last_arg="$arg"
         done
         export GIT_ALLOW_PROTOCOL=file
-        exec #{Shellwords.shellescape(REAL_GIT)} -C "$repo_root" fetch --no-tags --force "$PREFLIGHT_TEST_FETCH_SOURCE" "$last_arg"
+        exec #{Shellwords.shellescape(REAL_GIT)} -C "$repo_root" fetch --no-tags --force \
+          #{Shellwords.shellescape(fetch_source)} "$last_arg"
       fi
       exec #{Shellwords.shellescape(REAL_GIT)} "$@"
     SH
@@ -3147,6 +3283,41 @@ class PrSecurityPreflightTest < Minitest::Test
         }
       }
     )
+    paginated_timeline_initial_null_count = JSON.parse(paginated_timeline_first).tap do |payload|
+      payload.dig("data", "repository", "issue", "timelineItems")["totalCount"] = nil
+    end.to_json
+    paginated_timeline_fetched_null_count = JSON.parse(paginated_timeline_second).tap do |payload|
+      payload.dig("data", "repository", "issue", "timelineItems")["totalCount"] = nil
+    end.to_json
+    paginated_timeline_intermediate_nonboolean_page_info = JSON.generate(
+      data: {
+        repository: {
+          issue: {
+            timelineItems: {
+              totalCount: 102,
+              pageInfo: { hasNextPage: 0, endCursor: "timeline-page-2" },
+              nodes: [{ __typename: "IssueComment", author: { login: "justin808" } }]
+            }
+          }
+        }
+      }
+    )
+    paginated_timeline_final_third_page = JSON.generate(
+      data: {
+        repository: {
+          issue: {
+            timelineItems: {
+              totalCount: 102,
+              pageInfo: { hasNextPage: false, endCursor: nil },
+              nodes: [{ __typename: "IssueComment", author: { login: "justin808" } }]
+            }
+          }
+        }
+      }
+    )
+    paginated_timeline_first_expanded_total = JSON.parse(paginated_timeline_first).tap do |payload|
+      payload.dig("data", "repository", "issue", "timelineItems")["totalCount"] = 102
+    end.to_json
     paginated_timeline_missing_page_info = JSON.generate(
       data: {
         repository: {
@@ -3225,6 +3396,9 @@ class PrSecurityPreflightTest < Minitest::Test
         }
       }
     )
+    paginated_participants_fetched_null_count = JSON.parse(paginated_participants_second).tap do |payload|
+      payload.dig("data", "repository", "issue", "participants")["totalCount"] = nil
+    end.to_json
 
     <<~SH
       #!/usr/bin/env bash
@@ -3249,7 +3423,10 @@ class PrSecurityPreflightTest < Minitest::Test
           bare-bot-missing-id-participant|cached-bare-bot-alias-participants|\
           human-bot-basename-participant|\
           paginated-timeline|paginated-timeline-missing-page-info|paginated-timeline-page-fetch-failure|\
-          paginated-timeline-cursor-cycle|paginated-timeline-partial-error|paginated-participants)
+          paginated-timeline-cursor-cycle|paginated-timeline-partial-error|paginated-participants|\
+          paginated-timeline-initial-null-count|paginated-timeline-fetched-null-count|\
+          paginated-timeline-intermediate-nonboolean-page-info|\
+          paginated-participants-fetched-null-count)
             return 0
             ;;
           *)
@@ -3435,6 +3612,7 @@ class PrSecurityPreflightTest < Minitest::Test
             participant_nodes='[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
           fi
           commit_author_total="${PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL:-1}"
+          commit_author_has_next="${PREFLIGHT_TEST_COMMIT_AUTHOR_HAS_NEXT:-false}"
           timeline_total="${PREFLIGHT_TEST_TIMELINE_TOTAL:-1}"
           if [ "${PREFLIGHT_TEST_MISSING_ACTOR:-}" = "1" ]; then
             author_json=null
@@ -3444,7 +3622,7 @@ class PrSecurityPreflightTest < Minitest::Test
             commit_user_json="$(printf '{"login":"%s"}' "$author_login")"
           fi
           cat <<JSON
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","state":"${state}","mergedAt":"2026-08-28T00:00:00Z","isCrossRepository":${cross_repository},"headRefOid":"${head_sha}","headRepository":{"nameWithOwner":"${head_repo}"},"mergeCommit":{"oid":"${merge_sha}"},"author":${author_json},"participants":{${participant_count_field}"pageInfo":{"hasNextPage":false},"nodes":${participant_nodes}},"timelineItems":{"totalCount":${timeline_total},"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":${commit_author_total},"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":${commit_user_json}}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","state":"${state}","mergedAt":"2026-08-28T00:00:00Z","isCrossRepository":${cross_repository},"headRefOid":"${head_sha}","headRepository":{"nameWithOwner":"${head_repo}"},"mergeCommit":{"oid":"${merge_sha}"},"author":${author_json},"participants":{${participant_count_field}"pageInfo":{"hasNextPage":false},"nodes":${participant_nodes}},"timelineItems":{"totalCount":${timeline_total},"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":${commit_author_total},"pageInfo":{"hasNextPage":${commit_author_has_next},"endCursor":null},"nodes":[{"user":${commit_user_json}}]}}}]}}}}}
       JSON
         elif [ "$mode" = "warning-diff" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
@@ -3515,8 +3693,10 @@ class PrSecurityPreflightTest < Minitest::Test
           else
             printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_page_cap_first)}
           fi
-        elif [ "$mode" = "paginated-timeline" ] || [ "$mode" = "paginated-timeline-missing-page-info" ] || [ "$mode" = "paginated-timeline-page-fetch-failure" ] || [ "$mode" = "paginated-timeline-cursor-cycle" ] || [ "$mode" = "paginated-timeline-partial-error" ]; then
-          if printf '%s\\n' "$*" | grep -q 'after=timeline-page-1'; then
+        elif [ "$mode" = "paginated-timeline" ] || [ "$mode" = "paginated-timeline-missing-page-info" ] || [ "$mode" = "paginated-timeline-page-fetch-failure" ] || [ "$mode" = "paginated-timeline-cursor-cycle" ] || [ "$mode" = "paginated-timeline-partial-error" ] || [ "$mode" = "paginated-timeline-initial-null-count" ] || [ "$mode" = "paginated-timeline-fetched-null-count" ] || [ "$mode" = "paginated-timeline-intermediate-nonboolean-page-info" ]; then
+          if printf '%s\\n' "$*" | grep -q 'after=timeline-page-2'; then
+            printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_final_third_page)}
+          elif printf '%s\\n' "$*" | grep -q 'after=timeline-page-1'; then
             if [ "$mode" = "paginated-timeline-missing-page-info" ]; then
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_missing_page_info)}
             elif [ "$mode" = "paginated-timeline-page-fetch-failure" ]; then
@@ -3528,15 +3708,27 @@ class PrSecurityPreflightTest < Minitest::Test
       JSON
             elif [ "$mode" = "paginated-timeline-partial-error" ]; then
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_partial_error)}
+            elif [ "$mode" = "paginated-timeline-fetched-null-count" ]; then
+              printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_fetched_null_count)}
+            elif [ "$mode" = "paginated-timeline-intermediate-nonboolean-page-info" ]; then
+              printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_intermediate_nonboolean_page_info)}
             else
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_second)}
             fi
+          elif [ "$mode" = "paginated-timeline-initial-null-count" ]; then
+            printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_initial_null_count)}
+          elif [ "$mode" = "paginated-timeline-intermediate-nonboolean-page-info" ]; then
+            printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_first_expanded_total)}
           else
             printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_first)}
           fi
-        elif [ "$mode" = "paginated-participants" ]; then
+        elif [ "$mode" = "paginated-participants" ] || [ "$mode" = "paginated-participants-fetched-null-count" ]; then
           if printf '%s\\n' "$*" | grep -q 'after=participants-page-1'; then
-            printf '%s\\n' #{Shellwords.shellescape(paginated_participants_second)}
+            if [ "$mode" = "paginated-participants-fetched-null-count" ]; then
+              printf '%s\\n' #{Shellwords.shellescape(paginated_participants_fetched_null_count)}
+            else
+              printf '%s\\n' #{Shellwords.shellescape(paginated_participants_second)}
+            fi
           else
             printf '%s\\n' #{Shellwords.shellescape(paginated_participants_first)}
           fi

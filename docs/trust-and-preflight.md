@@ -184,11 +184,16 @@ single stored HTTPS or SSH URL resolves to that repository; and `ref` must be a
 full `refs/heads/...` ref. Missing, extra, malformed, `UNKNOWN`, or mismatched
 values leave the ordinary high-risk blocker in place.
 
-The helper treats worktree policy only as bootstrap. It fetches the exact
-configured ref from the verified remote with ambient Git configuration and URL
-rewrites disabled, resolves the fetched commit, then reads
-`.agents/agent-workflow.yml` again from that commit. The fetched mapping must be
-complete and exactly match the bootstrap mapping. Acceptance additionally
+The helper treats worktree policy only as bootstrap. It verifies the configured
+remote's stored URL, then fetches that URL and exact ref into a new temporary
+bare repository. The fetch runs with system/global and repository/worktree Git
+configuration absent, a minimal inherited environment, URL rewrites absent,
+SSH user configuration disabled, and transport restricted to HTTPS/SSH. Known local or worktree transport
+overrides are also rejected so the operator can see why provenance would have
+been ambiguous outside the isolated fetch. The helper resolves the fetched
+commit, then reads `.agents/agent-workflow.yml` again from that commit. The
+fetched mapping must be complete and exactly match the bootstrap mapping.
+Acceptance additionally
 requires a closed merged non-fork PR, matching complete REST and GraphQL
 repository/head/merge facts, trusted and fully visible actors/interactions,
 complete API coverage, no suspicious findings or warnings, and proof that the
