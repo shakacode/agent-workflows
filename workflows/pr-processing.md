@@ -369,13 +369,17 @@ provenance may define the exact closed mapping
 `.agents/agent-workflow.yml`: `enabled: true`, the authenticated
 `repository: OWNER/REPO`, one named `remote`, and a full
 `ref: refs/heads/<branch>`. The helper treats worktree policy only as bootstrap,
-verifies the named remote's single stored HTTPS/SSH URL, fetches the exact ref,
-and requires the same complete mapping from the fetched base commit. It emits
+verifies the named remote's single stored exact `github.com` HTTPS or GitHub SSH
+URL, fetches the exact ref, and requires the same complete mapping from the
+fetched base commit. `GH_HOST`, plaintext HTTP, non-GitHub hosts, and test
+selection cannot create an acceptance exception. It emits
 `TRUSTED_BASE_HIGH_RISK_ACCEPTED` only for an exact closed merged
 same-repository PR whose matching REST/GraphQL merge result is an ancestor of
 that base, with complete trusted actors, interactions, API coverage, and no
-suspicious findings. Complete coverage includes unique stable GraphQL node
-identities for participants, timeline events, and commit authors. Remote
+suspicious findings. Complete coverage includes globally keyed GraphQL node IDs
+with coherent typename/login/presentation facts for participants, timeline
+events, and commit authors. Duplicate, unavailable, or conflicting identities
+are ordinary operator-visible GitHub API coverage findings. Remote
 inspection, fetch, object inspection, and ancestry checks use one system Git
 executable pinned before task-scoped inputs, never a later inherited-`PATH`
 selection. The JSON receipt binds repository, PR, head, merge, base,

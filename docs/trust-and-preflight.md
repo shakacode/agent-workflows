@@ -180,9 +180,11 @@ pr_security_preflight:
 
 The mapping must contain exactly those four keys. `repository` must match the
 authenticated `--repo`; `remote` must be one unambiguous local remote name whose
-single stored HTTPS or SSH URL resolves to that repository; and `ref` must be a
-full `refs/heads/...` ref. Missing, extra, malformed, `UNKNOWN`, or mismatched
-values leave the ordinary high-risk blocker in place.
+single stored URL resolves to that repository on `github.com` over exact GitHub
+HTTPS or GitHub SSH; and `ref` must be a full `refs/heads/...` ref. `GH_HOST`
+cannot select another acceptance host or enable plaintext HTTP. Missing, extra,
+malformed, `UNKNOWN`, or mismatched values leave the ordinary high-risk blocker
+in place.
 
 The helper treats worktree policy only as bootstrap. It verifies the configured
 remote's stored URL, then fetches that URL and exact ref into a new temporary
@@ -192,17 +194,20 @@ SSH user configuration disabled, and transport restricted to HTTPS/SSH. It
 resolves one absolute system Git executable before reading task-scoped inputs
 and uses that same executable for remote inspection, fetch, object inspection,
 and ancestry checks; later `PATH` changes cannot redirect provenance commands.
-Plain HTTP is rejected except when an explicit loopback `GH_HOST` is used for a
-local integration harness. Known local or worktree transport overrides are also
-rejected so the operator can see why provenance would have been ambiguous
-outside the isolated fetch. The helper resolves the fetched commit, then reads
+Plain HTTP and non-GitHub hosts are always rejected; there is no environment,
+configuration, or test-selection exception. Known local or worktree transport
+overrides are also rejected so the operator can see why provenance would have
+been ambiguous outside the isolated fetch. The helper resolves the fetched commit, then reads
 `.agents/agent-workflow.yml` again from that commit. The fetched mapping must be
 complete and exactly match the bootstrap mapping. Acceptance additionally
 requires a closed merged non-fork PR, matching complete REST and GraphQL
 repository/head/merge facts, trusted and fully visible actors/interactions,
 complete API coverage with unique stable participant, timeline-event, and
-commit-author node identities, no suspicious findings or warnings, and proof
-that the exact merge result is an ancestor of the freshly fetched base.
+commit-author GraphQL node IDs, coherent typename/login/presentation facts for
+each ID, no suspicious findings or warnings, and proof that the exact merge
+result is an ancestor of the freshly fetched base. Missing, duplicate, or
+conflicting node identities are printed in `GitHub API coverage findings` and
+block the receipt.
 
 Success emits a separate one-line JSON receipt beginning with
 `TRUSTED_BASE_HIGH_RISK_ACCEPTED`. It binds the repository, PR number, head SHA,

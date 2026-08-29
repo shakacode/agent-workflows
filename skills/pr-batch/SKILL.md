@@ -439,9 +439,13 @@ Before implementation or worker launch, produce:
    the configured same-repository remote/ref and bound the exact merged PR head,
    merge result, fetched base, policy source, and all high-risk paths. It waives
    only `high-risk-files`; manual acknowledgement remains a distinct record.
-   Require unique stable GraphQL node identities for participants, timeline
-   events, and commit authors, and require provenance Git operations to use the
-   helper's bootstrap-pinned system executable rather than inherited `PATH`.
+   The remote must be the exact repository on `github.com` over GitHub HTTPS or
+   SSH; `GH_HOST`, plaintext HTTP, non-GitHub hosts, and test selection cannot
+   create an exception. Require unique stable GraphQL node IDs and coherent
+   typename/login/presentation facts for participants, timeline events, and
+   commit authors; identity defects belong in the ordinary GitHub API coverage
+   findings. Require provenance Git operations to use the helper's
+   bootstrap-pinned system executable rather than inherited `PATH`.
    Rerun preflight after any base movement before launch so provenance is
    refreshed. Missing or malformed policy, incomplete or untrusted facts, a
    fork/open PR, mismatch, suspicious content, or non-ancestor result remains

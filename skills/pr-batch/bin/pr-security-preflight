@@ -52,15 +52,6 @@ end
 
 pin_git_probe_metadata!
 
-options = {
-  acknowledged_risks: Hash.new { |hash, key| hash[key] = Set.new },
-  repo: nil,
-  fail_on_high_risk_files: false,
-  include_reactions: false,
-  strict_trust: false,
-  trust_config: nil
-}
-
 GH_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GH_TIMEOUT_SECONDS", "60"))
 GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS", "10"))
 ACKNOWLEDGEABLE_RISKS = Set.new(
@@ -115,52 +106,58 @@ WARNING_SUSPICIOUS_PATTERN = /
   ssh-key
 /ix
 
-parser = OptionParser.new do |opts|
-  opts.banner = "Usage: pr-security-preflight [--repo OWNER/REPO] [--trust-config PATH] " \
-                "[--acknowledge-risk NUMBER:RISK[,RISK]] [--include-reactions] " \
-                "[--strict-trust] [--fail-on-high-risk-files] NUMBER [...]"
-  opts.on("--repo OWNER/REPO", "GitHub repository, defaulting to gh repo view") { |repo| options[:repo] = repo }
-  opts.on("--trust-config PATH", "Trusted GitHub actor allowlist") { |path| options[:trust_config] = path }
-  acknowledge_help = "Maintainer-acknowledged exact-target risk. " \
-                     "Format NUMBER:risk-id[,risk-id]; valid risk ids: " \
-                     "#{ACKNOWLEDGEABLE_RISKS.to_a.sort.join(', ')}."
-  opts.on("--acknowledge-risk SPEC", acknowledge_help) do |spec|
-    number, risks = parse_acknowledged_risk(spec)
-    options[:acknowledged_risks][number].merge(risks)
+def parse_options!(argv)
+  options = {
+    acknowledged_risks: Hash.new { |hash, key| hash[key] = Set.new },
+    repo: nil,
+    fail_on_high_risk_files: false,
+    include_reactions: false,
+    strict_trust: false,
+    trust_config: nil
+  }
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: pr-security-preflight [--repo OWNER/REPO] [--trust-config PATH] " \
+                  "[--acknowledge-risk NUMBER:RISK[,RISK]] [--include-reactions] " \
+                  "[--strict-trust] [--fail-on-high-risk-files] NUMBER [...]"
+    opts.on("--repo OWNER/REPO", "GitHub repository, defaulting to gh repo view") { |repo| options[:repo] = repo }
+    opts.on("--trust-config PATH", "Trusted GitHub actor allowlist") { |path| options[:trust_config] = path }
+    acknowledge_help = "Maintainer-acknowledged exact-target risk. " \
+                       "Format NUMBER:risk-id[,risk-id]; valid risk ids: " \
+                       "#{ACKNOWLEDGEABLE_RISKS.to_a.sort.join(', ')}."
+    opts.on("--acknowledge-risk SPEC", acknowledge_help) do |spec|
+      number, risks = parse_acknowledged_risk(spec)
+      options[:acknowledged_risks][number].merge(risks)
+    end
+    include_reactions_help = "Fetch reaction users as visible actors (extra GitHub API calls). " \
+                             "Without this flag, reaction-only users already present in GitHub participants " \
+                             "appear as hidden participants and block when --strict-trust is set."
+    opts.on("--include-reactions", include_reactions_help) { options[:include_reactions] = true }
+    opts.on("--strict-trust", "Exit non-zero on non-allowlisted or hidden actor findings") do
+      options[:strict_trust] = true
+    end
+    opts.on("--fail-on-high-risk-files", "Exit non-zero when high-risk surfaces changed") do
+      options[:fail_on_high_risk_files] = true
+    end
   end
-  include_reactions_help = "Fetch reaction users as visible actors (extra GitHub API calls). " \
-                           "Without this flag, reaction-only users already present in GitHub participants " \
-                           "appear as hidden participants and block when --strict-trust is set."
-  opts.on("--include-reactions", include_reactions_help) do
-    options[:include_reactions] = true
+
+  parser.parse!(argv)
+  if !options[:fail_on_high_risk_files] &&
+     options.fetch(:acknowledged_risks).values.any? { |risks| risks.include?("high-risk-files") }
+    warn "WARN: high-risk-files acknowledgement has no effect unless --fail-on-high-risk-files is set"
   end
-  opts.on("--strict-trust", "Exit non-zero on non-allowlisted or hidden actor findings") do
-    options[:strict_trust] = true
+  if argv.empty?
+    warn parser
+    return [nil, 64]
   end
-  opts.on("--fail-on-high-risk-files", "Exit non-zero when high-risk surfaces changed") do
-    options[:fail_on_high_risk_files] = true
+
+  target_numbers = argv.filter_map { |arg| Integer(arg, exception: false) }.to_set
+  unused_targets = options.fetch(:acknowledged_risks).keys.reject { |number| target_numbers.include?(number) }
+  if unused_targets.any?
+    warn "WARN: acknowledgement target(s) not in scan list: " \
+         "#{unused_targets.sort.map { |number| "##{number}" }.join(', ')}"
   end
-end
 
-parser.parse!(ARGV)
-
-if !options[:fail_on_high_risk_files] &&
-   options.fetch(:acknowledged_risks).values.any? { |risks| risks.include?("high-risk-files") }
-  warn "WARN: high-risk-files acknowledgement has no effect unless --fail-on-high-risk-files is set"
-end
-
-if ARGV.empty?
-  warn parser
-  exit 64
-end
-
-target_numbers = ARGV.filter_map { |arg| Integer(arg, exception: false) }.to_set
-unused_acknowledgement_targets = options.fetch(:acknowledged_risks).keys.reject do |number|
-  target_numbers.include?(number)
-end
-if unused_acknowledgement_targets.any?
-  warn "WARN: acknowledgement target(s) not in scan list: " \
-       "#{unused_acknowledgement_targets.sort.map { |number| "##{number}" }.join(', ')}"
+  [options, nil]
 end
 
 def run_gh(*args)
@@ -296,7 +293,7 @@ def trusted_git_probe_env
   ssh_executable = %w[/usr/bin/ssh /bin/ssh].find { |path| File.executable?(path) } || "/nonexistent/ssh"
 
   inherited.merge(safe_directory_config).merge(
-    "GIT_ALLOW_PROTOCOL" => "https:http:ssh",
+    "GIT_ALLOW_PROTOCOL" => "https:ssh",
     "GIT_CONFIG_GLOBAL" => File::NULL,
     "GIT_CONFIG_NOSYSTEM" => "1",
     "GIT_CONFIG_SYSTEM" => File::NULL,
@@ -450,11 +447,6 @@ def normalized_github_host(host)
   host.to_s.downcase
 end
 
-def loopback_github_host?(host)
-  hostname = host.to_s.sub(/:\d+\z/, "").delete_prefix("[").delete_suffix("]")
-  %w[localhost 127.0.0.1 ::1].include?(hostname.downcase)
-end
-
 def expected_github_host
   normalized_github_host(ENV.fetch("GH_HOST", "github.com"))
 end
@@ -485,6 +477,7 @@ end
 def uri_remote_from_remote_url(normalized)
   uri = URI.parse(normalized)
   return unless %w[http https ssh].include?(uri.scheme)
+  return if uri.query || uri.fragment
 
   repo = uri.path.to_s.delete_prefix("/")
   return unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
@@ -493,7 +486,7 @@ def uri_remote_from_remote_url(normalized)
   host = remote_url_host(uri.host, port, scheme: uri.scheme)
   return unless host
 
-  { host:, port:, repo:, scheme: uri.scheme }
+  { host:, password: uri.password, port:, repo:, scheme: uri.scheme, user: uri.user }
 rescue URI::Error
   nil
 end
@@ -505,7 +498,14 @@ def github_remote_from_remote_url(url)
   match = normalized.match(%r{\A[^@/:\s]+@([^:\s]+):([^/\s]+/[^/\s]+)\z}i)
   return unless match
 
-  { host: normalized_remote_host(normalized_github_host(match[1])), port: 22, repo: match[2], scheme: "ssh" }
+  {
+    host: normalized_remote_host(normalized_github_host(match[1])),
+    port: 22,
+    repo: match[2],
+    scheme: "ssh",
+    user: normalized.split("@", 2).first,
+    password: nil
+  }
 end
 
 def host_port(host)
@@ -904,8 +904,8 @@ def target_source_actor_logins(target)
   Set[target.dig("author", "login")].tap { |logins| logins.delete(nil) }
 end
 
-def trusted_pr_source?(repo, target, trust_config:, team_cache:)
-  return false unless source_actor_coverage_findings(target).empty?
+def trusted_pr_source?(repo, target, graph_coverage_findings:, trust_config:, team_cache:)
+  return false unless graph_coverage_findings.empty?
 
   logins = pr_source_actor_logins(target)
   return false if logins.empty?
@@ -996,7 +996,7 @@ def warnings_not_already_blocking(suspicious_warnings, suspicious)
   suspicious_warnings.reject { |finding| blocking_locations.include?(finding.fetch(:location)) }
 end
 
-def suspicious_findings_for_target(repo:, number:, rest:, target:, target_is_pr:, trust_config:, team_cache:)
+def suspicious_findings_for_target(repo:, number:, rest:, target_is_pr:, trusted_source:, trust_config:, team_cache:)
   suspicious = []
   suspicious_warnings = suspicious_text_findings(
     rest:,
@@ -1019,7 +1019,7 @@ def suspicious_findings_for_target(repo:, number:, rest:, target:, target_is_pr:
     blocking_diff_findings = suspicious_added_lines(diff, pattern: BLOCKING_SUSPICIOUS_PATTERN)
     warning_diff_findings = suspicious_added_lines(diff, pattern: WARNING_SUSPICIOUS_PATTERN)
     suspicious.concat(blocking_diff_findings)
-    if trusted_pr_source?(repo, target, trust_config:, team_cache:)
+    if trusted_source
       suspicious_warnings.concat(warning_diff_findings)
     else
       suspicious.concat(warning_diff_findings)
@@ -1270,16 +1270,28 @@ def trusted_remote_url(root, policy, repo:, github_host:)
   end
 
   remote_info = github_remote_from_remote_url(urls.first)
-  allowed_transport = %w[https ssh].include?(remote_info&.fetch(:scheme, nil)) ||
-                      (remote_info&.fetch(:scheme, nil) == "http" && loopback_github_host?(github_host))
-  unless remote_info && allowed_transport &&
-         remote_matches_github_host?(remote_info, github_host) && remote_info.fetch(:repo).casecmp?(repo)
-    return [nil, "trusted remote #{remote.inspect} does not resolve to #{github_host}/#{repo} over a trusted transport"]
+  unless normalized_github_host(github_host) == "github.com" &&
+         trusted_github_remote?(remote_info) && remote_info.fetch(:repo).casecmp?(repo)
+    return [nil, "trusted remote #{remote.inspect} must resolve to github.com/#{repo} over exact GitHub HTTPS or SSH"]
   end
 
   [urls.first, nil]
 rescue StandardError => e
   [nil, "could not verify trusted remote: #{e.message.lines.first&.strip}"]
+end
+
+def trusted_github_remote?(remote)
+  return false unless remote&.fetch(:host, nil) == "github.com"
+
+  case remote.fetch(:scheme, nil)
+  when "https"
+    remote.fetch(:port, nil) == 443 && remote.fetch(:user, nil).nil? && remote.fetch(:password, nil).nil?
+  when "ssh"
+    [22, 443].include?(remote.fetch(:port, nil)) && remote.fetch(:user, nil) == "git" &&
+      remote.fetch(:password, nil).nil?
+  else
+    false
+  end
 end
 
 def fetch_trusted_base(root, remote_url, ref)
@@ -1367,99 +1379,188 @@ def clean_for_trusted_base_high_risk_acceptance?(result)
     result.fetch(:all_participants_visible) &&
     result.fetch(:graph_coverage_findings).empty? && result.fetch(:participant_findings).empty? &&
     result.fetch(:untrusted_interactions).empty? && result.fetch(:suspicious).empty? &&
-    result.fetch(:suspicious_warnings).empty? && trusted_graph_node_identity_findings(result.fetch(:target)).empty?
+    result.fetch(:suspicious_warnings).empty?
 end
 
 def complete_graph_identity?(value)
   !value.to_s.empty? && !value.to_s.casecmp?("UNKNOWN")
 end
 
-def duplicate_or_unavailable_graph_identity?(nodes, &identity_for)
-  identities = nodes.map(&identity_for)
-  identities.any?(&:nil?) || identities.uniq.size != identities.size
+PARTICIPANT_IDENTITY_TYPENAMES = Set.new(%w[Bot EnterpriseUser Mannequin Organization User]).freeze
+TIMELINE_AUTHOR_IDENTITY_TYPENAMES = Set.new(%w[IssueComment PullRequestReview]).freeze
+TIMELINE_ACTOR_IDENTITY_TYPENAMES = Set.new(
+  %w[
+    ClosedEvent CrossReferencedEvent MentionedEvent ReadyForReviewEvent
+    ReopenedEvent ReviewRequestedEvent SubscribedEvent UnsubscribedEvent
+  ]
+).freeze
+
+def graph_identity_coverage_finding(nodes, connection:, total_count:)
+  seen = {}
+  coherent_ids = {}
+  nodes.each do |node|
+    identity = yield node
+    unless identity
+      return {
+        connection:,
+        fetched_count: nodes.size,
+        reason: "node identity unavailable",
+        total_count:
+      }
+    end
+
+    id, representation, coherence_key = identity
+    if coherence_key && coherent_ids.key?(coherence_key) && coherent_ids.fetch(coherence_key) != id
+      return {
+        connection:,
+        fetched_count: nodes.size,
+        reason: "login has conflicting node ids",
+        total_count:
+      }
+    end
+    coherent_ids[coherence_key] = id if coherence_key
+    next(seen[id] = representation) unless seen.key?(id)
+
+    reason = seen.fetch(id) == representation ? "duplicate node id" : "node id has conflicting representations"
+    return { connection:, fetched_count: nodes.size, reason:, total_count: }
+  end
+
+  nil
 end
 
-def trusted_graph_node_identity_findings(target)
+def graph_node_identity_coverage_findings(target)
   findings = []
   participants = Array(target.dig("participants", "nodes"))
-  participant_ids = {}
-  participant_logins = {}
-  invalid_participants = duplicate_or_unavailable_graph_identity?(participants) do |node|
+  participant_finding = graph_identity_coverage_finding(
+    participants,
+    connection: "participants",
+    total_count: target.dig("participants", "totalCount")
+  ) do |node|
     id = node&.[]("id")
     login = node&.[]("login")
-    next unless complete_graph_identity?(id) && complete_graph_identity?(login)
+    typename = node&.[]("__typename")
+    next unless complete_graph_identity?(id) && complete_graph_identity?(login) &&
+                PARTICIPANT_IDENTITY_TYPENAMES.include?(typename)
 
-    normalized = normalized_login(login)
-    coherent = !participant_ids.key?(id) && !participant_logins.key?(normalized)
-    participant_ids[id] = normalized
-    participant_logins[normalized] = id
-    coherent ? [id, normalized] : nil
+    [id, node, normalized_login(login)]
   end
-  findings << "participants" if invalid_participants
+  findings << participant_finding if participant_finding
 
   timeline = Array(target.dig("timelineItems", "nodes"))
-  invalid_timeline = duplicate_or_unavailable_graph_identity?(timeline) do |node|
+  timeline_finding = graph_identity_coverage_finding(
+    timeline,
+    connection: "timelineItems",
+    total_count: target.dig("timelineItems", "totalCount")
+  ) do |node|
     id = node&.[]("id")
     typename = node&.[]("__typename")
-    [typename, id] if complete_graph_identity?(id) && complete_graph_identity?(typename)
+    next unless complete_graph_identity?(id) && complete_graph_identity?(typename)
+
+    case typename
+    when *TIMELINE_AUTHOR_IDENTITY_TYPENAMES
+      next unless complete_graph_identity?(node.dig("author", "login"))
+    when *TIMELINE_ACTOR_IDENTITY_TYPENAMES
+      next unless complete_graph_identity?(node.dig("actor", "login"))
+    when "PullRequestCommit"
+      next unless node["commit"].is_a?(Hash)
+    else
+      next
+    end
+
+    [id, node]
   end
-  findings << "timelineItems" if invalid_timeline
+  findings << timeline_finding if timeline_finding
 
   timeline.each do |item|
     next unless item&.[]("__typename") == "PullRequestCommit"
 
     authors = Array(item.dig("commit", "authors", "nodes"))
-    author_ids = {}
-    author_logins = {}
-    invalid_authors = duplicate_or_unavailable_graph_identity?(authors) do |author|
-      id = author&.dig("user", "id")
-      login = author&.dig("user", "login")
-      next unless complete_graph_identity?(id) && complete_graph_identity?(login)
+    author_finding = graph_identity_coverage_finding(
+      authors,
+      connection: "commit authors",
+      total_count: item.dig("commit", "authors", "totalCount")
+    ) do |author|
+      user = author&.[]("user")
+      id = user&.[]("id")
+      login = user&.[]("login")
+      typename = user&.[]("__typename")
+      next unless complete_graph_identity?(id) && complete_graph_identity?(login) && typename == "User"
 
-      normalized = normalized_login(login)
-      coherent = !author_ids.key?(id) && !author_logins.key?(normalized)
-      author_ids[id] = normalized
-      author_logins[normalized] = id
-      coherent ? [id, normalized] : nil
+      [id, user, normalized_login(login)]
     end
-    findings << "commit authors" if invalid_authors
+    findings << author_finding if author_finding
   end
 
   findings
 end
 
-def trusted_base_high_risk_receipt(result, repo:, github_host:)
+class TrustedBaseHighRiskOperations
+  def git_toplevel
+    trusted_git_toplevel
+  end
+
+  def git_root_matches_repo?(root, repo:, github_host:)
+    trusted_git_root_matches_repo?(root, repo, github_host:)
+  end
+
+  def bootstrap_policy(root, repo:)
+    bootstrap_trusted_base_policy(root, repo:)
+  end
+
+  def remote_url(root, policy, repo:, github_host:)
+    trusted_remote_url(root, policy, repo:, github_host:)
+  end
+
+  def with_isolated_base(remote_url, ref, &)
+    with_isolated_trusted_base(remote_url, ref, &)
+  end
+
+  def fetched_policy(root, base_sha, repo:)
+    fetched_trusted_base_policy(root, base_sha, repo:)
+  end
+
+  def pr_provenance(result, repo:)
+    exact_pr_provenance(result, repo:)
+  end
+
+  def ancestor?(root, merge_sha, base_sha)
+    _stdout, stderr, status = capture_trusted_git_probe(
+      "-C", root, "merge-base", "--is-ancestor", merge_sha, base_sha
+    )
+    return [true, nil] if status&.success?
+
+    [false, "PR merge result is not an ancestor of fetched trusted base: #{stderr.to_s.lines.first&.strip}"]
+  end
+end
+
+def trusted_base_high_risk_receipt(result, repo:, github_host:, operations: TrustedBaseHighRiskOperations.new)
   return [nil, "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"] unless clean_for_trusted_base_high_risk_acceptance?(result)
 
-  root = trusted_git_toplevel
+  root = operations.git_toplevel
   return [nil, "could not resolve the repository worktree"] unless root
-  unless trusted_git_root_matches_repo?(root, repo, github_host:)
+  unless operations.git_root_matches_repo?(root, repo:, github_host:)
     return [nil, "current worktree remotes do not match #{github_host}/#{repo}"]
   end
 
-  bootstrap_policy, error = bootstrap_trusted_base_policy(root, repo:)
+  bootstrap_policy, error = operations.bootstrap_policy(root, repo:)
   return [nil, error] unless bootstrap_policy
 
-  remote_url, error = trusted_remote_url(root, bootstrap_policy, repo:, github_host:)
+  remote_url, error = operations.remote_url(root, bootstrap_policy, repo:, github_host:)
   return [nil, error] unless remote_url
 
-  with_isolated_trusted_base(remote_url, bootstrap_policy.fetch("ref")) do |fetch_root, base_sha|
-    fetched_policy, fetched_error = fetched_trusted_base_policy(fetch_root, base_sha, repo:)
+  operations.with_isolated_base(remote_url, bootstrap_policy.fetch("ref")) do |fetch_root, base_sha|
+    fetched_policy, fetched_error = operations.fetched_policy(fetch_root, base_sha, repo:)
     next [nil, fetched_error] unless fetched_policy
     unless fetched_policy == bootstrap_policy
       next [nil, "bootstrap and fetched-base trusted-base policies do not match"]
     end
 
-    pr_provenance, provenance_error = exact_pr_provenance(result, repo:)
+    pr_provenance, provenance_error = operations.pr_provenance(result, repo:)
     next [nil, provenance_error] unless pr_provenance
 
     merge_sha = pr_provenance.fetch(:merge_sha)
-    _stdout, stderr, status = capture_trusted_git_probe(
-      "-C", fetch_root, "merge-base", "--is-ancestor", merge_sha, base_sha
-    )
-    unless status&.success?
-      next [nil, "PR merge result is not an ancestor of fetched trusted base: #{stderr.to_s.lines.first&.strip}"]
-    end
+    ancestor, ancestor_error = operations.ancestor?(fetch_root, merge_sha, base_sha)
+    next [nil, ancestor_error] unless ancestor
 
     receipt = {
       repository: repo,
@@ -1510,7 +1611,7 @@ PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
       authors(first:10) {
         totalCount
         pageInfo { hasNextPage endCursor }
-        nodes { user { id login } }
+        nodes { user { id login __typename } }
       }
     }
   }
@@ -1723,21 +1824,24 @@ def connection_coverage_finding(target, connection_name)
 end
 
 def graph_coverage_findings(target, include_target_author:, connections: PAGINATED_CONNECTIONS)
-  [
+  findings = [
     (target_author_coverage_finding(target) if include_target_author),
     *connections.filter_map { |connection_name| connection_coverage_finding(target, connection_name) },
     *commit_author_coverage_findings(target)
   ].compact
+  return findings unless target.key?("mergeCommit")
+
+  identity_findings = graph_node_identity_coverage_findings(target).select do |finding|
+    connections.include?(finding.fetch(:connection)) ||
+      (connections.include?("timelineItems") && finding.fetch(:connection) == "commit authors")
+  end
+  findings.concat(identity_findings)
 end
 
 def target_author_coverage_finding(target)
   return unless target.dig("author", "login").to_s.empty?
 
   { connection: "target author", fetched_count: 0, reason: "nodes unavailable", total_count: 1 }
-end
-
-def source_actor_coverage_findings(target)
-  graph_coverage_findings(target, include_target_author: true, connections: ["timelineItems"])
 end
 
 def commit_author_coverage_findings(target)
@@ -1885,6 +1989,14 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
   # Must run before visible_actor_logins: target aliases graph, so pagination
   # mutations must be in place before the visibility pass reads from graph.
   append_target_graph_pages!(owner:, name:, number:, graph_field:, target:)
+  coverage_findings = graph_coverage_findings(target, include_target_author: target_is_pr)
+  trusted_source = target_is_pr && trusted_pr_source?(
+    repo,
+    target,
+    graph_coverage_findings: coverage_findings,
+    trust_config:,
+    team_cache:
+  )
   rest = rest_context(repo, number, include_pull_comments: target_is_pr, issue:, trust_config:, team_cache:)
   visible = visible_actor_logins(graph, graph_field)
   visible.merge(visible_rest_actor_logins(rest))
@@ -1899,8 +2011,8 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     repo:,
     number:,
     rest:,
-    target:,
     target_is_pr:,
+    trusted_source:,
     trust_config:,
     team_cache:
   )
@@ -1920,7 +2032,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
   {
     files:,
     number:,
-    graph_coverage_findings: graph_coverage_findings(target, include_target_author: target_is_pr),
+    graph_coverage_findings: coverage_findings,
     participant_findings: participant_findings(
       repo:,
       target:,
@@ -1936,7 +2048,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     target:,
     target_is_pr:,
     all_participants_visible: all_participants_visible?(target, visible),
-    trusted_source: target_is_pr && trusted_pr_source?(repo, target, trust_config:, team_cache:),
+    trusted_source:,
     metadata_only_interactions:,
     untrusted_interactions:
   }
@@ -1950,9 +2062,13 @@ def print_graph_coverage_findings(findings)
 
   puts "  GitHub API coverage findings:"
   findings.each do |finding|
-    if finding.fetch(:reason) == "nodes unavailable"
+    reason = finding.fetch(:reason)
+    if reason == "nodes unavailable"
       puts "    - #{finding.fetch(:connection)} nodes unavailable; " \
            "reported total_count=#{finding.fetch(:total_count)}"
+    elsif reason.include?("node id") || reason == "node identity unavailable"
+      puts "    - #{finding.fetch(:connection)} #{reason}; " \
+           "fetched_count=#{finding.fetch(:fetched_count)}; reported total_count=#{finding.fetch(:total_count)}"
     else
       puts "    - #{finding.fetch(:connection)} fetched #{finding.fetch(:fetched_count)} of " \
            "#{finding.fetch(:total_count)} nodes"
@@ -2137,139 +2253,152 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
   puts
 end
 
-repo_info = options[:repo] ? repo_option_info(options[:repo]) : current_repo_info
-repo = repo_info.fetch(:repo)
-github_host = repo_info.fetch(:github_host)
-ENV["GH_HOST"] = github_host
-owner, name = repo.split("/", 2)
-abort "Repository must be OWNER/REPO, got #{repo.inspect}" unless owner && name && !owner.empty? && !name.empty?
+def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.new)
+  options, early_status = parse_options!(argv)
+  return early_status if early_status
 
-pr_query = <<~GRAPHQL
-  query($owner:String!, $name:String!, $number:Int!) {
-    repository(owner:$owner, name:$name) {
-      pullRequest(number:$number) {
-        number
-        title
-        url
-        state
-        mergedAt
-        isCrossRepository
-        headRefOid
-        headRepository { nameWithOwner }
-        mergeCommit { oid }
-        author { login }
-        participants(first:100) {
-          totalCount
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            #{PARTICIPANT_NODES_FRAGMENT}
-          }
-        }
-        timelineItems(first:100) {
-          totalCount
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            #{PR_TIMELINE_NODES_FRAGMENT}
-          }
-        }
-      }
-    }
-  }
-GRAPHQL
+  repo_info = options[:repo] ? repo_option_info(options[:repo]) : current_repo_info
+  repo = repo_info.fetch(:repo)
+  github_host = repo_info.fetch(:github_host)
+  ENV["GH_HOST"] = github_host
+  owner, name = repo.split("/", 2)
+  abort "Repository must be OWNER/REPO, got #{repo.inspect}" unless owner && name && !owner.empty? && !name.empty?
 
-issue_query = <<~GRAPHQL
-  query($owner:String!, $name:String!, $number:Int!) {
-    repository(owner:$owner, name:$name) {
-      issue(number:$number) {
-        number
-        title
-        url
-        author { login }
-        participants(first:100) {
-          totalCount
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            #{PARTICIPANT_NODES_FRAGMENT}
+  pr_query = <<~GRAPHQL
+    query($owner:String!, $name:String!, $number:Int!) {
+      repository(owner:$owner, name:$name) {
+        pullRequest(number:$number) {
+          number
+          title
+          url
+          state
+          mergedAt
+          isCrossRepository
+          headRefOid
+          headRepository { nameWithOwner }
+          mergeCommit { oid }
+          author { login }
+          participants(first:100) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              #{PARTICIPANT_NODES_FRAGMENT}
+            }
           }
-        }
-        timelineItems(first:100) {
-          totalCount
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            #{ISSUE_TIMELINE_NODES_FRAGMENT}
+          timelineItems(first:100) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              #{PR_TIMELINE_NODES_FRAGMENT}
+            }
           }
         }
       }
     }
-  }
-GRAPHQL
+  GRAPHQL
 
-overall_blockers = []
-acknowledged_findings = []
-trusted_base_receipts = []
-permission_cache = {}
-team_cache = {}
-canonical_bot_cache = {}
-trust_config_resolution = resolved_trust_config(options.fetch(:trust_config), repo:, github_host:)
-puts "Trust config: #{trust_config_resolution.fetch(:path)}"
-puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
-trust_config = load_trust_config(
-  path: trust_config_resolution.fetch(:path),
-  global: trust_config_resolution.fetch(:global)
-)
+  issue_query = <<~GRAPHQL
+    query($owner:String!, $name:String!, $number:Int!) {
+      repository(owner:$owner, name:$name) {
+        issue(number:$number) {
+          number
+          title
+          url
+          author { login }
+          participants(first:100) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              #{PARTICIPANT_NODES_FRAGMENT}
+            }
+          }
+          timelineItems(first:100) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              #{ISSUE_TIMELINE_NODES_FRAGMENT}
+            }
+          }
+        }
+      }
+    }
+  GRAPHQL
 
-ARGV.each do |arg|
-  number = Integer(arg, exception: false)
-  abort "Invalid issue/PR number: #{arg.inspect}" unless number
-
-  result = scan_target(
-    repo:,
-    owner:,
-    name:,
-    number:,
-    pr_query:,
-    issue_query:,
-    include_reactions: options[:include_reactions],
-    permission_cache:,
-    trust_config:,
-    team_cache:,
-    canonical_bot_cache:
+  overall_blockers = []
+  acknowledged_findings = []
+  trusted_base_receipts = []
+  permission_cache = {}
+  team_cache = {}
+  canonical_bot_cache = {}
+  trust_config_resolution = resolved_trust_config(options.fetch(:trust_config), repo:, github_host:)
+  puts "Trust config: #{trust_config_resolution.fetch(:path)}"
+  puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
+  trust_config = load_trust_config(
+    path: trust_config_resolution.fetch(:path),
+    global: trust_config_resolution.fetch(:global)
   )
-  if options[:fail_on_high_risk_files] && result.fetch(:risky_files).any? &&
-     !options.fetch(:acknowledged_risks).fetch(number, Set.new).include?("high-risk-files")
-    receipt, rejection = trusted_base_high_risk_receipt(result, repo:, github_host:)
-    result[:trusted_base_receipt] = receipt if receipt
-    result[:trusted_base_rejection] = rejection if rejection
+
+  argv.each do |arg|
+    number = Integer(arg, exception: false)
+    abort "Invalid issue/PR number: #{arg.inspect}" unless number
+
+    result = scan_target(
+      repo:,
+      owner:,
+      name:,
+      number:,
+      pr_query:,
+      issue_query:,
+      include_reactions: options[:include_reactions],
+      permission_cache:,
+      trust_config:,
+      team_cache:,
+      canonical_bot_cache:
+    )
+    if options[:fail_on_high_risk_files] && result.fetch(:risky_files).any? &&
+       !options.fetch(:acknowledged_risks).fetch(number, Set.new).include?("high-risk-files")
+      receipt, rejection = trusted_base_high_risk_receipt(
+        result,
+        repo:,
+        github_host:,
+        operations: trusted_base_operations
+      )
+      result[:trusted_base_receipt] = receipt if receipt
+      result[:trusted_base_rejection] = rejection if rejection
+    end
+    print_scan_result(
+      result,
+      overall_blockers,
+      acknowledged_findings:,
+      acknowledged_risks: options.fetch(:acknowledged_risks),
+      fail_on_high_risk_files: options[:fail_on_high_risk_files],
+      strict_trust: options[:strict_trust],
+      trusted_base_receipts:
+    )
   end
-  print_scan_result(
-    result,
-    overall_blockers,
-    acknowledged_findings:,
-    acknowledged_risks: options.fetch(:acknowledged_risks),
-    fail_on_high_risk_files: options[:fail_on_high_risk_files],
-    strict_trust: options[:strict_trust],
-    trusted_base_receipts:
-  )
-end
 
-if overall_blockers.any?
+  if overall_blockers.any?
+    if acknowledged_findings.any?
+      puts "Acknowledged security preflight findings:"
+      acknowledged_findings.each { |finding| puts "- #{finding}" }
+      puts
+    end
+    puts "SECURITY_PREFLIGHT_BLOCKED"
+    overall_blockers.each { |blocker| puts "- #{blocker}" }
+    return 2
+  end
+
   if acknowledged_findings.any?
     puts "Acknowledged security preflight findings:"
     acknowledged_findings.each { |finding| puts "- #{finding}" }
-    puts
   end
-  puts "SECURITY_PREFLIGHT_BLOCKED"
-  overall_blockers.each { |blocker| puts "- #{blocker}" }
-  exit 2
+
+  trusted_base_receipts.each do |receipt|
+    puts "TRUSTED_BASE_HIGH_RISK_ACCEPTED #{JSON.generate(receipt)}"
+  end
+
+  puts "SECURITY_PREFLIGHT_OK"
+  0
 end
 
-if acknowledged_findings.any?
-  puts "Acknowledged security preflight findings:"
-  acknowledged_findings.each { |finding| puts "- #{finding}" }
-end
-
-trusted_base_receipts.each do |receipt|
-  puts "TRUSTED_BASE_HIGH_RISK_ACCEPTED #{JSON.generate(receipt)}"
-end
-
-puts "SECURITY_PREFLIGHT_OK"
+exit(run_preflight(ARGV)) if $PROGRAM_NAME == __FILE__

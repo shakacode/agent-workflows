@@ -21,6 +21,48 @@ REAL_GIT = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |director
   candidate = File.join(directory, "git")
   candidate if File.file?(candidate) && File.executable?(candidate)
 end.first || raise("git executable not found")
+load SCRIPT
+
+TestCommandStatus = Struct.new(:exitstatus) do
+  def success?
+    exitstatus.zero?
+  end
+end
+
+class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
+  attr_reader :fetch_environments, :fetch_roots
+
+  def initialize(base_sha:, fetched_policy:, expected_merge_sha:, fetch_fail: false)
+    super()
+    @base_sha = base_sha
+    @fetched_policy = fetched_policy
+    @expected_merge_sha = expected_merge_sha
+    @fetch_fail = fetch_fail
+    @fetch_environments = []
+    @fetch_roots = []
+  end
+
+  def with_isolated_base(_remote_url, _ref)
+    return [nil, "fetch of trusted remote/ref failed: simulated failure"] if @fetch_fail
+
+    Dir.mktmpdir("pr-security-preflight-test-operations") do |fetch_root|
+      @fetch_environments << trusted_git_probe_env
+      @fetch_roots << fetch_root
+      yield fetch_root, @base_sha
+    end
+  end
+
+  def fetched_policy(_root, _base_sha, repo:)
+    yaml = @fetched_policy.is_a?(String) ? @fetched_policy : YAML.dump(@fetched_policy)
+    trusted_base_policy_from_yaml(yaml, repo:)
+  end
+
+  def ancestor?(_root, merge_sha, _base_sha)
+    return [true, nil] if merge_sha == @expected_merge_sha
+
+    [false, "PR merge result is not an ancestor of fetched trusted base: simulated non-ancestor"]
+  end
+end
 
 class PrSecurityPreflightTest < Minitest::Test
   def test_missing_repo_config_uses_env_global_config
@@ -1654,17 +1696,7 @@ class PrSecurityPreflightTest < Minitest::Test
 
   def test_trusted_base_accepts_exact_merged_same_repository_ancestor
     with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
-      out, status = run_script(
-        env,
-        "--repo",
-        "owner/repo",
-        "--trust-config",
-        trust_config_path,
-        "--strict-trust",
-        "--fail-on-high-risk-files",
-        "123",
-        chdir: repo_root
-      )
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
 
       assert status.success?, out
       assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
@@ -1861,8 +1893,8 @@ class PrSecurityPreflightTest < Minitest::Test
       "commit-author nodes" => {
         "PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL" => "2",
         "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" =>
-          '[{"user":{"id":"actor-1","login":"justin808"}},' \
-          '{"user":{"id":"actor-1","login":"justin808"}}]'
+          '[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},' \
+          '{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]'
       },
       "participant identity unavailable" => {
         "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
@@ -1888,9 +1920,67 @@ class PrSecurityPreflightTest < Minitest::Test
         out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
 
         assert_trusted_base_blocked(out, status)
+        assert_includes out, "GitHub API coverage findings:", label
+        refute_includes out, "GitHub API coverage findings: none", label
+        assert_match(/(?:participants|timelineItems|commit authors) (?:duplicate node id|node identity unavailable|login has conflicting node ids)/,
+                     out,
+                     label)
+        assert_includes out, "#123: GitHub API coverage truncated", label
         assert_includes out,
                         "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean",
                         label
+      end
+    end
+  end
+
+  def test_graphql_node_id_conflicts_are_canonical_api_coverage_findings
+    cases = {
+      "participant presentation" => {
+        connection: "participants",
+        overrides: {
+          "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+          "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+            '[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"},' \
+            '{"id":"actor-1","login":"trusted-collaborator","url":"https://github.com/trusted-collaborator","__typename":"User"}]',
+          "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+          "PREFLIGHT_TEST_TIMELINE_NODES" =>
+            '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,' \
+            '"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-2",' \
+            '"login":"justin808","__typename":"User"}}]}}},' \
+            '{"id":"comment-event-1","__typename":"IssueComment","author":{"login":"trusted-collaborator"}}]'
+        }
+      },
+      "timeline typename" => {
+        connection: "timelineItems",
+        overrides: {
+          "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+          "PREFLIGHT_TEST_TIMELINE_NODES" =>
+            '[{"id":"event-1","__typename":"IssueComment","author":{"login":"justin808"}},' \
+            '{"id":"event-1","__typename":"MentionedEvent","actor":{"login":"justin808"}}]'
+        }
+      },
+      "nested author presentation" => {
+        connection: "commit authors",
+        overrides: {
+          "PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL" => "2",
+          "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" =>
+            '[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},' \
+            '{"user":{"id":"actor-1","login":"trusted-collaborator","__typename":"User"}}]'
+        }
+      }
+    }
+
+    cases.each do |label, test_case|
+      with_trusted_base_preflight(fixture_env_overrides: test_case.fetch(:overrides)) do |env, trust_config_path, repo_root, _provenance|
+        write_trust_config(trust_config_path, users: %w[justin808 trusted-collaborator])
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "GitHub API coverage findings:", label
+        assert_includes out,
+                        "#{test_case.fetch(:connection)} node id has conflicting representations",
+                        label
+        assert_includes out, "#123: GitHub API coverage truncated", label
       end
     end
   end
@@ -1920,6 +2010,9 @@ class PrSecurityPreflightTest < Minitest::Test
         out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
 
         assert_trusted_base_blocked(out, status)
+        assert_includes out, "GitHub API coverage findings:", label
+        assert_includes out, "duplicate node id", label
+        assert_includes out, "#123: GitHub API coverage truncated", label
         assert_includes out,
                         "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean",
                         label
@@ -2127,7 +2220,67 @@ class PrSecurityPreflightTest < Minitest::Test
       out, status = run_trusted_base_preflight(production_host_env, trust_config_path, repo_root)
 
       assert_trusted_base_blocked(out, status)
-      assert_includes out, "over a trusted transport"
+      assert_includes out, "must resolve to github.com/owner/repo over exact GitHub HTTPS or SSH"
+    end
+  end
+
+  def test_trusted_base_rejects_https_non_github_host_selected_by_gh_host
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      remote_url = "https://github.company.example/owner/repo.git"
+      git! "-C", repo_root, "remote", "set-url", "origin", remote_url
+      alternate_host_env = env.merge(
+        "GH_HOST" => "github.company.example",
+        "PREFLIGHT_TEST_REPO_URL" => remote_url
+      )
+
+      out, status = run_trusted_base_preflight(alternate_host_env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "must resolve to github.com/owner/repo over exact GitHub HTTPS or SSH"
+    end
+  end
+
+  def test_trusted_base_accepts_exact_github_ssh_remote_metadata
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      git! "-C", repo_root, "remote", "set-url", "origin", "git@github.com:owner/repo.git"
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_production_cli_rejects_loopback_http_even_with_gh_host_and_fake_tools
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      install_path_git_attacker(env, provenance.fetch(:path_git_marker))
+      Dir.mktmpdir("pr-security-preflight-loopback") do |http_root|
+        with_static_http_server(http_root) do |port, http_request_log|
+          remote_url = "http://127.0.0.1:#{port}/owner/repo.git"
+          git! "-C", repo_root, "remote", "set-url", "origin", remote_url
+          production_env = env.merge(
+            "GH_HOST" => "127.0.0.1:#{port}",
+            "PREFLIGHT_TEST_REPO_URL" => remote_url
+          )
+          out, status = run_script(
+            production_env,
+            "--repo",
+            "owner/repo",
+            "--trust-config",
+            trust_config_path,
+            "--strict-trust",
+            "--fail-on-high-risk-files",
+            "123",
+            chdir: repo_root
+          )
+
+          assert_trusted_base_blocked(out, status)
+          assert_includes out, "must resolve to github.com/owner/repo over exact GitHub HTTPS or SSH"
+          assert_empty File.read(provenance.fetch(:path_git_marker)), "PATH-selected git bypassed pinned Git"
+          assert_empty File.read(http_request_log), "production CLI fetched from loopback HTTP"
+        end
+      end
     end
   end
 
@@ -2188,7 +2341,16 @@ class PrSecurityPreflightTest < Minitest::Test
 
       assert status.success?, out
       assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
-      refute_includes File.read(provenance.fetch(:http_request_log)), "Authorization: attacker"
+      operations = provenance.fetch(:operations)
+      assert_equal 1, operations.fetch_environments.size
+      fetch_env = operations.fetch_environments.first
+      inherited.each do |name, value|
+        refute_equal value, fetch_env[name], "trusted fetch inherited unsafe #{name} value"
+      end
+      refute fetch_env.key?("PATH"), "trusted fetch inherited PATH"
+      assert_equal "https:ssh", fetch_env.fetch("GIT_ALLOW_PROTOCOL")
+      assert_equal 1, operations.fetch_roots.size
+      refute operations.fetch_roots.first.start_with?("#{repo_root}/"), "trusted fetch ran inside consumer root"
     end
   end
 
@@ -3155,72 +3317,60 @@ class PrSecurityPreflightTest < Minitest::Test
 
   def with_trusted_base_preflight(policy: trusted_base_policy, fetched_policy: policy, fixture_env_overrides: {})
     with_fake_gh("trusted-base-high-risk") do |env, trust_config_path, _log_path, dir|
-      http_root = File.join(dir, "http")
-      remote_root = File.join(http_root, "owner", "repo.git")
-      seed_root = File.join(dir, "seed")
       repo_root = File.join(dir, "consumer")
-      FileUtils.mkdir_p([File.dirname(remote_root), seed_root, repo_root])
+      FileUtils.mkdir_p(repo_root)
+      head_sha = "a" * 40
+      merge_sha = "b" * 40
+      base_sha = "c" * 40
+      remote_url = "https://github.com/owner/repo.git"
+      git! "-C", repo_root, "init", "--quiet"
+      git! "-C", repo_root, "remote", "add", "origin", remote_url
+      write_workflow_policy(repo_root, policy)
+      path_git_marker = File.join(dir, "path-git.log")
+      File.write(path_git_marker, "")
+      operations = TestTrustedBaseHighRiskOperations.new(
+        base_sha:,
+        fetched_policy:,
+        expected_merge_sha: merge_sha,
+        fetch_fail: fixture_env_overrides["PREFLIGHT_TEST_FETCH_FAIL"] == "1"
+      )
+      @trusted_base_operations ||= {}
+      @trusted_base_operations[repo_root] = operations
 
-      git! "init", "--bare", "--quiet", remote_root
-      git! "-C", seed_root, "init", "--quiet"
-      git! "-C", seed_root, "config", "user.email", "preflight-test@example.invalid"
-      git! "-C", seed_root, "config", "user.name", "Preflight Test"
-      write_workflow_policy(seed_root, fetched_policy)
-      File.write(File.join(seed_root, "README.md"), "trusted base fixture\n")
-      git! "-C", seed_root, "add", ".agents/agent-workflow.yml", "README.md"
-      git! "-C", seed_root, "commit", "--quiet", "-m", "Add trusted-base policy"
-      git! "-C", seed_root, "branch", "-M", "main"
-      git! "-C", seed_root, "checkout", "--quiet", "-b", "feature"
-      File.write(File.join(seed_root, "feature.txt"), "feature\n")
-      git! "-C", seed_root, "add", "feature.txt"
-      git! "-C", seed_root, "commit", "--quiet", "-m", "Add feature"
-      head_sha = git_output("-C", seed_root, "rev-parse", "HEAD")
-      git! "-C", seed_root, "checkout", "--quiet", "main"
-      git! "-C", seed_root, "merge", "--quiet", "--no-ff", "feature", "-m", "Merge feature"
-      merge_sha = git_output("-C", seed_root, "rev-parse", "HEAD")
-      File.write(File.join(seed_root, "base-marker.txt"), "base advanced\n")
-      git! "-C", seed_root, "add", "base-marker.txt"
-      git! "-C", seed_root, "commit", "--quiet", "-m", "Advance trusted base"
-      base_sha = git_output("-C", seed_root, "rev-parse", "HEAD")
-      git! "-C", seed_root, "remote", "add", "fixture-origin", remote_root
-      git! "-C", seed_root, "push", "--quiet", "fixture-origin", "main"
-      git! "--git-dir", remote_root, "update-server-info"
-
-      with_static_http_server(
-        http_root,
-        fail_requests: fixture_env_overrides["PREFLIGHT_TEST_FETCH_FAIL"] == "1"
-      ) do |port, http_request_log|
-        remote_url = "http://127.0.0.1:#{port}/owner/repo.git"
-        git! "-C", repo_root, "init", "--quiet"
-        git! "-C", repo_root, "remote", "add", "origin", remote_url
-        write_workflow_policy(repo_root, policy)
-        path_git_marker = File.join(dir, "path-git.log")
-        File.write(path_git_marker, "")
-
-        provenance = { base_sha:, head_sha:, merge_sha:, http_request_log:, path_git_marker: }
-        fixture_env = env.merge(
-          "GH_HOST" => "127.0.0.1:#{port}",
-          "PREFLIGHT_TEST_REPO_URL" => remote_url,
-          "PREFLIGHT_TEST_HEAD_SHA" => head_sha,
-          "PREFLIGHT_TEST_MERGE_SHA" => merge_sha
-        ).merge(fixture_env_overrides.reject { |key, _value| key == "PREFLIGHT_TEST_FETCH_FAIL" })
-        yield fixture_env, trust_config_path, repo_root, provenance
-      end
+      provenance = { base_sha:, head_sha:, merge_sha:, operations:, path_git_marker: }
+      fixture_env = env.merge(
+        "GH_HOST" => "github.com",
+        "PREFLIGHT_TEST_REPO_URL" => remote_url,
+        "PREFLIGHT_TEST_HEAD_SHA" => head_sha,
+        "PREFLIGHT_TEST_MERGE_SHA" => merge_sha
+      ).merge(fixture_env_overrides.reject { |key, _value| key == "PREFLIGHT_TEST_FETCH_FAIL" })
+      yield fixture_env, trust_config_path, repo_root, provenance
+    ensure
+      @trusted_base_operations&.delete(repo_root)
     end
   end
 
   def run_trusted_base_preflight(env, trust_config_path, repo_root)
-    run_script(
-      env,
-      "--repo",
-      "owner/repo",
-      "--trust-config",
-      trust_config_path,
-      "--strict-trust",
-      "--fail-on-high-risk-files",
-      "123",
-      chdir: repo_root
-    )
+    status = nil
+    stdout, stderr = with_env(env.merge(clean_git_env)) do
+      Dir.chdir(repo_root) do
+        capture_io do
+          status = run_preflight(
+            [
+              "--repo",
+              "owner/repo",
+              "--trust-config",
+              trust_config_path,
+              "--strict-trust",
+              "--fail-on-high-risk-files",
+              "123"
+            ],
+            trusted_base_operations: @trusted_base_operations.fetch(repo_root)
+          )
+        end
+      end
+    end
+    [stdout + stderr, TestCommandStatus.new(status)]
   end
 
   def assert_trusted_base_blocked(out, status)
@@ -3261,7 +3411,7 @@ class PrSecurityPreflightTest < Minitest::Test
     FileUtils.chmod(0o755, wrapper)
   end
 
-  def with_static_http_server(root, fail_requests: false)
+  def with_static_http_server(root)
     server = TCPServer.new("127.0.0.1", 0)
     request_log = File.join(File.dirname(root), "http-requests.log")
     File.write(request_log, "")
@@ -3281,9 +3431,7 @@ class PrSecurityPreflightTest < Minitest::Test
         candidate = File.expand_path(".#{decoded_path}", root)
         allowed = candidate.start_with?("#{File.expand_path(root)}/") && File.file?(candidate)
 
-        if fail_requests
-          client.write("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        elsif allowed
+        if allowed
           body = File.binread(candidate)
           client.write("HTTP/1.1 200 OK\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n")
           client.write(body) unless request_line.start_with?("HEAD ")
@@ -3307,13 +3455,6 @@ class PrSecurityPreflightTest < Minitest::Test
     return if system(clean_git_env, REAL_GIT, *args)
 
     raise "git command failed: #{args.shelljoin}"
-  end
-
-  def git_output(*args)
-    output, status = Open3.capture2e(clean_git_env, REAL_GIT, *args)
-    raise "git command failed: #{args.shelljoin}\n#{output}" unless status.success?
-
-    output.strip
   end
 
   def clean_git_env
@@ -3803,7 +3944,7 @@ class PrSecurityPreflightTest < Minitest::Test
             commit_user_json=null
           else
             author_json="$(printf '{"login":"%s"}' "$author_login")"
-            commit_user_json="$(printf '{"id":"actor-1","login":"%s"}' "$author_login")"
+            commit_user_json="$(printf '{"id":"actor-1","login":"%s","__typename":"User"}' "$author_login")"
           fi
           if [ -z "$commit_author_nodes" ]; then
             commit_author_nodes="$(printf '[{"user":%s}]' "$commit_user_json")"
