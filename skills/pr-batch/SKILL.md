@@ -62,6 +62,26 @@ a blocker exhausted its bounded retries and needs intervention, or
 closeout/archive completed; delete the heartbeat when its gate clears or
 becomes durably terminal. The automation never owns the task or next action.
 
+## Coordinator Output Contract
+
+<!-- Keep this summary in sync with `.agents/workflows/pr-processing.md` -> `### Coordinator Output Contract`. -->
+
+`OC-v1` bounds coordinator narration volume. Use the canonical
+[Coordinator Output Contract](../../workflows/pr-processing.md#coordinator-output-contract)
+instead of restating its rules here. In short: bound coordinator narration to
+the five typed checkpoints `dispatch`, `pr-open`, `decision-required`,
+`merge-decision`, and `final-handoff`; keep recaps delta-only, findings
+single-surface, and corrections proportional; and report the shadow-only
+`coordinator-narration-volume v1` marker in FYI / decisions made at closeout.
+Four message kinds stay allowed outside those checkpoints and count in the
+marker's `always_allowed` bucket: a direct answer, an explicitly requested
+status report, a turn another contract requires the coordinator to show, and a
+required safety stop.
+
+`OC-v1` is presentation only. It relaxes no evidence, verification, or
+`UNKNOWN`-honesty rule, drops no required exact string, deletes no durable copy
+another contract requires, and collapses no closing structure.
+
 ## Single-Target Mode
 
 Use this mode for one GitHub issue, existing pull request, or durably overridden
@@ -796,7 +816,8 @@ At terminal closeout, use the resolved sibling
 `bin/batch-usage-receipt` helper for supported Codex rollout JSONL plus
 `state_5.sqlite` evidence, following
 [Batch Usage Receipt v1](../../docs/batch-usage-receipt.md). Put the compact
-batch total or a durable artifact reference in FYI / decisions made. Preserve
+batch total or a durable artifact reference in FYI / decisions made, alongside
+the shadow-only `coordinator-narration-volume v1` marker. Preserve
 structured `UNKNOWN` for unavailable evidence, keep requested and observed
 routes separate, and never attach raw rollout/database data or emit prompt,
 response, tool-result, auth, secret, or environment content. Usage telemetry is
