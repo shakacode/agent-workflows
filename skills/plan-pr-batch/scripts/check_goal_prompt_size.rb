@@ -117,7 +117,7 @@ MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker routes:implementation=bal
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
 MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory."
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
-DISPATCH_PLAN_PROMPT_LINE = "Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;pending/active lifecycle."
+DISPATCH_PLAN_PROMPT_LINE = "Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;ordinary pending/active lifecycle."
 COORDINATION_DEPENDENCY_PROMPT_LINE =
   "- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; " \
   "register before launch when supported; claim refusal=>stop; push holder/generation check; " \

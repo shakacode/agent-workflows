@@ -300,7 +300,7 @@ precise blocker.
    path/trusted-plan path/id/digest; substitute the actual values rather than
    those field initials.
    It must also say `Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.`
-   and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;pending/active lifecycle.` It must include this exact self-contained completion line:
+   and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;ordinary pending/active lifecycle.` It must include this exact self-contained completion line:
    `- Deps:v1 edit|validation_open|merge_order;missing/UNKNOWN/stale=>closed;combined-tip@seam`
    Each prompt must also include this exact compact scope line:
    `Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.`
