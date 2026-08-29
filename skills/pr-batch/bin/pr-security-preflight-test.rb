@@ -1985,6 +1985,73 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_graphql_node_id_conflicts_across_connections_are_canonical_api_coverage_findings
+    cases = {
+      "participant reused by timeline item" => {
+        expected_finding: "timelineItems node id has conflicting representations",
+        overrides: {
+          "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+            '[{"id":"shared-identity","login":"justin808","url":"https://github.com/justin808",' \
+            '"__typename":"User"}]',
+          "PREFLIGHT_TEST_TIMELINE_NODES" =>
+            '[{"id":"shared-identity","__typename":"IssueComment","author":{"login":"justin808"}}]'
+        }
+      },
+      "participant reused by nested author" => {
+        expected_finding: "commit authors node id has conflicting representations",
+        overrides: {
+          "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+            '[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808",' \
+            '"__typename":"User"}]',
+          "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" =>
+            '[{"user":{"id":"actor-1","login":"trusted-collaborator","__typename":"User"}}]'
+        }
+      },
+      "author reused across commits" => {
+        expected_finding: "commit authors node id has conflicting representations",
+        overrides: {
+          "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+          "PREFLIGHT_TEST_TIMELINE_NODES" =>
+            '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":' \
+            '{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":' \
+            '[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}},' \
+            '{"id":"commit-event-2","__typename":"PullRequestCommit","commit":{"authors":' \
+            '{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":' \
+            '[{"user":{"id":"actor-1","login":"trusted-collaborator","__typename":"User"}}]}}}]'
+        }
+      }
+    }
+
+    cases.each do |label, test_case|
+      with_trusted_base_preflight(fixture_env_overrides: test_case.fetch(:overrides)) do |env, trust_config_path, repo_root, _provenance|
+        write_trust_config(trust_config_path, users: %w[justin808 trusted-collaborator])
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "GitHub API coverage findings:", label
+        refute_includes out, "GitHub API coverage findings: none", label
+        assert_includes out, test_case.fetch(:expected_finding), label
+        assert_includes out, "#123: GitHub API coverage truncated", label
+      end
+    end
+  end
+
+  def test_graphql_node_id_compatible_recurrence_across_connections_remains_valid
+    overrides = {
+      "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+        '[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "GitHub API coverage findings: none"
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
   def test_trusted_base_rejects_duplicate_graphql_node_identities_across_pages
     cases = {
       "participant nodes" => {

@@ -1395,7 +1395,21 @@ TIMELINE_ACTOR_IDENTITY_TYPENAMES = Set.new(
   ]
 ).freeze
 
-def graph_identity_coverage_finding(nodes, connection:, total_count:)
+def merge_graph_identity_representation!(canonical_identities, id, representation)
+  canonical = canonical_identities[id]
+  unless canonical
+    canonical_identities[id] = representation.dup
+    return true
+  end
+
+  overlapping_facts = canonical.keys & representation.keys
+  return false if overlapping_facts.any? { |fact| canonical.fetch(fact) != representation.fetch(fact) }
+
+  canonical.merge!(representation)
+  true
+end
+
+def graph_identity_coverage_finding(nodes, connection:, total_count:, canonical_identities:)
   seen = {}
   coherent_ids = {}
   nodes.each do |node|
@@ -1409,7 +1423,7 @@ def graph_identity_coverage_finding(nodes, connection:, total_count:)
       }
     end
 
-    id, representation, coherence_key = identity
+    id, representation, coherence_key, canonical_representation = identity
     if coherence_key && coherent_ids.key?(coherence_key) && coherent_ids.fetch(coherence_key) != id
       return {
         connection:,
@@ -1419,10 +1433,19 @@ def graph_identity_coverage_finding(nodes, connection:, total_count:)
       }
     end
     coherent_ids[coherence_key] = id if coherence_key
-    next(seen[id] = representation) unless seen.key?(id)
+    if seen.key?(id)
+      reason = seen.fetch(id) == representation ? "duplicate node id" : "node id has conflicting representations"
+      return { connection:, fetched_count: nodes.size, reason:, total_count: }
+    end
+    seen[id] = representation
+    next if merge_graph_identity_representation!(canonical_identities, id, canonical_representation)
 
-    reason = seen.fetch(id) == representation ? "duplicate node id" : "node id has conflicting representations"
-    return { connection:, fetched_count: nodes.size, reason:, total_count: }
+    return {
+      connection:,
+      fetched_count: nodes.size,
+      reason: "node id has conflicting representations",
+      total_count:
+    }
   end
 
   nil
@@ -1430,11 +1453,13 @@ end
 
 def graph_node_identity_coverage_findings(target)
   findings = []
+  canonical_identities = {}
   participants = Array(target.dig("participants", "nodes"))
   participant_finding = graph_identity_coverage_finding(
     participants,
     connection: "participants",
-    total_count: target.dig("participants", "totalCount")
+    total_count: target.dig("participants", "totalCount"),
+    canonical_identities:
   ) do |node|
     id = node&.[]("id")
     login = node&.[]("login")
@@ -1442,7 +1467,12 @@ def graph_node_identity_coverage_findings(target)
     next unless complete_graph_identity?(id) && complete_graph_identity?(login) &&
                 PARTICIPANT_IDENTITY_TYPENAMES.include?(typename)
 
-    [id, node, normalized_login(login)]
+    canonical_representation = {
+      "__typename" => typename,
+      "login" => normalized_login(login),
+      "url" => node["url"]
+    }.compact
+    [id, node, normalized_login(login), canonical_representation]
   end
   findings << participant_finding if participant_finding
 
@@ -1450,7 +1480,8 @@ def graph_node_identity_coverage_findings(target)
   timeline_finding = graph_identity_coverage_finding(
     timeline,
     connection: "timelineItems",
-    total_count: target.dig("timelineItems", "totalCount")
+    total_count: target.dig("timelineItems", "totalCount"),
+    canonical_identities:
   ) do |node|
     id = node&.[]("id")
     typename = node&.[]("__typename")
@@ -1467,7 +1498,7 @@ def graph_node_identity_coverage_findings(target)
       next
     end
 
-    [id, node]
+    [id, node, nil, { "__typename" => typename }]
   end
   findings << timeline_finding if timeline_finding
 
@@ -1478,7 +1509,8 @@ def graph_node_identity_coverage_findings(target)
     author_finding = graph_identity_coverage_finding(
       authors,
       connection: "commit authors",
-      total_count: item.dig("commit", "authors", "totalCount")
+      total_count: item.dig("commit", "authors", "totalCount"),
+      canonical_identities:
     ) do |author|
       user = author&.[]("user")
       id = user&.[]("id")
@@ -1486,7 +1518,8 @@ def graph_node_identity_coverage_findings(target)
       typename = user&.[]("__typename")
       next unless complete_graph_identity?(id) && complete_graph_identity?(login) && typename == "User"
 
-      [id, user, normalized_login(login)]
+      canonical_representation = { "__typename" => typename, "login" => normalized_login(login) }
+      [id, user, normalized_login(login), canonical_representation]
     end
     findings << author_finding if author_finding
   end
