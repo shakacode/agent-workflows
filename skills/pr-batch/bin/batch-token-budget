@@ -2306,8 +2306,17 @@ module BatchTokenBudget
                         end
 
     return !value.key?("first_session_id") || value["first_session_id"].is_a?(String) if value["status"] == "UNKNOWN"
+
+    scope_evidence_identity_proven?(value)
+  end
+
+  def scope_evidence_identity_proven?(value)
+    first_session_ids = value["first_session_ids"]
+    physical_rollout_ids = value["physical_rollout_ids"]
+    return false unless first_session_ids.is_a?(Array) && physical_rollout_ids.is_a?(Array)
     return false if first_session_ids.empty? || physical_rollout_ids.empty?
     return false unless first_session_ids.length == physical_rollout_ids.length
+    return false unless first_session_ids.all? { |item| nonempty_string?(item) }
 
     if first_session_ids.one?
       value["first_session_id"] == first_session_ids.first
@@ -2581,6 +2590,18 @@ module BatchTokenBudget
     return unless scope_tokens.all? do |scope_id, tokens|
       turns = scope_turns.fetch(scope_id)
       tokens.zero? ? turns.zero? : turns.between?(1, tokens)
+    end
+
+    if evidence["status"] == "UNKNOWN"
+      return unless scope_tokens.fetch("coordinator").zero? ||
+                    scope_evidence_identity_proven?(coordinator.fetch("evidence"))
+      return unless lanes.all? do |lane|
+        lane_tokens.fetch(lane.fetch("id")).zero? || scope_evidence_identity_proven?(lane.fetch("evidence"))
+      end
+      return unless lanes.flat_map { |lane| lane.fetch("workers") }.all? do |worker|
+        worker_tokens = worker.dig("usage", "descendant_inclusive", "total_tokens")
+        worker_tokens.zero? || scope_evidence_identity_proven?(worker.fetch("evidence"))
+      end
     end
 
     {
@@ -3136,6 +3157,10 @@ begin
 
   FileUtils.mkdir_p(File.dirname(state_path))
   BatchTokenBudget.with_state_lock("#{state_path}.lock") do |_lock|
+    if BatchTokenBudget.artifact_path_collision?(trusted_plan_binding.fetch("path"), expanded_state_path)
+      raise BatchTokenBudget::InvalidInput, "trusted-plan-state-path-collision"
+    end
+
     post_lock_trusted_time = trusted_host_time +
                              (BatchTokenBudget.suspend_aware_clock_gettime(trusted_elapsed_clock) -
                               trusted_elapsed_time)

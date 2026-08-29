@@ -2250,6 +2250,88 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_runtime_rechecks_trusted_plan_state_collision_after_acquiring_the_lock
+    Dir.mktmpdir("batch-token-budget-post-lock-collision") do |directory|
+      state_path = File.join(directory, "state.json")
+      candidate = budget(state_path: state_path)
+      anchor = install_trusted_plan(state_path, candidate)
+      plan_before = File.binread(anchor.fetch("path"))
+      ready_path = File.join(directory, "lock-open-ready")
+      continue_path = File.join(directory, "continue-lock-open")
+      preloader = File.join(directory, "pause-before-lock-open.rb")
+      File.write(preloader, TRUSTED_CLOCK_SOURCE + <<~'RUBY')
+        class << File
+          alias_method :batch_token_budget_test_original_open, :open
+
+          def open(path, *args, **kwargs, &block)
+            if path.to_s == ENV.fetch("BATCH_TOKEN_BUDGET_TEST_LOCK_PATH") &&
+               !exist?(ENV.fetch("BATCH_TOKEN_BUDGET_TEST_READY_PATH"))
+              batch_token_budget_test_original_open(
+                ENV.fetch("BATCH_TOKEN_BUDGET_TEST_READY_PATH"), "w"
+              ) { |file| file.write("ready") }
+              sleep 0.01 until exist?(ENV.fetch("BATCH_TOKEN_BUDGET_TEST_CONTINUE_PATH"))
+            end
+
+            if kwargs.empty?
+              batch_token_budget_test_original_open(path, *args, &block)
+            else
+              batch_token_budget_test_original_open(path, *args, **kwargs, &block)
+            end
+          end
+        end
+      RUBY
+      input = JSON.generate(command("initialize", "budget" => candidate))
+      env = {
+        "BATCH_TOKEN_BUDGET_TEST_EPOCH" => Time.iso8601(command("initialize")["evaluated_at"]).to_f.to_s,
+        "BATCH_TOKEN_BUDGET_TEST_LOCK_PATH" => "#{state_path}.lock",
+        "BATCH_TOKEN_BUDGET_TEST_READY_PATH" => ready_path,
+        "BATCH_TOKEN_BUDGET_TEST_CONTINUE_PATH" => continue_path
+      }
+      stdout_text = stderr_text = nil
+      status = nil
+
+      Open3.popen3(
+        env,
+        RbConfig.ruby,
+        "-r", preloader,
+        HELPER,
+        "--state", state_path,
+        "--trusted-plan", anchor.fetch("path"),
+        "--trusted-plan-id", anchor.fetch("id"),
+        "--trusted-plan-digest", anchor.fetch("digest")
+      ) do |stdin, stdout, stderr, wait_thread|
+        stdin.write(input)
+        stdin.close
+        300.times do
+          break if File.exist?(ready_path)
+
+          sleep 0.01
+        end
+        assert File.exist?(ready_path), "helper never reached the state-lock boundary"
+        File.symlink(anchor.fetch("path"), state_path)
+        File.write(continue_path, "continue")
+        assert wait_thread.join(5), "helper did not terminate after the collision was introduced"
+        stdout_text = stdout.read
+        stderr_text = stderr.read
+        status = wait_thread.value
+      ensure
+        stdin.close unless stdin.closed?
+        File.write(continue_path, "continue") unless File.exist?(continue_path)
+        unless wait_thread.join(0)
+          Process.kill("KILL", wait_thread.pid)
+          wait_thread.join
+        end
+      end
+
+      refute status.success?
+      assert_empty stdout_text
+      assert_equal "trusted-plan-state-path-collision", JSON.parse(stderr_text).fetch("reason")
+      assert File.symlink?(state_path)
+      assert_equal anchor.fetch("path"), File.readlink(state_path)
+      assert_equal plan_before, File.binread(anchor.fetch("path"))
+    end
+  end
+
   def test_initialize_rejects_untrusted_or_malformed_verifier_keys
     Dir.mktmpdir("batch-token-budget-verifier-contract") do |directory|
       mutations = {
@@ -5332,6 +5414,108 @@ class BatchTokenBudgetTest < Minitest::Test
       assert status.success?, stderr
       assert_equal "reconciled", reconciled.fetch("status")
       assert_equal 1, JSON.parse(File.read(state_path)).fetch("usage_receipts").length
+    end
+  end
+
+  def test_permitted_top_level_unknown_rejects_unproved_positive_nested_scope_identities
+    variants = {
+      "missing-coordinator-singleton-alias" => lambda do |receipt|
+        assert_predicate receipt.dig("coordinator", "usage", "self_only", "total_tokens"), :positive?
+        evidence = receipt.dig("coordinator", "evidence")
+        evidence["first_session_ids"] = [evidence.fetch("first_session_ids").first]
+        evidence["physical_rollout_ids"] = [evidence.fetch("physical_rollout_ids").first]
+        evidence.delete("first_session_id")
+      end,
+      "empty-lane-identities" => lambda do |receipt|
+        assert_predicate receipt.dig("lanes", 0, "usage", "descendant_inclusive", "total_tokens"), :positive?
+        evidence = receipt.dig("lanes", 0, "evidence")
+        evidence["physical_rollout_ids"] = []
+        evidence["first_session_ids"] = []
+        evidence.delete("first_session_id")
+      end,
+      "inconsistent-worker-identity-counts" => lambda do |receipt|
+        worker = receipt.dig("lanes", 0, "workers", 0)
+        assert_predicate worker.dig("usage", "descendant_inclusive", "total_tokens"), :positive?
+        evidence = worker.fetch("evidence")
+        evidence["first_session_ids"] = [evidence.fetch("first_session_ids").first, "second-session"]
+        evidence.delete("first_session_id")
+      end
+    }
+
+    variants.each do |name, invalidate_identities|
+      with_state do |state_path|
+        initialize_budget(state_path)
+        reserve(state_path, id: "unknown-#{name}", tokens: 200)
+        receipt, = real_descendants_usage_receipt(state_path)
+        physical_rollout_id = receipt.dig("coordinator", "evidence", "physical_rollout_ids").first
+        receipt.fetch("evidence").merge!(
+          "status" => "UNKNOWN",
+          "unknown" => [{
+            "status" => "UNKNOWN",
+            "code" => "route_metadata_missing",
+            "thread_id" => receipt.dig("coordinator", "root_thread_id"),
+            "physical_rollout_id" => physical_rollout_id,
+            "line" => 2,
+            "fields" => ["model"]
+          }]
+        )
+        receipt.fetch("coordinator").fetch("evidence")["status"] = "UNKNOWN"
+        receipt.fetch("lanes").each do |lane|
+          lane.fetch("evidence")["status"] = "UNKNOWN"
+          lane.fetch("workers").each { |worker| worker.fetch("evidence")["status"] = "UNKNOWN" }
+        end
+        invalidate_identities.call(receipt)
+        state_before = File.binread(state_path)
+
+        blocked, stderr, status = reconcile_receipt(state_path, receipt, "unknown-#{name}")
+
+        assert status.success?, "#{name}: #{stderr}"
+        assert_equal "blocked", blocked.fetch("status"), name
+        assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason"), name
+        assert_equal state_before, File.binread(state_path), name
+        assert_empty JSON.parse(File.binread(state_path)).fetch("usage_receipts"), name
+      end
+    end
+  end
+
+  def test_permitted_top_level_unknown_allows_empty_nested_identities_for_zero_usage
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      physical_rollout_id = receipt.dig("coordinator", "evidence", "physical_rollout_ids").first
+      receipt.fetch("evidence").merge!(
+        "status" => "UNKNOWN",
+        "unknown" => [{
+          "status" => "UNKNOWN",
+          "code" => "route_metadata_missing",
+          "thread_id" => receipt.dig("coordinator", "root_thread_id"),
+          "physical_rollout_id" => physical_rollout_id,
+          "line" => 2,
+          "fields" => ["model"]
+        }]
+      )
+      nested_scopes = [receipt.fetch("coordinator"), *receipt.fetch("lanes")]
+      nested_scopes.concat(receipt.fetch("lanes").flat_map { |lane| lane.fetch("workers") })
+      nested_scopes.each do |scope|
+        evidence = scope.fetch("evidence")
+        evidence["status"] = "UNKNOWN"
+        evidence["physical_rollout_ids"] = []
+        evidence["first_session_ids"] = []
+        evidence.delete("first_session_id")
+      end
+
+      reconciled, stderr, status = reconcile_receipt(state_path, receipt, "zero-usage-unknown-identities")
+
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      assert_equal 1, JSON.parse(File.binread(state_path)).fetch("usage_receipts").length
     end
   end
 
