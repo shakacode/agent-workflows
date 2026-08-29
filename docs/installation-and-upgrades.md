@@ -610,10 +610,14 @@ third-party checks held may opt in to the exact trusted-base policy seam:
 ci_readiness:
   version: 1
   optional_approval_held_checks:
-    - id: storybook-review-app
-      app_slug: circleci-checks
-      name: storybook-review-app
+    - id: <POLICY_RULE_ID>
+      app_slug: <APP_SLUG>
+      name: <CHECK_NAME>
 ```
+
+Populate these placeholders from the consumer's own
+`.agents/agent-workflow.yml` policy seam; shared workflow documentation does
+not define consumer check identities.
 
 Land and review that policy change separately before relying on it. The merge
 path reads `.agents/agent-workflow.yml` from the live base commit's Git object,

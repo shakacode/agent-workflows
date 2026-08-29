@@ -3871,10 +3871,14 @@ The optional trusted-base `ci_readiness` seam is a closed version 1 mapping:
 ci_readiness:
   version: 1
   optional_approval_held_checks:
-    - id: storybook-review-app
-      app_slug: circleci-checks
-      name: storybook-review-app
+    - id: <POLICY_RULE_ID>
+      app_slug: <APP_SLUG>
+      name: <CHECK_NAME>
 ```
+
+Populate these placeholders from the consumer's own
+`.agents/agent-workflow.yml` policy seam; the shared workflow does not define
+consumer check identities.
 
 Each rule identifies one exact third-party check run. The helper reads the
 policy blob from the live PR base SHA in the explicitly supplied trusted Git
