@@ -1697,18 +1697,6 @@ module BatchTokenBudget
       )
     end
 
-    if reservation.dig("telemetry", "context_status") == "compaction-required" && !valid_approval
-      return persist_admission_decision(
-        original_state,
-        reservation,
-        command,
-        "approval-required",
-        "compaction-required",
-        %w[read-only-discovery checkpoint approve],
-        [reservation.fetch("scope_id")]
-      )
-    end
-
     scope_record = scope_totals(original_state, reservation.fetch("scope_id"))
     aggregate_record = original_state.dig("scopes", "aggregate")
     thresholds = original_state.dig("budget", "thresholds")
@@ -1732,6 +1720,17 @@ module BatchTokenBudget
         "projected-hard-threshold",
         %w[read-only-discovery checkpoint override closeout],
         blocking_scope_ids
+      )
+    end
+    if reservation.dig("telemetry", "context_status") == "compaction-required" && !valid_approval
+      return persist_admission_decision(
+        original_state,
+        reservation,
+        command,
+        "approval-required",
+        "compaction-required",
+        %w[read-only-discovery checkpoint approve],
+        [reservation.fetch("scope_id")]
       )
     end
     if delegation_approval_required && !valid_approval
@@ -2514,7 +2513,45 @@ module BatchTokenBudget
 
     lanes = usage_receipt.fetch("lanes")
     scopes = [usage_receipt.fetch("coordinator"), *lanes, *lanes.flat_map { |lane| lane.fetch("workers") }]
-    scopes.all? { |scope| scope.dig("evidence", "status") == "complete" }
+    scopes.all? { |scope| scope.dig("evidence", "status") == "complete" } &&
+      v2_usage_receipt_topology_consistent?(usage_receipt)
+  end
+
+  def v2_usage_receipt_topology_consistent?(usage_receipt)
+    coordinator = usage_receipt.fetch("coordinator")
+    lanes = usage_receipt.fetch("lanes")
+    coordinator_sessions = coordinator.dig("evidence", "first_session_ids")
+    coordinator_rollouts = coordinator.dig("evidence", "physical_rollout_ids")
+    return false unless coordinator_sessions.include?(coordinator.fetch("root_thread_id"))
+
+    lane_roots = lanes.map { |lane| lane.fetch("root_thread_id") }
+    return false unless ([coordinator.fetch("root_thread_id")] + lane_roots).uniq.length == lanes.length + 1
+
+    lane_evidence = lanes.map do |lane|
+      sessions = lane.dig("evidence", "first_session_ids")
+      rollouts = lane.dig("evidence", "physical_rollout_ids")
+      return false unless sessions.include?(lane.fetch("root_thread_id"))
+      return false if sessions.include?(coordinator.fetch("root_thread_id"))
+      return false unless (sessions - coordinator_sessions).empty? && (rollouts - coordinator_rollouts).empty?
+
+      workers = lane.fetch("workers")
+      worker_evidence = workers.map do |worker|
+        worker_sessions = worker.dig("evidence", "first_session_ids")
+        worker_rollouts = worker.dig("evidence", "physical_rollout_ids")
+        return false unless worker_sessions.include?(worker.fetch("root_thread_id"))
+        return false unless (worker_sessions - sessions).empty? && (worker_rollouts - rollouts).empty?
+
+        [worker_sessions, worker_rollouts]
+      end
+      worker_evidence.combination(2).each do |(left_sessions, left_rollouts), (right_sessions, right_rollouts)|
+        return false unless (left_sessions & right_sessions).empty? && (left_rollouts & right_rollouts).empty?
+      end
+
+      [sessions, rollouts]
+    end
+    lane_evidence.combination(2).all? do |(left_sessions, left_rollouts), (right_sessions, right_rollouts)|
+      (left_sessions & right_sessions).empty? && (left_rollouts & right_rollouts).empty?
+    end
   end
 
   def lane_usage_projection(lane)

@@ -1317,11 +1317,21 @@ class BatchPlanPreflightTest < Minitest::Test
                     "token-budget-placement-invalid"
   end
 
-  def test_budgetless_plan_preserves_legacy_lane_token_budget_metadata
+  def test_budgetless_plan_rejects_inline_lane_token_budget_metadata
     input = input_for
     input.dig("plan", "lanes", 0)["token_budget"] = { "limit_tokens" => 100 }
 
-    result, stderr, status = evaluate(input)
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_equal "rejected", result.fetch("status")
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-placement-invalid"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_budgetless_plan_without_any_budget_metadata_preserves_legacy_compatibility
+    result, stderr, status = evaluate(input_for)
 
     assert status.success?, stderr
     assert_equal "accepted", result.fetch("status")

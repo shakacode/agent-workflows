@@ -3333,6 +3333,92 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_complete_receipt_rejects_duplicate_sibling_lane_topology_without_mutating_state
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      lane_a, lane_b = receipt.fetch("lanes")
+      lane_b["root_thread_id"] = lane_a.fetch("root_thread_id")
+      lane_b["evidence"] = JSON.parse(JSON.generate(lane_a.fetch("evidence")))
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "duplicate-sibling-lane-topology")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      state = JSON.parse(state_before)
+      assert_empty state.fetch("usage_receipts")
+      assert_nil state["usage_cursor"]
+    end
+  end
+
+  def test_complete_receipt_rejects_worker_coordinator_topology_overlap_without_mutating_state
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      coordinator = receipt.fetch("coordinator")
+      worker = receipt.dig("lanes", 0, "workers", 0)
+      worker["root_thread_id"] = coordinator.fetch("root_thread_id")
+      worker["evidence"] = JSON.parse(JSON.generate(coordinator.fetch("evidence")))
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "worker-coordinator-topology-overlap")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      state = JSON.parse(state_before)
+      control_actions = state.fetch("control_events").map { |event| event.fetch("action") }
+      assert_equal ["initialize"], control_actions
+      assert_empty state.fetch("usage_receipts")
+      assert_nil state["usage_cursor"]
+    end
+  end
+
+  def test_complete_receipt_preserves_legitimate_lane_worker_evidence_containment
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      lane = receipt.fetch("lanes").first
+      worker = lane.fetch("workers").first
+      assert_empty worker.dig("evidence", "first_session_ids") - lane.dig("evidence", "first_session_ids")
+      assert_empty worker.dig("evidence", "physical_rollout_ids") - lane.dig("evidence", "physical_rollout_ids")
+      refute_empty worker.dig("evidence", "physical_rollout_ids") & lane.dig("evidence", "physical_rollout_ids")
+
+      reconciled, stderr, status = reconcile_receipt(state_path, receipt, "valid-parent-child-containment")
+
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      state = JSON.parse(File.binread(state_path))
+      assert_equal 1, state.fetch("usage_receipts").length
+      refute_nil state["usage_cursor"]
+    end
+  end
+
   def test_top_level_complete_cannot_hide_incomplete_coordinator_lane_or_worker_evidence
     variants = {
       "coordinator" => proc { |receipt| receipt.dig("coordinator", "evidence")["status"] = "UNKNOWN" },
@@ -4329,6 +4415,50 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_projected_hard_threshold_dominates_compaction_approval_and_replays_durably
+    with_state do |state_path|
+      initialize_budget(state_path)
+      hard_request = reservation(
+        id: "compaction-hard-stop",
+        tokens: 1_000,
+        overrides: {
+          "telemetry" => reservation(id: "ignored", tokens: 1_000).fetch("telemetry").merge(
+            "context_status" => "compaction-required"
+          )
+        }
+      )
+      hard_command = command("reserve", "reservation" => hard_request)
+
+      stopped, stderr, status = run_helper(state_path, hard_command)
+
+      assert status.success?, stderr
+      assert_equal "budget-exhausted", stopped.fetch("status")
+      assert_equal "projected-hard-threshold", stopped.fetch("reason")
+      assert_equal %w[read-only-discovery checkpoint override closeout], stopped.fetch("allowed_actions")
+      refute_includes stopped.fetch("allowed_actions"), "approve"
+      state_after_stop = File.binread(state_path)
+      saved = JSON.parse(state_after_stop)
+      decision = saved.fetch("admission_decisions").values.find do |candidate|
+        candidate.fetch("reservation_id") == "compaction-hard-stop"
+      end
+      assert_equal "budget-exhausted", decision.fetch("status")
+      assert_equal "projected-hard-threshold", decision.fetch("reason")
+      assert_equal %w[aggregate lane-a], decision.fetch("blocking_scope_ids").sort
+      outcomes = saved.dig("reservation_decisions", "compaction-hard-stop", "outcomes")
+      outcome_statuses = outcomes.map { |outcome| outcome.fetch("status") }
+      assert_equal ["budget-exhausted"], outcome_statuses
+
+      replayed, replay_stderr, replay_status = run_helper(state_path, hard_command)
+
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal "budget-exhausted", replayed.fetch("decision_status")
+      assert_equal "projected-hard-threshold", replayed.fetch("reason")
+      refute_includes replayed.fetch("allowed_actions"), "approve"
+      assert_equal state_after_stop, File.binread(state_path)
+    end
+  end
+
   def test_cross_task_delegation_requires_source_identity_and_delegation_approval
     with_state do |state_path|
       initialize_budget(state_path)
@@ -4709,7 +4839,12 @@ class BatchTokenBudgetTest < Minitest::Test
         coordinator_tokens: 0,
         lane_tokens: { "lane-a" => 10, "lane-b" => 0 }
       )
-      drifted_receipt.fetch("lanes").find { |lane| lane["id"] == "lane-a" }["root_thread_id"] = "drifted-root"
+      drifted_lane = drifted_receipt.fetch("lanes").find { |lane| lane["id"] == "lane-a" }
+      drifted_lane["root_thread_id"] = "drifted-root"
+      [drifted_receipt.fetch("coordinator"), drifted_lane].each do |scope|
+        session_ids = scope.dig("evidence", "first_session_ids")
+        session_ids[session_ids.index("lane-a")] = "drifted-root"
+      end
       drifted_receipt, drifted_ref, drifted_digest = receipt_artifact(state_path, drifted_receipt, "identity-drift")
       blocked, stderr, status = run_helper(
         state_path,
