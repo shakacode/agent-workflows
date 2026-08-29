@@ -492,6 +492,30 @@ class BatchUsageReceiptTest < Minitest::Test
     refute_includes unknown_codes, "missing_total_token_usage"
   end
 
+  def test_complete_rollout_diagnostics_include_valid_samples_after_window_end
+    control, = run_fixture(fixture: fixture_copy("descendants"))
+    fixture = fixture_copy("descendants")
+    records = fixture.fetch("rollouts").fetch("root.jsonl")
+    last_usage = records.reverse.find do |record|
+      record["type"] == "event_msg" && record.dig("payload", "type") == "token_count"
+    end
+    duplicate = JSON.parse(JSON.generate(last_usage))
+    duplicate["timestamp"] = fixture.dig("window", "to")
+    records << duplicate
+    records << { "timestamp" => "2026-08-05T00:00:00.500Z", "type" => "compacted", "payload" => {} }
+    records << token_count_record("2026-08-05T00:00:01Z", total: 1, last: 1)
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal control.dig("batch", "usage"), receipt.dig("batch", "usage")
+    assert_equal control.dig("accounting", "duplicate_samples_omitted") + 1,
+                 receipt.dig("accounting", "duplicate_samples_omitted")
+    assert_equal control.dig("accounting", "counter_resets") + 1,
+                 receipt.dig("accounting", "counter_resets")
+    assert_equal control.dig("accounting", "usage_samples") + 2,
+                 receipt.dig("accounting", "usage_samples")
+  end
+
   def test_token_counts_only_at_or_after_window_end_still_prove_rollout_usage_evidence
     fixture = fixture_copy("descendants")
     fixture.fetch("rollouts").each_value do |records|
@@ -824,6 +848,10 @@ class BatchUsageReceiptTest < Minitest::Test
     receipt, = run_fixture("compaction-reset")
 
     assert_equal 40, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 1, receipt.dig("batch", "turns", "descendant_inclusive")
+    assert_equal 0, receipt.dig("batch", "turns", "unattributed")
+    assert_equal 1, receipt.dig("coordinator", "turns", "self_only")
+    assert_equal 1, receipt.dig("coordinator", "turns", "descendant_inclusive")
     assert_equal 1, receipt.dig("accounting", "counter_resets")
     assert_equal 0, receipt.dig("accounting", "replay_records_omitted")
     assert_equal 1, receipt.dig("accounting", "duplicate_samples_omitted")
@@ -925,6 +953,15 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal 20, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
     assert_equal 10, receipt.dig("lanes", 0, "usage", "descendant_inclusive", "total_tokens")
     assert_equal 5, receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 3, receipt.dig("batch", "turns", "descendant_inclusive")
+    assert_equal 0, receipt.dig("batch", "turns", "unattributed")
+    assert_equal 1, receipt.dig("coordinator", "turns", "self_only")
+    assert_equal 3, receipt.dig("coordinator", "turns", "descendant_inclusive")
+    assert_equal 1, receipt.dig("lanes", 0, "turns", "self_only")
+    assert_equal 2, receipt.dig("lanes", 0, "turns", "descendant_inclusive")
+    assert_equal 1, receipt.dig("lanes", 0, "turns", "unattributed")
+    assert_equal 1, receipt.dig("lanes", 0, "workers", 0, "turns", "self_only")
+    assert_equal 1, receipt.dig("lanes", 0, "workers", 0, "turns", "descendant_inclusive")
     assert_equal 3, receipt.dig("accounting", "replay_records_omitted")
     assert_equal "complete", receipt.dig("evidence", "status")
   end

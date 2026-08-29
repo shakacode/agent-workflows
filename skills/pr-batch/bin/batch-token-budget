@@ -37,6 +37,7 @@ module BatchTokenBudget
   /ix
   TRUSTED_PLAN_MAX_BYTES = 1024 * 1024
   USAGE_RECEIPT_MAX_BYTES = TRUSTED_PLAN_MAX_BYTES
+  PERSISTED_STATE_MAX_BYTES = TRUSTED_PLAN_MAX_BYTES
   MAX_COMMAND_TIME_SKEW_SECONDS = 30
   V2_UNKNOWN_REASON_GLOBAL_CODES = %w[
     state_database_missing state_database_unsupported sqlite3_cli_unavailable
@@ -715,7 +716,10 @@ module BatchTokenBudget
         record.dig("receipt", "approval_id") == approval_id &&
         record.dig("receipt", "attestation_digest") == record["attestation_digest"] &&
         (record["consumed_by"].nil? ||
-          state.dig("reservations", record["consumed_by"], "request", "approval_id") == approval_id)
+          state.dig("reservations", record["consumed_by"], "request", "approval_id") == approval_id ||
+          state.dig(
+            "reservation_decisions", record["consumed_by"], "outcomes", -1, "result_fields", "approval_id"
+          ) == approval_id)
     end
     return false unless approvals_valid
 
@@ -836,7 +840,9 @@ module BatchTokenBudget
                         state.dig("reservation_decisions", decision["reservation_id"], "request_digest") == request_digest
 
       optional_keys.empty? || (timestamp?(decision["resolved_at"]) &&
-        !state.dig("reservations", decision["resolved_by_reservation_id"]).nil?)
+        (!state.dig("reservations", decision["resolved_by_reservation_id"]).nil? ||
+          state.dig("reservation_decisions", decision["resolved_by_reservation_id"], "outcomes", -1, "status") ==
+            "coalesced"))
     end
   end
 
@@ -856,7 +862,8 @@ module BatchTokenBudget
     state.fetch("checkpoint_resolutions").all? do |checkpoint_id, resolution|
       checkpoint_ids.include?(checkpoint_id) && resolution.is_a?(Hash) &&
         resolution.keys.sort == %w[reservation_id resolved_at] && timestamp?(resolution["resolved_at"]) &&
-        !state.dig("reservations", resolution["reservation_id"]).nil?
+        (!state.dig("reservations", resolution["reservation_id"]).nil? ||
+          state.dig("reservation_decisions", resolution["reservation_id"], "outcomes", -1, "status") == "coalesced")
     end
   end
 
@@ -1230,6 +1237,11 @@ module BatchTokenBudget
     blocking_scope_ids.include?("aggregate") || blocking_scope_ids.include?(reservation.fetch("scope_id"))
   end
 
+  def decision_target_compatible?(decision, reservation)
+    decision.fetch("blocking_scope_ids").all? { |scope_id| scope_id == "aggregate" } ||
+      decision["target"] == reservation["target"]
+  end
+
   def approval_covers_scope_ids?(approval, scope_ids)
     return false unless approval
     return true if approval["scope_id"] == "aggregate"
@@ -1353,8 +1365,8 @@ module BatchTokenBudget
 
     status = state_name == "hard" ? "budget-exhausted" : "approval-required"
     scope_ids = [
-      (scope_id if scope_state == state_name),
-      ("aggregate" if aggregate_state == state_name)
+      (scope_id if %w[approval hard].include?(scope_state)),
+      ("aggregate" if %w[approval hard].include?(aggregate_state))
     ].compact
     allowed_actions = if status == "budget-exhausted"
                         %w[read-only-discovery checkpoint override closeout]
@@ -1422,6 +1434,47 @@ module BatchTokenBudget
     fields["decision_status"] = outcome.fetch("status")
     fields["decision_receipt"] = outcome.fetch("receipt")
     [state, result(state, "replayed", fields)]
+  end
+
+  def resolve_admission_decisions(original_state, decisions, reservation, evaluated_at)
+    return original_state if decisions.empty?
+
+    state = deep_copy(original_state)
+    resolved_decisions = decisions.map do |decision|
+      state.fetch("admission_decisions").fetch(decision.fetch("request_digest"))
+    end
+    resolved_decisions.each do |decision|
+      decision["resolved_by_reservation_id"] = reservation.fetch("id")
+      decision["resolved_at"] = evaluated_at
+    end
+    prior_hard_decisions = resolved_decisions.select { |decision| decision["status"] == "budget-exhausted" }
+    resolved_checkpoint_ids = if prior_hard_decisions.empty?
+                                []
+                              else
+                                state.fetch("checkpoints").filter_map do |checkpoint|
+                                  next unless checkpoint["status"] == "budget-exhausted" &&
+                                              checkpoint["scope_id"] == reservation["scope_id"] &&
+                                              !state.fetch("checkpoint_resolutions").key?(checkpoint["id"])
+
+                                  state["checkpoint_resolutions"][checkpoint.fetch("id")] = {
+                                    "reservation_id" => reservation.fetch("id"),
+                                    "resolved_at" => evaluated_at
+                                  }
+                                  checkpoint.fetch("id")
+                                end
+                              end
+    append_receipt(
+      state,
+      "batch-token-budget-threshold-resolution-receipt",
+      "reservation_id" => reservation.fetch("id"),
+      "resolved_decision_reservation_ids" => resolved_decisions.map do |decision|
+        decision.fetch("reservation_id")
+      end.sort,
+      "prior_statuses" => resolved_decisions.map { |decision| decision.fetch("status") }.uniq.sort,
+      "resolution" => "admitted-with-current-headroom-or-scoped-approval",
+      "resolved_checkpoint_ids" => resolved_checkpoint_ids
+    )
+    state
   end
 
   def totals(state)
@@ -1574,7 +1627,7 @@ module BatchTokenBudget
         decision_applies_to_reservation?(decision, reservation)
     end
     resolvable_prior_decisions = prior_stop_decisions.select do |decision|
-      next false unless decision["target"] == reservation["target"]
+      next false unless decision_target_compatible?(decision, reservation)
 
       if decision["status"] == "approval-required"
         valid_approval && approval_covers_decision?(approval, decision)
@@ -1618,13 +1671,25 @@ module BatchTokenBudget
 
     if reservation["target_state"] == "active" || active_scope_reservation
       same_target = active_scope_reservation&.dig("request", "target") == reservation["target"]
-      return persist_reservation_decision(
+      resolved_state = resolve_admission_decisions(
         original_state,
+        resolvable_prior_decisions,
+        reservation,
+        command.fetch("evaluated_at")
+      )
+      if valid_approval && resolvable_prior_decisions.any? { |decision| decision["status"] == "approval-required" }
+        resolved_state["approvals"][approval_id]["consumed_by"] = reservation_id
+      end
+      return persist_reservation_decision(
+        resolved_state,
         reservation,
         command.fetch("evaluated_at"),
         "coalesced",
         "reason" => active_scope_reservation && !same_target ? "scope-already-active" : "target-already-active",
-        "coalesced_reservation_id" => active_scope_reservation&.dig("request", "id")
+        "coalesced_reservation_id" => active_scope_reservation&.dig("request", "id"),
+        "approval_id" => (approval_id if valid_approval && resolvable_prior_decisions.any? do |decision|
+          decision["status"] == "approval-required"
+        end)
       )
     end
 
@@ -1723,42 +1788,12 @@ module BatchTokenBudget
       "receipt" => reservation_receipt,
       "reserved_tokens" => tokens
     }
-    unless resolvable_prior_decisions.empty?
-      resolved_decisions = resolvable_prior_decisions.map do |decision|
-        state.fetch("admission_decisions").fetch(decision.fetch("request_digest"))
-      end
-      resolved_decisions.each do |decision|
-        decision["resolved_by_reservation_id"] = reservation_id
-        decision["resolved_at"] = command.fetch("evaluated_at")
-      end
-      prior_hard_decisions = resolved_decisions.select { |decision| decision["status"] == "budget-exhausted" }
-      resolved_checkpoint_ids = if prior_hard_decisions.empty?
-                                  []
-                                else
-                                  state.fetch("checkpoints").filter_map do |checkpoint|
-                                    next unless checkpoint["status"] == "budget-exhausted" &&
-                                                checkpoint["scope_id"] == reservation["scope_id"] &&
-                                                !state.fetch("checkpoint_resolutions").key?(checkpoint["id"])
-
-                                    state["checkpoint_resolutions"][checkpoint.fetch("id")] = {
-                                      "reservation_id" => reservation_id,
-                                      "resolved_at" => command.fetch("evaluated_at")
-                                    }
-                                    checkpoint.fetch("id")
-                                  end
-                                end
-      append_receipt(
-        state,
-        "batch-token-budget-threshold-resolution-receipt",
-        "reservation_id" => reservation_id,
-        "resolved_decision_reservation_ids" => resolved_decisions.map do |decision|
-          decision.fetch("reservation_id")
-        end.sort,
-        "prior_statuses" => resolved_decisions.map { |decision| decision.fetch("status") }.uniq.sort,
-        "resolution" => "admitted-with-current-headroom-or-scoped-approval",
-        "resolved_checkpoint_ids" => resolved_checkpoint_ids
-      )
-    end
+    state = resolve_admission_decisions(
+      state,
+      resolvable_prior_decisions,
+      reservation,
+      command.fetch("evaluated_at")
+    )
     state["approvals"][approval_id]["consumed_by"] = reservation_id if valid_approval
     threshold_checkpoint = nil
     if %w[warning approval].include?(state_name)
@@ -1954,11 +1989,16 @@ module BatchTokenBudget
     ensure_attestation_id_available!(original_state, override.fetch("attestation"), override.fetch("id"))
 
     if override["scope_id"] != "aggregate"
-      required_aggregate_override = original_state.fetch("overrides").values.find do |record|
+      effective_aggregate_override = original_state.fetch("overrides").values.reverse.find do |record|
         record["active"] == true && record["scope_id"] == "aggregate" &&
-          override["new_limit_tokens"] > record["old_limit_tokens"] &&
-          seconds_between(override.dig("attestation", "expires_at"), record["expires_at"]).positive?
+          record["new_limit_tokens"] == budget_scope_limit(original_state, "aggregate")
       end
+      required_aggregate_override = effective_aggregate_override &&
+                                    override["new_limit_tokens"] > effective_aggregate_override["old_limit_tokens"] &&
+                                    seconds_between(
+                                      override.dig("attestation", "expires_at"),
+                                      effective_aggregate_override["expires_at"]
+                                    ).positive?
       raise InvalidInput, "override-outlives-required-aggregate-headroom" if required_aggregate_override
     end
 
@@ -2795,9 +2835,9 @@ module BatchTokenBudget
 
       reservation_id = active.dig("request", "id")
       completed = completed_ids.include?(reservation_id)
+      reservation_tokens[reservation_id] = interval_tokens
       next if interval_tokens.zero? && !completed
 
-      reservation_tokens[reservation_id] = interval_tokens
       record = state.dig("reservations", reservation_id)
       prior_observed = record.fetch("observed_tokens", 0)
       prior_remaining = record.fetch("remaining_tokens", record.fetch("reserved_tokens"))
@@ -3052,9 +3092,14 @@ module BatchTokenBudget
         raise InvalidInput, "corrupt-persisted-state"
       end
 
-      parse_json_strict(file.read)
+      raise InvalidInput, "corrupt-persisted-state" if opened_stat.size > PERSISTED_STATE_MAX_BYTES
+
+      persisted_json = file.read(PERSISTED_STATE_MAX_BYTES + 1)
+      raise InvalidInput, "corrupt-persisted-state" if persisted_json.bytesize > PERSISTED_STATE_MAX_BYTES
+
+      parse_json_strict(persisted_json)
     end
-  rescue SystemCallError, IOError, JSON::ParserError
+  rescue SystemCallError, IOError, EncodingError, JSON::ParserError
     raise InvalidInput, "corrupt-persisted-state"
   end
 

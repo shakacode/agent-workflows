@@ -1317,6 +1317,55 @@ class BatchPlanPreflightTest < Minitest::Test
                     "token-budget-placement-invalid"
   end
 
+  def test_budgetless_plan_preserves_legacy_lane_token_budget_metadata
+    input = input_for
+    input.dig("plan", "lanes", 0)["token_budget"] = { "limit_tokens" => 100 }
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    refute_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-placement-invalid"
+  end
+
+  def test_each_token_budget_contract_violation_has_a_direct_trigger
+    cases = {
+      "token-budget-contract-invalid" => proc { |candidate| candidate["type"] = "not-a-token-budget" },
+      "token-budget-fields-invalid" => proc { |candidate| candidate["unexpected"] = true },
+      "token-budget-batch-id-mismatch" => proc { |candidate| candidate["batch_id"] = "other-batch" },
+      "token-budget-scopes-invalid" => proc { |candidate| candidate.fetch("scopes").delete("coordinator") },
+      "token-budget-limits-invalid" => proc do |candidate|
+        candidate.dig("scopes", "lanes", "lane-a")["limit_tokens"] = 0
+      end,
+      "token-budget-hierarchy-invalid" => proc do |candidate|
+        candidate.dig("scopes", "lanes", "lane-a")["limit_tokens"] = 1_001
+      end,
+      "token-budget-thresholds-invalid" => proc do |candidate|
+        candidate["thresholds"]["warning_percent"] = candidate.dig("thresholds", "approval_percent")
+      end,
+      "token-budget-telemetry-policy-invalid" => proc do |candidate|
+        candidate["telemetry"]["max_age_seconds"] = 0
+      end,
+      "token-budget-delegation-policy-invalid" => proc do |candidate|
+        candidate["delegation"]["approval_threshold_tokens"] = 0
+      end
+    }
+
+    cases.each do |expected_code, mutate|
+      input = input_for
+      candidate = token_budget
+      mutate.call(candidate)
+      enable_token_budget(input, candidate)
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, expected_code
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      expected_code, expected_code
+    end
+  end
+
   def test_partial_or_mismatched_token_budget_fails_closed_without_affecting_legacy_plans
     input = input_for(lanes: [lane("lane-a"), lane("lane-b")])
     input.fetch("plan")["token_budget"] = token_budget

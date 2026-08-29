@@ -768,6 +768,36 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_persisted_state_read_is_bounded_at_one_mibibyte
+    with_state do |state_path|
+      initialize_budget(state_path)
+      exact_state = File.binread(state_path)
+      File.binwrite(state_path, exact_state.ljust(1_048_576))
+
+      accepted, accepted_stderr, accepted_status = reserve(
+        state_path,
+        id: "near-boundary-persisted-state",
+        tokens: 1
+      )
+      assert accepted_status.success?, accepted_stderr
+      assert_equal "admitted", accepted.fetch("status")
+
+      oversized_state = File.binread(state_path).ljust(1_048_577)
+      File.binwrite(state_path, oversized_state)
+      before = Digest::SHA256.hexdigest(File.binread(state_path))
+      denied, denied_stderr, denied_status = reserve(
+        state_path,
+        id: "oversized-persisted-state",
+        tokens: 1
+      )
+
+      refute denied_status.success?
+      assert_nil denied
+      assert_equal "corrupt-persisted-state", JSON.parse(denied_stderr).fetch("reason")
+      assert_equal before, Digest::SHA256.hexdigest(File.binread(state_path))
+    end
+  end
+
   def test_initialize_replay_at_a_later_command_time_is_idempotent
     with_state do |state_path|
       first, stderr, status = initialize_budget(state_path)
@@ -4734,6 +4764,216 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_aggregate_approval_resolves_every_compatible_reconciled_stop_before_coalescing
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "aggregate-stop-lane-a", lane_id: "lane-a", tokens: 450)
+      setup_approval_id = "setup-aggregate-stop-lane-b"
+      run_helper(
+        state_path,
+        command("approve", "approval" => approval(state_path, id: setup_approval_id, scope_id: "aggregate"))
+      )
+      reserve(
+        state_path,
+        id: "aggregate-stop-lane-b",
+        lane_id: "lane-b",
+        tokens: 350,
+        overrides: { "approval_id" => setup_approval_id }
+      )
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 450, "lane-b" => 350 }
+      )
+      reconciled, reconcile_stderr, reconcile_status = reconcile_receipt(
+        state_path,
+        receipt,
+        "compatible-aggregate-stops"
+      )
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      aggregate_stops = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.select do |decision|
+        decision["blocking_scope_ids"] == ["aggregate"] && decision["resolved_by_reservation_id"].nil?
+      end
+      assert_equal %w[aggregate-stop-lane-a aggregate-stop-lane-b],
+                   aggregate_stops.map { |decision| decision.fetch("reservation_id") }.sort
+
+      approval_id = "resolve-compatible-aggregate-stops"
+      approved, approval_stderr, approval_status = run_helper(
+        state_path,
+        command("approve", "approval" => approval(state_path, id: approval_id, scope_id: "aggregate"))
+      )
+      assert approval_status.success?, approval_stderr
+      assert_equal "approved", approved.fetch("status")
+
+      resumed, resumed_stderr, resumed_status = reserve(
+        state_path,
+        id: "aggregate-stop-resume",
+        lane_id: "lane-a",
+        tokens: 1,
+        overrides: { "approval_id" => approval_id }
+      )
+      assert resumed_status.success?, resumed_stderr
+      assert_equal "coalesced", resumed.fetch("status")
+
+      resolved = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.select do |decision|
+        decision["blocking_scope_ids"] == ["aggregate"]
+      end
+      assert_equal ["aggregate-stop-resume"], resolved.map { |decision| decision["resolved_by_reservation_id"] }.uniq
+      saved = JSON.parse(File.read(state_path))
+      assert_equal "aggregate-stop-resume", saved.dig("approvals", approval_id, "consumed_by")
+      resolution = saved.fetch("receipts").reverse.find do |receipt|
+        receipt["type"] == "batch-token-budget-threshold-resolution-receipt"
+      end
+      assert_equal %w[aggregate-stop-lane-a aggregate-stop-lane-b],
+                   resolution.fetch("resolved_decision_reservation_ids")
+    end
+  end
+
+  def test_aggregate_headroom_resolves_every_compatible_hard_stop_before_coalescing
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "aggregate-hard-lane-a", lane_id: "lane-a", tokens: 450)
+      setup_approval_id = "setup-aggregate-hard-lane-b"
+      run_helper(
+        state_path,
+        command("approve", "approval" => approval(state_path, id: setup_approval_id, scope_id: "aggregate"))
+      )
+      reserve(
+        state_path,
+        id: "aggregate-hard-lane-b",
+        lane_id: "lane-b",
+        tokens: 350,
+        overrides: { "approval_id" => setup_approval_id }
+      )
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 200,
+        lane_tokens: { "lane-a" => 450, "lane-b" => 350 }
+      )
+      reconciled, reconcile_stderr, reconcile_status = reconcile_receipt(
+        state_path,
+        receipt,
+        "compatible-aggregate-hard-stops"
+      )
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      hard_stops = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.select do |decision|
+        decision["status"] == "budget-exhausted" && decision["blocking_scope_ids"] == ["aggregate"]
+      end
+      assert_equal %w[aggregate-hard-lane-a aggregate-hard-lane-b],
+                   hard_stops.map { |decision| decision.fetch("reservation_id") }.sort
+
+      aggregate_override = budget_override(
+        state_path,
+        id: "resolve-compatible-aggregate-hard-stops",
+        scope_id: "aggregate",
+        old_limit_tokens: 1_000,
+        new_limit_tokens: 1_500,
+        expires_at: "2026-08-12T14:00:00Z"
+      )
+      overridden, override_stderr, override_status = run_helper(
+        state_path,
+        command("override", "override" => aggregate_override)
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", overridden.fetch("status")
+
+      resumed, resumed_stderr, resumed_status = reserve(
+        state_path,
+        id: "aggregate-hard-resume",
+        lane_id: "lane-a",
+        tokens: 1
+      )
+      assert resumed_status.success?, resumed_stderr
+      assert_equal "coalesced", resumed.fetch("status")
+
+      resolved = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.select do |decision|
+        decision["status"] == "budget-exhausted" && decision["blocking_scope_ids"] == ["aggregate"]
+      end
+      assert_equal ["aggregate-hard-resume"], resolved.map { |decision| decision["resolved_by_reservation_id"] }.uniq
+    end
+  end
+
+  def test_zero_token_active_reservation_still_persists_aggregate_threshold_membership
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "zero-token-aggregate-member", lane_id: "lane-a", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 800,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+
+      reconciled, stderr, status = reconcile_receipt(state_path, receipt, "zero-token-aggregate-member")
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      saved = JSON.parse(File.read(state_path))
+      assert_equal 0, saved["usage_receipts"].values.last.dig("reservation_tokens", "zero-token-aggregate-member")
+      decision = saved.fetch("admission_decisions").values.find do |candidate|
+        candidate["reservation_id"] == "zero-token-aggregate-member"
+      end
+      assert_equal "approval-required", decision.fetch("status")
+      assert_equal ["aggregate"], decision.fetch("blocking_scope_ids")
+    end
+  end
+
+  def test_reconciled_threshold_preserves_every_approval_or_harder_scope
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "mixed-blocking-scopes", lane_id: "lane-a", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 520,
+        lane_tokens: { "lane-a" => 480, "lane-b" => 0 }
+      )
+
+      reconciled, stderr, status = reconcile_receipt(state_path, receipt, "mixed-blocking-scopes")
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      decision = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.find do |candidate|
+        candidate["reservation_id"] == "mixed-blocking-scopes"
+      end
+      assert_equal "budget-exhausted", decision.fetch("status")
+      assert_equal %w[aggregate lane-a], decision.fetch("blocking_scope_ids").sort
+
+      aggregate_override = budget_override(
+        state_path,
+        id: "aggregate-only-mixed-scope-headroom",
+        scope_id: "aggregate",
+        old_limit_tokens: 1_000,
+        new_limit_tokens: 1_500,
+        expires_at: "2026-08-12T14:00:00Z"
+      )
+      run_helper(state_path, command("override", "override" => aggregate_override))
+      still_blocked, blocked_stderr, blocked_status = reserve(
+        state_path,
+        id: "mixed-blocking-scopes-resume",
+        lane_id: "lane-a",
+        tokens: 1
+      )
+      assert blocked_status.success?, blocked_stderr
+      assert_equal "budget-exhausted", still_blocked.fetch("status")
+      assert_equal "persisted-hard-stop", still_blocked.fetch("reason")
+    end
+  end
+
   def test_reconciled_threshold_replaces_a_stale_approval_decision_with_a_later_hard_stop
     with_state do |state_path|
       initialize_budget(state_path)
@@ -5223,6 +5463,58 @@ class BatchTokenBudgetTest < Minitest::Test
         receipt["type"] == "batch-token-budget-override-expiration-receipt"
       end
       assert_equal 2, expiration_receipts
+    end
+  end
+
+  def test_scoped_override_headroom_ignores_superseded_aggregate_history
+    with_state do |state_path|
+      initialize_budget(state_path)
+      first_aggregate = budget_override(
+        state_path,
+        id: "superseded-aggregate-headroom",
+        scope_id: "aggregate",
+        old_limit_tokens: 1_000,
+        new_limit_tokens: 1_200,
+        expires_at: "2026-08-12T12:05:00Z"
+      )
+      first, first_stderr, first_status = run_helper(
+        state_path,
+        command("override", "override" => first_aggregate)
+      )
+      assert first_status.success?, first_stderr
+      assert_equal "overridden", first.fetch("status")
+
+      effective_aggregate = budget_override(
+        state_path,
+        id: "effective-aggregate-headroom",
+        scope_id: "aggregate",
+        old_limit_tokens: 1_200,
+        new_limit_tokens: 1_500,
+        expires_at: "2026-08-12T14:00:00Z"
+      )
+      second, second_stderr, second_status = run_helper(
+        state_path,
+        command("override", "override" => effective_aggregate)
+      )
+      assert second_status.success?, second_stderr
+      assert_equal "overridden", second.fetch("status")
+
+      lane_override = budget_override(
+        state_path,
+        id: "scoped-under-effective-headroom",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 1_100,
+        expires_at: "2026-08-12T13:00:00Z"
+      )
+      scoped, scoped_stderr, scoped_status = run_helper(
+        state_path,
+        command("override", "override" => lane_override)
+      )
+
+      assert scoped_status.success?, scoped_stderr
+      assert_equal "overridden", scoped.fetch("status")
+      assert_equal 1_100, scoped.dig("totals", "lanes", "lane-a", "limit_tokens")
     end
   end
 
