@@ -877,6 +877,19 @@ module MergeAssurance
     [accounting, semantic_tracker]
   end
 
+  # A semantic GitHub Actions change is not always in the repository's own
+  # `.github/`. Generated templates (for example `sim/template/.github/`) ship
+  # workflows to downstream repositories, and those are higher blast radius than
+  # a repo-local workflow, not lower. Accept the directory anywhere in the path
+  # while still requiring it to be a real workflow/action directory.
+  def semantic_tracker_workflow_path?(path)
+    return false unless path.is_a?(String)
+
+    %w[.github/workflows/ .github/actions/].any? do |directory|
+      path.start_with?(directory) || path.include?("/#{directory}")
+    end
+  end
+
   def validate_semantic_tracker(tracker, context, failures)
     required_keys = %w[
       changed_files cleanup_instructions exercise expected_evidence source_pr tracker type
@@ -902,10 +915,7 @@ module MergeAssurance
       tracker["source_pr"] == expected_source_pr
     changed_files = tracker["changed_files"]
     unless changed_files.is_a?(Array) && !changed_files.empty? &&
-           changed_files.all? do |path|
-             path.is_a?(String) &&
-             (path.start_with?(".github/workflows/") || path.start_with?(".github/actions/"))
-           end
+           changed_files.all? { |path| semantic_tracker_workflow_path?(path) }
       failures << "semantic GitHub Actions tracker changed_files are invalid"
     end
     if tracker.key?("owner") &&

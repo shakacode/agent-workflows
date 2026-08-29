@@ -518,6 +518,9 @@ objective verification record.
 
 Before reporting merge readiness for a PR with `.github/workflows/**` or
 `.github/actions/**` changes, classify the diff as semantic or non-semantic.
+This includes generated-template workflows nested under another directory, such
+as `sim/template/.github/workflows/**`; a workflow shipped to downstream
+repositories has a wider blast radius than a repo-local one, not a narrower one.
 Semantic changes include trigger, permission, job, matrix, condition,
 concurrency, secret, reusable-action, command-parsing, workflow-dispatch, and
 CI-routing behavior changes. For semantic changes, link an existing tracking

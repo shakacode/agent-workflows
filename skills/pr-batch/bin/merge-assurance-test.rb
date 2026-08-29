@@ -3443,6 +3443,76 @@ class MergeAssuranceTest < Minitest::Test
     assert_equal [false, 0], [result.fetch("eligible"), fake_gh_call_count]
   end
 
+  def test_semantic_tracker_accepts_generated_template_workflow_paths
+    accepted = [
+      ".github/workflows/ci.yml",
+      ".github/actions/setup/action.yml",
+      "sim/template/.github/workflows/seam-guard.yml",
+      "sim/template/.github/actions/setup/action.yml",
+      "packages/app/.github/workflows/release.yml"
+    ]
+    accepted.each do |path|
+      assert MergeAssurance.semantic_tracker_workflow_path?(path), "expected #{path} to be accepted"
+    end
+
+    rejected = [
+      "lib/task_one.rb",
+      ".github/dependabot.yml",
+      ".github/workflows",
+      "docs/.github/workflows",
+      "sim/template/.github/CODEOWNERS",
+      "notes-about-.github/workflows/ci.yml".sub("/", "-"),
+      nil,
+      42
+    ]
+    rejected.each do |path|
+      refute MergeAssurance.semantic_tracker_workflow_path?(path), "expected #{path.inspect} to be rejected"
+    end
+  end
+
+  def test_semantic_tracker_accepts_a_generated_template_workflow_change_end_to_end
+    generated = semantic_tracker.merge(
+      "changed_files" => [
+        "sim/template/.github/workflows/seam-guard.yml",
+        "sim/template/.github/workflows/ci.yml"
+      ]
+    )
+    ENV["FAKE_GH_RESPONSE"] = JSON.generate(fake_issue(tracker: generated))
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [generated]
+      ),
+      now: NOW
+    )
+
+    refute_includes result.fetch("failures", []), "semantic GitHub Actions tracker changed_files are invalid"
+    assert_equal true, result.fetch("eligible"), result.fetch("failures", []).inspect
+    assert_equal(
+      generated,
+      result.dig("follow_up_accounting", "semantic_github_actions_tracker")
+    )
+  end
+
+  def test_semantic_tracker_still_rejects_non_workflow_changed_files
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [semantic_tracker.merge("changed_files" => ["sim/template/.github/CODEOWNERS"])]
+      ),
+      now: NOW
+    )
+
+    assert_includes result.fetch("failures"), "semantic GitHub Actions tracker changed_files are invalid"
+    assert_equal false, result.fetch("eligible")
+  end
+
   def test_post_merge_audit_defaults_to_accounted_and_report_only_is_a_typed_operation
     default_result = MergeAssurance.assess(
       ci_result: ready_ci,
@@ -4068,7 +4138,7 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
-  def fake_issue
+  def fake_issue(tracker: semantic_tracker)
     {
       "id" => 101,
       "node_id" => "I_kwDOExample",
@@ -4083,7 +4153,7 @@ class MergeAssuranceTest < Minitest::Test
         "semantic-tracker-head-sha: #{HEAD_SHA}",
         "semantic-tracker-diff-identity: #{DIFF_IDENTITY}",
         "semantic-tracker-operation-digest: " \
-          "#{MergeAssurance.semantic_tracker_operation_digest(semantic_tracker)}"
+          "#{MergeAssurance.semantic_tracker_operation_digest(tracker)}"
       ].join("\n"),
       "updated_at" => "2026-07-30T11:59:30Z"
     }
