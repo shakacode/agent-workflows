@@ -79,10 +79,12 @@ module CompletedBatchPublicationPreflight
       batch = nil
       lane_entries = []
       resolved_targets = no_backend_evidence ? expected_targets : []
+      coordination_authentic = true
     else
       no_backend_evidence = nil
       authenticated_status = coordination_verifier&.call(backend:, batch_id:)
       drift = coordination_status_drift(authenticated_status, input["coordination_status"])
+      coordination_authentic = drift.empty?
       unless drift.empty?
         blockers << "coordination status is not authenticated or fresh"
         blockers << "coordination status drift: #{drift.join(', ')}"
@@ -121,7 +123,7 @@ module CompletedBatchPublicationPreflight
         batch,
         canonical_lanes,
         no_backend_evidence,
-        authenticated: no_backend || coordination_status_authentic?(authenticated_status, input["coordination_status"])
+        authenticated: coordination_authentic
       ),
       "targets" => canonical_targets,
       "qa" => canonical_qa
@@ -552,6 +554,11 @@ module CompletedBatchPublicationPreflight
     right = coordination_audit_facts(supplied)
     return [] if left == right
 
+    # Not dead: a key-wise comparison can come back empty while the hashes are
+    # unequal, because an explicit null and an absent key both read as nil here
+    # while Ruby's Hash#== distinguishes them. `{"a" => nil}` versus `{}` is
+    # unequal with no differing key, so name the payload rather than reporting
+    # authentic.
     drifted = (left.keys | right.keys).reject { |key| left[key] == right[key] }
     drifted.empty? ? ["coordination status"] : drifted.sort
   end

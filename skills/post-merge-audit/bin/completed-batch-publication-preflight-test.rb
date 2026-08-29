@@ -674,6 +674,18 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_empty result.fetch("blockers")
   end
 
+  def test_explicit_null_versus_absent_key_is_reported_as_drift_not_authentic
+    # Hash#== distinguishes an explicit null from an absent key, but a key-wise
+    # comparison does not, so this is the case where no individual key differs
+    # yet the payloads are unequal.
+    assert_equal(
+      ["coordination status"],
+      CompletedBatchPublicationPreflight.coordination_status_drift({ "scope" => nil }, {})
+    )
+    refute CompletedBatchPublicationPreflight.coordination_status_authentic?({ "scope" => nil }, {})
+    assert CompletedBatchPublicationPreflight.coordination_status_authentic?({ "scope" => nil }, { "scope" => nil })
+  end
+
   def test_terminal_fact_regression_still_blocks_and_names_the_drifted_component
     input = fixture("completed-batch-publication-hichee-terminal.json")
     regressed = Marshal.load(Marshal.dump(input.fetch("coordination_status")))
