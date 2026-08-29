@@ -587,8 +587,22 @@ def token_budget_legend_contract_errors(source_text, prompt_template)
   legend_count = source_text.scan(TOKEN_BUDGET_PROMPT_LEGEND_LINE).length
   errors << "legend occurrence count is #{legend_count}, expected 1" unless legend_count == 1
 
-  adjacent_legend = "#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n\n#{TEXT_FENCE}"
-  errors << "legend is not immediately before the generated prompt" unless source_text.include?(adjacent_legend)
+  ordered_contract_count = prompt_template.scan(GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET).length
+  unless ordered_contract_count == 1
+    errors << "generated prompt ordered contract count is #{ordered_contract_count}, expected 1"
+  end
+
+  canonical_fence = "#{TEXT_FENCE}#{prompt_template}"
+  canonical_fence_count = source_text.scan(canonical_fence).length
+  if canonical_fence_count == 1
+    canonical_fence_offset = source_text.index(canonical_fence)
+    legend_prefix = "#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n\n"
+    legend_offset = canonical_fence_offset - legend_prefix.length
+    legend_is_adjacent = legend_offset >= 0 && source_text[legend_offset, legend_prefix.length] == legend_prefix
+    errors << "legend is not immediately before the canonical generated prompt" unless legend_is_adjacent
+  else
+    errors << "canonical generated prompt fence count is #{canonical_fence_count}, expected 1"
+  end
   errors << "legend is inside the generated prompt" if prompt_template.include?(TOKEN_BUDGET_PROMPT_LEGEND_LINE)
   errors
 end
@@ -605,8 +619,7 @@ def assert_token_budget_legend_tamper_controls
     #{TOKEN_BUDGET_PROMPT_LEGEND_LINE}
 
     ```text
-    #{TOKEN_BUDGET_PROMPT_LINE}
-    #{WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE}
+    #{GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET}
     ```
   MARKDOWN
   valid_prompt = extract_first_text_fence_body(valid_source, "token budget legend fixture")
@@ -630,6 +643,27 @@ def assert_token_budget_legend_tamper_controls
   return if inside_errors.include?("legend is inside the generated prompt")
 
   abort_with_failure("token budget legend inside-prompt tamper must fail")
+end
+
+def assert_token_budget_wrong_fence_tamper_controls(sources)
+  legend_prefix = "#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n\n"
+
+  sources.each do |path, (source_text, generated_prompt)|
+    source_without_legend = source_text.sub(legend_prefix, "")
+    canonical_fence = "#{TEXT_FENCE}#{generated_prompt}"
+    canonical_fence_offset = source_without_legend.index(canonical_fence)
+    abort_with_failure("#{path} wrong-fence fixture cannot find canonical prompt fence") unless canonical_fence_offset
+
+    fence_offsets = []
+    source_without_legend.to_enum(:scan, TEXT_FENCE).each { fence_offsets << Regexp.last_match.begin(0) }
+    wrong_fence_offset = fence_offsets.find { |offset| offset != canonical_fence_offset }
+    abort_with_failure("#{path} wrong-fence fixture needs a noncanonical text fence") unless wrong_fence_offset
+
+    relocated_source = source_without_legend.dup.insert(wrong_fence_offset, legend_prefix)
+    next unless token_budget_legend_contract_errors(relocated_source, generated_prompt).empty?
+
+    abort_with_failure("#{path} wrong-fence legend relocation must fail")
+  end
 end
 
 def with_items(prompt_template, items)
@@ -724,11 +758,13 @@ workflow_prompt_template = extract_first_text_fence_body(
   workflow_goal_section,
   "canonical workflow plan-to-goal prompt"
 )
-{
+token_budget_legend_sources = {
   "skills/plan-pr-batch/SKILL.md" => [skill_text, prompt_template],
   "skills/pr-batch/SKILL.md" => [pr_batch_skill_text, pr_batch_prompt_template],
   "workflows/pr-processing.md" => [workflow_text, workflow_prompt_template]
-}.each do |path, (source_text, generated_prompt)|
+}
+assert_token_budget_wrong_fence_tamper_controls(token_budget_legend_sources)
+token_budget_legend_sources.each do |path, (source_text, generated_prompt)|
   assert_token_budget_legend_contract(source_text, generated_prompt, path)
 end
 enforce_restart_docs_drift = ENV[SOURCE_CHECKOUT_ENV] == "1"
