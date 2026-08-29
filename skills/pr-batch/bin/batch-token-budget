@@ -37,7 +37,10 @@ module BatchTokenBudget
   /ix
   TRUSTED_PLAN_MAX_BYTES = 1024 * 1024
   USAGE_RECEIPT_MAX_BYTES = TRUSTED_PLAN_MAX_BYTES
+  COMMAND_MAX_BYTES = 2 * 1024 * 1024
   PERSISTED_STATE_MAX_BYTES = 8 * 1024 * 1024
+  PERSISTED_RESERVATION_STRING_MAX_BYTES = 256
+  DESCENDANT_TARGET_IDS_MAX_COUNT = 256
   MAX_COMMAND_TIME_SKEW_SECONDS = 30
   V2_UNKNOWN_REASON_GLOBAL_CODES = %w[
     state_database_missing state_database_unsupported sqlite3_cli_unavailable
@@ -113,6 +116,13 @@ module BatchTokenBudget
     raise JSON::ParserError, "duplicate-object-key"
   end
 
+  def read_command(input)
+    raw = input.read(COMMAND_MAX_BYTES + 1) || ""
+    raise InvalidInput, "command-oversized" if raw.bytesize > COMMAND_MAX_BYTES
+
+    parse_json_strict(raw)
+  end
+
   def canonicalize(value)
     case value
     when Hash
@@ -138,6 +148,12 @@ module BatchTokenBudget
 
   def nonempty_string?(value)
     value.is_a?(String) && !value.strip.empty? && value != "UNKNOWN"
+  end
+
+  def persisted_reservation_string?(value)
+    nonempty_string?(value) && value.encode(Encoding::UTF_8).bytesize <= PERSISTED_RESERVATION_STRING_MAX_BYTES
+  rescue EncodingError
+    false
   end
 
   def positive_integer?(value)
@@ -1078,13 +1094,13 @@ module BatchTokenBudget
 
   def valid_work_item?(work_item)
     work_item.is_a?(Hash) && work_item.keys.sort == %w[number repo type] &&
-      nonempty_string?(work_item["repo"]) && %w[issue pull_request].include?(work_item["type"]) &&
+      persisted_reservation_string?(work_item["repo"]) && %w[issue pull_request].include?(work_item["type"]) &&
       positive_integer?(work_item["number"])
   end
 
   def valid_task_identity?(identity)
     identity.is_a?(Hash) && identity.keys.sort == %w[batch_id lane_id root_id task_id work_item] &&
-      %w[batch_id lane_id root_id task_id].all? { |key| nonempty_string?(identity[key]) } &&
+      %w[batch_id lane_id root_id task_id].all? { |key| persisted_reservation_string?(identity[key]) } &&
       valid_work_item?(identity["work_item"])
   end
 
@@ -1123,13 +1139,18 @@ module BatchTokenBudget
       context_status descendant_estimate_tokens descendant_target_ids observed_at self_estimate_tokens status
     ]
     return false unless telemetry.is_a?(Hash) && telemetry.keys.sort == expected_keys
-    return false unless telemetry["status"] == "fresh" && timestamp?(telemetry["observed_at"])
+    return false unless telemetry["status"] == "fresh" &&
+                        persisted_reservation_string?(telemetry["observed_at"]) &&
+                        timestamp?(telemetry["observed_at"])
     return false unless %w[ready compaction-required].include?(telemetry["context_status"])
     return false unless nonnegative_integer?(telemetry["self_estimate_tokens"]) &&
                         nonnegative_integer?(telemetry["descendant_estimate_tokens"])
     return false unless telemetry["descendant_target_ids"].is_a?(Array) &&
+                        telemetry["descendant_target_ids"].length <= DESCENDANT_TARGET_IDS_MAX_COUNT &&
                         telemetry["descendant_target_ids"].uniq.length == telemetry["descendant_target_ids"].length &&
-                        telemetry["descendant_target_ids"].all? { |target_id| nonempty_string?(target_id) }
+                        telemetry["descendant_target_ids"].all? do |target_id|
+                          persisted_reservation_string?(target_id)
+                        end
     return false unless telemetry["self_estimate_tokens"] + telemetry["descendant_estimate_tokens"] == reservation["tokens"]
 
     age = seconds_between(evaluated_at, telemetry["observed_at"])
@@ -1140,8 +1161,8 @@ module BatchTokenBudget
 
   def valid_reservation?(reservation, state, evaluated_at)
     return false unless reservation.is_a?(Hash) && reservation["type"] == "batch-token-reservation" &&
-                        reservation["version"] == 1 && nonempty_string?(reservation["id"])
-    return false unless nonempty_string?(reservation["scope_id"]) && scope(state, reservation["scope_id"])
+                        reservation["version"] == 1 && persisted_reservation_string?(reservation["id"])
+    return false unless persisted_reservation_string?(reservation["scope_id"]) && scope(state, reservation["scope_id"])
 
     required_keys = %w[
       admission_kind id message_fingerprint scope_id target target_state telemetry tokens type version
@@ -1157,7 +1178,7 @@ module BatchTokenBudget
     return false unless valid_task_identity?(reservation["target"])
     return false unless reservation.dig("target", "lane_id") == reservation["scope_id"]
     return false unless %w[idle paused active].include?(reservation["target_state"])
-    return false unless nonempty_string?(reservation["message_fingerprint"])
+    return false unless persisted_reservation_string?(reservation["message_fingerprint"])
 
     if reservation["admission_kind"] == "cross-task-delegation"
       return false unless valid_task_identity?(reservation["source"]) &&
@@ -1167,8 +1188,13 @@ module BatchTokenBudget
     else
       return false unless reservation["target"]["batch_id"] == state["batch_id"]
     end
-    return false if reservation.key?("approval_id") && !nonempty_string?(reservation["approval_id"])
-    return false if reservation.key?("replaces_reservation_id") && !nonempty_string?(reservation["replaces_reservation_id"])
+    if reservation.key?("approval_id") && !persisted_reservation_string?(reservation["approval_id"])
+      return false
+    end
+    if reservation.key?("replaces_reservation_id") &&
+       !persisted_reservation_string?(reservation["replaces_reservation_id"])
+      return false
+    end
 
     valid_telemetry?(
       reservation["telemetry"], reservation, evaluated_at,
@@ -3211,7 +3237,10 @@ unless options.values_at(:trusted_plan_path, :trusted_plan_id, :trusted_plan_dig
 end
 
 begin
-  command = BatchTokenBudget.parse_json_strict($stdin.read)
+  command = BatchTokenBudget.read_command($stdin)
+rescue BatchTokenBudget::InvalidInput => e
+  warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => e.message)
+  exit 1
 rescue JSON::ParserError
   warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => "malformed-json")
   exit 1

@@ -862,42 +862,194 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def test_persist_rejects_an_oversized_successor_without_replacing_readable_state
+  def test_command_input_is_bounded_before_trusted_plan_or_state_access
+    with_state do |state_path|
+      directory = File.dirname(state_path)
+      trusted_plan = File.join(directory, "trusted-plan-fifo")
+      anchor = {
+        "path" => trusted_plan,
+        "id" => "batch-399",
+        "digest" => "sha256:#{'0' * 64}"
+      }
+      File.mkfifo(trusted_plan)
+      File.binwrite(state_path, "existing-state-must-remain-identical")
+      baseline = File.binread(state_path)
+      command_json = JSON.generate(command("closeout"))
+      exact = command_json + (" " * ((2 * 1_048_576) - command_json.bytesize))
+
+      _accepted, accepted_stderr, accepted_status = run_helper_raw(state_path, exact, anchor: anchor)
+      refute accepted_status.success?
+      assert_equal "trusted-plan-unreadable", JSON.parse(accepted_stderr).fetch("reason")
+
+      denied, denied_stderr, denied_status = run_helper_raw(state_path, "#{exact} ", anchor: anchor)
+      refute denied_status.success?
+      assert_nil denied
+      assert_equal "command-oversized", JSON.parse(denied_stderr).fetch("reason")
+      assert_equal baseline, File.binread(state_path)
+      refute File.exist?("#{state_path}.lock")
+      assert_empty Dir.glob(File.join(directory, ".#{File.basename(state_path)}.tmp-*"))
+      assert File.pipe?(trusted_plan)
+    end
+  end
+
+  def test_reservation_task_identity_is_bounded_by_utf8_bytes_without_mutation
     with_state do |state_path|
       initialize_budget(state_path)
-      near_limit_request = reservation(
-        id: "near-limit-successor",
+      accepted, accepted_stderr, accepted_status = reserve(
+        state_path,
+        id: "exact-task-id-boundary",
+        target_id: "é" * 128
+      )
+      assert accepted_status.success?, accepted_stderr
+      assert_equal "admitted", accepted.fetch("status")
+      before = File.binread(state_path)
+
+      denied, denied_stderr, denied_status = reserve(
+        state_path,
+        id: "over-task-id-boundary",
+        target_id: "#{'é' * 128}x"
+      )
+      assert denied_status.success?, denied_stderr
+      assert_equal "blocked", denied.fetch("status")
+      assert_equal "invalid-reservation", denied.fetch("reason")
+      assert_equal before, File.binread(state_path)
+    end
+  end
+
+  def test_every_persisted_variable_reservation_string_has_the_same_byte_bound
+    load_batch_token_budget_module
+    base_state = lambda do
+      {
+        "batch_id" => "batch-399",
+        "budget" => { "telemetry" => { "max_age_seconds" => 600 } },
+        "scopes" => { "coordinator" => {}, "lanes" => { "lane-a" => {} } }
+      }
+    end
+    base_reservation = -> { reservation(id: "matrix-reservation") }
+    source_reservation = lambda do
+      candidate = base_reservation.call
+      candidate["admission_kind"] = "cross-task-delegation"
+      candidate["source"] = JSON.parse(JSON.generate(candidate.fetch("target")))
+      candidate["source"]["batch_id"] = "source-batch"
+      candidate
+    end
+    cases = {
+      "reservation.id" => ->(value, _state, candidate) { candidate["id"] = value },
+      "reservation.scope_id" => lambda do |value, state, candidate|
+        candidate["scope_id"] = value
+        candidate["target"]["lane_id"] = value
+        state.dig("scopes", "lanes").replace(value => {})
+      end,
+      "reservation.message_fingerprint" => ->(value, _state, candidate) { candidate["message_fingerprint"] = value },
+      "reservation.approval_id" => ->(value, _state, candidate) { candidate["approval_id"] = value },
+      "reservation.replaces_reservation_id" => lambda do |value, _state, candidate|
+        candidate["admission_kind"] = "replacement"
+        candidate["replaces_reservation_id"] = value
+      end,
+      "target.batch_id" => lambda do |value, state, candidate|
+        candidate["target"]["batch_id"] = value
+        state["batch_id"] = value
+      end,
+      "target.lane_id" => lambda do |value, state, candidate|
+        candidate["scope_id"] = value
+        candidate["target"]["lane_id"] = value
+        state.dig("scopes", "lanes").replace(value => {})
+      end,
+      "target.root_id" => ->(value, _state, candidate) { candidate["target"]["root_id"] = value },
+      "target.task_id" => ->(value, _state, candidate) { candidate["target"]["task_id"] = value },
+      "target.work_item.repo" => ->(value, _state, candidate) { candidate.dig("target", "work_item")["repo"] = value },
+      "telemetry.descendant_target_ids[]" => lambda do |value, _state, candidate|
+        candidate["telemetry"]["descendant_target_ids"] = [value]
+      end,
+      "source.batch_id" => ->(value, _state, candidate) { candidate["source"]["batch_id"] = value },
+      "source.lane_id" => ->(value, _state, candidate) { candidate["source"]["lane_id"] = value },
+      "source.root_id" => ->(value, _state, candidate) { candidate["source"]["root_id"] = value },
+      "source.task_id" => ->(value, _state, candidate) { candidate["source"]["task_id"] = value },
+      "source.work_item.repo" => ->(value, _state, candidate) { candidate.dig("source", "work_item")["repo"] = value }
+    }
+    cases.each do |name, mutate|
+      exact_state = base_state.call
+      exact_candidate = name.start_with?("source.") ? source_reservation.call : base_reservation.call
+      mutate.call("x" * 256, exact_state, exact_candidate)
+      assert BatchTokenBudget.valid_reservation?(exact_candidate, exact_state, "2026-08-12T12:00:00Z"),
+             "expected exact boundary to be valid for #{name}"
+
+      over_state = base_state.call
+      over_candidate = name.start_with?("source.") ? source_reservation.call : base_reservation.call
+      mutate.call("x" * 257, over_state, over_candidate)
+      refute BatchTokenBudget.valid_reservation?(over_candidate, over_state, "2026-08-12T12:00:00Z"),
+             "expected over boundary to be invalid for #{name}"
+    end
+  end
+
+  def test_descendant_target_id_count_is_bounded_without_mutation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      exact_descendants = Array.new(256) { |index| "child-#{index}" }
+      accepted_request = reservation(id: "exact-descendant-count")
+      accepted_request["telemetry"]["descendant_target_ids"] = exact_descendants
+      accepted, accepted_stderr, accepted_status = run_helper(
+        state_path,
+        command("reserve", "reservation" => accepted_request)
+      )
+      assert accepted_status.success?, accepted_stderr
+      assert_equal "admitted", accepted.fetch("status")
+      before = File.binread(state_path)
+
+      over_request = reservation(id: "over-descendant-count")
+      over_request["telemetry"]["descendant_target_ids"] = exact_descendants + ["child-256"]
+      denied, denied_stderr, denied_status = run_helper(
+        state_path,
+        command("reserve", "reservation" => over_request)
+      )
+      assert denied_status.success?, denied_stderr
+      assert_equal "blocked", denied.fetch("status")
+      assert_equal "invalid-reservation", denied.fetch("reason")
+      assert_equal before, File.binread(state_path)
+    end
+  end
+
+  def test_oversized_reservation_cannot_exhaust_state_headroom_or_block_closeout
+    with_state do |state_path|
+      initialize_budget(state_path)
+      oversized_request = reservation(
+        id: "oversized-successor",
         target_id: "t" * 4_188_900,
         tokens: 600
       )
-      stopped, stopped_stderr, stopped_status = run_helper(
-        state_path,
-        command("reserve", "reservation" => near_limit_request)
-      )
-      assert stopped_status.success?, stopped_stderr
-      assert_equal "budget-exhausted", stopped.fetch("status")
-
-      readable_state = File.binread(state_path)
-      assert_operator readable_state.bytesize, :<=, 8 * 1_048_576
-      assert_operator readable_state.bytesize, :>, 8_388_000
-
+      before = File.binread(state_path)
       denied, denied_stderr, denied_status = run_helper(
         state_path,
-        command("closeout", "evaluated_at" => "2026-08-12T12:01:00Z")
+        command("reserve", "reservation" => oversized_request)
       )
       refute denied_status.success?
       assert_nil denied
-      assert_equal "persisted-state-oversized", JSON.parse(denied_stderr).fetch("reason")
-      assert_equal readable_state, File.binread(state_path)
+      assert_equal "command-oversized", JSON.parse(denied_stderr).fetch("reason")
+      assert_equal before, File.binread(state_path)
 
+      closeout, closeout_stderr, closeout_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T12:01:00Z")
+      )
+      assert closeout_status.success?, closeout_stderr
+      assert_equal "not-complete", closeout.fetch("status")
+      assert_operator File.binread(state_path).bytesize, :>, before.bytesize
+
+      ordinary_request = reservation(id: "ordinary-after-oversized-command", tokens: 100)
+      ordinary, ordinary_stderr, ordinary_status = run_helper(
+        state_path,
+        command("reserve", "evaluated_at" => "2026-08-12T12:02:00Z", "reservation" => ordinary_request)
+      )
+      assert ordinary_status.success?, ordinary_stderr
+      assert_equal "admitted", ordinary.fetch("status")
+      ordinary_state = File.binread(state_path)
       replayed, replay_stderr, replay_status = run_helper(
         state_path,
-        command("reserve", "reservation" => near_limit_request)
+        command("reserve", "evaluated_at" => "2026-08-12T12:02:00Z", "reservation" => ordinary_request)
       )
       assert replay_status.success?, replay_stderr
       assert_equal "replayed", replayed.fetch("status")
-      assert_equal "budget-exhausted", replayed.fetch("decision_status")
-      assert_equal readable_state, File.binread(state_path)
+      assert_equal ordinary_state, File.binread(state_path)
     end
   end
 

@@ -94,7 +94,15 @@ coordinator-owned state file before the first expensive action:
 ```
 
 The helper takes one `batch-token-budget-command v1` JSON object on stdin and
-emits one deterministic result on stdout. The CLI path must match the plan's
+emits one deterministic result on stdout. Command input has an independent
+2 MiB bound so a reconcile command can carry the at-most-1 MiB usage receipt
+plus its envelope and charge-back metadata without leaving parser input
+unbounded. Exact 2 MiB input remains parseable; larger input fails as
+`command-oversized` before the trusted plan or state is opened and before any
+lock or mutation. Every variable reservation identity and telemetry string is
+limited to 256 UTF-8 bytes, and `descendant_target_ids` is limited to 256
+unique entries whose members each satisfy that same byte bound. Validated
+timestamps and fixed enums retain their stricter existing contracts. The CLI path must match the plan's
 `state_path`; mismatches and invalid envelopes exit nonzero. Every operation,
 including initialize, replay, closeout, and read-only result paths, reloads and
 validates the same external trusted plan binding before reading or mutating
