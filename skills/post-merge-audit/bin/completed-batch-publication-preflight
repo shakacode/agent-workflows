@@ -79,11 +79,15 @@ module CompletedBatchPublicationPreflight
       batch = nil
       lane_entries = []
       resolved_targets = no_backend_evidence ? expected_targets : []
+      coordination_authentic = true
     else
       no_backend_evidence = nil
       authenticated_status = coordination_verifier&.call(backend:, batch_id:)
-      unless authenticated_status == input["coordination_status"]
+      drift = coordination_status_drift(authenticated_status, input["coordination_status"])
+      coordination_authentic = drift.empty?
+      unless drift.empty?
         blockers << "coordination status is not authenticated or fresh"
+        blockers << "coordination status drift: #{drift.join(', ')}"
       end
       batch = resolved_batch(input["coordination_status"], batch_id, blockers)
       lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
@@ -119,7 +123,7 @@ module CompletedBatchPublicationPreflight
         batch,
         canonical_lanes,
         no_backend_evidence,
-        authenticated: no_backend || authenticated_status == input["coordination_status"]
+        authenticated: coordination_authentic
       ),
       "targets" => canonical_targets,
       "qa" => canonical_qa
@@ -511,6 +515,59 @@ module CompletedBatchPublicationPreflight
       end
       snapshot
     end
+  end
+
+  # Append-only telemetry and heartbeat-derived freshness are not audited facts.
+  # `events` and `heartbeats` grow whenever any lane records lifecycle state, and
+  # a terminal lane's `liveness` necessarily decays to `stale` once its heartbeat
+  # ages out. Binding them made a published receipt stop replaying for reasons the
+  # audit never asserted. Terminal and target facts remain enforced by
+  # `validate_batch_terminal`, the lane entries, and the target snapshots.
+  # Stripped by key name at any depth rather than by path. That is deliberate:
+  # `liveness` is heartbeat-derived wherever it appears, including under
+  # `claims`, so path-scoping would leave the same trap in a sibling section. It
+  # does mean a future schema that reused one of these names for a genuinely
+  # audited fact would silently drop out of the comparison, so extend this list
+  # only for names that are telemetry everywhere, and switch to path-scoped
+  # stripping if that ever stops holding.
+  COORDINATION_TELEMETRY_KEYS = %w[events heartbeats].freeze
+  COORDINATION_DERIVED_KEYS = %w[liveness].freeze
+
+  def coordination_audit_facts(value)
+    case value
+    when Hash
+      value.each_with_object({}) do |(key, nested), facts|
+        next if COORDINATION_TELEMETRY_KEYS.include?(key) || COORDINATION_DERIVED_KEYS.include?(key)
+
+        facts[key] = coordination_audit_facts(nested)
+      end
+    when Array
+      value.map { |entry| coordination_audit_facts(entry) }
+    else
+      value
+    end
+  end
+
+  def coordination_status_authentic?(authenticated, supplied)
+    coordination_status_drift(authenticated, supplied).empty?
+  end
+
+  # Names the drifted top-level components so a benign telemetry-only difference
+  # is distinguishable from a real terminal-fact regression.
+  def coordination_status_drift(authenticated, supplied)
+    return ["coordination status is unavailable"] unless authenticated.is_a?(Hash) && supplied.is_a?(Hash)
+
+    left = coordination_audit_facts(authenticated)
+    right = coordination_audit_facts(supplied)
+    return [] if left == right
+
+    # Not dead: a key-wise comparison can come back empty while the hashes are
+    # unequal, because an explicit null and an absent key both read as nil here
+    # while Ruby's Hash#== distinguishes them. `{"a" => nil}` versus `{}` is
+    # unequal with no differing key, so name the payload rather than reporting
+    # authentic.
+    drifted = (left.keys | right.keys).reject { |key| left[key] == right[key] }
+    drifted.empty? ? ["coordination status"] : drifted.sort
   end
 
   def indexed_target_snapshots(rows, expected_targets, blockers)

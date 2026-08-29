@@ -1024,7 +1024,13 @@ module CompletedBatchAuditReceipt
       backend: coordination_backend,
       batch_id: expected_batch_id
     )
-    return false unless live_coordination == preflight.dig("source_input", "coordination_status")
+    # Compare audited coordination facts only; append-only telemetry and
+    # heartbeat-derived liveness must not invalidate a published receipt.
+    unless CompletedBatchPublicationPreflight.coordination_status_authentic?(
+      live_coordination, preflight.dig("source_input", "coordination_status")
+    )
+      return false
+    end
 
     target_rows = preflight.dig("snapshot", "targets")
     qa_rows = preflight.dig("snapshot", "qa")
