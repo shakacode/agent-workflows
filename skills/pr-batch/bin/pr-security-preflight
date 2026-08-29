@@ -1239,40 +1239,92 @@ UNSAFE_TRUSTED_FETCH_CONFIG_PATTERN =
   /\A(?:url\..*\.insteadof|http(?:\..*)?\..*|credential\..*|
   remote\..*\.(?:proxy|uploadpack)|core\.(?:askpass|gitproxy|sshcommand))\z/ix
 
-def unsafe_trusted_fetch_config(root)
-  %w[local worktree].each do |scope|
-    stdout, _stderr, status = capture_trusted_git_probe(
-      "-C", root, "config", "--#{scope}", "--includes", "--name-only", "--get-regexp", ".*"
-    )
-    next unless status&.success?
-
-    key = stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).find do |candidate|
-      candidate.match?(UNSAFE_TRUSTED_FETCH_CONFIG_PATTERN)
-    end
-    return [scope, key] if key
+def trusted_git_config_query(root, scope:, args:, description:)
+  stdout, stderr, status = capture_trusted_git_probe(
+    "-C", root, "config", "--#{scope}", *args
+  )
+  unless status.respond_to?(:success?) && status.respond_to?(:exitstatus)
+    detail = stderr.to_s.force_encoding("UTF-8").scrub.lines.first&.strip
+    message = "#{scope} #{description} probe did not return a process status"
+    message = "#{message}: #{detail}" unless detail.to_s.empty?
+    return [nil, nil, message]
   end
 
-  nil
+  exitstatus = status.exitstatus
+  return [:present, stdout.to_s.force_encoding("UTF-8").scrub, nil] if status.success? && exitstatus&.zero?
+  return [:absent, "", nil] if exitstatus == 1
+
+  detail = stderr.to_s.force_encoding("UTF-8").scrub.lines.first&.strip
+  outcome = exitstatus ? "failed with exit #{exitstatus}" : "did not exit normally"
+  message = "#{scope} #{description} probe #{outcome}"
+  message = "#{message}: #{detail}" unless detail.to_s.empty?
+  [nil, nil, message]
+rescue StandardError => e
+  [nil, nil, "#{scope} #{description} probe failed: #{e.message.lines.first&.strip}"]
+end
+
+def unsafe_trusted_fetch_config(root, scopes:)
+  scopes.each do |scope|
+    state, stdout, error = trusted_git_config_query(
+      root,
+      scope:,
+      args: ["--includes", "--name-only", "--get-regexp", ".*"],
+      description: "trusted fetch configuration"
+    )
+    return [nil, error] if error
+    next if state == :absent
+
+    key = stdout.lines.map(&:strip).find do |candidate|
+      candidate.match?(UNSAFE_TRUSTED_FETCH_CONFIG_PATTERN)
+    end
+    return [[scope, key], nil] if key
+  end
+
+  [nil, nil]
 end
 
 def trusted_remote_url(root, policy, repo:, github_host:)
   remote = policy.fetch("remote")
-  worktree_config, _stderr, worktree_status = capture_trusted_git_probe(
-    "-C", root, "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"
+  worktree_state, worktree_config, worktree_error = trusted_git_config_query(
+    root,
+    scope: "local",
+    args: ["--type=bool", "--get", "extensions.worktreeConfig"],
+    description: "extensions.worktreeConfig"
   )
+  return [nil, worktree_error] if worktree_error
+
+  worktree_enabled = false
+  if worktree_state == :present
+    worktree_value = worktree_config.strip
+    unless %w[true false].include?(worktree_value)
+      return [nil, "local extensions.worktreeConfig probe returned malformed boolean output"]
+    end
+
+    worktree_enabled = worktree_value == "true"
+  end
+
   scopes = ["local"]
-  scopes << "worktree" if worktree_status&.success? && worktree_config.strip == "true"
-  urls = scopes.flat_map do |scope|
-    stdout, _stderr, status = capture_trusted_git_probe(
-      "-C", root, "config", "--#{scope}", "--get-all", "remote.#{remote}.url"
+  scopes << "worktree" if worktree_enabled
+  urls = scopes.each_with_object([]) do |scope, values|
+    state, stdout, error = trusted_git_config_query(
+      root,
+      scope:,
+      args: ["--get-all", "remote.#{remote}.url"],
+      description: "trusted remote #{remote.inspect} URL"
     )
-    status&.success? ? stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).reject(&:empty?) : []
+    return [nil, error] if error
+    next if state == :absent
+
+    values.concat(stdout.lines.map(&:strip).reject(&:empty?))
   end
   unless urls.one?
     return [nil, "trusted remote #{remote.inspect} URL entries across local and worktree scopes make provenance ambiguous"]
   end
 
-  if (unsafe_config = unsafe_trusted_fetch_config(root))
+  unsafe_config, unsafe_error = unsafe_trusted_fetch_config(root, scopes:)
+  return [nil, unsafe_error] if unsafe_error
+
+  if unsafe_config
     scope, key = unsafe_config
     kind = key.match?(/\Aurl\..*\.insteadof\z/i) ? "url.*.insteadOf rewrites" : "#{key} configuration"
     return [nil, "#{scope} #{kind} make trusted remote provenance ambiguous"]

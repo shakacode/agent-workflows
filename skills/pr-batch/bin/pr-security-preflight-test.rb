@@ -29,6 +29,16 @@ TestCommandStatus = Struct.new(:exitstatus) do
   end
 end
 
+TestSignaledCommandStatus = Struct.new(:termsig) do
+  def success?
+    false
+  end
+
+  def exitstatus
+    nil
+  end
+end
+
 class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
   attr_reader :fetch_environments, :fetch_roots
 
@@ -2308,6 +2318,158 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_blocks_when_worktree_config_probe_times_out
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+      git! "-C", repo_root, "config", "--worktree", "remote.origin.url",
+           "https://attacker.invalid/owner/repo.git"
+
+      matcher = lambda do |args|
+        args.include?("--type=bool") && args.last == "extensions.worktreeConfig"
+      end
+      with_trusted_git_probe_fault(matcher, ["", "simulated timeout", nil]) do
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "extensions.worktreeConfig probe"
+      end
+    end
+  end
+
+  def test_trusted_base_config_probe_failures_block_acceptance
+    valid_url = "https://github.com/owner/repo.git"
+    hostile_url = "https://attacker.invalid/owner/repo.git"
+    cases = [
+      {
+        label: "extensions.worktreeConfig fatal",
+        query: ["--local", "--type=bool", "--get", "extensions.worktreeConfig"],
+        response: ["", "fatal: simulated extension failure", TestCommandStatus.new(128)],
+        error: "local extensions.worktreeConfig probe",
+        setup: lambda do |repo_root|
+          git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+          git! "-C", repo_root, "config", "--worktree", "remote.origin.url", hostile_url
+        end
+      },
+      *%i[timeout fatal].map do |failure|
+        {
+          label: "local remote URL #{failure}",
+          query: ["--local", "--get-all", "remote.origin.url"],
+          response: trusted_git_probe_failure_response(failure),
+          error: 'local trusted remote "origin" URL probe',
+          setup: lambda do |repo_root|
+            git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+            git! "-C", repo_root, "remote", "set-url", "origin", hostile_url
+            git! "-C", repo_root, "config", "--worktree", "remote.origin.url", valid_url
+          end
+        }
+      end,
+      *%i[timeout fatal].map do |failure|
+        {
+          label: "worktree remote URL #{failure}",
+          query: ["--worktree", "--get-all", "remote.origin.url"],
+          response: trusted_git_probe_failure_response(failure),
+          error: 'worktree trusted remote "origin" URL probe',
+          setup: lambda do |repo_root|
+            git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+            git! "-C", repo_root, "config", "--worktree", "remote.origin.url", hostile_url
+          end
+        }
+      end,
+      *%i[timeout fatal].map do |failure|
+        {
+          label: "local unsafe-config scan #{failure}",
+          query: ["--local", "--includes", "--name-only", "--get-regexp", ".*"],
+          response: trusted_git_probe_failure_response(failure),
+          error: "local trusted fetch configuration probe",
+          setup: lambda do |repo_root|
+            git! "-C", repo_root, "config", "--local", "http.proxy", "https://proxy.invalid"
+          end
+        }
+      end,
+      *%i[timeout fatal].map do |failure|
+        {
+          label: "worktree unsafe-config scan #{failure}",
+          query: ["--worktree", "--includes", "--name-only", "--get-regexp", ".*"],
+          response: trusted_git_probe_failure_response(failure),
+          error: "worktree trusted fetch configuration probe",
+          setup: lambda do |repo_root|
+            git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+            git! "-C", repo_root, "config", "--worktree", "http.proxy", "https://proxy.invalid"
+          end
+        }
+      end
+    ]
+
+    cases.each do |test_case|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        test_case.fetch(:setup).call(repo_root)
+        matcher = ->(args) { args.drop(3) == test_case.fetch(:query) }
+        with_trusted_git_probe_fault(matcher, test_case.fetch(:response)) do
+          out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+          assert_trusted_base_blocked(out, status)
+          assert_includes out, test_case.fetch(:error), test_case.fetch(:label)
+        end
+      end
+    end
+  end
+
+  def test_trusted_base_config_probe_positive_controls
+    cases = {
+      "missing extension key with local URL" => lambda do |_repo_root|
+        nil
+      end,
+      "explicit false with local URL" => lambda do |repo_root|
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+        git! "-C", repo_root, "config", "--worktree", "remote.origin.url",
+             "https://attacker.invalid/owner/repo.git"
+        git! "-C", repo_root, "config", "--worktree", "http.proxy", "https://proxy.invalid"
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "false"
+      end,
+      "enabled extension with empty worktree config" => lambda do |repo_root|
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+      end,
+      "enabled extension with only one worktree URL" => lambda do |repo_root|
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+        git! "-C", repo_root, "config", "--local", "--unset-all", "remote.origin.url"
+        git! "-C", repo_root, "config", "--worktree", "remote.origin.url",
+             "https://github.com/owner/repo.git"
+      end
+    }
+
+    cases.each do |label, setup|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        setup.call(repo_root)
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert status.success?, "#{label}: #{out}"
+        assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED", label
+        assert_includes out, "SECURITY_PREFLIGHT_OK", label
+        refute_includes out, "SECURITY_PREFLIGHT_BLOCKED", label
+      end
+    end
+  end
+
+  def test_trusted_base_blocks_malformed_or_signaled_extension_probe_results
+    cases = {
+      "malformed boolean output" => ["enabled\n", "", TestCommandStatus.new(0)],
+      "signaled status" => ["", "simulated signal", TestSignaledCommandStatus.new(9)],
+      "malformed status" => ["", "simulated malformed status", Object.new]
+    }
+
+    cases.each do |label, response|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        matcher = ->(args) { args.include?("--type=bool") && args.last == "extensions.worktreeConfig" }
+        with_trusted_git_probe_fault(matcher, response) do
+          out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+          assert_trusted_base_blocked(out, status)
+          assert_includes out, "extensions.worktreeConfig probe", label
+        end
+      end
+    end
+  end
+
   def test_trusted_base_rejects_plain_http_for_non_loopback_github_host
     with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
       git! "-C", repo_root, "remote", "set-url", "origin", "http://github.com/owner/repo.git"
@@ -3470,6 +3632,24 @@ class PrSecurityPreflightTest < Minitest::Test
       end
     end
     [stdout + stderr, TestCommandStatus.new(status)]
+  end
+
+  def with_trusted_git_probe_fault(matcher, response)
+    original = Object.instance_method(:capture_trusted_git_probe)
+    Object.send(:define_method, :capture_trusted_git_probe) do |*args|
+      matcher.call(args) ? response : original.bind(self).call(*args)
+    end
+    Object.send(:private, :capture_trusted_git_probe)
+    yield
+  ensure
+    Object.send(:define_method, :capture_trusted_git_probe, original)
+    Object.send(:private, :capture_trusted_git_probe)
+  end
+
+  def trusted_git_probe_failure_response(failure)
+    return ["", "simulated timeout", nil] if failure == :timeout
+
+    ["", "fatal: simulated failure", TestCommandStatus.new(128)]
   end
 
   def assert_trusted_base_blocked(out, status)
