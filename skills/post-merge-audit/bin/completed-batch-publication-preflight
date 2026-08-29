@@ -523,6 +523,13 @@ module CompletedBatchPublicationPreflight
   # ages out. Binding them made a published receipt stop replaying for reasons the
   # audit never asserted. Terminal and target facts remain enforced by
   # `validate_batch_terminal`, the lane entries, and the target snapshots.
+  # Stripped by key name at any depth rather than by path. That is deliberate:
+  # `liveness` is heartbeat-derived wherever it appears, including under
+  # `claims`, so path-scoping would leave the same trap in a sibling section. It
+  # does mean a future schema that reused one of these names for a genuinely
+  # audited fact would silently drop out of the comparison, so extend this list
+  # only for names that are telemetry everywhere, and switch to path-scoped
+  # stripping if that ever stops holding.
   COORDINATION_TELEMETRY_KEYS = %w[events heartbeats].freeze
   COORDINATION_DERIVED_KEYS = %w[liveness].freeze
 
