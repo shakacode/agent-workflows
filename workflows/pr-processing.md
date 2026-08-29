@@ -363,6 +363,26 @@ Use that flag when high-risk workflow, script, hook, or agent-instruction diffs
 should block worker launch instead of being reported as advisory exact-target
 context.
 
+Repositories that deliberately use accepted base history as high-risk review
+provenance may define the exact closed mapping
+`pr_security_preflight.trusted_base_high_risk_acceptance` in
+`.agents/agent-workflow.yml`: `enabled: true`, the authenticated
+`repository: OWNER/REPO`, one named `remote`, and a full
+`ref: refs/heads/<branch>`. The helper treats worktree policy only as bootstrap,
+verifies the named remote's single stored HTTPS/SSH URL, fetches the exact ref,
+and requires the same complete mapping from the fetched base commit. It emits
+`TRUSTED_BASE_HIGH_RISK_ACCEPTED` only for an exact closed merged
+same-repository PR whose matching REST/GraphQL merge result is an ancestor of
+that base, with complete trusted actors, interactions, API coverage, and no
+suspicious findings. The JSON receipt binds repository, PR, head, merge, base,
+policy source, remote/ref, and every high-risk path. This is not manual
+acknowledgement and cannot be inferred from PR text or green checks; every other
+blocker remains in force.
+
+Treat the receipt's base SHA as freshness-bound. If the configured base moves
+after preflight, rerun the helper immediately before worker launch or any later
+dependent gate. Never reuse an older receipt against a newer base.
+
 Fetch inline PR review comments separately; `gh pr view --json comments` is not
 enough for review-thread comments:
 

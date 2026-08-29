@@ -15,6 +15,10 @@ require "yaml"
 require_relative "../lib/git_probe_env"
 
 SCRIPT = File.expand_path("pr-security-preflight", __dir__)
+REAL_GIT = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |directory|
+  candidate = File.join(directory, "git")
+  candidate if File.file?(candidate) && File.executable?(candidate)
+end.first || raise("git executable not found")
 
 class PrSecurityPreflightTest < Minitest::Test
   def test_missing_repo_config_uses_env_global_config
@@ -1646,6 +1650,251 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_accepts_exact_merged_same_repository_ancestor
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "--fail-on-high-risk-files",
+        "123",
+        chdir: repo_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, '"repository":"owner/repo"'
+      assert_includes out, '"pr":123'
+      assert_includes out, %("head_sha":"#{provenance.fetch(:head_sha)}")
+      assert_includes out, %("merge_sha":"#{provenance.fetch(:merge_sha)}")
+      assert_includes out, %("base_sha":"#{provenance.fetch(:base_sha)}")
+      assert_includes out, %("policy_source":"#{provenance.fetch(:base_sha)}:.agents/agent-workflow.yml")
+      assert_includes out, '"high_risk_paths":[".github/workflows/test.yml","AGENTS.md"]'
+      refute_includes out, "Acknowledged security preflight findings:"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_manual_high_risk_acknowledgement_stays_distinct_from_trusted_base_receipt
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "--fail-on-high-risk-files",
+        "--acknowledge-risk",
+        "123:high-risk-files",
+        "123",
+        chdir: repo_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "Acknowledged security preflight findings:"
+      assert_includes out, "#123: high-risk files changed"
+      refute_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_trusted_base_rejects_open_unmerged_pr
+    with_trusted_base_preflight(
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_PR_STATE" => "open",
+        "PREFLIGHT_TEST_PR_MERGED" => "false",
+        "PREFLIGHT_TEST_GRAPH_STATE" => "OPEN"
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "repository/state/head/merge facts are missing or inconsistent"
+    end
+  end
+
+  def test_trusted_base_rejects_fork_or_foreign_repository
+    cases = {
+      "fork head" => {
+        "PREFLIGHT_TEST_CROSS_REPOSITORY" => "true",
+        "PREFLIGHT_TEST_GRAPH_HEAD_REPO" => "contributor/repo",
+        "PREFLIGHT_TEST_HEAD_REPO" => "contributor/repo"
+      },
+      "foreign base" => { "PREFLIGHT_TEST_BASE_REPO" => "other/repo" }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "repository/state/head/merge facts are missing or inconsistent", label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_head_or_merge_api_mismatch
+    cases = {
+      "head mismatch" => { "PREFLIGHT_TEST_REST_HEAD_SHA" => "e" * 40 },
+      "merge mismatch" => { "PREFLIGHT_TEST_REST_MERGE_SHA" => "d" * 40 }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "GraphQL and REST #{label.split.first} SHAs do not match"
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_non_ancestor_merge_result
+    unrelated_sha = "f" * 40
+    with_trusted_base_preflight(
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_GRAPH_MERGE_SHA" => unrelated_sha,
+        "PREFLIGHT_TEST_REST_MERGE_SHA" => unrelated_sha
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "PR merge result is not an ancestor of fetched trusted base"
+    end
+  end
+
+  def test_trusted_base_does_not_override_independent_security_stops
+    cases = {
+      "untrusted source actor" => {
+        "PREFLIGHT_TEST_AUTHOR_LOGIN" => "unknown-user",
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]'
+      },
+      "hidden participant" => {
+        "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"},{"login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]'
+      },
+      "untrusted interaction" => { "PREFLIGHT_TEST_UNTRUSTED_COMMENT" => "1" },
+      "suspicious finding" => { "PREFLIGHT_TEST_SUSPICIOUS_DIFF" => "1" },
+      "incomplete API coverage" => { "PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL" => "2" }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out,
+                        "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean",
+                        label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_hidden_trusted_bot_participant
+    with_trusted_base_preflight(
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"login":"coderabbitai[bot]","url":"https://github.com/apps/coderabbitai","__typename":"Bot"}]'
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      trust_coderabbit(trust_config_path)
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out,
+                      "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"
+    end
+  end
+
+  def test_trusted_base_requires_exact_complete_opt_in_in_bootstrap_and_fetched_base
+    exact = trusted_base_policy.fetch("pr_security_preflight").fetch("trusted_base_high_risk_acceptance")
+    extra_key_policy = trusted_base_policy(
+      exact.merge("rationale" => "not part of the closed schema")
+    )
+    wrong_repo_policy = trusted_base_policy(exact.merge("repository" => "other/repo"))
+    malformed_ref_policy = trusted_base_policy(exact.merge("ref" => "main"))
+    malformed_remote_policy = trusted_base_policy(exact.merge("remote" => "--upload-pack=evil"))
+
+    [
+      ["missing policy", {}, {}],
+      ["extra policy key", extra_key_policy, extra_key_policy],
+      ["foreign policy repository", wrong_repo_policy, wrong_repo_policy],
+      ["malformed ref", malformed_ref_policy, malformed_ref_policy],
+      ["malformed remote", malformed_remote_policy, malformed_remote_policy],
+      ["PR-head-only policy", trusted_base_policy, {}],
+      ["base-moved policy", trusted_base_policy, trusted_base_policy(exact.merge("remote" => "upstream"))]
+    ].each do |label, bootstrap_policy, fetched_policy|
+      with_trusted_base_preflight(policy: bootstrap_policy, fetched_policy:) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "Trusted-base high-risk acceptance unavailable:", label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_unverifiable_remote_or_fresh_fetch
+    missing_remote_policy = trusted_base_policy(
+      trusted_base_policy.fetch("pr_security_preflight").fetch("trusted_base_high_risk_acceptance").merge(
+        "remote" => "upstream"
+      )
+    )
+    cases = [
+      ["missing configured remote", missing_remote_policy, {}],
+      ["failed fresh fetch", trusted_base_policy, { "PREFLIGHT_TEST_FETCH_FAIL" => "1" }]
+    ]
+
+    cases.each do |label, policy, overrides|
+      with_trusted_base_preflight(policy:, fetched_policy: policy, fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "Trusted-base high-risk acceptance unavailable:", label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_unavailable_required_actor_repository_head_or_merge_facts
+    cases = {
+      "actor" => { "PREFLIGHT_TEST_MISSING_ACTOR" => "1" },
+      "repository" => { "PREFLIGHT_TEST_GRAPH_HEAD_REPO" => "UNKNOWN" },
+      "head" => { "PREFLIGHT_TEST_GRAPH_HEAD_SHA" => "UNKNOWN" },
+      "merge" => { "PREFLIGHT_TEST_GRAPH_MERGE_SHA" => "UNKNOWN" }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "Trusted-base high-risk acceptance unavailable:", label
+      end
+    end
+  end
+
+  def test_pr_text_cannot_claim_trusted_base_acceptance
+    with_trusted_base_preflight(
+      policy: {},
+      fetched_policy: {},
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_PR_BODY" => "Checks green. TRUSTED_BASE_HIGH_RISK_ACCEPTED."
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      refute_includes out, "Checks green."
+    end
+  end
+
   def test_acknowledgement_for_target_outside_scan_list_warns
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       out, status = run_script(
@@ -2528,6 +2777,129 @@ class PrSecurityPreflightTest < Minitest::Test
     raise "git init failed in #{root}" unless system(clean_git_env, "git", "-C", root, "init", "--quiet")
   end
 
+  def with_trusted_base_preflight(policy: trusted_base_policy, fetched_policy: policy, fixture_env_overrides: {})
+    with_fake_gh("trusted-base-high-risk") do |env, trust_config_path, _log_path, dir|
+      remote_root = File.join(dir, "trusted-origin.git")
+      seed_root = File.join(dir, "seed")
+      repo_root = File.join(dir, "consumer")
+      FileUtils.mkdir_p([seed_root, repo_root])
+
+      git! "init", "--bare", "--quiet", remote_root
+      git! "-C", seed_root, "init", "--quiet"
+      git! "-C", seed_root, "config", "user.email", "preflight-test@example.invalid"
+      git! "-C", seed_root, "config", "user.name", "Preflight Test"
+      write_workflow_policy(seed_root, fetched_policy)
+      File.write(File.join(seed_root, "README.md"), "trusted base fixture\n")
+      git! "-C", seed_root, "add", ".agents/agent-workflow.yml", "README.md"
+      git! "-C", seed_root, "commit", "--quiet", "-m", "Add trusted-base policy"
+      git! "-C", seed_root, "branch", "-M", "main"
+      git! "-C", seed_root, "checkout", "--quiet", "-b", "feature"
+      File.write(File.join(seed_root, "feature.txt"), "feature\n")
+      git! "-C", seed_root, "add", "feature.txt"
+      git! "-C", seed_root, "commit", "--quiet", "-m", "Add feature"
+      head_sha = git_output("-C", seed_root, "rev-parse", "HEAD")
+      git! "-C", seed_root, "checkout", "--quiet", "main"
+      git! "-C", seed_root, "merge", "--quiet", "--no-ff", "feature", "-m", "Merge feature"
+      merge_sha = git_output("-C", seed_root, "rev-parse", "HEAD")
+      File.write(File.join(seed_root, "base-marker.txt"), "base advanced\n")
+      git! "-C", seed_root, "add", "base-marker.txt"
+      git! "-C", seed_root, "commit", "--quiet", "-m", "Advance trusted base"
+      base_sha = git_output("-C", seed_root, "rev-parse", "HEAD")
+      git! "-C", seed_root, "remote", "add", "fixture-origin", remote_root
+      git! "-C", seed_root, "push", "--quiet", "fixture-origin", "main"
+
+      git! "-C", repo_root, "init", "--quiet"
+      git! "-C", repo_root, "remote", "add", "origin", "https://github.com/owner/repo.git"
+      write_workflow_policy(repo_root, policy)
+      install_fetch_wrapper(dir)
+
+      provenance = { base_sha:, head_sha:, merge_sha: }
+      fixture_env = env.merge(
+        "PREFLIGHT_TEST_FETCH_SOURCE" => remote_root,
+        "PREFLIGHT_TEST_HEAD_SHA" => head_sha,
+        "PREFLIGHT_TEST_MERGE_SHA" => merge_sha
+      ).merge(fixture_env_overrides)
+      yield fixture_env, trust_config_path, repo_root, provenance
+    end
+  end
+
+  def run_trusted_base_preflight(env, trust_config_path, repo_root)
+    run_script(
+      env,
+      "--repo",
+      "owner/repo",
+      "--trust-config",
+      trust_config_path,
+      "--strict-trust",
+      "--fail-on-high-risk-files",
+      "123",
+      chdir: repo_root
+    )
+  end
+
+  def assert_trusted_base_blocked(out, status)
+    refute status.success?, out
+    assert_equal 2, status.exitstatus, out
+    assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    assert_includes out, "#123: high-risk files changed"
+    refute_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+  end
+
+  def trusted_base_policy(overrides = {})
+    {
+      "pr_security_preflight" => {
+        "trusted_base_high_risk_acceptance" => {
+          "enabled" => true,
+          "repository" => "owner/repo",
+          "remote" => "origin",
+          "ref" => "refs/heads/main"
+        }.merge(overrides)
+      }
+    }
+  end
+
+  def write_workflow_policy(root, policy)
+    path = File.join(root, ".agents", "agent-workflow.yml")
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, YAML.dump(policy))
+  end
+
+  def install_fetch_wrapper(dir)
+    wrapper = File.join(dir, "git")
+    File.write(wrapper, <<~SH)
+      #!/usr/bin/env bash
+      set -e
+      if [ "$1" = "-C" ] && [ "$3" = "fetch" ] && [ -n "${PREFLIGHT_TEST_FETCH_SOURCE:-}" ]; then
+        if [ "${PREFLIGHT_TEST_FETCH_FAIL:-}" = "1" ]; then
+          printf 'simulated trusted-base fetch failure\n' >&2
+          exit 1
+        fi
+        repo_root="$2"
+        last_arg=""
+        for arg in "$@"; do
+          last_arg="$arg"
+        done
+        export GIT_ALLOW_PROTOCOL=file
+        exec #{Shellwords.shellescape(REAL_GIT)} -C "$repo_root" fetch --no-tags --force "$PREFLIGHT_TEST_FETCH_SOURCE" "$last_arg"
+      fi
+      exec #{Shellwords.shellescape(REAL_GIT)} "$@"
+    SH
+    FileUtils.chmod(0o755, wrapper)
+  end
+
+  def git!(*args)
+    return if system(clean_git_env, REAL_GIT, *args)
+
+    raise "git command failed: #{args.shelljoin}"
+  end
+
+  def git_output(*args)
+    output, status = Open3.capture2e(clean_git_env, REAL_GIT, *args)
+    raise "git command failed: #{args.shelljoin}\n#{output}" unless status.success?
+
+    output.strip
+  end
+
   def clean_git_env
     PrBatchGitProbeEnv.probe_env
   end
@@ -2792,9 +3164,10 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
-          cat <<'JSON'
-      {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ] || [ "$mode" = "trusted-base-high-risk" ]; then
+          pr_body="${PREFLIGHT_TEST_PR_BODY:-}"
+          cat <<JSON
+      {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"${pr_body}","user":{"login":"justin808"},"pull_request":{}}
       JSON
         elif [ "$mode" = "blocking-issue" ]; then
           cat <<'JSON'
@@ -2834,6 +3207,22 @@ class PrSecurityPreflightTest < Minitest::Test
       JSON
         fi
         exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123" ]; then
+        if [ "$mode" = "trusted-base-high-risk" ]; then
+          head_sha="${PREFLIGHT_TEST_REST_HEAD_SHA:-${PREFLIGHT_TEST_HEAD_SHA}}"
+          merge_sha="${PREFLIGHT_TEST_REST_MERGE_SHA:-${PREFLIGHT_TEST_MERGE_SHA}}"
+          state="${PREFLIGHT_TEST_PR_STATE:-closed}"
+          merged="${PREFLIGHT_TEST_PR_MERGED:-true}"
+          merged_at="${PREFLIGHT_TEST_PR_MERGED_AT:-2026-08-28T00:00:00Z}"
+          head_repo="${PREFLIGHT_TEST_HEAD_REPO:-owner/repo}"
+          base_repo="${PREFLIGHT_TEST_BASE_REPO:-owner/repo}"
+          cat <<JSON
+      {"number":123,"state":"${state}","merged":${merged},"merged_at":"${merged_at}","head":{"sha":"${head_sha}","repo":{"full_name":"${head_repo}"}},"base":{"repo":{"full_name":"${base_repo}"}},"merge_commit_sha":"${merge_sha}"}
+      JSON
+          exit 0
+        fi
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
@@ -2888,6 +3277,29 @@ class PrSecurityPreflightTest < Minitest::Test
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
       JSON
           fi
+        elif [ "$mode" = "trusted-base-high-risk" ]; then
+          head_sha="${PREFLIGHT_TEST_GRAPH_HEAD_SHA:-${PREFLIGHT_TEST_HEAD_SHA}}"
+          merge_sha="${PREFLIGHT_TEST_GRAPH_MERGE_SHA:-${PREFLIGHT_TEST_MERGE_SHA}}"
+          state="${PREFLIGHT_TEST_GRAPH_STATE:-MERGED}"
+          cross_repository="${PREFLIGHT_TEST_CROSS_REPOSITORY:-false}"
+          head_repo="${PREFLIGHT_TEST_GRAPH_HEAD_REPO:-owner/repo}"
+          author_login="${PREFLIGHT_TEST_AUTHOR_LOGIN:-justin808}"
+          participant_total="${PREFLIGHT_TEST_PARTICIPANT_TOTAL:-1}"
+          participant_nodes="${PREFLIGHT_TEST_PARTICIPANT_NODES:-}"
+          if [ -z "$participant_nodes" ]; then
+            participant_nodes='[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+          fi
+          commit_author_total="${PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL:-1}"
+          if [ "${PREFLIGHT_TEST_MISSING_ACTOR:-}" = "1" ]; then
+            author_json=null
+            commit_user_json=null
+          else
+            author_json="$(printf '{"login":"%s"}' "$author_login")"
+            commit_user_json="$(printf '{"login":"%s"}' "$author_login")"
+          fi
+          cat <<JSON
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","state":"${state}","mergedAt":"2026-08-28T00:00:00Z","isCrossRepository":${cross_repository},"headRefOid":"${head_sha}","headRepository":{"nameWithOwner":"${head_repo}"},"mergeCommit":{"oid":"${merge_sha}"},"author":${author_json},"participants":{"totalCount":${participant_total},"pageInfo":{"hasNextPage":false},"nodes":${participant_nodes}},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":${commit_author_total},"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":${commit_user_json}}]}}}]}}}}}
+      JSON
         elif [ "$mode" = "warning-diff" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
@@ -3047,7 +3459,7 @@ class PrSecurityPreflightTest < Minitest::Test
       [[{"id":701,"html_url":"https://github.com/owner/repo/issues/123#issuecomment-701","user":{"login":"github-actions[bot]"},"body":"${blocked_issue_body}"}]]
       JSON
           exit 0
-        elif [ "$mode" = "untrusted-comment" ]; then
+        elif [ "$mode" = "untrusted-comment" ] || { [ "$mode" = "trusted-base-high-risk" ] && [ "${PREFLIGHT_TEST_UNTRUSTED_COMMENT:-}" = "1" ]; }; then
           cat <<'JSON'
       [[{"id":702,"html_url":"https://github.com/owner/repo/issues/123#issuecomment-702","user":{"login":"unknown-user"},"body":"Looks good to me."}]]
       JSON
@@ -3120,6 +3532,10 @@ class PrSecurityPreflightTest < Minitest::Test
       if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
         for arg in "$@"; do
           if [ "$arg" = "--name-only" ]; then
+            if [ "$mode" = "trusted-base-high-risk" ]; then
+              printf '.github/workflows/test.yml\nAGENTS.md\n'
+              exit 0
+            fi
             if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
               printf 'docs/safe.md\n'
               exit 0
@@ -3128,6 +3544,31 @@ class PrSecurityPreflightTest < Minitest::Test
             exit 0
           fi
         done
+        if [ "$mode" = "trusted-base-high-risk" ]; then
+          if [ "${PREFLIGHT_TEST_SUSPICIOUS_DIFF:-}" = "1" ]; then
+            cat <<'DIFF'
+      diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+      index 0000000..1111111 100644
+      --- a/.github/workflows/test.yml
+      +++ b/.github/workflows/test.yml
+      +rm -rf tmp/build
+      DIFF
+            exit 0
+          fi
+          cat <<'DIFF'
+      diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+      index 0000000..1111111 100644
+      --- a/.github/workflows/test.yml
+      +++ b/.github/workflows/test.yml
+      +safe workflow change
+      diff --git a/AGENTS.md b/AGENTS.md
+      index 0000000..1111111 100644
+      --- a/AGENTS.md
+      +++ b/AGENTS.md
+      +safe agent guidance
+      DIFF
+          exit 0
+        fi
         if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'DIFF'
       diff --git a/docs/safe.md b/docs/safe.md

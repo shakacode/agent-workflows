@@ -432,7 +432,17 @@ Before implementation or worker launch, produce:
 
    Add `--fail-on-high-risk-files` when high-risk workflow, script, hook, or
    agent-instruction diffs should block worker launch instead of being reported
-   as advisory exact-target context.
+   as advisory exact-target context. A repository may opt in through the exact
+   `pr_security_preflight.trusted_base_high_risk_acceptance` mapping in its
+   trusted-base `.agents/agent-workflow.yml`. In that mode, accept the separate
+   `TRUSTED_BASE_HIGH_RISK_ACCEPTED` receipt only when the helper freshly fetched
+   the configured same-repository remote/ref and bound the exact merged PR head,
+   merge result, fetched base, policy source, and all high-risk paths. It waives
+   only `high-risk-files`; manual acknowledgement remains a distinct record.
+   Rerun preflight after any base movement before launch so provenance is
+   refreshed. Missing or malformed policy, incomplete or untrusted facts, a
+   fork/open PR, mismatch, suspicious content, or non-ancestor result remains
+   blocked.
 5. A short batch table:
    - target number and title
    - branch name

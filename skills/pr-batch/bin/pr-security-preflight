@@ -195,6 +195,10 @@ def issue_payload(repo, number)
   run_gh_json("api", "repos/#{repo}/issues/#{number}")
 end
 
+def pull_request_payload(repo, number)
+  run_gh_json("api", "repos/#{repo}/pulls/#{number}")
+end
+
 def visible_actor_logins(node, graph_field)
   actors = Set.new
   target = node.fetch("data").fetch("repository").fetch(graph_field)
@@ -241,6 +245,26 @@ def capture_git_probe(*args)
 rescue Timeout::Error
   warn "WARN: git #{args.join(' ')} timed out after #{GIT_TIMEOUT_SECONDS}s"
   ["", "", nil]
+end
+
+def trusted_git_probe_env
+  git_probe_env.merge(
+    "GIT_ALLOW_PROTOCOL" => "https:http:ssh",
+    "GIT_CONFIG_GLOBAL" => File::NULL,
+    "GIT_CONFIG_NOSYSTEM" => "1",
+    "GIT_CONFIG_SYSTEM" => File::NULL,
+    "GIT_NO_REPLACE_OBJECTS" => "1",
+    "GIT_OPTIONAL_LOCKS" => "0",
+    "GIT_TERMINAL_PROMPT" => "0"
+  )
+end
+
+def capture_trusted_git_probe(*args)
+  Timeout.timeout(GIT_TIMEOUT_SECONDS) do
+    Open3.capture3(trusted_git_probe_env, *args)
+  end
+rescue Timeout::Error
+  ["", "git #{args.join(' ')} timed out after #{GIT_TIMEOUT_SECONDS}s", nil]
 end
 
 def resolved_trust_config(explicit_path, repo:, github_host:)
@@ -1048,6 +1072,182 @@ def high_risk_files(files)
   end
 end
 
+WORKFLOW_CONFIG_PATH = ".agents/agent-workflow.yml"
+TRUSTED_BASE_POLICY_KEYS = Set.new(%w[enabled repository remote ref]).freeze
+
+def trusted_base_policy_from_yaml(yaml, repo:)
+  data = YAML.safe_load(yaml, aliases: false)
+  return [nil, "workflow config must be a YAML mapping"] unless data.is_a?(Hash)
+
+  container = data["pr_security_preflight"]
+  return [nil, "pr_security_preflight mapping is missing"] unless container.is_a?(Hash)
+
+  policy = container["trusted_base_high_risk_acceptance"]
+  return [nil, "trusted_base_high_risk_acceptance mapping is missing"] unless policy.is_a?(Hash)
+  return [nil, "trusted_base_high_risk_acceptance keys must be exactly enabled, repository, remote, ref"] unless policy.keys.to_set == TRUSTED_BASE_POLICY_KEYS
+  return [nil, "trusted_base_high_risk_acceptance.enabled must be true"] unless policy["enabled"] == true
+
+  repository = policy["repository"]
+  return [nil, "trusted_base_high_risk_acceptance.repository must match #{repo}"] unless repository.is_a?(String) && repository.casecmp?(repo)
+
+  remote = policy["remote"]
+  unless remote.is_a?(String) && remote.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/) && !remote.end_with?(".")
+    return [nil, "trusted_base_high_risk_acceptance.remote is malformed"]
+  end
+
+  ref = policy["ref"]
+  unless ref.is_a?(String) && ref.match?(%r{\Arefs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*\z}) &&
+         !ref.include?("..") && !ref.include?("@{") && !ref.end_with?(".") && !ref.end_with?("/") &&
+         ref.split("/").none? { |component| component.empty? || component.start_with?(".") || component.end_with?(".lock") }
+    return [nil, "trusted_base_high_risk_acceptance.ref is malformed"]
+  end
+
+  [policy, nil]
+rescue Psych::Exception => e
+  [nil, "workflow config YAML is malformed: #{e.message.lines.first&.strip}"]
+end
+
+def bootstrap_trusted_base_policy(root, repo:)
+  path = File.join(root, WORKFLOW_CONFIG_PATH)
+  return [nil, "#{WORKFLOW_CONFIG_PATH} is missing from the current worktree"] unless File.file?(path)
+
+  trusted_base_policy_from_yaml(File.read(path), repo:)
+rescue SystemCallError => e
+  [nil, "could not read bootstrap policy: #{e.message}"]
+end
+
+def trusted_remote_url(root, policy, repo:, github_host:)
+  remote = policy.fetch("remote")
+  stdout, _stderr, status = capture_trusted_git_probe(
+    "git", "-C", root, "config", "--local", "--get-all", "remote.#{remote}.url"
+  )
+  urls = status&.success? ? stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).reject(&:empty?) : []
+  return [nil, "trusted remote #{remote.inspect} must have exactly one local URL"] unless urls.one?
+
+  rewrite_stdout, _rewrite_stderr, rewrite_status = capture_trusted_git_probe(
+    "git", "-C", root, "config", "--local", "--get-regexp", "^url\\..*\\.insteadOf$"
+  )
+  if rewrite_status&.success? && !rewrite_stdout.to_s.empty?
+    return [nil, "local url.*.insteadOf rewrites make trusted remote provenance ambiguous"]
+  end
+
+  remote_info = github_remote_from_remote_url(urls.first)
+  unless remote_info && %w[https ssh].include?(remote_info.fetch(:scheme)) &&
+         remote_matches_github_host?(remote_info, github_host) && remote_info.fetch(:repo).casecmp?(repo)
+    return [nil, "trusted remote #{remote.inspect} does not resolve to #{github_host}/#{repo} over HTTPS or SSH"]
+  end
+
+  [urls.first, nil]
+rescue StandardError => e
+  [nil, "could not verify trusted remote: #{e.message.lines.first&.strip}"]
+end
+
+def fetch_trusted_base(root, remote_url, ref)
+  _stdout, stderr, status = capture_trusted_git_probe(
+    "git", "-C", root, "fetch", "--no-tags", "--force", remote_url, ref
+  )
+  return [nil, "fetch of trusted remote/ref failed: #{stderr.to_s.lines.first&.strip}"] unless status&.success?
+
+  stdout, verify_stderr, verify_status = capture_trusted_git_probe(
+    "git", "-C", root, "rev-parse", "--verify", "FETCH_HEAD^{commit}"
+  )
+  base_sha = stdout.to_s.strip
+  unless verify_status&.success? && base_sha.match?(/\A[0-9a-f]{40,64}\z/)
+    return [nil, "fetched trusted base could not be resolved: #{verify_stderr.to_s.lines.first&.strip}"]
+  end
+
+  [base_sha, nil]
+end
+
+def fetched_trusted_base_policy(root, base_sha, repo:)
+  stdout, stderr, status = capture_trusted_git_probe(
+    "git", "-C", root, "show", "#{base_sha}:#{WORKFLOW_CONFIG_PATH}"
+  )
+  return [nil, "fetched trusted base lacks #{WORKFLOW_CONFIG_PATH}: #{stderr.to_s.lines.first&.strip}"] unless status&.success?
+
+  trusted_base_policy_from_yaml(stdout.force_encoding("UTF-8").scrub, repo:)
+end
+
+def exact_pr_provenance(result, repo:)
+  target = result.fetch(:target)
+  number = result.fetch(:number)
+  rest = pull_request_payload(repo, number)
+  head_sha = target["headRefOid"]
+  merge_sha = target.dig("mergeCommit", "oid")
+
+  required_graph_facts =
+    target["number"] == number && target["state"] == "MERGED" && !target["mergedAt"].to_s.empty? &&
+    target["isCrossRepository"] == false && target.dig("headRepository", "nameWithOwner").to_s.casecmp?(repo) &&
+    head_sha.to_s.match?(/\A[0-9a-f]{40,64}\z/) && merge_sha.to_s.match?(/\A[0-9a-f]{40,64}\z/)
+  return [nil, "GraphQL PR repository/state/head/merge facts are missing or inconsistent"] unless required_graph_facts
+
+  rest_head_sha = rest.dig("head", "sha")
+  rest_merge_sha = rest["merge_commit_sha"]
+  required_rest_facts =
+    rest["number"] == number && rest["state"] == "closed" && rest["merged"] == true &&
+    !rest["merged_at"].to_s.empty? && rest.dig("head", "repo", "full_name").to_s.casecmp?(repo) &&
+    rest.dig("base", "repo", "full_name").to_s.casecmp?(repo) &&
+    rest_head_sha.to_s.match?(/\A[0-9a-f]{40,64}\z/) && rest_merge_sha.to_s.match?(/\A[0-9a-f]{40,64}\z/)
+  return [nil, "REST PR repository/state/head/merge facts are missing or inconsistent"] unless required_rest_facts
+  return [nil, "GraphQL and REST head SHAs do not match"] unless head_sha == rest_head_sha
+  return [nil, "GraphQL and REST merge SHAs do not match"] unless merge_sha == rest_merge_sha
+
+  [{ head_sha:, merge_sha: }, nil]
+rescue StandardError => e
+  [nil, "could not verify exact PR provenance: #{e.message.lines.first&.strip}"]
+end
+
+def clean_for_trusted_base_high_risk_acceptance?(result)
+  result.fetch(:target_is_pr) && result.fetch(:trusted_source) &&
+    result.fetch(:all_participants_visible) &&
+    result.fetch(:graph_coverage_findings).empty? && result.fetch(:participant_findings).empty? &&
+    result.fetch(:untrusted_interactions).empty? && result.fetch(:suspicious).empty? &&
+    result.fetch(:suspicious_warnings).empty?
+end
+
+def trusted_base_high_risk_receipt(result, repo:, github_host:)
+  return [nil, "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"] unless clean_for_trusted_base_high_risk_acceptance?(result)
+
+  root = git_toplevel
+  return [nil, "could not resolve the repository worktree"] unless root
+  return [nil, "current worktree remotes do not match #{github_host}/#{repo}"] unless git_root_matches_repo?(root, repo, github_host:)
+
+  bootstrap_policy, error = bootstrap_trusted_base_policy(root, repo:)
+  return [nil, error] unless bootstrap_policy
+
+  remote_url, error = trusted_remote_url(root, bootstrap_policy, repo:, github_host:)
+  return [nil, error] unless remote_url
+
+  base_sha, error = fetch_trusted_base(root, remote_url, bootstrap_policy.fetch("ref"))
+  return [nil, error] unless base_sha
+
+  fetched_policy, error = fetched_trusted_base_policy(root, base_sha, repo:)
+  return [nil, error] unless fetched_policy
+  return [nil, "bootstrap and fetched-base trusted-base policies do not match"] unless fetched_policy == bootstrap_policy
+
+  pr_provenance, error = exact_pr_provenance(result, repo:)
+  return [nil, error] unless pr_provenance
+
+  merge_sha = pr_provenance.fetch(:merge_sha)
+  _stdout, stderr, status = capture_trusted_git_probe(
+    "git", "-C", root, "merge-base", "--is-ancestor", merge_sha, base_sha
+  )
+  return [nil, "PR merge result is not an ancestor of fetched trusted base: #{stderr.to_s.lines.first&.strip}"] unless status&.success?
+
+  receipt = {
+    repository: repo,
+    pr: result.fetch(:number),
+    head_sha: pr_provenance.fetch(:head_sha),
+    merge_sha:,
+    base_sha:,
+    policy_source: "#{base_sha}:#{WORKFLOW_CONFIG_PATH}",
+    policy_remote: bootstrap_policy.fetch("remote"),
+    policy_ref: bootstrap_policy.fetch("ref"),
+    high_risk_paths: result.fetch(:risky_files).sort.uniq
+  }
+  [receipt, nil]
+end
+
 PARTICIPANT_NODES_FRAGMENT = <<~GRAPHQL
   id
   login
@@ -1335,6 +1535,12 @@ def participant_logins_and_unknown_count(target)
   { participants:, unknown_count: }
 end
 
+def all_participants_visible?(target, visible)
+  participant_data = participant_logins_and_unknown_count(target)
+  participant_data.fetch(:unknown_count).zero? &&
+    participant_data.fetch(:participants).all? { |login, _node_id| visible.include?(login) }
+end
+
 def canonical_bot_login(node_id, canonical_bot_cache)
   return if node_id.to_s.empty?
 
@@ -1467,6 +1673,8 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     suspicious_warnings: suspicious_findings.fetch(:suspicious_warnings),
     target:,
     target_is_pr:,
+    all_participants_visible: all_participants_visible?(target, visible),
+    trusted_source: target_is_pr && trusted_pr_source?(repo, target, trust_config:, team_cache:),
     metadata_only_interactions:,
     untrusted_interactions:
   }
@@ -1561,7 +1769,7 @@ def record_blocker(number, risk_id, message, overall_blockers, acknowledged_find
 end
 
 def record_blockers(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:,
-                    strict_trust:)
+                    strict_trust:, trusted_base_receipts:)
   number = result.fetch(:number)
   if result.fetch(:graph_coverage_findings).any?
     record_blocker(
@@ -1605,6 +1813,11 @@ def record_blockers(result, overall_blockers, acknowledged_findings:, acknowledg
   end
   return if result.fetch(:risky_files).empty? || !fail_on_high_risk_files
 
+  if !acknowledged_risks.fetch(number, Set.new).include?("high-risk-files") && result[:trusted_base_receipt]
+    trusted_base_receipts << result.fetch(:trusted_base_receipt)
+    return
+  end
+
   record_blocker(
     number,
     "high-risk-files",
@@ -1631,7 +1844,7 @@ def print_file_findings(result)
 end
 
 def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:,
-                      strict_trust:)
+                      strict_trust:, trusted_base_receipts:)
   target_label = result.fetch(:target_is_pr) ? "PR" : "Issue"
   target = result.fetch(:target)
 
@@ -1651,8 +1864,13 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
     acknowledged_findings:,
     acknowledged_risks:,
     fail_on_high_risk_files:,
-    strict_trust:
+    strict_trust:,
+    trusted_base_receipts:
   )
+
+  if result[:trusted_base_rejection]
+    puts "  Trusted-base high-risk acceptance unavailable: #{result.fetch(:trusted_base_rejection)}"
+  end
 
   puts
 end
@@ -1671,7 +1889,12 @@ pr_query = <<~GRAPHQL
         number
         title
         url
+        state
+        mergedAt
+        isCrossRepository
         headRefOid
+        headRepository { nameWithOwner }
+        mergeCommit { oid }
         author { login }
         participants(first:100) {
           totalCount
@@ -1721,6 +1944,7 @@ GRAPHQL
 
 overall_blockers = []
 acknowledged_findings = []
+trusted_base_receipts = []
 permission_cache = {}
 team_cache = {}
 canonical_bot_cache = {}
@@ -1749,13 +1973,20 @@ ARGV.each do |arg|
     team_cache:,
     canonical_bot_cache:
   )
+  if options[:fail_on_high_risk_files] && result.fetch(:risky_files).any? &&
+     !options.fetch(:acknowledged_risks).fetch(number, Set.new).include?("high-risk-files")
+    receipt, rejection = trusted_base_high_risk_receipt(result, repo:, github_host:)
+    result[:trusted_base_receipt] = receipt if receipt
+    result[:trusted_base_rejection] = rejection if rejection
+  end
   print_scan_result(
     result,
     overall_blockers,
     acknowledged_findings:,
     acknowledged_risks: options.fetch(:acknowledged_risks),
     fail_on_high_risk_files: options[:fail_on_high_risk_files],
-    strict_trust: options[:strict_trust]
+    strict_trust: options[:strict_trust],
+    trusted_base_receipts:
   )
 end
 
@@ -1773,6 +2004,10 @@ end
 if acknowledged_findings.any?
   puts "Acknowledged security preflight findings:"
   acknowledged_findings.each { |finding| puts "- #{finding}" }
+end
+
+trusted_base_receipts.each do |receipt|
+  puts "TRUSTED_BASE_HIGH_RISK_ACCEPTED #{JSON.generate(receipt)}"
 end
 
 puts "SECURITY_PREFLIGHT_OK"

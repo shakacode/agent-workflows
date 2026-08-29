@@ -162,6 +162,51 @@ acknowledged findings in the handoff.
 flag is ignored and the helper warns, because there is no blocking risk to
 waive.
 
+## Trusted-Base High-Risk Acceptance
+
+A repository may opt in to accepting the `high-risk-files` finding without a
+fresh manual acknowledgement after the exact same-repository PR result has
+already landed on a trusted base. The opt-in is closed-schema policy in
+`.agents/agent-workflow.yml`:
+
+```yaml
+pr_security_preflight:
+  trusted_base_high_risk_acceptance:
+    enabled: true
+    repository: OWNER/REPO
+    remote: origin
+    ref: refs/heads/BASE_BRANCH
+```
+
+The mapping must contain exactly those four keys. `repository` must match the
+authenticated `--repo`; `remote` must be one unambiguous local remote name whose
+single stored HTTPS or SSH URL resolves to that repository; and `ref` must be a
+full `refs/heads/...` ref. Missing, extra, malformed, `UNKNOWN`, or mismatched
+values leave the ordinary high-risk blocker in place.
+
+The helper treats worktree policy only as bootstrap. It fetches the exact
+configured ref from the verified remote with ambient Git configuration and URL
+rewrites disabled, resolves the fetched commit, then reads
+`.agents/agent-workflow.yml` again from that commit. The fetched mapping must be
+complete and exactly match the bootstrap mapping. Acceptance additionally
+requires a closed merged non-fork PR, matching complete REST and GraphQL
+repository/head/merge facts, trusted and fully visible actors/interactions,
+complete API coverage, no suspicious findings or warnings, and proof that the
+exact merge result is an ancestor of the freshly fetched base.
+
+Success emits a separate one-line JSON receipt beginning with
+`TRUSTED_BASE_HIGH_RISK_ACCEPTED`. It binds the repository, PR number, head SHA,
+merge SHA, fetched base SHA, fetched policy source, configured remote/ref, and
+every detected high-risk path. It is not an `Acknowledged security preflight
+findings` record. A supplied `--acknowledge-risk ...:high-risk-files` remains the
+manual path and does not emit the trusted-base receipt.
+
+This opt-in recognizes repository history as durable acceptance of the exact
+merge result; it does not make PR text, green checks, or an arbitrary local
+branch provenance. Any base movement invalidates the prior base binding. Rerun
+the preflight immediately before worker launch or other dependent action so it
+fetches again and emits a receipt for the current trusted base.
+
 ## Security Tradeoffs
 
 Trusting an actor means future comments, review comments, and reviews from that
@@ -179,7 +224,10 @@ Be especially careful with:
   trust. Use exact acknowledgement only after reading the location.
 - high-risk files: changed workflows, scripts, hooks, and agent instructions are
   reported even when they are not blocking by default. Keep them visible in PR
-  handoffs.
+  handoffs. Trusted-base acceptance is appropriate only when repository policy
+  deliberately treats the fetched base's containment of that exact merge result
+  as sufficient high-risk review history; all other security findings still
+  fail closed.
 
 ## Operator Flow
 
