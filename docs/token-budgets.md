@@ -108,6 +108,15 @@ read: it must be a regular file no larger than 1 MiB. An exact 1 MiB regular
 file and a symlink resolving to such a file remain valid; oversized plans fail
 as `trusted-plan-oversized`, while FIFOs, other non-regular objects, and
 filesystem read failures fail as `trusted-plan-unreadable`.
+Persisted budget state has a separate 8 MiB whole-file bound. This is larger
+than the 1 MiB trusted-plan bound because initialization retains the base and
+effective budgets and binds the initialization command into the append-only
+control-event chain, then needs bounded headroom for later receipts and control
+events. Exact 8 MiB regular state remains readable; larger state fails closed
+as `corrupt-persisted-state`. A successor whose canonical serialization would
+exceed 8 MiB fails as `persisted-state-oversized` before temporary-file creation
+or rename, preserving the prior readable state byte-for-byte. The state remains
+strictly bounded; this contract does not make it unbounded or add compaction.
 Admission denials are valid decisions and exit zero so callers can persist the
 receipt and checkpoint safely. State updates use an exclusive adjacent lock,
 an fsynced private temporary file, and atomic rename. Replaying an id with a

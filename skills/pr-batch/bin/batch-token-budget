@@ -37,7 +37,7 @@ module BatchTokenBudget
   /ix
   TRUSTED_PLAN_MAX_BYTES = 1024 * 1024
   USAGE_RECEIPT_MAX_BYTES = TRUSTED_PLAN_MAX_BYTES
-  PERSISTED_STATE_MAX_BYTES = TRUSTED_PLAN_MAX_BYTES
+  PERSISTED_STATE_MAX_BYTES = 8 * 1024 * 1024
   MAX_COMMAND_TIME_SKEW_SECONDS = 30
   V2_UNKNOWN_REASON_GLOBAL_CODES = %w[
     state_database_missing state_database_unsupported sqlite3_cli_unavailable
@@ -2508,7 +2508,12 @@ module BatchTokenBudget
 
   def v2_usage_receipt_evidence_consistent?(usage_receipt)
     evidence = usage_receipt["evidence"]
-    return true unless evidence["status"] == "complete"
+    unless evidence["status"] == "complete"
+      batch_tokens = usage_receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+      return v2_usage_receipt_topology_consistent?(usage_receipt) if positive_integer?(batch_tokens)
+
+      return true
+    end
     return false unless evidence["unknown"].empty?
 
     lanes = usage_receipt.fetch("lanes")
@@ -3149,7 +3154,7 @@ module BatchTokenBudget
 
       raise InvalidInput, "corrupt-persisted-state" if opened_stat.size > PERSISTED_STATE_MAX_BYTES
 
-      persisted_json = file.read(PERSISTED_STATE_MAX_BYTES + 1)
+      persisted_json = file.read(PERSISTED_STATE_MAX_BYTES + 1) || ""
       raise InvalidInput, "corrupt-persisted-state" if persisted_json.bytesize > PERSISTED_STATE_MAX_BYTES
 
       parse_json_strict(persisted_json)

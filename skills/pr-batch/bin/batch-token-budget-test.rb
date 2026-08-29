@@ -415,6 +415,25 @@ class BatchTokenBudgetTest < Minitest::Test
     )
   end
 
+  def mark_receipt_route_unknown(receipt)
+    physical_rollout_id = receipt.dig("coordinator", "evidence", "physical_rollout_ids").first
+    receipt.fetch("evidence").merge!(
+      "status" => "UNKNOWN",
+      "unknown" => [{
+        "status" => "UNKNOWN",
+        "code" => "route_metadata_missing",
+        "thread_id" => receipt.dig("coordinator", "root_thread_id"),
+        "physical_rollout_id" => physical_rollout_id,
+        "line" => 2,
+        "fields" => ["model"]
+      }]
+    )
+    nested_scopes = [receipt.fetch("coordinator"), *receipt.fetch("lanes")]
+    nested_scopes.concat(receipt.fetch("lanes").flat_map { |lane| lane.fetch("workers") })
+    nested_scopes.each { |scope| scope.fetch("evidence")["status"] = "UNKNOWN" }
+    receipt
+  end
+
   def usage_window(
     receipt, from:, to:, coordinator_tokens:, lane_tokens:, batch_unattributed_tokens: 0,
     coordinator_turns: nil, lane_turns: nil, batch_unattributed_turns: nil
@@ -799,11 +818,11 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def test_persisted_state_read_is_bounded_at_one_mibibyte
+  def test_persisted_state_read_is_bounded_at_eight_mibibytes
     with_state do |state_path|
       initialize_budget(state_path)
       exact_state = File.binread(state_path)
-      File.binwrite(state_path, exact_state.ljust(1_048_576))
+      File.binwrite(state_path, exact_state.ljust(8 * 1_048_576))
 
       accepted, accepted_stderr, accepted_status = reserve(
         state_path,
@@ -813,7 +832,7 @@ class BatchTokenBudgetTest < Minitest::Test
       assert accepted_status.success?, accepted_stderr
       assert_equal "admitted", accepted.fetch("status")
 
-      oversized_state = File.binread(state_path).ljust(1_048_577)
+      oversized_state = File.binread(state_path).ljust((8 * 1_048_576) + 1)
       File.binwrite(state_path, oversized_state)
       before = Digest::SHA256.hexdigest(File.binread(state_path))
       denied, denied_stderr, denied_status = reserve(
@@ -829,12 +848,26 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_zero_byte_persisted_state_fails_as_structured_corrupt_input_without_mutation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      File.binwrite(state_path, "")
+
+      denied, stderr, status = reserve(state_path, id: "zero-byte-state", tokens: 1)
+
+      refute status.success?
+      assert_nil denied
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+      assert_equal "", File.binread(state_path)
+    end
+  end
+
   def test_persist_rejects_an_oversized_successor_without_replacing_readable_state
     with_state do |state_path|
       initialize_budget(state_path)
       near_limit_request = reservation(
         id: "near-limit-successor",
-        target_id: "t" * 519_000,
+        target_id: "t" * 4_188_900,
         tokens: 600
       )
       stopped, stopped_stderr, stopped_status = run_helper(
@@ -845,8 +878,8 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "budget-exhausted", stopped.fetch("status")
 
       readable_state = File.binread(state_path)
-      assert_operator readable_state.bytesize, :<=, 1_048_576
-      assert_operator readable_state.bytesize, :>, 1_047_000
+      assert_operator readable_state.bytesize, :<=, 8 * 1_048_576
+      assert_operator readable_state.bytesize, :>, 8_388_000
 
       denied, denied_stderr, denied_status = run_helper(
         state_path,
@@ -926,6 +959,48 @@ class BatchTokenBudgetTest < Minitest::Test
       refute status.success?
       assert_nil output
       assert_equal "trusted-plan-oversized", JSON.parse(stderr).fetch("reason")
+    end
+  end
+
+  def test_near_one_mibibyte_trusted_plan_initializes_with_independent_state_headroom
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      lanes = candidate.dig("scopes", "lanes")
+      lanes.clear
+      2_300.times do |index|
+        lane_id = format("lane-%<index>04d-%<padding>s", index: index, padding: "x" * 370)
+        lanes[lane_id] = { "limit_tokens" => 1 }
+      end
+      plan_json = JSON.generate(canonicalize(candidate))
+      assert_operator plan_json.bytesize, :>, 900_000
+      assert_operator plan_json.bytesize, :<=, 1_048_576
+
+      initialized, stderr, status = run_helper(
+        state_path,
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => candidate)
+      )
+
+      assert status.success?, stderr
+      assert_equal "initialized", initialized.fetch("status")
+      assert_operator File.binread(state_path).bytesize, :>, 3 * 1_048_576
+      assert_operator File.binread(state_path).bytesize, :<=, 8 * 1_048_576
+
+      replayed, replay_stderr, replay_status = run_helper(
+        state_path,
+        command("initialize", "evaluated_at" => "2026-08-12T12:00:00Z", "budget" => candidate)
+      )
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+
+      closed, closeout_stderr, closeout_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T12:01:00Z")
+      )
+      assert closeout_status.success?, closeout_stderr
+      assert_equal "not-complete", closed.fetch("status")
+      persisted = JSON.parse(File.binread(state_path))
+      assert_equal 2, persisted.fetch("control_events").length
+      assert_operator File.binread(state_path).bytesize, :<=, 8 * 1_048_576
     end
   end
 
@@ -6141,6 +6216,68 @@ class BatchTokenBudgetTest < Minitest::Test
         assert_equal state_before, File.binread(state_path), name
         assert_empty JSON.parse(File.binread(state_path)).fetch("usage_receipts"), name
       end
+    end
+  end
+
+  def test_permitted_top_level_unknown_rejects_duplicate_sibling_lane_topology_without_mutating_state
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 40, "lane-b" => 60 }
+      )
+      mark_receipt_route_unknown(receipt)
+      lane_a, lane_b = receipt.fetch("lanes")
+      lane_b["root_thread_id"] = lane_a.fetch("root_thread_id")
+      lane_b["evidence"] = JSON.parse(JSON.generate(lane_a.fetch("evidence")))
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "unknown-duplicate-sibling-lane-topology")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      state = JSON.parse(File.binread(state_path))
+      assert_empty state.fetch("usage_receipts")
+      assert_nil state["usage_cursor"]
+      assert_equal JSON.parse(state_before).fetch("control_events"), state.fetch("control_events")
+    end
+  end
+
+  def test_permitted_top_level_unknown_rejects_worker_coordinator_topology_overlap_without_mutating_state
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt = lane_component_usage_window(
+        state_path,
+        lane_tokens: 40,
+        lane_turns: 1,
+        worker_tokens: 40,
+        worker_turns: 1,
+        unattributed_tokens: 0,
+        unattributed_turns: 0
+      )
+      mark_receipt_route_unknown(receipt)
+      coordinator = receipt.fetch("coordinator")
+      worker = receipt.dig("lanes", 0, "workers", 0)
+      worker["root_thread_id"] = coordinator.fetch("root_thread_id")
+      worker["evidence"] = JSON.parse(JSON.generate(coordinator.fetch("evidence")))
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "unknown-worker-coordinator-overlap")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      state = JSON.parse(File.binread(state_path))
+      assert_empty state.fetch("usage_receipts")
+      assert_nil state["usage_cursor"]
+      assert_equal JSON.parse(state_before).fetch("control_events"), state.fetch("control_events")
     end
   end
 
