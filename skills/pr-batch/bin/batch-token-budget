@@ -2155,15 +2155,25 @@ module BatchTokenBudget
     required = %w[first_session_ids physical_rollout_ids status]
     return false unless exact_object_keys?(value, required, ["first_session_id"])
     return false unless %w[complete UNKNOWN].include?(value["status"])
-    return false unless value["first_session_ids"].is_a?(Array) &&
-                        value["first_session_ids"].all? { |item| item.is_a?(String) }
-    return false unless value["physical_rollout_ids"].is_a?(Array) &&
-                        value["physical_rollout_ids"].uniq.length == value["physical_rollout_ids"].length &&
-                        value["physical_rollout_ids"].all? do |item|
+    first_session_ids = value["first_session_ids"]
+    physical_rollout_ids = value["physical_rollout_ids"]
+    return false unless first_session_ids.is_a?(Array) &&
+                        first_session_ids.all? { |item| item.is_a?(String) }
+    return false unless physical_rollout_ids.is_a?(Array) &&
+                        physical_rollout_ids.uniq.length == physical_rollout_ids.length &&
+                        physical_rollout_ids.all? do |item|
                           item.is_a?(String) && item.match?(/\Asha256:[0-9a-f]{64}\z/)
                         end
 
-    !value.key?("first_session_id") || value["first_session_id"].is_a?(String)
+    return !value.key?("first_session_id") || value["first_session_id"].is_a?(String) if value["status"] == "UNKNOWN"
+    return false if first_session_ids.empty? || physical_rollout_ids.empty?
+    return false unless first_session_ids.length == physical_rollout_ids.length
+
+    if first_session_ids.one?
+      value["first_session_id"] == first_session_ids.first
+    else
+      !value.key?("first_session_id")
+    end
   end
 
   def execution_usage_shape?(value)

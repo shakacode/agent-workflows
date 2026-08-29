@@ -108,6 +108,27 @@
         "first_session_ids": {"type": "array", "items": {"type": "string"}},
         "first_session_id": {"type": "string"}
       },
+      "allOf": [
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "complete"}}
+          },
+          "then": {
+            "properties": {
+              "physical_rollout_ids": {"minItems": 1},
+              "first_session_ids": {"minItems": 1}
+            },
+            "allOf": [
+              {
+                "if": {"properties": {"first_session_ids": {"maxItems": 1}}},
+                "then": {"required": ["first_session_id"]},
+                "else": {"not": {"required": ["first_session_id"]}}
+              }
+            ]
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "executionTurns": {

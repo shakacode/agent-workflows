@@ -1258,6 +1258,49 @@ class BatchUsageReceiptTest < Minitest::Test
     refute_empty JSONSchemer.schema(schema).validate(missing_turns).to_a
   end
 
+  def test_v2_schema_conditionally_requires_complete_scope_evidence_identities
+    receipt, = run_fixture("replay")
+    schema = JSONSchemer.schema(receipt_schema(2))
+    scopes = [receipt.fetch("coordinator")] + receipt.fetch("lanes") +
+             receipt.fetch("lanes").flat_map { |lane| lane.fetch("workers") }
+
+    scopes.each do |scope|
+      evidence = scope.fetch("evidence")
+      assert_equal "complete", evidence.fetch("status"), scope.fetch("id")
+      refute_empty evidence.fetch("physical_rollout_ids"), scope.fetch("id")
+      refute_empty evidence.fetch("first_session_ids"), scope.fetch("id")
+      assert_equal evidence.fetch("physical_rollout_ids").length,
+                   evidence.fetch("first_session_ids").length,
+                   scope.fetch("id")
+      if evidence.fetch("first_session_ids").one?
+        assert_equal evidence.fetch("first_session_ids").first, evidence.fetch("first_session_id"), scope.fetch("id")
+      else
+        refute evidence.key?("first_session_id"), scope.fetch("id")
+      end
+    end
+
+    empty_complete = JSON.parse(JSON.generate(receipt))
+    empty_complete_evidence = empty_complete.dig("coordinator", "evidence")
+    empty_complete_evidence["physical_rollout_ids"] = []
+    empty_complete_evidence["first_session_ids"] = []
+    empty_complete_evidence.delete("first_session_id")
+    refute_empty schema.validate(empty_complete).to_a
+
+    missing_singleton_alias = JSON.parse(JSON.generate(receipt))
+    missing_singleton_alias.dig("lanes", 0, "workers", 0, "evidence").delete("first_session_id")
+    refute_empty schema.validate(missing_singleton_alias).to_a
+
+    multiple_with_singleton_alias = JSON.parse(JSON.generate(receipt))
+    multiple_evidence = multiple_with_singleton_alias.dig("lanes", 0, "workers", 0, "evidence")
+    multiple_evidence.fetch("first_session_ids") << "second-session"
+    multiple_evidence.fetch("physical_rollout_ids") << "sha256:#{'f' * 64}"
+    refute_empty schema.validate(multiple_with_singleton_alias).to_a
+
+    empty_unknown = JSON.parse(JSON.generate(empty_complete))
+    empty_unknown.dig("coordinator", "evidence")["status"] = "UNKNOWN"
+    assert_empty schema.validate(empty_unknown).to_a
+  end
+
   def test_v2_schema_requires_top_level_unknown_evidence_to_name_at_least_one_exact_reason
     receipt, = run_fixture("replay")
     receipt.fetch("evidence").merge!("status" => "UNKNOWN", "unknown" => [])

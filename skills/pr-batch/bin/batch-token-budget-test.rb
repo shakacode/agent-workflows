@@ -3096,6 +3096,81 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_reconcile_rejects_malformed_complete_scope_evidence
+    scope_evidence = lambda do |receipt, scope|
+      case scope
+      when :coordinator
+        receipt.dig("coordinator", "evidence")
+      when :lane
+        receipt.dig("lanes", 0, "evidence")
+      when :worker
+        receipt.dig("lanes", 0, "workers", 0, "evidence")
+      else
+        flunk "unknown test scope: #{scope}"
+      end
+    end
+    empty_identities = lambda do |evidence|
+      evidence["physical_rollout_ids"] = []
+      evidence["first_session_ids"] = []
+      evidence.delete("first_session_id")
+    end
+    variants = [
+      ["coordinator-empty-identities", :coordinator, empty_identities],
+      ["lane-empty-identities", :lane, empty_identities],
+      ["worker-empty-identities", :worker, empty_identities],
+      ["mismatched-identity-counts", :coordinator, lambda do |evidence|
+        evidence["first_session_ids"] = [evidence.fetch("first_session_ids").first, "second-session"]
+        evidence["physical_rollout_ids"] = [evidence.fetch("physical_rollout_ids").first]
+        evidence.delete("first_session_id")
+      end],
+      ["missing-singleton-alias", :coordinator, lambda do |evidence|
+        evidence["first_session_ids"] = [evidence.fetch("first_session_ids").first]
+        evidence["physical_rollout_ids"] = [evidence.fetch("physical_rollout_ids").first]
+        evidence.delete("first_session_id")
+      end],
+      ["incorrect-singleton-alias", :coordinator, lambda do |evidence|
+        evidence["first_session_ids"] = [evidence.fetch("first_session_ids").first]
+        evidence["physical_rollout_ids"] = [evidence.fetch("physical_rollout_ids").first]
+        evidence["first_session_id"] = "wrong-session"
+      end],
+      ["multiple-identities-with-singleton-alias", :coordinator, lambda do |evidence|
+        first_session_id = evidence.fetch("first_session_ids").first
+        physical_rollout_id = evidence.fetch("physical_rollout_ids").first
+        extra_rollout_id = "sha256:#{'f' * 64}"
+        extra_rollout_id = "sha256:#{'e' * 64}" if extra_rollout_id == physical_rollout_id
+        evidence["first_session_ids"] = [first_session_id, "second-session"]
+        evidence["physical_rollout_ids"] = [physical_rollout_id, extra_rollout_id]
+        evidence["first_session_id"] = first_session_id
+      end]
+    ]
+
+    variants.each do |name, scope, mutate|
+      with_state do |state_path|
+        initialize_budget(state_path)
+        base_receipt, = real_descendants_usage_receipt(state_path)
+        receipt = usage_window(
+          base_receipt,
+          from: "2026-08-12T11:00:00Z",
+          to: "2026-08-12T12:00:00Z",
+          coordinator_tokens: 0,
+          lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+        )
+        evidence = scope_evidence.call(receipt, scope)
+        assert_equal "complete", evidence.fetch("status"), name
+        mutate.call(evidence)
+        state_before = File.binread(state_path)
+
+        blocked, stderr, status = reconcile_receipt(state_path, receipt, name)
+
+        assert status.success?, "#{name}: #{stderr}"
+        assert_equal "blocked", blocked.fetch("status"), name
+        assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason"), name
+        assert_equal state_before, File.binread(state_path), name
+        assert_empty JSON.parse(File.binread(state_path)).fetch("usage_receipts"), name
+      end
+    end
+  end
+
   def test_top_level_unknown_without_a_reason_is_rejected_before_accounting_or_persistence
     with_state do |state_path|
       initialize_budget(state_path)
