@@ -1580,6 +1580,20 @@ module BatchTokenBudget
       )
     end
 
+    overshoot_envelope_consumed = Array(active_scope_reservation&.fetch("reconciliation_receipts", nil)).any? do |receipt|
+      receipt.fetch("overshoot_tokens").positive?
+    end
+    if overshoot_envelope_consumed
+      return persist_reservation_decision(
+        original_state,
+        reservation,
+        command.fetch("evaluated_at"),
+        "blocked",
+        "reason" => "overshoot-envelope-consumed",
+        "allowed_actions" => %w[read-only-discovery checkpoint release]
+      )
+    end
+
     if reservation["target_state"] == "active" || active_scope_reservation
       same_target = active_scope_reservation&.dig("request", "target") == reservation["target"]
       return persist_reservation_decision(

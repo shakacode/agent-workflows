@@ -262,7 +262,10 @@ verified contributing-turn count is positive and no greater than the persisted
 deduplicated target-plus-retained-descendant envelope. Each admitted target can
 contribute at most one already-running turn to that boundary. A zero, `UNKNOWN`,
 over-envelope, or second overshoot window blocks without mutation; the helper
-never synthesizes turn evidence from token samples. Observed use in a scope with no active
+never synthesizes turn evidence from token samples. Once the boundary is
+consumed, another reservation cannot coalesce into that active envelope; the
+owner must terminalize it before a fresh threshold-evaluated reservation.
+Observed use in a scope with no active
 reservation is still counted, marked unattributed, and blocks clean closeout
 rather than being assigned to a target without evidence. Reconciliation also
 persists warning checkpoints and approval/hard stops from actual consumed use;

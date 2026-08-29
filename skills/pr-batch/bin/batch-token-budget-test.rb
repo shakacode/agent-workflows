@@ -2848,6 +2848,16 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal 110, first.dig("totals", "aggregate", "consumed_tokens")
       assert_equal 0, first.dig("totals", "aggregate", "reserved_tokens")
 
+      fenced, fenced_stderr, fenced_status = reserve(
+        state_path,
+        id: "after-consumed-overshoot-envelope",
+        tokens: 1
+      )
+      assert fenced_status.success?, fenced_stderr
+      assert_equal "blocked", fenced.fetch("status")
+      assert_equal "overshoot-envelope-consumed", fenced.fetch("reason")
+      assert_equal %w[read-only-discovery checkpoint release], fenced.fetch("allowed_actions")
+
       second_receipt = usage_window(
         base_receipt,
         from: "2026-08-12T12:00:00Z",
@@ -2882,6 +2892,41 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal 10, closeout.dig("overshoot", "tokens")
       assert_equal 1, closeout.dig("overshoot", "turn_count")
       assert_equal({ "lane-a" => 10 }, closeout.dig("overshoot", "by_scope"))
+
+      released, release_stderr, release_status = run_helper(
+        state_path,
+        command(
+          "release",
+          "evaluated_at" => "2026-08-12T12:03:00Z",
+          "release" => {
+            "type" => "batch-token-release",
+            "version" => 1,
+            "id" => "release-consumed-overshoot-envelope",
+            "reservation_id" => "multi-window",
+            "reason" => "Terminalize the consumed overshoot envelope before a new turn."
+          }
+        )
+      )
+      assert release_status.success?, release_stderr
+      assert_equal "released", released.fetch("status")
+      fresh, fresh_stderr, fresh_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "evaluated_at" => "2026-08-12T12:04:00Z",
+          "reservation" => reservation(
+            id: "fresh-after-overshoot",
+            tokens: 1,
+            overrides: {
+              "telemetry" => reservation(id: "ignored", tokens: 1).fetch("telemetry").merge(
+                "observed_at" => "2026-08-12T12:03:59Z"
+              )
+            }
+          )
+        )
+      )
+      assert fresh_status.success?, fresh_stderr
+      assert_equal "admitted", fresh.fetch("status")
     end
   end
 

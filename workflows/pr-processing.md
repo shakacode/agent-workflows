@@ -871,7 +871,9 @@ completed reservations release their remaining headroom. Observed use without
 an active scope reservation is unattributed and blocks clean closeout.
 One overshoot boundary may contain at most one verified already-running turn
 for each deduplicated admitted target and retained descendant; zero,
-over-envelope, or repeated overshoot evidence fails closed. Reconciliation
+over-envelope, or repeated overshoot evidence fails closed. A consumed
+overshoot envelope blocks coalescing until its reservation is terminalized and
+a fresh reservation is threshold-evaluated. Reconciliation
 persists warning/approval/hard state from actual use before another coalesced
 or newly reserved turn can start.
 Cross-task charge-back records source causality for actual target self plus
