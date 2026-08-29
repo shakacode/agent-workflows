@@ -269,9 +269,9 @@ module BatchUsageReceipt
           usage_timestamp = parsed_timestamp(record["timestamp"])
           usage_timestamp_valid = !usage_timestamp.nil?
           unknown("invalid_usage_timestamp", line: line_number) unless usage_timestamp_valid
+          @accounting["usage_samples"] += 1
           next if usage_timestamp_valid && usage_timestamp >= @to_time
 
-          @accounting["usage_samples"] += 1
           info = payload["info"]
           total = canonical_usage(info.is_a?(Hash) ? info["total_token_usage"] : nil)
           last = canonical_usage(info.is_a?(Hash) ? info["last_token_usage"] : nil)

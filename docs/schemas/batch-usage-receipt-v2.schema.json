@@ -443,7 +443,7 @@
         "host": {"type": "string", "minLength": 1},
         "model": {"type": "string", "minLength": 1},
         "status": {"const": "UNKNOWN"},
-        "code": {"type": "string", "minLength": 1}
+        "code": {"enum": ["rate_mapping_missing", "route_identity_unknown", "usage_unknown"]}
       },
       "additionalProperties": false
     },

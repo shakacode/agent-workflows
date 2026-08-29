@@ -804,6 +804,7 @@ Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop
+For v1, A/R/L=aggregate/coordinator/lane limits, W/P/H=warning/approval-or-pause/hard-stop thresholds, a/d=freshness age/delegation threshold, and S/T/I/D=state path/trusted-plan path/id/digest.
 Worker model/effort preferences:<initial>/<effort>-><lanes>;escalate <route> after MODEL_ESCALATION_REQUEST;max=N.
 Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;ordinary pending/active lifecycle.
 - Deps:v1 edit|validation_open|merge_order;missing/UNKNOWN/stale=>closed;combined-tip@seam

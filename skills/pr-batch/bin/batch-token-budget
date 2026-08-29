@@ -58,6 +58,7 @@ module BatchTokenBudget
     input_tokens output_tokens reasoning_output_tokens cache_read_tokens total_tokens
   ].freeze
   V2_UNKNOWN_REASON_ROUTE_FIELDS = %w[provider model effort].freeze
+  CREDIT_EQUIVALENT_UNKNOWN_CODES = %w[rate_mapping_missing route_identity_unknown usage_unknown].freeze
 
   class InvalidInput < StandardError; end
   class DuplicateJSONKey < StandardError; end
@@ -2243,7 +2244,8 @@ module BatchTokenBudget
         value["credits"].is_a?(Numeric) && value["credits"].finite? && !value["credits"].negative?
     when "UNKNOWN"
       exact_object_keys?(value, %w[code host model status]) &&
-        value.values_at("code", "host", "model").all? { |field| schema_nonempty_string?(field) }
+        CREDIT_EQUIVALENT_UNKNOWN_CODES.include?(value["code"]) &&
+        value.values_at("host", "model").all? { |field| schema_nonempty_string?(field) }
     else
       false
     end
@@ -2862,8 +2864,15 @@ module BatchTokenBudget
   end
 
   def load_persisted_state(path)
-    File.open(path, File::RDONLY | File::NONBLOCK, encoding: "UTF-8") do |file|
-      raise InvalidInput, "corrupt-persisted-state" unless file.stat.file?
+    flags = File::RDONLY | File::NONBLOCK
+    flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+    File.open(path, flags, encoding: "UTF-8") do |file|
+      opened_stat = file.stat
+      path_stat = File.lstat(path)
+      unless opened_stat.file? && path_stat.file? &&
+             opened_stat.dev == path_stat.dev && opened_stat.ino == path_stat.ino
+        raise InvalidInput, "corrupt-persisted-state"
+      end
 
       parse_json_strict(file.read)
     end

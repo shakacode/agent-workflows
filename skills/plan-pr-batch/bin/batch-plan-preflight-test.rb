@@ -958,6 +958,24 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.fetch("violations")
   end
 
+  def test_token_budget_rejects_child_limits_above_the_aggregate_limit
+    {
+      "coordinator" => proc { |candidate| candidate.dig("scopes", "coordinator")["limit_tokens"] = 1_001 },
+      "lane" => proc { |candidate| candidate.dig("scopes", "lanes", "lane-a")["limit_tokens"] = 1_001 }
+    }.each do |name, mutate|
+      input = input_for
+      candidate = token_budget
+      mutate.call(candidate)
+      enable_token_budget(input, candidate)
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, name
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-hierarchy-invalid", name
+    end
+  end
+
   def test_opt_in_token_budget_requires_an_exact_external_anchor_binding
     missing = input_for
     missing.fetch("plan")["token_budget"] = token_budget

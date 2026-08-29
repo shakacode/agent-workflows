@@ -957,6 +957,30 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_preexisting_state_symlink_is_rejected_without_following
+    with_state do |state_path|
+      initialize_budget(state_path)
+      state_before = File.binread(state_path)
+      victim_path = "#{state_path}.victim"
+      File.rename(state_path, victim_path)
+      File.symlink(victim_path, state_path)
+
+      output, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("closeout"))
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+      assert File.symlink?(state_path)
+      assert_equal state_before, File.binread(victim_path)
+    ensure
+      File.unlink(state_path) if state_path && File.symlink?(state_path)
+      File.rename(victim_path, state_path) if victim_path && File.exist?(victim_path)
+    end
+  end
+
   def test_regular_persisted_state_is_opened_once_and_eacces_remains_structured_and_mutation_free
     with_state do |state_path|
       initialize_budget(state_path)

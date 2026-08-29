@@ -486,10 +486,27 @@ class BatchUsageReceiptTest < Minitest::Test
     receipt, = run_fixture(fixture: fixture)
 
     assert_equal control.dig("batch", "usage"), receipt.dig("batch", "usage")
-    assert_equal control.dig("accounting", "usage_samples"), receipt.dig("accounting", "usage_samples")
+    assert_equal control.dig("accounting", "usage_samples") + 2, receipt.dig("accounting", "usage_samples")
     assert_equal "complete", receipt.dig("evidence", "status")
     unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
     refute_includes unknown_codes, "missing_total_token_usage"
+  end
+
+  def test_token_counts_only_at_or_after_window_end_still_prove_rollout_usage_evidence
+    fixture = fixture_copy("descendants")
+    fixture.fetch("rollouts").each_value do |records|
+      records.each do |record|
+        next unless record["type"] == "event_msg" && record.dig("payload", "type") == "token_count"
+
+        record["timestamp"] = fixture.dig("window", "to")
+      end
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_operator receipt.dig("accounting", "usage_samples"), :>, 0
+    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    refute_includes unknown_codes, "missing_usage_evidence"
   end
 
   def test_emitted_window_preserves_fractional_second_precision
@@ -1405,6 +1422,16 @@ class BatchUsageReceiptTest < Minitest::Test
     asserted_codes = valid_reasons.map { |reason| reason.fetch("code") }.uniq
     assert_equal producer_codes.uniq.sort, asserted_codes.sort
     assert_equal producer_codes.uniq.sort, schema_codes.uniq.sort
+
+    credit_codes = File.read(HELPER, encoding: "UTF-8")
+                       .split("\n    def credit_equivalents", 2).last
+                       .split(/^    def /, 2).first
+                       .scan(/"code"\s*=>\s*"([a-z0-9_]+)"/).flatten.uniq.sort
+    schema_credit_codes = receipt_schema(2).dig(
+      "$defs", "unknownCreditModelValue", "properties", "code", "enum"
+    ).sort
+    assert_equal %w[rate_mapping_missing route_identity_unknown usage_unknown], credit_codes
+    assert_equal credit_codes, schema_credit_codes
 
     valid_reasons.each do |reason|
       candidate = JSON.parse(JSON.generate(receipt))
