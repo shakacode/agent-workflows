@@ -33,13 +33,18 @@ Commands below use one stable placeholder set:
 | `PR` | the suspect pull request number |
 | `TIP` | the commit on `BASE` that landed `PR` (for a merge PR, the merge commit itself) |
 | `N` | how many commits `PR` contains |
+| `MERGE_STYLE` | how `PR` landed — literal `merge`, `squash`, or `rebase`, classified per PR |
 | `SHA` | whichever single commit a given command is about |
+| `PATHS` | bash array of the paths the in-scope landed commits touched, built in [Recover each PR's landed range](#recover-each-prs-landed-range) |
 | `PRE_BATCH_SHA` | the base-branch state before the closure landed |
+| `OLDEST_IN_SCOPE_SHA` | the oldest landed commit in the closure — the last entry of the oldest in-scope PR's `REVERT_LIST` |
 | `BATCH_ID`, `LANE`, `TARGET` | coordination identifiers for the lane that produced `PR` |
 | `AGENT_ID` | stable identifier of the agent claiming the repair lane |
 | `REPAIR_BATCH_ID`, `REPAIR_LANE` | coordination identifiers for the **repair** lane — always distinct from `BATCH_ID`/`LANE` |
 | `REPAIR_TARGET` | the repair lane's canonical target — the audit child issue, never the suspect PR |
 | `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
+| `REPAIR_PR_URL` | `REPAIR_PR`'s HTML URL, derived in [checkpoint B](#coordination-events-and-terminal-state); unset until a repair merges |
+| `EVIDENCE_URL` | the durable URL a terminal release cites — `REPAIR_PR_URL` on the repair path, the accepted-risk record's URL on the no-repair path, and **unset** when neither exists |
 
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA,
   recorded as `BASE_TIP`:
@@ -226,13 +231,38 @@ the single most dangerous place to get it wrong:
   here reverts `N-1` unrelated commits that landed *before* this PR.
 - **Rebase merge**: `N` commits — the `N` first-parent commits ending at `TIP`.
 
-```bash
-# merge-commit PR or squash PR: exactly one landed commit
-REVERT_LIST="${TIP}"
+Select on `MERGE_STYLE`; do not print the two assignments one after another and
+rely on the operator running only the intended one. **Two unconditional
+assignments are not two alternatives — copy-pasted, both execute, and the rebase
+form silently overwrites the squash form.** Verified on a five-commit squash PR
+with four unrelated PRs behind it: the pair yields a five-entry `REVERT_LIST`
+naming all four of those unrelated PRs, which is a four-PR collateral revert
+reached by following the runbook exactly as written. A block that is only
+correct when read rather than run is the same defect class as prose that
+contradicts its own command.
 
-# rebase PR: the N first-parent commits ending at the tip, newest first
-REVERT_LIST=$(git log --first-parent -n "${N}" --format='%H' "${TIP}")
+```bash
+# MERGE_STYLE is the per-PR classification from "Before Anything Else":
+# literal merge | squash | rebase. Unset or unrecognised is UNKNOWN — stop.
+case "${MERGE_STYLE}" in
+  merge|squash)
+    # exactly one landed commit, whatever N says
+    REVERT_LIST="${TIP}"
+    ;;
+  rebase)
+    # the N first-parent commits ending at the tip, newest first
+    REVERT_LIST=$(git log --first-parent -n "${N}" --format='%H' "${TIP}")
+    ;;
+  *)
+    echo "MERGE_STYLE=${MERGE_STYLE:-<unset>} is UNKNOWN: classify the PR before building REVERT_LIST" >&2
+    exit 1
+    ;;
+esac
 ```
+
+The `*)` arm is not decoration. An unset `MERGE_STYLE` is exactly the state an
+operator is in before classifying the PR, and failing closed there is what keeps
+the block safe as printed rather than safe as intended.
 
 Two deliberate choices in that rebase form, both of which the `A..B` range
 operator gets wrong:
@@ -288,6 +318,90 @@ than a viewer's rendering.
 git --no-pager diff --no-ext-diff --stat "${SHA}^1" "${SHA}"
 git --no-pager diff --no-ext-diff --name-only "${SHA}^1" "${SHA}"
 ```
+
+### Build the path set
+
+`PATHS` is never typed by hand. It is the union of every path the in-scope
+landed commits touched, read straight out of the range you just recovered:
+
+```bash
+# Union of the paths touched by every commit in REVERT_LIST. Read NUL-delimited
+# into a bash array so a filename containing a space, tab, or newline stays
+# exactly one pathspec.
+PATHS=()
+while IFS= read -r -d '' p; do PATHS+=("$p"); done < <(
+  # shellcheck disable=SC2086
+  printf '%s\n' ${REVERT_LIST} | while read -r c; do
+    git diff --name-only -z "${c}^1" "${c}"
+  done | sort -z -u
+)
+printf '%s path(s):\n' "${#PATHS[@]}"
+printf '  %s\n' "${PATHS[@]}"
+```
+
+**Carry it as an array, and always expand it as `"${PATHS[@]}"`.** A
+space-separated string expanded unquoted word-splits one filename into several
+pathspecs. The fragments usually match nothing, so the query returns no later
+commits touching that file — and the disjointness test in
+[Decision rule](#decision-rule) reads "no later commit touched these paths" as
+evidence of independence. The failure is silent and points the wrong way: it
+manufactures the too-narrow revert. `git log` has no
+`--pathspec-from-file`, so the array is the portable carrier; do not flatten it
+into a variable in between.
+
+When the closure spans several PRs, run the same accumulation for each PR's
+`REVERT_LIST` and let `PATHS` grow across all of them — the disjointness test
+compares whole closures, not one PR at a time.
+
+### Landed commits that belong to no PR
+
+Everything above builds the closure out of **PR ranges**. Not every commit on a
+base branch came from a PR: a consumer repo may permit direct pushes, and an
+operator hotfix during an incident is a direct commit by definition.
+
+This matters because the two halves of the procedure can disagree. The
+disjointness test in [Decision rule](#decision-rule) works on commits, so it
+will correctly report that a later direct commit depends on the suspect change.
+If the closure then only admits PR ranges, that commit has nowhere to go: it is
+known-dependent and stays applied, and the revert leaves the base branch calling
+into code that no longer exists. A too-narrow revert reached by a step that
+already found the evidence is worse than one reached by missing it.
+
+**A first-parent commit is a closure unit whether or not a PR produced it.**
+Map every in-scope commit before building the closure:
+
+```bash
+git log --first-parent --format='%H' "${SHA}^1..${BASE_TIP}" | while read -r c; do
+  if ! prs=$(gh api "repos/${REPO}/commits/${c}/pulls" --jq '[.[].number] | join(",")'); then
+    printf '%s\tLOOKUP-FAILED — UNKNOWN\n' "$c"
+  elif [ -z "${prs}" ]; then
+    printf '%s\tno PR — direct commit\n' "$c"
+  else
+    printf '%s\tPR %s\n' "$c" "${prs}"
+  fi
+done
+```
+
+Three outcomes, three treatments:
+
+- **Maps to a PR** — recover that PR's landed range and treat the whole range as
+  the unit, exactly as above.
+- **Confirmed direct commit** (the lookup succeeded and returned nothing) — the
+  commit is its own closure unit, of exactly one commit. Admit it, and revert it
+  in the same reverse-landing order by its parent shape. Nothing is lost by
+  admitting it: the range machinery exists to answer "how many commits did this
+  PR land", and for a direct commit that answer is one, known exactly. Refusing
+  the case would be fail-closed theatre over the easiest unit in the document.
+- **Lookup failed** — `UNKNOWN`. Stop, or widen to the enclosing batch closure.
+  Do not read "the request errored" as "there is no PR": a network failure, a
+  token without the scope, and a genuinely direct commit all produce no PR
+  numbers, and only the third is safe to act on. That distinction is why the
+  block branches on `gh api`'s exit status rather than on the emptiness of its
+  output.
+
+A direct commit in the closure is also a finding in its own right. Record it in
+the revert PR body: it means work reached `BASE` outside the PR path, which the
+audit trail this runbook depends on cannot otherwise see.
 
 ### Read the declared dependencies
 
@@ -373,8 +487,55 @@ Neither query filters on `--merges`, for the reason above.
 git log --ancestry-path --first-parent --format='%h %s' "${SHA}..${BASE_TIP}"
 
 # Everything that touched the same files, in either direction.
-git log --first-parent --format='%h %s' "${BASE_TIP}" -- ${PATHS}
+git log --first-parent --format='%h %s' "${BASE_TIP}" -- "${PATHS[@]}"
 ```
+
+`"${PATHS[@]}"` is quoted deliberately: see
+[Build the path set](#build-the-path-set) for why an unquoted expansion turns a
+whitespace filename into a false independence result.
+
+#### Renames defeat a plain pathspec query, and there is no clean fix
+
+`git log -- <path>` matches a path **under the name it has in each commit**.
+A later `git mv` plus an edit therefore lands under a name that is not in
+`PATHS`, the query omits it, and the disjointness test reads that omission as
+independence — the exact "absence of evidence is not evidence of independence"
+failure this document exists to prevent, arrived at through the recommended
+command.
+
+`--follow` is the obvious answer and only half of one. It accepts **exactly one
+pathspec** (`git log --follow -- a b` fails with `fatal: --follow requires
+exactly one pathspec`), so it cannot be handed `"${PATHS[@]}"`, and it works by
+git's rename *heuristic*: a rename combined with a large enough edit falls below
+the similarity threshold, is recorded as a delete plus an add, and is not
+followed by anything.
+
+Run both of these and reconcile them by hand. Neither is sufficient alone and
+the pair is still not a proof:
+
+```bash
+# 1. Rename-aware history, one pathspec per invocation as --follow requires.
+for p in "${PATHS[@]}"; do
+  printf '=== %s\n' "$p"
+  git --no-pager log --follow --format='%h %s' "${BASE_TIP}" -- "$p"
+done
+
+# 2. Every rename that landed in the window, at a loosened similarity
+#    threshold, whether or not either side is currently in PATHS.
+git --no-pager log --first-parent --find-renames=30% --diff-filter=R \
+  --name-status --format='%h %s' "${SHA}..${BASE_TIP}"
+```
+
+If query 2 shows a rename whose source **or** destination is in `PATHS`, add the
+other side to `PATHS` and re-run the whole cross-check — a rename can chain.
+
+What neither query catches is a rewrite-plus-rename that scores below even the
+loosened threshold; git has no record linking the two paths, so no pathspec
+query can find it. That case is **`UNKNOWN`, not independent.** When the window
+is small enough, read its full `--name-status` and judge the adds and deletes
+directly; when it is not, fail closed to the enclosing batch closure or stop for
+the operator. Do not record "no later commit touched these paths" as a
+disjointness result unless the rename cross-check above actually ran.
 
 ### Decision rule
 
@@ -390,8 +551,10 @@ Compare whole ranges, not individual commits: a later commit that depends on any
 one member of a rebased series depends on the PR, and testing member-by-member
 can find each individual commit "independent" while the PR as a whole is not.
 
-Otherwise **unwind the closure**: the suspect PR's range plus every later PR
-whose range depends on it, transitively. If any input to that test is
+Otherwise **unwind the closure**: the suspect PR's range plus every later
+closure unit that depends on it, transitively — a later PR's whole range, or a
+later direct commit on its own, per
+[Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr). If any input to that test is
 `UNKNOWN`, take the wider scope or stop for the operator. A too-wide revert is
 a review problem; a too-narrow revert leaves the base branch in a state that
 never existed and that nothing has ever validated.
@@ -690,8 +853,41 @@ the beginning.
 
 What you lose is the conflict resolutions from the PRs that had already
 succeeded. If a closure is large enough that redoing them matters, enable
-`git config rerere.enabled true` **before** the first invocation, so resolutions
-are replayed automatically on the rebuild rather than reconstructed by hand.
+`rerere` **before** the first invocation, so resolutions are replayed
+automatically on the rebuild rather than reconstructed by hand.
+
+**Capture the prior setting before you change it, and restore it on every exit
+path.** `rerere` is repo-local git configuration with no session scope: once
+this procedure turns it on, every later conflict in this checkout — rebases,
+merges, work unrelated to the incident — silently reuses recorded resolutions,
+and nothing ever turns it back off. A successful repair is not an exemption;
+that is the path most likely to be forgotten, because the operator moves on.
+
+```bash
+# before the first revert invocation
+RERERE_PRIOR=$(git config --local --get rerere.enabled || true)   # empty = unset locally
+git config --local rerere.enabled true
+```
+
+`--get` exits nonzero when the key is unset, hence the `|| true`; an empty
+`RERERE_PRIOR` means "no local value", which is different from an explicit
+`false` and must be restored differently. Read and write `--local`
+deliberately: a global or system `rerere.enabled` belongs to the operator, and
+this procedure must neither read it as its own nor overwrite it.
+
+```bash
+# on every exit path: repair merged, revert abandoned, or accepted risk
+if [ -n "${RERERE_PRIOR}" ]; then
+  git config --local rerere.enabled "${RERERE_PRIOR}"
+else
+  git config --local --unset rerere.enabled || true
+fi
+```
+
+`--unset` on an already-absent key exits 5; the `|| true` keeps the restore
+idempotent so it can be run at the end of any path without a special case.
+[Checkpoint B](#coordination-events-and-terminal-state) names this restore on
+both the repair and the no-repair paths.
 
 Do not rerun the range command after a conflict — that restarts it from the
 newest commit. `git revert --continue` is the only correct resume, and
@@ -768,8 +964,11 @@ half a revert. Dashboards, audits, and the next batch all read those records.
 ### Changelog
 
 The repo's changelog is the `changelog` seam in `.agents/agent-workflow.yml`
-(`CHANGELOG.md` here). Which correction applies depends on whether the reverted
-entry has shipped:
+(`CHANGELOG.md` here). Two separate questions: **what** the correction is, and
+**who is allowed to write it**. Answer them in that order — the second is repo
+policy and overrides any instinct to edit the file from the revert PR.
+
+Which correction applies depends on whether the reverted entry has shipped:
 
 - **Still under `### [Unreleased]`**: delete the entry. It never reached a
   released version, so there is nothing for a reader to un-learn. Delete only
@@ -781,12 +980,34 @@ entry has shipped:
   feature is gone) that names the reverted PR and issue and says the change was
   reverted.
 
-`$update-changelog` is the changelog-correction path for *writing* the entry
-and for the release-time sweep and version stamping. It does not know that a
-merge was unwound: it adds and stamps entries from merged PRs and will happily
-re-derive the reverted entry. Make the deletion or the correcting entry
-explicitly, in the revert PR, and run `$update-changelog` afterwards for the
-sweep rather than instead of the correction.
+**Who writes it is the repo's changelog-ownership policy, not this runbook's
+call.** Where a repo restricts changelog edits — as this one does, per
+`AGENTS.md` → **Changelog Ownership**: only dedicated `/update-changelog` or
+release lanes may edit `CHANGELOG.md`, and ordinary PRs record
+`deferred_to_update_changelog` — the revert PR is an ordinary PR and **does not
+touch the changelog**. It records `deferred_to_update_changelog` like any other
+lane, and the correction is carried by a dedicated `$update-changelog` lane.
+Where a repo has no such restriction, the revert PR may carry the correction
+itself. Read the policy before deciding; a revert PR that edits a
+policy-restricted `CHANGELOG.md` is rejected for the edit, not thanked for the
+bookkeeping.
+
+Deferring the *edit* is not deferring the *decision*. `$update-changelog` does
+the release-time sweep and version stamping, but **it does not know that a merge
+was unwound**: it derives entries from merged PRs, and the reverted PR is still
+a merged PR, so left to itself it re-derives exactly the entry that must go. So
+whichever repo you are in:
+
+- State the exact required correction in the revert PR body — which entry to
+  delete, or the precise correcting entry to add and under which heading. That
+  body is the input the changelog lane works from.
+- Run `$update-changelog` for the sweep **after** the correction is settled,
+  never *instead of* it, and confirm the swept result matches what the revert PR
+  asked for rather than what derivation produced.
+
+Under a restrictive policy this also means the revert is not fully bookkept when
+its PR merges. The changelog lane is outstanding follow-up work; name it in the
+durable handoff so it is not lost with the incident.
 
 ### Merge ledger
 
@@ -873,6 +1094,17 @@ gh pr view "${REPAIR_PR}" --repo "${REPO}" --json state,mergedAt
 A closed-unmerged or still-open repair reaches neither this event nor the
 terminal closeout below.
 
+Once it is confirmed merged, derive its URL — `REPAIR_PR` is a number, and the
+terminal release wants a URL:
+
+```bash
+REPAIR_PR_URL=$(gh pr view "${REPAIR_PR}" --repo "${REPO}" --json url --jq '.url')
+EVIDENCE_URL="${REPAIR_PR_URL}"
+```
+
+On the no-repair path neither variable is set from a repair; see the
+accepted-risk bullets below for what `EVIDENCE_URL` may hold there.
+
 ```bash
 agent-coord record-event --type human_intervention --kind manual-fix \
   --batch-id "${BATCH_ID}" --lane "${LANE}" \
@@ -894,6 +1126,14 @@ lane that produced the suspect PR (per the terminal-state rules below), and the
 repair lane claimed in section 2, released `done` under `REPAIR_BATCH_ID` /
 `REPAIR_LANE` now that its PR has merged.
 
+**Restore `rerere.enabled` here too**, using the saved `RERERE_PRIOR` and the
+restore block in
+[Abandoning a multi-PR closure](#abandoning-a-multi-pr-closure). A merged repair
+is the path on which this is most often skipped and the one on which the leftover
+setting does the most damage: the incident is over, the checkout stays in use,
+and every unrelated conflict from here on silently replays a resolution recorded
+during the revert.
+
 **If no repair lands at all** — the operator declines both the revert and a
 forward fix and accepts the risk — checkpoint B does not fire, but the lane must
 still reach a defensible state rather than dangling with an open
@@ -904,9 +1144,10 @@ still reach a defensible state rather than dangling with an open
 - The checkpoint A `error` record stands as the durable statement of unrepaired
   harm. Do not retract it.
 - Close a non-terminal lane by the same rule as below (`superseded` when a named
-  successor will carry the work, otherwise `abandoned`) — but **do not pass
-  `--evidence-url "${REPAIR_PR_URL}"` on this path**. No repair PR exists, so
-  that variable is unset and expands to an empty argument, which
+  successor will carry the work, otherwise `abandoned`), using the conditional
+  `RELEASE_ARGS` block below so the flag is built rather than typed. **Never
+  pass `--evidence-url "${REPAIR_PR_URL}"` on this path**. No repair PR exists,
+  so that variable is unset and expands to an empty argument, which
   `agent-coord release` rejects outright:
 
   ```text
@@ -914,10 +1155,11 @@ still reach a defensible state rather than dangling with an open
   ```
 
   The closeout then fails and the lane stays open — the exact dangling state
-  this path is meant to avoid. Pass a real durable URL for the accepted-risk
-  decision if one exists (the tracking issue or handoff comment recording it),
-  and otherwise **omit the flag entirely**; an omitted `--evidence-url` is
-  accepted. Never pass an empty string.
+  this path is meant to avoid. Set `EVIDENCE_URL` to a real durable URL for the
+  accepted-risk decision if one exists (the tracking issue or handoff comment
+  recording it), and otherwise leave it unset so the flag is **omitted
+  entirely**; an omitted `--evidence-url` is accepted. Never pass an empty
+  string.
 - An already-`done` lane stays `done` and receives no new event, but the
   worked-issue outcome is still `regressed` — the harm is real and now
   knowingly unrepaired.
@@ -932,8 +1174,11 @@ still reach a defensible state rather than dangling with an open
   operator has declined. Close it with a comment naming the accepted-risk
   decision, and delete or leave the unpushed revert branch as the repo's
   convention prefers — it holds only revert commits.
-- If you enabled `rerere.enabled` for the closure, unset it. It is repo-local
-  git configuration this procedure turned on, and nothing else turns it off.
+- If you enabled `rerere.enabled` for the closure, restore `RERERE_PRIOR` with
+  the block in
+  [Abandoning a multi-PR closure](#abandoning-a-multi-pr-closure) — restore the
+  prior value, do not blanket-unset. It is repo-local git configuration this
+  procedure turned on, and nothing else turns it off.
 - Record the accepted-risk decision and the deciding operator in the durable
   handoff. An accepted risk that is written down is a decision; one that is not
   is an unexplained dangling lane.
@@ -943,10 +1188,33 @@ still reach a defensible state rather than dangling with an open
 *Lane not yet terminal* (`planned`, `claimed`, `active`, `blocked`) — close it
 now, choosing between the two non-`done` terminal values:
 
+**Build the arguments conditionally.** `--evidence-url` is optional and must be
+either a real HTTP(S) URL or absent — an empty string is rejected and the
+closeout fails, leaving the lane open. Do not print one command that passes the
+flag unconditionally and rely on the reader to drop it: the same block then
+serves both the repair and the accepted-risk paths, and it is correct as run.
+
 ```bash
+RELEASE_ARGS=(--terminal superseded --pr-state "${PR_STATE}"
+  --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}")
+if [ -n "${EVIDENCE_URL:-}" ]; then
+  RELEASE_ARGS+=(--evidence-url "${EVIDENCE_URL}")
+fi
+agent-coord release "${RELEASE_ARGS[@]}"
+```
+
+Where an array is not available, the two forms are separate commands, never one
+command with an optionally-empty flag:
+
+```bash
+# a durable evidence URL exists
 agent-coord release --terminal superseded --pr-state "${PR_STATE}" \
   --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}" \
-  --evidence-url "${REPAIR_PR_URL}"
+  --evidence-url "${EVIDENCE_URL}"
+
+# no durable URL exists — omit the flag entirely
+agent-coord release --terminal superseded --pr-state "${PR_STATE}" \
+  --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}"
 ```
 
 - Use `superseded` when a named successor — a new lane, issue, or PR — will
@@ -1062,14 +1330,21 @@ An agent **may not**, without an explicit operator decision:
 3. Recover each in-scope PR's **complete landed commit list**, newest first —
    exactly one commit for a merge *or a squash*, `N` first-parent commits for a
    rebase — matching on subject and patch-id, never SHA. Build it with
-   `git log --first-parent -n N`, never with an `A..B` range. Read the list
-   before using it. An unverifiable list is `UNKNOWN`: widen or stop.
-4. Compute the revert closure from the batch manifest, dependency-plan edges of
+   `git log --first-parent -n N`, never with an `A..B` range, and **select on
+   `MERGE_STYLE` with a `case`** — two unconditional assignments both run and
+   the rebase one wins. Read the list before using it. An unverifiable list is
+   `UNKNOWN`: widen or stop.
+4. Build `PATHS` from the landed range's `--name-only -z` output into a bash
+   array, and expand it only as `"${PATHS[@]}"`. Run the `--follow` and
+   `--find-renames` cross-check before recording any disjointness result.
+5. Compute the revert closure from the batch manifest, dependency-plan edges of
    **every** type, and
-   git, comparing whole ranges. Fail closed to the wider scope on any `UNKNOWN`.
-   Fix `PRE_BATCH_SHA` as `<oldest-in-scope-sha>^1`.
-5. Decide revert versus forward fix, and write down why.
-6. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
+   git, comparing whole ranges. Map every in-scope commit to a PR: a confirmed
+   direct commit is a closure unit of one, and a failed lookup is `UNKNOWN`.
+   Fail closed to the wider scope on any `UNKNOWN`.
+   Fix `PRE_BATCH_SHA` as `${OLDEST_IN_SCOPE_SHA}^1`.
+6. Decide revert versus forward fix, and write down why.
+7. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
    recovery if it moved. Derive and validate the slug branch name with
    `git check-ref-format --branch` — but do not create the branch yet. Run the
    bounded status check, then claim the repair lane under its own
@@ -1077,29 +1352,38 @@ An agent **may not**, without an explicit operator decision:
    the audit child issue and never the suspect PR. Stop on `CLAIM_REFUSED`
    without creating anything. Only once the claim holds, create the branch from
    `${BASE_TIP}`; never work on `BASE`.
-7. Revert **every commit in every in-scope list**, newest first, by handing the
+8. If you turn on `rerere` for the closure, capture `RERERE_PRIOR` first and
+   restore it on **every** exit path — merged repair included, not only
+   abandonment.
+9. Revert **every commit in every in-scope list**, newest first, by handing the
    whole list to one `git revert` invocation (`-m 1` on a merge commit, alone).
    On conflict: resolve and `--continue`, or `--abort` and re-scope — never
    `--skip`, and never leave a partial sequence. Abandoning a multi-PR closure
    also needs `git checkout -B "${REVERT_BRANCH}" "${BASE_TIP}"`, because
    `--abort` only cancels the invocation it is run from.
-8. Classify every conflicting hunk as dependent or independent; stop and
-   re-scope if an independent hunk cannot be preserved.
-9. Validate the branch, and diff the final tree against `PRE_BATCH_SHA`.
-10. Correct the changelog: delete an `[Unreleased]` entry, or add a correcting
-    entry when the original shipped.
-11. Rerun the merge ledger, or record `merge_ledger: UNKNOWN` when the seam is
+10. Classify every conflicting hunk as dependent or independent; stop and
+    re-scope if an independent hunk cannot be preserved.
+11. Validate the branch, and diff the final tree against `PRE_BATCH_SHA`.
+12. Settle the changelog correction — delete an `[Unreleased]` entry, or add a
+    correcting entry when the original shipped — and apply it through whoever
+    the repo's changelog-ownership policy allows. Under a restrictive policy
+    (this repo) the revert PR leaves `CHANGELOG.md` untouched, records
+    `deferred_to_update_changelog`, states the exact correction in its body, and
+    hands it to an `$update-changelog` lane.
+13. Rerun the merge ledger, or record `merge_ledger: UNKNOWN` when the seam is
     `n/a`.
-12. **Checkpoint A** — record the `error` event and `help_requested --reason
+14. **Checkpoint A** — record the `error` event and `help_requested --reason
     permission`. Open the revert PR as a draft and escalate to the operator for
     the merge decision. Record nothing here that claims a repair landed.
-13. **Checkpoint B, only after a repair PR actually merges** — the revert *or* a
+15. **Checkpoint B, only after a repair PR actually merges** — the revert *or* a
     forward fix, whichever the operator took — record `human_intervention --kind
     manual-fix` naming that PR; close a non-terminal original lane `superseded`
-    or `abandoned`; release the repair lane claimed in step 6 as `done` under
-    `REPAIR_BATCH_ID` / `REPAIR_LANE`; reclassify the worked issue as
-    `regressed`. If no repair lands at all, skip checkpoint B but still close
-    **both** lanes terminally (omitting `--evidence-url` when no repair URL
-    exists), close the draft revert PR, unset `rerere.enabled` if you set it,
-    reclassify the worked issue `regressed`, and record the accepted-risk
-    decision and its operator in the durable handoff.
+    or `abandoned`; release the repair lane claimed in step 7 as `done` under
+    `REPAIR_BATCH_ID` / `REPAIR_LANE`; restore `RERERE_PRIOR`; reclassify the
+    worked issue as `regressed`. Build the release arguments conditionally so
+    `--evidence-url` is present only when `EVIDENCE_URL` is set. If no repair
+    lands at all, skip checkpoint B but still close **both** lanes terminally
+    (omitting `--evidence-url` when no durable URL exists), close the draft
+    revert PR, restore `RERERE_PRIOR`, reclassify the worked issue `regressed`,
+    and record the accepted-risk decision and its operator in the durable
+    handoff.
