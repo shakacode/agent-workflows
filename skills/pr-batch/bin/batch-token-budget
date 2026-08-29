@@ -1975,6 +1975,29 @@ module BatchTokenBudget
     )
   end
 
+  def active_aggregate_restoration_layers(state)
+    remaining = state.fetch("overrides").values.reverse
+    current_limit = budget_scope_limit(state, "aggregate")
+    restores_at = nil
+    layers = []
+
+    loop do
+      index = remaining.find_index do |record|
+        record["active"] == true && record["scope_id"] == "aggregate" &&
+          record["new_limit_tokens"] == current_limit
+      end
+      break unless index
+
+      record = remaining.delete_at(index)
+      expires_at = record.fetch("expires_at")
+      restores_at = expires_at if restores_at.nil? || seconds_between(expires_at, restores_at).positive?
+      layers << [record, restores_at]
+      current_limit = record.fetch("old_limit_tokens")
+    end
+
+    layers
+  end
+
   def override_command(original_state, command, trusted_budget)
     override = command["override"]
     existing = override.is_a?(Hash) && original_state.dig("overrides", override["id"])
@@ -1990,16 +2013,10 @@ module BatchTokenBudget
     ensure_attestation_id_available!(original_state, override.fetch("attestation"), override.fetch("id"))
 
     if override["scope_id"] != "aggregate"
-      effective_aggregate_override = original_state.fetch("overrides").values.reverse.find do |record|
-        record["active"] == true && record["scope_id"] == "aggregate" &&
-          record["new_limit_tokens"] == budget_scope_limit(original_state, "aggregate")
+      required_aggregate_override = active_aggregate_restoration_layers(original_state).any? do |record, restores_at|
+        override["new_limit_tokens"] > record["old_limit_tokens"] &&
+          seconds_between(override.dig("attestation", "expires_at"), restores_at).positive?
       end
-      required_aggregate_override = effective_aggregate_override &&
-                                    override["new_limit_tokens"] > effective_aggregate_override["old_limit_tokens"] &&
-                                    seconds_between(
-                                      override.dig("attestation", "expires_at"),
-                                      effective_aggregate_override["expires_at"]
-                                    ).positive?
       raise InvalidInput, "override-outlives-required-aggregate-headroom" if required_aggregate_override
     end
 

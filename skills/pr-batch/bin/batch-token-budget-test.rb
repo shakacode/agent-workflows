@@ -737,6 +737,37 @@ class BatchTokenBudgetTest < Minitest::Test
     }
   end
 
+  def initialize_stacked_aggregate_overrides(state_path, lane_limit: 600)
+    stacked_budget = budget(state_path: state_path)
+    stacked_budget.dig("scopes", "lanes", "lane-a")["limit_tokens"] = lane_limit
+    initialized, initialized_stderr, initialized_status = run_helper(
+      state_path,
+      command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => stacked_budget)
+    )
+    assert initialized_status.success?, initialized_stderr
+    assert_equal "initialized", initialized.fetch("status")
+
+    [
+      ["aggregate-a", 1_000, 1_200, "2026-08-12T13:00:00Z"],
+      ["aggregate-b", 1_200, 1_500, "2026-08-12T12:00:00Z"]
+    ].each do |id, old_limit, new_limit, expires_at|
+      aggregate_override = budget_override(
+        state_path,
+        id: id,
+        scope_id: "aggregate",
+        old_limit_tokens: old_limit,
+        new_limit_tokens: new_limit,
+        expires_at: expires_at
+      )
+      overridden, stderr, status = run_helper(
+        state_path,
+        command("override", "override" => aggregate_override)
+      )
+      assert status.success?, stderr
+      assert_equal "overridden", overridden.fetch("status")
+    end
+  end
+
   def test_initialize_persists_complete_hierarchical_scope_totals_and_replays
     with_state do |state_path|
       first, stderr, status = initialize_budget(state_path)
@@ -5604,6 +5635,126 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "overridden", scoped.fetch("status")
       assert_equal 1_100, scoped.dig("totals", "lanes", "lane-a", "limit_tokens")
     end
+  end
+
+  def test_scoped_override_cannot_outlive_a_lower_aggregate_restoration_layer
+    with_state do |state_path|
+      initialize_stacked_aggregate_overrides(state_path, lane_limit: 1_000)
+      state_before = File.binread(state_path)
+      lane_override = budget_override(
+        state_path,
+        id: "lane-outlives-aggregate-a",
+        scope_id: "lane-a",
+        old_limit_tokens: 1_000,
+        new_limit_tokens: 1_100,
+        expires_at: "2026-08-12T14:00:00Z"
+      )
+
+      scoped, scoped_stderr, scoped_status = run_helper(
+        state_path,
+        command("override", "override" => lane_override)
+      )
+
+      refute scoped_status.success?
+      assert_nil scoped
+      assert_equal "override-outlives-required-aggregate-headroom", JSON.parse(scoped_stderr).fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+
+      replay, replay_stderr, replay_status = run_helper(
+        state_path,
+        command("override", "override" => lane_override)
+      )
+      refute replay_status.success?
+      assert_nil replay
+      assert_equal "override-outlives-required-aggregate-headroom", JSON.parse(replay_stderr).fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+    end
+  end
+
+  def test_scoped_override_accepts_limits_that_do_not_depend_on_expiring_aggregate_headroom
+    with_state do |state_path|
+      initialize_stacked_aggregate_overrides(state_path)
+      lane_override = budget_override(
+        state_path,
+        id: "lane-below-aggregate-base",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 900,
+        expires_at: "2026-08-12T14:00:00Z"
+      )
+
+      scoped, scoped_stderr, scoped_status = run_helper(
+        state_path,
+        command("override", "override" => lane_override)
+      )
+
+      assert scoped_status.success?, scoped_stderr
+      assert_equal "overridden", scoped.fetch("status")
+      assert_equal 900, scoped.dig("totals", "lanes", "lane-a", "limit_tokens")
+    end
+  end
+
+  def test_scoped_override_accepts_expiry_no_later_than_each_required_restoration_layer
+    with_state do |state_path|
+      initialize_stacked_aggregate_overrides(state_path, lane_limit: 1_000)
+      lane_override = budget_override(
+        state_path,
+        id: "lane-matches-required-restoration",
+        scope_id: "lane-a",
+        old_limit_tokens: 1_000,
+        new_limit_tokens: 1_300,
+        expires_at: "2026-08-12T12:00:00Z"
+      )
+
+      scoped, scoped_stderr, scoped_status = run_helper(
+        state_path,
+        command("override", "override" => lane_override)
+      )
+
+      assert scoped_status.success?, scoped_stderr
+      assert_equal "overridden", scoped.fetch("status")
+      assert_equal 1_300, scoped.dig("totals", "lanes", "lane-a", "limit_tokens")
+    end
+  end
+
+  def test_aggregate_restoration_layers_ignore_disconnected_active_history
+    load_batch_token_budget_module
+    effective_budget = budget
+    effective_budget.dig("scopes", "aggregate")["limit_tokens"] = 1_500
+    state = {
+      "budget" => effective_budget,
+      "overrides" => {
+        "aggregate-a" => {
+          "active" => true,
+          "scope_id" => "aggregate",
+          "old_limit_tokens" => 1_000,
+          "new_limit_tokens" => 1_200,
+          "expires_at" => "2026-08-12T13:00:00Z"
+        },
+        "disconnected-history" => {
+          "active" => true,
+          "scope_id" => "aggregate",
+          "old_limit_tokens" => 700,
+          "new_limit_tokens" => 800,
+          "expires_at" => "2026-08-12T15:00:00Z"
+        },
+        "aggregate-b" => {
+          "active" => true,
+          "scope_id" => "aggregate",
+          "old_limit_tokens" => 1_200,
+          "new_limit_tokens" => 1_500,
+          "expires_at" => "2026-08-12T12:00:00Z"
+        }
+      }
+    }
+
+    layers = BatchTokenBudget.active_aggregate_restoration_layers(state)
+    layer_limits = layers.map { |record, _restores_at| record.fetch("new_limit_tokens") }
+    restoration_times = layers.map { |_record, restores_at| restores_at }
+
+    assert_equal [1_500, 1_200], layer_limits
+    assert_equal ["2026-08-12T12:00:00Z", "2026-08-12T13:00:00Z"],
+                 restoration_times
   end
 
   def test_override_expiration_hierarchy_deadlock_fails_closed_without_mutating_state
