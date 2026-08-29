@@ -798,6 +798,45 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_persist_rejects_an_oversized_successor_without_replacing_readable_state
+    with_state do |state_path|
+      initialize_budget(state_path)
+      near_limit_request = reservation(
+        id: "near-limit-successor",
+        target_id: "t" * 519_000,
+        tokens: 600
+      )
+      stopped, stopped_stderr, stopped_status = run_helper(
+        state_path,
+        command("reserve", "reservation" => near_limit_request)
+      )
+      assert stopped_status.success?, stopped_stderr
+      assert_equal "budget-exhausted", stopped.fetch("status")
+
+      readable_state = File.binread(state_path)
+      assert_operator readable_state.bytesize, :<=, 1_048_576
+      assert_operator readable_state.bytesize, :>, 1_047_000
+
+      denied, denied_stderr, denied_status = run_helper(
+        state_path,
+        command("closeout", "evaluated_at" => "2026-08-12T12:01:00Z")
+      )
+      refute denied_status.success?
+      assert_nil denied
+      assert_equal "persisted-state-oversized", JSON.parse(denied_stderr).fetch("reason")
+      assert_equal readable_state, File.binread(state_path)
+
+      replayed, replay_stderr, replay_status = run_helper(
+        state_path,
+        command("reserve", "reservation" => near_limit_request)
+      )
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal "budget-exhausted", replayed.fetch("decision_status")
+      assert_equal readable_state, File.binread(state_path)
+    end
+  end
+
   def test_initialize_replay_at_a_later_command_time_is_idempotent
     with_state do |state_path|
       first, stderr, status = initialize_budget(state_path)
@@ -4486,10 +4525,14 @@ class BatchTokenBudgetTest < Minitest::Test
       )
       assert coalesced_status.success?, coalesced_stderr
       assert_equal "coalesced", coalesced.fetch("status")
+      assert_equal %w[
+        batch_id coalesced_reservation_id decision_receipt preserved_gates reason state_revision status totals type version
+      ], coalesced.keys.sort
       decision_state = JSON.parse(File.read(state_path))
       decision = decision_state.dig("reservation_decisions", "coalesced-id")
       refute_nil decision
       assert_equal "coalesced", decision.fetch("outcomes").last.fetch("status")
+      assert_equal %w[coalesced_reservation_id reason], decision.dig("outcomes", -1, "result_fields").keys.sort
 
       run_helper(
         state_path,
@@ -4819,6 +4862,10 @@ class BatchTokenBudgetTest < Minitest::Test
       )
       assert resumed_status.success?, resumed_stderr
       assert_equal "coalesced", resumed.fetch("status")
+      assert_equal %w[
+        approval_id batch_id coalesced_reservation_id decision_receipt preserved_gates reason state_revision status totals type version
+      ], resumed.keys.sort
+      assert_equal approval_id, resumed.fetch("approval_id")
 
       resolved = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.select do |decision|
         decision["blocking_scope_ids"] == ["aggregate"]
@@ -4826,6 +4873,9 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal ["aggregate-stop-resume"], resolved.map { |decision| decision["resolved_by_reservation_id"] }.uniq
       saved = JSON.parse(File.read(state_path))
       assert_equal "aggregate-stop-resume", saved.dig("approvals", approval_id, "consumed_by")
+      coalesced_fields = saved.dig("reservation_decisions", "aggregate-stop-resume", "outcomes", -1, "result_fields")
+      assert_equal %w[approval_id coalesced_reservation_id reason], coalesced_fields.keys.sort
+      assert_equal approval_id, coalesced_fields.fetch("approval_id")
       resolution = saved.fetch("receipts").reverse.find do |receipt|
         receipt["type"] == "batch-token-budget-threshold-resolution-receipt"
       end
@@ -4971,6 +5021,44 @@ class BatchTokenBudgetTest < Minitest::Test
       assert blocked_status.success?, blocked_stderr
       assert_equal "budget-exhausted", still_blocked.fetch("status")
       assert_equal "persisted-hard-stop", still_blocked.fetch("reason")
+    end
+  end
+
+  def test_projected_hard_threshold_preserves_simultaneous_lane_approval_scope
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      candidate.dig("scopes", "lanes", "lane-b")["limit_tokens"] = 1_000
+      install_trusted_plan(state_path, candidate)
+      initialized, initialize_stderr, initialize_status = run_helper(
+        state_path,
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => candidate)
+      )
+      assert initialize_status.success?, initialize_stderr
+      assert_equal "initialized", initialized.fetch("status")
+
+      existing, existing_stderr, existing_status = reserve(
+        state_path,
+        id: "projected-mixed-existing",
+        lane_id: "lane-b",
+        tokens: 600
+      )
+      assert existing_status.success?, existing_stderr
+      assert_equal "admitted-with-warning", existing.fetch("status")
+
+      blocked, blocked_stderr, blocked_status = reserve(
+        state_path,
+        id: "projected-mixed-blockers",
+        lane_id: "lane-a",
+        tokens: 480
+      )
+      assert blocked_status.success?, blocked_stderr
+      assert_equal "budget-exhausted", blocked.fetch("status")
+
+      decision = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.find do |candidate_decision|
+        candidate_decision["reservation_id"] == "projected-mixed-blockers"
+      end
+      assert_equal "budget-exhausted", decision.fetch("status")
+      assert_equal %w[aggregate lane-a], decision.fetch("blocking_scope_ids").sort
     end
   end
 

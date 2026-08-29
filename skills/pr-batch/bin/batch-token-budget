@@ -1677,19 +1677,23 @@ module BatchTokenBudget
         reservation,
         command.fetch("evaluated_at")
       )
-      if valid_approval && resolvable_prior_decisions.any? { |decision| decision["status"] == "approval-required" }
+      approval_consumed = valid_approval && resolvable_prior_decisions.any? do |decision|
+        decision["status"] == "approval-required"
+      end
+      if approval_consumed
         resolved_state["approvals"][approval_id]["consumed_by"] = reservation_id
       end
+      fields = {
+        "reason" => active_scope_reservation && !same_target ? "scope-already-active" : "target-already-active",
+        "coalesced_reservation_id" => active_scope_reservation&.dig("request", "id")
+      }
+      fields["approval_id"] = approval_id if approval_consumed
       return persist_reservation_decision(
         resolved_state,
         reservation,
         command.fetch("evaluated_at"),
         "coalesced",
-        "reason" => active_scope_reservation && !same_target ? "scope-already-active" : "target-already-active",
-        "coalesced_reservation_id" => active_scope_reservation&.dig("request", "id"),
-        "approval_id" => (approval_id if valid_approval && resolvable_prior_decisions.any? do |decision|
-          decision["status"] == "approval-required"
-        end)
+        fields
       )
     end
 
@@ -1711,9 +1715,9 @@ module BatchTokenBudget
     selected_threshold_state = threshold_state(scope_record, reservation.fetch("tokens"), thresholds)
     aggregate_threshold_state = threshold_state(aggregate_record, reservation.fetch("tokens"), thresholds)
     state_name = strongest_threshold(selected_threshold_state, aggregate_threshold_state)
-    approval_scope_ids = [
-      (reservation.fetch("scope_id") if selected_threshold_state == "approval"),
-      ("aggregate" if aggregate_threshold_state == "approval")
+    blocking_scope_ids = [
+      (reservation.fetch("scope_id") if %w[approval hard].include?(selected_threshold_state)),
+      ("aggregate" if %w[approval hard].include?(aggregate_threshold_state))
     ].compact
     delegation_approval_required = reservation["admission_kind"] == "cross-task-delegation" &&
                                    reservation["tokens"] >= original_state.dig(
@@ -1727,10 +1731,7 @@ module BatchTokenBudget
         "budget-exhausted",
         "projected-hard-threshold",
         %w[read-only-discovery checkpoint override closeout],
-        [
-          (reservation.fetch("scope_id") if selected_threshold_state == "hard"),
-          ("aggregate" if aggregate_threshold_state == "hard")
-        ].compact
+        blocking_scope_ids
       )
     end
     if delegation_approval_required && !valid_approval
@@ -1745,7 +1746,7 @@ module BatchTokenBudget
       )
     end
     if state_name == "approval" &&
-       !(valid_approval && approval_covers_scope_ids?(approval, approval_scope_ids))
+       !(valid_approval && approval_covers_scope_ids?(approval, blocking_scope_ids))
       return persist_admission_decision(
         original_state,
         reservation,
@@ -1753,7 +1754,7 @@ module BatchTokenBudget
         "approval-required",
         "projected-approval-threshold",
         %w[read-only-discovery checkpoint approve],
-        approval_scope_ids
+        blocking_scope_ids
       )
     end
 
@@ -3104,11 +3105,14 @@ module BatchTokenBudget
   end
 
   def persist(path, state)
+    persisted_json = JSON.generate(canonicalize(state))
+    raise InvalidInput, "persisted-state-oversized" if persisted_json.bytesize > PERSISTED_STATE_MAX_BYTES
+
     FileUtils.mkdir_p(File.dirname(path))
     temporary = nil
     Tempfile.create([".#{File.basename(path)}.tmp-", ".json"], File.dirname(path)) do |file|
       temporary = file.path
-      file.write(JSON.generate(canonicalize(state)))
+      file.write(persisted_json)
       file.flush
       file.fsync
       file.close
