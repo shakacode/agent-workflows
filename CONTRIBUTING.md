@@ -7,10 +7,13 @@ focused, and easy for consumer repos to adopt.
 
 - Start from the current `main` branch and keep each PR focused on one workflow,
   helper, or documentation concern.
-- Run `.agents/bin/lint` and `bin/validate` before opening or updating a PR.
+- Run `bin/lint` and `bin/validate` before opening or updating a PR.
   The lint command checks the tracked Ruby, shell, Markdown, YAML, and GitHub
   Actions surfaces with pinned tools. Do not autocorrect the tree unless the PR
   is explicitly a formatting cleanup.
+- Contributor docs use the short `bin/*` form; the `.agents/bin/*` seam
+  (`.agents/bin/lint`, `.agents/bin/validate`) is the portable entry point
+  consumer repos resolve, and both run the same commands here.
 - Review changed Markdown manually for stale paths, broken links, and accidental
   consumer-repo assumptions.
 

@@ -21,8 +21,10 @@ Installed paths:
   <target>/docs/review-finding-schema.md
   <target>/docs/agent-workflows-model-routing.md
   <target>/docs/user-facing-coordination.md
+  <target>/docs/writing-style.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
+  <target>/bin/agent-workflow-writing-style
   <target>/bin/validate-execution-provenance
   <target>/bin/agent-workflows-doctor
   <target>/bin/agent_doctor/*
@@ -44,6 +46,7 @@ doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
 delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
 bin_helpers=(
   agent-workflow-seam-doctor
+  agent-workflow-writing-style
   agent-workflows-delivery-state
   agent-workflows-doctor
   agent-workflows-status
@@ -58,6 +61,7 @@ pack_docs=(
   review-finding-schema.md
   agent-workflows-model-routing.md
   user-facing-coordination.md
+  writing-style.md
 )
 for solution_path in "$repo_root"/docs/solutions/*; do
   [[ -f "$solution_path" && ! -L "$solution_path" ]] || continue
@@ -76,6 +80,21 @@ default_target_for_host() {
       return 1
       ;;
   esac
+}
+
+canonicalize_target_path() {
+  ruby -e '
+    path = File.expand_path(ARGV.fetch(0))
+    begin
+      File.lstat(path)
+    rescue Errno::ENOENT
+      print path
+      exit
+    end
+    path = File.realpath(path)
+    abort unless File.directory?(path)
+    print path
+  ' "$1" 2>/dev/null
 }
 
 resolve_auto_target() {
@@ -106,14 +125,19 @@ resolve_auto_target() {
 
 resolve_host_and_target() {
   if [[ -n "$target" ]]; then
-    target="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$target")"
+    local requested_target="$target" canonical_target
+    if ! canonical_target="$(canonicalize_target_path "$requested_target")"; then
+      echo "Refusing target that cannot be resolved to an existing directory: $requested_target" >&2
+      return 1
+    fi
+    target="$canonical_target"
     if [[ "$host" = "auto" ]]; then
       local codex_home claude_home
-      codex_home="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "${CODEX_HOME:-$HOME/.codex}")"
-      claude_home="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "${CLAUDE_HOME:-$HOME/.claude}")"
+      codex_home="$(canonicalize_target_path "${CODEX_HOME:-$HOME/.codex}")" || codex_home=""
+      claude_home="$(canonicalize_target_path "${CLAUDE_HOME:-$HOME/.claude}")" || claude_home=""
       local codex_marker=false claude_marker=false
-      [[ "$target" = "$codex_home" || -f "$target/config.toml" ]] && codex_marker=true
-      [[ "$target" = "$claude_home" || -f "$target/settings.json" || -f "$target/plugins/installed_plugins.json" ]] && claude_marker=true
+      [[ ( -n "$codex_home" && "$target" = "$codex_home" ) || -f "$target/config.toml" ]] && codex_marker=true
+      [[ ( -n "$claude_home" && "$target" = "$claude_home" ) || -f "$target/settings.json" || -f "$target/plugins/installed_plugins.json" ]] && claude_marker=true
       if [[ "$codex_marker" = true && "$claude_marker" = true ]]; then
         echo "Explicit target has both Codex and Claude markers; pass --host codex or --host claude." >&2
         return 64
@@ -162,17 +186,1639 @@ metadata_value() {
   esac
 }
 
-installed_metadata_value() {
+read_installed_metadata_value() {
   local key="$1"
-  local metadata_path="$target/$metadata_name"
-  [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || return 1
+  local metadata_path protocol encoded_value decoded_value sentinel=$'\036'
+  local uses_bound_snapshot=false
+  installed_metadata_state="corrupt"
+  installed_metadata_value=""
 
-  ruby -rjson -e '
-    metadata = JSON.parse(File.read(ARGV.fetch(0)))
-    value = metadata[ARGV.fetch(1)]
-    exit 1 if value.nil? || value.to_s.empty?
-    puts value
-  ' "$metadata_path" "$key"
+  if [[ "$#" -ge 2 ]]; then
+    metadata_path="$2"
+  elif [[ "${install_metadata_binding_state:-}" = "present" ]]; then
+    metadata_path="$install_metadata_snapshot_path"
+    uses_bound_snapshot=true
+  elif [[ "${install_metadata_binding_state:-}" = "absent" ]]; then
+    metadata_path="$install_metadata_snapshot_path"
+    uses_bound_snapshot=true
+  else
+    metadata_path="$target/$metadata_name"
+  fi
+
+  if [[ "$uses_bound_snapshot" = "true" ]]; then
+    require_install_metadata_binding
+    if [[ "$install_metadata_binding_state" = "absent" ]]; then
+      installed_metadata_state="key_absent"
+      return 0
+    fi
+  fi
+
+  if ! protocol="$(ruby -rjson -e '
+    begin
+      path = ARGV.fetch(0)
+      stat = File.lstat(path)
+      unless stat.file? && !stat.symlink? && File.const_defined?(:NOFOLLOW)
+        puts "corrupt"
+        exit
+      end
+      file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      opened_stat = file.stat
+      unless opened_stat.file? && opened_stat.dev == stat.dev && opened_stat.ino == stat.ino
+        puts "corrupt"
+        exit
+      end
+      source = file.read
+      metadata = JSON.parse(source)
+      path_stat = File.lstat(path)
+      file.rewind
+      reread_source = file.read
+      final_stat = file.stat
+      unless path_stat.file? && !path_stat.symlink? &&
+             path_stat.dev == opened_stat.dev && path_stat.ino == opened_stat.ino &&
+             final_stat.file? && final_stat.dev == opened_stat.dev && final_stat.ino == opened_stat.ino &&
+             reread_source == source
+        puts "corrupt"
+        exit
+      end
+      unless metadata.is_a?(Hash)
+        puts "corrupt"
+        exit
+      end
+      string_fields = %w[host mode delivery_mode source version source_revision source_branch source_remote installed_at]
+      invalid_string = string_fields.any? do |field|
+        metadata.key?(field) && (!metadata[field].is_a?(String) || metadata[field].include?("\0"))
+      end
+      invalid_required_value = %w[host mode source source_revision installed_at].any? do |field|
+        metadata.key?(field) && metadata[field].is_a?(String) && metadata[field].empty?
+      end
+      invalid_enum = (metadata.key?("host") && !%w[codex claude].include?(metadata["host"])) ||
+                     (metadata.key?("mode") && !%w[copy symlink].include?(metadata["mode"]))
+      invalid_fingerprints = %w[managed_skill_copy_fingerprints managed_pack_doc_copy_fingerprints].any? do |field|
+        next false unless metadata.key?(field)
+        fingerprints = metadata[field]
+        !fingerprints.is_a?(Hash) || fingerprints.any? do |name, digest|
+          valid_name = if field == "managed_skill_copy_fingerprints"
+                         name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
+                       else
+                         segments = name.is_a?(String) ? name.split("/", -1) : []
+                         name.is_a?(String) && !name.empty? && !name.start_with?("/") && !name.include?("\0") &&
+                           segments.none? { |segment| segment.empty? || segment == "." || segment == ".." }
+                       end
+          !valid_name || !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/i)
+        end
+      end
+      if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints
+        puts "corrupt"
+        exit
+      end
+      key = ARGV.fetch(1)
+      unless metadata.key?(key)
+        puts "key_absent"
+        exit
+      end
+      value = metadata[key]
+      unless value.is_a?(String) && !value.empty? && !value.include?("\0")
+        puts "corrupt"
+        exit
+      end
+      if key == "delivery_mode"
+        case value
+        when "flat" then puts "delivery_mode:flat"
+        when "plugin-companion" then puts "delivery_mode:plugin-companion"
+        else puts "delivery_mode:invalid"
+        end
+        exit
+      end
+      puts "valid:#{[value].pack("m0")}"
+    rescue Errno::ENOENT
+      puts "corrupt"
+    rescue StandardError
+      puts "corrupt"
+    ensure
+      file&.close
+    end
+  ' "$metadata_path" "$key" 2>/dev/null)"; then
+    return 0
+  fi
+
+  case "$protocol" in
+    delivery_mode:flat)
+      installed_metadata_state="valid"
+      installed_metadata_value="flat"
+      ;;
+    delivery_mode:plugin-companion)
+      installed_metadata_state="valid"
+      installed_metadata_value="plugin-companion"
+      ;;
+    delivery_mode:invalid) installed_metadata_state="invalid" ;;
+    valid:*)
+      encoded_value="${protocol#valid:}"
+      if decoded_value="$(ruby -e 'print ARGV.fetch(0).unpack1("m0")' "$encoded_value" 2>/dev/null && printf '\036')" &&
+         [[ "$decoded_value" == *"$sentinel" ]]; then
+        installed_metadata_value="${decoded_value%"$sentinel"}"
+        installed_metadata_state="valid"
+      fi
+      ;;
+    key_absent) installed_metadata_state="key_absent" ;;
+    corrupt) ;;
+  esac
+  if [[ "$uses_bound_snapshot" = "true" ]]; then
+    require_install_metadata_binding
+  fi
+  return 0
+}
+
+capture_bound_recovery_metadata() {
+  ruby -rdigest -rfiddle/import -rsecurerandom -e '
+    module RecoverySyscalls
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int, unsigned int)"
+      extern "int fchmod(int, unsigned int)"
+      extern "int linkat(int, const char *, int, const char *, int)"
+      extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(source_fd, source, destination_fd, destination)
+          renameatx_np(source_fd, source, destination_fd, destination, 0x4)
+        end
+        def self.exchange(source_fd, source, destination_fd, destination)
+          renameatx_np(source_fd, source, destination_fd, destination, 0x2)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(source_fd, source, destination_fd, destination)
+          renameat2(source_fd, source, destination_fd, destination, 0x1)
+        end
+        def self.exchange(source_fd, source, destination_fd, destination)
+          renameat2(source_fd, source, destination_fd, destination, 0x2)
+        end
+      end
+    end
+
+    class BindingChanged < StandardError; end
+
+    ios = []
+    created = []
+    target_file = nil
+    quarantine_file = nil
+    target = nil
+    quarantine_name = nil
+    expected_quarantine = nil
+    binding_changed = false
+    completed = false
+    sentinel_installed = false
+    displaced_destination_attestation = nil
+    descriptor_close_failed = false
+    syscall = lambda do |result, name|
+      raise SystemCallError.new(name, Fiddle.last_error) if result == -1
+      result
+    end
+    open_at = lambda do |directory, name, flags|
+      result = RecoverySyscalls.openat(directory.fileno, name, flags, 0)
+      fd = syscall.call(result, "openat #{name}")
+      io = IO.new(fd, flags & File::WRONLY == File::WRONLY ? "w" : "r")
+      ios << io
+      io
+    end
+    identity = lambda { |stat| "#{stat.dev}:#{stat.ino}" }
+    attestation = lambda do |file|
+      file.rewind
+      initial = file.stat
+      raise BindingChanged unless initial.file?
+      digest = Digest::SHA256.new
+      while (chunk = file.read(64 * 1024))
+        digest.update(chunk)
+      end
+      final = file.stat
+      raise BindingChanged unless final.file? && final.dev == initial.dev && final.ino == initial.ino
+      "#{identity.call(initial)}|#{digest.hexdigest}"
+    end
+    named_directory = lambda do |parent, name, expected|
+      directory = open_at.call(parent, name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      stat = directory.stat
+      raise BindingChanged unless stat.directory? && identity.call(stat) == expected
+      directory
+    end
+    create_copy = lambda do |source, name, expected_digest, mode|
+      temporary = nil
+      RecoveryCaptureHook.call(:before_temporary_create) if defined?(RecoveryCaptureHook)
+      temporary_name = nil
+      10.times do
+        candidate = "agent-workflows-metadata-#{SecureRandom.hex(16)}.tmp"
+        fd = RecoverySyscalls.openat(
+          quarantine_file.fileno,
+          candidate,
+          File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW,
+          0o600
+        )
+        next if fd == -1 && Fiddle.last_error == Errno::EEXIST::Errno
+        syscall.call(fd, "openat temporary metadata")
+        temporary_name = candidate
+        temporary = IO.new(fd, "w+")
+        break
+      end
+      raise BindingChanged unless temporary && temporary_name
+      temporary.binmode
+      source.rewind
+      IO.copy_stream(source, temporary)
+      temporary.flush
+      temporary.fsync
+      syscall.call(RecoverySyscalls.fchmod(temporary.fileno, mode & 0o7777), "fchmod temporary metadata")
+      temporary.rewind
+      temporary_attestation = attestation.call(temporary)
+      raise BindingChanged unless temporary_attestation.split("|", 2).fetch(1) == expected_digest
+      named_temporary = open_at.call(
+        quarantine_file, temporary_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      raise BindingChanged unless identity.call(named_temporary.stat) == identity.call(temporary.stat)
+      rebound_quarantine = named_directory.call(target_file, quarantine_name, expected_quarantine)
+      rebound_quarantine.close
+      syscall.call(
+        RecoverySyscalls.no_replace(quarantine_file.fileno, temporary_name, quarantine_file.fileno, name),
+        "atomic no-replace #{name}"
+      )
+      temporary.close
+      created << name
+      copied = open_at.call(quarantine_file, name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      copied_attestation = attestation.call(copied)
+      raise BindingChanged unless copied_attestation.split("|", 2).fetch(1) == expected_digest
+      copied_attestation
+    ensure
+      temporary&.close unless temporary&.closed?
+    end
+    remove_exact = lambda do |directory, name, held, expected|
+      RecoveryCaptureCleanupHook.call(name) if defined?(RecoveryCaptureCleanupHook)
+      private_name = "cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
+      raise BindingChanged unless RecoverySyscalls.no_replace(
+        directory.fileno, name, directory.fileno, private_name
+      ) == 0
+      moved = open_at.call(directory, private_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      held_stat = held.stat
+      moved_stat = moved.stat
+      raise BindingChanged unless attestation.call(moved) == expected &&
+                                  held_stat.dev == moved_stat.dev && held_stat.ino == moved_stat.ino
+      raise BindingChanged unless RecoverySyscalls.unlinkat(directory.fileno, private_name, 0) == 0
+    end
+
+    begin
+      target = File.expand_path(ARGV.fetch(0))
+      metadata_name = ARGV.fetch(1)
+      quarantine_name = ARGV.fetch(2)
+      expected_quarantine = ARGV.fetch(3)
+      expected_original = ARGV.fetch(4)
+      raise BindingChanged unless metadata_name == ".agent-workflows-install.json" &&
+                                  quarantine_name.match?(/\A\.agent-workflows-install\.json\.recovery-[A-Za-z0-9]+\z/)
+
+      target_path_stat = File.lstat(target)
+      target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      target_stat = target_file.stat
+      raise BindingChanged unless target_stat.directory? && target_stat.dev == target_path_stat.dev &&
+                                  target_stat.ino == target_path_stat.ino
+      target_realpath = File.realpath(target)
+      real_target_stat = File.lstat(target_realpath)
+      raise BindingChanged unless real_target_stat.dev == target_stat.dev && real_target_stat.ino == target_stat.ino
+
+      quarantine_file = named_directory.call(target_file, quarantine_name, expected_quarantine)
+      source = open_at.call(target_file, metadata_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      original_attestation = attestation.call(source)
+      raise BindingChanged unless original_attestation == expected_original
+
+      source_mode = source.stat.mode
+      expected_digest = expected_original.split("|", 2).fetch(1)
+      backup_attestation = create_copy.call(source, "original-backup", expected_digest, source_mode)
+      RecoveryCaptureHook.call(:after_backup_copy) if defined?(RecoveryCaptureHook)
+      backup_reader = open_at.call(
+        quarantine_file,
+        "original-backup",
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      raise BindingChanged unless attestation.call(backup_reader) == backup_attestation
+      sentinel_attestation = create_copy.call(backup_reader, "sentinel", expected_digest, source_mode)
+      sentinel_reader = open_at.call(
+        quarantine_file,
+        "sentinel",
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      raise BindingChanged unless attestation.call(sentinel_reader) == sentinel_attestation
+
+      RecoveryCaptureHook.call(:before_link) if defined?(RecoveryCaptureHook)
+      syscall.call(
+        RecoverySyscalls.linkat(target_file.fileno, metadata_name, quarantine_file.fileno, "metadata", 0),
+        "linkat"
+      )
+      created << "metadata"
+      snapshot = open_at.call(quarantine_file, "metadata", File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      snapshot_attestation = attestation.call(snapshot)
+      raise BindingChanged unless snapshot_attestation == expected_original
+
+      current_source = open_at.call(target_file, metadata_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      raise BindingChanged unless attestation.call(current_source) == expected_original
+      named_quarantine = named_directory.call(target_file, quarantine_name, expected_quarantine)
+      named_quarantine.close
+
+      syscall.call(
+        RecoverySyscalls.exchange(quarantine_file.fileno, "sentinel", target_file.fileno, metadata_name),
+        "atomic exchange"
+      )
+      sentinel_installed = true
+      installed = open_at.call(target_file, metadata_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      raise BindingChanged unless attestation.call(installed) == sentinel_attestation
+      displaced_destination = open_at.call(
+        quarantine_file,
+        "sentinel",
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      displaced_destination_attestation = attestation.call(displaced_destination)
+      raise BindingChanged unless displaced_destination_attestation == expected_original
+      RecoveryCaptureHook.call(:after_rename) if defined?(RecoveryCaptureHook)
+      RecoveryCaptureHook.call(:before_sentinel_cleanup) if defined?(RecoveryCaptureHook)
+      remove_exact.call(quarantine_file, "sentinel", displaced_destination, expected_original)
+      created.delete("sentinel")
+      sentinel_installed = false
+
+      print [
+        expected_original.split("|", 2).fetch(0),
+        expected_original.split("|", 2).fetch(1),
+        snapshot_attestation.split("|", 2).fetch(0),
+        backup_attestation.split("|", 2).fetch(0),
+        sentinel_attestation.split("|", 2).fetch(0),
+        identity.call(target_stat)
+      ].join("|")
+      completed = true
+    rescue BindingChanged, Errno::ELOOP, Errno::ENOTDIR
+      binding_changed = true
+    rescue StandardError
+      nil
+    ensure
+      if !completed && sentinel_installed
+        begin
+          rollback_guard = open_at.call(
+            quarantine_file,
+            "metadata",
+            File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+          )
+          raise BindingChanged unless attestation.call(rollback_guard) == expected_original
+          undo_exchange = RecoverySyscalls.exchange(
+            quarantine_file.fileno,
+            "metadata",
+            target_file.fileno,
+            metadata_name
+          )
+          raise BindingChanged unless undo_exchange == 0
+          restored_original = open_at.call(target_file, metadata_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+          raise BindingChanged unless attestation.call(restored_original) == expected_original
+          sentinel_installed = false
+          binding_changed = false
+        rescue StandardError
+          binding_changed = true
+        end
+      end
+      if !completed && target_file && quarantine_file && (created.empty? || binding_changed)
+        begin
+          named_stat = File.lstat(File.join(File.expand_path(ARGV.fetch(0)), ARGV.fetch(2)))
+          raise BindingChanged unless named_stat.directory? && !named_stat.symlink? &&
+                                      identity.call(named_stat) == ARGV.fetch(3)
+          ios.reverse_each do |io|
+            begin
+              io.close unless io.closed?
+            rescue StandardError
+              descriptor_close_failed = true
+            end
+          end
+          if created.empty?
+            begin
+              quarantine_file.close unless quarantine_file.closed?
+            rescue StandardError
+              descriptor_close_failed = true
+            end
+          end
+        rescue StandardError
+          nil
+        end
+      end
+      ios.reverse_each do |io|
+        begin
+          io.close unless io.closed?
+        rescue StandardError
+          descriptor_close_failed = true
+        end
+      end
+      begin
+        quarantine_file&.close unless quarantine_file&.closed?
+      rescue StandardError
+        descriptor_close_failed = true
+      end
+      begin
+        target_file&.close unless target_file&.closed?
+      rescue StandardError
+        descriptor_close_failed = true
+      end
+    end
+    exit 67 if binding_changed
+    exit 70 if !completed || descriptor_close_failed
+  ' "$target" "$metadata_name" "${recovery_metadata_quarantine##*/}" \
+    "$recovery_metadata_quarantine_identity" "$1" 2>/dev/null
+}
+
+capture_installed_metadata_for_recovery() {
+  local original_attestation original_identity capture_protocol capture_status cleanup_path
+  local snapshot_identity backup_identity sentinel_identity target_identity
+  local metadata_absent_under_lock="${1:-false}"
+  recovery_metadata_path="$target/$metadata_name"
+  recovery_metadata_quarantine=""
+  recovery_metadata_snapshot=""
+  recovery_metadata_backup=""
+  recovery_metadata_sentinel_identity=""
+  recovery_metadata_snapshot_identity=""
+  recovery_metadata_backup_identity=""
+  recovery_metadata_quarantine_identity=""
+  recovery_metadata_target_identity=""
+  recovery_metadata_cleanup_receipt=""
+  recovery_metadata_digest=""
+  recovery_metadata_captured=false
+
+  if installed_metadata_blocking_recovery_residue_exists; then
+    return 66
+  fi
+  if [[ ! -e "$recovery_metadata_path" && ! -L "$recovery_metadata_path" ]]; then
+    [[ "$metadata_absent_under_lock" = "true" ]] && return 68
+    return 1
+  fi
+  if ! original_attestation="$(regular_file_attestation "$recovery_metadata_path")"; then
+    return 1
+  fi
+  original_identity="${original_attestation%%|*}"
+  recovery_metadata_digest="${original_attestation#*|}"
+  if [[ -z "$original_identity" || -z "$recovery_metadata_digest" ]]; then
+    return 1
+  fi
+
+  if ! recovery_metadata_quarantine="$(mktemp -d "$target/$metadata_name.recovery-XXXXXX")"; then
+    return 70
+  fi
+  if ! recovery_metadata_quarantine_identity="$(recovery_directory_identity "$recovery_metadata_quarantine")"; then
+    cleanup_path="$(remove_bound_empty_directory "$recovery_metadata_quarantine" \
+      "$recovery_metadata_quarantine_identity" 2>/dev/null)" || \
+      [[ -z "$cleanup_path" ]] || recovery_metadata_quarantine="$cleanup_path"
+    return 70
+  fi
+  recovery_metadata_cleanup_receipt="$target/$metadata_name.cleanup-complete-${recovery_metadata_quarantine##*.recovery-}"
+  if [[ -e "$recovery_metadata_cleanup_receipt" || -L "$recovery_metadata_cleanup_receipt" ]]; then
+    cleanup_path="$(remove_bound_empty_directory "$recovery_metadata_quarantine" \
+      "$recovery_metadata_quarantine_identity" 2>/dev/null)" || \
+      [[ -z "$cleanup_path" ]] || recovery_metadata_quarantine="$cleanup_path"
+    return 70
+  fi
+  recovery_metadata_snapshot="$recovery_metadata_quarantine/metadata"
+  recovery_metadata_backup="$recovery_metadata_quarantine/original-backup"
+  if capture_protocol="$(capture_bound_recovery_metadata "$original_attestation")"; then
+    capture_status=0
+  else
+    capture_status=$?
+  fi
+  [[ "$capture_status" -eq 0 ]] || {
+    if [[ "$(recovery_directory_identity "$recovery_metadata_quarantine" 2>/dev/null || true)" = \
+          "$recovery_metadata_quarantine_identity" ]]; then
+      cleanup_path="$(remove_bound_empty_directory "$recovery_metadata_quarantine" \
+        "$recovery_metadata_quarantine_identity" 2>/dev/null)" || \
+        [[ -z "$cleanup_path" ]] || recovery_metadata_quarantine="$cleanup_path"
+    fi
+    [[ "$capture_status" -eq 67 ]] && return 1
+    return 70
+  }
+  IFS='|' read -r original_identity recovery_metadata_digest snapshot_identity \
+    backup_identity sentinel_identity target_identity <<< "$capture_protocol"
+  if [[ -z "$original_identity" || -z "$recovery_metadata_digest" || -z "$snapshot_identity" ||
+        -z "$backup_identity" || -z "$sentinel_identity" || -z "$target_identity" ]]; then
+    return 1
+  fi
+  recovery_metadata_sentinel_identity="$sentinel_identity"
+  recovery_metadata_snapshot_identity="$snapshot_identity"
+  recovery_metadata_backup_identity="$backup_identity"
+  recovery_metadata_target_identity="$target_identity"
+  recovery_metadata_captured=true
+  if ! recovery_metadata_binding_intact; then
+    return 1
+  fi
+}
+
+installed_metadata_blocking_recovery_residue_exists() {
+  local cleanup_receipt residue
+  for residue in "$target/$metadata_name".recovery-*; do
+    [[ -e "$residue" || -L "$residue" ]] || continue
+    cleanup_receipt="$target/$metadata_name.cleanup-complete-${residue##*.recovery-}"
+    recovery_metadata_cleanup_receipt_valid "$residue" "$cleanup_receipt" && continue
+    return 0
+  done
+  return 1
+}
+
+report_blocking_recovery_quarantines() {
+  local explicit_residue="${1:-}" residue
+  if [[ -n "$explicit_residue" && ( -e "$explicit_residue" || -L "$explicit_residue" ) ]]; then
+    echo "Preserved recovery metadata quarantine $explicit_residue blocks automatic recovery." >&2
+  fi
+  for residue in "$target/$metadata_name".recovery-*; do
+    [[ -e "$residue" || -L "$residue" ]] || continue
+    [[ "$residue" != "$explicit_residue" ]] || continue
+    echo "Preserved recovery metadata quarantine $residue blocks automatic recovery." >&2
+  done
+  echo "Verify the quarantined artifacts against a trusted metadata backup; move the entire quarantine aside only after preserving it, then retry." >&2
+}
+
+recovery_metadata_cleanup_receipt_valid() {
+  ruby -e '
+    receipt_file = nil
+    begin
+      residue = File.expand_path(ARGV.fetch(0))
+      receipt = File.expand_path(ARGV.fetch(1))
+      residue_stat = File.lstat(residue)
+      abort unless residue_stat.directory? && !residue_stat.symlink?
+      %w[metadata original-backup sentinel].each do |name|
+        path = File.join(residue, name)
+        begin
+          File.lstat(path)
+          abort
+        rescue Errno::ENOENT
+          nil
+        end
+      end
+      receipt_stat = File.lstat(receipt)
+      abort unless receipt_stat.file? && !receipt_stat.symlink? && File.const_defined?(:NOFOLLOW)
+      receipt_file = File.open(receipt, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      opened_stat = receipt_file.stat
+      abort unless opened_stat.file? && opened_stat.dev == receipt_stat.dev && opened_stat.ino == receipt_stat.ino
+      identity = receipt_file.read
+      final_stat = receipt_file.stat
+      named_stat = File.lstat(receipt)
+      abort unless final_stat.dev == opened_stat.dev && final_stat.ino == opened_stat.ino &&
+                   named_stat.file? && !named_stat.symlink? &&
+                   named_stat.dev == opened_stat.dev && named_stat.ino == opened_stat.ino
+      RecoveryCleanupReceiptHook.call(:before_final_residue_check, residue) if defined?(RecoveryCleanupReceiptHook)
+      final_residue_stat = File.lstat(residue)
+      abort unless final_residue_stat.directory? && !final_residue_stat.symlink? &&
+                   final_residue_stat.dev == residue_stat.dev && final_residue_stat.ino == residue_stat.ino
+      %w[metadata original-backup sentinel].each do |name|
+        begin
+          File.lstat(File.join(residue, name))
+          abort
+        rescue Errno::ENOENT
+          nil
+        end
+      end
+      abort unless identity == "#{final_residue_stat.dev}:#{final_residue_stat.ino}"
+    ensure
+      receipt_file&.close
+    end
+  ' "$1" "$2" 2>/dev/null
+}
+
+write_recovery_metadata_cleanup_receipt() {
+  ruby -rfiddle/import -e '
+    module RecoveryReceiptSyscalls
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int fchdir(int)"
+    end
+
+    file = nil
+    target_file = nil
+    begin
+      target = File.expand_path(ARGV.fetch(0))
+      receipt_name = ARGV.fetch(1)
+      expected_target_identity = ARGV.fetch(2)
+      quarantine_identity = ARGV.fetch(3)
+      abort unless receipt_name.match?(/\A\.agent-workflows-install\.json\.cleanup-complete-[A-Za-z0-9]+\z/) &&
+                   File.const_defined?(:NOFOLLOW)
+
+      target_path_stat = File.lstat(target)
+      abort unless target_path_stat.directory? && !target_path_stat.symlink?
+      target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      target_stat = target_file.stat
+      target_identity = "#{target_stat.dev}:#{target_stat.ino}"
+      named_target_stat = File.lstat(target)
+      abort unless target_stat.directory? && target_identity == expected_target_identity &&
+                   named_target_stat.directory? && !named_target_stat.symlink? &&
+                   named_target_stat.dev == target_stat.dev && named_target_stat.ino == target_stat.ino
+
+      raise SystemCallError.new("fchdir cleanup receipt", Fiddle.last_error) if
+        RecoveryReceiptSyscalls.fchdir(target_file.fileno) == -1
+      file = File.open(
+        receipt_name,
+        File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+        0o600
+      )
+      abort unless file.stat.file?
+      file.write(quarantine_identity)
+      file.flush
+      file.fsync
+    ensure
+      file&.close
+      target_file&.close
+    end
+  ' "$target" "${recovery_metadata_cleanup_receipt##*/}" "$recovery_metadata_target_identity" \
+    "$recovery_metadata_quarantine_identity" 2>/dev/null
+}
+
+regular_file_attestation() {
+  ruby -rdigest -e '
+    file = nil
+    begin
+      path = ARGV.fetch(0)
+      path_stat = File.lstat(path)
+      abort unless path_stat.file? && !path_stat.symlink? && File.const_defined?(:NOFOLLOW)
+      file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      opened_stat = file.stat
+      abort unless opened_stat.file? && opened_stat.dev == path_stat.dev && opened_stat.ino == path_stat.ino
+      digest = Digest::SHA256.new
+      while (chunk = file.read(64 * 1024))
+        digest.update(chunk)
+      end
+      final_stat = file.stat
+      path_stat = File.lstat(path)
+      abort unless final_stat.file? && final_stat.dev == opened_stat.dev && final_stat.ino == opened_stat.ino &&
+                   path_stat.file? && !path_stat.symlink? &&
+                   path_stat.dev == opened_stat.dev && path_stat.ino == opened_stat.ino
+      print "#{opened_stat.dev}:#{opened_stat.ino}|#{digest.hexdigest}"
+    ensure
+      file&.close
+    end
+  ' "$1" 2>/dev/null
+}
+
+capture_regular_file_snapshot() {
+  ruby -rdigest -rfiddle/import -e '
+    module MetadataSnapshotSyscalls
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int, unsigned int)"
+    end
+    source_file = nil
+    snapshot_file = nil
+    lock_file = nil
+    snapshot_stat = nil
+    completed = false
+    begin
+      source, snapshot, expected, expected_lock = ARGV
+      lock_path = File.dirname(snapshot)
+      snapshot_name = File.basename(snapshot)
+      abort unless snapshot_name == "install-metadata.snapshot"
+      lock_path_stat = File.lstat(lock_path)
+      abort unless lock_path_stat.directory? && !lock_path_stat.symlink? && File.const_defined?(:NOFOLLOW)
+      lock_file = File.open(lock_path, File::RDONLY | File::NOFOLLOW)
+      lock_stat = lock_file.stat
+      abort unless lock_stat.directory? &&
+                   "#{lock_stat.dev}:#{lock_stat.ino}" == expected_lock &&
+                   lock_stat.dev == lock_path_stat.dev && lock_stat.ino == lock_path_stat.ino
+      source_path_stat = File.lstat(source)
+      abort unless source_path_stat.file? && !source_path_stat.symlink? && File.const_defined?(:NOFOLLOW)
+      source_file = File.open(source, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      source_stat = source_file.stat
+      abort unless source_stat.file? && source_stat.dev == source_path_stat.dev && source_stat.ino == source_path_stat.ino
+      content = source_file.read
+      final_source_stat = source_file.stat
+      named_source_stat = File.lstat(source)
+      digest = Digest::SHA256.hexdigest(content)
+      attestation = "#{source_stat.dev}:#{source_stat.ino}|#{digest}"
+      abort unless attestation == expected &&
+                   final_source_stat.file? && final_source_stat.dev == source_stat.dev && final_source_stat.ino == source_stat.ino &&
+                   named_source_stat.file? && !named_source_stat.symlink? &&
+                   named_source_stat.dev == source_stat.dev && named_source_stat.ino == source_stat.ino
+
+      MetadataSnapshotHook.call(:before_snapshot_create) if defined?(MetadataSnapshotHook)
+      snapshot_fd = MetadataSnapshotSyscalls.openat(
+        lock_file.fileno,
+        snapshot_name,
+        File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW,
+        0o600
+      )
+      abort if snapshot_fd == -1
+      snapshot_file = File.for_fd(snapshot_fd)
+      snapshot_stat = snapshot_file.stat
+      abort unless snapshot_stat.file?
+      snapshot_file.chmod(0o600)
+      MetadataSnapshotHook.call(:after_snapshot_create) if defined?(MetadataSnapshotHook)
+      snapshot_file.write(content)
+      snapshot_file.flush
+      snapshot_file.fsync
+      MetadataSnapshotHook.call(:after_snapshot_fsync) if defined?(MetadataSnapshotHook)
+      snapshot_stat = snapshot_file.stat
+      abort unless snapshot_stat.file?
+      begin
+        snapshot_file.close
+      rescue StandardError
+        nil
+      ensure
+        snapshot_file = nil
+      end
+      print "#{snapshot_stat.dev}:#{snapshot_stat.ino}|#{digest}"
+      completed = true
+    ensure
+      if !completed && snapshot_file && snapshot_stat && lock_file
+        begin
+          snapshot_file.flush
+          cleanup_stat = snapshot_file.stat
+          if cleanup_stat.file? && cleanup_stat.dev == snapshot_stat.dev && cleanup_stat.ino == snapshot_stat.ino
+            STDOUT.write("#{cleanup_stat.dev}:#{cleanup_stat.ino}")
+            STDOUT.flush
+          end
+        rescue StandardError
+          nil
+        end
+      end
+      [snapshot_file, source_file, lock_file].each do |file|
+        begin
+          file&.close
+        rescue StandardError
+          nil
+        end
+      end
+    end
+  ' "$1" "$2" "$3" "$install_lock_identity" 2>/dev/null
+}
+
+capture_install_metadata_binding() {
+  local metadata_path="$target/$metadata_name"
+  local first_state first_value first_attestation second_attestation snapshot_attestation
+  install_metadata_binding_state=""
+  install_metadata_binding_attestation=""
+  install_metadata_snapshot_path="$install_lock/install-metadata.snapshot"
+  install_metadata_snapshot_attestation=""
+  install_metadata_bound_delivery_mode=""
+
+  if [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]; then
+    install_metadata_binding_state="absent"
+    install_metadata_bound_delivery_mode="flat"
+    return 0
+  fi
+
+  read_installed_metadata_value delivery_mode
+  first_state="$installed_metadata_state"
+  first_value="$installed_metadata_value"
+  case "$first_state" in
+    valid|key_absent) ;;
+    invalid)
+      report_invalid_install_delivery_mode
+      return 64
+      ;;
+    *)
+      report_corrupt_install_metadata
+      return 65
+      ;;
+  esac
+  first_attestation="$(regular_file_attestation "$metadata_path")" || {
+    report_corrupt_install_metadata
+    return 65
+  }
+
+  read_installed_metadata_value delivery_mode
+  second_attestation="$(regular_file_attestation "$metadata_path")" || true
+  if [[ "$installed_metadata_state" != "$first_state" ||
+        "$installed_metadata_value" != "$first_value" ||
+        "$second_attestation" != "$first_attestation" ]]; then
+    report_install_metadata_binding_changed
+    return 65
+  fi
+
+  snapshot_attestation="$(capture_regular_file_snapshot \
+    "$metadata_path" "$install_metadata_snapshot_path" "$first_attestation")" || {
+    install_metadata_snapshot_attestation="$snapshot_attestation"
+    report_install_metadata_binding_changed
+    return 65
+  }
+  if [[ "$(regular_file_attestation "$metadata_path" 2>/dev/null || true)" != "$first_attestation" ||
+        "$(regular_file_attestation "$install_metadata_snapshot_path" 2>/dev/null || true)" != "$snapshot_attestation" ]]; then
+    report_install_metadata_binding_changed
+    return 65
+  fi
+
+  install_metadata_binding_state="present"
+  install_metadata_binding_attestation="$first_attestation"
+  install_metadata_snapshot_attestation="$snapshot_attestation"
+  case "$first_state" in
+    valid) install_metadata_bound_delivery_mode="$first_value" ;;
+    key_absent) install_metadata_bound_delivery_mode="flat" ;;
+  esac
+}
+
+prebind_install_metadata_rollback_guard() {
+  [[ "$install_metadata_binding_state" = "present" ]] || return 0
+  install_metadata_rollback_guard="$install_lock/metadata-commit-old.guard"
+  if ! ruby -rdigest -rfiddle/import -rsecurerandom -e '
+    module AtomicMetadataPrebind
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"
+      extern "int linkat(int, const char *, int, const char *, int)"
+      extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x4)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x1)
+        end
+      end
+    end
+    target, metadata_name, lock, expected = ARGV
+    target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    lock_file = File.open(lock, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    created = false
+    attest = lambda do |file|
+      file.rewind
+      stat = file.stat
+      abort unless stat.file?
+      digest = Digest::SHA256.new
+      while (chunk = file.read(64 * 1024))
+        digest.update(chunk)
+      end
+      final = file.stat
+      abort unless final.file? && final.dev == stat.dev && final.ino == stat.ino
+      "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}"
+    end
+    open_at = lambda do |directory, name|
+      fd = AtomicMetadataPrebind.openat(directory.fileno, name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      abort if fd == -1
+      File.for_fd(fd)
+    end
+    begin
+      source = open_at.call(target_file, metadata_name)
+      abort unless attest.call(source) == expected
+      abort unless AtomicMetadataPrebind.linkat(
+        target_file.fileno, metadata_name, lock_file.fileno, "metadata-commit-old.guard", 0
+      ) == 0
+      created = true
+      guard = open_at.call(lock_file, "metadata-commit-old.guard")
+      source_stat = source.stat
+      guard_stat = guard.stat
+      abort unless attest.call(guard) == expected &&
+                   source_stat.dev == guard_stat.dev && source_stat.ino == guard_stat.ino
+    ensure
+      failed = !$!.nil?
+      close_safely = lambda do |file|
+        begin
+          file&.close unless file&.closed?
+        rescue StandardError
+          nil
+        end
+      end
+      close_safely.call(guard)
+      if failed && created
+        cleanup_guard = open_at.call(lock_file, "metadata-commit-old.guard")
+        source_stat = source.stat
+        cleanup_stat = cleanup_guard.stat
+        abort unless attest.call(cleanup_guard) == expected &&
+                     source_stat.dev == cleanup_stat.dev && source_stat.ino == cleanup_stat.ino
+        cleanup_name = "metadata-commit-old.cleanup-#{Process.pid}-#{SecureRandom.hex(8)}"
+        abort unless AtomicMetadataPrebind.no_replace(
+          lock_file.fileno, "metadata-commit-old.guard", cleanup_name
+        ) == 0
+        moved_guard = open_at.call(lock_file, cleanup_name)
+        moved_stat = moved_guard.stat
+        abort unless attest.call(moved_guard) == expected &&
+                     source_stat.dev == moved_stat.dev && source_stat.ino == moved_stat.ino
+        abort unless AtomicMetadataPrebind.unlinkat(
+          lock_file.fileno, cleanup_name, 0
+        ) == 0
+        close_safely.call(moved_guard)
+        close_safely.call(cleanup_guard)
+      end
+      close_safely.call(source)
+      close_safely.call(lock_file)
+      close_safely.call(target_file)
+    end
+  ' "$target" "$metadata_name" "$install_lock" "$install_metadata_binding_attestation" 2>/dev/null; then
+    echo "METADATA_COMMIT_PREBIND_UNAVAILABLE: could not bind the attested install metadata into the install lock before mutation." >&2
+    echo "Preserved the existing metadata and refused to mutate managed files; verify hardlink support and retry." >&2
+    return 1
+  fi
+}
+
+remove_install_metadata_rollback_guard() {
+  [[ -n "${install_metadata_rollback_guard:-}" && -e "$install_metadata_rollback_guard" ]] || return 0
+  ruby -rdigest -rfiddle/import -rsecurerandom -e '
+    module AtomicMetadataGuardCleanup
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"
+      extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x4)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x1)
+        end
+      end
+    end
+    lock, expected = ARGV
+    retained = File.join(lock, "metadata-commit-old.guard")
+    success = false
+    at_exit { print retained unless success }
+    lock_path_stat = File.lstat(lock)
+    lock_file = File.open(lock, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    lock_stat = lock_file.stat
+    abort unless lock_path_stat.directory? && !lock_path_stat.symlink? &&
+                 lock_path_stat.dev == lock_stat.dev && lock_path_stat.ino == lock_stat.ino
+    fd = AtomicMetadataGuardCleanup.openat(
+      lock_file.fileno, "metadata-commit-old.guard", File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+    )
+    abort if fd == -1
+    file = File.for_fd(fd)
+    stat = file.stat
+    digest = Digest::SHA256.new
+    while (chunk = file.read(64 * 1024))
+      digest.update(chunk)
+    end
+    abort unless stat.file? && "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}" == expected
+    cleanup_name = "metadata-commit-old.cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
+    AtomicMetadataGuardCleanupHook.call if defined?(AtomicMetadataGuardCleanupHook)
+    abort unless AtomicMetadataGuardCleanup.no_replace(
+      lock_file.fileno, "metadata-commit-old.guard", cleanup_name
+    ) == 0
+    retained = File.join(lock, cleanup_name)
+    AtomicMetadataGuardCleanupPostDetachHook.call(retained) if defined?(AtomicMetadataGuardCleanupPostDetachHook)
+    moved_fd = AtomicMetadataGuardCleanup.openat(
+      lock_file.fileno, cleanup_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+    )
+    abort if moved_fd == -1
+    moved = File.for_fd(moved_fd)
+    moved_stat = moved.stat
+    moved_digest = Digest::SHA256.new
+    while (chunk = moved.read(64 * 1024))
+      moved_digest.update(chunk)
+    end
+    abort unless "#{moved_stat.dev}:#{moved_stat.ino}|#{moved_digest.hexdigest}" == expected &&
+                 moved_stat.dev == stat.dev && moved_stat.ino == stat.ino
+    abort unless AtomicMetadataGuardCleanup.unlinkat(
+      lock_file.fileno, cleanup_name, 0
+    ) == 0
+    success = true
+  ' "$install_lock" "$install_metadata_binding_attestation" 2>/dev/null
+}
+
+verify_install_metadata_binding() {
+  local metadata_path="$target/$metadata_name"
+  case "$install_metadata_binding_state" in
+    absent)
+      [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]
+      ;;
+    present)
+      [[ "$(regular_file_attestation "$metadata_path" 2>/dev/null || true)" = \
+         "$install_metadata_binding_attestation" ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+require_install_metadata_binding() {
+  if ! verify_install_metadata_binding; then
+    report_install_metadata_binding_changed
+    exit 65
+  fi
+  if [[ "$install_metadata_binding_state" = "present" ]] &&
+     [[ "$(regular_file_attestation "$install_metadata_snapshot_path" 2>/dev/null || true)" != \
+        "$install_metadata_snapshot_attestation" ]]; then
+    report_install_metadata_binding_changed
+    exit 65
+  fi
+}
+
+report_install_metadata_binding_changed() {
+  local metadata_path="$target/$metadata_name"
+  echo "CORRUPT_INSTALL_METADATA: install metadata binding changed after locked validation; refused an unsafe metadata commit." >&2
+  case "${install_metadata_binding_state:-}" in
+    present)
+      echo "Restore a valid backup of $metadata_path. If none exists, preserve the target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
+      ;;
+    absent)
+      if [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]; then
+        echo "Confirm $metadata_path remains absent, then retry the install." >&2
+      else
+        echo "Unexpected install metadata appeared at $metadata_path after an absent binding was recorded. Preserve that path and the target without overwriting either, then verify their origin before retrying." >&2
+      fi
+      ;;
+    *)
+      echo "The original install metadata state is unavailable. Preserve $metadata_path and the target without overwriting either, then establish a trusted backup or verified empty-target recovery before retrying." >&2
+      ;;
+  esac
+}
+
+recovery_metadata_binding_intact() {
+  local sentinel_attestation snapshot_attestation backup_attestation
+  [[ "$recovery_metadata_captured" = "true" ]] || return 1
+  sentinel_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 1
+  snapshot_attestation="$(regular_file_attestation "$recovery_metadata_snapshot")" || return 1
+  backup_attestation="$(regular_file_attestation "$recovery_metadata_backup")" || return 1
+  [[ "$sentinel_attestation" = "$recovery_metadata_sentinel_identity|$recovery_metadata_digest" &&
+     "$snapshot_attestation" = "$recovery_metadata_snapshot_identity|$recovery_metadata_digest" &&
+     "$backup_attestation" = "$recovery_metadata_backup_identity|$recovery_metadata_digest" ]]
+}
+
+recovery_metadata_restore_binding_intact() {
+  local sentinel_attestation backup_attestation
+  [[ "$recovery_metadata_captured" = "true" ]] || return 1
+  sentinel_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 1
+  backup_attestation="$(regular_file_attestation "$recovery_metadata_backup")" || return 1
+  [[ "$sentinel_attestation" = "$recovery_metadata_sentinel_identity|$recovery_metadata_digest" &&
+     "$backup_attestation" = "$recovery_metadata_backup_identity|$recovery_metadata_digest" ]]
+}
+
+recovery_metadata_sentinel_intact() {
+  [[ "$recovery_metadata_captured" = "true" ]] || return 1
+  [[ "$(regular_file_attestation "$recovery_metadata_path" 2>/dev/null || true)" = \
+     "$recovery_metadata_sentinel_identity|$recovery_metadata_digest" ]]
+}
+
+replace_bound_recovery_metadata() {
+  ruby -rdigest -rfiddle/import -rsecurerandom -e '
+    module RecoveryRestoreSyscalls
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int, ...)"
+      extern "int linkat(int, const char *, int, const char *, int)"
+      extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.exchange(source_fd, source, destination_fd, destination)
+          renameatx_np(source_fd, source, destination_fd, destination, 0x2)
+        end
+        def self.no_replace(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x4)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.exchange(source_fd, source, destination_fd, destination)
+          renameat2(source_fd, source, destination_fd, destination, 0x2)
+        end
+        def self.no_replace(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x1)
+        end
+      end
+    end
+
+    ios = []
+    exchanged = false
+    guard_created = false
+    completed = false
+    content_restored = false
+    cleanup_uncertain = false
+    rollback_failed = false
+    rollback_succeeded = false
+    displaced_destination_attestation = nil
+    displaced_destination_identity = nil
+    open_at = lambda do |directory, name|
+      fd = RecoveryRestoreSyscalls.openat(
+        directory.fileno,
+        name,
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      io = IO.new(fd, "r")
+      ios << io
+      io
+    end
+    open_entry = lambda do |directory, name|
+      fd = RecoveryRestoreSyscalls.openat(
+        directory.fileno,
+        name,
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      if fd == -1 && Fiddle.last_error == Errno::ELOOP::Errno
+        link_flags = if RUBY_PLATFORM.include?("darwin")
+                       0x00200000
+                     else
+                       File::NOFOLLOW | 0x00200000
+                     end
+        fd = RecoveryRestoreSyscalls.openat(directory.fileno, name, link_flags)
+      end
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      io = IO.for_fd(fd, autoclose: true)
+      ios << io
+      io
+    end
+    attestation = lambda do |file|
+      file.rewind
+      stat = file.stat
+      digest = Digest::SHA256.new
+      while (chunk = file.read(64 * 1024))
+        digest.update(chunk)
+      end
+      final_stat = file.stat
+      raise "metadata attestation changed during read" unless final_stat.file? &&
+                                                               final_stat.dev == stat.dev &&
+                                                               final_stat.ino == stat.ino
+      "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}"
+    end
+    identity = lambda do |file|
+      stat = file.stat
+      type = if stat.file?
+               "file"
+             elsif stat.directory?
+               "directory"
+             elsif stat.symlink?
+               "symlink"
+             else
+               "other"
+             end
+      "#{stat.dev}:#{stat.ino}|#{type}"
+    end
+    remove_exact = lambda do |directory, name, held, expected_attestation|
+      RecoveryRestoreCleanupHook.call(name) if defined?(RecoveryRestoreCleanupHook)
+      private_name = "restore-cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
+      raise "cleanup move failed" unless RecoveryRestoreSyscalls.no_replace(
+        directory.fileno, name, private_name
+      ) == 0
+      moved = open_entry.call(directory, private_name)
+      held_stat = held.stat
+      moved_stat = moved.stat
+      raise "cleanup identity changed" unless held_stat.dev == moved_stat.dev && held_stat.ino == moved_stat.ino
+      if expected_attestation
+        raise "cleanup attestation changed" unless moved_stat.file? &&
+                                                     attestation.call(moved) == expected_attestation
+      end
+      raise "cleanup unlink failed" unless RecoveryRestoreSyscalls.unlinkat(
+        directory.fileno, private_name, 0
+      ) == 0
+    end
+    begin
+      source = File.expand_path(ARGV.fetch(0))
+      destination = File.expand_path(ARGV.fetch(1))
+      expected_source = ARGV.fetch(2)
+      expected_destination = ARGV.fetch(3)
+      target = File.expand_path(ARGV.fetch(4))
+      quarantine = File.expand_path(ARGV.fetch(5))
+      expected_quarantine = ARGV.fetch(6)
+      source_name = File.basename(source)
+      exit 67 unless File.dirname(destination) == target &&
+                     File.basename(destination) == ".agent-workflows-install.json" &&
+                     File.dirname(source) == quarantine &&
+                     %w[metadata original-backup].include?(source_name)
+      target_path_stat = File.lstat(target)
+      target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      ios << target_file
+      target_stat = target_file.stat
+      exit 67 unless target_stat.directory? && target_stat.dev == target_path_stat.dev &&
+                     target_stat.ino == target_path_stat.ino
+      target_realpath = File.realpath(target)
+      real_target_stat = File.lstat(target_realpath)
+      exit 67 unless real_target_stat.dev == target_stat.dev && real_target_stat.ino == target_stat.ino
+
+      quarantine_name = File.basename(quarantine)
+      quarantine_file = open_at.call(target_file, quarantine_name)
+      quarantine_stat = quarantine_file.stat
+      exit 67 unless quarantine_stat.directory? &&
+                     "#{quarantine_stat.dev}:#{quarantine_stat.ino}" == expected_quarantine
+
+      source_file = open_at.call(quarantine_file, source_name)
+      exit 67 unless attestation.call(source_file) == expected_source
+      destination_file = open_at.call(target_file, ".agent-workflows-install.json")
+      exit 67 unless attestation.call(destination_file) == expected_destination
+
+      exit 67 unless RecoveryRestoreSyscalls.linkat(
+        target_file.fileno,
+        ".agent-workflows-install.json",
+        quarantine_file.fileno,
+        "restore-guard",
+        0
+      ) == 0
+      guard_created = true
+      guard_file = open_at.call(quarantine_file, "restore-guard")
+      exit 67 unless attestation.call(guard_file) == expected_destination
+
+      RecoveryRestoreHook.call(:before_rename) if defined?(RecoveryRestoreHook)
+      exit 67 unless RecoveryRestoreSyscalls.exchange(
+        quarantine_file.fileno,
+        source_name,
+        target_file.fileno,
+        ".agent-workflows-install.json"
+      ) == 0
+      exchanged = true
+      RecoveryRestoreHook.call(:after_rename) if defined?(RecoveryRestoreHook)
+      displaced_destination_file = open_entry.call(quarantine_file, source_name)
+      displaced_destination_identity = identity.call(displaced_destination_file)
+      if displaced_destination_file.stat.file?
+        displaced_destination_attestation = attestation.call(displaced_destination_file)
+      end
+      restored_file = open_at.call(target_file, ".agent-workflows-install.json")
+      raise "restored metadata binding changed" unless attestation.call(restored_file) == expected_source
+      raise "displaced metadata binding changed" unless displaced_destination_attestation == expected_destination
+      guard_stat = guard_file.stat
+      displaced_stat = displaced_destination_file.stat
+      raise "displaced metadata identity changed" unless guard_stat.dev == displaced_stat.dev &&
+                                                          guard_stat.ino == displaced_stat.ino
+      exchanged = false
+      content_restored = true
+      RecoveryRestoreHook.call(:before_success_cleanup) if defined?(RecoveryRestoreHook)
+      remove_exact.call(quarantine_file, source_name, displaced_destination_file, expected_destination)
+      exit 67 unless attestation.call(guard_file) == expected_destination
+      remove_exact.call(quarantine_file, "restore-guard", guard_file, expected_destination)
+      guard_created = false
+      completed = true
+    rescue StandardError
+      cleanup_uncertain = true if content_restored
+    ensure
+      if exchanged
+        begin
+          guard_file ||= open_at.call(quarantine_file, "restore-guard")
+          raise "restore guard binding changed" unless attestation.call(guard_file) == expected_destination
+          if RecoveryRestoreSyscalls.exchange(
+            quarantine_file.fileno,
+            "restore-guard",
+            target_file.fileno,
+            ".agent-workflows-install.json"
+          ) == 0
+            exchanged = false
+            rollback_destination = open_entry.call(target_file, ".agent-workflows-install.json")
+            raise "restore guard rollback changed" unless attestation.call(rollback_destination) == expected_destination
+            guard_file = open_at.call(quarantine_file, "restore-guard")
+            raise "restore source rollback changed" unless attestation.call(guard_file) == expected_source
+            remove_exact.call(quarantine_file, "restore-guard", guard_file, expected_source)
+            guard_created = false
+            rollback_succeeded = true
+          else
+            rollback_failed = true
+          end
+        rescue StandardError
+          rollback_failed = true
+        end
+      end
+      if guard_created && quarantine_file && !exchanged && !rollback_failed
+        begin
+          guard_file ||= open_at.call(quarantine_file, "restore-guard")
+          remove_exact.call(quarantine_file, "restore-guard", guard_file, expected_destination)
+          guard_created = false
+        rescue StandardError
+          rollback_failed = true
+        end
+      end
+      ios.reverse_each do |io|
+        begin
+          io.close unless io.closed?
+        rescue StandardError
+          rollback_failed = true unless completed
+        end
+      end
+    end
+    exit 67 if cleanup_uncertain || rollback_failed || exchanged || guard_created
+    exit 69 if rollback_succeeded
+    exit 65 unless completed
+  ' "$1" "$2" "$3" "$4" "$target" "$recovery_metadata_quarantine" \
+    "$recovery_metadata_quarantine_identity" 2>/dev/null
+}
+
+remove_bound_recovery_metadata_artifacts() {
+  ruby -rfiddle/import -rsecurerandom -e '
+    module RecoveryCleanupSyscalls
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int, ...)"
+      extern "int mkdirat(int, const char *, unsigned int)"
+      extern "int renameat(int, const char *, int, const char *)"
+      extern "int unlinkat(int, const char *, int)"
+    end
+
+    class CleanupFailed < StandardError; end
+
+    ios = []
+    holder_name = nil
+    holder_path = nil
+    holder_file = nil
+    target_file = nil
+    payload_file = nil
+    original_target_mode = nil
+    mode_restore_failed = false
+    close_failed = false
+    detached = false
+    holder_close_failed = false
+    cleanup_status = 67
+    identity = lambda { |stat| "#{stat.dev}:#{stat.ino}" }
+    open_at = lambda do |directory, name|
+      fd = RecoveryCleanupSyscalls.openat(
+        directory.fileno,
+        name,
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      io = IO.new(fd, "r")
+      ios << io
+      io
+    end
+
+    begin
+      target = File.expand_path(ARGV.fetch(0))
+      target_realpath = File.realpath(target)
+      target_parent = File.dirname(target_realpath)
+      target_parent_stat = File.lstat(target_parent)
+      quarantine_name = ARGV.fetch(1)
+      expected_quarantine = ARGV.fetch(2)
+      expected_children = {
+        "metadata" => ARGV.fetch(3),
+        "original-backup" => ARGV.fetch(4)
+      }
+      raise CleanupFailed unless quarantine_name.match?(/\A\.agent-workflows-install\.json\.recovery-[A-Za-z0-9]+\z/)
+
+      target_path_stat = File.lstat(target)
+      target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      ios << target_file
+      target_stat = target_file.stat
+      raise CleanupFailed unless target_stat.directory? && target_stat.dev == target_path_stat.dev &&
+                                 target_stat.ino == target_path_stat.ino
+      real_target_stat = File.lstat(target_realpath)
+      raise CleanupFailed unless real_target_stat.dev == target_stat.dev && real_target_stat.ino == target_stat.ino
+      parent_writable_by_others = (target_parent_stat.mode & 0o022) != 0
+      raise CleanupFailed if parent_writable_by_others &&
+                             (!target_parent_stat.sticky? || target_stat.uid != Process.euid)
+      original_target_mode = target_stat.mode & 0o7777
+      if (original_target_mode & 0o022) != 0
+        raise CleanupFailed unless target_stat.uid == Process.euid
+        target_file.chmod(original_target_mode & ~0o022)
+      end
+      secured_target_stat = File.lstat(target)
+      raise CleanupFailed unless secured_target_stat.dev == target_stat.dev && secured_target_stat.ino == target_stat.ino
+
+      10.times do
+        candidate = ".agent-workflows-install.json.recovery-#{SecureRandom.hex(16)}"
+        if RecoveryCleanupSyscalls.mkdirat(target_file.fileno, candidate, 0o700) == 0
+          holder_name = candidate
+          break
+        end
+        raise CleanupFailed unless Fiddle.last_error == Errno::EEXIST::Errno
+      end
+      raise CleanupFailed unless holder_name
+      holder_file = open_at.call(target_file, holder_name)
+      holder_stat = holder_file.stat
+      raise CleanupFailed unless holder_stat.directory? && holder_stat.uid == Process.euid &&
+                                 (holder_stat.mode & 0o077).zero?
+
+      RecoveryCleanupHook.call(:before_quarantine_detach, quarantine_name) if defined?(RecoveryCleanupHook)
+      raise CleanupFailed unless RecoveryCleanupSyscalls.renameat(
+        target_file.fileno,
+        quarantine_name,
+        holder_file.fileno,
+        "payload"
+      ) == 0
+      detached = true
+      payload_file = open_at.call(holder_file, "payload")
+      payload_stat = payload_file.stat
+      raise CleanupFailed unless payload_stat.directory? && payload_stat.uid == Process.euid &&
+                                 (payload_stat.mode & 0o022).zero? &&
+                                 identity.call(payload_stat) == expected_quarantine
+
+      expected_children.each do |name, expected_identity|
+        begin
+          child = open_at.call(payload_file, name)
+        rescue Errno::ENOENT
+          next
+        end
+        child_stat = child.stat
+        raise CleanupFailed unless child_stat.file? && identity.call(child_stat) == expected_identity
+        RecoveryCleanupHook.call(:before_child_move, name) if defined?(RecoveryCleanupHook)
+        raise CleanupFailed unless RecoveryCleanupSyscalls.renameat(
+          payload_file.fileno,
+          name,
+          holder_file.fileno,
+          name
+        ) == 0
+        moved_child = open_at.call(holder_file, name)
+        moved_stat = moved_child.stat
+        raise CleanupFailed unless moved_stat.file? && identity.call(moved_stat) == expected_identity
+      end
+      begin
+        open_at.call(payload_file, "sentinel")
+        raise CleanupFailed
+      rescue Errno::ENOENT
+        nil
+      end
+
+      remove_directory = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
+      payload_remove = RecoveryCleanupSyscalls.unlinkat(holder_file.fileno, "payload", remove_directory)
+      if payload_remove == 0
+        cleanup_status = 0
+      elsif [Errno::ENOTEMPTY::Errno, Errno::EEXIST::Errno].include?(Fiddle.last_error)
+        RecoveryCleanupHook.call(:before_quarantine_restore, quarantine_name) if defined?(RecoveryCleanupHook)
+        begin
+          open_at.call(target_file, quarantine_name)
+          raise CleanupFailed
+        rescue Errno::ENOENT
+          nil
+        end
+        raise CleanupFailed unless RecoveryCleanupSyscalls.renameat(
+          holder_file.fileno,
+          "payload",
+          target_file.fileno,
+          quarantine_name
+        ) == 0
+        restored_payload = open_at.call(target_file, quarantine_name)
+        raise CleanupFailed unless identity.call(restored_payload.stat) == expected_quarantine
+        cleanup_status = 68
+      else
+        raise CleanupFailed
+      end
+
+      RecoveryCleanupHook.call(:before_holder_delete, holder_name) if defined?(RecoveryCleanupHook)
+      holder_path = File.join(target_realpath, holder_name)
+      named_holder_stat = File.lstat(holder_path)
+      raise CleanupFailed unless named_holder_stat.directory? && !named_holder_stat.symlink? &&
+                                 identity.call(named_holder_stat) == identity.call(holder_stat)
+
+      receipt_name = nil
+      if cleanup_status == 0
+        receipt_name = ARGV.fetch(5)
+        receipt = open_at.call(target_file, receipt_name)
+        raise CleanupFailed unless receipt.stat.file? && receipt.read == expected_quarantine
+        RecoveryCleanupHook.call(:before_receipt_move, receipt_name) if defined?(RecoveryCleanupHook)
+        raise CleanupFailed unless RecoveryCleanupSyscalls.renameat(
+          target_file.fileno,
+          receipt_name,
+          holder_file.fileno,
+          "cleanup-receipt"
+        ) == 0
+        bound_receipt = open_at.call(holder_file, "cleanup-receipt")
+        raise CleanupFailed unless bound_receipt.stat.file? && bound_receipt.read == expected_quarantine
+      end
+      expected_children.each do |name, expected_identity|
+        begin
+          tomb = open_at.call(holder_file, name)
+        rescue Errno::ENOENT
+          next
+        end
+        raise CleanupFailed unless tomb.stat.file? && identity.call(tomb.stat) == expected_identity
+        raise CleanupFailed unless RecoveryCleanupSyscalls.unlinkat(holder_file.fileno, name, 0) == 0
+      end
+      if receipt_name
+        raise CleanupFailed unless RecoveryCleanupSyscalls.unlinkat(holder_file.fileno, "cleanup-receipt", 0) == 0
+      end
+      deletion_committed = true
+      begin
+        holder_file.close
+      rescue StandardError
+        holder_close_failed = true
+      end
+      ios.delete_if { |io| io.equal?(holder_file) }
+      remove_directory = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
+      raise CleanupFailed unless RecoveryCleanupSyscalls.unlinkat(target_file.fileno, holder_name, remove_directory) == 0
+      holder_name = nil
+      holder_path = nil
+    rescue CleanupFailed, StandardError
+      cleanup_status = 67
+    ensure
+      if holder_name && !detached && holder_file && target_file
+        begin
+          holder_file.close unless holder_file.closed?
+          remove_directory = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
+          if RecoveryCleanupSyscalls.unlinkat(target_file.fileno, holder_name, remove_directory) == 0
+            holder_name = nil
+            holder_path = nil
+          end
+        rescue StandardError
+          cleanup_status = 67
+        end
+      end
+      if target_file && original_target_mode
+        begin
+          RecoveryCleanupHook.call(:before_target_mode_restore, nil) if defined?(RecoveryCleanupHook)
+          target_file.chmod(original_target_mode)
+        rescue StandardError
+          mode_restore_failed = true
+        end
+      end
+      ios.reverse_each do |io|
+        begin
+          io.close unless io.closed?
+        rescue StandardError
+          close_failed = true unless deletion_committed && holder_name.nil?
+        end
+      end
+    end
+    puts(holder_path || File.join(target, holder_name)) if cleanup_status == 67 && holder_name
+    puts(File.join(target, quarantine_name)) if cleanup_status == 68
+    exit 70 if mode_restore_failed && deletion_committed && holder_name.nil?
+    exit 67 if mode_restore_failed || close_failed || (holder_close_failed && (!deletion_committed || holder_name))
+    exit cleanup_status
+  ' "$target" "${recovery_metadata_quarantine##*/}" "$recovery_metadata_quarantine_identity" \
+    "$recovery_metadata_snapshot_identity" "$recovery_metadata_backup_identity" \
+    "${recovery_metadata_cleanup_receipt##*/}" 2>/dev/null
+}
+
+restore_captured_recovery_metadata() {
+  local cleanup_artifact cleanup_status expected_restore_attestation replace_status snapshot_attestation restored_attestation restore_source
+  [[ "$recovery_metadata_captured" = "true" ]] || return 0
+  recovery_metadata_restore_binding_intact || {
+    recovery_metadata_sentinel_intact && return 67
+    return 65
+  }
+  snapshot_attestation="$(regular_file_attestation "$recovery_metadata_snapshot")" || true
+  if [[ "$snapshot_attestation" = "$recovery_metadata_snapshot_identity|$recovery_metadata_digest" ]]; then
+    restore_source="$recovery_metadata_snapshot"
+    expected_restore_attestation="$recovery_metadata_snapshot_identity|$recovery_metadata_digest"
+  else
+    restore_source="$recovery_metadata_backup"
+    expected_restore_attestation="$recovery_metadata_backup_identity|$recovery_metadata_digest"
+  fi
+  replace_status=0
+  replace_bound_recovery_metadata "$restore_source" "$recovery_metadata_path" \
+    "$expected_restore_attestation" "$recovery_metadata_sentinel_identity|$recovery_metadata_digest" || replace_status=$?
+  if [[ "$replace_status" -ne 0 ]]; then
+    restored_attestation="$(regular_file_attestation "$recovery_metadata_path" 2>/dev/null || true)"
+    if [[ "$replace_status" -eq 67 && "$restored_attestation" = "$expected_restore_attestation" ]]; then
+      recovery_metadata_captured=false
+      recovery_metadata_restore_reported=true
+      echo "RECOVERY_METADATA_CLEANUP_PENDING: restored and verified install metadata; preserved recovery state at $recovery_metadata_quarantine for manual cleanup." >&2
+    fi
+    return "$replace_status"
+  fi
+  restored_attestation="$(regular_file_attestation "$recovery_metadata_path")" || return 65
+  [[ "$restored_attestation" = "$expected_restore_attestation" ]] || return 65
+  if ! write_recovery_metadata_cleanup_receipt; then
+    recovery_metadata_captured=false
+    echo "RECOVERY_METADATA_CLEANUP_PENDING: restored install metadata; preserved recovery state at $recovery_metadata_quarantine" >&2
+    return 0
+  fi
+  recovery_metadata_captured=false
+  cleanup_status=0
+  cleanup_artifact="$(remove_bound_recovery_metadata_artifacts)" || cleanup_status=$?
+  if [[ "$cleanup_status" -eq 68 ]]; then
+    [[ -n "$cleanup_artifact" ]] || cleanup_artifact="$recovery_metadata_quarantine"
+    echo "RECOVERY_METADATA_CLEANUP_PENDING: preserved $cleanup_artifact" >&2
+  elif [[ "$cleanup_status" -eq 70 ]]; then
+    echo "RECOVERY_TARGET_MODE_RESTORE_PENDING: recovery metadata cleanup committed, but exact target permissions could not be restored; no recovery quarantine remains." >&2
+  elif [[ "$cleanup_status" -ne 0 ]]; then
+    [[ -n "$cleanup_artifact" ]] || cleanup_artifact="$recovery_metadata_quarantine"
+    echo "RECOVERY_METADATA_CLEANUP_PENDING: preserved recovery state at $cleanup_artifact" >&2
+  fi
+}
+
+report_corrupt_install_metadata() {
+  local residue_may_explain="${1:-false}"
+  local metadata_path="$target/$metadata_name"
+  local residue
+  local residue_present=false
+  for residue in "$metadata_path".recovery-*; do
+    [[ -e "$residue" || -L "$residue" ]] || continue
+    residue_present=true
+    if [[ ! -d "$residue" || -L "$residue" ]]; then
+      echo "Unexpected recovery residue $residue blocks recovery; remove it only after confirming it holds no needed data." >&2
+    fi
+  done
+  for residue in "$metadata_path".recovery-*; do
+    [[ -d "$residue" && ! -L "$residue" ]] || continue
+    echo "Preserved recovery metadata quarantine $residue; do not delete it while recovering the target." >&2
+  done
+  if [[ "$residue_present" = "true" && "$residue_may_explain" = "true" ]]; then
+    return 0
+  fi
+  echo "CORRUPT_INSTALL_METADATA: cannot read valid install metadata from $metadata_path." >&2
+  echo "Restore a valid backup of that file. If none exists, preserve the corrupt target and reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
+}
+
+report_recovery_metadata_restore_failure() {
+  recovery_metadata_restore_reported=true
+  if recovery_metadata_sentinel_intact; then
+    echo "RECOVERY_METADATA_RESTORE_FAILED: verified install metadata remains in place; preserved recovery metadata quarantine for retry." >&2
+  else
+    report_corrupt_install_metadata
+    echo "RECOVERY_FAILED: install metadata could not be restored; preserved pending recovery state." >&2
+  fi
+}
+
+report_invalid_install_delivery_mode() {
+  echo "Installed metadata delivery_mode must be flat or plugin-companion." >&2
+  echo "Restore a valid backup of $target/$metadata_name or reinstall into a new empty target with the verified layout as --delivery-mode flat|plugin-companion." >&2
+}
+
+resolve_delivery_mode() {
+  local metadata_path="$target/$metadata_name"
+  local recorded_mode
+
+  if [[ ! -e "$metadata_path" && ! -L "$metadata_path" ]]; then
+    [[ -n "$delivery_mode" ]] || delivery_mode="flat"
+    return 0
+  fi
+  read_installed_metadata_value delivery_mode
+
+  case "$installed_metadata_state" in
+    valid)
+      recorded_mode="$installed_metadata_value"
+      [[ -n "$delivery_mode" ]] || delivery_mode="$recorded_mode"
+      ;;
+    key_absent) [[ -n "$delivery_mode" ]] || delivery_mode="flat" ;;
+    invalid)
+      report_invalid_install_delivery_mode
+      return 64
+      ;;
+    corrupt)
+      report_corrupt_install_metadata
+      return 65
+      ;;
+  esac
 }
 
 validate_delivery_mode() {
@@ -189,14 +1835,37 @@ validate_delivery_mode() {
 prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
-  local version source_revision source_branch source_remote installed_at
+  local version source_revision source_branch source_remote installed_at prepare_status=0
+  prepared_metadata_attestation=""
+  if [[ -e "$metadata_tmp" || -L "$metadata_tmp" ]]; then
+    echo "METADATA_PREPARE_BLOCKED: preserved existing untrusted metadata preparation path $metadata_tmp." >&2
+    echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite it." >&2
+    return 68
+  fi
   version="$(metadata_value version)"
   source_revision="$(metadata_value source_revision)"
   source_branch="$(metadata_value source_branch)"
   source_remote="$(metadata_value source_remote)"
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-  ruby -rjson -rdigest -rfind -e '
+  prepared_metadata_attestation="$(ruby -rjson -rdigest -rfind -rfiddle/import -rsecurerandom -e '
+    module PreparedMetadataSyscalls
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int, unsigned int)"
+      extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, source, destination)
+          renameatx_np(fd, source, fd, destination, 0x4)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, source, destination)
+          renameat2(fd, source, fd, destination, 0x1)
+        end
+      end
+    end
     path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, *pack_docs = ARGV
     directory_fingerprint = lambda do |root|
       entries = []
@@ -217,12 +1886,12 @@ prepare_metadata() {
       Digest::SHA256.hexdigest(JSON.generate(entries.sort_by { |fingerprint_entry| fingerprint_entry.fetch(1) }))
     end
     skill_fingerprints = if mode == "copy" && delivery_mode == "flat"
-                           Dir.children(File.join(source, "skills")).sort.filter_map do |name|
+                           Dir.children(File.join(source, "skills")).sort.each_with_object({}) do |name, fingerprints|
                              root = File.join(source, "skills", name)
                              next unless File.directory?(root) && !File.symlink?(root)
 
-                             [name, directory_fingerprint.call(root)]
-                           end.to_h
+                             fingerprints[name] = directory_fingerprint.call(root)
+                           end
                          else
                            {}
                          end
@@ -249,21 +1918,876 @@ prepare_metadata() {
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints
     }
-    File.write(path, JSON.pretty_generate(metadata) + "\n")
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}"
+    serialized_metadata = JSON.pretty_generate(metadata) + "\n"
+    abort unless File.const_defined?(:NOFOLLOW)
+    file = nil
+    file_stat = nil
+    completed = false
+    begin
+      file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
+      file_stat = file.stat
+      abort unless file_stat.file?
+      PreparedMetadataHook.call(:after_create) if defined?(PreparedMetadataHook)
+      file.write(serialized_metadata)
+      file.flush
+      file.fsync
+      stat = file.stat
+      abort unless stat.file?
+      print "#{stat.dev}:#{stat.ino}|#{Digest::SHA256.hexdigest(serialized_metadata)}"
+      completed = true
+    ensure
+      begin
+        file.close unless file.closed?
+      rescue StandardError
+        nil
+      end
+      if !completed && file_stat
+        begin
+          parent = File.open(File.dirname(path), File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+          cleanup_name = "#{File.basename(path)}.cleanup-#{Process.pid}-#{SecureRandom.hex(8)}"
+          if PreparedMetadataSyscalls.no_replace(parent.fileno, File.basename(path), cleanup_name) == 0
+            cleanup_fd = PreparedMetadataSyscalls.openat(
+              parent.fileno, cleanup_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW, 0
+            )
+            if cleanup_fd != -1
+              cleanup_file = File.for_fd(cleanup_fd)
+              cleanup_stat = cleanup_file.stat
+              cleanup_file.close
+              if cleanup_stat.dev == file_stat.dev && cleanup_stat.ino == file_stat.ino
+                PreparedMetadataSyscalls.unlinkat(parent.fileno, cleanup_name, 0)
+              end
+            end
+          end
+          parent.close
+        rescue StandardError
+          nil
+        end
+      end
+    end
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}" 2>/dev/null)" || prepare_status=$?
+  if [[ "$prepare_status" -ne 0 ]]; then
+    echo "METADATA_PREPARE_BLOCKED: could not safely create $metadata_tmp; preserved any path that exists there." >&2
+    echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite an unverified path." >&2
+    return 68
+  fi
+}
+
+preflight_metadata_commit_capability() {
+  local probe_status=0
+  ruby -rfiddle/import -e '
+    module AtomicMetadataRenameProbe
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int, unsigned int)"
+      extern "int linkat(int, const char *, int, const char *, int)"
+      extern "int mkdirat(int, const char *, unsigned int)"
+      extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x4)
+        end
+        def self.exchange(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x2)
+        end
+        def self.exchange_between(source_fd, source, destination_fd, destination)
+          renameatx_np(source_fd, source, destination_fd, destination, 0x2)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x1)
+        end
+        def self.exchange(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x2)
+        end
+        def self.exchange_between(source_fd, source, destination_fd, destination)
+          renameat2(source_fd, source, destination_fd, destination, 0x2)
+        end
+      end
+    end
+
+    lock = File.expand_path(ARGV.fetch(0))
+    first_name = "metadata-rename-probe-a"
+    second_name = "metadata-rename-probe-b"
+    link_name = "metadata-rename-probe-link"
+    cross_directory_name = "metadata-rename-probe-directory"
+    cross_source_name = "metadata-rename-probe-cross-source"
+    cross_destination_name = "metadata-rename-probe-cross-destination"
+    directory = nil
+    cross_directory = nil
+    cross_directory_created = false
+    ios = []
+    cleanup_failed = false
+    open_at = lambda do |name|
+      fd = AtomicMetadataRenameProbe.openat(
+        directory.fileno,
+        name,
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW,
+        0
+      )
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      io = File.for_fd(fd)
+      ios << io
+      io
+    end
+    create = lambda do |name, content|
+      fd = AtomicMetadataRenameProbe.openat(
+        directory.fileno,
+        name,
+        File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+        0o600
+      )
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      file = File.for_fd(fd)
+      begin
+        file.chmod(0o600)
+        file.write(content)
+        file.flush
+        file.fsync
+      ensure
+        file.close
+      end
+    end
+    create_at = lambda do |owner, name, content|
+      fd = AtomicMetadataRenameProbe.openat(
+        owner.fileno,
+        name,
+        File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+        0o600
+      )
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      file = File.for_fd(fd)
+      begin
+        file.chmod(0o600)
+        file.write(content)
+        file.flush
+        file.fsync
+      ensure
+        file.close
+      end
+    end
+
+    begin
+      abort unless File.const_defined?(:NOFOLLOW)
+      lock_path_stat = File.lstat(lock)
+      abort unless lock_path_stat.directory? && !lock_path_stat.symlink?
+      directory = File.open(lock, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      directory_stat = directory.stat
+      abort unless directory_stat.directory? &&
+                   directory_stat.dev == lock_path_stat.dev && directory_stat.ino == lock_path_stat.ino
+
+      MetadataRenameProbeHook.call(:after_directory_attestation) if defined?(MetadataRenameProbeHook)
+      create.call(first_name, "first")
+      abort unless AtomicMetadataRenameProbe.no_replace(
+        directory.fileno,
+        first_name,
+        second_name
+      ) == 0
+      create.call(first_name, "second")
+      abort unless AtomicMetadataRenameProbe.exchange(
+        directory.fileno,
+        first_name,
+        second_name
+      ) == 0
+      first = open_at.call(first_name)
+      second = open_at.call(second_name)
+      abort unless first.read == "first" && second.read == "second"
+      abort unless AtomicMetadataRenameProbe.linkat(
+        directory.fileno,
+        first_name,
+        directory.fileno,
+        link_name,
+        0
+      ) == 0
+      linked = open_at.call(link_name)
+      first_stat = first.stat
+      linked_stat = linked.stat
+      abort unless linked.read == "first" &&
+                   first_stat.dev == linked_stat.dev && first_stat.ino == linked_stat.ino
+      abort unless AtomicMetadataRenameProbe.mkdirat(directory.fileno, cross_directory_name, 0o700) == 0
+      cross_directory_created = true
+      cross_directory_fd = AtomicMetadataRenameProbe.openat(
+        directory.fileno,
+        cross_directory_name,
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW,
+        0
+      )
+      abort if cross_directory_fd == -1
+      cross_directory = File.for_fd(cross_directory_fd)
+      abort unless cross_directory.stat.directory?
+      create_at.call(cross_directory, cross_source_name, "cross-source")
+      create_at.call(directory, cross_destination_name, "cross-destination")
+      MetadataRenameProbeHook.call(:before_cross_directory_exchange) if defined?(MetadataRenameProbeHook)
+      abort unless AtomicMetadataRenameProbe.exchange_between(
+        cross_directory.fileno,
+        cross_source_name,
+        directory.fileno,
+        cross_destination_name
+      ) == 0
+      cross_source = open_at.call(cross_destination_name)
+      cross_fd = AtomicMetadataRenameProbe.openat(
+        cross_directory.fileno, cross_source_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW, 0
+      )
+      abort if cross_fd == -1
+      cross_destination = File.for_fd(cross_fd)
+      ios << cross_destination
+      abort unless cross_source.read == "cross-source" && cross_destination.read == "cross-destination"
+      named_lock_stat = File.lstat(lock)
+      abort unless named_lock_stat.directory? && !named_lock_stat.symlink? &&
+                   named_lock_stat.dev == directory_stat.dev && named_lock_stat.ino == directory_stat.ino
+    ensure
+      ios.reverse_each do |io|
+        begin
+          io.close unless io.closed?
+        rescue StandardError
+          cleanup_failed = true
+        end
+      end
+      if directory
+        [first_name, second_name, link_name, cross_destination_name].each do |name|
+          next if AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0) == 0
+
+          retry_result = AtomicMetadataRenameProbe.unlinkat(directory.fileno, name, 0)
+          next if retry_result == 0
+
+          missing_fd = AtomicMetadataRenameProbe.openat(
+            directory.fileno,
+            name,
+            File::RDONLY | File::NONBLOCK | File::NOFOLLOW,
+            0
+          )
+          if missing_fd == -1 && Fiddle.last_error == Errno::ENOENT::Errno
+            next
+          end
+          File.for_fd(missing_fd).close unless missing_fd == -1
+          cleanup_failed = true
+        end
+        if cross_directory
+          if AtomicMetadataRenameProbe.unlinkat(cross_directory.fileno, cross_source_name, 0) != 0 &&
+             Fiddle.last_error != Errno::ENOENT::Errno
+            cleanup_failed = true
+          end
+          begin
+            cross_directory.close unless cross_directory.closed?
+          rescue StandardError
+            cleanup_failed = true
+          end
+        end
+        if cross_directory_created
+          remove_directory = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
+          cleanup_failed = true unless AtomicMetadataRenameProbe.unlinkat(
+            directory.fileno, cross_directory_name, remove_directory
+          ) == 0
+        end
+      end
+      begin
+        directory&.close unless directory&.closed?
+      rescue StandardError
+        cleanup_failed = true
+      end
+      raise "atomic metadata rename probe cleanup failed" if cleanup_failed
+    end
+  ' "$install_lock" 2>/dev/null || probe_status=$?
+
+  if [[ "$probe_status" -ne 0 ]]; then
+    echo "METADATA_COMMIT_UNAVAILABLE: the current Ruby runtime or target filesystem does not support the atomic metadata rename operations required for a safe install." >&2
+    echo "Use a supported macOS or Linux runtime/filesystem, or install into a new target where the capability probe passes." >&2
+    return 1
+  fi
 }
 
 commit_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
-  mv "$metadata_tmp" "$metadata_path"
+  local commit_status=0
+
+  ruby -rdigest -rfiddle/import -rsecurerandom -e '
+    module AtomicMetadataRename
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"
+      extern "int linkat(int, const char *, int, const char *, int)"
+      extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x4)
+        end
+        def self.exchange(directory_fd, source, destination)
+          renameatx_np(directory_fd, source, directory_fd, destination, 0x2)
+        end
+        def self.exchange_between(source_fd, source, destination_fd, destination)
+          renameatx_np(source_fd, source, destination_fd, destination, 0x2)
+        end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x1)
+        end
+        def self.exchange(directory_fd, source, destination)
+          renameat2(directory_fd, source, directory_fd, destination, 0x2)
+        end
+        def self.exchange_between(source_fd, source, destination_fd, destination)
+          renameat2(source_fd, source, destination_fd, destination, 0x2)
+        end
+      end
+    end
+
+    class MetadataBindingChanged < StandardError; end
+
+    target, metadata_name, state, expected, expected_prepared, lock = ARGV
+    temporary_name = "#{metadata_name}.tmp"
+    cleanup_guard_name = "metadata-commit-old.guard"
+    directory = nil
+    lock_directory = nil
+    temporary = nil
+    destination = nil
+    cleanup_guard = nil
+    cleanup_candidate = nil
+    exchanged = false
+    absent_moved = false
+    completed = false
+    rollback_failed = false
+    rollback_succeeded = false
+    cleanup_uncertain = false
+    descriptor_close_failed = false
+    close_descriptor = lambda do |file|
+      begin
+        file&.close unless file&.closed?
+      rescue StandardError
+        descriptor_close_failed = true
+      end
+    end
+    open_at = lambda do |name|
+      fd = AtomicMetadataRename.openat(
+        directory.fileno,
+        name,
+        File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      raise SystemCallError.new("openat #{name}", Fiddle.last_error) if fd == -1
+      File.for_fd(fd)
+    end
+    attestation = lambda do |file|
+      stat = file.stat
+      raise MetadataBindingChanged unless stat.file?
+      file.rewind
+      digest = Digest::SHA256.new
+      while (chunk = file.read(64 * 1024))
+        digest.update(chunk)
+      end
+      final_stat = file.stat
+      raise MetadataBindingChanged unless final_stat.file? &&
+                                          final_stat.dev == stat.dev && final_stat.ino == stat.ino
+      "#{stat.dev}:#{stat.ino}|#{digest.hexdigest}"
+    end
+    same_identity = lambda do |left, right|
+      left_stat = left.stat
+      right_stat = right.stat
+      left_stat.dev == right_stat.dev && left_stat.ino == right_stat.ino
+    end
+    remove_exact = lambda do |owner, name, held, expected_attestation|
+      AtomicMetadataCommitCleanupHook.call(name) if defined?(AtomicMetadataCommitCleanupHook)
+      private_name = "metadata-cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
+      raise MetadataBindingChanged unless AtomicMetadataRename.no_replace(
+        owner.fileno, name, private_name
+      ) == 0
+      fd = AtomicMetadataRename.openat(
+        owner.fileno, private_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      )
+      raise MetadataBindingChanged if fd == -1
+      moved = File.for_fd(fd)
+      held_stat = held.stat
+      moved_stat = moved.stat
+      raise MetadataBindingChanged unless attestation.call(moved) == expected_attestation &&
+                                          held_stat.dev == moved_stat.dev && held_stat.ino == moved_stat.ino
+      raise MetadataBindingChanged unless AtomicMetadataRename.unlinkat(owner.fileno, private_name, 0) == 0
+      close_descriptor.call(moved)
+    end
+
+    begin
+      abort unless metadata_name == ".agent-workflows-install.json" && File.const_defined?(:NOFOLLOW)
+      target_path_stat = File.lstat(target)
+      raise MetadataBindingChanged unless target_path_stat.directory? && !target_path_stat.symlink?
+      directory = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      directory_stat = directory.stat
+      named_target_stat = File.lstat(target)
+      raise MetadataBindingChanged unless directory_stat.directory? &&
+                                          named_target_stat.directory? && !named_target_stat.symlink? &&
+                                          named_target_stat.dev == directory_stat.dev && named_target_stat.ino == directory_stat.ino
+      lock_path_stat = File.lstat(lock)
+      lock_directory = File.open(lock, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      lock_stat = lock_directory.stat
+      raise MetadataBindingChanged unless lock_stat.directory? && !lock_path_stat.symlink? &&
+                                          lock_path_stat.dev == lock_stat.dev && lock_path_stat.ino == lock_stat.ino
+
+      if state == "present"
+        cleanup_guard_fd = AtomicMetadataRename.openat(
+          lock_directory.fileno,
+          cleanup_guard_name,
+          File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+        )
+        raise MetadataBindingChanged if cleanup_guard_fd == -1
+        cleanup_guard = File.for_fd(cleanup_guard_fd)
+        raise MetadataBindingChanged unless attestation.call(cleanup_guard) == expected
+      end
+
+      temporary = open_at.call(temporary_name)
+      prepared_attestation = attestation.call(temporary)
+      raise MetadataBindingChanged unless prepared_attestation == expected_prepared
+
+      case state
+      when "absent"
+        begin
+          destination = open_at.call(metadata_name)
+          raise MetadataBindingChanged
+        rescue Errno::ENOENT
+          nil
+        ensure
+          close_descriptor.call(destination)
+          destination = nil
+        end
+        raise MetadataBindingChanged unless AtomicMetadataRename.no_replace(
+          directory.fileno,
+          temporary_name,
+          metadata_name
+        ) == 0
+        absent_moved = true
+      when "present"
+        destination = open_at.call(metadata_name)
+        raise MetadataBindingChanged unless attestation.call(destination) == expected &&
+                                            same_identity.call(destination, cleanup_guard)
+        close_descriptor.call(destination)
+        destination = nil
+        raise MetadataBindingChanged unless AtomicMetadataRename.exchange(
+          directory.fileno,
+          temporary_name,
+          metadata_name
+        ) == 0
+        exchanged = true
+        AtomicMetadataCommitHook.call(:after_exchange) if defined?(AtomicMetadataCommitHook)
+      else
+        raise MetadataBindingChanged
+      end
+
+      if exchanged
+        close_descriptor.call(temporary)
+        temporary = open_at.call(temporary_name)
+        raise MetadataBindingChanged unless attestation.call(temporary) == expected &&
+                                            same_identity.call(temporary, cleanup_guard)
+      end
+
+      destination = open_at.call(metadata_name)
+      raise MetadataBindingChanged unless attestation.call(destination) == expected_prepared
+      close_descriptor.call(destination)
+      destination = nil
+
+      if exchanged
+        begin
+          close_descriptor.call(temporary)
+          temporary = nil
+          cleanup_candidate = open_at.call(temporary_name)
+          raise MetadataBindingChanged unless attestation.call(cleanup_candidate) == expected &&
+                                              same_identity.call(cleanup_candidate, cleanup_guard)
+          AtomicMetadataCommitHook.call(:before_success_cleanup) if defined?(AtomicMetadataCommitHook)
+          remove_exact.call(directory, temporary_name, cleanup_candidate, expected)
+          close_descriptor.call(cleanup_candidate)
+          cleanup_candidate = nil
+          raise MetadataBindingChanged unless attestation.call(cleanup_guard) == expected
+          remove_exact.call(lock_directory, cleanup_guard_name, cleanup_guard, expected)
+          close_descriptor.call(cleanup_guard)
+          cleanup_guard = nil
+          exchanged = false
+        rescue StandardError
+          cleanup_uncertain = true
+          exchanged = false
+          raise
+        end
+      end
+      absent_moved = false
+      completed = true
+    rescue StandardError
+      nil
+    ensure
+      [destination, temporary, cleanup_candidate].each { |file| close_descriptor.call(file) }
+      if absent_moved && directory
+        if AtomicMetadataRename.no_replace(directory.fileno, metadata_name, temporary_name) == 0
+          begin
+            restored_temporary = open_at.call(temporary_name)
+            raise MetadataBindingChanged unless attestation.call(restored_temporary) == expected_prepared
+            begin
+              stale_destination = open_at.call(metadata_name)
+              raise MetadataBindingChanged
+            rescue Errno::ENOENT
+              remove_exact.call(directory, temporary_name, restored_temporary, expected_prepared)
+              close_descriptor.call(restored_temporary)
+              restored_temporary = nil
+              absent_moved = false
+              rollback_succeeded = true
+            ensure
+              close_descriptor.call(stale_destination)
+              close_descriptor.call(restored_temporary)
+            end
+          rescue StandardError
+            rollback_failed = true
+          end
+        else
+          rollback_failed = true
+        end
+      elsif exchanged && directory && lock_directory && !cleanup_uncertain
+        if cleanup_guard && attestation.call(cleanup_guard) == expected &&
+           AtomicMetadataRename.exchange_between(
+             lock_directory.fileno,
+             cleanup_guard_name,
+             directory.fileno,
+             metadata_name
+           ) == 0
+          begin
+            restored_destination = open_at.call(metadata_name)
+            raise MetadataBindingChanged unless attestation.call(restored_destination) == expected
+            exchanged = false
+            rollback_temporary = open_at.call(temporary_name)
+            raise MetadataBindingChanged unless attestation.call(rollback_temporary) == expected &&
+                                                same_identity.call(rollback_temporary, cleanup_guard)
+            remove_exact.call(directory, temporary_name, rollback_temporary, expected)
+            close_descriptor.call(rollback_temporary)
+            rollback_temporary = nil
+            rollback_guard_fd = AtomicMetadataRename.openat(
+              lock_directory.fileno,
+              cleanup_guard_name,
+              File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+            )
+            raise MetadataBindingChanged if rollback_guard_fd == -1
+            rollback_new_guard = File.for_fd(rollback_guard_fd)
+            raise MetadataBindingChanged unless attestation.call(rollback_new_guard) == expected_prepared
+            remove_exact.call(lock_directory, cleanup_guard_name, rollback_new_guard, expected_prepared)
+            close_descriptor.call(rollback_new_guard)
+            rollback_new_guard = nil
+            close_descriptor.call(cleanup_guard)
+            cleanup_guard = nil
+            rollback_succeeded = true
+          rescue StandardError
+            rollback_failed = true
+          ensure
+            close_descriptor.call(restored_destination)
+            close_descriptor.call(rollback_temporary)
+            close_descriptor.call(rollback_new_guard)
+          end
+        else
+          rollback_failed = true
+        end
+      end
+      close_descriptor.call(cleanup_guard)
+      close_descriptor.call(directory)
+      close_descriptor.call(lock_directory)
+    end
+    exit 68 if cleanup_uncertain || (completed && descriptor_close_failed)
+    exit 67 if rollback_failed
+    exit 69 if rollback_succeeded
+    exit 1 unless completed
+  ' "$target" "$metadata_name" "$install_metadata_binding_state" \
+    "$install_metadata_binding_attestation" "$prepared_metadata_attestation" "$install_lock" \
+    2>/dev/null || commit_status=$?
+
+  if [[ "$commit_status" -ne 0 ]]; then
+    if [[ "$commit_status" -eq 68 ]]; then
+      metadata_commit_rollback_failed=true
+      echo "METADATA_COMMIT_CLEANUP_FAILED: committed metadata cleanup could not prove the attested old destination name; preserved all remaining artifacts for manual recovery." >&2
+      echo "Inspect $metadata_path, $metadata_tmp, and $install_lock before removing any preserved path." >&2
+      return 68
+    fi
+    if [[ "$commit_status" -eq 67 ]]; then
+      metadata_commit_rollback_failed=true
+      echo "METADATA_COMMIT_ROLLBACK_FAILED: atomic metadata commit rollback could not be completed and proven; preserved every remaining metadata artifact for manual recovery." >&2
+      echo "Inspect $metadata_path and $metadata_tmp; do not delete either path that exists until their contents and ownership are verified." >&2
+      return 67
+    fi
+    if [[ "$commit_status" -eq 69 ]]; then
+      prepared_metadata_attestation=""
+      install_metadata_rollback_guard=""
+      echo "METADATA_COMMIT_ROLLED_BACK: the metadata commit failed after mutation, but the original metadata and cleanup state were restored and verified." >&2
+      echo "No metadata artifact requires manual recovery; the managed-file transaction will be rolled back and may be retried." >&2
+      return 69
+    fi
+    report_install_metadata_binding_changed
+    return 65
+  fi
+}
+
+recovery_directory_identity() {
+  ruby -e '
+    path = ARGV.fetch(0)
+    stat = File.lstat(path)
+    exit 1 unless stat.directory? && !stat.symlink?
+    verified = File.lstat(path)
+    exit 1 unless verified.directory? && !verified.symlink? &&
+                  verified.dev == stat.dev && verified.ino == stat.ino
+    print "#{stat.dev}:#{stat.ino}"
+  ' "$1" 2>/dev/null
+}
+
+remove_attested_metadata_file() {
+  local path="$1" expected="$2"
+  [[ -n "$path" && -n "$expected" ]] || return 1
+  ruby -rdigest -rfiddle/import -rsecurerandom -e '
+    module BoundCleanup
+      extend Fiddle::Importer; dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"; extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, a, b); renameatx_np(fd, a, fd, b, 0x4); end
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, a, b); renameat2(fd, a, fd, b, 0x1); end
+      end
+    end
+    path, expected = ARGV; retained = path; success = false
+    at_exit { print retained unless success }
+    parent = File.open(File.dirname(path), File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    name = File.basename(path); private_name = ".cleanup-#{Process.pid}-#{SecureRandom.hex(12)}"
+    BoundCleanupHook.call(path) if defined?(BoundCleanupHook)
+    abort unless BoundCleanup.no_replace(parent.fileno, name, private_name) == 0
+    retained = File.join(File.dirname(path), private_name)
+    BoundCleanupPostDetachHook.call(retained) if defined?(BoundCleanupPostDetachHook)
+    fd = BoundCleanup.openat(parent.fileno, private_name, File::RDONLY | File::NONBLOCK | File::NOFOLLOW); abort if fd == -1
+    file = File.for_fd(fd); stat = file.stat; digest = Digest::SHA256.new
+    while (chunk = file.read(64 * 1024)); digest.update(chunk); end
+    actual_identity = "#{stat.dev}:#{stat.ino}"
+    actual_attestation = "#{actual_identity}|#{digest.hexdigest}"
+    abort unless stat.file? && (actual_attestation == expected || actual_identity == expected)
+    abort unless BoundCleanup.unlinkat(parent.fileno, private_name, 0) == 0
+    success = true
+  ' "$path" "$expected" 2>/dev/null
+}
+
+remove_bound_empty_directory() {
+  local path="$1" expected="$2"
+  [[ -n "$path" && -n "$expected" ]] || return 1
+  ruby -rfiddle/import -rsecurerandom -e '
+    module BoundDirCleanup
+      extend Fiddle::Importer; dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int)"; extern "int unlinkat(int, const char *, int)"
+      if RUBY_PLATFORM.include?("darwin")
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, a, b); renameatx_np(fd, a, fd, b, 0x4); end
+        REMOVE_DIR = 0x80
+      else
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+        def self.no_replace(fd, a, b); renameat2(fd, a, fd, b, 0x1); end
+        REMOVE_DIR = 0x200
+      end
+    end
+    path, expected = ARGV; retained = path; success = false
+    at_exit { print retained unless success }
+    parent = File.open(File.dirname(path), File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    name = File.basename(path); private_name = ".cleanup-dir-#{Process.pid}-#{SecureRandom.hex(12)}"
+    original_fd = BoundDirCleanup.openat(parent.fileno, name, File::RDONLY | File::NOFOLLOW); abort if original_fd == -1
+    original = File.for_fd(original_fd); original_stat = original.stat
+    abort unless original_stat.directory? && "#{original_stat.dev}:#{original_stat.ino}" == expected && Dir.empty?(path)
+    BoundDirCleanupHook.call(path) if defined?(BoundDirCleanupHook)
+    abort unless BoundDirCleanup.no_replace(parent.fileno, name, private_name) == 0
+    retained = File.join(File.dirname(path), private_name)
+    BoundDirCleanupPostDetachHook.call(retained) if defined?(BoundDirCleanupPostDetachHook)
+    fd = BoundDirCleanup.openat(parent.fileno, private_name, File::RDONLY | File::NOFOLLOW); abort if fd == -1
+    directory = File.for_fd(fd); stat = directory.stat
+    private_path = File.join(File.dirname(path), private_name)
+    abort unless stat.directory? && "#{stat.dev}:#{stat.ino}" == expected && Dir.empty?(private_path)
+    abort unless BoundDirCleanup.unlinkat(parent.fileno, private_name, BoundDirCleanup::REMOVE_DIR) == 0
+    success = true
+  ' "$path" "$expected" 2>/dev/null
+}
+
+report_metadata_cleanup_pending() {
+  local path="$1"
+  echo "METADATA_CLEANUP_PENDING: preserved $path because identity-safe cleanup could not be completed." >&2
+  echo "Verify the preserved path and its parent against trusted state; move the entire preserved path aside only after retaining evidence, then retry." >&2
+}
+
+recovery_path_identity() {
+  ruby -e '
+    path = ARGV.fetch(0)
+    stat = File.lstat(path)
+    verified = File.lstat(path)
+    exit 1 unless verified.dev == stat.dev && verified.ino == stat.ino
+    print "#{stat.dev}:#{stat.ino}"
+  ' "$1" 2>/dev/null
+}
+
+move_bound_recovery_path() {
+  ruby -rfiddle -e '
+    renamed = false
+    begin
+      source = File.expand_path(ARGV.fetch(0))
+      destination = File.expand_path(ARGV.fetch(1))
+      source_parent = File.expand_path(ARGV.fetch(2))
+      source_parent_identity = ARGV.fetch(3)
+      destination_parent = File.expand_path(ARGV.fetch(4))
+      destination_parent_identity = ARGV.fetch(5)
+      expected_source_identity = ARGV[6]
+      secure_destination_parent = ARGV[7] == "true"
+      exit 67 unless File.dirname(source) == source_parent && File.dirname(destination) == destination_parent
+      exit 67 unless File.const_defined?(:NOFOLLOW)
+
+      flags = File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      source_parent_file = File.open(source_parent, flags)
+      destination_parent_file = File.open(destination_parent, flags)
+      source_parent_stat = source_parent_file.stat
+      destination_parent_stat = destination_parent_file.stat
+      exit 67 unless source_parent_stat.directory? &&
+                     "#{source_parent_stat.dev}:#{source_parent_stat.ino}" == source_parent_identity
+      exit 67 unless destination_parent_stat.directory? &&
+                     "#{destination_parent_stat.dev}:#{destination_parent_stat.ino}" == destination_parent_identity
+      if secure_destination_parent
+        exit 67 unless destination_parent_stat.uid == Process.euid &&
+                       (destination_parent_stat.mode & 0o022).zero?
+      end
+
+      handle = Fiddle.dlopen(nil)
+      openat = Fiddle::Function.new(handle["openat"],
+                                    [Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT],
+                                    Fiddle::TYPE_INT)
+      source_name = File.basename(source)
+      destination_name = File.basename(destination)
+      open_entry = lambda do |parent_fd, name|
+        fd = openat.call(parent_fd, name, flags)
+        if fd == -1 && Fiddle.last_error == Errno::ELOOP::Errno
+          link_flags = if RUBY_PLATFORM.include?("darwin")
+                         0x00200000 # O_SYMLINK
+                       else
+                         File::NOFOLLOW | 0x00200000 # O_PATH | O_NOFOLLOW
+                       end
+          fd = openat.call(parent_fd, name, link_flags)
+        end
+        fd
+      end
+      RecoveryMoveHook.call(:before_source_open, source_parent, source_name,
+                            destination_parent, destination_name) if defined?(RecoveryMoveHook)
+      source_fd = open_entry.call(source_parent_file.fileno, source_name)
+      exit 67 if source_fd == -1
+      source_file = IO.for_fd(source_fd, autoclose: true)
+      source_stat = source_file.stat
+      if expected_source_identity
+        exit 67 unless "#{source_stat.dev}:#{source_stat.ino}" == expected_source_identity
+      end
+      destination_fd = open_entry.call(destination_parent_file.fileno, destination_name)
+      if destination_fd != -1
+        IO.for_fd(destination_fd, autoclose: true).close
+        exit 67
+      end
+      exit 67 unless Fiddle.last_error == Errno::ENOENT::Errno
+      RecoveryMoveHook.call(:before_rename, source_parent, source_name,
+                            destination_parent, destination_name) if defined?(RecoveryMoveHook)
+      if secure_destination_parent
+        final_destination_parent_stat = destination_parent_file.stat
+        exit 67 unless final_destination_parent_stat.directory? &&
+                       "#{final_destination_parent_stat.dev}:#{final_destination_parent_stat.ino}" == destination_parent_identity &&
+                       final_destination_parent_stat.uid == Process.euid &&
+                       (final_destination_parent_stat.mode & 0o022).zero?
+      end
+
+      if RUBY_PLATFORM.include?("darwin")
+        rename = Fiddle::Function.new(handle["renameatx_np"],
+                                      [Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP,
+                                       Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT],
+                                      Fiddle::TYPE_INT)
+        result = rename.call(source_parent_file.fileno, source_name,
+                             destination_parent_file.fileno, destination_name, 0x00000004)
+      else
+        rename = Fiddle::Function.new(handle["renameat2"],
+                                      [Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP,
+                                       Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT],
+                                      Fiddle::TYPE_INT)
+        result = rename.call(source_parent_file.fileno, source_name,
+                             destination_parent_file.fileno, destination_name, 0x00000001)
+      end
+      exit 67 if result == -1
+      renamed = true
+      RecoveryMoveHook.call(:after_rename_before_verify, source_parent, source_name,
+                            destination_parent, destination_name) if defined?(RecoveryMoveHook)
+      moved_fd = open_entry.call(destination_parent_file.fileno, destination_name)
+      exit 68 if moved_fd == -1
+      moved_file = IO.for_fd(moved_fd, autoclose: true)
+      moved_stat = moved_file.stat
+      exit 68 unless moved_stat.dev == source_stat.dev && moved_stat.ino == source_stat.ino
+      stale_source_fd = open_entry.call(source_parent_file.fileno, source_name)
+      if stale_source_fd != -1
+        IO.for_fd(stale_source_fd, autoclose: true).close
+        exit 68
+      end
+      exit 68 unless Fiddle.last_error == Errno::ENOENT::Errno
+    rescue Fiddle::DLError, SystemCallError, StandardError
+      exit renamed ? 68 : 67
+    ensure
+      close_failed = false
+      [source_file, moved_file, source_parent_file, destination_parent_file].each do |file|
+        begin
+          file&.close unless file&.closed?
+        rescue StandardError
+          close_failed = true
+        end
+      end
+      exit(renamed ? 68 : 67) if close_failed
+    end
+  ' "$@" 2>/dev/null
+}
+
+restore_recovery_staging_moves() {
+  local staging="$1"
+  local staging_identity="$2"
+  local skills_root="$3"
+  local skills_identity="$4"
+  shift 4
+  local destination staged_path expected_identity index move_status
+  local -a move_records=("$@")
+  for ((index = ${#move_records[@]} - 2; index >= 0; index -= 2)); do
+    destination="${move_records[$index]}"
+    expected_identity="${move_records[$((index + 1))]}"
+    staged_path="$staging/$(basename "$destination")"
+    move_status=0
+    if [[ -e "$staged_path" || -L "$staged_path" || ! -e "$destination" && ! -L "$destination" ]]; then
+      move_status=1
+    else
+      move_bound_recovery_path "$destination" "$staged_path" "$skills_root" "$skills_identity" \
+        "$staging" "$staging_identity" "$expected_identity" || move_status=$?
+    fi
+    if [[ "$move_status" -ne 0 ]]; then
+      echo "RECOVERY_STAGING_RESTORE_FAILED: preserved all remaining recovery artifacts for manual recovery." >&2
+      if [[ "$move_status" -eq 67 || "$move_status" -eq 68 ]]; then
+        if [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
+          echo "RECOVERY_STAGING_BINDING_CHANGED: refused to restore through a replaced staging path." >&2
+        elif [[ "$(recovery_directory_identity "$skills_root" 2>/dev/null || true)" != "$skills_identity" ]]; then
+          echo "RECOVERY_SKILLS_BINDING_CHANGED: refused to restore through a replaced skills path." >&2
+        else
+          echo "RECOVERY_PATH_BINDING_CHANGED: refused an unbound recovery move." >&2
+        fi
+        return 67
+      fi
+      return 1
+    fi
+  done
+}
+
+recovery_metadata_absence_intact() {
+  [[ "$metadata_absent_under_lock" = "true" ]] || return 0
+  [[ ! -e "$target/$metadata_name" && ! -L "$target/$metadata_name" ]]
 }
 
 rollback_migration_staging() {
   local staging="$1"
+  local bind_recovery_metadata="${2:-false}"
+  local staging_identity="${3:-}"
   local skills_root="$target/skills"
-  local staged_path
-  [[ -n "$staging" && -d "$staging" ]] || return 0
+  local staged_path destination source_identity move_status restore_status reversal_status skills_identity
+  local -a moved_records=()
+  local moved_count=0
+  [[ -n "$staging" ]] || return 0
+  if [[ -z "$staging_identity" ]]; then
+    [[ -d "$staging" ]] || return 0
+    staging_identity="$(recovery_directory_identity "$staging")" || return 1
+  elif [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
+    echo "RECOVERY_STAGING_BINDING_CHANGED: preserved recovery artifacts without moving them." >&2
+    return 67
+  fi
   if [[ -L "$skills_root" || -e "$skills_root" && ! -d "$skills_root" ]]; then
     echo "ROLLBACK_FAILED: unsafe skills root: $skills_root" >&2
     return 1
@@ -277,44 +2801,397 @@ rollback_migration_staging() {
     echo "ROLLBACK_FAILED: unsafe skills root: $skills_root" >&2
     return 1
   fi
+  skills_identity="$(recovery_directory_identity "$skills_root")" || return 1
   for staged_path in "$staging"/*; do
     [[ -e "$staged_path" || -L "$staged_path" ]] || continue
     if [[ -L "$skills_root" || ! -d "$skills_root" ]]; then
       echo "ROLLBACK_FAILED: skills root changed during rollback: $skills_root" >&2
+      if [[ "$moved_count" -gt 0 ]]; then
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_records[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+      fi
       return 1
     fi
-    if [[ -e "$target/skills/$(basename "$staged_path")" || -L "$target/skills/$(basename "$staged_path")" ]]; then
-      echo "ROLLBACK_FAILED: destination appeared during migration: $target/skills/$(basename "$staged_path")" >&2
+    destination="$target/skills/$(basename "$staged_path")"
+    if [[ -e "$destination" || -L "$destination" ]]; then
+      echo "ROLLBACK_FAILED: destination appeared during migration: $destination" >&2
+      if [[ "$moved_count" -gt 0 ]]; then
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_records[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+      fi
       return 1
     fi
-    mv "$staged_path" "$target/skills/"
+    if ! source_identity="$(recovery_path_identity "$staged_path")"; then
+      if [[ "$moved_count" -gt 0 ]]; then
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_records[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+      fi
+      return 67
+    fi
+    move_status=0
+    move_bound_recovery_path "$staged_path" "$destination" "$staging" "$staging_identity" \
+      "$skills_root" "$skills_identity" "$source_identity" || move_status=$?
+    if [[ "$move_status" -eq 0 || "$move_status" -eq 68 ]]; then
+      moved_records[moved_count]="$destination"
+      moved_count=$((moved_count + 1))
+      moved_records[moved_count]="$source_identity"
+      moved_count=$((moved_count + 1))
+    fi
+    if [[ "$move_status" -ne 0 ]]; then
+      if [[ "$move_status" -eq 68 || "$moved_count" -gt 0 ]]; then
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_records[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+      fi
+      if [[ "$move_status" -eq 67 || "$move_status" -eq 68 ]]; then
+        if [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
+          echo "RECOVERY_STAGING_BINDING_CHANGED: preserved recovery artifacts without following a replaced staging path." >&2
+        elif [[ "$(recovery_directory_identity "$skills_root" 2>/dev/null || true)" != "$skills_identity" ]]; then
+          echo "RECOVERY_SKILLS_BINDING_CHANGED: preserved recovery artifacts without following a replaced skills path." >&2
+        else
+          echo "RECOVERY_PATH_BINDING_CHANGED: refused an unbound recovery move." >&2
+        fi
+        return 67
+      fi
+      return 1
+    fi
+    if [[ "$bind_recovery_metadata" = "true" ]]; then
+      if [[ "$recovery_metadata_captured" = "true" ]] && ! recovery_metadata_binding_intact; then
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_records[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+        return 65
+      elif [[ "$recovery_metadata_captured" != "true" ]] && ! recovery_metadata_absence_intact; then
+        restore_status=0
+        restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+          "${moved_records[@]}" || restore_status=$?
+        [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+        return 65
+      fi
+    fi
   done
-  rmdir "$staging"
+  restore_status=0
+  if [[ "$bind_recovery_metadata" = "true" ]]; then
+    restore_captured_recovery_metadata || restore_status=$?
+  fi
+  if [[ "$restore_status" -ne 0 ]]; then
+    if [[ "$moved_count" -gt 0 ]]; then
+      reversal_status=0
+      restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+        "${moved_records[@]}" || reversal_status=$?
+      [[ "$reversal_status" -eq 0 ]] || return "$reversal_status"
+    fi
+    return "$restore_status"
+  fi
+  if [[ "$bind_recovery_metadata" = "true" && "$recovery_metadata_captured" != "true" ]] &&
+     ! recovery_metadata_absence_intact; then
+    if [[ "$moved_count" -gt 0 ]]; then
+      restore_status=0
+      restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+        "${moved_records[@]}" || restore_status=$?
+      [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+    fi
+    return 65
+  fi
+  if ! rmdir "$staging"; then
+    if [[ "$moved_count" -gt 0 ]]; then
+      restore_status=0
+      restore_recovery_staging_moves "$staging" "$staging_identity" "$skills_root" "$skills_identity" \
+        "${moved_records[@]}" || restore_status=$?
+      [[ "$restore_status" -eq 0 ]] || return "$restore_status"
+    fi
+    return 1
+  fi
+}
+
+validate_recovery_cleanup_root() {
+  ruby -e '
+    target = File.realpath(ARGV.fetch(0))
+    cleanup_root = File.expand_path(ARGV.fetch(1))
+    require_empty = ARGV.fetch(2) == "true"
+    abort unless File.basename(cleanup_root).match?(/\A\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+\z/)
+    abort unless File.realpath(File.dirname(cleanup_root)) == target
+    cleanup_stat = File.lstat(cleanup_root)
+    abort unless cleanup_stat.directory? && !cleanup_stat.symlink? &&
+                 cleanup_stat.uid == Process.euid && (cleanup_stat.mode & 0o022).zero?
+    cleanup_realpath = File.realpath(cleanup_root)
+    abort unless File.dirname(cleanup_realpath) == target &&
+                 File.basename(cleanup_realpath) == File.basename(cleanup_root)
+    verified_stat = File.lstat(cleanup_root)
+    abort unless verified_stat.dev == cleanup_stat.dev && verified_stat.ino == cleanup_stat.ino &&
+                 verified_stat.uid == Process.euid && (verified_stat.mode & 0o022).zero?
+    abort if require_empty && !Dir.empty?(cleanup_root)
+  ' "$target" "$1" "${2:-false}" 2>/dev/null
+}
+
+validate_bound_recovery_cleanup_root() {
+  ruby -e '
+    path, expected = ARGV
+    file = nil
+    begin
+      stat = File.lstat(path)
+      abort unless stat.directory? && !stat.symlink? && stat.uid == Process.euid && (stat.mode & 0o022).zero?
+      file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      opened = file.stat
+      named = File.lstat(path)
+      abort unless opened.directory? && "#{opened.dev}:#{opened.ino}" == expected &&
+                   opened.uid == Process.euid && (opened.mode & 0o022).zero? &&
+                   named.directory? && !named.symlink? && named.dev == opened.dev && named.ino == opened.ino &&
+                   named.uid == Process.euid && (named.mode & 0o022).zero?
+    ensure
+      file&.close
+    end
+  ' "$1" "$2" 2>/dev/null
+}
+
+remove_recovery_cleanup_root() {
+  ruby -rfileutils -rsecurerandom -e '
+    class CleanupFailed < StandardError; end
+    target_file = nil
+    original_target_mode = nil
+    captured = nil
+    cleanup_captured = false
+    deletion_committed = false
+    cleanup_status = 0
+    failure_reported = false
+    report_failure = lambda do
+      next if failure_reported
+
+      if deletion_committed && original_target_mode
+        puts "mode\t#{format("%04o", original_target_mode)}"
+      elsif cleanup_captured && captured
+        puts captured
+      end
+      failure_reported = true
+    end
+    begin
+      target = File.realpath(ARGV.fetch(0))
+      cleanup_root = File.expand_path(ARGV.fetch(1))
+      target_parent = File.realpath(File.dirname(target))
+      target_parent_stat = File.lstat(target_parent)
+      raise CleanupFailed unless target_parent_stat.directory? && !target_parent_stat.symlink?
+      target_file = File.open(target, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+      target_stat = target_file.stat
+      named_target_stat = File.lstat(target)
+      raise CleanupFailed unless target_stat.directory? &&
+                   target_stat.dev == named_target_stat.dev && target_stat.ino == named_target_stat.ino
+      parent_writable_by_others = (target_parent_stat.mode & 0o022) != 0
+      raise CleanupFailed if parent_writable_by_others &&
+               (!target_parent_stat.sticky? || target_stat.uid != Process.euid)
+      original_target_mode = target_stat.mode & 0o7777
+      if (original_target_mode & 0o022) != 0
+        raise CleanupFailed unless target_stat.uid == Process.euid
+        target_file.chmod(original_target_mode & ~0o022)
+      end
+      secured_target_stat = File.lstat(target)
+      raise CleanupFailed unless secured_target_stat.dev == target_stat.dev && secured_target_stat.ino == target_stat.ino
+      raise CleanupFailed unless File.basename(cleanup_root).match?(/\A\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+\z/)
+      raise CleanupFailed unless File.realpath(File.dirname(cleanup_root)) == target
+      cleanup_stat = File.lstat(cleanup_root)
+      raise CleanupFailed unless cleanup_stat.directory? && !cleanup_stat.symlink? && cleanup_stat.uid == Process.euid
+      cleanup_realpath = File.realpath(cleanup_root)
+      raise CleanupFailed unless File.dirname(cleanup_realpath) == target &&
+                   File.basename(cleanup_realpath) == File.basename(cleanup_root)
+      verified_stat = File.lstat(cleanup_root)
+      raise CleanupFailed unless verified_stat.dev == cleanup_stat.dev && verified_stat.ino == cleanup_stat.ino
+      10.times do
+        candidate = File.join(target, ".agent-workflows-recovery-delete-#{SecureRandom.hex(16)}")
+        begin
+          File.lstat(candidate)
+        rescue Errno::ENOENT
+          captured = candidate
+          break
+        end
+      end
+      raise CleanupFailed unless captured
+      File.rename(cleanup_root, captured)
+      cleanup_captured = true
+      captured_stat = File.lstat(captured)
+      unless captured_stat.dev == cleanup_stat.dev && captured_stat.ino == cleanup_stat.ino
+        puts captured
+        exit 67
+      end
+      if original_target_mode
+        deletion_parent_mode = original_target_mode
+        deletion_parent_mode |= 0o1000 if (deletion_parent_mode & 0o022) != 0
+        target_file.chmod(deletion_parent_mode)
+        restored_target_stat = target_file.stat
+        abort unless (restored_target_stat.mode & 0o7777) == deletion_parent_mode
+      end
+      FileUtils.remove_entry_secure(captured)
+      deletion_committed = true
+      if original_target_mode
+        target_file.chmod(original_target_mode)
+        RecoveryCleanupRootHook.call(:after_deletion_mode_restore) if defined?(RecoveryCleanupRootHook)
+        restored_target_stat = target_file.stat
+        raise CleanupFailed unless (restored_target_stat.mode & 0o7777) == original_target_mode
+        original_target_mode = nil
+      end
+    rescue StandardError
+      cleanup_status = deletion_committed ? 70 : (cleanup_captured ? 69 : 1)
+      report_failure.call
+    ensure
+      if target_file
+        begin
+          target_file.chmod(original_target_mode) if original_target_mode
+        rescue StandardError
+          cleanup_status = deletion_committed ? 70 : 69
+          report_failure.call
+        ensure
+          begin
+            target_file.close
+          rescue StandardError
+            nil
+          end
+        end
+      end
+    end
+    exit cleanup_status
+  ' "$target" "$1" 2>/dev/null
+}
+
+cleanup_recovery_staging() {
+  local staging="$1"
+  local staging_identity="$2"
+  local cleanup_root cleanup_staging move_status restore_status remove_status remove_artifact cleanup_root_identity target_identity quoted_target
+  target_identity="$(recovery_directory_identity "$target")" || return 1
+  cleanup_root="$(mktemp -d "$target/.agent-workflows-recovery-cleanup-XXXXXX")" || return 1
+  cleanup_staging="$cleanup_root/staging"
+  if ! validate_recovery_cleanup_root "$cleanup_root" true; then
+    echo "RECOVERY_CLEANUP_ROOT_REJECTED: preserved rejected cleanup path $cleanup_root without moving recovery staging." >&2
+    return 1
+  fi
+  cleanup_root_identity="$(recovery_directory_identity "$cleanup_root")" || return 1
+  if ! validate_bound_recovery_cleanup_root "$cleanup_root" "$cleanup_root_identity"; then
+    echo "RECOVERY_CLEANUP_ROOT_REJECTED: preserved rejected cleanup path $cleanup_root without moving recovery staging." >&2
+    return 1
+  fi
+  move_status=0
+  move_bound_recovery_path "$staging" "$cleanup_staging" "$target" "$target_identity" \
+    "$cleanup_root" "$cleanup_root_identity" "$staging_identity" true || move_status=$?
+  if [[ "$move_status" -ne 0 ]]; then
+    if [[ "$move_status" -eq 68 ]]; then
+      restore_status=0
+      move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_root" "$cleanup_root_identity" \
+        "$target" "$target_identity" "$staging_identity" || restore_status=$?
+      if [[ "$restore_status" -eq 0 ]]; then
+        rmdir "$cleanup_root" 2>/dev/null || true
+        echo "RECOVERY_CLEANUP_COMMITTED_UNVERIFIED: restored receipted recovery staging at $staging after post-rename verification failed." >&2
+      else
+        echo "RECOVERY_CLEANUP_COMMITTED_UNVERIFIED: preserved recoverable staging under $cleanup_root and retained its recovery receipt after post-rename verification failed." >&2
+      fi
+      return 67
+    fi
+    rmdir "$cleanup_root" 2>/dev/null || true
+    if [[ "$move_status" -eq 67 ]]; then
+      if [[ "$(recovery_directory_identity "$staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
+        echo "RECOVERY_STAGING_BINDING_CHANGED: preserved recovery artifacts without following a replaced staging path." >&2
+      else
+        echo "RECOVERY_CLEANUP_BINDING_CHANGED: preserved recovery artifacts without following a replaced cleanup path." >&2
+      fi
+      return 67
+    fi
+    return 1
+  fi
+  restore_status=0
+  if ! recovery_metadata_binding_intact; then
+    restore_status=65
+  else
+    restore_captured_recovery_metadata || restore_status=$?
+  fi
+  if [[ "$restore_status" -ne 0 ]]; then
+    if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_root" "$cleanup_root_identity" \
+      "$target" "$target_identity" "$staging_identity"; then
+      echo "RECOVERY_STAGING_RESTORE_FAILED: preserved $cleanup_root for manual recovery." >&2
+    else
+      rmdir "$cleanup_root" 2>/dev/null || true
+    fi
+    return "$restore_status"
+  fi
+  if [[ "$(recovery_directory_identity "$cleanup_staging" 2>/dev/null || true)" != "$staging_identity" ]]; then
+    echo "RECOVERY_STAGING_BINDING_CHANGED: preserved $cleanup_root and recovery receipt for manual recovery." >&2
+    return 67
+  fi
+  remove_status=0
+  remove_artifact="$(remove_recovery_cleanup_root "$cleanup_root")" || remove_status=$?
+  remove_artifact="${remove_artifact%%$'\n'*}"
+  if [[ "$remove_status" -eq 67 ]]; then
+    echo "RECOVERY_CLEANUP_BINDING_CHANGED: preserved ${remove_artifact:-$cleanup_root} and recovery receipt after cleanup path replacement." >&2
+    return 67
+  elif [[ "$remove_status" -eq 69 ]]; then
+    remove_artifact="${remove_artifact:-$cleanup_root}"
+    if move_bound_recovery_path "$remove_artifact/staging" "$staging" "$remove_artifact" "$cleanup_root_identity" \
+      "$target" "$target_identity" "$staging_identity"; then
+      rmdir "$remove_artifact" 2>/dev/null || true
+      echo "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: restored receipted recovery staging at $staging because target permissions could not be restored before deletion." >&2
+    else
+      echo "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: preserved ${remove_artifact:-$cleanup_root} and recovery receipt; recovery staging could not be restored." >&2
+    fi
+    return 1
+  elif [[ "$remove_status" -eq 70 ]]; then
+    remove_artifact="${remove_artifact#mode$'\t'}"
+    echo "RECOVERY_TARGET_MODE_RESTORE_PENDING: recovery staging deletion committed, but exact permissions on $target could not be verified." >&2
+    if [[ "$remove_artifact" =~ ^[0-7]{4}$ ]]; then
+      printf -v quoted_target '%q' "$target"
+      echo "Verify $target still names the intended agent home, then restore its trusted mode with: chmod $remove_artifact -- $quoted_target" >&2
+    else
+      echo "Verify $target still names the intended agent home, then restore its permissions from trusted policy before retrying." >&2
+    fi
+    return 70
+  elif [[ "$remove_status" -ne 0 ]]; then
+    if ! move_bound_recovery_path "$cleanup_staging" "$staging" "$cleanup_root" "$cleanup_root_identity" \
+      "$target" "$target_identity" "$staging_identity"; then
+      echo "RECOVERY_STAGING_RESTORE_FAILED: preserved $cleanup_root for manual recovery." >&2
+    else
+      rmdir "$cleanup_root" 2>/dev/null || true
+    fi
+    return 1
+  fi
+}
+
+report_pending_recovery_corruption() {
+  local migration_receipt="$1"
+  local recovered_staging="$2"
+  if ! restore_captured_recovery_metadata; then
+    report_recovery_metadata_restore_failure
+  fi
+  if [[ "$recovery_metadata_restore_reported" != "true" ]]; then
+    report_corrupt_install_metadata
+  fi
+  echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
+}
+
+report_pending_recovery_integrity_failure() {
+  local migration_receipt="$1"
+  local recovered_staging="$2"
+  if ! restore_captured_recovery_metadata; then
+    report_recovery_metadata_restore_failure
+  fi
+  echo "RECOVERY_FAILED: recovery paths changed during the operation; preserved $migration_receipt for $recovered_staging and any named cleanup artifacts." >&2
 }
 
 valid_migration_staging_path() {
   ruby -e '
-    target = File.expand_path(ARGV.fetch(0))
+    target = File.realpath(ARGV.fetch(0))
     staging = File.expand_path(ARGV.fetch(1))
-    exit 1 unless File.dirname(staging) == target
     exit 1 unless File.basename(staging).match?(/\A\.agent-workflows-flat-migration-.+\z/)
-
-    current = File::SEPARATOR
-    target.split(File::SEPARATOR).reject(&:empty?).each_with_index do |component, index|
-      current = File.join(current, component)
-      next unless File.symlink?(current)
-
-      platform_alias = index.zero? && {
-        "/tmp" => "/private/tmp",
-        "/var" => "/private/var"
-      }[current] == File.expand_path(File.readlink(current), File.dirname(current))
-      exit 1 unless platform_alias
-    end
-
     stat = File.lstat(staging)
     exit 1 unless stat.directory? && !stat.symlink?
-    exit 1 unless File.realpath(File.dirname(staging)) == File.realpath(target)
-  ' "$1" "$2"
+    canonical_staging = File.realpath(staging)
+    exit 1 unless File.dirname(canonical_staging) == target
+    canonical_stat = File.lstat(canonical_staging)
+    exit 1 unless canonical_stat.directory? && !canonical_stat.symlink? &&
+                  canonical_stat.dev == stat.dev && canonical_stat.ino == stat.ino
+    print canonical_staging
+  ' "$1" "$2" 2>/dev/null
 }
 
 ensure_real_directory() {
@@ -363,8 +3240,18 @@ workflow_doctor_symlink_matches_recorded_source() {
   local destination="$target/bin/agent_doctor"
   local link_target recorded_mode recorded_source
   link_target="$(readlink "$destination" 2>/dev/null)" || return 1
-  recorded_mode="$(installed_metadata_value mode 2>/dev/null || true)"
-  recorded_source="$(installed_metadata_value source 2>/dev/null || true)"
+  read_installed_metadata_value mode
+  case "$installed_metadata_state" in
+    valid) recorded_mode="$installed_metadata_value" ;;
+    invalid|key_absent|corrupt|absent) return 1 ;;
+    *) return 1 ;;
+  esac
+  read_installed_metadata_value source
+  case "$installed_metadata_state" in
+    valid) recorded_source="$installed_metadata_value" ;;
+    invalid|key_absent|corrupt|absent) return 1 ;;
+    *) return 1 ;;
+  esac
   [[ "$recorded_mode" = symlink && -n "$recorded_source" &&
      "$link_target" = "$recorded_source/bin/agent_doctor" ]]
 }
@@ -432,7 +3319,11 @@ remove_legacy_managed_model_routing_path() {
   local legacy_path="$docs_target/model-routing.md"
   local link_target previous_revision previous_source source_root
 
-  previous_source="$(installed_metadata_value source 2>/dev/null || true)"
+  read_installed_metadata_value source
+  case "$installed_metadata_state" in
+    valid) previous_source="$installed_metadata_value" ;;
+    key_absent|corrupt) previous_source="" ;;
+  esac
   if [[ -L "$legacy_path" ]]; then
     link_target="$(readlink "$legacy_path")"
     if [[ "$link_target" == "$repo_root/docs/model-routing.md" || \
@@ -443,7 +3334,11 @@ remove_legacy_managed_model_routing_path() {
   fi
 
   [[ -f "$legacy_path" ]] || return 0
-  previous_revision="$(installed_metadata_value source_revision 2>/dev/null || true)"
+  read_installed_metadata_value source_revision
+  case "$installed_metadata_state" in
+    valid) previous_revision="$installed_metadata_value" ;;
+    key_absent|corrupt) previous_revision="" ;;
+  esac
   [[ -n "$previous_revision" ]] || return 0
 
   for source_root in "$repo_root" "$previous_source"; do
@@ -467,9 +3362,17 @@ recorded_revision_pack_doc_matches() {
   local destination="$2"
   local previous_revision previous_source source_root
   [[ -f "$destination" && ! -L "$destination" ]] || return 1
-  previous_revision="$(installed_metadata_value source_revision 2>/dev/null || true)"
+  read_installed_metadata_value source_revision
+  case "$installed_metadata_state" in
+    valid) previous_revision="$installed_metadata_value" ;;
+    *) previous_revision="" ;;
+  esac
   [[ "$previous_revision" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
-  previous_source="$(installed_metadata_value source 2>/dev/null || true)"
+  read_installed_metadata_value source
+  case "$installed_metadata_state" in
+    valid) previous_source="$installed_metadata_value" ;;
+    *) previous_source="" ;;
+  esac
 
   for source_root in "$repo_root" "$previous_source"; do
     [[ -n "$source_root" && -d "$source_root" ]] || continue
@@ -487,7 +3390,11 @@ pack_doc_symlink_matches_recorded_source() {
   local previous_source resolved source_root expected
   [[ -L "$destination" ]] || return 1
   resolved="$(ruby -e 'puts File.expand_path(File.readlink(ARGV.fetch(0)), File.dirname(ARGV.fetch(0)))' "$destination")"
-  previous_source="$(installed_metadata_value source 2>/dev/null || true)"
+  read_installed_metadata_value source
+  case "$installed_metadata_state" in
+    valid) previous_source="$installed_metadata_value" ;;
+    *) previous_source="" ;;
+  esac
 
   for source_root in "$repo_root" "$previous_source"; do
     [[ -n "$source_root" ]] || continue
@@ -516,10 +3423,17 @@ recorded_pack_doc_copy_fingerprint_matches() {
   local doc_name="$1"
   local destination="$2"
   local metadata_path="$target/$metadata_name"
+  local matches=false
+  if [[ "${install_metadata_binding_state:-}" = "present" ]]; then
+    require_install_metadata_binding
+    metadata_path="$install_metadata_snapshot_path"
+  elif [[ "${install_metadata_binding_state:-}" = "absent" ]]; then
+    return 1
+  fi
   [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || return 1
   [[ -f "$destination" && ! -L "$destination" ]] || return 1
 
-  ruby -rjson -rdigest -e '
+  if ruby -rjson -rdigest -e '
     metadata_path, doc_name, destination = ARGV
     metadata = JSON.parse(File.binread(metadata_path))
     exit 1 unless metadata.is_a?(Hash) && metadata["mode"] == "copy"
@@ -528,7 +3442,13 @@ recorded_pack_doc_copy_fingerprint_matches() {
     expected = fingerprints[doc_name]
     exit 1 unless expected.is_a?(String) && expected.match?(/\A[0-9a-f]{64}\z/i)
     exit(Digest::SHA256.file(destination).hexdigest == expected ? 0 : 1)
-  ' "$metadata_path" "$doc_name" "$destination"
+  ' "$metadata_path" "$doc_name" "$destination"; then
+    matches=true
+  fi
+  if [[ "${install_metadata_binding_state:-}" = "present" ]]; then
+    require_install_metadata_binding
+  fi
+  [[ "$matches" = "true" ]]
 }
 
 verify_pack_doc_destinations() {
@@ -741,10 +3661,18 @@ validate_delivery_mode "--delivery-mode"
 resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
-if [[ -z "$delivery_mode" ]]; then
-  delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
-  validate_delivery_mode "Installed metadata delivery_mode"
+if [[ -e "$target" || -L "$target" ]]; then
+  requested_target="$target"
+  if ! canonical_target="$(canonicalize_target_path "$requested_target")"; then
+    echo "Refusing target that cannot be resolved to an existing directory: $requested_target" >&2
+    exit 1
+  fi
+  target="$canonical_target"
 fi
+delivery_mode_was_explicit=false
+[[ -z "$delivery_mode" ]] || delivery_mode_was_explicit=true
+resolve_delivery_mode
+validate_delivery_mode "Installed metadata delivery_mode"
 
 if [[ "$delivery_mode" = "plugin-companion" ]]; then
   validate_scanner_companion_ancestors || exit 1
@@ -772,60 +3700,249 @@ if ! mkdir "$install_lock" 2>/dev/null; then
   echo "DELIVERY_MODE_CONFLICT: another agent-workflows install or migration holds $install_lock" >&2
   exit 1
 fi
+if ! install_lock_identity="$(recovery_directory_identity "$install_lock")"; then
+  if rmdir "$install_lock" 2>/dev/null; then
+    echo "INSTALL_LOCK_IDENTITY_FAILED: could not attest the newly created install lock; removed the verified-empty lock and refused to continue." >&2
+  else
+    echo "METADATA_CLEANUP_PENDING: could not attest or safely remove $install_lock; preserve and verify it before retrying." >&2
+  fi
+  exit 1
+fi
 release_install_lock() {
-  local status=$?
+  local status=$? cleanup_path restore_status=0
   trap - EXIT
-  rmdir "$install_lock" 2>/dev/null || true
+  if [[ "${recovery_metadata_captured:-false}" = "true" &&
+        "${recovery_metadata_restore_reported:-false}" != "true" ]]; then
+    restore_captured_recovery_metadata || restore_status=$?
+    if [[ "$restore_status" -ne 0 ]]; then
+      report_recovery_metadata_restore_failure
+      if [[ "$restore_status" -eq 69 ]]; then
+        status=69
+      else
+        status=65
+      fi
+    fi
+  fi
+  if [[ -n "${install_metadata_snapshot_attestation:-}" ]]; then
+    if ! cleanup_path="$(remove_attested_metadata_file "$install_metadata_snapshot_path" \
+      "$install_metadata_snapshot_attestation" 2>/dev/null)"; then
+      report_metadata_cleanup_pending "${cleanup_path:-$install_metadata_snapshot_path}"
+      [[ "$status" -ne 0 ]] || status=1
+    fi
+  fi
+  if ! cleanup_path="$(remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null)"; then
+    report_metadata_cleanup_pending "${cleanup_path:-$install_lock}"
+    [[ "$status" -ne 0 ]] || status=1
+  fi
   exit "$status"
 }
 trap release_install_lock EXIT
 migration_staging=""
 migration_receipt="$target/.agent-workflows-migration-staging"
+recovery_metadata_captured=false
+recovery_metadata_restore_reported=false
+recovery_staging_identity=""
+install_metadata_binding_state=""
+install_metadata_binding_attestation=""
+install_metadata_snapshot_path=""
+install_metadata_snapshot_attestation=""
+install_metadata_bound_delivery_mode=""
+install_metadata_rollback_guard=""
+metadata_absent_under_lock=false
+if ! preflight_metadata_commit_capability; then
+  exit 1
+fi
+if [[ ! -e "$target/$metadata_name" && ! -L "$target/$metadata_name" ]]; then
+  metadata_absent_under_lock=true
+fi
 if [[ -f "$migration_receipt" ]]; then
   IFS= read -r recovered_staging < "$migration_receipt" || recovered_staging=""
-  recovered_staging="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$recovered_staging")"
-  if ! valid_migration_staging_path "$target" "$recovered_staging"; then
+  if ! recovered_staging="$(valid_migration_staging_path "$target" "$recovered_staging")"; then
     echo "RECOVERY_FAILED: unsafe migration staging receipt; preserved $migration_receipt" >&2
-    rmdir "$install_lock" 2>/dev/null || true
     exit 1
   fi
-  prior_delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
+  if ! recovery_staging_identity="$(recovery_directory_identity "$recovered_staging")" ||
+     [[ -z "$recovery_staging_identity" ]]; then
+    echo "RECOVERY_STAGING_BINDING_CHANGED: preserved $migration_receipt and recovery artifacts without moving them." >&2
+    exit 65
+  fi
+  set +e
+  capture_installed_metadata_for_recovery "$metadata_absent_under_lock"
+  capture_status=$?
+  set -e
+  case "$capture_status" in
+    0) ;;
+    68) prior_delivery_mode="flat" ;;
+    66)
+      report_corrupt_install_metadata true
+      report_blocking_recovery_quarantines "$recovery_metadata_quarantine"
+      echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+      exit 65
+      ;;
+    70)
+      echo "RECOVERY_METADATA_CAPTURE_UNAVAILABLE: this filesystem could not create a bound metadata snapshot; preserved $migration_receipt and $recovered_staging." >&2
+      report_blocking_recovery_quarantines "$recovery_metadata_quarantine"
+      exit 1
+      ;;
+    *)
+      if [[ "$recovery_metadata_captured" = "true" ]] && ! restore_captured_recovery_metadata; then
+        report_recovery_metadata_restore_failure
+      fi
+      if [[ "$recovery_metadata_restore_reported" != "true" ]]; then
+        report_corrupt_install_metadata
+      fi
+      if [[ -n "$recovery_metadata_quarantine" &&
+            ( -e "$recovery_metadata_quarantine" || -L "$recovery_metadata_quarantine" ) ]]; then
+        report_blocking_recovery_quarantines "$recovery_metadata_quarantine"
+      fi
+      echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+      exit 65
+      ;;
+  esac
+  if [[ "$capture_status" -ne 68 ]]; then
+    read_installed_metadata_value delivery_mode "$recovery_metadata_snapshot"
+    if ! recovery_metadata_binding_intact; then
+      installed_metadata_state="corrupt"
+      installed_metadata_value=""
+    fi
+  else
+    installed_metadata_state="absent"
+  fi
+  case "$installed_metadata_state" in
+    valid)
+      prior_delivery_mode="$installed_metadata_value"
+      ;;
+    key_absent) prior_delivery_mode="flat" ;;
+    absent) prior_delivery_mode="flat" ;;
+    invalid)
+      if ! restore_captured_recovery_metadata; then
+        report_recovery_metadata_restore_failure
+        echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+        exit 65
+      fi
+      report_invalid_install_delivery_mode
+      echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+      exit 64
+      ;;
+    corrupt)
+      if ! restore_captured_recovery_metadata; then
+        report_recovery_metadata_restore_failure
+      fi
+      if [[ "$recovery_metadata_restore_reported" != "true" ]]; then
+        report_corrupt_install_metadata
+      fi
+      echo "Preserved pending recovery receipt $migration_receipt for staging directory $recovered_staging." >&2
+      exit 65
+      ;;
+  esac
   if [[ "$prior_delivery_mode" = "plugin-companion" ]]; then
-    if ! rm -rf "$recovered_staging"; then
+    set +e
+    cleanup_recovery_staging "$recovered_staging" "$recovery_staging_identity"
+    recovery_status=$?
+    set -e
+    if [[ "$recovery_status" -eq 65 ]]; then
+      report_pending_recovery_corruption "$migration_receipt" "$recovered_staging"
+      exit 65
+    elif [[ "$recovery_status" -eq 67 ]]; then
+      report_pending_recovery_integrity_failure "$migration_receipt" "$recovered_staging"
+      exit 65
+    elif [[ "$recovery_status" -eq 70 ]]; then
+      if rm -f "$migration_receipt"; then
+        echo "RECOVERY_TARGET_MODE_RESTORE_PENDING: removed the completed recovery receipt; restore the target permissions as directed before retrying." >&2
+      else
+        echo "RECOVERY_TARGET_MODE_RESTORE_PENDING: remove stale completed recovery receipt $migration_receipt only after verifying $recovered_staging remains absent." >&2
+      fi
+      exit 70
+    elif [[ "$recovery_status" -ne 0 ]]; then
       echo "CLEANUP_PENDING: committed plugin-companion mode; preserved $migration_receipt for $recovered_staging" >&2
-      rmdir "$install_lock" 2>/dev/null || true
       exit 1
     fi
-  elif [[ ! -d "$recovered_staging" ]]; then
-    echo "RECOVERY_FAILED: flat migration staging is missing; preserved $migration_receipt" >&2
-    rmdir "$install_lock" 2>/dev/null || true
-    exit 1
-  elif ! rollback_migration_staging "$recovered_staging"; then
+  elif [[ "$(recovery_directory_identity "$recovered_staging" 2>/dev/null || true)" != "$recovery_staging_identity" ]]; then
+    echo "RECOVERY_STAGING_BINDING_CHANGED: preserved recovery artifacts without moving them." >&2
+    report_pending_recovery_integrity_failure "$migration_receipt" "$recovered_staging"
+    exit 65
+  else
+    set +e
+    rollback_migration_staging "$recovered_staging" true "$recovery_staging_identity"
+    recovery_status=$?
+    set -e
+    if [[ "$recovery_status" -eq 65 ]]; then
+      report_pending_recovery_corruption "$migration_receipt" "$recovered_staging"
+      exit 65
+    elif [[ "$recovery_status" -eq 67 ]]; then
+      report_pending_recovery_integrity_failure "$migration_receipt" "$recovered_staging"
+      exit 65
+    elif [[ "$recovery_status" -ne 0 ]]; then
+      echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
+      exit 1
+    fi
+  fi
+  if [[ "$capture_status" -eq 68 ]] && ! recovery_metadata_absence_intact; then
+    echo "RECOVERY_METADATA_BINDING_CHANGED: install metadata appeared during absent-state recovery; preserved the recovery receipt and refused to finalize it." >&2
+    report_pending_recovery_integrity_failure "$migration_receipt" "$recovered_staging"
+    exit 65
+  fi
+  if ! restore_captured_recovery_metadata; then
+    report_recovery_metadata_restore_failure
     echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
-    rmdir "$install_lock" 2>/dev/null || true
-    exit 1
+    exit 65
   fi
   rm -f "$migration_receipt"
 fi
+binding_status=0
+capture_install_metadata_binding || binding_status=$?
+[[ "$binding_status" -eq 0 ]] || exit "$binding_status"
+if [[ "$delivery_mode_was_explicit" != "true" &&
+      "$delivery_mode" != "$install_metadata_bound_delivery_mode" ]]; then
+  report_install_metadata_binding_changed
+  exit 65
+fi
+prebind_install_metadata_rollback_guard || exit 1
 metadata_committed=false
+metadata_commit_rollback_failed=false
 release_install_transaction() {
-  local status=$?
+  local status=$? cleanup_path
   trap - EXIT
   if [[ -z "$migration_staging" && -f "$migration_receipt" ]]; then
     IFS= read -r migration_staging < "$migration_receipt" || true
   fi
-  if [[ "$metadata_committed" != "true" && -n "$migration_staging" ]]; then
+  if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" &&
+        -n "$migration_staging" ]]; then
     if rollback_migration_staging "$migration_staging"; then
       rm -f "$migration_receipt"
     else
       echo "RECOVERY_FAILED: rollback incomplete; preserved $migration_receipt for $migration_staging" >&2
       status=1
     fi
+  elif [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" = "true" &&
+          -n "$migration_staging" ]]; then
+    echo "CLEANUP_PENDING: metadata commit outcome is uncertain; preserved $migration_receipt for $migration_staging without restoring the staged flat layout." >&2
   fi
-  if [[ "$metadata_committed" != "true" && -f "$target/$metadata_name.tmp" ]]; then
-    rm -f "$target/$metadata_name.tmp"
+  if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" &&
+        -n "${prepared_metadata_attestation:-}" ]]; then
+    if ! cleanup_path="$(remove_attested_metadata_file "$target/$metadata_name.tmp" \
+      "$prepared_metadata_attestation" 2>/dev/null)"; then
+      report_metadata_cleanup_pending "${cleanup_path:-$target/$metadata_name.tmp}"
+      [[ "$status" -ne 0 ]] || status=1
+    fi
   fi
-  rmdir "$install_lock" 2>/dev/null || true
+  if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" ]]; then
+    if ! cleanup_path="$(remove_install_metadata_rollback_guard)"; then
+      report_metadata_cleanup_pending "${cleanup_path:-$install_lock/metadata-commit-old.guard}"
+      [[ "$status" -ne 0 ]] || status=1
+    fi
+  fi
+  if [[ -n "${install_metadata_snapshot_attestation:-}" ]]; then
+    if ! cleanup_path="$(remove_attested_metadata_file "$install_metadata_snapshot_path" \
+      "$install_metadata_snapshot_attestation" 2>/dev/null)"; then
+      report_metadata_cleanup_pending "${cleanup_path:-$install_metadata_snapshot_path}"
+      [[ "$status" -ne 0 ]] || status=1
+    fi
+  fi
+  if ! cleanup_path="$(remove_bound_empty_directory "$install_lock" "$install_lock_identity" 2>/dev/null)"; then
+    report_metadata_cleanup_pending "${cleanup_path:-$install_lock}"
+    [[ "$status" -ne 0 ]] || status=1
+  fi
   exit "$status"
 }
 trap release_install_transaction EXIT
@@ -847,6 +3964,10 @@ fi
 verify_pack_doc_destinations
 verify_install_destinations
 prepare_metadata
+if ! verify_install_metadata_binding; then
+  report_install_metadata_binding_changed
+  exit 65
+fi
 
 if [[ "$mode" = "copy" ]]; then
   ensure_real_directory "$target/bin"
@@ -966,6 +4087,10 @@ if [[ "$delivery_mode" = "plugin-companion" ]]; then
   fi
 fi
 
+if ! verify_install_metadata_binding; then
+  report_install_metadata_binding_changed
+  exit 65
+fi
 commit_metadata
 metadata_committed=true
 if [[ -n "$migration_staging" ]]; then

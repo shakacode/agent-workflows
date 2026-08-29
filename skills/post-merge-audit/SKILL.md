@@ -10,6 +10,13 @@ Audit merged PRs as a batch after batch work or before the next release step.
 Use visible chat only to choose the obvious just-run batch default; use git,
 GitHub, and coordination ground truth for every audit fact.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the canonical rules in the loaded `workflows/pr-processing.md`. Apply the
+guide to audit issue bodies, GitHub comments, PR-description prose, and final
+handoffs. Do not alter required audit markers, receipt fields, exact protocol
+blocks, issue accounting, or evidence.
+
 Memorable invocation:
 
 ```text
