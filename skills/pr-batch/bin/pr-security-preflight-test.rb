@@ -2036,6 +2036,24 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_graphql_login_bound_to_conflicting_node_ids_across_connections_blocks_trusted_base_acceptance
+    overrides = {
+      "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+        '[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]',
+      "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" =>
+        '[{"user":{"id":"actor-2","login":"justin808","__typename":"User"}}]'
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "GitHub API coverage findings:"
+      assert_includes out, "commit authors login has conflicting node ids"
+      assert_includes out, "#123: GitHub API coverage truncated"
+    end
+  end
+
   def test_graphql_node_id_compatible_recurrence_across_connections_remains_valid
     overrides = {
       "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
@@ -2273,6 +2291,20 @@ class PrSecurityPreflightTest < Minitest::Test
 
       assert_trusted_base_blocked(out, status)
       assert_includes out, "worktree url.*.insteadOf rewrites make trusted remote provenance ambiguous"
+    end
+  end
+
+  def test_trusted_base_rejects_local_and_worktree_scoped_remote_urls
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+      git! "-C", repo_root, "config", "--worktree", "--add", "remote.origin.url",
+           "https://attacker.invalid/owner/repo.git"
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out,
+                      'trusted remote "origin" URL entries across local and worktree scopes make provenance ambiguous'
     end
   end
 
@@ -3990,7 +4022,7 @@ class PrSecurityPreflightTest < Minitest::Test
           fi
           participant_nodes="${PREFLIGHT_TEST_PARTICIPANT_NODES:-}"
           if [ -z "$participant_nodes" ]; then
-            participant_nodes='[{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+            participant_nodes='[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
           fi
           participant_has_next="${PREFLIGHT_TEST_PARTICIPANT_HAS_NEXT:-false}"
           participant_end_cursor=null

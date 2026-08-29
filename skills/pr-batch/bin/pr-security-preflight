@@ -1257,11 +1257,20 @@ end
 
 def trusted_remote_url(root, policy, repo:, github_host:)
   remote = policy.fetch("remote")
-  stdout, _stderr, status = capture_trusted_git_probe(
-    "-C", root, "config", "--local", "--get-all", "remote.#{remote}.url"
+  worktree_config, _stderr, worktree_status = capture_trusted_git_probe(
+    "-C", root, "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"
   )
-  urls = status&.success? ? stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).reject(&:empty?) : []
-  return [nil, "trusted remote #{remote.inspect} must have exactly one local URL"] unless urls.one?
+  scopes = ["local"]
+  scopes << "worktree" if worktree_status&.success? && worktree_config.strip == "true"
+  urls = scopes.flat_map do |scope|
+    stdout, _stderr, status = capture_trusted_git_probe(
+      "-C", root, "config", "--#{scope}", "--get-all", "remote.#{remote}.url"
+    )
+    status&.success? ? stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).reject(&:empty?) : []
+  end
+  unless urls.one?
+    return [nil, "trusted remote #{remote.inspect} URL entries across local and worktree scopes make provenance ambiguous"]
+  end
 
   if (unsafe_config = unsafe_trusted_fetch_config(root))
     scope, key = unsafe_config
@@ -1409,9 +1418,8 @@ def merge_graph_identity_representation!(canonical_identities, id, representatio
   true
 end
 
-def graph_identity_coverage_finding(nodes, connection:, total_count:, canonical_identities:)
+def graph_identity_coverage_finding(nodes, connection:, total_count:, canonical_identities:, coherent_ids:)
   seen = {}
-  coherent_ids = {}
   nodes.each do |node|
     identity = yield node
     unless identity
@@ -1454,12 +1462,14 @@ end
 def graph_node_identity_coverage_findings(target)
   findings = []
   canonical_identities = {}
+  coherent_ids = {}
   participants = Array(target.dig("participants", "nodes"))
   participant_finding = graph_identity_coverage_finding(
     participants,
     connection: "participants",
     total_count: target.dig("participants", "totalCount"),
-    canonical_identities:
+    canonical_identities:,
+    coherent_ids:
   ) do |node|
     id = node&.[]("id")
     login = node&.[]("login")
@@ -1481,7 +1491,8 @@ def graph_node_identity_coverage_findings(target)
     timeline,
     connection: "timelineItems",
     total_count: target.dig("timelineItems", "totalCount"),
-    canonical_identities:
+    canonical_identities:,
+    coherent_ids:
   ) do |node|
     id = node&.[]("id")
     typename = node&.[]("__typename")
@@ -1510,7 +1521,8 @@ def graph_node_identity_coverage_findings(target)
       authors,
       connection: "commit authors",
       total_count: item.dig("commit", "authors", "totalCount"),
-      canonical_identities:
+      canonical_identities:,
+      coherent_ids:
     ) do |author|
       user = author&.[]("user")
       id = user&.[]("id")
