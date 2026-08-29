@@ -540,6 +540,41 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal [held, replacement], scopes.dig("other", "rows")
   end
 
+  def test_optional_policy_indexes_check_run_identity_once_per_row
+    rows = Array.new(100) do |index|
+      {
+        "kind" => "check_run", "id" => index + 1, "name" => "check-#{index}",
+        "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
+        "app_slug" => "app-#{index}", "dependabot" => false
+      }
+    end
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => rows.map do |row|
+        {
+          "id" => "rule-#{row.fetch("id")}",
+          "app_slug" => row.fetch("app_slug"),
+          "name" => row.fetch("name")
+        }
+      end
+    }
+    original = PrCiReadiness.method(:check_run_identity)
+    identity_calls = 0
+    PrCiReadiness.define_singleton_method(:check_run_identity) do |row|
+      identity_calls += 1
+      original.call(row)
+    end
+
+    dispositions = PrCiReadiness.optional_approval_held_dispositions(
+      rows, required_rows: [], policy:
+    )
+
+    assert_equal rows.length, dispositions.length
+    assert_operator identity_calls, :<=, rows.length * 2
+  ensure
+    PrCiReadiness.define_singleton_method(:check_run_identity, original) if original
+  end
+
   def test_required_reclassification_prevents_optional_approval_held_disposition
     head = "a" * 40
     held = {
@@ -760,6 +795,61 @@ class PrCiReadinessTest < Minitest::Test
         PrCiReadiness.validate_optional_approval_held_policy!(policy)
       end
       assert_match(/closed version 1 mapping|contain exactly app_slug, id, and name/, error.message)
+    end
+  end
+
+  def test_optional_approval_held_policy_rejects_every_invalid_security_boundary_shape
+    valid_rule = {
+      "id" => "circleci-storybook",
+      "app_slug" => "circleci-checks",
+      "name" => "storybook-review-app"
+    }
+    cases = {
+      "unsupported version" => {
+        "version" => 2, "optional_approval_held_checks" => [valid_rule]
+      },
+      "missing version" => {
+        "optional_approval_held_checks" => [valid_rule]
+      },
+      "empty rules" => {
+        "version" => 1, "optional_approval_held_checks" => []
+      },
+      "non-list rules" => {
+        "version" => 1, "optional_approval_held_checks" => valid_rule
+      },
+      "uppercase rule id" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("id" => "CircleCI-Storybook")]
+      },
+      "underscored app slug" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("app_slug" => "circleci_checks")]
+      },
+      "unknown name" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("name" => "UNKNOWN")]
+      },
+      "multiline name" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("name" => "storybook\nreview")]
+      },
+      "duplicate rule id" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [
+          valid_rule,
+          valid_rule.merge("app_slug" => "other-app", "name" => "other-check")
+        ]
+      },
+      "duplicate check identity" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule, valid_rule.merge("id" => "other-rule")]
+      }
+    }
+
+    cases.each do |label, policy|
+      assert_raises(PrCiReadiness::Error, label) do
+        PrCiReadiness.validate_optional_approval_held_policy!(policy)
+      end
     end
   end
 
