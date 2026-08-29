@@ -190,10 +190,24 @@ The helper treats worktree policy only as bootstrap. It verifies the configured
 remote's stored URL, then fetches that URL and exact ref into a new temporary
 bare repository. The fetch runs with system/global and repository/worktree Git
 configuration absent, a minimal inherited environment, URL rewrites absent,
-SSH user configuration disabled, and transport restricted to HTTPS/SSH. It
-resolves one absolute system Git executable before reading task-scoped inputs
-and uses that same executable for remote inspection, fetch, object inspection,
-and ancestry checks; later `PATH` changes cannot redirect provenance commands.
+SSH user configuration disabled, SSH batch mode enabled, and transport
+restricted to HTTPS/SSH. It resolves one absolute trusted Git executable before
+reading task-scoped inputs and uses that same executable for remote inspection,
+fetch, object inspection, and ancestry checks; later `PATH` changes cannot
+redirect provenance commands. Fixed system installation paths are tried by
+default. For a Git installation elsewhere, an operator may set
+`PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE` to its absolute executable path.
+That operator-owned environment setting is authoritative, is canonicalized, and
+fails closed unless it resolves to an executable outside the current working
+repository and temporary directories. It must never come from repository
+configuration; the helper does not search arbitrary `PATH` entries. Known
+platform temporary roots remain prohibited even when ambient temp-directory
+variables are redirected; canonical ambient temp roots are additive.
+HTTPS trusted-base verification is deliberately credential-free and therefore
+supports public repositories only. Private repositories must configure the
+validated trusted remote with GitHub SSH; the isolated fetch may use the
+existing `SSH_AUTH_SOCK`. It does not forward ambient credential helpers,
+tokens, or askpass programs.
 Plain HTTP and non-GitHub hosts are always rejected; there is no environment,
 configuration, or test-selection exception. Known local or worktree transport
 overrides are also rejected so the operator can see why provenance would have
