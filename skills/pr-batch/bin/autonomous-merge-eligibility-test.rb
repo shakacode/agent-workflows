@@ -686,6 +686,115 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal "UNKNOWN", weakened_tests.fetch("verdict")
   end
 
+  def test_portable_safe_path_groups_classify_docs_and_tests_without_repo_configuration
+    documentation = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("docs/usage.md"), file("guides/setup.txt"), file("notes.mdx")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    tests = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("spec/service_spec.rb"), file("test/support/helper.rb"), file("src/__tests__/api.test.ts")],
+        semantic: semantic_assessment.merge("safe_class" => "tests", "test_change" => "strengthens-only")
+      )
+    end
+
+    assert_equal "autonomous-merge-eligible", documentation.fetch("verdict")
+    assert_equal "documentation", documentation.fetch("safe_class")
+    assert_equal "autonomous-merge-eligible", tests.fetch("verdict")
+    assert_equal "tests", tests.fetch("safe_class")
+  end
+
+  def test_portable_safe_path_group_excludes_reject_policy_and_sensitive_documents_by_default
+    cases = {
+      "workflows/pr-processing.md" => true,
+      "skills/pr-batch/SKILL.md" => true,
+      "docs/adr/0003-smarter-autonomous-merge-gates.md" => true,
+      "AGENTS.md" => true,
+      "spec/AGENTS.md" => false,
+      "CHANGELOG.md" => false,
+      "README.md" => false,
+      "SECURITY.md" => false
+    }
+
+    cases.each do |path, policy_gated|
+      safe_class = path.end_with?(".md") && path.start_with?("spec/") ? "tests" : "documentation"
+      result = evaluate do |base_sha|
+        evidence(
+          base_sha:,
+          files: [file(path)],
+          semantic: semantic_assessment.merge("safe_class" => safe_class, "test_change" => "strengthens-only")
+        )
+      end
+
+      assert_equal "UNKNOWN", result.fetch("verdict"), path
+      assert_includes result.fetch("evidence_failures"),
+                      "safe classification #{safe_class} contradicts path evidence", path
+      next unless policy_gated
+
+      assert_includes result.fetch("triggered_gates"), "autonomous-merge-policy-change", path
+    end
+  end
+
+  def test_consumer_safe_path_groups_add_patterns_without_removing_a_portable_exclude
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        safe_path_groups:
+          documentation:
+            include:
+              - handbook/**
+              - workflows/**
+            exclude:
+              - handbook/runbooks/**
+    YAML
+    added = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("handbook/onboarding.rst")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    portable_include_survives = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("docs/usage.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    consumer_exclude = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("handbook/runbooks/restore.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    portable_exclude_survives = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("workflows/pr-processing.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    other_group_stays_portable = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("spec/service_spec.rb")],
+        semantic: semantic_assessment.merge("safe_class" => "tests", "test_change" => "strengthens-only")
+      )
+    end
+
+    assert_equal "documentation", added.fetch("safe_class")
+    assert_equal "documentation", portable_include_survives.fetch("safe_class")
+    assert_equal "UNKNOWN", consumer_exclude.fetch("verdict")
+    assert_equal "UNKNOWN", portable_exclude_survives.fetch("verdict")
+    assert_includes portable_exclude_survives.fetch("evidence_failures"),
+                    "safe classification documentation contradicts path evidence"
+    assert_equal "tests", other_group_stays_portable.fetch("safe_class")
+  end
+
   def test_missing_false_invalid_or_ambiguous_safe_classification_fails_closed
     policy_yaml = <<~YAML
       autonomous_merge:

@@ -341,43 +341,7 @@ policy.human_review_paths.each do |rule|
     path_matches << path_match
   end
 end
-builtin_policy_patterns = [
-  "AGENTS.md",
-  "**/AGENTS.md",
-  ".agents/agent-workflow.yml",
-  "workflows/pr-processing.md",
-  ".agents/workflows/pr-processing.md",
-  "skills/pr-batch/SKILL.md",
-  "skills/pr-monitoring/SKILL.md",
-  "skills/plan-pr-batch/SKILL.md",
-  "skills/triage/SKILL.md",
-  ".agents/skills/pr-batch/SKILL.md",
-  ".agents/skills/pr-monitoring/SKILL.md",
-  ".agents/skills/plan-pr-batch/SKILL.md",
-  ".agents/skills/triage/SKILL.md",
-  "bin/agent_doctor/autonomous_merge_policy.rb",
-  "bin/agent_doctor/autonomous_merge_policy_globs.rb",
-  "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
-  ".agents/bin/agent_doctor/autonomous_merge_policy.rb",
-  ".agents/bin/agent_doctor/autonomous_merge_policy_globs.rb",
-  ".agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb",
-  "skills/pr-batch/bin/autonomous-merge-eligibility",
-  "skills/pr-batch/bin/autonomous-merge-calibrate",
-  "skills/pr-batch/bin/autonomous-merge-closeout",
-  "skills/pr-batch/lib/autonomous_merge_*.rb",
-  "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json",
-  ".agents/skills/pr-batch/bin/autonomous-merge-eligibility",
-  ".agents/skills/pr-batch/bin/autonomous-merge-calibrate",
-  ".agents/skills/pr-batch/bin/autonomous-merge-closeout",
-  ".agents/skills/pr-batch/lib/autonomous_merge_*.rb",
-  ".agents/skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json",
-  "skills/pr-batch/bin/*contract-test.rb",
-  ".agents/skills/pr-batch/bin/*contract-test.rb",
-  "skills/plan-pr-batch/scripts/check_goal_prompt_size.rb",
-  ".agents/skills/plan-pr-batch/scripts/check_goal_prompt_size.rb",
-  "docs/adr/0003-smarter-autonomous-merge-gates.md"
-]
-policy_patterns = builtin_policy_patterns + policy.policy_paths
+policy_patterns = AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS + policy.policy_paths
 paths.each do |path|
   next unless policy_patterns.any? { |pattern| AutonomousMergePolicy.match?(pattern, path) }
 

@@ -87,7 +87,7 @@ module AutonomousMergePolicy
       thresholds: PORTABLE_THRESHOLDS.dup,
       human_review_paths: [],
       policy_paths: [],
-      safe_path_groups: {},
+      safe_path_groups: portable_safe_path_groups,
       generated_paths: [],
       errors: errors.flatten.compact
     )
