@@ -120,6 +120,9 @@ module BatchTokenBudget
     raw = input.read(COMMAND_MAX_BYTES + 1) || ""
     raise InvalidInput, "command-oversized" if raw.bytesize > COMMAND_MAX_BYTES
 
+    raw.force_encoding(Encoding::UTF_8)
+    raise InvalidInput, "invalid-command-encoding" unless raw.valid_encoding?
+
     parse_json_strict(raw)
   end
 
@@ -151,9 +154,8 @@ module BatchTokenBudget
   end
 
   def persisted_reservation_string?(value)
-    nonempty_string?(value) && value.encode(Encoding::UTF_8).bytesize <= PERSISTED_RESERVATION_STRING_MAX_BYTES
-  rescue EncodingError
-    false
+    value.is_a?(String) && value.valid_encoding? && !value.strip.empty? && value != "UNKNOWN" &&
+      value.bytesize <= PERSISTED_RESERVATION_STRING_MAX_BYTES
   end
 
   def positive_integer?(value)
@@ -1567,7 +1569,7 @@ module BatchTokenBudget
 
   def reserve_command(original_state, command)
     reservation = command["reservation"]
-    if reservation.is_a?(Hash) && nonempty_string?(reservation["id"])
+    if reservation.is_a?(Hash) && persisted_reservation_string?(reservation["id"])
       request_digest = digest(reservation)
       fence = original_state.dig("reservation_decisions", reservation["id"])
       if fence

@@ -892,6 +892,73 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_invalid_utf8_command_is_rejected_before_trusted_plan_or_state_access
+    with_state do |state_path|
+      directory = File.dirname(state_path)
+      trusted_plan = File.join(directory, "trusted-plan-fifo")
+      anchor = {
+        "path" => trusted_plan,
+        "id" => "batch-399",
+        "digest" => "sha256:#{'0' * 64}"
+      }
+      File.mkfifo(trusted_plan)
+      File.binwrite(state_path, "existing-state-must-remain-identical")
+      baseline = File.binread(state_path)
+      invalid_byte = "\xFF".dup.force_encoding(Encoding::UTF_8)
+      target_request = reservation(id: "INVALID_RESERVATION_ID")
+      source_request = reservation(id: "invalid-source-identity")
+      source_request["admission_kind"] = "cross-task-delegation"
+      source_request["source"] = JSON.parse(JSON.generate(source_request.fetch("target")))
+      source_request["source"]["batch_id"] = "source-batch"
+      source_request.dig("source", "work_item")["repo"] = "INVALID_SOURCE_REPO"
+      raw_commands = [
+        JSON.generate(command("reserve", "reservation" => target_request)).sub("INVALID_RESERVATION_ID", invalid_byte),
+        JSON.generate(command("reserve", "reservation" => source_request)).sub("INVALID_SOURCE_REPO", invalid_byte)
+      ]
+
+      raw_commands.each do |raw_command|
+        refute raw_command.valid_encoding?
+        denied, denied_stderr, denied_status = run_helper_raw(state_path, raw_command, anchor: anchor)
+        refute denied_status.success?
+        assert_nil denied
+        assert_equal "invalid-command-encoding", JSON.parse(denied_stderr).fetch("reason")
+        assert_equal baseline, File.binread(state_path)
+        refute File.exist?("#{state_path}.lock")
+        assert_empty Dir.glob(File.join(directory, ".#{File.basename(state_path)}.tmp-*"))
+        assert File.pipe?(trusted_plan)
+      end
+    end
+  end
+
+  def test_persisted_reservation_string_rejects_invalid_utf8_without_raising
+    load_batch_token_budget_module
+    invalid_string = "\xFF".dup.force_encoding(Encoding::UTF_8)
+
+    refute invalid_string.valid_encoding?
+    refute BatchTokenBudget.persisted_reservation_string?(invalid_string)
+  end
+
+  def test_reservation_fast_path_rejects_invalid_utf8_without_mutating_readable_state
+    with_state do |state_path|
+      initialize_budget(state_path)
+      load_batch_token_budget_module
+      original_state = JSON.parse(File.read(state_path))
+      baseline = File.binread(state_path)
+      invalid_reservation = reservation(id: "invalid-reservation-id")
+      invalid_reservation["id"] = "\xFF".dup.force_encoding(Encoding::UTF_8)
+
+      next_state, result = BatchTokenBudget.reserve_command(
+        original_state,
+        command("reserve", "reservation" => invalid_reservation)
+      )
+
+      assert_same original_state, next_state
+      assert_equal "blocked", result.fetch("status")
+      assert_equal "invalid-reservation", result.fetch("reason")
+      assert_equal baseline, File.binread(state_path)
+    end
+  end
+
   def test_reservation_task_identity_is_bounded_by_utf8_bytes_without_mutation
     with_state do |state_path|
       initialize_budget(state_path)
