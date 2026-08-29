@@ -1895,6 +1895,26 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_directory_rename_endpoints_collide_with_ancestor_touches
+    %w[old new].each do |endpoint|
+      lanes = [lane("lane-a"), lane("lane-b")]
+      ancestor = "lib/#{endpoint}"
+      maps = {
+        "lane-a" => touch_map(1, %w[lib/old/sub lib/new/sub]).merge(
+          "renames" => [{ "old" => "lib/old/sub", "new" => "lib/new/sub" }]
+        ),
+        "lane-b" => touch_map(2, [ancestor])
+      }
+
+      result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps))
+
+      refute status.success?, endpoint
+      collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+      assert_equal %w[lane-a lane-b], collision.fetch("lane_ids"), endpoint
+      assert_includes collision.fetch("message"), ancestor, endpoint
+    end
+  end
+
   def test_reserved_directory_rename_endpoints_collide_with_descendant_touches
     %w[old new].each do |endpoint|
       lanes = [lane("lane-a"), lane("lane-b")]
@@ -1912,6 +1932,36 @@ class BatchPlanPreflightTest < Minitest::Test
       collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
       assert_equal %w[lane-a lane-b], collision.fetch("lane_ids"), endpoint
       assert_includes collision.fetch("message"), descendant, endpoint
+    end
+  end
+
+  def test_reserved_directory_rename_endpoints_collide_with_ancestor_touches
+    %w[old new].each do |endpoint|
+      lanes = [lane("lane-a"), lane("lane-b")]
+      ancestor = "lib/#{endpoint}"
+      maps = {
+        "lane-a" => touch_map(1, ["lib/lane-a.rb"]),
+        "lane-b" => touch_map(2, [ancestor])
+      }
+      edges = [{ "id" => "lane-a-before-lane-b", "from" => "lane-a", "to" => "lane-b", "type" => "edit" }]
+      gate_lanes = [gate_lane("lane-a"), gate_lane("lane-b", patch_edit: false)]
+      reservation = expansion_rename_reservation(old_path: "lib/old/sub", new_path: "lib/new/sub")
+      input = input_for(
+        lanes: lanes,
+        maps: maps,
+        reservations: [reservation],
+        edges: edges,
+        gate_lanes: gate_lanes
+      )
+      input.fetch("stage_dependency_gate")["status"] = "gated"
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, endpoint
+      collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+      assert_equal %w[lane-a lane-b], collision.fetch("lane_ids"), endpoint
+      assert_includes collision.fetch("message"), "max-1 serialization", endpoint
+      assert_includes collision.fetch("message"), ancestor, endpoint
     end
   end
 

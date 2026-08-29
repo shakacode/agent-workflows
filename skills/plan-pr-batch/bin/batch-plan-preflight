@@ -1344,19 +1344,23 @@ module BatchPlanPreflight
     right_paths = right_map.fetch("paths")
     paths = left_paths & right_paths
     left_map.fetch("renames").each do |rename|
-      paths.concat(right_paths.select { |path| rename.values.any? { |endpoint| path.start_with?("#{endpoint}/") } })
+      paths.concat(right_paths.select { |path| rename.values.any? { |endpoint| paths_overlap?(path, endpoint) } })
     end
     right_map.fetch("renames").each do |rename|
-      paths.concat(left_paths.select { |path| rename.values.any? { |endpoint| path.start_with?("#{endpoint}/") } })
+      paths.concat(left_paths.select { |path| rename.values.any? { |endpoint| paths_overlap?(path, endpoint) } })
     end
     paths.uniq
+  end
+
+  def paths_overlap?(left, right)
+    left == right || left.start_with?("#{right}/") || right.start_with?("#{left}/")
   end
 
   def reservation_collides_with_path?(reservation, path)
     return reservation["path"] == path unless reservation["type"] == "expansion-rename-reservation"
 
     reservation.fetch("rename").values.any? do |endpoint|
-      path == endpoint || path.start_with?("#{endpoint}/")
+      paths_overlap?(path, endpoint)
     end
   end
 
