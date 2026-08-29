@@ -42,6 +42,28 @@ class BatchTokenBudgetTest < Minitest::Test
     refute_includes triage_skill, "`A/R/L` is aggregate/root/lane limits"
   end
 
+  def test_linux_uses_suspend_aware_boottime_and_fails_closed_without_it
+    unless defined?(BatchTokenBudget)
+      source = File.read(HELPER, encoding: "UTF-8").split("\noptions = {}\n", 2).fetch(0)
+      Dir.mktmpdir("batch-token-budget-clock-module") do |directory|
+        module_path = File.join(directory, "batch-token-budget-module.rb")
+        File.write(module_path, source)
+        load module_path
+      end
+    end
+    linux_process = Module.new
+    linux_process.const_set(:CLOCK_BOOTTIME, :boottime)
+    darwin_process = Module.new
+    darwin_process.const_set(:CLOCK_MONOTONIC, :monotonic)
+
+    assert_equal :boottime, BatchTokenBudget.suspend_aware_clock_id("x86_64-linux", linux_process)
+    assert_equal :monotonic, BatchTokenBudget.suspend_aware_clock_id("arm64-darwin", darwin_process)
+    error = assert_raises(BatchTokenBudget::InvalidInput) do
+      BatchTokenBudget.suspend_aware_clock_id("x86_64-linux", Module.new)
+    end
+    assert_equal "trusted-clock-unavailable", error.message
+  end
+
   def budget(state_path: nil)
     parsed = JSON.parse(File.read(FIXTURE))
     parsed["state_path"] = state_path if state_path
@@ -212,12 +234,14 @@ class BatchTokenBudgetTest < Minitest::Test
   end
 
   def closeout_in_memory(state, evaluated_at)
-    source = File.read(HELPER, encoding: "UTF-8")
-    module_source = source.split("\noptions = {}\n", 2).fetch(0)
-    Dir.mktmpdir("batch-token-budget-module") do |directory|
-      module_path = File.join(directory, "batch-token-budget-module.rb")
-      File.write(module_path, module_source)
-      load module_path
+    unless defined?(BatchTokenBudget)
+      source = File.read(HELPER, encoding: "UTF-8")
+      module_source = source.split("\noptions = {}\n", 2).fetch(0)
+      Dir.mktmpdir("batch-token-budget-module") do |directory|
+        module_path = File.join(directory, "batch-token-budget-module.rb")
+        File.write(module_path, module_source)
+        load module_path
+      end
     end
     BatchTokenBudget.closeout_command(state, evaluated_at).last
   end
@@ -2797,7 +2821,7 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
-  def test_multiple_usage_windows_measure_cumulative_tokens_and_each_overshoot_boundary
+  def test_an_overshoot_envelope_can_be_consumed_only_once
     with_state do |state_path|
       initialize_budget(state_path)
       reserve(state_path, id: "multi-window", lane_id: "lane-a", tokens: 100)
@@ -2844,7 +2868,9 @@ class BatchTokenBudgetTest < Minitest::Test
         )
       )
       assert second_status.success?, second_stderr
-      assert_equal 130, second.dig("totals", "aggregate", "consumed_tokens")
+      assert_equal "blocked", second.fetch("status")
+      assert_equal "overshoot-evidence-unsupported", second.fetch("reason")
+      assert_equal 110, second.dig("totals", "aggregate", "consumed_tokens")
       assert_equal 0, second.dig("totals", "aggregate", "reserved_tokens")
 
       closeout, closeout_stderr, closeout_status = run_helper(
@@ -2852,10 +2878,10 @@ class BatchTokenBudgetTest < Minitest::Test
         command("closeout", "evaluated_at" => "2026-08-12T12:02:00Z")
       )
       assert closeout_status.success?, closeout_stderr
-      assert_equal "complete", closeout.fetch("status")
-      assert_equal 30, closeout.dig("overshoot", "tokens")
-      assert_equal 2, closeout.dig("overshoot", "turn_count")
-      assert_equal({ "lane-a" => 30 }, closeout.dig("overshoot", "by_scope"))
+      assert_equal "not-complete", closeout.fetch("status")
+      assert_equal 10, closeout.dig("overshoot", "tokens")
+      assert_equal 1, closeout.dig("overshoot", "turn_count")
+      assert_equal({ "lane-a" => 10 }, closeout.dig("overshoot", "by_scope"))
     end
   end
 
@@ -4116,6 +4142,27 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal 260, admitted.dig("totals", "aggregate", "reserved_tokens")
       assert_equal %w[other-task retained-child retained-grandchild],
                    admitted.dig("receipt", "overshoot_envelope", "target_ids")
+      assert_equal 3, admitted.dig("receipt", "overshoot_envelope", "max_in_flight_turns")
+
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      fanout_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 300, "lane-b" => 0 },
+        lane_turns: { "lane-a" => 3, "lane-b" => 0 }
+      )
+      reconciled, reconcile_stderr, reconcile_status = reconcile_receipt(
+        state_path,
+        fanout_receipt,
+        "cross-task-retained-fanout",
+        completed_reservation_ids: ["cross-task-1-authorized"]
+      )
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      assert_equal 40, reconciled.fetch("receipts").first.fetch("overshoot_tokens")
+      assert_equal 3, reconciled.fetch("receipts").first.fetch("overshoot_turn_count")
     end
   end
 
@@ -4482,6 +4529,20 @@ class BatchTokenBudgetTest < Minitest::Test
       )
       assert reconciled_status.success?, reconciled_stderr
       assert_equal "reconciled", reconciled.fetch("status")
+      persisted_stop = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.find do |decision|
+        decision["reservation_id"] == "lane-hard-overshoot"
+      end
+      assert_equal "budget-exhausted", persisted_stop.fetch("status")
+      assert_equal "actual-hard-threshold", persisted_stop.fetch("reason")
+
+      next_turn, next_stderr, next_status = reserve(
+        state_path,
+        id: "lane-hard-next-turn",
+        tokens: 1
+      )
+      assert next_status.success?, next_stderr
+      assert_equal "budget-exhausted", next_turn.fetch("status")
+      assert_equal "persisted-hard-stop", next_turn.fetch("reason")
 
       closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
       assert closeout_status.success?, closeout_stderr
@@ -4489,6 +4550,56 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "NOT COMPLETE", closeout.fetch("completion")
       assert_equal 650, closeout.dig("totals", "lanes", "lane-a", "consumed_tokens")
       assert_equal 650, closeout.dig("totals", "aggregate", "consumed_tokens")
+    end
+  end
+
+  def test_reconciled_actual_usage_persists_warning_and_approval_threshold_state
+    {
+      "warning" => { "tokens" => 300, "next_status" => "admitted-with-warning" },
+      "approval" => { "tokens" => 480, "next_status" => "approval-required" }
+    }.each do |threshold, expectations|
+      with_state do |state_path|
+        initialize_budget(state_path)
+        reserve(state_path, id: "actual-#{threshold}", tokens: 100)
+        base_receipt, = real_descendants_usage_receipt(state_path)
+        receipt = usage_window(
+          base_receipt,
+          from: "2026-08-12T11:00:00Z",
+          to: "2026-08-12T12:00:00Z",
+          coordinator_tokens: 0,
+          lane_tokens: { "lane-a" => expectations.fetch("tokens"), "lane-b" => 0 }
+        )
+        reconciled, stderr, status = reconcile_receipt(
+          state_path,
+          receipt,
+          "actual-#{threshold}",
+          completed_reservation_ids: ["actual-#{threshold}"]
+        )
+        assert status.success?, stderr
+        assert_equal "reconciled", reconciled.fetch("status")
+
+        saved = JSON.parse(File.read(state_path))
+        if threshold == "warning"
+          checkpoint = saved.fetch("checkpoints").find { |item| item["id"].start_with?("actual-threshold-") }
+          assert_equal "warning", checkpoint.fetch("status")
+          assert_equal "2026-08-12T12:00:00Z", checkpoint.fetch("receipt_cutoff")
+        else
+          stop = saved.fetch("admission_decisions").values.find do |decision|
+            decision["reservation_id"] == "actual-approval"
+          end
+          assert_equal "approval-required", stop.fetch("status")
+          assert_equal "actual-approval-threshold", stop.fetch("reason")
+        end
+
+        next_turn, next_stderr, next_status = reserve(
+          state_path,
+          id: "after-actual-#{threshold}",
+          tokens: 1
+        )
+        assert next_status.success?, next_stderr
+        assert_equal expectations.fetch("next_status"), next_turn.fetch("status")
+        assert_equal "persisted-approval-stop", next_turn.fetch("reason") if threshold == "approval"
+      end
     end
   end
 
@@ -4518,7 +4629,7 @@ class BatchTokenBudgetTest < Minitest::Test
           "ownership" => "held",
           "merge" => "not-authorized"
         },
-        "receipt_cutoff" => "runtime-sequence:42",
+        "receipt_cutoff" => "2026-08-12T11:00:00Z",
         "resume_conditions" => ["Apply scoped budget increase", "Rerun exact-head gates"],
         "resume_action" => "Resume batch-399 from checkpoint-hard-1 after scoped approval."
       }
@@ -4532,6 +4643,18 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "NOT COMPLETE", saved.dig("checkpoint", "completion")
       assert_equal "a" * 40, saved.dig("checkpoint", "head_sha")
       assert_equal checkpoint.fetch("gates"), saved.dig("checkpoint", "gates")
+
+      fabricated = JSON.parse(JSON.generate(checkpoint)).merge(
+        "id" => "checkpoint-hard-fabricated",
+        "receipt_cutoff" => "2026-08-12T11:00:01Z"
+      )
+      rejected, rejected_stderr, rejected_status = run_helper(
+        state_path,
+        command("checkpoint", "checkpoint" => fabricated)
+      )
+      refute rejected_status.success?
+      assert_nil rejected
+      assert_equal "invalid-checkpoint", JSON.parse(rejected_stderr).fetch("reason")
 
       closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
       assert closeout_status.success?, closeout_stderr

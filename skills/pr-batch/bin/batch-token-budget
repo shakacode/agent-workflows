@@ -1079,6 +1079,24 @@ module BatchTokenBudget
     ((trusted_time.to_datetime - DateTime.iso8601(timestamp)) * 86_400) > MAX_COMMAND_TIME_SKEW_SECONDS
   end
 
+  def suspend_aware_clock_id(platform = RUBY_PLATFORM, process = Process)
+    if platform.include?("linux")
+      raise InvalidInput, "trusted-clock-unavailable" unless process.const_defined?(:CLOCK_BOOTTIME)
+
+      process.const_get(:CLOCK_BOOTTIME)
+    else
+      process.const_get(:CLOCK_MONOTONIC)
+    end
+  rescue NameError
+    raise InvalidInput, "trusted-clock-unavailable"
+  end
+
+  def suspend_aware_clock_gettime(clock_id)
+    Process.clock_gettime(clock_id)
+  rescue SystemCallError, ArgumentError
+    raise InvalidInput, "trusted-clock-unavailable"
+  end
+
   def valid_telemetry?(telemetry, reservation, evaluated_at, max_age_seconds)
     expected_keys = %w[
       context_status descendant_estimate_tokens descendant_target_ids observed_at self_estimate_tokens status
@@ -1147,6 +1165,16 @@ module BatchTokenBudget
     "ok"
   end
 
+  def actual_threshold_state(scope_record, thresholds)
+    consumed = scope_record.fetch("consumed_tokens")
+    limit = scope_record.fetch("limit_tokens")
+    return "hard" if consumed * 100 >= limit * thresholds.fetch("hard_percent")
+    return "approval" if consumed * 100 >= limit * thresholds.fetch("approval_percent")
+    return "warning" if consumed * 100 >= limit * thresholds.fetch("warning_percent")
+
+    "ok"
+  end
+
   def strongest_threshold(*states)
     states.max_by { |state| %w[ok warning approval hard].index(state) }
   end
@@ -1205,7 +1233,10 @@ module BatchTokenBudget
     end
   end
 
-  def persist_admission_decision(original_state, reservation, command, status, reason, allowed_actions, blocking_scope_ids)
+  def persist_admission_decision(
+    original_state, reservation, command, status, reason, allowed_actions, blocking_scope_ids,
+    telemetry_cutoff: reservation.dig("telemetry", "observed_at")
+  )
     decision_digest = digest(reservation)
     existing = original_state.dig("admission_decisions", decision_digest)
     if existing && existing["budget_digest"] == original_state["budget_digest"]
@@ -1228,7 +1259,7 @@ module BatchTokenBudget
       "status" => status,
       "reason" => reason,
       "cutoff" => command.fetch("evaluated_at"),
-      "telemetry_cutoff" => reservation.dig("telemetry", "observed_at")
+      "telemetry_cutoff" => telemetry_cutoff
     )
     state["admission_decisions"][decision_digest] = {
       "reservation_id" => reservation.fetch("id"),
@@ -1256,6 +1287,69 @@ module BatchTokenBudget
       fields["resume_conditions"] = %w[scoped-budget-increase durable-resume-decision-with-headroom]
     end
     persist_reservation_decision(state, reservation, command.fetch("evaluated_at"), status, fields)
+  end
+
+  def persist_reconciled_threshold(state, active, evaluated_at, receipt_cutoff)
+    reservation = active.fetch("request")
+    scope_id = reservation.fetch("scope_id")
+    thresholds = state.dig("budget", "thresholds")
+    scope_state = actual_threshold_state(scope_totals(state, scope_id), thresholds)
+    aggregate_state = actual_threshold_state(state.dig("scopes", "aggregate"), thresholds)
+    state_name = strongest_threshold(scope_state, aggregate_state)
+    return state if state_name == "ok"
+
+    if state_name == "warning"
+      checkpoint_id = "actual-threshold-#{digest([reservation.fetch('id'), 'warning'])[0, 20]}"
+      return state if state.fetch("checkpoints").any? { |checkpoint| checkpoint["id"] == checkpoint_id }
+
+      threshold_receipt = append_receipt(
+        state,
+        "batch-token-budget-threshold-receipt",
+        "reservation_id" => reservation.fetch("id"),
+        "scope_id" => scope_id,
+        "status" => "warning",
+        "reason" => "actual-warning-threshold",
+        "cutoff" => evaluated_at,
+        "telemetry_cutoff" => receipt_cutoff
+      )
+      checkpoint = {
+        "type" => "batch-token-budget-threshold-checkpoint",
+        "version" => 1,
+        "id" => checkpoint_id,
+        "batch_id" => state.fetch("batch_id"),
+        "scope_id" => scope_id,
+        "status" => "warning",
+        "cutoff" => evaluated_at,
+        "receipt_cutoff" => receipt_cutoff,
+        "threshold_receipt" => threshold_receipt,
+        "totals" => totals(state)
+      }
+      state["checkpoints"] << checkpoint
+      append_receipt(state, "batch-token-budget-checkpoint-receipt", "checkpoint" => checkpoint)
+      return state
+    end
+
+    status = state_name == "hard" ? "budget-exhausted" : "approval-required"
+    scope_ids = [
+      (scope_id if scope_state == state_name),
+      ("aggregate" if aggregate_state == state_name)
+    ].compact
+    allowed_actions = if status == "budget-exhausted"
+                        %w[read-only-discovery checkpoint override closeout]
+                      else
+                        %w[read-only-discovery checkpoint approve]
+                      end
+    next_state, = persist_admission_decision(
+      state,
+      reservation,
+      { "evaluated_at" => evaluated_at },
+      status,
+      "actual-#{state_name}-threshold",
+      allowed_actions,
+      scope_ids,
+      telemetry_cutoff: receipt_cutoff
+    )
+    next_state
   end
 
   def persist_reservation_decision(original_state, reservation, evaluated_at, status, fields)
@@ -1446,17 +1540,6 @@ module BatchTokenBudget
         "allowed_actions" => %w[read-only-discovery checkpoint approve]
       )
     end
-    if reservation["target_state"] == "active" || active_scope_reservation
-      same_target = active_scope_reservation&.dig("request", "target") == reservation["target"]
-      return persist_reservation_decision(
-        original_state,
-        reservation,
-        command.fetch("evaluated_at"),
-        "coalesced",
-        "reason" => active_scope_reservation && !same_target ? "scope-already-active" : "target-already-active",
-        "coalesced_reservation_id" => active_scope_reservation&.dig("request", "id")
-      )
-    end
     approval_id = reservation["approval_id"]
     approval = approval_id && original_state.dig("approvals", approval_id)
     valid_approval = approval && ["aggregate", reservation["scope_id"]].include?(approval["scope_id"]) &&
@@ -1494,6 +1577,18 @@ module BatchTokenBudget
       end
       return persist_reservation_decision(
         original_state, reservation, command.fetch("evaluated_at"), unresolved_prior_stop.fetch("status"), fields
+      )
+    end
+
+    if reservation["target_state"] == "active" || active_scope_reservation
+      same_target = active_scope_reservation&.dig("request", "target") == reservation["target"]
+      return persist_reservation_decision(
+        original_state,
+        reservation,
+        command.fetch("evaluated_at"),
+        "coalesced",
+        "reason" => active_scope_reservation && !same_target ? "scope-already-active" : "target-already-active",
+        "coalesced_reservation_id" => active_scope_reservation&.dig("request", "id")
       )
     end
 
@@ -1579,8 +1674,10 @@ module BatchTokenBudget
       "target_id" => reservation.dig("target", "task_id"),
       "threshold_state" => state_name,
       "overshoot_envelope" => {
-        "max_in_flight_turns" => 1,
-        "target_ids" => [reservation.dig("target", "task_id")] + reservation.dig("telemetry", "descendant_target_ids")
+        "max_in_flight_turns" => ([reservation.dig("target", "task_id")] +
+                                  reservation.dig("telemetry", "descendant_target_ids")).uniq.length,
+        "target_ids" => ([reservation.dig("target", "task_id")] +
+                         reservation.dig("telemetry", "descendant_target_ids")).uniq
       }
     )
     state["reservations"][reservation_id] = {
@@ -1916,7 +2013,9 @@ module BatchTokenBudget
     current_approval_stop = state.fetch("admission_decisions").values.any? do |decision|
       decision["status"] == "approval-required" && decision["resolved_by_reservation_id"].nil?
     end
-    reconciliations = state.fetch("reservations").values.filter_map { |record| record["reconciliation_receipt"] }
+    reconciliations = state.fetch("reservations").values.filter_map do |record|
+      Array(record["reconciliation_receipts"]).last || record["reconciliation_receipt"]
+    end
     overshoot_boundaries = state.fetch("reservations").values.flat_map do |record|
       record["reconciliation_receipts"] || [record["reconciliation_receipt"]].compact
     end
@@ -1969,7 +2068,10 @@ module BatchTokenBudget
     gates = checkpoint["gates"]
     return false unless gates.is_a?(Hash) && gates.keys.sort == PRESERVED_GATES.sort &&
                         gates.values.all? { |value| nonempty_string?(value) }
-    return false unless nonempty_string?(checkpoint["receipt_cutoff"])
+
+    authoritative_cutoff = state["usage_cursor"] || state.fetch("usage_initial_cutoff")
+    return false unless timestamp?(checkpoint["receipt_cutoff"]) &&
+                        DateTime.iso8601(checkpoint["receipt_cutoff"]) == DateTime.iso8601(authoritative_cutoff)
     return false unless checkpoint["resume_conditions"].is_a?(Array) && !checkpoint["resume_conditions"].empty? &&
                         checkpoint["resume_conditions"].all? { |condition| nonempty_string?(condition) }
 
@@ -2601,8 +2703,16 @@ module BatchTokenBudget
       prior_remaining = active.fetch("remaining_tokens", active.fetch("reserved_tokens"))
       next false unless interval_tokens > prior_remaining
 
-      active.dig("receipt", "overshoot_envelope", "max_in_flight_turns") != 1 ||
-        projection.dig("scope_turns", scope_id) != 1
+      envelope = active.dig("receipt", "overshoot_envelope")
+      target_ids = envelope.fetch("target_ids")
+      max_in_flight_turns = envelope.fetch("max_in_flight_turns")
+      prior_overshoot = Array(active["reconciliation_receipts"]).any? do |receipt|
+        receipt.fetch("overshoot_tokens").positive?
+      end
+      contributing_turns = projection.dig("scope_turns", scope_id)
+      max_in_flight_turns != target_ids.uniq.length ||
+        !positive_integer?(contributing_turns) || contributing_turns > max_in_flight_turns ||
+        prior_overshoot
     end
     return blocked_usage_result(original_state, "overshoot-evidence-unsupported") if unsupported_overshoot
 
@@ -2682,6 +2792,17 @@ module BatchTokenBudget
       else
         state["reservations"][reservation_id]["remaining_tokens"] = remaining_tokens
       end
+    end
+
+    active_reservations.each do |active|
+      next unless reservation_tokens.key?(active.dig("request", "id"))
+
+      state = persist_reconciled_threshold(
+        state,
+        active,
+        command.fetch("evaluated_at"),
+        projection.fetch("to_exclusive")
+      )
     end
 
     completed_scope_ids = completed_ids.map do |reservation_id|
@@ -2930,10 +3051,11 @@ rescue JSON::ParserError
   warn JSON.generate("type" => "batch-token-budget-error", "version" => 1, "status" => "invalid-input", "reason" => "malformed-json")
   exit 1
 end
-trusted_monotonic_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-trusted_host_time = Time.now.utc
 
 begin
+  trusted_elapsed_clock = BatchTokenBudget.suspend_aware_clock_id
+  trusted_elapsed_time = BatchTokenBudget.suspend_aware_clock_gettime(trusted_elapsed_clock)
+  trusted_host_time = Time.now.utc
   trusted_budget = BatchTokenBudget.load_trusted_plan(
     options.fetch(:trusted_plan_path),
     options.fetch(:trusted_plan_id),
@@ -2979,7 +3101,8 @@ begin
   FileUtils.mkdir_p(File.dirname(state_path))
   BatchTokenBudget.with_state_lock("#{state_path}.lock") do |_lock|
     post_lock_trusted_time = trusted_host_time +
-                             (Process.clock_gettime(Process::CLOCK_MONOTONIC) - trusted_monotonic_time)
+                             (BatchTokenBudget.suspend_aware_clock_gettime(trusted_elapsed_clock) -
+                              trusted_elapsed_time)
     if BatchTokenBudget.timestamp_future_of?(command.fetch("evaluated_at"), post_lock_trusted_time)
       raise BatchTokenBudget::InvalidInput, "command-time-future"
     end

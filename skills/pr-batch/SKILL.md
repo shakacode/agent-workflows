@@ -577,7 +577,11 @@ future evidence, and unknown relevant totals or topology. Route-only and
 non-total-counter `UNKNOWN` may pass only while raw total-token accounting stays
 known and balanced. Each window shifts observed tokens from reserved to
 consumed, completed reservations release remaining headroom, and unreserved
-observed use becomes unattributed and blocks closeout. Never use worker
+observed use becomes unattributed and blocks closeout. One overshoot boundary may contain at most
+one verified already-running turn for each deduplicated admitted target and
+retained descendant; zero, over-envelope, or repeated overshoot evidence fails
+closed. Reconciliation persists warning/approval/hard state from actual use
+before another coalesced or newly reserved turn can start. Never use worker
 self-attestation as authoritative. Cross-task causal charge-back includes
 target self plus descendant use without incrementing a physical aggregate
 twice and retains an exact one-to-one reverse link to its reconciled

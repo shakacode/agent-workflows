@@ -869,6 +869,11 @@ widen the narrow route-only top-level `UNKNOWN` exception. Each accepted window
 shifts observed use from reserved to consumed;
 completed reservations release their remaining headroom. Observed use without
 an active scope reservation is unattributed and blocks clean closeout.
+One overshoot boundary may contain at most one verified already-running turn
+for each deduplicated admitted target and retained descendant; zero,
+over-envelope, or repeated overshoot evidence fails closed. Reconciliation
+persists warning/approval/hard state from actual use before another coalesced
+or newly reserved turn can start.
 Cross-task charge-back records source causality for actual target self plus
 descendant use without incrementing physical aggregate totals twice. It retains
 an exact bidirectional link to the matching reconciled reservation.

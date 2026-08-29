@@ -132,9 +132,11 @@ back to make an expired approval or stale receipt appear current. Each helper
 invocation captures a monotonic baseline immediately before trusted host wall
 time, captured once, and accepts `evaluated_at` only
 within 30 seconds before or after that clock, inclusively. After acquiring the
-state lock, it revalidates against that capture advanced by monotonic elapsed
-time from the earlier baseline, conservatively including suspension between the
-two captures, before expiration, evaluation, or persistence. An older command
+state lock, it revalidates against that capture advanced by suspend-aware elapsed
+time from the earlier baseline (`CLOCK_BOOTTIME` on Linux and the platform
+monotonic clock elsewhere). Linux fails closed if the suspend-aware clock is
+unavailable. This includes suspension between the two captures before expiration,
+evaluation, or persistence. An older command
 fails as `command-time-stale`; a newer command fails as `command-time-future`.
 Initial validation rejects an already-out-of-window fresh initialization before
 its state directory or lock can be created. Both the initial and post-lock checks
@@ -255,13 +257,16 @@ Each accounting scope has at most one active reservation. Same-scope nested
 work coalesces into that reservation while different lanes may run
 concurrently. Every accepted window atomically shifts the scope's observed
 tokens from reserved to consumed; a completed reservation releases its unused
-remainder. Token-budget version 1 admits an overshooting window only when the persisted
-reservation envelope is exactly `max_in_flight_turns: 1` and that scope's
-verified receipt count is exactly one contributing turn. A zero, `UNKNOWN`, or
-multiple-turn count, or any wider envelope, blocks without mutation; the helper
-never synthesizes one from token samples. Observed use in a scope with no active
+remainder. Token-budget version 1 admits one overshooting window only when its
+verified contributing-turn count is positive and no greater than the persisted
+deduplicated target-plus-retained-descendant envelope. Each admitted target can
+contribute at most one already-running turn to that boundary. A zero, `UNKNOWN`,
+over-envelope, or second overshoot window blocks without mutation; the helper
+never synthesizes turn evidence from token samples. Observed use in a scope with no active
 reservation is still counted, marked unattributed, and blocks clean closeout
-rather than being assigned to a target without evidence.
+rather than being assigned to a target without evidence. Reconciliation also
+persists warning checkpoints and approval/hard stops from actual consumed use;
+those stops are consulted before an active-target coalescing decision.
 
 Cross-task reconciliation can include a `batch-token-charge-back v1` source and
 target identity. The resulting causal attribution reports actual self plus
