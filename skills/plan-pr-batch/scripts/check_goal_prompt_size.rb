@@ -100,6 +100,11 @@ MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
                                   "UNKNOWN=field;no guesses"
 TOKEN_BUDGET_PROMPT_LINE = "Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop"
+TOKEN_BUDGET_PROMPT_LEGEND_LINE =
+  "For v1, A/R/L=aggregate/coordinator/lane limits, " \
+  "W/P/H=warning/approval-or-pause/hard-stop thresholds, " \
+  "a/d=freshness age/delegation threshold, and " \
+  "S/T/I/D=state path/trusted-plan path/id/digest."
 MANIFEST_WHOLE_COORDINATOR_PREFERENCE_UNKNOWN_FRAGMENT =
   "coordinator_preference=<model/effort|UNKNOWN>"
 BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
@@ -577,6 +582,56 @@ def assert_goal_prompt_heading_is_line_anchored
   abort_with_failure("goal prompt extractor must ignore headings quoted outside a real heading line")
 end
 
+def token_budget_legend_contract_errors(source_text, prompt_template)
+  errors = []
+  legend_count = source_text.scan(TOKEN_BUDGET_PROMPT_LEGEND_LINE).length
+  errors << "legend occurrence count is #{legend_count}, expected 1" unless legend_count == 1
+
+  adjacent_legend = "#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n\n#{TEXT_FENCE}"
+  errors << "legend is not immediately before the generated prompt" unless source_text.include?(adjacent_legend)
+  errors << "legend is inside the generated prompt" if prompt_template.include?(TOKEN_BUDGET_PROMPT_LEGEND_LINE)
+  errors
+end
+
+def assert_token_budget_legend_contract(source_text, prompt_template, label)
+  errors = token_budget_legend_contract_errors(source_text, prompt_template)
+  return if errors.empty?
+
+  abort_with_failure("#{label} token budget legend contract failed: #{errors.join('; ')}")
+end
+
+def assert_token_budget_legend_tamper_controls
+  valid_source = <<~MARKDOWN
+    #{TOKEN_BUDGET_PROMPT_LEGEND_LINE}
+
+    ```text
+    #{TOKEN_BUDGET_PROMPT_LINE}
+    #{WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE}
+    ```
+  MARKDOWN
+  valid_prompt = extract_first_text_fence_body(valid_source, "token budget legend fixture")
+  unless token_budget_legend_contract_errors(valid_source, valid_prompt).empty?
+    abort_with_failure("token budget legend baseline fixture must pass")
+  end
+
+  missing_source = valid_source.sub("#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n\n", "")
+  missing_prompt = extract_first_text_fence_body(missing_source, "missing token budget legend fixture")
+  missing_errors = token_budget_legend_contract_errors(missing_source, missing_prompt)
+  unless missing_errors.any? { |error| error.include?("occurrence count is 0") }
+    abort_with_failure("token budget legend missing-content tamper must fail")
+  end
+
+  inside_source = valid_source.sub(
+    "#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n\n#{TEXT_FENCE}",
+    "#{TEXT_FENCE}#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n"
+  )
+  inside_prompt = extract_first_text_fence_body(inside_source, "inside-prompt token budget legend fixture")
+  inside_errors = token_budget_legend_contract_errors(inside_source, inside_prompt)
+  return if inside_errors.include?("legend is inside the generated prompt")
+
+  abort_with_failure("token budget legend inside-prompt tamper must fail")
+end
+
 def with_items(prompt_template, items)
   updated_prompt = prompt_template.sub(/Items:\n.*?\nExecution rules:/m) do
     "Items:\n#{items}\nExecution rules:"
@@ -650,6 +705,7 @@ abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(ski
 
 skill_text = File.read(skill_path, encoding: "UTF-8")
 assert_goal_prompt_heading_is_line_anchored
+assert_token_budget_legend_tamper_controls
 workflow_text = read_repo_file("workflows/pr-processing.md")
 pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill_text = read_repo_file("skills/triage/SKILL.md")
@@ -668,6 +724,13 @@ workflow_prompt_template = extract_first_text_fence_body(
   workflow_goal_section,
   "canonical workflow plan-to-goal prompt"
 )
+{
+  "skills/plan-pr-batch/SKILL.md" => [skill_text, prompt_template],
+  "skills/pr-batch/SKILL.md" => [pr_batch_skill_text, pr_batch_prompt_template],
+  "workflows/pr-processing.md" => [workflow_text, workflow_prompt_template]
+}.each do |path, (source_text, generated_prompt)|
+  assert_token_budget_legend_contract(source_text, generated_prompt, path)
+end
 enforce_restart_docs_drift = ENV[SOURCE_CHECKOUT_ENV] == "1"
 pr_batch_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/pr-batch-skills.md") : nil
 context_text = enforce_restart_docs_drift ? read_optional_repo_file("CONTEXT.md") : nil
