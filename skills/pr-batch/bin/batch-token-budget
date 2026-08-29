@@ -2155,6 +2155,7 @@ module BatchTokenBudget
     required = %w[first_session_ids physical_rollout_ids status]
     return false unless exact_object_keys?(value, required, ["first_session_id"])
     return false unless %w[complete UNKNOWN].include?(value["status"])
+
     first_session_ids = value["first_session_ids"]
     physical_rollout_ids = value["physical_rollout_ids"]
     return false unless first_session_ids.is_a?(Array) &&
