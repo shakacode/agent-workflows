@@ -552,7 +552,7 @@ class PrCiReadinessTest < Minitest::Test
       "version" => 1,
       "optional_approval_held_checks" => rows.map do |row|
         {
-          "id" => "rule-#{row.fetch("id")}",
+          "id" => "rule-#{row.fetch('id')}",
           "app_slug" => row.fetch("app_slug"),
           "name" => row.fetch("name")
         }
