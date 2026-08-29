@@ -651,6 +651,59 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                  Digest::SHA256.hexdigest(marker)
   end
 
+  def test_append_only_telemetry_and_liveness_decay_do_not_invalidate_coordination_status
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    # The live backend has since recorded unrelated lifecycle events, and the
+    # terminal lanes' heartbeat-derived liveness has decayed. Neither is a fact
+    # the audit asserts, so publication must stay eligible.
+    drifted = Marshal.load(Marshal.dump(input.fetch("coordination_status")))
+    drifted["events"] = [{ "type" => "claim.acquired", "agent_id" => "other-lane-worker" }]
+    drifted["heartbeats"] = [{ "agent_id" => "other-lane-worker", "status" => "in_progress" }]
+    drifted.fetch("batches").each do |batch|
+      batch.fetch("lanes").each { |lane| lane["liveness"] = "stale" }
+    end
+    verifier = lambda do |backend:, batch_id:|
+      next unless backend == BACKEND && batch_id == input.fetch("batch_id")
+
+      drifted
+    end
+
+    result = assess_input(input, coordination_verifier: verifier)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_empty result.fetch("blockers")
+  end
+
+  def test_terminal_fact_regression_still_blocks_and_names_the_drifted_component
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    regressed = Marshal.load(Marshal.dump(input.fetch("coordination_status")))
+    regressed.fetch("batches").each do |batch|
+      batch.fetch("lanes").each { |lane| lane["terminal"] = "abandoned" }
+    end
+    verifier = lambda do |backend:, batch_id:|
+      next unless backend == BACKEND && batch_id == input.fetch("batch_id")
+
+      regressed
+    end
+
+    result = assess_input(input, coordination_verifier: verifier)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "coordination status is not authenticated or fresh"
+    assert_includes result.fetch("blockers"), "coordination status drift: batches"
+  end
+
+  def test_unavailable_coordination_status_is_reported_as_drift
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    verifier = ->(backend:, batch_id:) { nil } # rubocop:disable Lint/UnusedBlockArgument
+
+    result = assess_input(input, coordination_verifier: verifier)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "coordination status is not authenticated or fresh"
+    assert_includes result.fetch("blockers"), "coordination status drift: coordination status is unavailable"
+  end
+
   def test_four_terminal_reconciled_lanes_pass_with_exact_head_dispositions
     result = assess_input(fixture("completed-batch-publication-hichee-terminal.json"))
 
