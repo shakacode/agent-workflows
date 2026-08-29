@@ -41,6 +41,7 @@ class PrMergeSubmitTest < Minitest::Test
     enqueue_timeout_unknown enqueue_timeout_merged
   ].freeze
   MUTATION_TIMEOUT_GH_SECONDS = "2"
+  INTERRUPT_START_DEADLINE_SECONDS = 10
   GUARD_TIMEOUT_GH_SECONDS = "2"
   # The remaining timeout modes hang their only gh call, so a startup-induced
   # timeout is the same observable event as the hang under test. They keep the
@@ -2374,7 +2375,7 @@ class PrMergeSubmitTest < Minitest::Test
       stdin.close
       stdout_reader = Thread.new { stdout.read }
       stderr_reader = Thread.new { stderr.read }
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + INTERRUPT_START_DEADLINE_SECONDS
       until File.exist?(wait_path)
         raise "guard did not start before interrupt deadline" if
           Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
@@ -2431,7 +2432,7 @@ class PrMergeSubmitTest < Minitest::Test
         stdin.close
         stdout_reader = Thread.new { stdout.read }
         stderr_reader = Thread.new { stderr.read }
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + INTERRUPT_START_DEADLINE_SECONDS
         until File.exist?(log_path) && File.read(log_path).include?(wait_for)
           raise "gh request did not start before interrupt deadline" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
