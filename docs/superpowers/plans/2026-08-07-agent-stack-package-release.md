@@ -1782,17 +1782,16 @@ mutating job—including `stage-draft`, `expose-draft`, and every
 `open-closeout-pr` mode—re-fetches current `main` and rejects either terminal
 namespace under its acquired lock immediately before invoking its mutator.
 
-One narrowly scoped exception keeps a staged draft from stranding a candidate. A
-serialized `cleanup-unexposed-draft` mode may operate while the closeout
-namespace exists, but only while that namespace is still an unaccepted
-candidate. Under the same canonical lock key it re-fetches current `main`,
-requires a merged candidate closeout with no accepted terminal verdict, requires
-the evaluated tag to have no public release, and then deletes only the
-exporter-owned unexposed draft and its uploaded assets, recording the exact
-deleted release and asset identities as the authorized cleanup evidence the
-finalizer requires. It never publishes, never exposes a draft, never writes or
-accepts a terminal verdict, and rejects an accepted terminal namespace exactly
-like every other mutator. The finalizer is rerun after it completes.
+This plan defines no automated cleanup mutator, and the mode list above stays
+closed. A staged-but-unexposed draft that survives into a merged negative
+closeout is therefore an explicit maintainer-handled blocker: the finalizer
+refuses terminal acceptance while it exists, and removing it is an out-of-band
+maintainer action outside this automation, performed with the maintainer's own
+credentials and recorded in the closeout thread. Automating that deletion would
+require adding a destructive mode to the reviewed `agent-release-mutator`
+contract with its own schema, provenance binding, permissions, and durable
+evidence path; that is deliberately deferred to a separately reviewed change
+rather than assumed here.
 
 In each authorization, preparation, publication, and pre-merge denial or
 threshold-failure opener workflow, a first read-only identity job downloads and
@@ -1815,19 +1814,17 @@ evidence PR remains a candidate rather than an accepted terminal verdict until
 that serialized finalizer revalidates current `main`, the no-public-release
 condition, and the absence of any draft release or uploaded asset for the
 evaluated tag. A staged but unexposed draft is not a public release, so the
-finalizer queries the tag's release and asset state directly and requires either
-that no exporter-owned draft or asset exists or the recorded
-`cleanup-unexposed-draft` evidence that removed it; a surviving draft blocks
-terminal acceptance until that serialized cleanup mode runs, rather than being
-stranded by a namespace that would otherwise reject every later mutator.
+finalizer queries the tag's release and asset state directly and requires that no
+exporter-owned draft or asset exists. A surviving draft holds the closeout as an
+unaccepted candidate and blocks terminal acceptance until a maintainer removes it
+out of band as described above; the finalizer is rerun afterward.
 A terminal-candidate closeout merged after authorization capture therefore
 either invalidates the authorization before staging/exposure or waits for
 publication and is rejected by the finalizer after exposure. Tests cover
 forged identity inputs, cross-workflow serialization, finalizer/check/toggle
 interleavings, terminal acceptance between preparation and `stage-draft`, a
-staged-but-unexposed draft or orphaned asset at the finalizer boundary,
-`cleanup-unexposed-draft` against an already-accepted terminal namespace and
-against a tag with a public release, and
+staged-but-unexposed draft or orphaned asset holding the closeout as an
+unaccepted candidate at the finalizer boundary, and
 the plan-fixed tag path for no-authorization negative cases,
 as well as merge denial,
 stale-authorization, and threshold-failure closeouts at each race boundary.
