@@ -379,6 +379,13 @@ provisional aliases; they do not grant merge authority.
 How long the human expects to be unavailable while agents continue with
 reversible best judgment.
 
+**Material or meaningful**
+
+A change, ambiguity, question, or blocker that can alter the intended outcome,
+cross the safety floor, change integration order, or require a consequential
+human choice. Routine bookkeeping, reversible implementation choices, and
+unchanged status are not material.
+
 **Run ID and idempotency key**
 
 The unique execution identity and the stable retry key that prevents the same
@@ -591,8 +598,9 @@ authorizes the unattended wave, all remaining prompts use current live GitHub
 state and current main, and the authorized tasks may start simultaneously up to
 the operator target and host capacity. In the remaining entries, `now` means
 after that T10 gate. When a documented semantic dependency is not ready, the task
-records `waiting`, uses a task heartbeat or backed-off checks for up to six
-hours, and proceeds when the dependency changes without asking the maintainer.
+records `waiting`, uses a task heartbeat or backed-off checks until the
+operator-declared attention interval ends, and proceeds when the dependency
+changes without asking the maintainer. This launch uses six hours.
 
 Until this planning PR merges, each linked issue's outcome, required behavior,
 constraints, and prompt are the canonical launch contract. A task started from
@@ -619,11 +627,12 @@ behavior, and link the website to the normative agent-workflows repository.
 ```text
 Fix agent-workflows#476 using PR-batch with merge authority ask. Use current
 main after #479 and #486, title the task `AW #476 — Simplify cross-host
-prompts`, and continue with reversible best judgment for six hours. Make the
-issue or maintainer comment the readable prompt, support the one-line shortcut,
-remove file-touch maps and compressed restatements, and record actual model and
-workflow versions without treating telemetry as exact accounting. Emit the
-cheap launch timestamps directly; do not wait for #562's aggregation work.
+prompts`, and continue with reversible best judgment for the operator-declared
+attention interval; this launch uses six hours. Make the issue or maintainer
+comment the readable prompt, support the one-line shortcut, remove file-touch
+maps and compressed restatements, and record actual model and workflow versions
+without treating telemetry as exact accounting. Emit the cheap launch
+timestamps directly; do not wait for #562's aggregation work.
 ```
 
 ### T3 — Modularize PR-batch
@@ -641,8 +650,9 @@ approved component, and extract only one component in this task. Keep
 workflows/pr-processing.md as an index and compatibility shim, avoid
 cross-component cleanup, and use focused validation before the full gate. If
 the planning PR is not final, poll its current review state with backed-off
-checks for up to six hours while completing the read-only coupling inventory;
-if it is still not final, record `blocked` and queue one concise decision.
+checks until the operator-declared attention interval ends while completing the
+read-only coupling inventory; this launch uses six hours. If it is still not
+final, record `blocked` and queue one concise decision.
 ```
 
 ### T4 — Audit every shipped skill under #189
@@ -694,9 +704,10 @@ deterministic task names, and collapsed details for provenance. Keep visible
 state compact and make coordination optional. Include a globally unique run ID,
 source-content digest, observed workflow versions, separate state and outcome,
 and append-only rerun history. If #476 prompt decisions are not final, poll
-GitHub with backed-off checks for up to six hours. If they become final,
-implement only the agreed format with focused tests; otherwise record `blocked`
-and queue one concise decision.
+GitHub with backed-off checks until the operator-declared attention interval
+ends; this launch uses six hours. If they become final, implement only the agreed
+format with focused tests; otherwise record `blocked` and queue one concise
+decision.
 ```
 
 ### T8 — Create, title, and supervise Codex tasks
@@ -713,8 +724,9 @@ and PR state to GitHub. Before task creation, persist a `launch-pending` record
 with a globally unique run ID and idempotency key; retries SHALL reuse it. Provide
 a visible no-backend override and a copy-paste fallback for unsupported hosts.
 If the T7 run-record format is not ready, poll its issue with backed-off checks
-for up to six hours while completing the read-only capability inventory; if it
-is still not ready, record `blocked` and queue one concise decision.
+until the operator-declared attention interval ends while completing the
+read-only capability inventory; this launch uses six hours. If it is still not
+ready, record `blocked` and queue one concise decision.
 ```
 
 ### T9 — Collect directional workflow telemetry
@@ -795,8 +807,8 @@ preparation first, then yields or releases its active slot when the host support
 that behavior. T6 is deliberately parked.
 
 No task should use file overlap as a launch blocker. No task should ask the
-maintainer for routine scope expansion while the six-hour unattended interval
-is active.
+maintainer for routine scope expansion while the operator-declared attention
+interval is active; this launch uses six hours.
 
 ## Validation Strategy
 
