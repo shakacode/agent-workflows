@@ -264,16 +264,17 @@ Every unavailable timestamp, identifier, or count in the normalized input is
 literal `UNKNOWN`. Derived duration totals also become literal `UNKNOWN` when
 any contributing boundary is unavailable; a known partial total is never
 presented as the complete measure. Absent phase or slot rows likewise report
-`UNKNOWN`, while an explicitly empty question list reports a known count and
-queue time of zero. The JSON report lists every propagated unknown in
-`unknown_fields`.
+`UNKNOWN`. Use literal `UNKNOWN` for an unavailable human-question collection;
+an explicitly empty question list instead reports a known count and queue time
+of zero. The JSON report lists every propagated unknown in `unknown_fields`.
 
 The input is closed and metadata-only. Unknown fields are rejected, identifier
-and source-reference values use constrained grammars, and token-shaped content
-is rejected even inside an allowlisted identifier. There is no field for a raw
-prompt, response, transcript, tool result, secret, environment value, auth
-content, or arbitrary prose. Do not add one; retain durable evidence by
-reference and query only the exact upstream fields needed for normalization.
+and source-reference values use constrained grammars, opaque batch IDs remain
+single-line, and common token-shaped content is rejected even inside an
+allowlisted identifier. There is no field for a raw prompt, response,
+transcript, tool result, secret, environment value, auth content, or arbitrary
+prose. Do not add one; retain durable evidence by reference and query only the
+exact upstream fields needed for normalization.
 
 Replay JSON or a compact twelve-line text view without copying the source
 events into the result:

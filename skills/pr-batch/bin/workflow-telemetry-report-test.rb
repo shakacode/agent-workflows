@@ -33,19 +33,47 @@ class WorkflowTelemetryReportTest < Minitest::Test
   end
 
   def test_rejects_token_shaped_content_even_in_an_allowlisted_metadata_field_without_echoing_it
-    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
-    secret = ["sk", "proj", "do-not-echo-1234567890"].join("-")
-    input["prompt_creation"]["model"] = secret
+    secrets = [
+      ["sk", "proj", "do-not-echo-1234567890"].join("-"),
+      ["sk", "live", "1234567890abcdefghijklmn"].join("_"),
+      ["glpat", "0123456789abcdefghijkl"].join("-"),
+      ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "signature"].join(".")
+    ]
 
-    Tempfile.create(["workflow-telemetry", ".json"]) do |file|
-      file.write(JSON.generate(input))
-      file.flush
-      stdout, stderr, status = Open3.capture3(HELPER, "--input", file.path, "--format", "json")
+    secrets.each do |secret|
+      input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+      input["prompt_creation"]["model"] = secret
 
-      refute status.success?
-      refute_includes stdout, secret
-      refute_includes stderr, secret
+      Tempfile.create(["workflow-telemetry", ".json"]) do |file|
+        file.write(JSON.generate(input))
+        file.flush
+        stdout, stderr, status = Open3.capture3(HELPER, "--input", file.path, "--format", "json")
+
+        refute status.success?
+        refute_includes stdout, secret
+        refute_includes stderr, secret
+      end
     end
+  end
+
+  def test_accepts_an_opaque_single_line_coordination_batch_id
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["batch_id"] = "prod;batch=42"
+
+    report = run_json(input)
+
+    assert_equal "prod;batch=42", report.fetch("batch_id")
+  end
+
+  def test_propagates_unknown_when_human_question_collection_is_unavailable
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["human_questions"] = "UNKNOWN"
+
+    report = run_json(input)
+
+    assert_equal "UNKNOWN", report.dig("measurements", "human_questions", "count")
+    assert_equal "UNKNOWN", report.dig("measurements", "human_questions", "answered_count")
+    assert_equal "UNKNOWN", report.dig("measurements", "human_questions", "queue_seconds")
   end
 
   def test_rejects_non_allowlisted_payload_fields_without_echoing_their_content
@@ -102,6 +130,41 @@ class WorkflowTelemetryReportTest < Minitest::Test
 
       refute status.success?
       assert_includes stderr, "invalid timestamp"
+    end
+  end
+
+  def test_rejects_invalid_calendar_timestamps_instead_of_normalizing_them
+    ["2026-02-30T20:00:00Z", "2026-01-01T24:00:00Z", "2026-01-01T23:59:60Z"].each do |value|
+      input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+      input["prompt_creation"]["at"] = value
+
+      Tempfile.create(["workflow-telemetry", ".json"]) do |file|
+        file.write(JSON.generate(input))
+        file.flush
+        _stdout, stderr, status = Open3.capture3(HELPER, "--input", file.path)
+
+        refute status.success?
+        assert_includes stderr, "invalid timestamp"
+      end
+    end
+  end
+
+  def test_directory_input_fails_without_a_backtrace
+    _stdout, stderr, status = Open3.capture3(HELPER, "--input", File.dirname(FIXTURE))
+
+    refute status.success?
+    assert_equal "workflow-telemetry-report: unable to read input\n", stderr
+  end
+
+  private
+
+  def run_json(input)
+    Tempfile.create(["workflow-telemetry", ".json"]) do |file|
+      file.write(JSON.generate(input))
+      file.flush
+      stdout, stderr, status = Open3.capture3(HELPER, "--input", file.path, "--format", "json")
+      assert status.success?, stderr
+      return JSON.parse(stdout)
     end
   end
 end

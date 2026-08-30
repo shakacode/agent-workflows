@@ -8,6 +8,7 @@
 
 require "json"
 require "optparse"
+require "date"
 require "time"
 
 module WorkflowTelemetryReport
@@ -31,8 +32,17 @@ module WorkflowTelemetryReport
   SAFE_IDENTIFIER = %r{\A[A-Za-z0-9][A-Za-z0-9._+:/-]{0,127}\z}
   SAFE_SOURCE_REF = %r{\A(?:coordination|batch|issue|plan-state|github)://[A-Za-z0-9][A-Za-z0-9._+/:#-]{0,239}\z}
   SAFE_GITHUB_URL = %r{\Ahttps://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/(?:issues|pull)/[1-9][0-9]*)?(?:#issuecomment-[1-9][0-9]*)?\z}
-  SENSITIVE_FRAGMENT = /(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9_-]{8,}|AKIA[A-Z0-9]{12,})/
-  RFC3339_TIMESTAMP = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/
+  SENSITIVE_PATTERNS = [
+    /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
+    /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
+    /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
+    /\bglpat-[A-Za-z0-9_-]{20,}\b/,
+    /\bsk-(?:proj-|svcacct-|ant-api\d+-)?[A-Za-z0-9_-]{12,}\b/,
+    /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/,
+    /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,
+    /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/
+  ].freeze
+  RFC3339_TIMESTAMP = /\A(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?<offset>Z|[+-](?<offset_hour>\d{2}):(?<offset_minute>\d{2}))\z/
 
   InputError = Class.new(StandardError)
 
@@ -44,7 +54,7 @@ module WorkflowTelemetryReport
     raise InputError, "unsupported input contract" unless object["contract"] == INPUT_CONTRACT
     raise InputError, "unsupported input version" unless object["version"] == VERSION
 
-    batch_id = safe_identifier(object["batch_id"])
+    batch_id = safe_batch_id(object["batch_id"])
     source_ref = safe_source_ref(object["source_ref"])
     prompt = snapshot(object["prompt_creation"])
     worker = snapshot(object["worker_start"])
@@ -102,14 +112,23 @@ module WorkflowTelemetryReport
   def safe_identifier(value, allow_unknown: false)
     return UNKNOWN if allow_unknown && value == UNKNOWN
 
-    valid = value.is_a?(String) && value.match?(SAFE_IDENTIFIER) && !value.match?(SENSITIVE_FRAGMENT)
+    valid = value.is_a?(String) && value.match?(SAFE_IDENTIFIER) && !sensitive?(value)
     raise InputError, "invalid metadata identifier" unless valid
 
     value
   end
 
+  def safe_batch_id(value)
+    valid = value.is_a?(String) && value.valid_encoding? && value.bytesize.between?(1, 256) &&
+            !value.match?(/[[:cntrl:]]/) && !value.include?("<!--") && !value.include?("-->") &&
+            !sensitive?(value)
+    raise InputError, "invalid batch identifier" unless valid
+
+    value
+  end
+
   def safe_source_ref(value)
-    valid = value.is_a?(String) && !value.match?(SENSITIVE_FRAGMENT) &&
+    valid = value.is_a?(String) && !sensitive?(value) &&
             (value.match?(SAFE_SOURCE_REF) || value.match?(SAFE_GITHUB_URL))
     raise InputError, "invalid durable source reference" unless valid
 
@@ -118,7 +137,12 @@ module WorkflowTelemetryReport
 
   def timestamp(value, allow_unknown: true)
     return UNKNOWN if allow_unknown && value == UNKNOWN
-    raise InputError, "invalid timestamp" unless value.is_a?(String) && value.match?(RFC3339_TIMESTAMP)
+
+    match = value.match(RFC3339_TIMESTAMP) if value.is_a?(String)
+    valid = match && Date.valid_date?(match[:year].to_i, match[:month].to_i, match[:day].to_i) &&
+            match[:hour].to_i <= 23 && match[:minute].to_i <= 59 && match[:second].to_i <= 59 &&
+            (match[:offset] == "Z" || (match[:offset_hour].to_i <= 23 && match[:offset_minute].to_i <= 59))
+    raise InputError, "invalid timestamp" unless valid
 
     Time.iso8601(value).utc
   rescue ArgumentError
@@ -155,6 +179,14 @@ module WorkflowTelemetryReport
   end
 
   def question_measurements(value)
+    if value == UNKNOWN
+      return {
+        "count" => UNKNOWN,
+        "answered_count" => UNKNOWN,
+        "queue_seconds" => UNKNOWN
+      }
+    end
+
     questions = require_array(value).map do |raw|
       object = require_object(raw)
       require_exact_keys(object, QUESTION_KEYS)
@@ -221,6 +253,10 @@ module WorkflowTelemetryReport
     durations.sum
   end
 
+  def sensitive?(value)
+    SENSITIVE_PATTERNS.any? { |pattern| value.match?(pattern) }
+  end
+
   def unknown_paths(value, path = "")
     case value
     when Hash
@@ -272,7 +308,7 @@ begin
   report = WorkflowTelemetryReport.build(input)
   output = options.fetch(:format) == "json" ? JSON.generate(report) : WorkflowTelemetryReport.render_text(report)
   puts output
-rescue Errno::ENOENT, Errno::EACCES
+rescue Errno::ENOENT, Errno::EACCES, Errno::EISDIR
   warn "workflow-telemetry-report: unable to read input"
   exit 1
 rescue JSON::ParserError
