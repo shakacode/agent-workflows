@@ -509,7 +509,9 @@ Agent run: Codex on M5 — active — <task link>
 - Branch and PR: <values or pending>
 - Resolved merge authority: <auto or ask>
 - State: <launch-pending, active, waiting, blocked, PR-ready, or completed>
+- State transitions: <timestamped append-only from/to entries, including the initial state>
 - Execution slot: <queued, occupied, released, or not-applicable>
+- Execution-slot transitions: <timestamped append-only from/to entries, including the initial status>
 - Outcome: <pending, merged, closed, failed, or reverted>
 - Promotion/release authority: <not granted or separately authorized reference>
 - Last material update: <timestamp>
