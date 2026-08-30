@@ -3484,8 +3484,8 @@ class PrMergeSubmitTest < Minitest::Test
                                       "started_at" => "2026-08-25T12:00:00Z"
                                     )], 1]
                                   when :held_then_failed_after_first_inventory
-                                    suite_reads = File.read(ENV.fetch("GH_LOG")).scan("/check-suites?").length
-                                    if suite_reads > 3
+                                    pr_metadata_reads = File.read(ENV.fetch("GH_LOG") + ".queries").to_i
+                                    if pr_metadata_reads >= 2
                                       [[held.merge(
                                         "status" => "completed", "conclusion" => "failure",
                                         "started_at" => "2026-08-25T12:00:00Z"
@@ -3675,7 +3675,7 @@ class PrMergeSubmitTest < Minitest::Test
                           query_count.positive?
                         when "direct_graphql_error_queue_enabled" then query_count >= 2
                         when "guard_post_materialization_queue_race"
-                          gh_log.scan("/check-suites?").length > 3
+                          query_count >= 2
                         else false
                         end
         queued = case current_mode
@@ -3721,7 +3721,7 @@ class PrMergeSubmitTest < Minitest::Test
         live_base = if (base_race_modes.include?(current_mode) && query_count.positive?) ||
                        (ci_base_race_modes.include?(current_mode) && ci_inventory_complete) ||
                        (current_mode == "guard_post_materialization_base_race" &&
-                        gh_log.scan("/check-suites?").length > 3)
+                        query_count >= 2)
                       "release"
                     else
                       #{base.inspect}
