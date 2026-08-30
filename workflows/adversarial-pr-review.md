@@ -68,7 +68,9 @@ gh pr diff <PR> --name-only
 gh pr diff <PR>
 # Resolve PR_BATCH_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
 PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO>
+"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
+  --repo <OWNER/REPO> \
+  --trusted-repo-root "$(git rev-parse --show-toplevel)"
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
 

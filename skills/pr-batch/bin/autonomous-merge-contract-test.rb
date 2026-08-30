@@ -32,6 +32,24 @@ SAFE_PATH_GROUP_DOCUMENTATION_PARITY = "Portable safe_path_groups defaults ship 
                                        "a consumer can never remove a portable exclude."
 
 class AutonomousMergeContractTest < Minitest::Test
+  def paragraphs_with(path, fragment)
+    File.read(File.join(ROOT, path), encoding: "UTF-8")
+        .split(/\n{2,}/)
+        .select { |paragraph| paragraph.include?(fragment) }
+  end
+
+  def bash_blocks_with(path, fragment)
+    File.read(File.join(ROOT, path), encoding: "UTF-8")
+        .scan(/```bash\n(.*?)```/m)
+        .flatten
+        .select { |block| block.include?(fragment) }
+  end
+
+  def shipped_markdown_paths
+    Dir.glob(File.join(ROOT, "{skills,workflows}", "**", "*.md"))
+       .map { |path| path.delete_prefix("#{ROOT}/") }
+  end
+
   def test_runtime_records_are_keyword_structs_compatible_with_ruby_three_one
     records = [
       AutonomousMergePolicy::Result,
@@ -80,6 +98,33 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes workflow, "mechanically recomputes a length-framed manifest"
     assert_includes workflow, "remain coordinator procedures"
     assert_match(/`merge_authority`\s+remains separate from\s+eligibility/, workflow)
+  end
+
+  def test_every_shipped_readiness_caller_authenticates_the_trusted_repository_root
+    callers = shipped_markdown_paths.flat_map do |path|
+      paragraphs_with(path, "/bin/pr-ci-readiness").map { |paragraph| [path, paragraph] }
+    end
+
+    assert_equal 4, callers.length
+    callers.each do |path, paragraph|
+      assert_includes paragraph, '--trusted-repo-root "$(git rev-parse --show-toplevel)"', path
+    end
+  end
+
+  def test_canonical_merge_commands_forward_ordered_requested_hosted_runs
+    merge_callers = shipped_markdown_paths.flat_map do |path|
+      bash_blocks_with(path, "/bin/merge-assurance").map { |block| [path, block] }
+    end
+    submit_callers = shipped_markdown_paths.flat_map do |path|
+      bash_blocks_with(path, "/bin/pr-merge-submit").map { |block| [path, block] }
+    end
+
+    assert_equal 2, merge_callers.length
+    assert_equal 1, submit_callers.length
+    (merge_callers + submit_callers).each do |path, block|
+      assert_includes block, 'REQUESTED_HOSTED_RUN_ARGS+=(--requested-hosted-run "${run_id}")', path
+      assert_includes block, '"${REQUESTED_HOSTED_RUN_ARGS[@]}"', path
+    end
   end
 
   def test_goal_generation_surfaces_carry_both_autonomous_stop_states

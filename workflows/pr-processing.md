@@ -4301,11 +4301,17 @@ selection list is empty, the seam is not invoked and incidental hosted runs do
 not gate.
 
 ```bash
+# REQUESTED_HOSTED_RUN_IDS is the ordered coordinator input; set it to () when no runs were requested.
+REQUESTED_HOSTED_RUN_ARGS=()
+for run_id in "${REQUESTED_HOSTED_RUN_IDS[@]}"; do
+  REQUESTED_HOSTED_RUN_ARGS+=(--requested-hosted-run "${run_id}")
+done
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
   --context "${MERGE_CONTEXT_PATH}" \
   --trusted-repo-root "$(git rev-parse --show-toplevel)" \
+  "${REQUESTED_HOSTED_RUN_ARGS[@]}" \
   > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
@@ -4349,12 +4355,18 @@ mutation. Resolve
 chain, then run:
 
 ```bash
+# Reuse the same ordered run IDs that produced the merge-assurance receipt.
+REQUESTED_HOSTED_RUN_ARGS=()
+for run_id in "${REQUESTED_HOSTED_RUN_IDS[@]}"; do
+  REQUESTED_HOSTED_RUN_ARGS+=(--requested-hosted-run "${run_id}")
+done
 "${PR_BATCH_SKILL_DIR}/bin/pr-merge-submit" <PR> \
   --repo <OWNER/REPO> \
   --host <GITHUB_HOST[:PORT]> \
   --expected-head <FULL_HEAD_SHA> \
   --expected-base <BASE_BRANCH> \
   --method <merge|rebase|squash> \
+  "${REQUESTED_HOSTED_RUN_ARGS[@]}" \
   --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
