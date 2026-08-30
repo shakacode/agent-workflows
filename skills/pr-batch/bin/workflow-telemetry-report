@@ -1,0 +1,287 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Reduces field-selected, normalized workflow metadata into one compact,
+# replayable directional report. Arbitrary prose and payload fields are not
+# accepted, so prompts, responses, transcripts, and environment/auth content
+# never enter the report.
+
+require "json"
+require "optparse"
+require "time"
+
+module WorkflowTelemetryReport
+  INPUT_CONTRACT = "workflow-telemetry-input"
+  REPORT_CONTRACT = "workflow-telemetry-report"
+  VERSION = 1
+  UNKNOWN = "UNKNOWN"
+  PHASES = %w[planning discovery implementation validation review integration].freeze
+  SLOT_STATES = %w[occupied stopped].freeze
+  TOP_LEVEL_KEYS = %w[
+    contract version batch_id source_ref prompt_creation worker_start
+    phase_intervals human_questions slot_intervals amplification integration outcomes
+  ].freeze
+  SNAPSHOT_KEYS = %w[at model workflow_version].freeze
+  PHASE_INTERVAL_KEYS = %w[lane_id phase started_at ended_at].freeze
+  QUESTION_KEYS = %w[lane_id asked_at answered_at].freeze
+  SLOT_INTERVAL_KEYS = %w[lane_id status started_at ended_at].freeze
+  AMPLIFICATION_KEYS = %w[review_attempts ci_attempts retry_attempts].freeze
+  INTEGRATION_KEYS = %w[started_at ended_at].freeze
+  OUTCOME_KEYS = %w[consequential_defects reverts rollbacks].freeze
+  SAFE_IDENTIFIER = %r{\A[A-Za-z0-9][A-Za-z0-9._+:/-]{0,127}\z}
+  SAFE_SOURCE_REF = %r{\A(?:coordination|batch|issue|plan-state|github)://[A-Za-z0-9][A-Za-z0-9._+/:#-]{0,239}\z}
+  SAFE_GITHUB_URL = %r{\Ahttps://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/(?:issues|pull)/[1-9][0-9]*)?(?:#issuecomment-[1-9][0-9]*)?\z}
+  SENSITIVE_FRAGMENT = /(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9_-]{8,}|AKIA[A-Z0-9]{12,})/
+  RFC3339_TIMESTAMP = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/
+
+  InputError = Class.new(StandardError)
+
+  module_function
+
+  def build(input)
+    object = require_object(input)
+    require_exact_keys(object, TOP_LEVEL_KEYS)
+    raise InputError, "unsupported input contract" unless object["contract"] == INPUT_CONTRACT
+    raise InputError, "unsupported input version" unless object["version"] == VERSION
+
+    batch_id = safe_identifier(object["batch_id"])
+    source_ref = safe_source_ref(object["source_ref"])
+    prompt = snapshot(object["prompt_creation"])
+    worker = snapshot(object["worker_start"])
+    phases = phase_measurements(object["phase_intervals"])
+    questions = question_measurements(object["human_questions"])
+    slots = slot_measurements(object["slot_intervals"])
+    amplification = count_object(object["amplification"], AMPLIFICATION_KEYS)
+    integration = interval_seconds_from_object(object["integration"], INTEGRATION_KEYS)
+    outcomes = count_object(object["outcomes"], OUTCOME_KEYS)
+
+    measurements = {
+      "prompt_to_worker_start_seconds" => interval_seconds(prompt.fetch("at"), worker.fetch("at")),
+      "models" => {
+        "prompt_creation" => prompt.fetch("model"),
+        "worker_start" => worker.fetch("model")
+      },
+      "workflow_versions" => {
+        "prompt_creation" => prompt.fetch("workflow_version"),
+        "worker_start" => worker.fetch("workflow_version")
+      },
+      "phase_seconds" => phases,
+      "human_questions" => questions,
+      "slot_seconds" => slots,
+      "amplification" => amplification,
+      "integration_seconds" => integration,
+      "outcomes" => outcomes
+    }
+    report = {
+      "contract" => REPORT_CONTRACT,
+      "version" => VERSION,
+      "batch_id" => batch_id,
+      "source_ref" => source_ref,
+      "measurements" => measurements
+    }
+    report["unknown_fields"] = unknown_paths(report)
+    report
+  end
+
+  def require_object(value)
+    raise InputError, "expected JSON object" unless value.is_a?(Hash)
+
+    value
+  end
+
+  def require_array(value)
+    raise InputError, "expected JSON array" unless value.is_a?(Array)
+
+    value
+  end
+
+  def require_exact_keys(object, expected)
+    raise InputError, "input fields do not match the metadata allowlist" unless object.keys.sort == expected.sort
+  end
+
+  def safe_identifier(value, allow_unknown: false)
+    return UNKNOWN if allow_unknown && value == UNKNOWN
+
+    valid = value.is_a?(String) && value.match?(SAFE_IDENTIFIER) && !value.match?(SENSITIVE_FRAGMENT)
+    raise InputError, "invalid metadata identifier" unless valid
+
+    value
+  end
+
+  def safe_source_ref(value)
+    valid = value.is_a?(String) && !value.match?(SENSITIVE_FRAGMENT) &&
+            (value.match?(SAFE_SOURCE_REF) || value.match?(SAFE_GITHUB_URL))
+    raise InputError, "invalid durable source reference" unless valid
+
+    value
+  end
+
+  def timestamp(value, allow_unknown: true)
+    return UNKNOWN if allow_unknown && value == UNKNOWN
+    raise InputError, "invalid timestamp" unless value.is_a?(String) && value.match?(RFC3339_TIMESTAMP)
+
+    Time.iso8601(value).utc
+  rescue ArgumentError
+    raise InputError, "invalid timestamp"
+  end
+
+  def snapshot(value)
+    object = require_object(value)
+    require_exact_keys(object, SNAPSHOT_KEYS)
+    {
+      "at" => timestamp(object["at"]),
+      "model" => safe_identifier(object["model"], allow_unknown: true),
+      "workflow_version" => safe_identifier(object["workflow_version"], allow_unknown: true)
+    }
+  end
+
+  def phase_measurements(value)
+    intervals = require_array(value)
+    grouped = intervals.group_by do |raw|
+      object = require_object(raw)
+      require_exact_keys(object, PHASE_INTERVAL_KEYS)
+      safe_identifier(object["lane_id"])
+      phase = object["phase"]
+      raise InputError, "invalid phase" unless PHASES.include?(phase)
+
+      phase
+    end
+
+    PHASES.to_h do |phase|
+      rows = grouped.fetch(phase, [])
+      durations = rows.map { |row| interval_seconds(timestamp(row["started_at"]), timestamp(row["ended_at"])) }
+      [phase, aggregate_durations(durations)]
+    end
+  end
+
+  def question_measurements(value)
+    questions = require_array(value).map do |raw|
+      object = require_object(raw)
+      require_exact_keys(object, QUESTION_KEYS)
+      safe_identifier(object["lane_id"])
+      [timestamp(object["asked_at"]), timestamp(object["answered_at"])]
+    end
+    durations = questions.map { |asked_at, answered_at| interval_seconds(asked_at, answered_at) }
+    {
+      "count" => questions.length,
+      "answered_count" => questions.count { |_asked_at, answered_at| answered_at != UNKNOWN },
+      "queue_seconds" => aggregate_durations(durations, empty: 0)
+    }
+  end
+
+  def slot_measurements(value)
+    intervals = require_array(value)
+    grouped = intervals.group_by do |raw|
+      object = require_object(raw)
+      require_exact_keys(object, SLOT_INTERVAL_KEYS)
+      safe_identifier(object["lane_id"])
+      status = object["status"]
+      raise InputError, "invalid slot status" unless SLOT_STATES.include?(status)
+
+      status
+    end
+
+    SLOT_STATES.to_h do |status|
+      rows = grouped.fetch(status, [])
+      durations = rows.map { |row| interval_seconds(timestamp(row["started_at"]), timestamp(row["ended_at"])) }
+      [status, aggregate_durations(durations)]
+    end
+  end
+
+  def count_object(value, keys)
+    object = require_object(value)
+    require_exact_keys(object, keys)
+    keys.to_h { |key| [key, count_or_unknown(object[key])] }
+  end
+
+  def count_or_unknown(value)
+    return UNKNOWN if value == UNKNOWN
+    raise InputError, "invalid directional count" unless value.is_a?(Integer) && value >= 0
+
+    value
+  end
+
+  def interval_seconds_from_object(value, keys)
+    object = require_object(value)
+    require_exact_keys(object, keys)
+    interval_seconds(timestamp(object["started_at"]), timestamp(object["ended_at"]))
+  end
+
+  def interval_seconds(started_at, ended_at)
+    return UNKNOWN if started_at == UNKNOWN || ended_at == UNKNOWN
+    raise InputError, "interval ends before it starts" if ended_at < started_at
+
+    (ended_at - started_at).to_i
+  end
+
+  def aggregate_durations(durations, empty: UNKNOWN)
+    return empty if durations.empty?
+    return UNKNOWN if durations.include?(UNKNOWN)
+
+    durations.sum
+  end
+
+  def unknown_paths(value, path = "")
+    case value
+    when Hash
+      value.flat_map { |key, child| unknown_paths(child, "#{path}/#{key}") }
+    when Array
+      value.each_with_index.flat_map { |child, index| unknown_paths(child, "#{path}/#{index}") }
+    else
+      value == UNKNOWN ? [path] : []
+    end
+  end
+
+  def render_text(report)
+    measurements = report.fetch("measurements")
+    phases = measurements.fetch("phase_seconds")
+    questions = measurements.fetch("human_questions")
+    slots = measurements.fetch("slot_seconds")
+    amplification = measurements.fetch("amplification")
+    outcomes = measurements.fetch("outcomes")
+    [
+      "workflow telemetry v1 — #{report.fetch('batch_id')}",
+      "source_ref: #{report.fetch('source_ref')}",
+      "prompt_to_worker_start_seconds: #{measurements.fetch('prompt_to_worker_start_seconds')}",
+      "models: prompt_creation=#{measurements.dig('models', 'prompt_creation')} worker_start=#{measurements.dig('models', 'worker_start')}",
+      "workflow_versions: prompt_creation=#{measurements.dig('workflow_versions', 'prompt_creation')} worker_start=#{measurements.dig('workflow_versions', 'worker_start')}",
+      "phase_seconds: #{PHASES.map { |phase| "#{phase}=#{phases.fetch(phase)}" }.join(' ')}",
+      "human_questions: count=#{questions.fetch('count')} answered=#{questions.fetch('answered_count')} queue_seconds=#{questions.fetch('queue_seconds')}",
+      "slot_seconds: occupied=#{slots.fetch('occupied')} stopped=#{slots.fetch('stopped')}",
+      "amplification: review=#{amplification.fetch('review_attempts')} ci=#{amplification.fetch('ci_attempts')} retry=#{amplification.fetch('retry_attempts')}",
+      "integration_seconds: #{measurements.fetch('integration_seconds')}",
+      "outcomes: defects=#{outcomes.fetch('consequential_defects')} reverts=#{outcomes.fetch('reverts')} rollbacks=#{outcomes.fetch('rollbacks')}",
+      "unknown_fields: #{report.fetch('unknown_fields').empty? ? 'none' : report.fetch('unknown_fields').join(',')}"
+    ].join("\n")
+  end
+end
+
+options = { input: "-", format: "json" }
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: workflow-telemetry-report [--input PATH|-] [--format json|text]"
+  opts.on("--input PATH", "Normalized workflow telemetry JSON (default: stdin)") { |path| options[:input] = path }
+  opts.on("--format FORMAT", %w[json text], "Report format") { |format| options[:format] = format }
+end
+
+begin
+  parser.parse!
+  raise WorkflowTelemetryReport::InputError, "unexpected arguments" unless ARGV.empty?
+
+  raw = options.fetch(:input) == "-" ? $stdin.read : File.read(options.fetch(:input), encoding: "UTF-8")
+  input = JSON.parse(raw)
+  report = WorkflowTelemetryReport.build(input)
+  output = options.fetch(:format) == "json" ? JSON.generate(report) : WorkflowTelemetryReport.render_text(report)
+  puts output
+rescue Errno::ENOENT, Errno::EACCES
+  warn "workflow-telemetry-report: unable to read input"
+  exit 1
+rescue JSON::ParserError
+  warn "workflow-telemetry-report: invalid JSON input"
+  exit 1
+rescue OptionParser::ParseError
+  warn "workflow-telemetry-report: invalid command options"
+  exit 1
+rescue WorkflowTelemetryReport::InputError => e
+  warn "workflow-telemetry-report: #{e.message}"
+  exit 1
+end

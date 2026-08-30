@@ -237,6 +237,62 @@ advertise that compatible capability or its advertisement is `UNKNOWN`, record
 `telemetry audit: unavailable` in the durable handoff and continue; backend
 `n/a` skips the check.
 
+## Directional Workflow Telemetry Report
+
+Use `skills/pr-batch/bin/workflow-telemetry-report` for the smallest replayable
+throughput view built from existing durable coordination and GitHub-shaped
+metadata. It is a reducer, not a collector or accounting ledger: callers first
+normalize field-selected timestamps, identifiers, counts, and durable source
+references into `workflow-telemetry-input` v1. The helper does not invoke GitHub,
+read rollout/session content, inspect the environment, or create backend state.
+
+The replay fixture at
+`skills/pr-batch/fixtures/workflow-telemetry-report-replay.json` is the canonical
+input example. It covers:
+
+- prompt-to-worker-start latency and the model/workflow version observed at each
+  boundary;
+- broad `planning`, `discovery`, `implementation`, `validation`, `review`, and
+  `integration` phase time;
+- human-question count, answered count, and queue time;
+- `occupied` and `stopped` slot time;
+- review, CI, and retry attempts;
+- integration time; and
+- consequential defects, reverts, and rollbacks.
+
+Every unavailable timestamp, identifier, or count in the normalized input is
+literal `UNKNOWN`. Derived duration totals also become literal `UNKNOWN` when
+any contributing boundary is unavailable; a known partial total is never
+presented as the complete measure. Absent phase or slot rows likewise report
+`UNKNOWN`, while an explicitly empty question list reports a known count and
+queue time of zero. The JSON report lists every propagated unknown in
+`unknown_fields`.
+
+The input is closed and metadata-only. Unknown fields are rejected, identifier
+and source-reference values use constrained grammars, and token-shaped content
+is rejected even inside an allowlisted identifier. There is no field for a raw
+prompt, response, transcript, tool result, secret, environment value, auth
+content, or arbitrary prose. Do not add one; retain durable evidence by
+reference and query only the exact upstream fields needed for normalization.
+
+Replay JSON or a compact twelve-line text view without copying the source
+events into the result:
+
+```bash
+skills/pr-batch/bin/workflow-telemetry-report \
+  --input skills/pr-batch/fixtures/workflow-telemetry-report-replay.json \
+  --format json
+
+skills/pr-batch/bin/workflow-telemetry-report \
+  --input skills/pr-batch/fixtures/workflow-telemetry-report-replay.json \
+  --format text
+```
+
+Use the report directionally to find latency, queueing, slot pressure, and
+amplification worth investigating. It does not authorize exact token/cost
+accounting, adaptive scheduling, experiments, or an exhaustive collection
+layer, and it never replaces readiness, QA, review, CI, or closeout evidence.
+
 ## Typed Dependency Facts
 
 Backend `depends_on` and `blocked_on` values describe coordination state; they
