@@ -171,7 +171,7 @@ an unavailable observation stays `UNKNOWN` and never becomes inferred evidence.
   `<coordinator-approved|UNKNOWN>`
 - `Batch/lane:` `<batch-id>` / `<lane>`; `dashboard_url`: `<url|UNKNOWN>`
 - `Target:` `<verified GitHub issue/PR link>` or exactly
-  `n/a — durably overridden ad-hoc; durable_ref=<accepted ref>`
+  `n/a — durably overridden ad-hoc; durable_ref=<exact accepted durable_authorization_ref>`
 - `Canonical launch:` `<repository-qualified stable identity>`;
   `Ad-hoc override:` `none` or
   `<override_name>; authorizer=<trusted_authorizer>; durable_ref=<durable_authorization_ref>; task_identity=<original_task_identity>`
