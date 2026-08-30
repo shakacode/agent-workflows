@@ -419,16 +419,7 @@ module PrCiReadiness
     return false if phases.empty? || phases.any?(&:nil?)
     return false unless phases.any? { |phase| phase[:status] == "Blocked" }
 
-    phases.all? do |phase|
-      %w[Success Blocked].include?(phase[:status]) ||
-        (phase[:status] == "Running" && circleci_same_workflow_job_link?(phase[:job], details_match[1]))
-    end
-  end
-
-  def circleci_same_workflow_job_link?(raw_job, workflow_id)
-    job_link = raw_job.match(%r{\A\[[^\]]+\]\((https://[^)]+)\)\z})
-    job_url_match = job_link && job_link[1].match(CIRCLECI_WORKFLOW_URL)
-    job_url_match && job_url_match[1] == workflow_id
+    phases.all? { |phase| %w[Success Blocked].include?(phase[:status]) }
   end
 
   def optional_phase_timestamp?(row, key)

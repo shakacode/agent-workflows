@@ -3889,12 +3889,11 @@ evidence is an `in_progress` `circleci-checks` row whose output title and
 workflow link bind the configured check name and one CircleCI workflow, whose
 completion and actions are explicitly null, and whose `started_at` is null or a
 valid timestamp. Its summary must contain at least one downstream `Blocked`
-phase; `Success` prerequisites and `Running` jobs whose Markdown links use the
-same CircleCI workflow UUID as the authenticated outer workflow links are also
-allowed. Failed or unknown states, ordinary running compute, plain or untrusted
-links, CircleCI `/job/…` links, mismatched workflow UUIDs, missing or malformed
-provider evidence, another app, queued rows, and otherwise ambiguous phase
-evidence remain blocking. A name match to any required evidence
+phase; `Success` prerequisites are also allowed. A same-workflow link
+authenticates origin but not completion, and the current collector has no
+separate terminal history evidence, so every `Running` phase remains blocking.
+Failed or unknown states, missing or malformed provider evidence, another app,
+queued rows, and otherwise ambiguous phase evidence also remain blocking. A name match to any required evidence
 blocks optional disposition; workflow/producer metadata is not authenticated
 identity and cannot narrow that match. Any requested GitHub Actions run, failures, completed unknown
 conclusions, malformed or incomplete inventory, and every unmatched pending or

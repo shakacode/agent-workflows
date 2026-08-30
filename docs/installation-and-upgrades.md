@@ -632,12 +632,11 @@ The currently supported held-phase evidence is CircleCI-specific: the exact
 must bind the configured check name and one CircleCI workflow, completion and
 actions must be explicitly null, and `started_at` must be null or a valid
 timestamp. The summary must contain at least one downstream `Blocked` phase; it
-may also contain `Success` prerequisites and `Running` jobs whose Markdown links
-use the same CircleCI workflow UUID as the authenticated outer workflow links.
-Failed or unknown states, ordinary running compute, plain or untrusted links,
-CircleCI `/job/…` links, mismatched workflow UUIDs, missing or malformed
-provider evidence, another app, or another pending/queued state remain
-blocking.
+may also contain `Success` prerequisites. A same-workflow link authenticates
+origin but not completion, and the current collector has no separate terminal
+history evidence, so every `Running` phase remains blocking. Failed or unknown
+states, missing or malformed provider evidence, another app, or another
+pending/queued state also remain blocking.
 
 `--trusted-repo-root` requires the exact live base commit object locally even
 when `ci_readiness` is omitted or `n/a`. A shallow or PR-branch-only checkout

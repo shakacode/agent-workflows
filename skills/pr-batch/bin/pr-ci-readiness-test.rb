@@ -409,7 +409,7 @@ class PrCiReadinessTest < Minitest::Test
     )
   end
 
-  def test_optional_policy_accepts_historical_same_workflow_running_approval_links
+  def test_optional_policy_rejects_historical_shaped_running_links_without_terminal_evidence
     head = "a" * 40
     held = circleci_approval_held_row
     workflow_url = held.fetch("details_url")
@@ -423,6 +423,42 @@ class PrCiReadinessTest < Minitest::Test
                      "* [start-playwright](#{workflow_url}) - Running\n" \
                      "* build-storybook-review-app - Blocked\n" \
                      "* deploy-storybook-review-app - Blocked\n"
+      )
+    )
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+  end
+
+  def test_optional_policy_accepts_successful_prerequisites_and_downstream_blocked_phases
+    head = "a" * 40
+    held = circleci_approval_held_row
+    workflow_url = held.fetch("details_url")
+    held = held.merge(
+      "output" => held.fetch("output").merge(
+        "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n" \
+                     "* setup - Success\n" \
+                     "* build-storybook-review-app - Blocked\n"
       )
     )
     policy = {
