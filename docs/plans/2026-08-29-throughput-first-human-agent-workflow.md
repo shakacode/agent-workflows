@@ -243,13 +243,14 @@ than creating a duplicate task. After task creation, the launcher attaches the
 host task ID and advances the same run. If the durable write path is unavailable,
 a visible single-operator or no-backend override may proceed without turning a
 bookkeeping failure into a global stall; it SHALL preserve the run ID locally
-and report that GitHub reconciliation remains due. The missing write path is not
-itself evidence of contradictory ownership. Before mutating an issue, PR, or
-branch that requires exclusive ownership, or assuming exclusive integration
-responsibility, the override SHALL check any reliable coordination evidence that
-remains available and refuse an observed conflict. If none can be observed, it
-MAY proceed under explicit single-operator authority while recording that
-coordination evidence is degraded.
+in durable host storage that survives a process restart and report that GitHub
+reconciliation remains due. The missing write path is not itself evidence of
+contradictory ownership. Before mutating an issue, PR, or branch that requires
+exclusive ownership, or assuming exclusive integration responsibility, the
+override SHALL check any reliable coordination evidence that remains available
+and refuse an observed conflict. If none can be observed, it MAY proceed under
+explicit single-operator authority while recording that coordination evidence
+is degraded.
 
 This availability choice accepts the residual risk that a backend outage hides
 another operator making the same assumption. The override is for a genuinely
@@ -861,7 +862,7 @@ These do not block the initial execution wave:
 
 1. Final delivery-policy terminology and per-change overrides.
 2. Automated concurrency thresholds or slot-replacement scheduling.
-3. General host naming beyond configurable aliases; Justin currently uses
+3. General host naming beyond configurable aliases; the current operator uses
    `M1` and `M5`.
 4. Whether a run set creates every task immediately or lazily; this should be
    simple configuration optimized for human attention.
