@@ -34,7 +34,7 @@ module WorkflowTelemetryReport
   SAFE_IDENTIFIER = %r{\A[A-Za-z0-9][A-Za-z0-9._+:/-]{0,127}\z}
   SAFE_BATCH_ID = %r{\A[A-Za-z0-9][A-Za-z0-9._+:/;=@,#-]{0,255}\z}
   SAFE_SOURCE_REF = %r{\A(?:coordination|batch|issue|plan-state|github)://[A-Za-z0-9][A-Za-z0-9._+/:#-]{0,239}\z}
-  SAFE_GITHUB_URL = %r{\Ahttps://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:(?:/(?:issues|pull)/[1-9][0-9]*)(?:#issuecomment-[1-9][0-9]*)?)?\z}
+  SAFE_GITHUB_URL = %r{\Ahttps://github\.com/[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}(?:(?:/(?:issues|pull)/[1-9][0-9]*)(?:#issuecomment-[1-9][0-9]*)?)?\z}
   SENSITIVE_PATTERNS = [
     /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])/,
     /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9_]{20,}(?![A-Za-z0-9])/,
@@ -61,7 +61,10 @@ module WorkflowTelemetryReport
             end
     raise InputError, "input payload exceeds size limit" if input.bytesize > MAX_INPUT_BYTES
 
-    input
+    utf8_input = input.dup.force_encoding(Encoding::UTF_8)
+    raise InputError, "input is not valid UTF-8" unless utf8_input.valid_encoding?
+
+    utf8_input
   rescue SystemCallError, EncodingError
     raise InputReadError
   end

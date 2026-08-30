@@ -299,6 +299,21 @@ class WorkflowTelemetryReportTest < Minitest::Test
     assert_equal source_ref, report.fetch("source_ref")
   end
 
+  def test_rejects_overlong_github_owner_and_repository_segments
+    [
+      "https://github.com/#{'o' * 40}/repo",
+      "https://github.com/owner/#{'r' * 101}"
+    ].each do |source_ref|
+      input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+      input["source_ref"] = source_ref
+
+      _stdout, stderr, status = run_invalid(input)
+
+      refute status.success?
+      assert_includes stderr, "invalid durable source reference"
+    end
+  end
+
   def test_rejects_oversized_arrays
     input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
     row = input.fetch("phase_intervals").first
@@ -316,6 +331,25 @@ class WorkflowTelemetryReportTest < Minitest::Test
     refute status.success?
     assert_empty stdout
     assert_equal "workflow-telemetry-report: input payload exceeds size limit\n", stderr
+  end
+
+  def test_rejects_invalid_utf8_before_parsing_or_matching
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["prompt_creation"]["model"] = "invalid-marker"
+    payload = JSON.generate(input).b.sub("invalid-marker", "invalid-\xFF".b)
+
+    Tempfile.create(["workflow-telemetry", ".json"]) do |file|
+      file.binmode
+      file.write(payload)
+      file.flush
+      stdout, stderr, status = Open3.capture3(HELPER, "--input", file.path, "--format", "json")
+
+      refute status.success?
+      assert_empty stdout
+      assert_equal "workflow-telemetry-report: input is not valid UTF-8\n", stderr
+      refute_includes stderr, "invalid-marker"
+      refute_includes stderr, "backtrace"
+    end
   end
 
   def test_rejects_invalid_calendar_timestamps_instead_of_normalizing_them
