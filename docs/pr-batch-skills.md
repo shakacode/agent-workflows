@@ -211,7 +211,8 @@ live, blocked, and reserved lanes. If any of those inputs cannot be verified,
 phase 2 stops instead of inventing a group count. The value is never committed in
 this repo or hardcoded in the skill. Each generated implementation group still
 obeys the host-aware per-wave item caps described below; capacity slots do not
-override Codex, Claude, generic, file-collision, or `UNKNOWN` path limits.
+override Codex, Claude, or generic limits, consequence-aware care for
+shared/risky surfaces, or `UNKNOWN` path discovery limits.
 
 If live capacity profiles or enabled inbox config are unavailable, `$triage` may
 still produce the phase-1 inventory and graph, but phase 2 must stop with a
@@ -263,10 +264,13 @@ omit the queue summary and note that queue state is unavailable.
 6. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
 7. Shape the batch into independent worker lanes and choose the batch-size
    target before final lane packing. Codex-targeted waves may use up to 10
-   fully independent file-disjoint items, or 8 when verified file-disjoint lanes
+   fully independent items, or 8 when verified independent lanes
    touch shared or risky surfaces. Claude and generic waves use up to 5
-   independent items, or 3 under those same shared/risky conditions. Overlapping
-   or `UNKNOWN` path lanes are sequenced, deferred, or run as serial discovery;
+   independent items, or 3 under those same shared/risky conditions. File
+   overlap is an integration advisory; issue-authored semantic dependencies are
+   the only ordering constraints. Record any non-safety coordination override in
+   the Batch Plan and affected Lane Cards; it cannot alter protected gates.
+   `UNKNOWN` path lanes run as serial discovery;
    never count them as parallel capacity. Propose a smaller first batch when
    live coordination, CI, approval, or quota health is uncertain. For multiple
    concurrent batches, keep this as a per-wave cap and apply the target repo's
@@ -281,7 +285,8 @@ omit the queue summary and note that queue state is unavailable.
    canonical high-risk trigger, require `MODEL_ESCALATION_REQUEST`. Prefer
    stronger-model plan review followed by implementation on the initial tier.
    Group lanes by model/effort preference without combining ownership,
-   dependencies, collision ordering, or wave schedule. When a known host's
+   issue-authored semantic dependencies, active-reservation coordination, or
+   wave schedule. When a known host's
    roster is unavailable, use portable dispatch-resolved initial and escalation
    classes. Keep an unresolved preference `UNKNOWN`; it never alone blocks the
    prompt, launch, or readiness. Give every lane whose risk or bounded delegation

@@ -1585,7 +1585,7 @@ class BatchPlanPreflightTest < Minitest::Test
                     "qa-not-required-rationale-missing"
   end
 
-  def test_same_wave_shared_path_without_edit_serialization_is_rejected
+  def test_same_wave_shared_path_is_accepted_with_an_integration_advisory
     lanes = [lane("lane-a"), lane("lane-b")]
     maps = {
       "lane-a" => touch_map(1, ["CHANGELOG.md"]),
@@ -1593,10 +1593,11 @@ class BatchPlanPreflightTest < Minitest::Test
     }
     result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps))
 
-    refute status.success?
-    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
-    assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
-    assert_includes collision.fetch("message"), "CHANGELOG.md"
+    assert status.success?
+    assert_empty result.fetch("violations")
+    advisory = result.fetch("advisories").find { |item| item.fetch("code") == "file-overlap-advisory" }
+    assert_equal %w[lane-a lane-b], advisory.fetch("lane_ids")
+    assert_includes advisory.fetch("message"), "CHANGELOG.md"
   end
 
   def test_expansion_path_reservations_are_optional_and_disjoint_reservations_are_accepted
@@ -1623,12 +1624,18 @@ class BatchPlanPreflightTest < Minitest::Test
     collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
     assert_equal %w[lane-a lane-b], collision.fetch("lane_ids")
     assert_includes collision.fetch("message"), "lib/expanded.rb"
+    advisory = result.fetch("advisories").find { |item| item.fetch("code") == "file-overlap-advisory" }
+    assert_equal %w[lane-a lane-b], advisory.fetch("lane_ids")
+    assert_includes advisory.fetch("message"), "lib/expanded.rb"
 
     lanes.each { |record| record["serialization_group"] = "expanded-path-writers" }
     groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
     result, stderr, status = evaluate(input_for(lanes: lanes, groups: groups, reservations: reservations))
     assert status.success?, stderr
     assert_equal "accepted", result.fetch("status")
+    advisory = result.fetch("advisories").find { |item| item.fetch("code") == "file-overlap-advisory" }
+    assert_equal %w[lane-a lane-b], advisory.fetch("lane_ids")
+    assert_includes advisory.fetch("message"), "lib/expanded.rb"
   end
 
   def test_typed_edit_edge_does_not_replace_max_one_serialization_for_reserved_paths
@@ -1952,7 +1959,7 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal lanes.map { |record| record.fetch("id") }, cap.fetch("lane_ids")
   end
 
-  def test_directory_rename_endpoints_collide_with_descendant_touches
+  def test_directory_rename_endpoints_are_reported_as_integration_advisories
     %w[old new].each do |endpoint|
       lanes = [lane("lane-a"), lane("lane-b")]
       descendant = "lib/#{endpoint}/nested.rb"
@@ -1965,10 +1972,11 @@ class BatchPlanPreflightTest < Minitest::Test
 
       result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps))
 
-      refute status.success?, endpoint
-      collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
-      assert_equal %w[lane-a lane-b], collision.fetch("lane_ids"), endpoint
-      assert_includes collision.fetch("message"), descendant, endpoint
+      assert status.success?, endpoint
+      assert_empty result.fetch("violations"), endpoint
+      advisory = result.fetch("advisories").find { |item| item.fetch("code") == "file-overlap-advisory" }
+      assert_equal %w[lane-a lane-b], advisory.fetch("lane_ids"), endpoint
+      assert_includes advisory.fetch("message"), descendant, endpoint
     end
   end
 
@@ -2317,24 +2325,18 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["consumer"], result.dig("launch", "held_lane_ids")
   end
 
-  def test_satisfied_edit_edge_does_not_exempt_two_patch_enabled_incomplete_lanes
+  def test_file_overlap_does_not_create_a_semantic_dependency
     lanes = [lane("foundation"), lane("consumer")]
     maps = {
       "foundation" => touch_map(1, ["CHANGELOG.md"]),
       "consumer" => touch_map(2, ["CHANGELOG.md"])
     }
-    edges = [{
-      "id" => "foundation-before-consumer",
-      "from" => "foundation",
-      "to" => "consumer",
-      "type" => "edit"
-    }]
-    result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps, edges: edges))
+    result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps, edges: []))
 
-    refute status.success?
-    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
-    assert_equal %w[consumer foundation], collision.fetch("lane_ids")
-    assert_empty result.dig("launch", "eligible_lane_ids")
+    assert status.success?
+    assert_equal %w[consumer foundation], result.dig("launch", "eligible_lane_ids").sort
+    advisory = result.fetch("advisories").find { |item| item.fetch("code") == "file-overlap-advisory" }
+    assert_equal %w[consumer foundation], advisory.fetch("lane_ids")
   end
 
   def test_edit_edge_overlap_is_safe_after_durable_predecessor_completion
@@ -2557,11 +2559,14 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal(
       {
         "qa-required-for-risky-surface" => 5,
-        "unsafe-concurrent-edit" => 10,
         "backend-risky-cap-exceeded" => 1,
         "external-api-support-blocks-implementation" => 1
       },
       result.fetch("violations").map { |item| item.fetch("code") }.tally
+    )
+    assert_equal(
+      { "file-overlap-advisory" => 10 },
+      result.fetch("advisories").map { |item| item.fetch("code") }.tally
     )
   end
 
@@ -2814,7 +2819,7 @@ class BatchPlanPreflightTest < Minitest::Test
                     "file-touch-map-shape-invalid"
   end
 
-  def test_validation_open_and_merge_order_edges_do_not_make_concurrent_edits_safe
+  def test_validation_open_and_merge_order_edges_do_not_turn_overlap_into_a_launch_blocker
     %w[validation_open merge_order].each do |edge_type|
       lanes = [lane("lane-a"), lane("lane-b")]
       maps = {
@@ -2824,9 +2829,10 @@ class BatchPlanPreflightTest < Minitest::Test
       edges = [{ "id" => "#{edge_type}-edge", "from" => "lane-a", "to" => "lane-b", "type" => edge_type }]
       result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps, edges: edges))
 
-      refute status.success?, edge_type
-      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                      "unsafe-concurrent-edit", edge_type
+      assert status.success?, edge_type
+      assert_empty result.fetch("violations"), edge_type
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "file-overlap-advisory", edge_type
     end
   end
 

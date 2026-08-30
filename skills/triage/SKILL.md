@@ -119,8 +119,9 @@ Build a complete current-state inventory for the requested repo or repos:
 - Live coordination state from the selected backend: active claims, live/stale/dead
   heartbeats, blocked lanes, done-but-unmerged work, and dependency
   `blocked_on` refs.
-- A dependency-ordered worklist with the critical path and items that should not
-  run concurrently.
+- A dependency-ordered worklist with the critical path. Issue-authored semantic
+  dependencies are authoritative; file overlap is an integration advisory, not
+  an inferred ordering edge.
 - One persisted `stage-dependency-plan` v1 file for the complete inventory graph
   and a separate `stage-dependency-gate` v1 live replay, using the exact schemas
   from `workflows/pr-processing.md` -> **Stage-Typed Dependency Gate**. The
@@ -185,15 +186,16 @@ precise blocker.
 
 3. First cap the current wave to the selected host-aware item limit, then split
    only those capped items into up to `N` non-empty groups, honoring
-   dependencies, file/risk disjointness, package boundaries, release gates,
+   issue-authored semantic dependencies, consequence/risk care, package boundaries, release gates,
    cross-repo sequencing, and the host-aware `$pr-batch` per-wave cap from
    `workflows/pr-processing.md`:
-   - `codex`: up to 10 independent file-disjoint items, or 8 when verified
-     file-disjoint lanes touch shared/risky surfaces.
-   - `claude` or `generic`: up to 5 independent file-disjoint items, or 3 under
+   - `codex`: up to 10 independent items, or 8 when verified
+     lanes touch shared/risky surfaces.
+   - `claude` or `generic`: up to 5 independent items, or 3 under
      those same shared/risky conditions.
-   - Overlapping or `UNKNOWN` path lanes are sequenced, deferred, or run as
-     serial discovery; never count them as parallel capacity.
+   - Ordinary overlapping paths remain parallel capacity and are recorded as
+     integration advisories. Only `UNKNOWN` path evidence stays a serial discovery
+     lane; active expansion reservations retain their separate max-one gate.
    Use the prompt target selected for each generated `$pr-batch` prompt; an
    explicit user-requested host or paste destination wins, otherwise use the
    detectable current host, or `generic` when detection is ambiguous.
@@ -208,7 +210,7 @@ precise blocker.
    escalation route, not a starting assignment: a worker must emit a
    `MODEL_ESCALATION_REQUEST` with evidence before the coordinator authorizes
    replacement or review. Collate matching routes without changing
-   dependencies, collision ordering, or wave caps. If neither exact pairs nor
+   dependencies, active-reservation coordination, or wave caps. If neither exact pairs nor
    initial/escalation class-and-effort preferences can be named, keep the
    preference `UNKNOWN`; it never alone blocks prompt readiness or launch.
    Prefer a fresh strongest-capability checker instance distinct from every
@@ -274,7 +276,7 @@ precise blocker.
    backlog/next wave instead of packing oversized groups. If actionable work has
    fewer items than available slots, report the idle slots instead of creating
    empty groups.
-4. Keep dependencies inside a group where practical. When a dependency must cross
+4. Keep issue-authored semantic dependencies inside a group where practical. When a dependency must cross
    groups, express it as a `depends_on` ref for the batch state and preserve its
    typed edge in the shared `stage-dependency-plan` v1 file and live replay.
    Re-evaluate the affected group after capacity placement; never convert a
@@ -286,22 +288,22 @@ precise blocker.
    `Scope` data and carry the complete live replay inline or name its durable
    reference; persist or deliver both artifacts with stable planning state.
    Backend storage is optional and must not be assumed.
-   Each generated prompt must include `Batch size target: <codex|claude|generic>;wave: <cap/items>`
+   Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
    with the selected target and current aggregate wave cap. Each generated prompt must include
    `Coordinator model/effort preference: <model/class>/<effort>.` and
    `Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.` and
    `Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses` and
    `Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop` and
-   `Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart` and
-   `Worker model/effort preferences:<initial>/<effort>-><lanes>;escalate <route> after MODEL_ESCALATION_REQUEST;max=N.`
+   `Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord` and
+   `Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`
    In the v1 budget form, `A/R/L` is aggregate/coordinator/lane limits, `W/P/H` is
    warning/approval-or-pause/hard-stop thresholds, `a/d` is freshness
    age/delegation threshold, and `S/T/I/D` is the exact state
    path/trusted-plan path/id/digest; substitute the actual values rather than
    those field initials.
    It must also say `Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.`
-   and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch:<lane>:<dispatcher>@<route>;fallback <...|none>;auth=<y|n>;ordinary pending/active lifecycle.` It must include this exact self-contained completion line:
-   `- Deps:v1 edit|validation_open|merge_order;missing/UNKNOWN/stale=>closed;combined-tip@seam`
+   and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle` It must include this exact self-contained completion line:
+   `- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.`
    Each prompt must also include this exact compact scope line:
    `Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.`
    Each prompt must include these exact compact launch lines:
