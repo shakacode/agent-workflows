@@ -23,12 +23,12 @@ coordinator does not calculate an adaptive target or silently tune a threshold.
 
 | State | Coordinator action | Durable or live result |
 | --- | --- | --- |
-| Set the window | Record the concurrent task target, next availability, mode (`attended` or `overnight`), and any operator override. Refresh the authorized task list and current dependencies before launch. | One current operator card and a ready-task list. |
-| Classify the portfolio | Once per attended session and before every unattended launch wave, refresh every open PR and active task/run record. Classify each as `accelerate`, `continue`, `hold`, `replace`, `close`, or `integration-ready` using current live state, value, explicit dependencies, conflicts, remaining work, and expected integration cost. | One current combined portfolio view that authorizes the next launch wave and integration order. |
-| Fill ready slots | Start the highest-priority authorized, dependency-ready tasks until the runnable count reaches the target. Append a compact GitHub run record for each execution; do not replace earlier run history. | Runnable work reaches the target without losing task-to-PR traceability. |
+| Set the window | Record the two operator inputs: concurrent task target and next availability. Derive `attended` mode from `available now`; otherwise use `overnight`. Record later plain-language overrides separately. Refresh the authorized task list and current dependencies before launch. | One current operator card with both inputs, the derived mode, and any overrides, plus a ready-task list. |
+| Classify the portfolio | Once per attended session and before every unattended launch wave, refresh every open PR and active task/run record. Classify each with the [canonical portfolio dispositions](https://github.com/shakacode/agent-workflows/blob/50187b1eba2222d7c1abc39a5de7fd66a0d40443/docs/plans/2026-08-29-throughput-first-human-agent-workflow.md#r12--in-flight-portfolio-control-p1) as `accelerate`, `continue`, `hold`, `replace`, `close`, or `integration-ready` using current live state, value, explicit dependencies, conflicts, remaining work, and expected integration cost. | One current combined portfolio view that authorizes the next launch wave and integration order. |
+| Fill ready slots | While the running-task count is below the target and a host or service slot is available, start the highest-priority authorized, dependency-ready task. Append a compact GitHub run record for each execution; do not replace earlier run history. | Running-task count reaches the target when capacity provides enough active slots, without losing task-to-PR traceability. |
 | Attend | Keep ready slots filled while maintaining a queue of meaningful decisions. Present only the next-highest-priority question; routine status, mechanical retries, and safe local choices stay out of the queue. | One exact question for the operator and a durable queue behind it. |
 | Run overnight | Before the operator leaves, prefer work with deterministic done checks and no expected human decision. Record the next check or wake for each nonterminal run, and prepare every conceptual section of likely PR walkthroughs in advance. | Independent work can finish or reach an honest blocked state without waiting for routine input. |
-| Wait on a dependency | Complete independent preparation, then checkpoint the task and record the exact dependency or blocker. Use one exact-time heartbeat when a safe retry time is known; otherwise use a deterministic state-change watcher or the bounded backed-off fallback. A task waiting for human input gets no monitor. If the slot can be released, fill it with the next ready task; otherwise record that it remains occupied. | Waiting is visible, dependency-aware, bounded, and does not cause noisy polling or fictitious capacity. |
+| Wait on a dependency | Complete independent preparation, then checkpoint the task and record the exact dependency or blocker. For an external blocker with an exact future retry time, use one same-thread heartbeat only when the blocker can clear without input, the checkpoint is durable, the host can inspect, update, and stop the schedule, and automatic follow-ups remain enabled. If any heartbeat condition fails, create no automation and preserve exact manual-resume instructions. For a separately eligible autonomously clearable state-change blocker, use a deterministic watcher or bounded-backoff fallback. A task waiting for human input gets no monitor. If the slot can be released, fill it with the next ready task; otherwise record that it remains occupied. | Waiting is visible, dependency-aware, bounded, and does not cause noisy polling or fictitious capacity. |
 | Return and review | At the availability time, refresh GitHub rather than trusting cached run records. Review current heads, checks, reviews, unresolved threads, dependencies, and merge state across the active PRs; then update each run record and select the next integration or decision. | A live PR view, an ordered decision queue, and a current integration choice. |
 | Walk through or retarget | Refresh the exact diff before using the prepared walkthrough map; rebuild stale sections and present one conceptual section at a time. Discard later prepared sections if an earlier discussion sends the work back to development. Apply simple non-safety overrides at the next safe checkpoint. | The operator gets a prepared, current walkthrough or an immediately visible new target, return time, queue order, hold, or priority. |
 
@@ -36,6 +36,8 @@ Each compact run record links the exact prompt source and its launch-time digest
 runner, observed machine, task, branch or PR, current state, meaningful blocker,
 and last material update. Put detailed provenance in the existing collapsed
 agent-details surface instead of making the operator scan it during live review.
+Issue [#560](https://github.com/shakacode/agent-workflows/issues/560) owns the
+canonical GitHub surface and append mechanism; this guide does not define them.
 
 ## Keep The Decision Queue Meaningful
 
@@ -52,23 +54,26 @@ During an overnight window, leave the queue durable and work on independent
 ready tasks until the recorded availability time.
 
 While the operator is unavailable, continue through routine choices with
-reversible best judgment and queue a concise question for later. Stop a task
-only when the missing answer changes the intended outcome, crosses the safety
-floor, or would cause a difficult-to-reverse external action.
+reversible best judgment and record them in the PR's agent details; do not add
+them to the decision queue. Queue one concise question and stop only when the
+missing answer changes the intended outcome, crosses the safety floor, or would
+cause a difficult-to-reverse external action.
 
 ## Make Overrides Easy And Bounded
 
 Plain instructions such as `set the task target to 3`, `I am back at 07:00
-HST`, `hold #123`, `review #456 first`, or `continue this run with coordination
-state UNKNOWN` take effect at the next safe checkpoint. Record the instruction,
-its effective time, and the resulting task or queue change; no configuration
-redesign is required.
+HST`, `hold #123`, or `review #456 first` take effect at the next safe
+checkpoint. Record the instruction, its effective time, and the resulting task
+or queue change; no configuration redesign is required.
 
 These routine overrides may change capacity, timing, ordering, holds, or an
 optional presentation choice. A named, visible override may also keep
-reversible work moving when bookkeeping, coordination, or telemetry is
-unavailable, provided the run record preserves the failure as `UNKNOWN` and no
-reliable ownership evidence contradicts the run. Overrides do not bypass
+reversible work that does not require ownership moving when bookkeeping,
+coordination, or telemetry is unavailable, provided the run record preserves
+the failure as `UNKNOWN`. An exact, independent ownership-requiring run with no
+dependency references may proceed with degraded coordination only after a
+direct claim succeeds. A refused claim stops the run; a timed-out or otherwise
+unknown claim outcome stops for reconciliation. Overrides do not bypass
 repository policy, trust or security checks, dependency gates, validation,
 review, merge authority, a failing correctness check, or a required human
 decision.
@@ -77,6 +82,8 @@ decision.
 
 - Use [`$batch-status`](../skills/batch-status/SKILL.md) for a read-only view
   that joins run coordination with live GitHub state.
+- Use [`$pr-monitoring`](../skills/pr-monitoring/SKILL.md) to refresh current
+  heads, checks, reviews, conflicts, unresolved threads, and merge readiness.
 - Use the [question and decision rules](../workflows/pr-processing.md#question-and-decision-handling)
   to distinguish a blocking question from a safe local decision.
 - Use the [goal-mode completion contract](../workflows/pr-processing.md#goal-mode-completion-contract)
