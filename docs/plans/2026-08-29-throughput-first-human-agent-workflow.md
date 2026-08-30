@@ -56,9 +56,10 @@ that every safety control is unnecessary.
 ## Requirement Priorities
 
 - **P0 — Governing:** R1 and R15.
-- **P1 — Stabilize now:** R3 through R8 and R10 through R13.
+- **P1 — Stabilize now:** R3 through R8, R10 through R13, and R2's
+  operator-set concurrency target.
 - **P2 — Learn from use:** R9 and R14.
-- **Deferred optimization:** automated scheduling in R2.
+- **Deferred optimization:** R2's adaptive or automated scheduling.
 
 In this document, SHALL is required, SHOULD is the expected default unless a
 documented reason applies, and MAY is optional.
@@ -106,11 +107,11 @@ missing answer changes the intended outcome, crosses the safety floor, or would
 cause a difficult-to-reverse external action.
 
 The operator SHALL be able to declare an attention interval such as “I am
-unavailable for six hours.” Work should be selected and prompted to maximize
+unavailable for six hours.” Work SHOULD be selected and prompted to maximize
 independent progress during that interval. A blocked worker records a visible
 stopped state. If the host can release or replace its slot, the next ready task
-may use it; if it cannot, the run record must say that capacity remains occupied
-rather than pretending replacement occurred.
+MAY use it; if it cannot, the run record SHALL say that capacity remains
+occupied rather than pretending replacement occurred.
 
 The operator SHOULD be able to request the next highest-priority queued
 decision. Code walkthroughs SHOULD prepare all conceptual sections in advance
@@ -204,12 +205,13 @@ individual audit does not edit other skills.
 
 Telemetry SHALL record the AI model and the Agent Workflows version observed at
 prompt creation and worker start. If the installed workflow changes during a
-long-running task, the next material run update records the new version.
+long-running task, the next material run update SHALL append a timestamped
+observation without rewriting the start value.
 
 A prompt-generation version is documentation, not proof that the worker kept
 using that version. Self-hosting work may deliberately upgrade the installed
 workflow during a task. Telemetry only needs to be directionally useful; it is
-not an accounting ledger that must reconstruct every instruction exactly. If a
+not an accounting ledger required to reconstruct every instruction exactly. If a
 version cannot be observed, record `UNKNOWN` and continue; an unavailable
 telemetry value is not a launch blocker.
 
@@ -233,7 +235,7 @@ globally unique run ID and idempotency key. A retry reuses that record rather
 than creating a duplicate task. After task creation, the launcher attaches the
 host task ID and advances the same run. If the durable write path is unavailable,
 a visible single-operator or no-backend override may proceed without turning a
-bookkeeping failure into a global stall; it must preserve the run ID locally
+bookkeeping failure into a global stall; it SHALL preserve the run ID locally
 and report that GitHub reconciliation remains due.
 
 Run state and outcome are separate. State uses a small useful vocabulary such
@@ -402,6 +404,20 @@ when the issue is already clear.
 The Agent Workflows revision observed at a particular moment. A recorded prompt
 version does not freeze an independently installed runtime.
 
+**Reliable coordination evidence**
+
+Current evidence from the repository's configured coordination source, such as
+an unexpired claim with a live heartbeat or an authenticated append-only run
+record that the source defines as live. A stale label, expired comment, or
+unverified self-report is not reliable evidence.
+
+**Contradictory live ownership**
+
+Reliable coordination evidence that two nonterminal workers simultaneously
+claim the same exclusive issue, PR, branch, or integration responsibility. A
+worker refuses the conflicting mutation until ownership is reconciled; ordinary
+file overlap across independently owned tasks is not contradictory ownership.
+
 ## Initial Operating Design
 
 ### Human-attention queue
@@ -460,7 +476,8 @@ Agent run: Codex on M5 — active — <task link>
 - Model observed by worker: <observed value or UNKNOWN>
 - Machine: <configured alias or observed host>
 - Workflow at prompt creation: <version or UNKNOWN>
-- Workflow observed by worker: <version or UNKNOWN>
+- Workflow observed at worker start: <version or UNKNOWN>
+- Later workflow observations: <timestamped append-only entries or none>
 - Branch and PR: <values or pending>
 - Resolved merge authority: <auto or ask>
 - State: <launch-pending, active, waiting, blocked, PR-ready, or completed>
@@ -482,16 +499,15 @@ The first implementation should:
 - use an issue body or maintainer comment as the detailed prompt;
 - use one readable shape across Codex, Claude, and generic hosts;
 - remove file-touch maps, abbreviated file-touch inputs, ad hoc coordination
-  diagnostics, and compressed workflow
-  restatements, token-abandonment budgets, and redundant outcome fields from
-  normal human input;
+  diagnostics, compressed workflow restatements, token-abandonment budgets, and
+  redundant outcome fields from normal human input;
 - record the launch source digest and lightweight timing at the launcher without
   waiting for the telemetry aggregation task;
 - record both prompt-generation and worker-observed workflow versions;
 - preserve append-only rerun history in collapsed details;
 - prefer compact `gh` or field-selected API queries;
 - resolve current live state at launch. In particular, #476 is now unblocked
-  after #479 and #486 merged, and work must use their current-base result rather
+  after #479 and #486 merged, and work SHALL use their current-base result rather
   than a pre-cut artifact from before those merges.
 
 Host prompt limits should change batch size, not force telegraphic vocabulary.
@@ -526,7 +542,7 @@ run set. Claude requires its own dispatcher or a copy-paste prompt.
 
 Every task starts by re-reading current GitHub state. A task with an unmet
 semantic dependency should use a task heartbeat or bounded, backed-off checks
-for up to the operator's unattended interval. It must not busy-poll, hold a
+for up to the operator's unattended interval. It SHALL not busy-poll, hold a
 working-tree lock, or ask the human merely because its dependency is still
 open.
 
@@ -568,6 +584,12 @@ simultaneously. When a documented semantic dependency is not ready, the task
 records `waiting`, uses a task heartbeat or backed-off checks for up to six
 hours, and proceeds when the dependency changes without asking the maintainer.
 
+Until this planning PR merges, each linked issue's outcome, required behavior,
+constraints, and prompt are the canonical launch contract. A task started from
+current `main` SHALL not depend on this unmerged file being present. The fenced
+prompts below are planning copies; a coordinator MAY additionally provide an
+exact commit/blob URL for rationale without replacing the issue contract.
+
 ### T1 — Publish the objective and cross-repository docs map
 
 - **Issue:** [agent-workflows-com#22](https://github.com/shakacode/agent-workflows-com/issues/22)
@@ -603,14 +625,13 @@ cheap launch timestamps directly; do not wait for #562's aggregation work.
 
 ```text
 Define and begin the smallest behavior-preserving modularization of PR-batch.
-Use the component boundaries in
-docs/plans/2026-08-29-throughput-first-human-agent-workflow.md, inventory current
-coupling, create one implementation issue per approved component, and extract
-only one component in this task. Keep workflows/pr-processing.md as an index
-and compatibility shim, avoid cross-component cleanup, and use focused
-validation before the full gate. If that plan is not final, poll its current
-review state with backed-off checks for up to six hours while completing the
-read-only coupling inventory.
+Use #559's outcome and constraints as the canonical pre-merge component
+contract, inventory current coupling, create one implementation issue per
+approved component, and extract only one component in this task. Keep
+workflows/pr-processing.md as an index and compatibility shim, avoid
+cross-component cleanup, and use focused validation before the full gate. If
+the planning PR is not final, poll its current review state with backed-off
+checks for up to six hours while completing the read-only coupling inventory.
 ```
 
 ### T4 — Audit every shipped skill under #189
@@ -620,7 +641,7 @@ read-only coupling inventory.
 
 ```text
 Audit the one skill named by this #189 sub-issue. Identify the minimum material
-that must always load, content that can be retrieved only when needed,
+required at initial load, content that can be retrieved only when needed,
 deterministic work suited to a helper or schema, necessary visible judgment,
 and obsolete or duplicated text. Comment with evidence and a no-change or
 smallest-follow-up recommendation. Do not edit files or another skill, and do
@@ -655,9 +676,9 @@ evidence.
   #476 prompt decisions.
 
 ```text
-Design the minimal GitHub prompt and append-only run-record format from
-docs/plans/2026-08-29-throughput-first-human-agent-workflow.md. Use issue bodies
-or maintainer comments, the one-line PR-batch shortcut,
+Design the minimal GitHub prompt and append-only run-record format from the
+outcome and required behavior in #560. Use issue bodies or maintainer comments,
+the one-line PR-batch shortcut,
 deterministic task names, and collapsed details for provenance. Keep visible
 state compact and make coordination optional. Include a globally unique run ID,
 source-content digest, observed workflow versions, separate state and outcome,
@@ -677,7 +698,7 @@ Implement host-capability-aware launch for an authorized run set. Create one
 user-visible Codex task per approved issue in a worktree, use a deterministic
 repository/issue/purpose title, and append its task, runner, machine, branch,
 and PR state to GitHub. Before task creation, persist a `launch-pending` record
-with a globally unique run ID and idempotency key; retries must reuse it. Provide
+with a globally unique run ID and idempotency key; retries SHALL reuse it. Provide
 a visible no-backend override and a copy-paste fallback for unsupported hosts.
 If the T7 run-record format is not ready, poll its issue with backed-off checks
 for up to six hours while completing the read-only capability inventory.
@@ -697,18 +718,19 @@ store raw prompts, responses, transcripts, or secrets, and do not build an
 adaptive scheduler or controlled-experiment framework.
 ```
 
-### T10 — Classify current in-flight PRs
+### T10 — Classify current in-flight PRs and tasks
 
 - **Issue:** [#563](https://github.com/shakacode/agent-workflows/issues/563).
 - **Start:** now; read-only.
 
 ```text
-Perform a read-only live portfolio audit of every open pull request in
-shakacode/agent-workflows. Refresh current base/head, conflicts, explicit issue
-dependencies, review and CI state, value, and remaining integration cost.
-Classify each PR as accelerate, continue, hold, replace, close, or
+Perform a read-only live portfolio audit of every open pull request and every
+active or recently completed task/run record in shakacode/agent-workflows.
+Refresh current base/head, conflicts, explicit issue dependencies, review and
+CI state, task ownership/status, value, and remaining integration cost.
+Classify each PR and task as accelerate, continue, hold, replace, close, or
 integration-ready and recommend an integration order. File overlap alone is
-not a dependency. Do not edit, close, merge, or message PRs.
+not a dependency. Do not edit, close, merge, or message PRs, issues, or tasks.
 ```
 
 ### T11 — Simplify conflict and dependency handling
@@ -717,10 +739,9 @@ not a dependency. Do not edit, close, merge, or message PRs.
 - **Start:** now; no dependency.
 
 ```text
-Implement the conflict policy in
-docs/plans/2026-08-29-throughput-first-human-agent-workflow.md: issue-authored
-semantic dependencies, file overlap advisory only, this repository's changelog
-deferral rule, and ordinary documentation conflicts deferred to integration.
+Implement the outcome and required behavior in #564: issue-authored semantic
+dependencies, file overlap advisory only, this repository's changelog deferral
+rule, and ordinary documentation conflicts deferred to integration.
 Expose a repository
 policy seam for changelog and generated-artifact handling instead of imposing a
 universal relaxation. Add a simple override for broken bookkeeping or
@@ -734,9 +755,8 @@ correctness gates. Keep the change small and add focused deterministic tests.
 - **Start:** now; document the simple process, not a scheduler.
 
 ```text
-Document the daily attended and overnight unattended loop from
-docs/plans/2026-08-29-throughput-first-human-agent-workflow.md. Cover the
-operator-set concurrency target, next human availability time, meaningful
+Document the outcome and coverage list in #565. Cover the operator-set
+concurrency target, next human availability time, meaningful
 decision queue, dependency-aware task waiting, GitHub task records, live PR
 portfolio review, and easy non-safety overrides. Use one compact state table and
 plain language. Do not design adaptive thresholds or require a comparison
@@ -752,7 +772,7 @@ capacity. A host that queues tasks may create the whole set immediately without
 claiming every task is consuming an active worker slot. A host without a
 separate queue treats its creation limit as the capacity limit.
 
-Each prompt states what can proceed immediately and what must wait for a
+Each prompt states what can proceed immediately and what waits for a
 documented GitHub dependency. A dependency-waiting task completes independent
 preparation first, then yields or releases its active slot when the host supports
 that behavior. T6 is deliberately parked.
