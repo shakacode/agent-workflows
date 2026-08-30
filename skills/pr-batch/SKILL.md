@@ -649,8 +649,8 @@ for the reviewed diff, and the full lowercase head SHA. The helper's v1
 length-delimited NUL-separated serialization is canonical; never substitute an
 opaque 64-hex value or caller-authored serialization. Any member change
 invalidates walkthrough, human-decision, CI, and receipt evidence.
-The bare ref `@` and any reflog syntax containing `@{` are noncanonical and
-rejected.
+The valid single-component Git branch name `@` is accepted; reflog syntax
+containing `@{` remains noncanonical and is rejected.
 The trusted coordinator must resolve that reviewed SHA from the trusted
 repository. `merge-assurance` authenticates and canonically binds the supplied
 value but intentionally does not query Git or prove ancestry itself.

@@ -37,7 +37,6 @@ module DiffIdentity
     return false unless value.is_a?(String)
     return false unless value.encoding == Encoding::UTF_8 && value.valid_encoding?
     return false if value.empty?
-    return false if value == "@"
     return false if value.bytes.any? { |byte| byte <= 0x20 || byte == 0x7f }
     return false if value.start_with?("-", "/") || value.end_with?("/", ".")
     return false if value.include?("..") || value.include?("@{") || value.include?("//")

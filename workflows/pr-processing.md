@@ -3983,8 +3983,8 @@ canonical nonempty Git refs and both SHAs must be exactly 40 lowercase hex
 characters. Changing the base ref, resolved base/effective merge-base SHA, or
 head SHA changes the identity and invalidates walkthrough, decision, CI, and
 merge-receipt evidence.
-The bare ref `@` and any reflog syntax containing `@{` are noncanonical and
-rejected.
+The valid single-component Git branch name `@` is accepted; reflog syntax
+containing `@{` remains noncanonical and is rejected.
 The trusted coordinator must resolve that reviewed SHA from the trusted
 repository. `merge-assurance` authenticates and canonically binds the supplied
 value but intentionally does not query Git or prove ancestry itself.

@@ -94,11 +94,15 @@ class DiffIdentityTest < Minitest::Test
     end
   end
 
-  def test_rejects_bare_at_and_embedded_reflog_syntax
-    ["@", "main@{1}"].each do |base_ref|
-      assert_raises(DiffIdentity::Error, base_ref.inspect) do
-        DiffIdentity.derive(base_ref:, base_sha: BASE_SHA, head_sha: HEAD_SHA)
-      end
+  def test_accepts_bare_at_as_a_canonical_git_branch_name
+    identity = DiffIdentity.derive(base_ref: "@", base_sha: BASE_SHA, head_sha: HEAD_SHA)
+
+    assert_match(/\A[0-9a-f]{64}\z/, identity)
+  end
+
+  def test_rejects_embedded_reflog_syntax
+    assert_raises(DiffIdentity::Error) do
+      DiffIdentity.derive(base_ref: "main@{1}", base_sha: BASE_SHA, head_sha: HEAD_SHA)
     end
   end
 
