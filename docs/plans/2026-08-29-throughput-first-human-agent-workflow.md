@@ -802,7 +802,8 @@ existing task, if any, and the resulting execution action: `create`, `resume`,
 `hold`, `replace after terminal`, or `no worker`. Map `continue` to resuming
 the existing task rather than creating a duplicate. Map `accelerate` to
 prioritizing and resuming its suitable existing task, or to creating exactly one
-task when none exists. `Hold`, `close`, and `integration-ready` create no worker;
+task when none exists. Map `hold` to the existing task's hold action, or to
+`no worker` when none exists. `Close` and `integration-ready` create no worker;
 `replace` creates a worker only after the prior ownership record is terminal.
 File overlap alone is not a dependency. Do not edit, close, merge, or message
 PRs, issues, or tasks.
@@ -850,18 +851,25 @@ available. Apply the operator's authorization only to that filtered execution
 set: resume the named existing tasks, create only lanes marked `create`, and do
 not create duplicates for `continue`, `hold`, `close`, or `integration-ready`.
 An `accelerate` action resumes the suitable existing task or creates exactly one
-when none exists; it never adds a second worker to the same lane. For `replace`,
-the parent rechecks the prior run. Under explicit operator or repository-policy
-replacement authority, it may append the terminal transition—with reason,
-evidence, authorizer/reference, and replacement run ID—only after the run has
-ended and no writer survives. A healthy prior run or missing replacement
-authority changes the action to `hold` and queues one decision instead of
-launching a duplicate. Then prompt the resulting T1, T2, T3, T4, T5, T7, T8,
-T9, T11, and T12 tasks at the same time so every active or queued task is visible
-and traceable. Begin active execution only up to the operator's target and the
-host's actual capacity. A host that queues tasks may create the whole filtered
-set immediately without claiming every task is consuming an active worker slot.
-A host without a separate queue treats its creation limit as the capacity limit.
+when none exists; it never adds a second worker to the same lane. For an existing
+task marked `hold`, the parent asks it to checkpoint at a safe boundary, pause or
+yield when the host supports that behavior, and record its actual task and slot
+state. It never reports a released slot while the worker remains occupied. A
+host that cannot pause or release records `waiting` with `hold requested` and
+the slot still occupied; a force-stop queues one decision unless explicit stop
+authority exists.
+For `replace`, the parent rechecks the prior run. Under explicit operator or
+repository-policy replacement authority, it may append the terminal
+transition—with reason, evidence, authorizer/reference, and replacement run
+ID—only after the run has ended and no writer survives. A healthy prior run or
+missing replacement authority changes the action to `hold` and queues one
+decision instead of launching a duplicate. Then prompt the resulting T1, T2,
+T3, T4, T5, T7, T8, T9, T11, and T12 tasks at the same time so every active or
+queued task is visible and traceable. Begin active execution only up to the
+operator's target and the host's actual capacity. A host that queues tasks may
+create the whole filtered set immediately without claiming every task is
+consuming an active worker slot. A host without a separate queue treats its
+creation limit as the capacity limit.
 
 Each prompt states what can proceed immediately and what waits for a
 documented GitHub dependency. A dependency-waiting task completes independent
