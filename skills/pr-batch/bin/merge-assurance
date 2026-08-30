@@ -72,6 +72,10 @@ module MergeAssurance
   AUTONOMOUS_RUNTIME_MANIFEST_KEYS = %w[
     helper
     closeout-helper
+    diff-identity-helper
+    ci-readiness-helper
+    merge-assurance-helper
+    merge-submit-helper
     decision-library
     evidence-library
     policy-library

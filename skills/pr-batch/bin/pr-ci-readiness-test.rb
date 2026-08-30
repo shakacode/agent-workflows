@@ -4263,7 +4263,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_empty_queued_check_suite_without_published_checks_is_ignored
+  def test_empty_queued_check_suite_without_published_checks_fails_closed
     head = "a" * 40
     runner = PrCiReadiness::Runner.new
     runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
@@ -4281,9 +4281,9 @@ class PrCiReadinessCliTest < Minitest::Test
 
     rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
 
-    assert complete, error
+    refute complete
     assert_empty rows
-    assert_nil error
+    assert_includes error, "latest-run inventory was empty"
   end
 
   def test_empty_nonqueued_or_malformed_check_suite_is_not_complete

@@ -3562,9 +3562,8 @@ review-agent checks for advisory reviewer completion. Run these under the
 current tool's timeout or a shell timeout when available:
 
 ```bash
-# Resolve PR_BATCH_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
-PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
+# Bind TRUSTED_PR_BATCH_SKILL_DIR through an authenticated runtime route below.
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
   --repo <OWNER/REPO> \
   --trusted-repo-root "$(git rev-parse --show-toplevel)" \
   --diff-base-sha <REVIEWED_DIFF_BASE_SHA>
@@ -3851,8 +3850,8 @@ Before saying a PR is ready to merge:
 
 ```bash
 gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels,latestReviews,reviews,comments,mergedAt
-# Resolve PR_BATCH_SKILL_DIR, then capture the machine-owned exact-head CI result.
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
+# Use the authenticated runtime's helper to capture machine-owned exact-head CI.
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
   --repo <OWNER/REPO> \
   --trusted-repo-root "$(git rev-parse --show-toplevel)" \
   --diff-base-sha "${DIFF_BASE_SHA}" \
@@ -4077,8 +4076,9 @@ For an independently verified installed pack, use
 `TRUSTED_PR_BATCH_SKILL_DIR` to the independently verified pack directory.
 The expected digest is trusted coordinator or installation
 state, not output learned from the helper being evaluated. The evaluator
-mechanically recomputes a length-framed manifest over the executing evaluator
-and closeout helpers, decision/evidence/policy/trust libraries (including
+mechanically recomputes a length-framed manifest over the executing evaluator,
+closeout, diff-identity, CI-readiness, merge-assurance, and merge-submit helpers,
+the decision/evidence/policy/trust libraries (including
 `autonomous_merge_runtime_trust.rb`), and selected calibration decision.
 For `trusted-base:<SHA>`, it instead compares every one of those runtime bytes
 with the claimed commit tree. A missing source or byte mismatch yields
@@ -4335,7 +4335,7 @@ REQUESTED_HOSTED_RUN_ARGS=()
 for run_id in "${REQUESTED_HOSTED_RUN_IDS[@]}"; do
   REQUESTED_HOSTED_RUN_ARGS+=(--requested-hosted-run "${run_id}")
 done
-"${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
   --context "${MERGE_CONTEXT_PATH}" \
@@ -4370,18 +4370,17 @@ multiplicity cannot receive an optional disposition. A missing or null retry
 timestamp, malformed timestamp, or tie is incomplete `UNKNOWN` evidence.
 Each suite must also expose a recognized status/conclusion pair and an exact
 `latest_check_runs_count` materialized by the paginated latest-run response.
-Ignore a queued suite with zero published checks as incidental. Other zero-run,
-mismatched, or phase-contradictory suites are incomplete `UNKNOWN` evidence,
-including apparently completed zero-run suites.
+Any zero-run, mismatched, or phase-contradictory suite is incomplete `UNKNOWN`
+evidence; a queued suite with no published checks cannot prove readiness.
 
 ### Exact-Head Merge Submission
 
 After the readiness gate passes, merge authority is explicit, and
 `merge-assurance` emits a fresh eligible receipt, use the same canonical GitHub
 host, base branch, and current head SHA that passed the gate for the final
-mutation. Resolve
-`PR_BATCH_SKILL_DIR` through the normal installed/shared or repo-pinned helper
-chain, then run:
+mutation. Reuse the authenticated `TRUSTED_PR_BATCH_SKILL_DIR` runtime that
+produced the gate evidence; a repo-local candidate helper chain is not trusted
+for the final mutation. Then run:
 
 ```bash
 # Reuse the same ordered run IDs that produced the merge-assurance receipt.
@@ -4389,7 +4388,7 @@ REQUESTED_HOSTED_RUN_ARGS=()
 for run_id in "${REQUESTED_HOSTED_RUN_IDS[@]}"; do
   REQUESTED_HOSTED_RUN_ARGS+=(--requested-hosted-run "${run_id}")
 done
-"${PR_BATCH_SKILL_DIR}/bin/pr-merge-submit" <PR> \
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/pr-merge-submit" <PR> \
   --repo <OWNER/REPO> \
   --host <GITHUB_HOST[:PORT]> \
   --expected-head <FULL_HEAD_SHA> \

@@ -4991,6 +4991,10 @@ class MergeAssuranceTest < Minitest::Test
     {
       "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
       "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
+      "diff-identity-helper" => "skills/pr-batch/bin/diff-identity",
+      "ci-readiness-helper" => "skills/pr-batch/bin/pr-ci-readiness",
+      "merge-assurance-helper" => "skills/pr-batch/bin/merge-assurance",
+      "merge-submit-helper" => "skills/pr-batch/bin/pr-merge-submit",
       "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
       "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
       "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",

@@ -173,6 +173,7 @@ class AutonomousMergeContractTest < Minitest::Test
 
     assert_equal 4, callers.length
     callers.each do |path, paragraph|
+      assert_includes paragraph, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness"', path
       assert_includes paragraph, '--trusted-repo-root "$(git rev-parse --show-toplevel)"', path
       assert_includes paragraph, "--diff-base-sha", path
     end
@@ -189,8 +190,28 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_equal 2, merge_callers.length
     assert_equal 1, submit_callers.length
     (merge_callers + submit_callers).each do |path, block|
+      helper = block.include?("/bin/merge-assurance") ? "merge-assurance" : "pr-merge-submit"
+      assert_includes block, "\"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/#{helper}\"", path
       assert_includes block, 'REQUESTED_HOSTED_RUN_ARGS+=(--requested-hosted-run "${run_id}")', path
       assert_includes block, '"${REQUESTED_HOSTED_RUN_ARGS[@]}"', path
+    end
+  end
+
+  def test_trusted_runtime_manifest_binds_every_merge_boundary_helper
+    expected = {
+      "diff-identity-helper" => "diff-identity",
+      "ci-readiness-helper" => "pr-ci-readiness",
+      "merge-assurance-helper" => "merge-assurance",
+      "merge-submit-helper" => "pr-merge-submit"
+    }
+
+    expected.each do |role, helper|
+      source = AutonomousMergeRuntimeTrust::RUNTIME_SOURCES.fetch(role)
+      assert_equal File.join(ROOT, "skills/pr-batch/bin", helper), source.fetch(:path)
+      assert_equal [
+        "skills/pr-batch/bin/#{helper}",
+        ".agents/skills/pr-batch/bin/#{helper}"
+      ], source.fetch(:tree_paths)
     end
   end
 

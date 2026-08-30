@@ -696,8 +696,8 @@ only app/name, that multiplicity cannot receive an optional disposition.
 A missing or null retry timestamp, malformed timestamp, or tie is `UNKNOWN`.
 Every suite also requires a recognized status/conclusion pair and an exact
 `latest_check_runs_count` materialized by the paginated latest-run response.
-Ignore a queued suite with zero published checks as incidental. Other zero-run,
-mismatched, or phase-contradictory suites are `UNKNOWN`.
+Any zero-run, mismatched, or phase-contradictory suite is `UNKNOWN`; a queued
+suite with no published checks cannot prove readiness.
 
 When a hosted workflow outside the ordinary GitHub check scopes is explicitly
 selected, add its exact `{provider, run_id}` to merge-context
@@ -734,7 +734,7 @@ REQUESTED_HOSTED_RUN_ARGS=()
 for run_id in "${REQUESTED_HOSTED_RUN_IDS[@]}"; do
   REQUESTED_HOSTED_RUN_ARGS+=(--requested-hosted-run "${run_id}")
 done
-"${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
   --context "${MERGE_CONTEXT_PATH}" \
