@@ -120,7 +120,7 @@ module BatchPlanPreflight
     item
   end
 
-  def result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: [])
+  def result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: [], advisories: [])
     {
       "type" => "batch-plan-preflight",
       "version" => 1,
@@ -130,7 +130,8 @@ module BatchPlanPreflight
         "held_lane_ids" => status == "accepted" ? held_lane_ids : [],
         "completed_lane_ids" => status == "accepted" ? completed_lane_ids : []
       },
-      "violations" => violations
+      "violations" => violations,
+      "advisories" => advisories
     }
   end
 
@@ -147,6 +148,7 @@ module BatchPlanPreflight
     lane_ids = lanes.map { |lane| lane["id"] }
     plan_violations = validate_plan(input["plan"])
     violations = plan_violations.dup
+    advisories = []
     violations.concat(validate_unknown_decisions(input["plan"]))
     plan_violation_codes = plan_violations.map { |item| item["code"] }
     lane_ids_valid = !plan_violation_codes.include?("lane-id-invalid-or-duplicate")
@@ -192,15 +194,18 @@ module BatchPlanPreflight
                       ))
     if file_touch_violations.empty? && reservation_violations.empty? && lane_ids_valid
       effective_maps = effective_file_touch_maps(input["file_touch_map"], expansion_path_reservations)
-      violations.concat(validate_collisions(
-                          lanes,
-                          input["plan"]["serialization_groups"],
-                          effective_maps,
-                          input["stage_dependency_plan"],
-                          input["stage_dependency_gate"],
-                          completed_lane_ids,
-                          expansion_path_reservations
-                        ))
+      collision_violations, collision_advisories =
+        validate_collisions(
+          lanes,
+          input["plan"]["serialization_groups"],
+          effective_maps,
+          input["stage_dependency_plan"],
+          input["stage_dependency_gate"],
+          completed_lane_ids,
+          expansion_path_reservations
+        )
+      violations.concat(collision_violations)
+      advisories = collision_advisories
       if changed_surfaces_valid
         violations.concat(validate_caps(
                             input["plan"]["backend"],
@@ -229,7 +234,14 @@ module BatchPlanPreflight
       else
         [[], []]
       end
-    result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: completed_lane_ids.sort)
+    result(
+      status,
+      eligible_lane_ids,
+      held_lane_ids,
+      violations,
+      completed_lane_ids: completed_lane_ids.sort,
+      advisories: advisories
+    )
   end
 
   def validate_plan(plan)
@@ -954,46 +966,41 @@ module BatchPlanPreflight
       permissions.values.all? { |value| [true, false].include?(value) }
   end
 
-  def validate_collisions(lanes, groups, maps, dependency_plan, gate, completed_lane_ids, reservations)
+  def validate_collisions(lanes, groups, maps, _dependency_plan, _gate, _completed_lane_ids, reservations)
     lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
     lane_ids = lanes_by_id.keys.sort
-    gate_lanes = Array(gate.is_a?(Hash) ? gate["lanes"] : nil).filter_map do |lane|
-      [lane["id"], lane] if lane.is_a?(Hash)
-    end.to_h
-    collisions = []
+    violations = []
+    advisories = []
     lane_ids.combination(2) do |left_id, right_id|
       collision_paths = colliding_paths(maps.fetch(left_id), maps.fetch(right_id))
       next if collision_paths.empty?
       next if lanes_by_id.fetch(left_id)["wave"] != lanes_by_id.fetch(right_id)["wave"]
-      next if serialized_by_group?(lanes_by_id.fetch(left_id), lanes_by_id.fetch(right_id), groups)
 
       reservation_collision = collision_paths.any? do |path|
         reservations.any? do |reservation|
           [left_id, right_id].include?(reservation["lane_id"]) && reservation_collides_with_path?(reservation, path)
         end
       end
-      next if !reservation_collision && serialized_by_edit_edge?(
-        left_id,
-        right_id,
-        dependency_plan.fetch("edges"),
-        gate_lanes,
-        completed_lane_ids
-      )
-
-      serialization_requirement = if reservation_collision
-                                    "max-1 serialization"
-                                  else
-                                    "max-1 serialization or a typed edit edge"
-                                  end
-      collisions << violation(
-        "unsafe-concurrent-edit",
+      advisories << violation(
+        "file-overlap-advisory",
         "$.file_touch_map",
-        "Same-wave lanes share changed path(s) without #{serialization_requirement}: " \
+        "Same-wave lanes share changed path(s); treat this as integration care, not a launch dependency: " \
         "#{collision_paths.sort.join(', ')}.",
         lane_ids: [left_id, right_id]
       )
+      if reservation_collision
+        next if serialized_by_group?(lanes_by_id.fetch(left_id), lanes_by_id.fetch(right_id), groups)
+
+        violations << violation(
+          "unsafe-concurrent-edit",
+          "$.file_touch_map",
+          "Same-wave lanes share active expansion reservation path(s) without max-1 serialization: " \
+          "#{collision_paths.sort.join(', ')}.",
+          lane_ids: [left_id, right_id]
+        )
+      end
     end
-    collisions
+    [violations, advisories]
   end
 
   def colliding_paths(left_map, right_map)
@@ -1023,19 +1030,6 @@ module BatchPlanPreflight
 
     groups.is_a?(Array) && groups.any? do |group|
       group.is_a?(Hash) && group["id"] == group_id && group["max_concurrency"] == 1
-    end
-  end
-
-  def serialized_by_edit_edge?(left_id, right_id, edges, gate_lanes, completed_lane_ids)
-    edit_edge = edges.any? do |edge|
-      edge.is_a?(Hash) && edge["type"] == "edit" &&
-        [[left_id, right_id], [right_id, left_id]].include?([edge["from"], edge["to"]])
-    end
-    return false unless edit_edge
-    return true if completed_lane_ids.include?(left_id) || completed_lane_ids.include?(right_id)
-
-    [left_id, right_id].any? do |lane_id|
-      gate_lanes.dig(lane_id, "permissions", "patch_edit") != true
     end
   end
 

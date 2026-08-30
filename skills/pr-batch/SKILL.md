@@ -308,8 +308,8 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
 8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
    user-requested host or paste destination wins. Use `codex` for up to 10
-   independent file-disjoint items, or 8 when shared/risky conditions apply.
-   Use `claude` for up to 5 independent file-disjoint items, or 3 under those
+   independent items, or 8 when shared/risky conditions apply.
+   Use `claude` for up to 5 independent items, or 3 under those
    same conditions. Items with `UNKNOWN` path evidence stay serial discovery
    lanes. Use the Claude-sized 5/3 limit for `generic` unless a larger host
    capacity is explicitly verified.
@@ -450,7 +450,8 @@ Before implementation or worker launch, produce:
    durable ad-hoc override field and its repository-qualified stable
    coordination identity. Put the same values in the plan/preflight input and
    reject a missing, changed, duplicate, or `UNKNOWN` identity before dispatch.
-9. A conflict check for overlapping files or dependent PRs.
+9. An integration-advisory check for overlapping files plus the authoritative
+   issue-authored dependency check for dependent PRs.
 10. The selected batch-size target and wave split: `codex` up to 10/8,
     `claude` up to 5/3, or `generic` up to 5/3, with spillover assigned to
     later waves instead of overfilling the current one.
@@ -727,7 +728,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
+Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
@@ -924,7 +925,9 @@ events `claim.acquired`, `claim.released`, or `phase.changed`.
 
 Follow the canonical
 [Worker Rules](../../workflows/pr-processing.md#worker-rules) and keep one target
-or one disjoint lane per worker. Every file-editing worker runs in its own
+or one semantic lane per worker. Ordinary file overlap does not require
+file-disjoint workers or launch serialization; record it for integration. Every
+file-editing worker runs in its own
 worktree so two workers never share one working directory — Codex or
 multi-machine workers use `git worktree add`; in-process Claude Code
 `Agent`/`Workflow` subagents pass `isolation: 'worktree'`. The main agent owns
@@ -940,11 +943,12 @@ unchanged repository-qualified canonical launch identity, and `Ad-hoc
 override: none` or every accepted durable override field when lane
 risk or bounded delegation required one. Unavailable route
 observations remain field-granular `UNKNOWN`.
+Follow the canonical [Dependency And Conflict Throughput Policy](../../workflows/pr-processing.md#dependency-and-conflict-throughput-policy): issue-authored semantic dependencies are the only ordering edges; file overlap is an integration advisory. Record any operational non-safety coordination override in the Batch Plan and affected Lane Cards; it may set aside only its specifically evidenced stale/broken bookkeeping or coordination stop and cannot alter protected gates.
 For host-aware sizing, Codex-targeted waves may use up to 10 independent
-file-disjoint lanes, or 8 when shared/risky conditions apply.
+lanes, or 8 when shared/risky conditions apply.
 Claude and generic waves use up to 5 lanes, or up to 3 under those same
 conditions. Keep `UNKNOWN` path lanes serial until discovery resolves their real
-paths. Queue spillover as later waves rather than overfilling the active worker
+paths. File overlap is an integration advisory; issue-authored semantic dependencies remain the only ordering edges. Queue spillover as later waves rather than overfilling the active worker
 set. Preserve the coordinator model/effort preference and each lane's staged
 worker model/effort preference at dispatch. Keep worker requested preferences
 distinct from the coordinator preference; if the dispatcher or runtime inherits
