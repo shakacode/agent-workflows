@@ -1818,6 +1818,26 @@ class TrustedBaseHighRiskOperations
       return [false, "trusted checkout branch could not be resolved: #{ref_stderr.to_s.lines.first&.strip}"]
     end
 
+    _staged_stdout, staged_stderr, staged_status = capture_trusted_git_probe(
+      "-C", root, "diff", "--cached", "--quiet", "--no-ext-diff", "HEAD", "--"
+    )
+    if staged_status.respond_to?(:exitstatus) && staged_status.exitstatus == 1
+      return [false, "trusted checkout has staged tracked changes"]
+    end
+    unless staged_status&.success?
+      return [false, "trusted checkout staged state could not be verified: #{staged_stderr.to_s.lines.first&.strip}"]
+    end
+
+    _worktree_stdout, worktree_stderr, worktree_status = capture_trusted_git_probe(
+      "-C", root, "diff", "--quiet", "--no-ext-diff", "HEAD", "--"
+    )
+    if worktree_status.respond_to?(:exitstatus) && worktree_status.exitstatus == 1
+      return [false, "trusted checkout has tracked working-tree changes"]
+    end
+    unless worktree_status&.success?
+      return [false, "trusted checkout working-tree state could not be verified: #{worktree_stderr.to_s.lines.first&.strip}"]
+    end
+
     [true, nil]
   rescue StandardError => e
     [false, "could not verify trusted checkout against fetched base: #{e.message.lines.first&.strip}"]
@@ -2029,6 +2049,8 @@ def timeline_connection_page_query(graph_field)
         #{graph_field}(number:$number) {
           timelineItems(first:100, after:$after) {
             totalCount
+            filteredCount
+            pageCount
             pageInfo { hasNextPage endCursor }
             nodes {
               #{fragment}
@@ -2240,12 +2262,104 @@ def graph_timeline_matches_rest?(nodes, rest_items, reported_total_count:)
     graph_cross_reference_ids_by_facts.empty?
 end
 
-def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:, connection_name:)
+def graph_timeline_matches_complete_rest?(nodes, rest_items, reviews:, review_comments:, reported_total_count:)
+  return false unless graph_timeline_matches_rest?(nodes, rest_items, reported_total_count:)
+  return false unless reviews.is_a?(Array) && review_comments.is_a?(Array)
+
+  reviews_by_id = {}
+  review_ids_by_node = {}
+  reviews.each do |review|
+    return false unless review.is_a?(Hash)
+
+    id = review["id"]
+    node_id = review["node_id"]
+    login = review.dig("user", "login")
+    state = review["state"]
+    submitted_at = review["submitted_at"]
+    return false unless id.is_a?(Integer) && id.positive?
+    return false if [node_id, login, state, submitted_at].any? { |value| value.to_s.empty? }
+    return false if reviews_by_id.key?(id) || review_ids_by_node.key?(node_id)
+
+    reviews_by_id[id] = review
+    review_ids_by_node[node_id] = id
+  end
+
+  comments_by_id = {}
+  comment_ids_by_node = {}
+  comments_by_review_id = Hash.new { |hash, key| hash[key] = [] }
+  review_comments.each do |comment|
+    return false unless comment.is_a?(Hash)
+
+    id = comment["id"]
+    node_id = comment["node_id"]
+    review_id = comment["pull_request_review_id"]
+    login = comment.dig("user", "login")
+    return false unless id.is_a?(Integer) && id.positive?
+    return false unless review_id.is_a?(Integer) && review_id.positive?
+    return false if node_id.to_s.empty? || login.to_s.empty?
+    return false if comments_by_id.key?(id) || comment_ids_by_node.key?(node_id)
+
+    review = reviews_by_id[review_id]
+    return false unless review
+    return false unless normalized_login(review.dig("user", "login")) == normalized_login(login)
+
+    comments_by_id[id] = comment
+    comment_ids_by_node[node_id] = id
+    comments_by_review_id[review_id] << comment
+  end
+
+  valid_reply_relationships = review_comments.all? do |comment|
+    reply_to_id = comment["in_reply_to_id"]
+    reply_to_id.nil? ||
+      (reply_to_id.is_a?(Integer) && reply_to_id.positive? &&
+       reply_to_id != comment["id"] && comments_by_id.key?(reply_to_id))
+  end
+  return false unless valid_reply_relationships
+
+  timeline_review_ids = Set.new
+  rest_items.each do |item|
+    next unless item["event"] == "reviewed"
+
+    id = item["id"]
+    review = reviews_by_id[id]
+    return false unless review && timeline_review_ids.add?(id)
+    return false unless item["node_id"] == review["node_id"]
+    return false unless normalized_login(item.dig("user", "login")) ==
+                        normalized_login(review.dig("user", "login"))
+    return false unless item["state"].to_s.casecmp?(review["state"].to_s)
+    return false unless item["submitted_at"] == review["submitted_at"]
+  end
+
+  reviews_by_id.each_key do |review_id|
+    next if timeline_review_ids.include?(review_id)
+
+    comments = comments_by_review_id[review_id]
+    return false if comments.empty? || comments.any? { |comment| comment["in_reply_to_id"].nil? }
+  end
+
+  non_review_timeline_count = rest_items.count { |item| item["event"] != "reviewed" }
+  independently_accounted_total = non_review_timeline_count + comments_by_review_id.size
+  independently_accounted_total == reported_total_count
+end
+
+def graph_timeline_filtered_cardinality_matches?(connection, accumulated_node_count:, initial_page_node_count:)
+  total_count = connection["totalCount"]
+  filtered_count = connection["filteredCount"]
+  page_count = connection["pageCount"]
+  return false unless [total_count, filtered_count, page_count].all? { |count| count.is_a?(Integer) && count >= 0 }
+
+  filtered_count <= total_count && page_count <= filtered_count &&
+    filtered_count == accumulated_node_count && page_count == initial_page_node_count
+end
+
+def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:, connection_name:, rest_context:)
   connection = target[connection_name]
   return unless connection.is_a?(Hash)
 
   nodes = connection["nodes"]
   return unless nodes.is_a?(Array)
+
+  initial_page_node_count = nodes.size
 
   timeline_total_may_include_non_nodes = graph_field == "pullRequest" && connection_name == "timelineItems"
 
@@ -2306,17 +2420,32 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
 
   return unless timeline_total_may_include_non_nodes && nodes.size != expected_total_count
 
+  unless graph_timeline_filtered_cardinality_matches?(
+    connection,
+    accumulated_node_count: nodes.size,
+    initial_page_node_count:
+  )
+    connection["nodes"] = nil
+    return
+  end
+
   rest_items = rest_pull_request_timeline("#{owner}/#{name}", number)
-  if graph_timeline_matches_rest?(nodes, rest_items, reported_total_count: expected_total_count)
+  if graph_timeline_matches_complete_rest?(
+    nodes,
+    rest_items,
+    reviews: rest_context&.fetch(:reviews, nil),
+    review_comments: rest_context&.fetch(:review_comments, nil),
+    reported_total_count: expected_total_count
+  )
     connection["verifiedNodeCount"] = nodes.size
   else
     connection["nodes"] = nil
   end
 end
 
-def append_target_graph_pages!(owner:, name:, number:, graph_field:, target:)
+def append_target_graph_pages!(owner:, name:, number:, graph_field:, target:, rest_context:)
   PAGINATED_CONNECTIONS.each do |connection_name|
-    append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:, connection_name:)
+    append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:, connection_name:, rest_context:)
   end
 end
 
@@ -2514,11 +2643,12 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
   target_is_pr = issue.key?("pull_request")
   graph_field = target_is_pr ? "pullRequest" : "issue"
   query = target_is_pr ? pr_query : issue_query
+  rest = rest_context(repo, number, include_pull_comments: target_is_pr, issue:, trust_config:, team_cache:)
   graph = fetch_target_graph(owner:, name:, number:, query:)
   target = graph.fetch("data").fetch("repository").fetch(graph_field)
   # Must run before visible_actor_logins: target aliases graph, so pagination
   # mutations must be in place before the visibility pass reads from graph.
-  append_target_graph_pages!(owner:, name:, number:, graph_field:, target:)
+  append_target_graph_pages!(owner:, name:, number:, graph_field:, target:, rest_context: rest)
   coverage_findings = graph_coverage_findings(
     target,
     include_target_author: target_is_pr,
@@ -2530,7 +2660,6 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     trust_config:,
     team_cache:
   )
-  rest = rest_context(repo, number, include_pull_comments: target_is_pr, issue:, trust_config:, team_cache:)
   visible = visible_actor_logins(graph, graph_field)
   visible.merge(visible_rest_actor_logins(rest))
   if include_reactions
@@ -2821,6 +2950,8 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
           }
           timelineItems(first:100) {
             totalCount
+            filteredCount
+            pageCount
             pageInfo { hasNextPage endCursor }
             nodes {
               #{PR_TIMELINE_NODES_FRAGMENT}

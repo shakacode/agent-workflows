@@ -2929,6 +2929,34 @@ class PrSecurityPreflightTest < Minitest::Test
         "refs/heads/main"
       )
       assert checkout_matches, checkout_error
+      untracked_path = File.join(repo_root, "untracked.txt")
+      File.write(untracked_path, "untracked content\n")
+      untracked_matches, untracked_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      assert untracked_matches, untracked_error
+      FileUtils.rm_f(untracked_path)
+      File.write(File.join(repo_root, "first.txt"), "dirty tracked content\n")
+      dirty_matches, dirty_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      refute dirty_matches
+      assert_equal "trusted checkout has tracked working-tree changes", dirty_error
+      git! "-C", repo_root, "restore", "--worktree", "first.txt"
+      File.write(File.join(repo_root, "first.txt"), "staged tracked content\n")
+      git! "-C", repo_root, "add", "first.txt"
+      staged_matches, staged_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      refute staged_matches
+      assert_equal "trusted checkout has staged tracked changes", staged_error
+      git! "-C", repo_root, "restore", "--staged", "--worktree", "first.txt"
       git! "-C", repo_root, "checkout", "--quiet", "-b", "same-commit-other-branch"
       refute operations.checkout_matches_fetched_base?(
         repo_root,
@@ -3419,6 +3447,25 @@ class PrSecurityPreflightTest < Minitest::Test
       assert status.success?, out
       assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
       assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_trusted_base_rejects_credentialed_wrong_user_and_wrong_repository_remotes
+    remote_urls = [
+      "https://token@github.com/owner/repo.git",
+      "ssh://mallory@github.com/owner/repo.git",
+      "https://github.com/other/repo.git"
+    ]
+
+    remote_urls.each do |remote_url|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        git! "-C", repo_root, "remote", "set-url", "origin", remote_url
+
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "must resolve to github.com/owner/repo over exact GitHub HTTPS or SSH"
+      end
     end
   end
 
@@ -4031,7 +4078,7 @@ class PrSecurityPreflightTest < Minitest::Test
       refute status.success?, out
       assert_equal 2, status.exitstatus
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
-      assert_includes out, "timelineItems nodes unavailable; reported total_count=2"
+      assert_includes out, "timelineItems nodes unavailable; reported total_count=3"
       assert_equal 2, graphql_call_count(log_path)
       assert_equal 1, timeline_api_call_count(log_path)
     end
@@ -4059,6 +4106,134 @@ class PrSecurityPreflightTest < Minitest::Test
     rest_items = [{ "event" => "commented", "node_id" => nil }]
 
     refute graph_timeline_matches_rest?(graph_nodes, rest_items, reported_total_count: 2)
+  end
+
+  def test_timeline_total_surplus_requires_exact_review_and_reply_accounting
+    graph_nodes = [
+      {
+        "id" => "commit-event-1",
+        "__typename" => "PullRequestCommit",
+        "commit" => { "oid" => "a" * 40 }
+      },
+      { "id" => "review-node-1", "__typename" => "PullRequestReview" }
+    ]
+    rest_items = [
+      { "event" => "committed", "node_id" => "commit-object-1", "sha" => "a" * 40 },
+      {
+        "event" => "reviewed",
+        "id" => 501,
+        "node_id" => "review-node-1",
+        "user" => { "login" => "reviewer" },
+        "state" => "commented",
+        "submitted_at" => "2026-08-30T04:00:00Z"
+      }
+    ]
+    reviews = [
+      {
+        "id" => 501,
+        "node_id" => "review-node-1",
+        "user" => { "login" => "reviewer" },
+        "state" => "COMMENTED",
+        "submitted_at" => "2026-08-30T04:00:00Z"
+      },
+      {
+        "id" => 502,
+        "node_id" => "review-node-2",
+        "user" => { "login" => "maintainer" },
+        "state" => "COMMENTED",
+        "submitted_at" => "2026-08-30T04:01:00Z"
+      }
+    ]
+    review_comments = [
+      {
+        "id" => 601,
+        "node_id" => "comment-node-1",
+        "pull_request_review_id" => 501,
+        "in_reply_to_id" => nil,
+        "user" => { "login" => "reviewer" }
+      },
+      {
+        "id" => 602,
+        "node_id" => "comment-node-2",
+        "pull_request_review_id" => 502,
+        "in_reply_to_id" => 601,
+        "user" => { "login" => "maintainer" }
+      }
+    ]
+
+    assert graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 3
+    )
+
+    refute graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 4
+    )
+    review_comments.last["in_reply_to_id"] = 999
+    refute graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 3
+    )
+    review_comments.last["in_reply_to_id"] = 601
+    reviews << reviews.first.dup
+    refute graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 3
+    )
+    reviews.pop
+    reviews.last["user"] = nil
+    refute graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 3
+    )
+    reviews.last["user"] = { "login" => "maintainer" }
+    review_comments.last["pull_request_review_id"] = 999
+    refute graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 3
+    )
+  end
+
+  def test_timeline_total_surplus_requires_exact_filtered_and_page_counts
+    connection = { "totalCount" => 3, "filteredCount" => 2, "pageCount" => 2 }
+    assert graph_timeline_filtered_cardinality_matches?(
+      connection,
+      accumulated_node_count: 2,
+      initial_page_node_count: 2
+    )
+
+    connection["filteredCount"] = 3
+    refute graph_timeline_filtered_cardinality_matches?(
+      connection,
+      accumulated_node_count: 2,
+      initial_page_node_count: 2
+    )
+    connection["filteredCount"] = 2
+    connection["pageCount"] = 1
+    refute graph_timeline_filtered_cardinality_matches?(
+      connection,
+      accumulated_node_count: 2,
+      initial_page_node_count: 2
+    )
   end
 
   def test_timeline_rest_reconciliation_rejects_empty_nodes_when_graphql_reported_items
@@ -5463,7 +5638,7 @@ class PrSecurityPreflightTest < Minitest::Test
           fi
         elif [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":2,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":3,"filteredCount":2,"pageCount":2,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}},{"id":"review-node-1","__typename":"PullRequestReview","author":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}}}
       JSON
         elif [ "$mode" = "trusted-base-high-risk" ]; then
           if [[ "$*" == *"after=participant-page-1"* ]]; then
@@ -5686,9 +5861,9 @@ class PrSecurityPreflightTest < Minitest::Test
       # raw GitHub REST pages in an outer array. An empty first page is `[[]]`.
       if [ "$1" = "api" ] && [ "$2" = "-H" ] && [ "$3" = "Accept: application/vnd.github+json" ] && [ "$4" = "repos/owner/repo/issues/123/timeline?per_page=100" ]; then
         if [ "$mode" = "timeline-total-includes-non-node-items" ]; then
-          printf '[[{"event":"committed","node_id":"commit-object-1","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]]'
+          printf '[[{"event":"committed","node_id":"commit-object-1","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"event":"reviewed","id":501,"node_id":"review-node-1","user":{"login":"justin808"},"state":"commented","submitted_at":"2026-08-30T04:00:00Z"}]]'
         elif [ "$mode" = "timeline-total-rest-identity-mismatch" ]; then
-          printf '[[{"event":"committed","node_id":"different-commit-object","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]]'
+          printf '[[{"event":"committed","node_id":"different-commit-object","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},{"event":"reviewed","id":501,"node_id":"review-node-1","user":{"login":"justin808"},"state":"commented","submitted_at":"2026-08-30T04:00:00Z"}]]'
         else
           printf '[[]]'
         fi
@@ -5723,7 +5898,11 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123/comments?per_page=100" ]; then
-        if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ]; then
+        if [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ]; then
+          cat <<'JSON'
+      [[{"id":601,"node_id":"comment-node-1","html_url":"https://github.com/owner/repo/pull/123#discussion_r601","pull_request_review_id":501,"in_reply_to_id":null,"user":{"login":"justin808"},"body":"Top-level review comment."},{"id":602,"node_id":"comment-node-2","html_url":"https://github.com/owner/repo/pull/123#discussion_r602","pull_request_review_id":502,"in_reply_to_id":601,"user":{"login":"justin808"},"body":"Maintainer reply."}]]
+      JSON
+        elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ]; then
           cat <<JSON
       [[{"id":901,"html_url":"https://github.com/owner/repo/pull/123#discussion_r901","user":{"login":"coderabbitai[bot]"},"body":"${blocked_review_body}"}]]
       JSON
@@ -5742,7 +5921,11 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123/reviews?per_page=100" ]; then
-        if [ "$mode" = "metadata-bot-review" ]; then
+        if [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ]; then
+          cat <<'JSON'
+      [[{"id":501,"node_id":"review-node-1","html_url":"https://github.com/owner/repo/pull/123#pullrequestreview-501","user":{"login":"justin808"},"body":"","state":"COMMENTED","submitted_at":"2026-08-30T04:00:00Z"},{"id":502,"node_id":"review-node-2","html_url":"https://github.com/owner/repo/pull/123#pullrequestreview-502","user":{"login":"justin808"},"body":"","state":"COMMENTED","submitted_at":"2026-08-30T04:01:00Z"}]]
+      JSON
+        elif [ "$mode" = "metadata-bot-review" ]; then
           cat <<JSON
       [[{"id":801,"html_url":"https://github.com/owner/repo/pull/123#pullrequestreview-801","user":{"login":"coderabbitai[bot]"},"body":"${blocked_review_body}"}]]
       JSON
