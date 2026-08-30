@@ -3,6 +3,10 @@
 > **Status:** Revised after maintainer review on 2026-08-30. This is the
 > working specification and execution map. It does not change workflow behavior
 > by itself.
+>
+> **Lifecycle:** This is temporary planning scaffolding, not a permanent
+> operator reference. After T1-T12 land or are explicitly superseded, prune it
+> to a concise outcome record and do not carry the full plan into worker prompts.
 
 ## Governing Objective
 
@@ -250,6 +254,10 @@ This availability choice accepts the residual risk that a backend outage hides
 another operator making the same assumption. The override is for a genuinely
 single-operator context; a repository that cannot accept that residual risk
 SHOULD disable it and wait for coordination recovery.
+When coordination recovers, the override SHALL reconcile its preserved run ID
+against durable claims for the same issue or PR. It SHALL flag any duplicate for
+an operator decision and prevent both runs from silently continuing as the sole
+owner; it does not automatically close, merge, or discard either run.
 
 Run state and outcome are separate. State uses a small useful vocabulary such
 as `launch-pending`, `active`, `waiting`, `blocked`, `PR-ready`, and `completed`.
