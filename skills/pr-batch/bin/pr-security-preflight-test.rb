@@ -40,24 +40,66 @@ TestSignaledCommandStatus = Struct.new(:termsig) do
   end
 end
 
-def resolve_process_state_executable(path: ENV.fetch("PATH", ""))
+def resolve_process_state_executable(path: ENV.fetch("PATH", ""), fixed_candidates: %w[/usr/bin/ps /bin/ps])
+  fixed_candidates.each do |candidate|
+    canonical_candidate = canonical_process_state_executable(candidate)
+    next unless canonical_candidate
+    next unless process_state_root_owned?(canonical_candidate)
+
+    return canonical_candidate
+  end
+
+  rejected_roots = [
+    File.realpath(File.expand_path("../../..", __dir__)),
+    File.realpath(Dir.tmpdir),
+    File.realpath(Dir.home)
+  ]
   candidates = path.split(File::PATH_SEPARATOR).filter_map do |directory|
     next if directory.empty?
     next unless File.absolute_path(directory) == directory
 
     File.join(directory, "ps")
   end
-  candidates.concat(%w[/usr/bin/ps /bin/ps])
   candidates.each do |candidate|
-    next unless File.absolute_path(candidate) == candidate
-    next unless File.file?(candidate) && File.executable?(candidate)
+    canonical_candidate = canonical_process_state_executable(candidate)
+    next unless canonical_candidate
+    next unless process_state_fallback_trusted?(canonical_candidate, rejected_roots:)
 
-    return File.realpath(candidate)
-  rescue ArgumentError, SystemCallError
-    next
+    return canonical_candidate
   end
 
   raise "ps is unavailable"
+end
+
+def canonical_process_state_executable(candidate)
+  return unless File.absolute_path(candidate) == candidate
+  return unless File.file?(candidate) && File.executable?(candidate)
+
+  File.realpath(candidate)
+rescue ArgumentError, SystemCallError
+  nil
+end
+
+def process_state_root_owned?(candidate)
+  File.stat(candidate).uid.zero?
+rescue SystemCallError
+  false
+end
+
+def process_state_fallback_trusted?(canonical_candidate, rejected_roots:, writable: File.method(:writable?))
+  return false if rejected_roots.any? do |root|
+    canonical_candidate == root || canonical_candidate.start_with?("#{root}#{File::SEPARATOR}")
+  end
+
+  candidate_ancestor = canonical_candidate
+  loop do
+    return false if writable.call(candidate_ancestor)
+
+    parent = File.dirname(candidate_ancestor)
+    return true if parent == candidate_ancestor
+
+    candidate_ancestor = parent
+  end
 end
 
 class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
@@ -2753,13 +2795,98 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_process_state_executable_resolves_a_non_fhs_path_candidate
-    Dir.mktmpdir("portable-ps", Dir.home) do |dir|
-      executable = File.join(dir, "ps")
-      File.write(executable, "#!/bin/sh\nexit 0\n")
-      FileUtils.chmod(0o755, executable)
+  def test_process_execution_liveness_ignores_path_shim_reporting_z_for_live_process
+    Dir.mktmpdir("untrusted-ps") do |dir|
+      shim = File.join(dir, "ps")
+      File.write(shim, "#!/bin/sh\nprintf 'Z\\n'\n")
+      FileUtils.chmod(0o755, shim)
+      previous_path = ENV.fetch("PATH", nil)
+      ENV["PATH"] = dir
+      running_pid = Process.spawn(RbConfig.ruby, "-e", "loop { sleep 1 }")
 
-      assert_equal File.realpath(executable), resolve_process_state_executable(path: dir)
+      assert process_executing?(running_pid)
+    ensure
+      ENV["PATH"] = previous_path
+      begin
+        Process.kill("KILL", running_pid) if running_pid
+      rescue Errno::ESRCH
+        nil
+      end
+      Process.waitpid(running_pid) if running_pid
+    end
+  end
+
+  def test_process_state_executable_rejects_home_path_shim
+    Dir.mktmpdir("untrusted-portable-ps", Dir.home) do |dir|
+      shim = File.join(dir, "ps")
+      File.write(shim, "#!/bin/sh\nprintf 'Z\\n'\n")
+      FileUtils.chmod(0o755, shim)
+
+      assert_raises(RuntimeError) do
+        resolve_process_state_executable(path: dir, fixed_candidates: [])
+      end
+    end
+  end
+
+  def test_process_state_executable_rejects_temp_path_candidates_and_aliases
+    Dir.mktmpdir("untrusted-portable-ps") do |dir|
+      install_process_state_executable(dir)
+      Dir.mktmpdir("portable-ps-alias", Dir.home) do |alias_parent|
+        alias_dir = File.join(alias_parent, "bin")
+        File.symlink(dir, alias_dir)
+
+        [dir, alias_dir].each do |candidate_dir|
+          assert_raises(RuntimeError) do
+            resolve_process_state_executable(path: candidate_dir, fixed_candidates: [])
+          end
+        end
+      end
+    end
+  end
+
+  def test_process_state_executable_rejects_repository_path_candidates_and_aliases
+    repository_root = File.expand_path("../../..", __dir__)
+    Dir.mktmpdir("untrusted-portable-ps", repository_root) do |dir|
+      install_process_state_executable(dir)
+      Dir.mktmpdir("portable-ps-alias", Dir.home) do |alias_parent|
+        alias_dir = File.join(alias_parent, "bin")
+        File.symlink(dir, alias_dir)
+
+        [dir, alias_dir].each do |candidate_dir|
+          assert_raises(RuntimeError) do
+            resolve_process_state_executable(path: candidate_dir, fixed_candidates: [])
+          end
+        end
+      end
+    end
+  end
+
+  def test_process_state_fallback_trust_allows_immutable_non_fhs_installation
+    candidate = "/nix/store/00000000000000000000000000000000-procps/bin/ps"
+    rejected_roots = [
+      File.realpath(File.expand_path("../../..", __dir__)),
+      File.realpath(Dir.tmpdir),
+      File.realpath(Dir.home)
+    ]
+
+    assert process_state_fallback_trusted?(
+      candidate,
+      rejected_roots:,
+      writable: ->(_path) { false }
+    )
+    refute process_state_fallback_trusted?(
+      candidate,
+      rejected_roots:,
+      writable: ->(path) { path == "/nix/store" }
+    )
+  end
+
+  def test_process_state_fixture_is_portable_without_fixed_ps_candidates
+    Dir.mktmpdir("portable-ps-fixture") do |dir|
+      executable = install_process_state_executable(dir, source_candidates: [])
+
+      assert File.executable?(executable)
+      assert system(executable)
     end
   end
 
@@ -4475,6 +4602,18 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   private
+
+  def install_process_state_executable(directory, source_candidates: %w[/usr/bin/ps /bin/ps])
+    source = source_candidates.find { |path| File.executable?(path) }
+    destination = File.join(directory, "ps")
+    if source
+      FileUtils.cp(source, destination)
+    else
+      File.write(destination, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, destination)
+    end
+    destination
+  end
 
   def assert_process_absent(pid)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
