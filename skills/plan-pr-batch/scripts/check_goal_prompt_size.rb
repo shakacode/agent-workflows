@@ -64,6 +64,7 @@ GUIDANCE_PHRASES = [
 ].freeze
 
 LAUNCHER_RECORD_FIELDS = [
+  "Prompt source: <exact issue or trusted maintainer-comment URL>",
   "Selected at: <timestamp>",
   "Prompt created at: <timestamp>",
   "Worker started at: <timestamp or pending>",

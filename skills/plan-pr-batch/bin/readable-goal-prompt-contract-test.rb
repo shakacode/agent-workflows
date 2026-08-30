@@ -81,6 +81,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
     launcher_record = @workflow.split("### Launcher Run Record", 2).fetch(1).split("### ", 2).first
 
     [
+      "Prompt source: <exact issue or trusted maintainer-comment URL>",
       "Selected at: <timestamp>",
       "Prompt created at: <timestamp>",
       "Worker started at: <timestamp or pending>",

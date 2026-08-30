@@ -1802,6 +1802,7 @@ issue body and comment or synthesizes a new source.
 <details>
 <summary>Run details</summary>
 
+- Prompt source: <exact issue or trusted maintainer-comment URL>
 - Selected at: <timestamp>
 - Prompt created at: <timestamp>
 - Worker started at: <timestamp or pending>
