@@ -1,0 +1,652 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "digest"
+require "open3"
+require "optparse"
+require "securerandom"
+require "time"
+require "uri"
+require "yaml"
+
+module AgentRunRecord
+  class ContractError < StandardError; end
+
+  STATES = %w[launch-pending active waiting blocked PR-ready completed].freeze
+  OUTCOMES = %w[pending merged closed failed reverted].freeze
+  UNKNOWN = "UNKNOWN"
+  UUID_V4 = /\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
+  SHA256 = /\A[0-9a-f]{64}\z/
+  GIT_SHA = /\A[0-9a-f]{40}\z/
+  REPOSITORY = %r{\A[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\z}
+
+  module_function
+
+  def validate!(record)
+    object!(record, "record")
+    exact!(record, "contract", "agent-run-record")
+    exact!(record, "version", 1)
+    match!(record, "run_id", UUID_V4)
+    match!(record, "launch_idempotency_key", UUID_V4)
+    match!(record, "repository", REPOSITORY)
+    issue = object_field!(record, "issue")
+    positive_integer!(issue, "number")
+    scalar!(issue, "title")
+    scalar!(issue, "url")
+    brief = object_field!(record, "brief")
+    member!(brief, "kind", %w[issue-body maintainer-comment])
+    scalar!(brief, "url")
+    match!(brief, "content_sha256", SHA256)
+    if brief.fetch("kind") == "maintainer-comment"
+      scalar!(brief, "author")
+      member!(brief, "author_association", %w[OWNER MEMBER COLLABORATOR])
+    end
+    current_main = object_field!(record, "current_main")
+    scalar!(current_main, "branch")
+    main_sha = scalar!(current_main, "sha")
+    unless main_sha == UNKNOWN || GIT_SHA.match?(main_sha)
+      raise ContractError, "current_main.sha must be a full git SHA or UNKNOWN"
+    end
+
+    runner = object_field!(record, "runner")
+    %w[name machine model].each { |key| scalar!(runner, key) }
+    workflows = object_field!(record, "workflow_versions")
+    worker_start = object_field!(workflows, "worker_start")
+    validate_workflow_observation!(worker_start, "workflow_versions.worker_start")
+    later = workflows.fetch("later_observations") do
+      raise ContractError, "workflow_versions.later_observations is required"
+    end
+    unless later.is_a?(Array)
+      raise ContractError, "workflow_versions.later_observations must be an array"
+    end
+
+    later.each_with_index do |observation, index|
+      object!(observation, "workflow_versions.later_observations[#{index}]")
+      validate_workflow_observation!(observation, "workflow_versions.later_observations[#{index}]")
+    end
+    task = object_field!(record, "task")
+    %w[title id url].each { |key| scalar!(task, key) }
+    scalar!(record, "branch")
+    pr = object_field!(record, "pr")
+    pr_number!(pr.fetch("number") { raise ContractError, "pr.number is required" })
+    scalar!(pr, "url")
+    member!(record, "state", STATES)
+    member!(record, "outcome", OUTCOMES)
+    latest = object_field!(record, "latest_material_update")
+    timestamp!(latest, "at")
+    scalar!(latest, "summary")
+    blocker = record.fetch("blocker") { raise ContractError, "blocker is required" }
+    scalar_value!(blocker, "blocker") unless blocker.nil?
+    timestamps = object_field!(record, "timestamps")
+    timestamp!(timestamps, "launched_at")
+    timestamp!(timestamps, "observed_at")
+    coordination = record["coordination"]
+    scalar_value!(coordination, "coordination") unless coordination.nil?
+    record
+  end
+
+  def render(record)
+    validate!(record)
+    runner = record.fetch("runner")
+    issue = record.fetch("issue")
+    task = record.fetch("task")
+    latest = record.fetch("latest_material_update")
+    brief = record.fetch("brief")
+    current_main = record.fetch("current_main")
+    workflows = record.fetch("workflow_versions")
+    worker_start = workflows.fetch("worker_start")
+    later_workflows = workflows.fetch("later_observations")
+    timestamps = record.fetch("timestamps")
+    pr = record.fetch("pr")
+    coordination = record["coordination"] || "not recorded (optional)"
+
+    lines = [
+      "<!-- agent-run-record:v1 -->",
+      "Agent run: #{plain(runner.fetch('name'))} on #{plain(runner.fetch('machine'))} — " \
+        "#{plain(record.fetch('state'))} / #{plain(record.fetch('outcome'))}",
+      "",
+      "Task: #{code(task.fetch('title'))} · Branch: #{code(record.fetch('branch'))} · " \
+        "PR: #{code(pr.fetch('url'))}",
+      "Latest: #{plain(latest.fetch('at'))} — #{plain(latest.fetch('summary'))}",
+      "Blocker: #{record['blocker'] ? plain(record.fetch('blocker')) : 'none'}",
+      "",
+      "<details>",
+      "<summary>Run details</summary>",
+      "",
+      "- Run ID: #{code(record.fetch('run_id'))}",
+      "- Launch retry key: #{code(record.fetch('launch_idempotency_key'))}",
+      "- Repository: #{code(record.fetch('repository'))}",
+      "- Issue: ##{issue.fetch('number')} — #{plain(issue.fetch('title'))} (#{plain(issue.fetch('url'))})",
+      "- Brief: #{plain(brief.fetch('kind'))} — #{plain(brief.fetch('url'))}" \
+        "#{brief['author'] ? "; author #{plain(brief.fetch('author'))} (#{plain(brief.fetch('author_association'))})" : ''}",
+      "- Brief SHA-256: #{code(brief.fetch('content_sha256'))}",
+      "- Current main: #{code(current_main.fetch('branch'))}@#{code(current_main.fetch('sha'))}",
+      "- Runner/model: #{plain(runner.fetch('name'))} / #{plain(runner.fetch('model'))}",
+      "- Task ID/link: #{code(task.fetch('id'))} / #{plain(task.fetch('url'))}",
+      "- Branch/PR: #{code(record.fetch('branch'))} / #{plain(pr.fetch('url'))}",
+      "- State/outcome: #{code(record.fetch('state'))} / #{code(record.fetch('outcome'))}",
+      "- Workflow versions at worker start (#{plain(worker_start.fetch('observed_at'))}): " \
+        "pack #{code(worker_start.fetch('pack_head'))}; " \
+        "pr-batch #{code(worker_start.fetch('pr_batch_sha256'))}; " \
+        "pr-processing #{code(worker_start.fetch('pr_processing_sha256'))}",
+      *render_later_workflow_observations(later_workflows),
+      "- Coordination: #{plain(coordination)}",
+      "- Launched/observed: #{plain(timestamps.fetch('launched_at'))} / " \
+        "#{plain(timestamps.fetch('observed_at'))}",
+      "",
+      "</details>",
+      ""
+    ]
+    lines.join("\n")
+  end
+
+  def prepare(arguments)
+    options = {
+      "brief_kind" => "issue-body",
+      "model" => UNKNOWN,
+      "task_id" => UNKNOWN,
+      "task_url" => UNKNOWN,
+      "branch" => UNKNOWN,
+      "pr_number" => UNKNOWN,
+      "pr_url" => UNKNOWN,
+      "state" => "launch-pending",
+      "outcome" => "pending",
+      "latest_update" => "launch prepared",
+      "format" => "markdown"
+    }
+    blocker_seen = false
+    parser = OptionParser.new do |opts|
+      opts.banner = "usage: agent-run-record prepare --issue N --runner NAME --machine NAME " \
+                    "--identity-file PATH [options]"
+      opts.on("--issue N", Integer) { |value| options["issue"] = value }
+      opts.on("--repo OWNER/REPO") { |value| options["repository"] = value }
+      opts.on("--brief KIND") { |value| options["brief_kind"] = value }
+      opts.on("--comment-url URL") { |value| options["comment_url"] = value }
+      opts.on("--trusted-comment-author LOGIN") { |value| options["trusted_comment_author"] = value }
+      opts.on("--runner NAME") { |value| options["runner"] = value }
+      opts.on("--machine NAME") { |value| options["machine"] = value }
+      opts.on("--model NAME") { |value| options["model"] = value }
+      opts.on("--task-id ID") { |value| options["task_id"] = value }
+      opts.on("--task-url URL") { |value| options["task_url"] = value }
+      opts.on("--task-title TITLE") { |value| options["task_title"] = value }
+      opts.on("--branch NAME") { |value| options["branch"] = value }
+      opts.on("--pr NUMBER", Integer) { |value| options["pr_number"] = value }
+      opts.on("--pr-url URL") { |value| options["pr_url"] = value }
+      opts.on("--state STATE") { |value| options["state"] = value }
+      opts.on("--outcome OUTCOME") { |value| options["outcome"] = value }
+      opts.on("--latest-update SUMMARY") { |value| options["latest_update"] = value }
+      opts.on("--blocker SUMMARY") do |value|
+        raise OptionParser::InvalidOption, "--blocker may be supplied at most once" if blocker_seen
+
+        blocker_seen = true
+        options["blocker"] = value
+      end
+      opts.on("--coordination SUMMARY") { |value| options["coordination"] = value }
+      opts.on("--repo-root PATH") { |value| options["repo_root"] = File.expand_path(value) }
+      opts.on("--identity-file PATH") { |value| options["identity_file"] = File.expand_path(value) }
+      opts.on("--format FORMAT") { |value| options["format"] = value }
+    end
+    parser.parse!(arguments)
+    raise ContractError, "unexpected arguments: #{arguments.join(' ')}" unless arguments.empty?
+
+    %w[issue runner machine identity_file].each do |key|
+      raise ContractError, "--#{key.tr('_', '-')} is required" unless options[key]
+    end
+    raise ContractError, "--issue must be positive" unless options.fetch("issue").positive?
+    raise ContractError, "--format must be json or markdown" unless %w[json markdown].include?(options.fetch("format"))
+    unless STATES.include?(options.fetch("state"))
+      raise ContractError, "--state must be one of: #{STATES.join(', ')}"
+    end
+    unless OUTCOMES.include?(options.fetch("outcome"))
+      raise ContractError, "--outcome must be one of: #{OUTCOMES.join(', ')}"
+    end
+
+    %w[runner machine model task_id task_url branch pr_url latest_update].each do |key|
+      scalar_value!(options.fetch(key), "--#{key.tr('_', '-')}")
+    end
+    scalar_value!(options.fetch("task_title"), "--task-title") if options.key?("task_title")
+    scalar_value!(options.fetch("blocker"), "--blocker") if options.key?("blocker")
+    scalar_value!(options.fetch("coordination"), "--coordination") if options.key?("coordination")
+
+    options
+  end
+
+  def build_prepared_record(options)
+    repo_root = options["repo_root"] || command!("git", "rev-parse", "--show-toplevel").strip
+    repository = options["repository"] || github_json("repo", "view", "--json", "nameWithOwner")
+                 .fetch("nameWithOwner")
+    raise ContractError, "repository has invalid format" unless REPOSITORY.match?(repository)
+
+    issue_fields = options.fetch("brief_kind") == "maintainer-comment" ? "number,title,url" : "number,title,body,url"
+    issue = github_json(
+      "issue", "view", options.fetch("issue").to_s,
+      "--repo", repository,
+      "--json", issue_fields
+    )
+    unless issue["number"] == options.fetch("issue")
+      raise ContractError, "GitHub returned issue ##{issue['number'].inspect}, expected ##{options.fetch('issue')}"
+    end
+
+    brief = resolve_brief(options, repository, issue)
+    config = workflow_config(repo_root)
+    prefix = task_prefix(config, repository)
+    task_title = options["task_title"] || "#{prefix} ##{issue.fetch('number')} — #{issue.fetch('title')}"
+    current_main = observe_current_main(repo_root, config)
+    observed_at = timestamp_now
+    workflow_start = observe_workflow_versions(repo_root, observed_at)
+    immutable = {
+      "repository" => repository,
+      "issue_number" => issue.fetch("number"),
+      "brief_kind" => brief.fetch("kind"),
+      "brief_url" => brief.fetch("url"),
+      "brief_content_sha256" => brief.fetch("content_sha256"),
+      "current_main" => current_main,
+      "workflow_start" => workflow_start,
+      "runner" => options.fetch("runner"),
+      "machine" => options.fetch("machine"),
+      "model" => options.fetch("model")
+    }
+    identity = launch_identity(options.fetch("identity_file"), immutable, observed_at)
+    record = {
+      "contract" => "agent-run-record",
+      "version" => 1,
+      "run_id" => identity.fetch("run_id"),
+      "launch_idempotency_key" => identity.fetch("launch_idempotency_key"),
+      "repository" => repository,
+      "issue" => {
+        "number" => issue.fetch("number"),
+        "title" => issue.fetch("title"),
+        "url" => issue.fetch("url")
+      },
+      "brief" => brief,
+      "current_main" => identity.fetch("binding").fetch("current_main"),
+      "runner" => {
+        "name" => options.fetch("runner"),
+        "machine" => options.fetch("machine"),
+        "model" => options.fetch("model")
+      },
+      "workflow_versions" => {
+        "worker_start" => identity.fetch("binding").fetch("workflow_start"),
+        "later_observations" => []
+      },
+      "task" => {
+        "title" => task_title,
+        "id" => options.fetch("task_id"),
+        "url" => options.fetch("task_url")
+      },
+      "branch" => options.fetch("branch"),
+      "pr" => {
+        "number" => options.fetch("pr_number"),
+        "url" => options.fetch("pr_url")
+      },
+      "state" => options.fetch("state"),
+      "outcome" => options.fetch("outcome"),
+      "latest_material_update" => {
+        "at" => observed_at,
+        "summary" => options.fetch("latest_update")
+      },
+      "blocker" => options["blocker"],
+      "timestamps" => {
+        "launched_at" => identity.fetch("launched_at"),
+        "observed_at" => observed_at
+      }
+    }
+    record["coordination"] = options.fetch("coordination") if options.key?("coordination")
+    validate!(record)
+  end
+
+  def append_workflow_observation(record, repo_root)
+    validate!(record)
+    workflows = record.fetch("workflow_versions")
+    history = workflows.fetch("later_observations")
+    previous = history.last || workflows.fetch("worker_start")
+    observation = observe_workflow_versions(repo_root, timestamp_now)
+    return record if workflow_observation_values(previous) == workflow_observation_values(observation)
+
+    history << observation
+    record.fetch("timestamps")["observed_at"] = observation.fetch("observed_at")
+    record["latest_material_update"] = {
+      "at" => observation.fetch("observed_at"),
+      "summary" => "workflow versions changed"
+    }
+    validate!(record)
+  end
+
+  def resolve_brief(options, repository, issue)
+    case options.fetch("brief_kind")
+    when "issue-body"
+      content = issue.fetch("body")
+      raise ContractError, "issue body must be a string" unless content.is_a?(String)
+
+      {
+        "kind" => "issue-body",
+        "url" => issue.fetch("url"),
+        "content_sha256" => Digest::SHA256.hexdigest(content.b)
+      }
+    when "maintainer-comment"
+      resolve_comment_brief(options, repository, issue)
+    else
+      raise ContractError, "brief must be issue-body or maintainer-comment"
+    end
+  end
+
+  def resolve_comment_brief(options, repository, issue)
+    comment_url = options["comment_url"]
+    trusted_author = options["trusted_comment_author"]
+    raise ContractError, "--comment-url is required for a maintainer-comment brief" unless comment_url
+    unless one_line?(trusted_author) && trusted_author != UNKNOWN
+      raise ContractError, "--trusted-comment-author is required from trusted launcher state"
+    end
+
+    uri = URI.parse(comment_url)
+    match = uri.path.match(%r{\A/([^/]+)/([^/]+)/issues/([1-9][0-9]*)\z})
+    fragment = uri.fragment.to_s.match(/\Aissuecomment-([1-9][0-9]*)\z/)
+    valid_origin = uri.scheme == "https" && uri.host&.casecmp?("github.com") && uri.port == 443 &&
+                   uri.userinfo.nil? && uri.query.nil?
+    unless valid_origin && match && fragment &&
+           "#{match[1]}/#{match[2]}".casecmp?(repository) && match[3].to_i == issue.fetch("number")
+      raise ContractError, "maintainer comment URL must name the selected issue and repository"
+    end
+
+    comment = github_json(
+      "api", "repos/#{repository}/issues/comments/#{fragment[1]}",
+      "--jq", "{body: .body, url: .html_url, author: .user.login, author_association: .author_association}"
+    )
+    unless comment.fetch("url") == comment_url
+      raise ContractError, "GitHub returned a different maintainer comment URL"
+    end
+
+    author = comment.fetch("author")
+    unless author.is_a?(String) && author.casecmp?(trusted_author)
+      raise ContractError, "maintainer comment author does not match trusted launcher state"
+    end
+
+    association = comment.fetch("author_association")
+    unless %w[OWNER MEMBER COLLABORATOR].include?(association)
+      raise ContractError, "maintainer comment author association is not trusted"
+    end
+
+    content = comment.fetch("body")
+    raise ContractError, "maintainer comment body must be a string" unless content.is_a?(String)
+
+    {
+      "kind" => "maintainer-comment",
+      "url" => comment_url,
+      "content_sha256" => Digest::SHA256.hexdigest(content.b),
+      "author" => author,
+      "author_association" => association
+    }
+  rescue URI::InvalidURIError, KeyError => e
+    raise ContractError, "invalid maintainer comment response: #{e.message}"
+  end
+
+  def workflow_config(repo_root)
+    path = File.join(repo_root, ".agents/agent-workflow.yml")
+    return {} unless File.file?(path)
+
+    parsed = YAML.safe_load(File.read(path, encoding: "UTF-8"), aliases: false)
+    parsed.is_a?(Hash) ? parsed : {}
+  rescue Psych::Exception, SystemCallError
+    {}
+  end
+
+  def observe_current_main(repo_root, config)
+    branch = config["base_branch"]
+    return { "branch" => UNKNOWN, "sha" => UNKNOWN } unless one_line?(branch)
+
+    stdout, _stderr, status = Open3.capture3("git", "-C", repo_root, "rev-parse", "origin/#{branch}")
+    sha = status.success? && GIT_SHA.match?(stdout.strip) ? stdout.strip : UNKNOWN
+    { "branch" => branch, "sha" => sha }
+  end
+
+  def observe_workflow_versions(repo_root, observed_at)
+    stdout, _stderr, status = Open3.capture3("git", "-C", repo_root, "rev-parse", "HEAD")
+    pack_head = status.success? && GIT_SHA.match?(stdout.strip) ? stdout.strip : UNKNOWN
+    {
+      "observed_at" => observed_at,
+      "pack_head" => pack_head,
+      "pr_batch_sha256" => file_digest(File.join(repo_root, "skills/pr-batch/SKILL.md")),
+      "pr_processing_sha256" => file_digest(File.join(repo_root, "workflows/pr-processing.md"))
+    }
+  end
+
+  def file_digest(path)
+    File.file?(path) ? "sha256:#{Digest::SHA256.file(path).hexdigest}" : UNKNOWN
+  rescue SystemCallError
+    UNKNOWN
+  end
+
+  def task_prefix(config, repository)
+    if config.key?("repo_prefix")
+      configured = config["repo_prefix"]
+      unless configured.is_a?(String) && configured.match?(/\A[A-Z0-9]{1,6}\z/)
+        raise ContractError, "configured repo_prefix must be 1-6 uppercase ASCII letters or digits"
+      end
+
+      return configured
+    end
+
+    name = repository.split("/", 2).last
+    segments = name.split(/[-_ ]+/).reject(&:empty?)
+    if segments.length > 1
+      segments.first(6).map { |segment| segment[0] }.join.upcase
+    else
+      name[0, 4].upcase
+    end
+  end
+
+  def launch_identity(path, binding, launched_at)
+    candidate = {
+      "contract" => "agent-run-launch-identity",
+      "version" => 1,
+      "run_id" => SecureRandom.uuid,
+      "launch_idempotency_key" => SecureRandom.uuid,
+      "launched_at" => launched_at,
+      "binding" => binding
+    }
+    begin
+      File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+        file.write("#{JSON.pretty_generate(candidate)}\n")
+        file.flush
+        file.fsync
+      end
+      candidate
+    rescue Errno::EEXIST
+      existing = JSON.parse(File.read(path, encoding: "UTF-8"))
+      validate_identity!(existing, binding)
+      existing
+    rescue JSON::ParserError, SystemCallError => e
+      raise ContractError, "cannot persist launch identity: #{e.message}"
+    end
+  end
+
+  def validate_identity!(identity, binding)
+    exact!(identity, "contract", "agent-run-launch-identity")
+    exact!(identity, "version", 1)
+    match!(identity, "run_id", UUID_V4)
+    match!(identity, "launch_idempotency_key", UUID_V4)
+    timestamp!(identity, "launched_at")
+    existing_binding = identity["binding"]
+    object!(existing_binding, "binding")
+    immutable_observations = %w[current_main workflow_start]
+    comparable_existing = existing_binding.reject { |key, _value| immutable_observations.include?(key) }
+    comparable_candidate = binding.reject { |key, _value| immutable_observations.include?(key) }
+    unless comparable_existing == comparable_candidate
+      raise ContractError, "launch retry binding changed; start a new run"
+    end
+
+    current_main = existing_binding["current_main"]
+    object!(current_main, "binding.current_main")
+    scalar!(current_main, "branch")
+    main_sha = scalar!(current_main, "sha")
+    unless main_sha == UNKNOWN || GIT_SHA.match?(main_sha)
+      raise ContractError, "binding.current_main.sha must be a full git SHA or UNKNOWN"
+    end
+
+    workflow_start = existing_binding["workflow_start"]
+    object!(workflow_start, "binding.workflow_start")
+    validate_workflow_observation!(workflow_start, "binding.workflow_start")
+  end
+
+  def github_json(*arguments)
+    stdout = command!("gh", *arguments)
+    parsed = JSON.parse(stdout)
+    raise ContractError, "GitHub query did not return an object" unless parsed.is_a?(Hash)
+
+    parsed
+  rescue JSON::ParserError => e
+    raise ContractError, "GitHub query returned invalid JSON: #{e.message}"
+  end
+
+  def command!(*arguments)
+    stdout, stderr, status = Open3.capture3(*arguments)
+    return stdout if status.success?
+
+    raise ContractError, "command failed (#{arguments.first}): #{stderr.strip}"
+  rescue Errno::ENOENT
+    raise ContractError, "command unavailable: #{arguments.first}"
+  end
+
+  def timestamp_now
+    Time.now.utc.iso8601(3)
+  end
+
+  def one_line?(value)
+    value.is_a?(String) && !value.empty? && !value.match?(/[\r\n\0]/)
+  end
+
+  def object!(value, path)
+    raise ContractError, "#{path} must be an object" unless value.is_a?(Hash)
+  end
+
+  def object_field!(object, key)
+    value = object.fetch(key) { raise ContractError, "#{key} is required" }
+    object!(value, key)
+    value
+  end
+
+  def exact!(object, key, expected)
+    actual = object.fetch(key) { raise ContractError, "#{key} is required" }
+    raise ContractError, "#{key} must be #{expected.inspect}" unless actual == expected
+  end
+
+  def scalar!(object, key)
+    value = object.fetch(key) { raise ContractError, "#{key} is required" }
+    scalar_value!(value, key)
+    value
+  end
+
+  def scalar_value!(value, path)
+    return if value.is_a?(String) && !value.empty? && !value.match?(/[\r\n\0]/)
+
+    raise ContractError, "#{path} must be one nonempty line"
+  end
+
+  def match!(object, key, pattern)
+    value = scalar!(object, key)
+    raise ContractError, "#{key} has invalid format" unless pattern.match?(value)
+  end
+
+  def member!(object, key, values)
+    value = scalar!(object, key)
+    raise ContractError, "#{key} must be one of: #{values.join(', ')}" unless values.include?(value)
+  end
+
+  def positive_integer!(object, key)
+    value = object.fetch(key) { raise ContractError, "#{key} is required" }
+    raise ContractError, "#{key} must be a positive integer" unless value.is_a?(Integer) && value.positive?
+  end
+
+  def pr_number!(value)
+    return if value == UNKNOWN || (value.is_a?(Integer) && value.positive?)
+
+    raise ContractError, "pr.number must be a positive integer or UNKNOWN"
+  end
+
+  def timestamp!(object, key)
+    value = scalar!(object, key)
+    Time.iso8601(value)
+  rescue ArgumentError
+    raise ContractError, "#{key} must be an ISO 8601 timestamp"
+  end
+
+  def validate_workflow_observation!(observation, path)
+    timestamp!(observation, "observed_at")
+    pack_head = scalar!(observation, "pack_head")
+    unless pack_head == UNKNOWN || GIT_SHA.match?(pack_head)
+      raise ContractError, "#{path}.pack_head must be a full git SHA or UNKNOWN"
+    end
+
+    %w[pr_batch_sha256 pr_processing_sha256].each do |key|
+      value = scalar!(observation, key)
+      next if value == UNKNOWN || value.match?(/\Asha256:[0-9a-f]{64}\z/)
+
+      raise ContractError, "#{path}.#{key} must be sha256:<digest> or UNKNOWN"
+    end
+  end
+
+  def workflow_observation_values(observation)
+    observation.slice("pack_head", "pr_batch_sha256", "pr_processing_sha256")
+  end
+
+  def render_later_workflow_observations(observations)
+    return ["- Later workflow observations: none"] if observations.empty?
+
+    ["- Later workflow observations:"] + observations.map do |observation|
+      "  - #{plain(observation.fetch('observed_at'))}: pack #{code(observation.fetch('pack_head'))}; " \
+        "pr-batch #{code(observation.fetch('pr_batch_sha256'))}; " \
+        "pr-processing #{code(observation.fetch('pr_processing_sha256'))}"
+    end
+  end
+
+  def plain(value)
+    value.to_s.gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;")
+  end
+
+  def code(value)
+    "`#{plain(value).gsub('`', '&#96;')}`"
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  command = ARGV.shift
+
+  begin
+    case command
+    when "render"
+      raise AgentRunRecord::ContractError, "render accepts no arguments" unless ARGV.empty?
+
+      record = JSON.parse($stdin.read)
+      $stdout.write(AgentRunRecord.render(record))
+    when "prepare"
+      options = AgentRunRecord.prepare(ARGV)
+      record = AgentRunRecord.build_prepared_record(options)
+      if options.fetch("format") == "json"
+        $stdout.write("#{JSON.pretty_generate(record)}\n")
+      else
+        $stdout.write(AgentRunRecord.render(record))
+      end
+    when "observe-workflows"
+      repo_root = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "usage: agent-run-record observe-workflows [--repo-root PATH] < record.json"
+        opts.on("--repo-root PATH") { |value| repo_root = File.expand_path(value) }
+      end
+      parser.parse!(ARGV)
+      raise AgentRunRecord::ContractError, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+
+      repo_root ||= AgentRunRecord.command!("git", "rev-parse", "--show-toplevel").strip
+      record = JSON.parse($stdin.read)
+      updated = AgentRunRecord.append_workflow_observation(record, repo_root)
+      $stdout.write("#{JSON.pretty_generate(updated)}\n")
+    else
+      raise AgentRunRecord::ContractError,
+            "usage: agent-run-record render < record.json | agent-run-record prepare [options] | " \
+            "agent-run-record observe-workflows [options] < record.json"
+    end
+  rescue JSON::ParserError, OptionParser::ParseError, AgentRunRecord::ContractError => e
+    warn "agent-run-record: #{e.message}"
+    exit 1
+  end
+end

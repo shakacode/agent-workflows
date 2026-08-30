@@ -168,6 +168,7 @@ ruby skills/pr-batch/bin/review-wave-contract-test.rb
 ruby skills/pr-batch/bin/assignee-exclusion-contract-test.rb
 ruby skills/pr-batch/bin/agent-claimed-mirror-contract-test.rb
 ruby skills/pr-batch/bin/coordination-declaration-contract-test.rb
+ruby skills/pr-batch/bin/agent-run-record-test.rb
 echo "== json_schemer =="
 JSON_SCHEMER_VERSION=$(tr -d '[:space:]' < .json-schemer-version)
 JSON_SCHEMER_VERSION="${JSON_SCHEMER_VERSION}" ruby skills/pr-batch/bin/batch-usage-receipt-test.rb
