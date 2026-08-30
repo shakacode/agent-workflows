@@ -969,6 +969,14 @@ class PrCiReadinessTest < Minitest::Test
         "version" => 1,
         "optional_approval_held_checks" => [valid_rule.merge("name" => "UNKNOWN")]
       },
+      "unknown name phrase" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("name" => "Approval UNKNOWN state")]
+      },
+      "hyphenated unknown name" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("name" => "NOT-UNKNOWN")]
+      },
       "multiline name" => {
         "version" => 1,
         "optional_approval_held_checks" => [valid_rule.merge("name" => "storybook\nreview")]

@@ -719,8 +719,8 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       "exact unknown name" => [base_rule.merge("name" => "UNKNOWN"), false],
       "kebab app slug" => [base_rule, true],
       "resolved spaced name" => [base_rule.merge("name" => "Storybook review app"), true],
-      "resolved unknown phrase" => [base_rule.merge("name" => "Approval UNKNOWN state"), true],
-      "resolved hyphenated unknown" => [base_rule.merge("name" => "NOT-UNKNOWN"), true]
+      "unknown name phrase" => [base_rule.merge("name" => "Approval UNKNOWN state"), false],
+      "hyphenated unknown name" => [base_rule.merge("name" => "NOT-UNKNOWN"), false]
     }
 
     cases.each do |label, (rule, expected)|
