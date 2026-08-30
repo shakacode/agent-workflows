@@ -324,8 +324,11 @@ precise blocker.
    Use the shared prompt template from `$plan-pr-batch` and
    `pr-processing.md`. The prompt carries only repository, exact work-item URL,
    task name, instruction, human `auto` or `ask` merge authority, and the
-   optional human-availability time. For Codex, prepend `/goal`; other hosts use
-   the same body unchanged. <!-- host-allow: codex-only -->
+   optional human-availability time.
+   <!-- host-branch: codex-only start -->
+   For Codex, prepend `/goal`.
+   <!-- host-branch: codex-only end -->
+   Other hosts use the same body unchanged.
    The canonical launcher record outside the human-authored prompt stores the
    launch digest, selection/prompt-creation/worker-start timestamps, model and
    Agent Workflows observations at prompt creation and worker start, and
