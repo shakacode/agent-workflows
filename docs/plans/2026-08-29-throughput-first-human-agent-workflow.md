@@ -28,7 +28,8 @@ The explanatory website tracks the objective in
 
 ## Current Evidence
 
-At the 2026-08-29 snapshot:
+At the 2026-08-29 snapshot, bound to `main` revision
+`1614b6758735cb3d5a02c3a4313af4e0eb2db4a8`:
 
 - 24 pull requests were open; 18 were conflict-dirty and their median age was
   about 21 days.
@@ -254,6 +255,9 @@ This availability choice accepts the residual risk that a backend outage hides
 another operator making the same assumption. The override is for a genuinely
 single-operator context; a repository that cannot accept that residual risk
 SHOULD disable it and wait for coordination recovery.
+It SHALL be disabled by default when more than one independent coordinator or
+human operator may act during the outage, including shared/team repositories,
+unless a separate cross-host-visible lease remains available.
 When coordination recovers, the override SHALL reconcile its preserved run ID
 against durable claims for the same issue or PR. It SHALL flag any duplicate for
 an operator decision and prevent both runs from silently continuing as the sole
@@ -775,8 +779,14 @@ every active or recently completed task/run record. Refresh current base/head,
 conflicts, explicit issue dependencies, review and CI state, task
 ownership/status, value, and remaining integration cost. Classify each PR and
 task as accelerate, continue, hold, replace, close, or integration-ready and
-recommend an integration order. File overlap alone is not a dependency. Do not
-edit, close, merge, or message PRs, issues, or tasks.
+recommend an integration order. For each requested lane, also return the
+existing task, if any, and the resulting execution action: `create`, `resume`,
+`hold`, `replace after superseding`, or `no worker`. Map `continue` to resuming
+the existing task rather than creating a duplicate; `hold`, `close`, and
+`integration-ready` create no worker; and `replace` creates a worker only after
+the prior ownership record is terminal or explicitly superseded. File overlap
+alone is not a dependency. Do not edit, close, merge, or message PRs, issues, or
+tasks.
 ```
 
 ### T11 — Simplify conflict and dependency handling
@@ -811,16 +821,19 @@ thresholds or require a comparison pilot.
 
 ## Launch Order
 
-Create and run T10 first. Its initial live PR/task inventory classifies existing
-work and authorizes the unattended wave; prompt preparation MAY proceed in
-parallel, but the remaining tasks are not created or activated until that
-classification is available. Then create and prompt T1, T2, T3, every T4 audit,
-T5, T7, T8, T9, T11, and T12 at the same time so every authorized task is
-visible and traceable. Begin active execution only up to the operator's target
-and the host's actual capacity. A host that queues tasks may create the whole
-approved set immediately without claiming every task is consuming an active
-worker slot. A host without a separate queue treats its creation limit as the
-capacity limit.
+Create and run T10 first. Its initial live PR/task inventory returns the
+execution action for each requested lane; prompt preparation MAY proceed in
+parallel, but no other task is created or activated until that result is
+available. Apply the operator's authorization only to that filtered execution
+set: resume the named existing tasks, create only lanes marked `create`, and do
+not create duplicates for `continue`, `hold`, `close`, or `integration-ready`.
+A `replace` action waits until the prior ownership record is terminal or
+explicitly superseded. Then prompt the resulting T1, T2, T3, T4, T5, T7, T8,
+T9, T11, and T12 tasks at the same time so every active or queued task is visible
+and traceable. Begin active execution only up to the operator's target and the
+host's actual capacity. A host that queues tasks may create the whole filtered
+set immediately without claiming every task is consuming an active worker slot.
+A host without a separate queue treats its creation limit as the capacity limit.
 
 Each prompt states what can proceed immediately and what waits for a
 documented GitHub dependency. A dependency-waiting task completes independent
