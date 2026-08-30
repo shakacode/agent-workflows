@@ -72,6 +72,10 @@ class ProductionReleaseContractTest < Minitest::Test
       "require explicit authority for the exact action and target"
     ].each { |phrase| assert_includes normalized, phrase }
 
+    authority = squish(@component.split("## Promotion, Publishing, And Rollback Authority", 2).last
+                                 .split("## Accelerated RC Auto-Merge", 2).first)
+    assert_includes authority, "production deployment or promotion"
+
     assert_includes squish(@workflow), "Do not bypass the queue with administrator privileges"
     assert_includes normalized, "## Release Closeout Extension"
     assert_includes normalized, "accelerated-RC waiver-soak"
@@ -95,6 +99,13 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes fallback, "not an operating-system sandbox"
     assert_includes fallback, "`write`, `maintain`, or `admin` permission"
     assert_includes fallback, "independently reproduce the invocation"
+    assert_includes fallback, "pre-existing or author-controlled PR-body text is not trigger evidence"
+    assert_includes fallback, "persistent HTTP 429 after one 60-second retry"
+    assert_includes fallback, "extend polling when runner queues or Actions visibility are known to lag"
+    assert_includes fallback, "vague failure notes are insufficient"
+    assert_includes fallback, "treats the untrusted PR diff as data"
+    assert_includes fallback, "invocation identity"
+    assert_includes fallback, "Regardless of permission"
   end
 
   private

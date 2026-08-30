@@ -95,11 +95,11 @@ update:
 ## Promotion, Publishing, And Rollback Authority
 
 Enter this downstream stage only when the task explicitly selects a production
-promotion, package/release publication, or release rollback. Resolve the exact
-target, artifact or commit SHA, repository-owned command, verification, and
-rollback path from the consumer repo's `AGENTS.md` seams. A missing or `UNKNOWN`
-fact stops the consequential action without blocking unrelated ordinary PR
-integration.
+deployment or promotion, package/release publication, or release rollback.
+Resolve the exact target, artifact or commit SHA, repository-owned command,
+verification, and rollback path from the consumer repo's `AGENTS.md` seams. A
+missing or `UNKNOWN` fact stops the consequential action without blocking
+unrelated ordinary PR integration.
 
 Merge authority never grants this authority. Deploying, promoting, publishing,
 and rolling back each require explicit authority for the exact action and
