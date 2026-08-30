@@ -934,6 +934,7 @@ module PrCiReadiness
       )
       # The fallback verdict is disposition-blind; override it only when an exact-head disposition made the contract READY.
       disposition_owns_fallback = !required_used && ordinary_checks_verdict == "NOT_READY" &&
+                                  result.fetch("invalid").empty? &&
                                   contract.fetch("verdict") == "READY" &&
                                   scopes.dig("other", "policy_dispositions").is_a?(Array) &&
                                   scopes.dig("other", "policy_dispositions").any?

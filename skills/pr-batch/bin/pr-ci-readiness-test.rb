@@ -2890,6 +2890,54 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_optional_disposition_cannot_override_an_unrelated_invalid_check_bucket
+    head = "a" * 40
+    with_optional_policy_repo do |root, base_sha|
+      pr_identity = {
+        "id" => 9_001, "number" => 123,
+        "head" => {
+          "sha" => head, "ref" => "feature",
+          "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+        },
+        "base" => {
+          "sha" => base_sha, "ref" => "main",
+          "repo" => { "id" => 9_003, "full_name" => "owner/repo" }
+        }
+      }
+      workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
+      exact_held = {
+        "id" => 31, "name" => "storybook-review-app", "status" => "in_progress",
+        "conclusion" => nil, "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
+        "head_sha" => head, "app" => { "slug" => "circleci-checks" }, "actions" => nil,
+        "details_url" => workflow_url,
+        "output" => {
+          "title" => "Workflow: storybook-review-app",
+          "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - Blocked\n"
+        },
+        "html_url" => "https://example/check/31"
+      }
+      with_fake_gh(
+        required_json: "",
+        full_json: '[{"workflow":"circleci-checks","name":"storybook-review-app","bucket":"pending"},' \
+                   '{"workflow":"external-ci","name":"mystery","bucket":"future-state"}]',
+        pr_head: head,
+        pr_identity:,
+        exact_check_runs: [exact_held]
+      ) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+        assert status.success?, out
+        data = JSON.parse(out)
+
+        assert_equal "NOT_READY", data.fetch("verdict"), data.inspect
+        assert_equal "NOT_READY", data.fetch("ordinary_verdict")
+        assert_equal ['mystery (bucket: "future-state")'], data.fetch("invalid")
+        refute_empty data.dig("scopes", "other", "policy_dispositions")
+      end
+    end
+  end
+
   def test_optional_disposition_fails_closed_when_required_inventory_changes_during_assessment
     head = "a" * 40
     with_optional_policy_repo do |root, base_sha|
