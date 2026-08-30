@@ -1,8 +1,8 @@
 # PR-Batch Worker Execution
 
 This component owns bounded implementation for an accepted PR-batch lane.
-Load after prompt intake, planning, dependency preflight, and dispatcher
-selection, and before creating the lane worktree or editing files.
+Load after prompt intake, planning, dependency preflight, and dispatch, before
+creating the lane worktree or editing files.
 
 ## Boundary
 
@@ -33,8 +33,7 @@ Consume one lane record with known values for:
 - focused verification commands or their repository discovery seam;
 - dispatcher assignment and, when required, the coordinator-approved execution
   envelope; and
-- optional coordination ownership evidence, kept separate from execution
-  correctness.
+- optional coordination ownership evidence, separate from execution correctness.
 
 Never reconstruct missing intake, dependency, authority, or ownership facts
 from prompts or worker self-report. Missing or `UNKNOWN` required facts stop
@@ -102,11 +101,11 @@ For a sole active editor, the coordinator records the reservation, refreshes fil
 maps, lifecycle, claims, and collision evidence, then reruns
 `batch-plan-preflight`; continue only after acceptance. In a multi-editor wave,
 persist the typed request, block the lane, refresh its heartbeat, emit the Lane
-Card with path/reason/request reference, and pause before editing. Resume only
-after serial coordinator processing, leaving `blocked`, fresh preflight
-acceptance, and absence from
-`launch.held_lane_ids`, and a relaunching lane is present in
-`launch.eligible_lane_ids`; any max-one slot must also be available. A collision
+Card with path/reason/request reference, and pause before editing. After serial
+coordinator processing, resume only when the lane has left `blocked`, fresh
+preflight accepts, and it is absent from `launch.held_lane_ids`. When launch or
+relaunch is needed, it must also be in `launch.eligible_lane_ids`. Under max-one
+serialization, the current holder must release the slot. A collision
 or `UNKNOWN` collision result remains stopped.
 
 Directory renames use `expansion-rename-reservation` with canonical distinct
@@ -160,8 +159,7 @@ because a dependency is still progressing or optional telemetry is unavailable.
 ## Worker-To-Coordinator Handoff
 
 Emit a Lane Card after accepted ownership, when blocked or cancelled, and as the
-final handoff header. Keep it human-readable and refresh values rather than
-relying on task titles:
+final handoff header. Refresh values rather than relying on task titles:
 
 Record `preferred model/effort` separately from `observed host/model/effort`;
 an unavailable observation stays `UNKNOWN` and never becomes inferred evidence.
