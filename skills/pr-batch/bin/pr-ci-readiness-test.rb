@@ -409,6 +409,44 @@ class PrCiReadinessTest < Minitest::Test
     )
   end
 
+  def test_optional_policy_accepts_successful_prerequisites_and_explicit_approval_holds
+    head = "a" * 40
+    held = circleci_approval_held_row
+    workflow_url = held.fetch("details_url")
+    held = held.merge(
+      "output" => held.fetch("output").merge(
+        "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n" \
+                     "* setup - Success\n" \
+                     "* [hold](#{workflow_url}) - Running\n" \
+                     "* approve-storybook-review-app - Running\n" \
+                     "* build-storybook-review-app - Blocked\n"
+      )
+    )
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "READY", scopes.dig("other", "state")
+    refute_empty scopes.dig("other", "policy_dispositions")
+  end
+
   def test_optional_policy_keeps_an_actively_running_check_blocking
     head = "a" * 40
     running = circleci_approval_held_row(summary_status: "Running")
@@ -462,7 +500,13 @@ class PrCiReadinessTest < Minitest::Test
       "mixed running summary" => circleci_approval_held_row.merge(
         "output" => circleci_approval_held_row.fetch("output").merge(
           "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
-                       "* start - Blocked\n* build - Running\n"
+                       "* start - Blocked\n* build-hold-artifacts - Running\n"
+        )
+      ),
+      "failed prerequisite with approval hold" => circleci_approval_held_row.merge(
+        "output" => circleci_approval_held_row.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
+                       "* setup - Failed\n* hold - Running\n* build - Blocked\n"
         )
       ),
       "non-CircleCI details URL" => base_row.merge("details_url" => "https://example.test/workflow/31"),

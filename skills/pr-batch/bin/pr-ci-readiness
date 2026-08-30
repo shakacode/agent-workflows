@@ -415,7 +415,21 @@ module PrCiReadiness
     summary_url_match = summary_link && summary_link[1].match(CIRCLECI_WORKFLOW_URL)
     return false unless summary_url_match && summary_url_match[1] == details_match[1]
 
-    summary_lines.any? && summary_lines.all? { |line| line.match?(/\A\* \S.* - Blocked\z/) }
+    phases = summary_lines.map { |line| line.match(/\A\* (?<job>\S.*) - (?<status>\S+)\z/) }
+    return false if phases.empty? || phases.any?(&:nil?)
+    return false unless phases.any? { |phase| phase[:status] == "Blocked" }
+
+    phases.all? do |phase|
+      %w[Success Blocked].include?(phase[:status]) ||
+        (phase[:status] == "Running" && circleci_approval_job?(phase[:job]))
+    end
+  end
+
+  def circleci_approval_job?(raw_job)
+    linked_label = raw_job.match(/\A\[([^\]]+)\]\([^)]+\)\z/)&.[](1)
+    tokens = (linked_label || raw_job).downcase.split(/[^a-z0-9]+/)
+    approval_tokens = %w[approval approve hold]
+    approval_tokens.include?(tokens.first) || approval_tokens.include?(tokens.last)
   end
 
   def optional_phase_timestamp?(row, key)
