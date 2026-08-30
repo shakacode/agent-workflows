@@ -36,6 +36,7 @@ class WorkflowTelemetryReportTest < Minitest::Test
     secrets = [
       ["AKIA", "A" * 16].join,
       ["ghp_", "a" * 20].join,
+      ["npm_", "a" * 36].join,
       %w[sk proj do-not-echo-1234567890].join("-"),
       %w[sk live 1234567890abcdefghijklmn].join("_"),
       %w[glpat 0123456789abcdefghijkl].join("-"),
