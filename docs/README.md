@@ -27,6 +27,7 @@ and implementation plans are collected in the final reference section.
 | Goal | Read |
 | --- | --- |
 | Choose between issue triage, one-PR lanes, batch planning, and batch execution | [PR Batch Skills Usage](pr-batch-skills.md) |
+| Run an attended work window or leave authorized work moving overnight | [Attended And Overnight Workflow](attended-and-overnight-workflow.md) |
 | Finish and archive a stale PR-batch task | Use the `$close-batch` skill |
 | Understand task ownership, cross-task requests, approvals, and heartbeat communication | [User-Facing Coordination](user-facing-coordination.md) |
 | Understand a PR one conceptual change and rationale at a time | Use the `$pr-walkthrough` skill |
