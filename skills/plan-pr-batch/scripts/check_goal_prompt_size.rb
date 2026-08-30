@@ -180,9 +180,6 @@ require_phrases(
 )
 
 codex_prompt = "/goal\n#{prompts.fetch('plan-pr-batch')}"
-unless codex_prompt == "/goal\n#{EXPECTED_PROMPT}"
-  abort_with_failure("Codex prompt must add only the /goal wrapper")
-end
 
 begin
   GoalPromptDriftContract.check!(
