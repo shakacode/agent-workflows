@@ -48,7 +48,9 @@ At the 2026-08-29 snapshot:
 
 This is a frozen historical baseline, not current repository state. Use
 [#563](https://github.com/shakacode/agent-workflows/issues/563) and its successors
-for the current portfolio inventory.
+for the current portfolio inventory. The snapshot identity, selected GitHub
+fields, source PR sets, formulas, and derived rows are preserved in the
+[baseline evidence comment](https://github.com/shakacode/agent-workflows/pull/558#issuecomment-5466674188).
 
 These observations establish a credible throughput problem. They do not prove
 that every safety control is unnecessary.
@@ -243,6 +245,11 @@ responsibility, the override SHALL check any reliable coordination evidence that
 remains available and refuse an observed conflict. If none can be observed, it
 MAY proceed under explicit single-operator authority while recording that
 coordination evidence is degraded.
+
+This availability choice accepts the residual risk that a backend outage hides
+another operator making the same assumption. The override is for a genuinely
+single-operator context; a repository that cannot accept that residual risk
+SHOULD disable it and wait for coordination recovery.
 
 Run state and outcome are separate. State uses a small useful vocabulary such
 as `launch-pending`, `active`, `waiting`, `blocked`, `PR-ready`, and `completed`.
@@ -639,20 +646,24 @@ timestamps directly; do not wait for #562's aggregation work.
 
 - **Issue:** [#559](https://github.com/shakacode/agent-workflows/issues/559),
   followed by one implementation sub-issue per extracted component.
-- **Start:** architecture and coupling inventory now. Extraction PRs wait for
-  the architecture issue's component boundaries.
+- **Start:** architecture and coupling inventory after the T10 gate. This task
+  may begin the smallest first extraction after recording the boundaries in
+  #559; later extraction PRs wait for those recorded boundaries.
 
 ```text
 Define and begin the smallest behavior-preserving modularization of PR-batch.
 Use #559's outcome and constraints as the canonical pre-merge component
-contract, inventory current coupling, create one implementation issue per
-approved component, and extract only one component in this task. Keep
+contract, inventory current coupling, record the component boundaries in #559,
+and create one implementation issue per later extraction. The same task may
+then extract only the smallest first component without a separate approval
+round unless a material design ambiguity remains. Keep
 workflows/pr-processing.md as an index and compatibility shim, avoid
 cross-component cleanup, and use focused validation before the full gate. If
-the planning PR is not final, poll its current review state with backed-off
-checks until the operator-declared attention interval ends while completing the
-read-only coupling inventory; this launch uses six hours. If it is still not
-final, record `blocked` and queue one concise decision.
+the planning PR is not final, poll
+its current review state with backed-off checks until the operator-declared
+attention interval ends while completing the read-only coupling inventory; this
+launch uses six hours. If it is still not final, record `blocked`; queue one
+concise decision only when a material question remains.
 ```
 
 ### T4 — Audit every shipped skill under #189
@@ -707,7 +718,7 @@ and append-only rerun history. If #476 prompt decisions are not final, poll
 GitHub with backed-off checks until the operator-declared attention interval
 ends; this launch uses six hours. If they become final, implement only the agreed
 format with focused tests; otherwise record `blocked` and queue one concise
-decision.
+decision only when a material question remains.
 ```
 
 ### T8 — Create, title, and supervise Codex tasks
@@ -726,7 +737,8 @@ a visible no-backend override and a copy-paste fallback for unsupported hosts.
 If the T7 run-record format is not ready, poll its issue with backed-off checks
 until the operator-declared attention interval ends while completing the
 read-only capability inventory; this launch uses six hours. If it is still not
-ready, record `blocked` and queue one concise decision.
+ready, record `blocked` and queue one concise decision only when a material
+question remains.
 ```
 
 ### T9 — Collect directional workflow telemetry
@@ -749,13 +761,15 @@ adaptive scheduler or controlled-experiment framework.
 - **Start:** first; immediate and read-only.
 
 ```text
-Perform a read-only live portfolio audit of every open pull request and every
-active or recently completed task/run record in shakacode/agent-workflows.
-Refresh current base/head, conflicts, explicit issue dependencies, review and
-CI state, task ownership/status, value, and remaining integration cost.
-Classify each PR and task as accelerate, continue, hold, replace, close, or
-integration-ready and recommend an integration order. File overlap alone is
-not a dependency. Do not edit, close, merge, or message PRs, issues, or tasks.
+Perform a read-only live portfolio audit of every repository represented in the
+authorized run set; this launch includes shakacode/agent-workflows and
+shakacode/agent-workflows-com. For each, inspect every open pull request and
+every active or recently completed task/run record. Refresh current base/head,
+conflicts, explicit issue dependencies, review and CI state, task
+ownership/status, value, and remaining integration cost. Classify each PR and
+task as accelerate, continue, hold, replace, close, or integration-ready and
+recommend an integration order. File overlap alone is not a dependency. Do not
+edit, close, merge, or message PRs, issues, or tasks.
 ```
 
 ### T11 — Simplify conflict and dependency handling
