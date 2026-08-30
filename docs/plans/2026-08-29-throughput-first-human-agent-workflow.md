@@ -1,20 +1,25 @@
 # Throughput-First Human-Agent Workflow Redesign
 
-> **Status:** Draft for collaborative editing. This document is the working
-> specification and issue map. It does not change workflow behavior by itself.
+> **Status:** Revised after maintainer review on 2026-08-30. This is the
+> working specification and execution map. It does not change workflow behavior
+> by itself.
 
-## Objective
+## Governing Objective
 
 > Maximize valuable, verified software changes per unit of human attention,
 > elapsed time, and tokens—subject to a small explicit safety floor.
 
-The design goal is not the largest possible number of simultaneous workers or
-the most complete workflow specification. It is a system that keeps useful
-workers moving independently, brings the operator only decisions that need
-human judgment, and concentrates expensive assurance at the point where it
-protects users, collaborators, or a release.
+This objective is more important than every mechanism proposed below. When two
+requirements conflict, choose the path that better serves this objective unless
+it would cross the explicit safety floor.
 
-The explanatory website tracks this objective in
+The immediate priority is stabilization and simplification. We already have
+enough experience to know the current workflow is too slow and brittle. We will
+make changes, use them in real work, record directional telemetry, and refine
+from experience. We will not delay stabilization to build an adaptive scheduler
+or a controlled comparison with the old workflow.
+
+The explanatory website tracks the objective in
 [agent-workflows-com#22](https://github.com/shakacode/agent-workflows-com/issues/22).
 
 ## Current Evidence
@@ -29,729 +34,697 @@ At the 2026-08-29 snapshot:
 - `workflows/pr-processing.md`, `skills/plan-pr-batch/SKILL.md`, and
   `skills/pr-batch/SKILL.md` totalled 6,853 lines and 515 KB. Roughly 150
   mainline commits earlier they totalled 3,089 lines and 214 KB.
-- The canonical goal-prompt body used 3,630 characters for 38 compressed lines
+- The canonical goal prompt used about 3,630 characters for 38 compressed lines
   before substantial task-specific detail was filled in.
-- Existing GitHub and token receipts show that repeated review and context
-  re-entry can cost more than initial implementation.
+- A documentation-only change ran the repository validation matrix for more
+  than 20 minutes locally. One one-second timeout failed under load and passed
+  six consecutive isolated reruns; hosted validation later passed.
+- A live monitoring routine correctly stayed silent when nothing had changed
+  and later caught a stale review against a newer PR head. Silence with a
+  durable dedup state can therefore be successful execution.
+- One GitHub tool request returned a 672 KB pull-request payload before the
+  agent recovered from a spilled file. Compact, field-selected queries should
+  be the default.
 
-These observations establish a credible throughput problem. They do not by
-themselves prove that any individual safety control is unnecessary.
+These observations establish a credible throughput problem. They do not prove
+that every safety control is unnecessary.
+
+## Requirement Priorities
+
+- **P0 — Governing:** R1 and R15.
+- **P1 — Stabilize now:** R3 through R8 and R10 through R13.
+- **P2 — Learn from use:** R9 and R14.
+- **Deferred optimization:** automated scheduling in R2.
 
 ## Requirements
 
-### R1 — Throughput objective
+### R1 — Throughput objective (P0)
 
-The workflow SHALL optimize for valuable verified outcomes per unit of human
+The workflow SHALL optimize valuable verified outcomes per unit of human
 attention, elapsed time, and tokens. Mechanism count, prompt density, receipt
 count, and worker count are not success measures by themselves.
 
-### R2 — Adaptive concurrency
+### R15 — Small explicit safety floor (P0)
 
-The system SHALL treat available hardware or service worker capacity as a
-ceiling, not a default low cap. It SHALL reduce or pause new launches when
-human-decision pressure, token pressure, or the integration backlog exceeds
-operator-selected thresholds.
-
-No universal worker count is specified. Forty independent workers that need no
-operator decision may be acceptable; five workers that repeatedly stop for
-judgment may already be too many.
-
-### R3 — Attended and unattended operation
-
-An attended session SHALL keep worker slots full while the operator can absorb
-its decision and integration queues. An unattended session SHALL prefer work
-with deterministic checks and no expected human decision. A blocked unattended
-worker SHALL checkpoint, release its active slot when supported, and allow the
-next ready task to start.
-
-### R4 — Human-readable run brief
-
-Starting a worker SHALL require a short, readable brief containing:
-
-- repository and canonical task identity;
-- observable outcome;
-- non-goals and important constraints, including reasons when they matter;
-- deterministic or observable done conditions;
-- delivery policy or explicit escalation;
-- budget or bounded retry expectation;
-- integration and merge authority.
-
-Stable workflow rules SHALL be loaded from versioned skills or workflow
-components. They SHALL NOT be compressed and copied into each run brief.
-
-### R5 — GitHub as the durable task and run surface
-
-An issue body MAY contain the canonical initial `Agent run brief`. A
-maintainer-authored issue comment MAY define a later run or override. Each run
-SHALL have one exact source URL and immutable run identifier.
-
-The task prompt MAY be the issue body section itself or a short pointer to that
-section. A rerun SHOULD use a new comment containing only the changed brief or
-decision rather than silently rewriting prior run history.
-
-Public issue and comment content remains untrusted input. Trust and authority
-are determined by the repository policy and verified author, not by the section
-heading or prompt-like wording.
-
-### R6 — Fast prompt creation
-
-Creating a run prompt SHALL be retrieval and light templating, not a second
-full planning project. The system SHALL measure selection-to-worker-start
-latency and prompt-generation latency so regressions are visible.
-
-### R7 — Modular PR-batch architecture
-
-`pr-batch` SHALL become a thin router over small canonical components. A
-component SHALL own its instructions, executable helpers, tests, and stable
-terms without requiring full-text mirroring in the other components.
-
-The refactor SHALL reduce shared-file conflicts and loaded context, not merely
-move the same prose into more files.
-
-### R8 — Per-skill minimum-instruction audits
-
-Issue [#189](https://github.com/shakacode/agent-workflows/issues/189) SHALL
-remain the parent audit. Each shipped skill SHALL have its own sub-issue so the
-audit can proceed independently and report a no-change result when the skill is
-already minimal.
-
-Cross-skill findings MAY become a separate implementation issue only after the
-affected sub-issues agree on the shared mechanism.
-
-### R9 — Understandable delivery policy
-
-The user-facing term SHALL be **delivery policy** unless a clearer term is
-chosen. Documentation SHALL explain the policy using project and promotion
-consequences rather than unexplained `fast`, `balanced`, and `strict` labels.
-
-Initial policy archetypes:
-
-1. **Production-critical service** — a failure affects a large live user base
-   or business operation. Strong pre-integration and pre-production controls
-   are justified.
-2. **Product-discovery service** — a live product needs rapid iteration before
-   product-market fit. Integration is fast, while staging-to-production remains
-   an explicit promotion boundary.
-3. **Release-train project** — changes integrate quickly on main and extensive
-   compatibility, packaging, and regression assurance is concentrated before
-   a release candidate or final release.
-
-The policy SHALL also account for the number of collaborators who depend on the
-shared main branch. A project or change can escalate above its default policy
-when consequence, irreversibility, security, or weak verification requires it.
-
-### R10 — Workflow version pins during continuous upgrades
-
-A run SHALL record the workflow pack or contract version it used. The pin
-exists so a task remains reproducible while Agent Workflows itself changes.
-
-A worker that cannot resolve the pinned contract SHALL stop with a clear
-diagnostic. The prompt SHALL NOT carry a compressed backup copy of the entire
-contract.
-
-### R11 — Parent-created, named, traceable tasks
-
-When the operator explicitly authorizes a run set, a parent Codex task MAY
-create separate user-visible Codex tasks, select the saved project and isolated
-worktree, give each task a deterministic title, and monitor its state.
-
-Every created or externally started task SHALL be traceable from the GitHub
-issue through a human-readable run record containing:
-
-- runner: Codex, Claude, or another named runner;
-- observed host or machine, or `UNKNOWN`;
-- task identifier or link;
-- branch and PR when known;
-- lifecycle state and last material update;
-- blocking decision, if any.
-
-Task titles are a convenience; the GitHub run record is the durable lookup.
-Host or machine identity SHALL be host-observed rather than inferred from a
-prompt.
-
-### R12 — In-flight portfolio control
-
-The project SHALL support a periodic inventory of all open PRs and active
-tasks, classifying each as:
-
-- accelerate;
-- continue normally;
-- hold;
-- replace with a smaller design;
-- close as obsolete or superseded;
-- ready for integration or merge review.
-
-The classification SHALL use current evidence, dependency value, conflict
-surface, remaining work, and expected integration cost. Age or sunk token cost
-alone SHALL NOT determine priority.
-
-### R13 — Conflict criticality
-
-Overlap SHALL be classified by consequence:
-
-1. core executable, schema, security, or merge-policy conflicts;
-2. canonical workflow-contract conflicts;
-3. user documentation, examples, and noncanonical reference conflicts;
-4. generated artifacts and changelog conflicts.
-
-File overlap alone SHOULD be advisory before implementation. True semantic
-dependencies may still require ordering.
-
-`CHANGELOG.md` SHALL never block ordinary work. Ordinary PRs already defer
-changelog ownership; on integration they keep the current-base changelog and
-discard branch-local changelog edits. Generated artifacts are regenerated.
-Documentation conflicts are normally resolved during integration, while a
-canonical behavioral contract receives the same care as code.
-
-### R14 — Evidence-driven refinement
-
-The operating limits SHALL be tuned from telemetry. Required measures include:
-
-- active workers and worker utilization;
-- uninterrupted independent-work duration;
-- blocking human decisions per active worker-hour;
-- operator response latency and accumulated decision queue;
-- prompt-generation and time-to-first-worker latency;
-- time to first PR, PR-ready, integration start, and merge;
-- integration backlog age and conflict-resolution time;
-- tokens by planning, implementation, review, and integration phase;
-- pushes, review waves, reruns, and rebases;
-- escaped consequential defects, reverts, and rollbacks;
-- per-gate invocation, true-positive stop, false-positive stop, and elapsed
-  cost.
-
-### R15 — Explicit safety floor
-
-Every delivery policy SHALL preserve:
+Every project SHALL preserve:
 
 - untrusted-input handling;
 - no direct push to the protected base branch;
-- isolated concurrent work;
-- an observable validation result;
-- current-head binding for merge and hosted evidence;
-- explicit authority for destructive, security-sensitive, release, or
-  production actions;
-- refusal of contradictory live ownership;
-- independent review when consequence or weak verification justifies it.
+- a worktree or equivalent isolated checkout for concurrent implementation;
+- an observable validation result appropriate to the changed behavior;
+- proof that merge-time reviews and checks apply to the exact PR commit being
+  merged;
+- explicit authority for destructive, security-sensitive, production, or
+  release actions;
+- refusal of contradictory live ownership when reliable coordination evidence
+  is available.
 
-## Key Terminology
+Bookkeeping, coordination, or telemetry failures SHALL have a simple visible
+override so they do not stall all work. An override cannot grant missing merge,
+production, release, security, or destructive-action authority and cannot
+bypass a failing correctness check.
 
-**Worker slot**
+### R3 — Human attention and unattended work (P1)
 
-Capacity for one independently operating worker. It is a resource ceiling, not
-a proxy for human attention.
+Planning SHALL resolve material product, design, and architecture decisions as
+early as practical. Agents SHALL not interrupt the human for bookkeeping or
+routine implementation choices such as expanding the number of files edited.
 
-**Decision pressure**
+When the human is unavailable, an agent SHOULD continue with reversible best
+judgment and queue concise questions for later. It SHALL stop only when a
+missing answer changes the intended outcome, crosses the safety floor, or would
+cause a difficult-to-reverse external action.
 
-Blocking human decisions created per active worker-hour, combined with how long
-they wait unanswered.
+The operator SHALL be able to declare an attention interval such as “I am
+unavailable for six hours.” Work should be selected and prompted to maximize
+independent progress during that interval. A blocked worker records a visible
+stopped state. If the host can release or replace its slot, the next ready task
+may use it; if it cannot, the run record must say that capacity remains occupied
+rather than pretending replacement occurred.
 
-**Integration backlog**
+The operator SHOULD be able to request the next highest-priority queued
+decision. Code walkthroughs SHOULD prepare all conceptual sections in advance
+and present them one at a time, accepting that later prepared sections may be
+discarded if an earlier discussion sends the work back to development.
 
-Completed or PR-ready work awaiting rebase, conflict resolution, final
-verification, review, or merge.
+### R4 — Minimal human-readable prompt (P1)
 
-**Run brief**
+The user-facing term is **prompt**, not `run brief`. For a well-defined issue,
+the minimum launch information is:
 
-The short human-readable specification used to start one agent run.
+- repository;
+- exact issue or maintainer-comment URL;
+- task/chat name;
+- the instruction, commonly `Use PR-batch to fix this issue`;
+- merge authority: `auto` or `ask`;
+- optional time until the human is next available.
+
+Repository policy or launcher defaults MAY supply repository, title, and merge
+authority when the maintainer omits them. The launcher records the resolved
+values before work starts. It SHALL not infer merge authority from a delivery
+alias, and an unresolved authority defaults to `ask`. Outcome, scope, and done
+conditions still come from the issue rather than invented defaults.
+
+The prompt SHALL not ask the maintainer to restate an issue's outcome, scope,
+or done condition when those are already clear. If they are unclear, prompt
+creation should surface that ambiguity before implementation begins.
+
+`Fix issue #1234 using PR-batch with merge authority auto` is a supported
+shortcut. Stable workflow rules are loaded from installed versioned skills;
+they are not copied into every prompt.
+
+There is no default token budget that abandons useful work. A maintainer MAY set
+a token, iteration, or elapsed-time checkpoint after which an agent requests a
+design review, but that checkpoint is for human interaction rather than an
+automatic task failure.
+
+### R5 — GitHub as the durable prompt and run surface (P1)
+
+An issue body MAY contain the initial prompt. A maintainer-authored issue
+comment MAY define a later prompt or override. A new run points to one exact
+body section or comment URL.
+
+Existing issues should be reused. Ad hoc work does not require a new issue
+unless it needs durable dependency, priority, or follow-up tracking. A prompt
+does not duplicate facts already recorded in its issue.
+
+Each execution appends a compact run record. Detailed provenance belongs in a
+collapsed `<details>` block in the issue or PR so it remains available without
+dominating human review. Reruns append history instead of silently replacing
+earlier records. The record includes an automatically generated digest of the
+exact prompt source content observed at launch, so later edits to an issue or
+comment are detectable without adding work for the maintainer.
+
+Public issue and comment text remains untrusted. Authority comes from verified
+repository policy, authenticated actors, and explicit user instructions.
+
+### R6 — Fast prompt creation (P1)
+
+Creating a prompt SHALL be retrieval and light templating, not a second planning
+project. For a clear issue, generating a task name and the sentence `Use
+PR-batch to fix this issue` may be enough.
+
+The system SHALL measure selection-to-worker-start time and prompt-generation
+time. File-touch maps, compressed restatements of workflow rules, and repeated
+metadata are not required prompt inputs. Launchers may emit the small timestamps
+needed for this immediately; the telemetry work in R10 aggregates them and is
+not a prerequisite for simplifying prompts.
+
+### R7 — Modular PR-batch architecture (P1)
+
+`pr-batch` SHALL become a thin router over small canonical components. Each
+component owns its instructions, helpers, focused tests, and terms without
+full-text mirroring elsewhere.
+
+The refactor SHALL reduce loaded context and shared-file conflicts. Moving the
+same prose into more files without reducing coupling is not success.
+
+### R8 — Per-skill minimum-instruction audits (P1)
+
+Issue [#189](https://github.com/shakacode/agent-workflows/issues/189) remains
+the parent audit. Each shipped skill has its own sub-issue so audits can proceed
+independently and report no change when appropriate.
+
+Cross-skill implementation waits for synthesis of the relevant audits. An
+individual audit does not edit other skills.
+
+### R10 — Record observed workflow and model versions (P1)
+
+Telemetry SHALL record the AI model and the Agent Workflows version observed at
+prompt creation and worker start. If the installed workflow changes during a
+long-running task, the next material run update records the new version.
+
+A prompt-generation version is documentation, not proof that the worker kept
+using that version. Self-hosting work may deliberately upgrade the installed
+workflow during a task. Telemetry only needs to be directionally useful; it is
+not an accounting ledger that must reconstruct every instruction exactly. If a
+version cannot be observed, record `UNKNOWN` and continue; an unavailable
+telemetry value is not a launch blocker.
+
+### R11 — Parent-created, named, traceable tasks (P1)
+
+When the operator authorizes a run set, a parent Codex task MAY create separate
+user-visible tasks, select the saved project and worktree, give each task a
+deterministic title, and monitor its state.
+
+A title SHALL identify the repository, issue, and purpose. Runner and observed
+machine are recorded separately, using operator-defined aliases such as `M1`
+and `M5` when configured.
+
+Each task is traceable from GitHub through a run record containing runner,
+observed host, task identifier or link, branch, PR, state, latest material
+update, and any meaningful blocking decision. The workflow and model versions
+belong in the collapsed details.
+
+Before creating a task, the launcher appends a `launch-pending` record with a
+globally unique run ID and idempotency key. A retry reuses that record rather
+than creating a duplicate task. After task creation, the launcher attaches the
+host task ID and advances the same run. If the durable write path is unavailable,
+a visible single-operator or no-backend override may proceed without turning a
+bookkeeping failure into a global stall; it must preserve the run ID locally
+and report that GitHub reconciliation remains due.
+
+Run state and outcome are separate. State uses a small useful vocabulary such
+as `launch-pending`, `active`, `waiting`, `blocked`, `PR-ready`, and `completed`.
+Outcome is `pending` until it can be recorded as `merged`, `closed`, `failed`,
+or `reverted`. A completed worker that is waiting for integration therefore
+does not disappear into an ambiguous terminal state. The normal progression is
+`launch-pending` to `active`, optionally through `waiting` or `blocked`, then to
+`PR-ready` or `completed`; resumed work returns to `active` and never rewrites
+the earlier history.
+
+### R12 — In-flight portfolio control (P1)
+
+The project SHALL periodically inventory open PRs and active tasks, classifying
+each as accelerate, continue, hold, replace, close, or integration-ready.
+
+Classification uses current live state, value, explicit semantic dependencies,
+conflicts, remaining work, and expected integration cost. Age and sunk tokens
+are context, not priority. Every run refreshes current base/head and dependency
+state rather than relying on yesterday's artifact.
+
+### R13 — Explicit dependencies; consequence-aware conflicts (P1)
+
+Semantic dependencies and incompatible design choices SHALL be documented in
+the related issues. They SHALL not be inferred merely because two tasks may
+edit the same file.
+
+File overlap does not block concurrent development. Repeated overlap is a
+signal to split monolithic files and interfaces. Integration handles ordinary
+text conflicts later.
+
+Conflict care follows consequence:
+
+1. executable, schema, security, or merge-policy conflicts;
+2. canonical workflow-contract conflicts;
+3. user documentation and examples;
+4. generated artifacts and changelog.
+
+This repository's `AGENTS.md` seam makes `CHANGELOG.md` nonblocking for ordinary
+work: ordinary PRs keep the current-base changelog and discard branch-local
+edits. The portable workflow SHALL expose a repository policy seam for defer,
+waive, or dedicated ownership rather than imposing that choice on every
+consumer. Repository policy likewise decides whether generated artifacts are
+regenerated or require careful review. Ordinary documentation conflicts are
+normally resolved during integration unless repository policy marks them as
+canonical or executable.
+
+### R9 — Simple delivery policy, detailed design later (P2)
+
+For now, repositories MAY use familiar aliases with plain-language meanings:
+
+- **fast** — package or open-source release work that integrates quickly and
+  concentrates broader checks before publishing a package, release candidate,
+  or final release;
+- **balanced** — a live product-discovery service that moves quickly before
+  product-market fit while retaining an explicit production promotion gate;
+- **strict** — a production-critical service where failure affects many users
+  or business operations.
+
+The repository-level policy accounts for both project type and the number of
+collaborators affected by a bad main branch. This belongs in the repository
+`AGENTS.md` seam at the same level as other workflow policy.
+
+Merge authority remains the only ordinary per-task authority choice: `auto` or
+`ask`. Delivery policy chooses which checks apply; it does not grant permission
+to merge, deploy, or release. Production and release actions require their own
+explicit authority outside the ordinary task prompt.
+
+The final taxonomy and per-change overrides require more discussion. In the
+near term, agent-workflows favors a progress-oriented stabilization setting
+while preserving R15.
+
+### R14 — Directional telemetry from real work (P2)
+
+Telemetry SHOULD collect, when available:
+
+- prompt creation and selection-to-start time;
+- AI model and observed Agent Workflows versions;
+- time to first PR, PR-ready, integration start, and merge;
+- human questions, reason, queue time, and response latency;
+- uninterrupted worker time and stopped/occupied slots;
+- tokens by broad phase;
+- review, CI, retry, and rebase amplification;
+- integration backlog and conflict-resolution time;
+- consequential defects, reverts, and rollbacks.
+
+Telemetry SHALL avoid raw transcripts, prompts, responses, and secrets. Queries
+should select compact fields and avoid loading whole pull-request inventories
+when a small CLI or API response is sufficient.
+
+The data is for broad directional decisions. We will refine from live work
+without requiring controlled experiments or one-variable-at-a-time changes.
+
+### R2 — Simple concurrency now; adaptive scheduling later
+
+The operator chooses a target number of concurrent tasks. The system starts
+ready work up to that target and the host's actual capacity. Trial and error
+will reveal practical machine limits.
+
+We will not predict decision pressure or task duration before launch, and we
+will not build adaptive thresholds yet. First collect telemetry and improve the
+workflow without a scheduler. A future scheduler may be proposed only after the
+simple model is stable and observed limitations justify it.
+
+## Plain-Language Terminology
+
+**Prompt**
+
+The short human-readable instruction that starts one task. The issue usually
+contains the details, so the prompt often points to it.
 
 **Run record**
 
-The durable GitHub issue comment or equivalent record that maps an issue to its
-runner, host, task, branch, PR, state, and blocker.
+The durable GitHub record mapping an issue to runner, machine, task, branch,
+PR, state, and meaningful blocker.
 
-**Delivery policy**
+**Worktree**
 
-The project's default placement and strength of integration, promotion, and
-release checks, derived from failure consequence and delivery model.
+A separate Git checkout used so concurrent tasks do not edit the same working
+directory.
 
-**Promotion boundary**
+**Exact-head evidence**
 
-The point at which staged or integrated work reaches production users or a
-published release.
+Proof that reviews and checks apply to the exact PR commit being merged. This
+does not always mean rebasing onto the latest default branch; base freshness and
+conflict policy are separate checks.
 
-**Workflow pin**
+**Non-goal**
 
-The exact Agent Workflows revision or stable contract version used by a run.
+Something deliberately excluded from a task. It is not a required prompt field
+when the issue is already clear.
 
-Legacy prompt abbreviations SHALL not appear as unexplained user fields:
+**Workflow version**
 
-- `ft` meant **file-touch map**: predicted paths and overlap. The replacement
-  label is `Expected files and overlap`, and agents should derive it when
-  possible rather than asking the human to encode it.
-- `split-brain` meant that coordination configuration sources disagreed about
-  which backend was active. It is a diagnostic condition, not a run-brief
-  field. A tool should report it in plain language with the corrective action.
+The Agent Workflows revision observed at a particular moment. A recorded prompt
+version does not freeze an independently installed runtime.
 
-## Design
+The file-touch map is removed from human input and initial scheduling. Tools may
+inspect files during implementation or integration, but overlap alone creates
+no dependency.
 
-### Adaptive scheduler
+If coordination sources disagree, tools should say which sources conflict and
+offer a plain-language override or repair. Do not add coordination diagnostics
+to human-authored fields; the phrase `split-brain` came from an ad hoc prompt,
+not a canonical project field.
+The workflow must also remain usable in single-operator repositories with no
+coordination backend.
 
-The default attended scheduler fills worker slots up to the available hardware
-or service capacity. It stops launching new work when any operator-selected
-backpressure threshold is exceeded:
+## Initial Operating Design
 
-- decision queue or decision wait;
-- integration backlog count or age;
-- remaining token budget;
-- number of simultaneously active high-consequence tasks;
-- host saturation or measured slowdown.
+### Human-attention queue
 
-When a worker blocks without consuming resources, the scheduler may start the
-next ready task. The blocked item stays visible in the decision queue. Initial
-thresholds are operator choices; the telemetry loop recommends adjustments but
-does not silently change them.
+Before work starts, ask only about material ambiguity in outcome, design, or
+architecture. During work:
 
-### GitHub issue layout
+1. continue through reversible implementation choices;
+2. record meaningful questions without stopping when a safe best guess exists;
+3. stop for missing authority, an outcome-changing choice, or an irreversible
+   external action;
+4. let the human request the next highest-priority question when available.
 
-The initial issue may end with:
+Question telemetry records the category so recurring inane interruptions can
+be removed from the workflow.
 
-```markdown
-## Agent run brief
+### GitHub prompt and run record
 
-- Outcome:
-- Non-goals:
-- Constraints and reasons:
-- Done when:
-- Delivery policy:
-- Integration and merge authority:
-- Budget or retry bound:
-- Workflow pin: resolve at launch
+For a clear issue, the visible prompt may be:
+
+```text
+Repository: shakacode/agent-workflows
+Work item: https://github.com/shakacode/agent-workflows/issues/476
+Task name: AW #476 — Simplify cross-host prompts
+Instruction: Use PR-batch to fix this issue against current main.
+Merge authority: ask
+Human available after: 6 hours
 ```
 
-Each execution adds or updates one run record without copying the full workflow:
+The equivalent shortcut is:
+
+```text
+Fix agent-workflows#476 using PR-batch with merge authority ask. Use current
+main, title the task `AW #476 — Simplify cross-host prompts`, and continue with
+reversible best judgment while I am unavailable for six hours.
+```
+
+Each execution appends compact visible state and collapses detail:
 
 ```markdown
-## Agent run
+Agent run: Codex on M5 — active — <task link>
 
-- Run: `issue-476-run-1`
-- Brief: <exact issue or comment URL>
-- Runner: Codex
-- Host: <observed host or UNKNOWN>
-- Task: <task id/link>
-- Branch: <branch or pending>
-- PR: <URL or pending>
-- State: <active|blocked|PR-ready|integrating|terminal>
-- Needs human: <none or exact decision>
+<details>
+<summary>Run details</summary>
+
+- Run ID: <ULID or host-generated globally unique ID>
+- Idempotency key: <stable key reused by launch retries>
+- Prompt: <exact issue or comment URL>
+- Prompt digest: <SHA-256 of the exact source content observed at launch>
+- Runner and model: <observed values>
+- Machine: <configured alias or observed host>
+- Workflow at prompt creation: <version or UNKNOWN>
+- Workflow observed by worker: <version or UNKNOWN>
+- Branch and PR: <values or pending>
+- State: <launch-pending, active, waiting, blocked, PR-ready, or completed>
+- Outcome: <pending, merged, closed, failed, or reverted>
+- Promotion/release authority: <not granted or separately authorized reference>
 - Last material update: <timestamp>
-```
+- Needs human: <none or one meaningful decision>
 
-For a maintainer-authored issue, the body section is the stable initial brief.
-For an outside-authored or ambiguous issue, a trusted maintainer comment is the
-run brief. Later runs use new comments so history remains reviewable.
+</details>
+```
 
 ### Prompt design for #476
 
 The first implementation should:
 
-- retain one workflow revision or contract pin;
-- use one readable prompt shape across Codex, Claude, and generic hosts;
-- split a batch into more run briefs when a host limit is reached instead of
-  converting judgment fields into abbreviations;
-- use the labels `Outcome`, `Non-goals`, `Constraints and reasons`, and
-  `Done when`;
-- remove `ft` and coordination diagnostics from human-authored fields;
-- let tools derive file overlap, backend health, routes, and receipt metadata;
-- keep failure to resolve the pinned workflow as a clear stop.
+- support the one-line `Fix issue … using PR-batch` shortcut;
+- derive repository, issue identity, current main, and task title when possible;
+- use an issue body or maintainer comment as the detailed prompt;
+- use one readable shape across Codex, Claude, and generic hosts;
+- remove file-touch maps, abbreviated file-touch inputs, ad hoc coordination
+  diagnostics, and compressed workflow
+  restatements, token-abandonment budgets, and redundant outcome fields from
+  normal human input;
+- record the launch source digest and lightweight timing at the launcher without
+  waiting for the telemetry aggregation task;
+- record both prompt-generation and worker-observed workflow versions;
+- preserve append-only rerun history in collapsed details;
+- prefer compact `gh` or field-selected API queries;
+- resolve current live state at launch. In particular, #476 is now unblocked
+  after #479 and #486 merged, and work must use their current-base result rather
+  than a pre-cut artifact from before those merges.
 
-The phrase **host-budget-aware density** in #476 currently means using more
-expanded labels for a host with a larger prompt limit and telegraphic labels
-for a host with a smaller limit. This spec rejects that as the default design:
-human readability should not vary by host. Host limits should change batch
-size, not the language humans must decode.
-
-The **judgment fields** are the parts that cannot be reconstructed from code or
-GitHub metadata: desired outcome, non-goals, important constraints and their
-reasons, and the observable done condition. They are mandatory concepts but
-may be concise; empty or not-applicable values are preferable to cryptic
-abbreviations.
+Host prompt limits should change batch size, not force telegraphic vocabulary.
 
 ### Modular PR-batch components
 
-The target structure is a thin `pr-batch` router plus independently owned
-components:
+The target is a thin router plus independently owned components:
 
-1. **Run intake** — task identity, run brief, trust, and duplicate prevention.
+1. **Prompt intake** — task identity, trust, shortcut expansion, and duplicate
+   detection that never becomes a global stall.
 2. **Worker execution** — worktree, implementation loop, focused validation,
-   budget, and stop conditions.
-3. **Integration** — base refresh, conflict handling, final validation, review,
-   CI, and PR readiness.
-4. **Promotion and release** — production deployment, release candidate, final
-   release, rollback, and high-consequence approval.
-5. **Coordination and observability** — task/run mapping, liveness, decision
-   queue, telemetry, and recovery.
-6. **Security floor** — untrusted-input and authority boundaries shared by all
-   components.
+   meaningful stop conditions, and human-attention queue.
+3. **Integration and PR closeout** — current base/head, conflict handling,
+   final validation, review, CI, and merge readiness.
+4. **Production and release** — a separate downstream lifecycle for deployment,
+   release candidates, publishing, rollback, and high-consequence approval. It
+   is not part of ordinary feature implementation.
+5. **Optional coordination and observability** — task mapping, liveness,
+   telemetry, and recovery. Core work remains usable without this component.
+6. **Security floor** — the small shared R15 boundary.
 
-`workflows/pr-processing.md` should become an index and compatibility shim
-while sections move in small behavior-preserving PRs. Later simplification PRs
-can remove or revise behavior component by component. Tests should verify
-behavior and component interfaces rather than pinning duplicated paragraphs in
-multiple large files.
+`workflows/pr-processing.md` becomes an index and compatibility shim while
+sections move through small behavior-preserving PRs. Later simplification removes
+obsolete behavior component by component. Tests verify interfaces and behavior,
+not duplicated paragraphs.
 
-### Parent-created task feasibility
+### Parent-created tasks
 
-The current Codex desktop host exposes task creation, deterministic task
-titles, project/worktree selection, task listing and reading, follow-up
-messages, and bounded waiting. A parent task can therefore create and supervise
-separate user-visible Codex tasks after the operator explicitly authorizes that
-run set.
+The current Codex desktop host can create, title, list, read, message, and wait
+on separately visible tasks. A parent task can therefore launch an authorized
+run set. Claude requires its own dispatcher or a copy-paste prompt.
 
-Internal subagents remain useful for bounded work inside one task, but they are
-not substitutes for separately visible user tasks. Starting and naming a task
-on another runner such as Claude still requires that runner's dispatcher or a
-manual start unless a cross-runner integration is available. The same GitHub
-run-record format can identify either runner.
+Every task starts by re-reading current GitHub state. A task with an unmet
+semantic dependency should use a task heartbeat or bounded, backed-off checks
+for up to the operator's unattended interval. It must not busy-poll, hold a
+working-tree lock, or ask the human merely because its dependency is still
+open.
 
-The public OpenAI documentation currently establishes parallel multi-agent
-coordination but does not fully document the desktop task-management surface.
-The design must therefore feature-detect host capabilities and preserve a
-copy-paste fallback.
+The parent writes the unique `launch-pending` run record before task creation,
+then updates that same record with the created task ID. This small launch fence
+prevents a timeout or retry from silently creating duplicate workers while
+retaining the explicit no-backend override described in R11.
 
-### Delivery policy design for #514
+### Daily and unattended loop
 
-Issue #514 should be revised before implementation. The first PR should define
-the plain-language policy and examples, not immediately encode a three-column
-matrix across every workflow.
+The attended session:
 
-Each repository selects one default archetype. Each run records only the
-default plus a concrete escalation reason, if any. The implementation then maps
-the policy to two moments:
-
-- **integration checks** before shared main is changed;
-- **promotion checks** before users receive the change or a release is
-  published.
-
-This preserves rapid integration for product discovery and release-train
-projects without weakening the production or release promotion boundary.
-
-### Daily and unattended control loop
-
-The daily attended session:
-
-1. review material state changes and unanswered decisions;
-2. classify in-flight PRs and choose the integration order;
-3. set worker capacity, token budget, decision-pressure threshold, and
-   integration-backlog threshold;
+1. review material state changes and ask for the next highest-priority queued
+   decision;
+2. classify in-flight PRs and choose likely integration order;
+3. choose a simple target number of concurrent tasks and the next human
+   availability time;
 4. authorize a named run set;
-5. create and title tasks, then write their GitHub run records;
-6. keep capacity filled while thresholds permit;
-7. end with durable state, not a transcript-dependent handoff.
+5. launch tasks and write their GitHub run records;
+6. use easy overrides for broken accounting or coordination;
+7. leave durable state rather than a transcript-only handoff.
 
-An unattended or overnight run uses the same queue with stricter admission:
-deterministic done checks, no expected product or permission decision, isolated
-worktree, bounded retries, and a default stop at PR-ready unless stronger
-authority and all required gates are already explicit.
+An unattended run favors clear issues, reversible work, worktrees, and
+observable done checks. It normally stops at PR-ready unless merge authority is
+`auto`. Production and release actions require separate explicit authority.
 
-### Telemetry refinement loop
+### Refinement loop
 
-Daily review uses current state. Weekly calibration compares:
+Use real work immediately. Daily review uses current state; periodic review
+looks for prompt latency, recurring low-value questions, stalled capacity,
+integration accumulation, review/CI amplification, and consequential defects.
+Adjust simple configuration and workflow wording first. Consider automation
+only after repeated evidence shows the simple process is insufficient.
 
-- useful worker utilization;
-- decision pressure and wait;
-- integration backlog and age;
-- tokens and elapsed time by phase;
-- review and CI amplification;
-- defect, revert, and rollback outcomes.
+## Issue And Prompt Map
 
-Increase capacity when workers remain independent and integration stays
-healthy. Reduce or redirect capacity when decisions or integration accumulate.
-Change one scheduling or assurance variable at a time where practical so the
-result remains interpretable.
+All prompts use current live GitHub state and current main. Tasks may start
+simultaneously. When a documented semantic dependency is not ready, the task
+records `waiting`, uses a task heartbeat or backed-off checks for up to six
+hours, and proceeds when the dependency changes without asking the maintainer.
 
-## Issue And Run Map
+### T1 — Publish the objective and cross-repository docs map
 
-The issue bodies created from this section should contain the matching run
-brief. Do not regenerate a separate compressed goal prompt.
-
-### T1 — Publish the throughput objective and cross-repository docs map
-
-- **Requirements:** R1, R9, R14
 - **Issue:** [agent-workflows-com#22](https://github.com/shakacode/agent-workflows-com/issues/22)
-- **Parallel:** yes
-- **Done when:** the site explains the objective, concurrency model, delivery
-  archetypes, source-of-truth boundary, and links both repositories.
-
-**Run brief**
+- **Start:** now; no dependency.
 
 ```text
-Implement shakacode/agent-workflows-com#22. Explain the throughput-first
-objective in plain language, define every public term, distinguish principles
-from current behavior, and link the website to the normative agent-workflows
-repository. Preserve the site’s existing user-facing style and verify the
-rendered documentation through the repository seam.
+Implement shakacode/agent-workflows-com#22. Explain the governing objective in
+plain language, define public terms, distinguish principles from current
+behavior, and link the website to the normative agent-workflows repository.
 ```
 
-### T2 — Replace #476 with one readable cross-host run brief
+### T2 — Simplify #476 prompts
 
-- **Requirements:** R4, R5, R6, R10
-- **Issue:** update [#476](https://github.com/shakacode/agent-workflows/issues/476)
-- **Parallel:** yes after its issue text is revised; integration may overlap
-  PR-batch modularization
-- **Done when:** one readable prompt format replaces compressed restatements,
-  host limits change item count rather than vocabulary, and prompt creation is
-  measured.
-
-**Run brief**
+- **Issue:** [#476](https://github.com/shakacode/agent-workflows/issues/476)
+- **Start:** now; no dependency.
 
 ```text
-Implement the revised agent-workflows#476. Replace duplicated compressed
-workflow rules with one resolvable workflow pin and one human-readable run
-brief using Outcome, Non-goals, Constraints and reasons, and Done when. Remove
-unexplained ft and split-brain fields from human input. Use batch splitting,
-not telegraphic language, when a host prompt limit is reached. Preserve a clear
-stop when the pinned workflow cannot be resolved.
+Fix agent-workflows#476 using PR-batch with merge authority ask. Use current
+main after #479 and #486, title the task `AW #476 — Simplify cross-host
+prompts`, and continue with reversible best judgment for six hours. Make the
+issue or maintainer comment the readable prompt, support the one-line shortcut,
+remove file-touch maps and compressed restatements, and record actual model and
+workflow versions without treating telemetry as exact accounting. Emit the
+cheap launch timestamps directly; do not wait for #562's aggregation work.
 ```
 
-### T3 — Refactor PR-batch into independently owned components
+### T3 — Modularize PR-batch
 
-- **Requirements:** R7, R13, R15
-- **Issue:** to create after this design is approved
-- **Parallel:** structural extraction PRs may run independently when their
-  source sections and target components are disjoint
-- **Done when:** `pr-batch` is a thin router, the monolithic workflow is an
-  index/compatibility shim, and component tests avoid mirrored full-text pins.
-
-**Run brief**
+- **Issue:** [#559](https://github.com/shakacode/agent-workflows/issues/559),
+  followed by one implementation sub-issue per extracted component.
+- **Start:** architecture and coupling inventory now. Extraction PRs wait for
+  the architecture issue's component boundaries.
 
 ```text
-Refactor one approved PR-batch component from the monolithic workflow without
-changing behavior. Move its canonical instructions, helpers, and focused tests
-behind a thin router; remove only duplicate mirrors proven unnecessary. Keep
-the compatibility index working, run the relevant focused tests and full
-repository validation, and report remaining cross-component coupling rather
-than expanding scope.
+Define and begin the smallest behavior-preserving modularization of PR-batch.
+Use the component boundaries in PR #558, inventory current coupling, create one
+implementation issue per approved component, and extract only one component in
+this task. Keep workflows/pr-processing.md as an index and compatibility shim,
+avoid cross-component cleanup, and use focused validation before the full gate.
+If PR #558 is not final, poll its current review state with backed-off checks
+for up to six hours while completing the read-only coupling inventory.
 ```
 
-### T4 — Split #189 into one audit sub-issue per shipped skill
+### T4 — Audit every shipped skill under #189
 
-- **Requirements:** R8
 - **Issue:** parent [#189](https://github.com/shakacode/agent-workflows/issues/189)
-- **Parallel:** yes; audits are independent, shared implementation waits for
-  cross-skill synthesis
-- **Done when:** every shipped skill is represented by a native GitHub
-  sub-issue and the parent summarizes only shared findings and priority.
-
-**Run brief**
+- **Start:** all skill audits may start now and run independently.
 
 ```text
-Audit the named skill as a sub-issue of agent-workflows#189. Identify its
-minimum always-loaded contract, conditional material to retrieve on demand,
-deterministic work suited to a helper or schema, judgment that must remain
-visible, and redundant or obsolete text. Produce evidence and a no-change or
-smallest-follow-up recommendation. Do not edit another skill or implement a
-cross-skill mechanism in this audit.
+Audit the one skill named by this #189 sub-issue. Identify the minimum material
+that must always load, content that can be retrieved only when needed,
+deterministic work suited to a helper or schema, necessary visible judgment,
+and obsolete or duplicated text. Comment with evidence and a no-change or
+smallest-follow-up recommendation. Do not edit files or another skill, and do
+not implement a shared mechanism from this audit.
 ```
 
-### T5 — Rewrite #514 as understandable delivery-policy design
+### T5 — Clarify #514 without broad implementation
 
-- **Requirements:** R9, R15
-- **Issue:** update [#514](https://github.com/shakacode/agent-workflows/issues/514)
-- **Parallel:** design can proceed now; implementation follows agreement
-- **Done when:** the issue explains the three project archetypes, integration
-  versus promotion checks, collaboration impact, escalation, and terminology.
-
-**Run brief**
+- **Issue:** [#514](https://github.com/shakacode/agent-workflows/issues/514)
+- **Start:** now; terminology remains explicitly provisional.
 
 ```text
-Revise agent-workflows#514 as a documentation-first delivery-policy design.
-Replace unexplained fast/balanced/strict language with production-critical,
-product-discovery, and release-train examples. Separate integration checks
-from production or release promotion checks, include shared-main contributor
-impact, preserve the explicit safety floor, and defer broad implementation
-until the terminology and examples are approved.
+Revise agent-workflows#514 as a short documentation-first design. Explain fast,
+balanced, and strict as aliases for package/release work, product discovery,
+and production-critical services. Put project type and collaborator impact in
+the repository AGENTS.md seam. Keep merge authority as the separate per-task
+auto-or-ask choice, preserve explicit production/release authority, and defer
+the final taxonomy and broad implementation until stabilization produces more
+evidence.
 ```
 
-### T6 — Implement adaptive worker-capacity and backpressure policy
+### T6 — Adaptive scheduler
 
-- **Requirements:** R2, R3, R14
-- **Issue:** to create
-- **Depends on:** telemetry event definitions from T9
-- **Done when:** the operator can set a hardware ceiling plus decision,
-  integration, budget, and high-consequence thresholds; blocked workers do not
-  prevent ready work from using available capacity.
+- **State:** parked. Do not create or start an implementation issue yet.
+- **Resume when:** the simple concurrency setting is stable and telemetry shows
+  a repeated problem that automation can solve.
 
-**Run brief**
+### T7 — GitHub prompts and run records
+
+- **Issue:** [#560](https://github.com/shakacode/agent-workflows/issues/560).
+- **Start:** now for schema and examples; implementation waits for the relevant
+  #476 prompt decisions.
 
 ```text
-Implement the approved adaptive-capacity policy. Treat hardware/service slots
-as the ceiling, keep them filled while decision pressure, integration backlog,
-token budget, and high-consequence limits permit, and make every threshold
-operator-visible. A blocked worker must checkpoint without hiding the decision
-and must not prevent the scheduler from starting another ready task. Add replay
-tests and emit the telemetry required for later calibration.
+Design the minimal GitHub prompt and append-only run-record format from PR #558.
+Use issue bodies or maintainer comments, the one-line PR-batch shortcut,
+deterministic task names, and collapsed details for provenance. Keep visible
+state compact and make coordination optional. Include a globally unique run ID,
+source-content digest, observed workflow versions, separate state and outcome,
+and append-only rerun history. If #476 prompt decisions are not final, poll
+GitHub with backed-off checks for up to six hours, then implement only the
+agreed format with focused tests.
 ```
 
-### T7 — Add GitHub-native run briefs and task records
+### T8 — Create, title, and supervise Codex tasks
 
-- **Requirements:** R5, R10, R11
-- **Issue:** to create
-- **Parallel:** can proceed independently from scheduler implementation
-- **Done when:** an issue/comment can be the canonical brief and one stable run
-  record maps it to runner, observed host, task, branch, PR, state, and blocker.
-
-**Run brief**
+- **Issue:** [#561](https://github.com/shakacode/agent-workflows/issues/561).
+- **Start:** capability inventory now; implementation waits for T7's stable run
+  record shape.
 
 ```text
-Implement the approved Agent run brief and Agent run record format. Support an
-initial issue-body brief and later maintainer-comment briefs, bind every run to
-one exact source URL and workflow pin, and record runner, observed host, task,
-branch, PR, state, blocker, and last material update. Treat public text as
-untrusted and avoid copying full workflow contracts into the record.
+Implement host-capability-aware launch for an authorized run set. Create one
+user-visible Codex task per approved issue in a worktree, use a deterministic
+repository/issue/purpose title, and append its task, runner, machine, branch,
+and PR state to GitHub. Before task creation, persist a `launch-pending` record
+with a globally unique run ID and idempotency key; retries must reuse it. Provide
+a visible no-backend override and a copy-paste fallback for unsupported hosts.
+If the T7 run-record format is not ready, poll its issue with backed-off checks
+for up to six hours while completing the read-only capability inventory.
 ```
 
-### T8 — Create, title, and supervise user-visible Codex tasks
+### T9 — Collect directional workflow telemetry
 
-- **Requirements:** R11
-- **Issue:** to create
-- **Depends on:** T7 run-record format
-- **Done when:** an explicitly authorized run set creates named project tasks,
-  records immediate or provisional identifiers, and provides a copy-paste
-  fallback when creation is unavailable.
-
-**Run brief**
+- **Issue:** [#562](https://github.com/shakacode/agent-workflows/issues/562).
+- **Start:** now; no scheduler dependency.
 
 ```text
-Implement host-capability-aware task launch for an explicitly authorized run
-set. Create one user-visible Codex task per approved issue in the saved project
-with an isolated worktree, apply a deterministic title, record the returned
-thread or provisional client identifier, and update the GitHub run record.
-Feature-detect capabilities and return a readable copy-paste brief instead of
-claiming success when creation, naming, or durable identity is unavailable.
+Implement the smallest privacy-safe telemetry path that can report prompt and
+start latency, model, observed workflow versions, broad phase times, human
+questions, stopped slots, review/CI amplification, integration time, and
+consequential outcomes. Prefer compact gh or field-selected API queries. Do not
+store raw prompts, responses, transcripts, or secrets, and do not build an
+adaptive scheduler or controlled-experiment framework.
 ```
 
-### T9 — Build flow and attention telemetry outside prompts
+### T10 — Classify current in-flight PRs
 
-- **Requirements:** R6, R14
-- **Issue:** to create
-- **Parallel:** yes
-- **Done when:** a privacy-safe collector joins task, GitHub, and available
-  host evidence and reports the required flow, decision, integration, token,
-  and control-yield measures without raw transcript storage.
-
-**Run brief**
+- **Issue:** [#563](https://github.com/shakacode/agent-workflows/issues/563).
+- **Start:** now; read-only.
 
 ```text
-Build a privacy-safe workflow telemetry collector for the metrics in the
-throughput-first spec. Join records by canonical issue/PR and run identity;
-measure phase timestamps, worker utilization, decision pressure, integration
-backlog, review/CI amplification, tokens, and gate yield. Do not store prompts,
-responses, secrets, or raw transcripts. Provide a replay fixture and a compact
-daily/weekly report.
-```
-
-### T10 — Audit and classify every current in-flight PR
-
-- **Requirements:** R12, R13
-- **Issue:** to create as an inventory/decision task
-- **Parallel:** read-only inventory may run immediately
-- **Done when:** every open PR has an evidence-backed accelerate, continue,
-  hold, replace, close, or integration-ready classification with exact next
-  action and dependency state.
-
-**Run brief**
-
-```text
-Perform a read-only portfolio audit of every open pull request in
-shakacode/agent-workflows. Use live GitHub state, current base/head, conflicts,
-dependencies, review and CI state, scope value, and remaining integration cost.
+Perform a read-only live portfolio audit of every open pull request in
+shakacode/agent-workflows. Refresh current base/head, conflicts, explicit issue
+dependencies, review and CI state, value, and remaining integration cost.
 Classify each PR as accelerate, continue, hold, replace, close, or
-integration-ready. Treat age and sunk work as context, not priority. Produce a
-concise portfolio table and a recommended integration order; do not edit,
-close, merge, or message PRs.
+integration-ready and recommend an integration order. File overlap alone is
+not a dependency. Do not edit, close, merge, or message PRs.
 ```
 
-### T11 — Make conflict handling consequence-aware
+### T11 — Simplify conflict and dependency handling
 
-- **Requirements:** R13
-- **Issue:** to create
-- **Parallel:** yes
-- **Done when:** path classes influence integration care but no changelog,
-  generated-file, or ordinary documentation overlap blocks worker launch.
-
-**Run brief**
+- **Issue:** [#564](https://github.com/shakacode/agent-workflows/issues/564).
+- **Start:** now; no dependency.
 
 ```text
-Implement the approved conflict-criticality policy. Classify core executable
-or policy, canonical contract, ordinary documentation, and
-generated/changelog paths. Make overlap advisory before implementation unless
-there is a true semantic dependency. Ensure ordinary feature lanes discard
-branch-local CHANGELOG.md edits in favor of current main and regenerate
-generated artifacts. Add focused policy and replay tests without weakening
-care for canonical behavior or security conflicts.
+Implement the PR #558 conflict policy: issue-authored semantic dependencies,
+file overlap advisory only, this repository's changelog deferral rule, and
+ordinary documentation conflicts deferred to integration. Expose a repository
+policy seam for changelog and generated-artifact handling instead of imposing a
+universal relaxation. Add a simple override for broken bookkeeping or
+coordination without weakening merge, security, production, release, or
+correctness gates. Keep the change small and add focused deterministic tests.
 ```
 
-### T12 — Document the daily and overnight operator loop
+### T12 — Document the daily and overnight loop
 
-- **Requirements:** R2, R3, R12, R14
-- **Issue:** to create; related public explanation belongs in T1
-- **Depends on:** terminology agreed; implementation tooling may follow later
-- **Done when:** the operator has one short routine for setting capacity,
-  reviewing decisions, selecting integrations, authorizing runs, and
-  calibrating from telemetry.
-
-**Run brief**
+- **Issue:** [#565](https://github.com/shakacode/agent-workflows/issues/565).
+- **Start:** now; document the simple process, not a scheduler.
 
 ```text
-Document the approved daily attended and overnight unattended operating loop.
-Use plain language and one compact state table. Explain capacity ceilings,
-decision and integration backpressure, run authorization, PR portfolio
-classification, deterministic unattended admission, and weekly telemetry
-calibration. Link to the normative components instead of duplicating their
-full procedures.
+Document the daily attended and overnight unattended loop from PR #558. Cover
+the operator-set concurrency target, next human availability time, meaningful
+decision queue, dependency-aware task waiting, GitHub task records, live PR
+portfolio review, and easy non-safety overrides. Use one compact state table and
+plain language. Do not design adaptive thresholds or require a comparison
+pilot.
 ```
 
-## Sequencing
+## Launch Order
 
-1. Collaboratively edit and approve this specification.
-2. Complete the read-only current-PR inventory in T10 before choosing which
-   existing implementation PRs to accelerate or replace.
-3. Revise #476 and #514 from this agreed terminology and design.
-4. Finish the #189 sub-issue structure and begin the highest-context audits.
-5. Run T2, T7, T9, and the documentation portion of T12 in parallel.
-6. Extract PR-batch components incrementally through T3.
-7. Implement adaptive scheduling only after T9 defines the evidence it needs.
-8. Pilot the thin run brief and delivery policies on representative tasks
-   before promoting defaults across consumer repositories.
+Start T1, T2, T3, every T4 audit, T5, T7, T8, T9, T10, T11, and T12 at the
+same time. Their prompts state what can proceed immediately and what must poll a
+documented GitHub dependency. T6 is deliberately parked.
+
+No task should use file overlap as a launch blocker. No task should ask the
+maintainer for routine scope expansion while the six-hour unattended interval
+is active.
 
 ## Validation Strategy
 
-Every implementation issue resolves its commands and policy through the target
-repository's `AGENTS.md` seam. This source repository uses `bin/validate` as
-the full verification baseline. Focused tests should run for the component
-changed, and docs changes should verify links and rendered output where the
-owning repository provides that capability.
+Validate the changed behavior through the target repository's `AGENTS.md` seam.
+Run focused checks during implementation and the full repository gate before
+publication or merge when policy requires it. Record gate time and failures as
+telemetry, but do not make every worker wait for unrelated full-suite checks
+before useful implementation begins.
 
-The pilot compares the current workflow with the thin path on representative
-normal and high-consequence tasks. It records elapsed time, human
-interventions, planning latency, tokens by phase, review rounds, integration
-cost, escaped consequential defects, and rollback outcomes.
+We will use the new workflow on real work immediately and refine from observed
+outcomes. A separate comparison pilot is not required.
 
-## Non-Goals
+## Deferred Decisions
 
-- Removing the safety floor.
-- Setting one universal worker count.
-- Treating all documentation as noncritical; canonical behavioral contracts
-  may be as consequential as executable code.
-- Moving the same monolithic workflow into many files without reducing loaded
-  context, duplication, and conflict coupling.
-- Making task titles the only durable ownership record.
-- Automatically creating all proposed implementation issues before this plan
-  is reviewed.
-- Automatically merging unattended work merely because implementation and
-  tests completed.
+These do not block the initial execution wave:
 
-## Open Questions For Collaborative Editing
-
-These are non-blocking for the first draft:
-
-1. Should the public term remain `delivery policy`, or is `delivery mode` more
-   intuitive?
-2. Which machine labels should be stable in task titles and run records: the
-   Codex host id, an operator-defined alias such as `m1`, or both?
-3. Should a daily run-set authorization permit the parent to create all named
-   child tasks at once, or should it create them lazily as capacity opens?
-4. What initial decision-queue and integration-backlog thresholds should the
-   first telemetry pilot observe before recommending defaults?
-5. Which existing open PRs should be treated as likely replacement candidates
-   before the full T10 inventory is complete?
+1. Final delivery-policy terminology and per-change overrides.
+2. Automated concurrency thresholds or slot-replacement scheduling.
+3. General host naming beyond configurable aliases; Justin currently uses
+   `M1` and `M5`.
+4. Whether a run set creates every task immediately or lazily; this should be
+   simple configuration optimized for human attention.
