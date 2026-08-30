@@ -421,6 +421,12 @@ module PrMergeSubmit
         requested_hosted_runs: requested_run_ids, trusted_repo_root: @repo_root,
         diff_base_sha: ci_result["diff_base_sha"]
       )
+      if %w[github_actions dependabot].all? { |scope| refreshed.dig("scopes", scope, "complete") == true }
+        actions_snapshot = readiness.authenticated_actions_snapshot(
+          repo: options[:repo], pr_number: options[:pr], host: options[:host]
+        )
+        validate_actions_snapshot_continuity!(refreshed, actions_snapshot, options)
+      end
       unless refreshed.dig("requested_hosted", "run_ids") == requested_run_ids
         raise Error, "current CI requested hosted-run bindings changed during reassessment"
       end
@@ -450,6 +456,23 @@ module PrMergeSubmit
       refreshed
     rescue PrCiReadiness::Error => e
       raise Error, "current CI evidence could not be refreshed completely: #{e.message}"
+    end
+
+    def validate_actions_snapshot_continuity!(refreshed, snapshot, options)
+      unless snapshot["head_sha"].to_s.casecmp?(options[:expected_head])
+        raise Error, "current CI Actions inventory moved to another head"
+      end
+
+      initial_rows = %w[github_actions dependabot].flat_map do |scope|
+        Array(refreshed.dig("scopes", scope, "rows"))
+      end
+      initial_rows.select! { |row| row.is_a?(Hash) && %w[run job].include?(row["kind"]) }
+      canonical = lambda do |rows|
+        rows.map { |row| MergeAssurance.canonical_json(row) }.sort
+      end
+      return if canonical.call(initial_rows) == canonical.call(Array(snapshot["rows"]))
+
+      raise Error, "current CI Actions runs or jobs changed during final reassessment"
     end
 
     def validate_policy_disposition_continuity!(receipt_ci, refreshed_ci, trusted_ci_policy:)

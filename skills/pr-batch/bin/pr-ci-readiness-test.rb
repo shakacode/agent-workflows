@@ -820,6 +820,53 @@ class PrCiReadinessTest < Minitest::Test
     end
   end
 
+  def test_trusted_ci_policy_rejects_duplicate_ci_readiness_keys
+    fixtures = {
+      root: <<~YAML,
+        ci_readiness:
+          version: 1
+          optional_approval_held_checks: []
+        ci_readiness:
+          version: 1
+          optional_approval_held_checks: []
+      YAML
+      version: <<~YAML,
+        ci_readiness:
+          version: 1
+          version: 1
+          optional_approval_held_checks: []
+      YAML
+      rule: <<~YAML
+        ci_readiness:
+          version: 1
+          optional_approval_held_checks:
+            - id: circleci-storybook
+              app_slug: circleci-checks
+              app_slug: circleci-checks
+              name: storybook-review-app
+      YAML
+    }
+
+    fixtures.each do |label, yaml|
+      Dir.mktmpdir("pr-ci-policy-duplicate") do |root|
+        run_fixture_git(root, "init", "-q")
+        run_fixture_git(root, "config", "user.name", "Test User")
+        run_fixture_git(root, "config", "user.email", "test@example.test")
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), yaml)
+        run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+        run_fixture_git(root, "commit", "-q", "-m", "duplicate policy")
+        base_sha = run_fixture_git(root, "rev-parse", "HEAD").strip
+
+        error = assert_raises(PrCiReadiness::Error) do
+          PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
+        end
+
+        assert_includes error.message, "duplicate key", label
+      end
+    end
+  end
+
   def test_trusted_ci_policy_ignores_repository_replacement_refs
     Dir.mktmpdir("pr-ci-policy-replace") do |root|
       run_fixture_git(root, "init", "-q")

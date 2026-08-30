@@ -1729,6 +1729,29 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  def test_actions_appearing_after_authenticated_assessment_stop_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[actions_race_failure actions_race_pending].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held,
+          merge_submission:, ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        assert_operator log.scan("actions/runs?head_sha=").length, :>=, 2, "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
   def test_commit_status_change_during_final_inventory_stops_every_submission_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
@@ -1922,6 +1945,17 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes malformed_result.fetch(:stderr),
                     "trusted-base ci_readiness policy could not be authenticated"
     assert_empty malformed_log
+
+    duplicate_result, duplicate_log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held_policy_duplicate,
+      merge_submission: { "mode" => "direct" },
+      policy_fixture: :duplicate_ci_readiness
+    )
+    assert_equal 1, duplicate_result.fetch(:status).exitstatus
+    assert_includes duplicate_result.fetch(:stderr),
+                    "trusted-base ci_readiness policy could not be authenticated"
+    assert_empty duplicate_log
 
     tampered_result, tampered_log = run_cli(
       mode: "direct",
@@ -2642,10 +2676,12 @@ class PrMergeSubmitTest < Minitest::Test
           repo_root:, base_ref:, base_sha:
         )
       rescue PrCiReadiness::Error
-        raise unless mode == :optional_held_policy_malformed
+        raise unless %i[
+          optional_held_policy_malformed optional_held_policy_duplicate
+        ].include?(mode)
       end
       if trusted_ci_policy.nil? && %i[
-        optional_held_policy_missing optional_held_policy_malformed
+        optional_held_policy_missing optional_held_policy_malformed optional_held_policy_duplicate
       ].include?(mode)
         trusted_ci_policy = claimed_optional_held_policy(base_ref:, base_sha:)
       end
@@ -2909,6 +2945,22 @@ class PrMergeSubmitTest < Minitest::Test
       File.write(policy_path, policy.to_yaml)
     when :malformed
       File.write(policy_path, "merge_submission: [\n")
+    when :duplicate_ci_readiness
+      File.write(
+        policy_path,
+        <<~YAML
+          base_branch: main
+          merge_submission:
+            mode: direct
+          ci_readiness:
+            version: 1
+            version: 1
+            optional_approval_held_checks:
+              - id: circleci-storybook
+                app_slug: circleci-checks
+                name: storybook-review-app
+        YAML
+      )
     when :missing
       nil
     else
@@ -3168,9 +3220,13 @@ class PrMergeSubmitTest < Minitest::Test
       if actions_endpoint
         exit 1 if transition == :actions_inventory_missing
 
-        action_rows = if %i[actions_failure actions_pending].include?(transition)
-                        status = transition == :actions_failure ? "completed" : "in_progress"
-                        conclusion = transition == :actions_failure ? "failure" : nil
+        actions_reads = File.read(ENV.fetch("GH_LOG")).scan("actions/runs?head_sha=").length
+        action_rows = if %i[actions_failure actions_pending].include?(transition) ||
+                         (%i[actions_race_failure actions_race_pending].include?(transition) &&
+                          actions_reads >= 2)
+                        failure = %i[actions_failure actions_race_failure].include?(transition)
+                        status = failure ? "completed" : "in_progress"
+                        conclusion = failure ? "failure" : nil
                         [{
                           "id" => 501, "workflow_id" => 601, "run_number" => 1, "run_attempt" => 1,
                           "event" => "pull_request", "head_branch" => #{head_ref_name.inspect},

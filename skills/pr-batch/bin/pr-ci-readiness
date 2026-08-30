@@ -29,6 +29,7 @@ require "json"
 require "open3"
 require "time"
 require "yaml"
+require_relative "../../../bin/agent_doctor/autonomous_merge_policy_yaml"
 load File.expand_path("diff-identity", __dir__) unless defined?(DiffIdentity)
 
 # Pure verdict logic (no I/O) plus the gh-backed runner. The pure methods take
@@ -467,6 +468,15 @@ module PrCiReadiness
     return nil if tree_entry.empty?
 
     raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{POLICY_PATH}")
+    duplicate_errors = AutonomousMergePolicy.duplicate_key_errors(raw).select do |error|
+      error == '$ contains duplicate key "ci_readiness"' ||
+        error.start_with?("$.ci_readiness contains duplicate key") ||
+        error.start_with?("$.ci_readiness.optional_approval_held_checks contains duplicate key")
+    end
+    unless duplicate_errors.empty?
+      raise Error, "trusted-base ci_readiness policy contains duplicate keys: #{duplicate_errors.join('; ')}"
+    end
+
     config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false) || {}
     raise Error, "trusted-base policy is not a mapping" unless config.is_a?(Hash)
 
@@ -710,6 +720,23 @@ module PrCiReadiness
       )
       result["context"] = { "host" => resolved_host }
       result
+    end
+
+    def authenticated_actions_snapshot(repo:, pr_number:, host:)
+      resolved_host = resolve_host!(host)
+      @gh_env = { "GH_HOST" => resolved_host }
+      resolved_repo = resolve_repo!(repo)
+      validated_pr = validate_pr!(pr_number)
+      target_pr = fetch_target_pr_identity(resolved_repo, validated_pr, require_base: true)
+      rows, complete, error, = fetch_exact_head_actions(resolved_repo, target_pr)
+      raise Error, error unless complete
+
+      final_target_pr = fetch_target_pr_identity(resolved_repo, validated_pr, require_base: true)
+      unless same_target_pr_identity?(target_pr, final_target_pr)
+        raise Error, "target PR identity moved during final Actions inventory"
+      end
+
+      { "head_sha" => target_pr.fetch(:head_sha), "rows" => rows }
     end
 
     private
