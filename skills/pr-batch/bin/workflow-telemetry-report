@@ -177,7 +177,9 @@ module WorkflowTelemetryReport
 
     PHASES.to_h do |phase|
       rows = grouped.fetch(phase, [])
-      durations = rows.map { |row| interval_seconds(timestamp(row["started_at"]), timestamp(row["ended_at"])) }
+      durations = rows.map do |row|
+        interval_duration(timestamp(row["started_at"]), timestamp(row["ended_at"]))
+      end
       [phase, aggregate_durations(durations)]
     end
   end
@@ -197,7 +199,7 @@ module WorkflowTelemetryReport
       safe_identifier(object["lane_id"], allow_unknown: true)
       [timestamp(object["asked_at"]), timestamp(object["answered_at"])]
     end
-    durations = questions.map { |asked_at, answered_at| interval_seconds(asked_at, answered_at) }
+    durations = questions.map { |asked_at, answered_at| interval_duration(asked_at, answered_at) }
     {
       "count" => questions.length,
       "answered_count" => questions.count { |_asked_at, answered_at| answered_at != UNKNOWN },
@@ -219,7 +221,9 @@ module WorkflowTelemetryReport
 
     SLOT_STATES.to_h do |status|
       rows = grouped.fetch(status, [])
-      durations = rows.map { |row| interval_seconds(timestamp(row["started_at"]), timestamp(row["ended_at"])) }
+      durations = rows.map do |row|
+        interval_duration(timestamp(row["started_at"]), timestamp(row["ended_at"]))
+      end
       [status, aggregate_durations(durations)]
     end
   end
@@ -244,17 +248,24 @@ module WorkflowTelemetryReport
   end
 
   def interval_seconds(started_at, ended_at)
+    duration = interval_duration(started_at, ended_at)
+    return UNKNOWN if duration == UNKNOWN
+
+    duration.round
+  end
+
+  def interval_duration(started_at, ended_at)
     return UNKNOWN if started_at == UNKNOWN || ended_at == UNKNOWN
     raise InputError, "interval ends before it starts" if ended_at < started_at
 
-    (ended_at - started_at).to_i
+    ended_at - started_at
   end
 
   def aggregate_durations(durations, empty: UNKNOWN)
     return empty if durations.empty?
     return UNKNOWN if durations.include?(UNKNOWN)
 
-    durations.sum
+    durations.sum.round
   end
 
   def sensitive?(value)

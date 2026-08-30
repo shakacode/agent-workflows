@@ -136,6 +136,31 @@ class WorkflowTelemetryReportTest < Minitest::Test
     assert_equal "UNKNOWN", report.dig("measurements", "slot_seconds", "stopped")
   end
 
+  def test_rounds_fractional_durations_only_after_aggregation
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["prompt_creation"]["at"] = "2026-08-29T20:00:00.1Z"
+    input["worker_start"]["at"] = "2026-08-29T20:00:00.9Z"
+    input["phase_intervals"] = [
+      {
+        "lane_id" => "issue-562-telemetry",
+        "phase" => "planning",
+        "started_at" => "2026-08-29T20:00:00.0Z",
+        "ended_at" => "2026-08-29T20:00:00.8Z"
+      },
+      {
+        "lane_id" => "issue-562-telemetry",
+        "phase" => "planning",
+        "started_at" => "2026-08-29T20:00:01.0Z",
+        "ended_at" => "2026-08-29T20:00:01.8Z"
+      }
+    ]
+
+    report = run_json(input)
+
+    assert_equal 1, report.dig("measurements", "prompt_to_worker_start_seconds")
+    assert_equal 2, report.dig("measurements", "phase_seconds", "planning")
+  end
+
   def test_rejects_non_allowlisted_payload_fields_without_echoing_their_content
     input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
     private_content = "private prompt content must not be echoed"
