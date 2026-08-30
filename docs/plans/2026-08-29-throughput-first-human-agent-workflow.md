@@ -270,6 +270,10 @@ single-operator context. It SHALL be disabled when more than one independent
 coordinator or human operator may act during the outage, including shared/team
 repositories. A single-operator repository that cannot accept the residual risk
 SHOULD also disable it and wait for coordination recovery.
+Eligibility is opt-in: a trusted repository-policy seam or authenticated
+maintainer authorization SHALL name the sole coordinator and the bounded run
+interval. The launcher records that source and digest. A missing, expired, or
+ambiguous signal disables the override.
 When coordination recovers, the override SHALL reconcile its preserved run ID
 against durable claims for the same issue or PR. It SHALL flag any duplicate for
 an operator decision and prevent both runs from silently continuing as the sole
@@ -288,6 +292,9 @@ that the host did not actually allocate.
 A replacement run may launch only after the prior ownership record is terminal.
 Its append-only terminal transition records the trusted authorizer and durable
 authority reference plus the replacement run ID.
+Here, `terminal` means an authenticated terminal ownership transition proving
+the worker ended, no heartbeat or writer/descendant survives, and ownership was
+released. `state=completed` with `outcome=pending` is not terminal.
 
 ### R12 — In-flight portfolio control (P1)
 
@@ -318,6 +325,13 @@ The disposition-to-action map has one meaning everywhere:
   the actual active/occupied state and queue one decision;
 - `integration-ready`: create no implementation worker and place the PR in the
   integration queue, still subject to exact-head gates and merge authority.
+
+The create-one fallback for `accelerate` or `continue` is allowed only when no
+nonterminal ownership record exists. An unresumable nonterminal owner routes to
+`hold` or `replace`; it never permits a second worker. A `close` disposition for
+an issue or PR closes that GitHub object only after any associated task is
+terminal (or when none exists) and only under explicit close authority;
+otherwise it queues one decision.
 
 ### R13 — Explicit dependencies; consequence-aware conflicts (P1)
 
