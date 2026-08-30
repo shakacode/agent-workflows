@@ -266,10 +266,10 @@ while recording that coordination evidence is degraded.
 
 This availability choice accepts the residual risk that a backend outage hides
 another operator making the same assumption. The override is for a genuinely
-single-operator context; a repository that cannot accept that residual risk
-SHOULD disable it and wait for coordination recovery.
-It SHALL be disabled by default when more than one independent coordinator or
-human operator may act during the outage, including shared/team repositories.
+single-operator context. It SHALL be disabled when more than one independent
+coordinator or human operator may act during the outage, including shared/team
+repositories. A single-operator repository that cannot accept the residual risk
+SHOULD also disable it and wait for coordination recovery.
 When coordination recovers, the override SHALL reconcile its preserved run ID
 against durable claims for the same issue or PR. It SHALL flag any duplicate for
 an operator decision and prevent both runs from silently continuing as the sole
