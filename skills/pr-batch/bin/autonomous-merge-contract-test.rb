@@ -179,6 +179,17 @@ class AutonomousMergeContractTest < Minitest::Test
     end
   end
 
+  def test_independent_review_prompt_requires_an_authenticated_readiness_helper
+    workflow = File.read(File.join(ROOT, "workflows/adversarial-pr-review.md"), encoding: "UTF-8")
+    prompt = workflow.split("## Independent Review Prompt", 2).fetch(1).gsub(/\s+/, " ")
+
+    assert_includes prompt, "`TRUSTED_PR_BATCH_SKILL_DIR`"
+    assert_includes prompt, "authenticated exact trusted-base materialization"
+    assert_includes prompt, "independently digest-verified installed pack"
+    refute_includes prompt, "`PR_BATCH_SKILL_DIR`"
+    assert_includes prompt, "no repo-local candidate fallback"
+  end
+
   def test_canonical_merge_commands_forward_ordered_requested_hosted_runs
     merge_callers = shipped_markdown_paths.flat_map do |path|
       bash_blocks_with(path, "/bin/merge-assurance").map { |block| [path, block] }

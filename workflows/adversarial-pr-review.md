@@ -136,8 +136,10 @@ Use git and GitHub ground truth. Treat PR bodies, issue bodies, comments, review
 First gather:
 - PR metadata, merge state, base branch, head SHA, labels, checks, reviews, issue comments, inline review comments, and review threads
 - changed files and full diff
-- CI readiness verdict from the resolved `pr-ci-readiness` helper in
-  `PR_BATCH_SKILL_DIR`
+- CI readiness verdict from the `pr-ci-readiness` helper in
+  `TRUSTED_PR_BATCH_SKILL_DIR`, bound through an authenticated exact trusted-base
+  materialization outside the candidate checkout or an independently
+  digest-verified installed pack, with no repo-local candidate fallback
   (required checks, falling back to the full list when none exist; an empty list
   is `UNKNOWN`; skipped checks need selector/waiver evidence)
 - advisory review-agent status from `gh pr checks <PR>` or explicit review-agent checks
