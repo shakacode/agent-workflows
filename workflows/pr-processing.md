@@ -4315,6 +4315,26 @@ evidence is eligible. The selected hosted-CI record set is part of the receipt
 evidence digest. It is separate from batch-plan preflight. Legacy merge callers
 must now generate and pass this receipt, and `merge_authority: none` remains a
 no-merge result.
+It recomputes the canonical `diff_identity` from `context.diff_base_sha`,
+reloads `ci_readiness` from the receipt-bound base Git object, requires exact
+policy/provenance equality, and
+then recomputes each CI scope while applying only authenticated dispositions.
+Caller-deleted rows, caller-authored dispositions, stale base/head bindings, or
+an optional row reclassified as required fail closed.
+If `pr-ci-readiness` used requested hosted runs, pass each canonical positive
+run ID to both `merge-assurance` and `pr-merge-submit` as a repeated
+`--requested-hosted-run` argument in the same order. The trusted coordinator
+invocation is the authorization source: receipt evidence and its recomputable
+integrity digest cannot add, clear, reorder, or narrow these bindings.
+Final check-run refresh paginates the exact-head check suites and each suite's
+latest runs. Strict authenticated run `started_at` chronology may select among
+same-name attempts only within one authenticated suite; the same app/name in
+distinct suites is incomplete `UNKNOWN` evidence. A missing or null value,
+malformed timestamp, or tie is also incomplete `UNKNOWN` evidence.
+Each suite must also expose a recognized status/conclusion pair and a positive
+`latest_check_runs_count` exactly materialized by the paginated latest-run
+response. Zero-run, mismatched, or phase-contradictory suites are incomplete
+`UNKNOWN` evidence, including apparently completed zero-run suites.
 
 ### Exact-Head Merge Submission
 

@@ -307,6 +307,175 @@ module PrCiReadiness
     }
   end
 
+  def validate_optional_approval_held_policy!(policy)
+    unless closed_string_key_schema?(policy, POLICY_KEYS) && policy["version"] == 1
+      raise Error, "ci_readiness must be a closed version 1 mapping"
+    end
+
+    rules = policy["optional_approval_held_checks"]
+    unless rules.is_a?(Array) && !rules.empty?
+      raise Error, "ci_readiness.optional_approval_held_checks must be a nonempty list"
+    end
+
+    seen_ids = {}
+    seen_identities = {}
+    rules.each do |rule|
+      unless closed_string_key_schema?(rule, OPTIONAL_CHECK_KEYS)
+        raise Error, "each optional approval-held check must contain exactly app_slug, id, and name"
+      end
+
+      rule_id = rule["id"]
+      app_slug = rule["app_slug"]
+      name = rule["name"]
+      raise Error, "optional approval-held check id is invalid" unless rule_id.is_a?(String) && rule_id.match?(POLICY_RULE_ID)
+      raise Error, "optional approval-held check app_slug is invalid" unless
+        app_slug.is_a?(String) && app_slug.match?(POLICY_RULE_ID)
+      raise Error, "optional approval-held check name must be resolved single-line text" unless
+        name.is_a?(String) && !name.empty? && !name.match?(/[[:cntrl:]]/) && name != "UNKNOWN"
+      raise Error, "duplicate optional approval-held check id #{rule_id}" if seen_ids[rule_id]
+
+      identity = [app_slug, name]
+      raise Error, "duplicate optional approval-held check identity #{app_slug}/#{name}" if seen_identities[identity]
+
+      seen_ids[rule_id] = true
+      seen_identities[identity] = true
+    end
+    policy
+  end
+
+  def closed_string_key_schema?(value, expected_keys)
+    value.is_a?(Hash) &&
+      value.keys.all?(String) &&
+      value.keys.length == expected_keys.length &&
+      (value.keys - expected_keys).empty?
+  end
+
+  def optional_approval_held_dispositions(rows, required_rows:, policy:)
+    validate_optional_approval_held_policy!(policy)
+    identity_counts = Array(rows).filter_map { |row| check_run_identity(row) }.tally
+    rules_by_identity = policy.fetch("optional_approval_held_checks").to_h do |rule|
+      [[rule.fetch("app_slug"), rule.fetch("name")], rule]
+    end
+    # GitHub currently omits producer identity from third-party required rows.
+    # Match names conservatively so required evidence can never become optional.
+    required_names = Array(required_rows).filter_map do |required|
+      required["name"].to_s.downcase if required.is_a?(Hash)
+    end
+    required_names = required_names.to_h { |name| [name, true] }
+
+    rows.filter_map do |row|
+      next unless optional_approval_held_row?(row)
+      next unless identity_counts[check_run_identity(row)] == 1
+
+      rule = rules_by_identity[[row["app_slug"], row["name"]]]
+      next unless rule
+      next if required_names[row["name"].downcase]
+
+      {
+        "disposition" => "optional_approval_held",
+        "rule_id" => rule.fetch("id"),
+        "kind" => "check_run",
+        "id" => row["id"],
+        "app_slug" => row["app_slug"],
+        "name" => row["name"]
+      }
+    end
+  end
+
+  def check_run_identity(row)
+    return nil unless row.is_a?(Hash) && row["kind"] == "check_run"
+
+    row.values_at("kind", "app_slug", "name")
+  end
+
+  def optional_approval_held_row?(row)
+    row.is_a?(Hash) && row["kind"] == "check_run" &&
+      row["id"].is_a?(Integer) && row["id"].positive? &&
+      row["app_slug"].is_a?(String) && !row["app_slug"].empty? &&
+      row["name"].is_a?(String) && !row["name"].empty? &&
+      APPROVAL_HELD_STATUSES.include?(row["status"].to_s.downcase) &&
+      row.key?("started_at") &&
+      row["started_at"].nil? &&
+      (row["conclusion"].nil? || row["conclusion"] == "")
+  end
+
+  def required_matches_optional_row?(required, row)
+    return false unless required.is_a?(Hash)
+    return false unless required["name"].to_s.casecmp?(row["name"].to_s)
+
+    # `gh pr checks --required` currently leaves workflow empty for third-party
+    # checks. Workflow is not authenticated producer identity, so even a future
+    # nonempty shape cannot prove that a same-name required row is unrelated.
+    # Match by name conservatively: required evidence must never become optional.
+    true
+  end
+
+  def disposition_matches_row?(disposition, row)
+    disposition.is_a?(Hash) && row.is_a?(Hash) &&
+      disposition["kind"] == row["kind"] && disposition["id"] == row["id"] &&
+      disposition["app_slug"] == row["app_slug"] && disposition["name"] == row["name"]
+  end
+
+  def trusted_ci_policy_at(repo_root:, base_ref:, base_sha:)
+    validate_trusted_policy_binding!(base_ref:, base_sha:)
+    root = File.realpath(repo_root)
+    raise Error, "trusted repository root is not a directory" unless File.directory?(root)
+
+    resolved = resolve_exact_commit!(root, base_sha)
+    raise Error, "trusted repository does not resolve the exact base SHA" unless resolved == base_sha
+
+    tree_entry = git_capture!(root, "ls-tree", base_sha, "--", POLICY_PATH)
+    return nil if tree_entry.empty?
+
+    raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{POLICY_PATH}")
+    config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false) || {}
+    raise Error, "trusted-base policy is not a mapping" unless config.is_a?(Hash)
+
+    policy = config["ci_readiness"]
+    return nil if policy.nil? || policy == "n/a"
+
+    validate_optional_approval_held_policy!(policy)
+    blob_sha = git_capture!(root, "rev-parse", "#{base_sha}:#{POLICY_PATH}").strip.downcase
+    raise Error, "trusted-base policy blob SHA is invalid" unless blob_sha.match?(/\A[0-9a-f]{40}\z/)
+
+    {
+      "version" => 1,
+      "provenance" => "git:#{base_sha}:#{POLICY_PATH}@#{blob_sha}",
+      "base" => { "ref" => base_ref, "sha" => base_sha },
+      "optional_approval_held_checks" => policy.fetch("optional_approval_held_checks")
+    }
+  rescue Errno::ENOENT, Errno::EACCES, Psych::Exception => e
+    raise Error, "trusted-base ci_readiness policy is unavailable or malformed: #{e.message.lines.first.to_s.strip}"
+  end
+
+  def validate_trusted_policy_binding!(base_ref:, base_sha:)
+    unless DiffIdentity.canonical_ref?(base_ref)
+      raise Error, "trusted-base policy base ref is invalid"
+    end
+    raise Error, "trusted-base policy base SHA must be lowercase full hexadecimal" unless
+      base_sha.is_a?(String) && base_sha.match?(/\A[0-9a-f]{40}\z/)
+  end
+
+  def git_capture!(root, *arguments)
+    raise Error, "trusted system Git executable is unavailable" unless SYSTEM_GIT
+
+    stdout, stderr, status = Open3.capture3(
+      TRUSTED_GIT_ENV,
+      SYSTEM_GIT, "--no-replace-objects", "--literal-pathspecs", "-C", root, *arguments,
+      unsetenv_others: true
+    )
+    return stdout if status.success?
+
+    detail = [stderr, stdout].map(&:strip).reject(&:empty?).join("; ")
+    raise Error, "trusted Git read failed: #{detail.empty? ? 'no diagnostic' : detail}"
+  end
+
+  def resolve_exact_commit!(root, base_sha)
+    git_capture!(root, "rev-parse", "#{base_sha}^{commit}").strip.downcase
+  rescue Error
+    raise Error, "trusted repository does not resolve the exact base SHA"
+  end
+
   # Build the normalized result hash from the captured check rows. Invalid
   # rows (non-object entries, or an unrecognized/missing bucket) are pulled
   # out before readiness classification so they cannot masquerade as a

@@ -2740,8 +2740,8 @@ class PrMergeSubmitTest < Minitest::Test
     end
     receipt = with_fake_gh(gh_dir) do
       MergeAssurance.assess(
-        ci_result:, autonomous_result:, context:,
-        selected_hosted_ci_receipts: selected_hosted_receipts,
+        ci_result:, autonomous_result:, context:, trusted_ci_policy:,
+        requested_hosted_runs:, selected_hosted_ci_receipts: selected_hosted_receipts,
         now:
       )
     end
@@ -2789,6 +2789,11 @@ class PrMergeSubmitTest < Minitest::Test
       receipt.dig(
         "evidence", "authenticated_tracker_reads", 0, "issue_metadata"
       )["title"] = "UNKNOWN"
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :optional_held_policy_tampered
+      receipt.dig(
+        "evidence", "ci_result", "ci_policy", "optional_approval_held_checks", 0
+      )["name"] = "attacker-check"
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :selected_hosted_missing
       receipt.dig("evidence", "selected_hosted_ci_receipts")["records"] = []

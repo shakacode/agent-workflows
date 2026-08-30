@@ -100,6 +100,47 @@ class MergeAssuranceTest < Minitest::Test
     assert MergeAssurance.valid_evidence_digest?(result)
   end
 
+  def test_optional_approval_held_ci_requires_and_accepts_matching_trusted_base_policy
+    trusted_policy = optional_held_policy
+    ci_result = optional_held_ci(trusted_policy)
+
+    missing_policy = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+    accepted = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      trusted_ci_policy: trusted_policy,
+      now: NOW
+    )
+
+    refute missing_policy.fetch("eligible")
+    assert_includes missing_policy.fetch("failures"), "ci policy disposition is not authenticated from trusted base"
+    assert accepted.fetch("eligible")
+  end
+
+  def test_ci_policy_tampering_fails_closed_and_pending_row_is_recomputed
+    ci_result = optional_held_ci(optional_held_policy)
+    authenticated = optional_held_policy
+    authenticated["optional_approval_held_checks"][0]["name"] = "different-check"
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      trusted_ci_policy: authenticated,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci policy evidence does not match authenticated trusted-base policy"
+    assert_includes result.fetch("failures"), "ci_result scope other declared READY but recomputed NOT_READY"
+  end
+
   def test_selected_hosted_ci_hichee_10049_cancelled_replay_blocks
     replay = HOSTED_CI_REPLAYS.fetch("cases").find { |item| item.fetch("pr") == 10_049 }
     context = context(
@@ -130,6 +171,498 @@ class MergeAssuranceTest < Minitest::Test
       result.fetch("failures"),
       "selected hosted run circleci/c506a91e-5b3b-4bb6-b136-2bcfa06f69aa is cancelled"
     )
+  end
+
+  def test_requested_hosted_run_bindings_cannot_be_deleted_from_ci_evidence
+    ci_result = ready_ci
+    ci_result.delete("requested_hosted")
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci_result requested hosted-run bindings are invalid"
+  end
+
+  def test_requested_hosted_run_bindings_require_trusted_invocation_authorization
+    ci_result = ready_ci
+    ci_result.fetch("requested_hosted")["run_ids"] = %w[42 43]
+
+    missing = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+    exact = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      requested_hosted_runs: %w[42 43],
+      now: NOW
+    )
+
+    refute missing.fetch("eligible")
+    assert_includes missing.fetch("failures"),
+                    "ci_result requested hosted-run bindings do not match trusted invocation authorization"
+    assert exact.fetch("eligible")
+    assert_equal %w[42 43], exact.dig("bindings", "requested_hosted_run_ids")
+  end
+
+  def test_cli_requested_hosted_run_authorization_is_independent_of_ci_json
+    ci_result = ready_ci
+    ci_result.fetch("requested_hosted")["run_ids"] = %w[42 43]
+    checked_at = Time.now.utc.iso8601
+    ci_result["checked_at"] = checked_at
+    ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = checked_at }
+    ci_path = File.join(@fake_gh_dir, "ci-requested.json")
+    autonomous_path = File.join(@fake_gh_dir, "autonomous-requested.json")
+    context_path = File.join(@fake_gh_dir, "context-requested.json")
+    File.write(ci_path, JSON.generate(ci_result))
+    File.write(autonomous_path, JSON.generate(autonomous_result("autonomous-merge-eligible")))
+    File.write(context_path, JSON.generate(context("auto_merge_when_gates_pass")))
+    base_args = [
+      RbConfig.ruby, SCRIPT,
+      "--ci-result", ci_path,
+      "--autonomous-result", autonomous_path,
+      "--context", context_path
+    ]
+
+    missing_out, = Open3.capture2(*base_args)
+    exact_out, = Open3.capture2(
+      *base_args, "--requested-hosted-run", "42", "--requested-hosted-run", "43"
+    )
+
+    refute JSON.parse(missing_out).fetch("eligible")
+    assert JSON.parse(exact_out).fetch("eligible")
+  end
+
+  def test_optional_policy_cannot_disposition_a_required_check
+    trusted_policy = optional_held_policy
+    ci_result = optional_held_ci(trusted_policy)
+    required = ci_result.fetch("scopes").fetch("required_status_check_rollup")
+    required["state"] = "READY"
+    required["rows"] = [
+      { "workflow" => "circleci-checks", "name" => "storybook-review-app", "bucket" => "pass" }
+    ]
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      trusted_ci_policy: trusted_policy,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci_result scope other policy disposition was reclassified as required"
+    assert_includes result.fetch("failures"), "ci_result scope other declared READY but recomputed NOT_READY"
+  end
+
+  def test_optional_policy_cannot_hide_duplicate_conflicting_check_run_identity
+    trusted_policy = optional_held_policy
+    ci_result = optional_held_ci(trusted_policy)
+    held = ci_result.dig("scopes", "other", "rows", 0)
+    ci_result.dig("scopes", "other", "rows") << held.merge(
+      "status" => "completed",
+      "conclusion" => "failure"
+    )
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      trusted_ci_policy: trusted_policy,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result scope other policy disposition matches duplicate check-run identity"
+    assert_includes result.fetch("failures"), "ci_result scope other declared READY but recomputed NOT_READY"
+  end
+
+  def test_check_run_identity_cannot_appear_in_multiple_scopes
+    trusted_policy = optional_held_policy
+    ci_result = optional_held_ci(trusted_policy)
+    held = ci_result.dig("scopes", "other", "rows", 0)
+    ci_result.dig("scopes", "github_actions", "rows") << held.dup
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      trusted_ci_policy: trusted_policy,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result repeats a check-run identity across scopes or rows"
+  end
+
+  def test_optional_policy_cannot_hide_an_actively_running_check
+    trusted_policy = optional_held_policy
+    ci_result = optional_held_ci(trusted_policy)
+    ci_result.dig("scopes", "other", "rows", 0)["started_at"] = "2026-07-30T11:58:00Z"
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      trusted_ci_policy: trusted_policy,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result scope other policy disposition does not match a held row and trusted rule"
+    assert_includes result.fetch("failures"), "ci_result scope other declared READY but recomputed NOT_READY"
+  end
+
+  def test_unknown_ci_policy_cannot_authenticate_a_disposition
+    ci_result = optional_held_ci(optional_held_policy)
+    ci_result["ci_policy"] = "UNKNOWN"
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      trusted_ci_policy: optional_held_policy,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci policy evidence does not match authenticated trusted-base policy"
+    assert_includes result.fetch("failures"), "ci_result contains UNKNOWN"
+  end
+
+  def test_diff_identity_must_equal_the_canonical_base_and_head_derivation
+    stale = context("auto_merge_when_gates_pass")
+    stale["diff_identity"] = "f" * 64
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: stale,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "context diff_identity does not match canonical reviewed diff-base/head derivation"
+  end
+
+  def test_diff_identity_binds_the_reviewed_diff_base_separately_from_the_live_base
+    reviewed_diff_base_sha = "c" * 40
+    merge_context = context("auto_merge_when_gates_pass")
+    merge_context["diff_base_sha"] = reviewed_diff_base_sha
+    merge_context["diff_identity"] = DiffIdentity.derive(
+      base_ref: merge_context.dig("base", "ref"),
+      base_sha: reviewed_diff_base_sha,
+      head_sha: merge_context.fetch("head_sha")
+    )
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context,
+      now: NOW
+    )
+
+    assert result.fetch("eligible"), result.inspect
+    assert_equal BASE_SHA, result.dig("bindings", "base", "sha")
+    assert_equal reviewed_diff_base_sha, result.dig("bindings", "diff_base_sha")
+  end
+
+  def test_walkthrough_and_human_decision_bind_the_reviewed_diff_base
+    reviewed_diff_base_sha = "c" * 40
+    decision = human_merge_decision.merge("diff_base_sha" => reviewed_diff_base_sha)
+    walkthrough_receipt = walkthrough("completed", "pr-walkthrough").merge(
+      "diff_base_sha" => reviewed_diff_base_sha
+    )
+    merge_context = context(
+      "ask",
+      human_merge_decision: decision,
+      walkthrough: walkthrough_receipt
+    )
+    merge_context["diff_base_sha"] = reviewed_diff_base_sha
+    merge_context["diff_identity"] = DiffIdentity.derive(
+      base_ref: "main", base_sha: reviewed_diff_base_sha, head_sha: HEAD_SHA
+    )
+    decision["diff_identity"] = merge_context.fetch("diff_identity")
+    walkthrough_receipt["diff_identity"] = merge_context.fetch("diff_identity")
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("human-approval-required"),
+      context: merge_context,
+      now: NOW
+    )
+
+    assert result.fetch("eligible"), result.inspect
+  end
+
+  def test_noncanonical_base_refs_return_structured_blocked_results
+    invalid_refs = ["foo//bar", "foo/", ".", "foo.lock", "foo\0bar", "\xFF".b, 123, nil]
+
+    invalid_refs.each do |base_ref|
+      malformed = context("auto_merge_when_gates_pass")
+      malformed.fetch("base")["ref"] = base_ref
+
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: malformed,
+        now: NOW
+      )
+
+      refute result.fetch("eligible"), base_ref.inspect
+      assert_equal "BLOCKED", result.fetch("verdict"), base_ref.inspect
+      assert_includes result.fetch("failures"), "context base binding is invalid", base_ref.inspect
+    end
+  end
+
+  def test_cli_trusted_policy_errors_return_structured_blocked_results
+    ci_result = optional_held_ci(optional_held_policy)
+    malformed_context = context("auto_merge_when_gates_pass")
+    malformed_context.fetch("base")["ref"] = "foo//bar"
+    ci_path = File.join(@fake_gh_dir, "ci-result.json")
+    autonomous_path = File.join(@fake_gh_dir, "autonomous-result.json")
+    context_path = File.join(@fake_gh_dir, "context.json")
+    File.write(ci_path, JSON.generate(ci_result))
+    File.write(autonomous_path, JSON.generate(autonomous_result("autonomous-merge-eligible")))
+    File.write(context_path, JSON.generate(malformed_context))
+
+    stdout, stderr, status = Open3.capture3(
+      { "PATH" => @original_path },
+      RbConfig.ruby, SCRIPT,
+      "--ci-result", ci_path,
+      "--autonomous-result", autonomous_path,
+      "--context", context_path,
+      "--trusted-repo-root", @fake_gh_dir
+    )
+    result = JSON.parse(stdout)
+
+    refute status.success?
+    assert_empty stderr
+    refute result.fetch("eligible")
+    assert_equal "BLOCKED", result.fetch("verdict")
+    assert_includes result.fetch("failures"), "trusted-base policy base ref is invalid"
+  end
+
+  def test_cli_non_object_base_returns_structured_blocked_result
+    ci_path = File.join(@fake_gh_dir, "ci-result-malformed-base.json")
+    autonomous_path = File.join(@fake_gh_dir, "autonomous-result-malformed-base.json")
+    context_path = File.join(@fake_gh_dir, "context-malformed-base.json")
+    File.write(ci_path, JSON.generate(optional_held_ci(optional_held_policy)))
+    File.write(autonomous_path, JSON.generate(autonomous_result("autonomous-merge-eligible")))
+    malformed_context = context("auto_merge_when_gates_pass")
+    malformed_context["base"] = "malformed"
+    File.write(context_path, JSON.generate(malformed_context))
+
+    stdout, stderr, status = Open3.capture3(
+      { "PATH" => @original_path },
+      RbConfig.ruby, SCRIPT,
+      "--ci-result", ci_path,
+      "--autonomous-result", autonomous_path,
+      "--context", context_path,
+      "--trusted-repo-root", @fake_gh_dir
+    )
+    result = JSON.parse(stdout)
+
+    refute status.success?
+    assert_empty stderr
+    refute result.fetch("eligible")
+    assert_equal "BLOCKED", result.fetch("verdict")
+    assert_includes result.fetch("failures"), "context base binding is invalid"
+  end
+
+  def test_malformed_other_rows_return_structured_blocked_results_in_module_and_cli
+    policy = optional_held_policy
+    ci_result = optional_held_ci(policy)
+    ci_result.fetch("scopes").fetch("other")["rows"] = "malformed"
+
+    assessed = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      trusted_ci_policy: policy,
+      now: NOW
+    )
+    refute assessed.fetch("eligible")
+    assert_equal "BLOCKED", assessed.fetch("verdict")
+    assert_includes assessed.fetch("failures"), "ci_result scope other rows are invalid"
+
+    ci_path = File.join(@fake_gh_dir, "ci-result-malformed-other-rows.json")
+    autonomous_path = File.join(@fake_gh_dir, "autonomous-result-malformed-other-rows.json")
+    context_path = File.join(@fake_gh_dir, "context-malformed-other-rows.json")
+    File.write(ci_path, JSON.generate(ci_result))
+    File.write(autonomous_path, JSON.generate(autonomous_result("autonomous-merge-eligible")))
+    File.write(context_path, JSON.generate(context("auto_merge_when_gates_pass")))
+
+    stdout, stderr, status = Open3.capture3(
+      { "PATH" => @original_path }, RbConfig.ruby, SCRIPT,
+      "--ci-result", ci_path, "--autonomous-result", autonomous_path, "--context", context_path
+    )
+    cli_result = JSON.parse(stdout)
+    refute status.success?
+    assert_empty stderr
+    assert_equal "BLOCKED", cli_result.fetch("verdict")
+    assert_includes cli_result.fetch("failures"), "ci_result scope other rows are invalid"
+  end
+
+  def test_cli_heterogeneous_trusted_policy_keys_return_structured_blocked_result
+    repo_root = File.join(@fake_gh_dir, "heterogeneous-policy-repo")
+    FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+    system(PrCiReadiness::SYSTEM_GIT, "init", "-q", repo_root, exception: true)
+    system(PrCiReadiness::SYSTEM_GIT, "-C", repo_root, "config", "user.name", "Test User", exception: true)
+    system(PrCiReadiness::SYSTEM_GIT, "-C", repo_root, "config", "user.email", "test@example.test", exception: true)
+    File.write(
+      File.join(repo_root, ".agents", "agent-workflow.yml"),
+      <<~YAML
+        ci_readiness:
+          version: 1
+          optional_approval_held_checks:
+            - id: circleci-storybook
+              app_slug: circleci-checks
+              name: storybook-review-app
+          1: unexpected
+      YAML
+    )
+    system(PrCiReadiness::SYSTEM_GIT, "-C", repo_root, "add", ".agents/agent-workflow.yml", exception: true)
+    system(PrCiReadiness::SYSTEM_GIT, "-C", repo_root, "commit", "-q", "-m", "malformed policy", exception: true)
+    base_sha, status = Open3.capture2e(PrCiReadiness::SYSTEM_GIT, "-C", repo_root, "rev-parse", "HEAD")
+    assert status.success?, base_sha
+    base_sha = base_sha.strip
+    malformed_context = context("auto_merge_when_gates_pass")
+    malformed_context.fetch("base")["sha"] = base_sha
+    ci_result = ready_ci.merge("ci_policy" => {})
+    ci_path = File.join(@fake_gh_dir, "ci-result-heterogeneous-policy.json")
+    autonomous_path = File.join(@fake_gh_dir, "autonomous-result-heterogeneous-policy.json")
+    context_path = File.join(@fake_gh_dir, "context-heterogeneous-policy.json")
+    File.write(ci_path, JSON.generate(ci_result))
+    File.write(autonomous_path, JSON.generate(autonomous_result("autonomous-merge-eligible")))
+    File.write(context_path, JSON.generate(malformed_context))
+
+    stdout, stderr, status = Open3.capture3(
+      { "PATH" => @original_path }, RbConfig.ruby, SCRIPT,
+      "--ci-result", ci_path, "--autonomous-result", autonomous_path, "--context", context_path,
+      "--trusted-repo-root", repo_root
+    )
+    result = JSON.parse(stdout)
+    refute status.success?
+    assert_empty stderr
+    assert_equal "BLOCKED", result.fetch("verdict")
+    assert_includes result.fetch("failures"), "ci_readiness must be a closed version 1 mapping"
+  end
+
+  def test_cli_cannot_bypass_trusted_policy_by_omitting_ci_policy_evidence
+    repo_root = File.join(@fake_gh_dir, "omitted-policy-repo")
+    FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+    system(PrCiReadiness::SYSTEM_GIT, "init", "-q", repo_root, exception: true)
+    system(PrCiReadiness::SYSTEM_GIT, "-C", repo_root, "config", "user.name", "Test User", exception: true)
+    system(PrCiReadiness::SYSTEM_GIT, "-C", repo_root, "config", "user.email", "test@example.test", exception: true)
+    File.write(
+      File.join(repo_root, ".agents", "agent-workflow.yml"),
+      {
+        "ci_readiness" => {
+          "version" => 1,
+          "optional_approval_held_checks" => [
+            { "id" => "circleci-storybook", "app_slug" => "circleci-checks",
+              "name" => "storybook-review-app" }
+          ]
+        }
+      }.to_yaml
+    )
+    system(PrCiReadiness::SYSTEM_GIT, "-C", repo_root, "add", ".agents/agent-workflow.yml", exception: true)
+    system(PrCiReadiness::SYSTEM_GIT, "-C", repo_root, "commit", "-q", "-m", "policy", exception: true)
+    base_sha, status = Open3.capture2e(PrCiReadiness::SYSTEM_GIT, "-C", repo_root, "rev-parse", "HEAD")
+    assert status.success?, base_sha
+    base_sha = base_sha.strip
+    merge_context = context("auto_merge_when_gates_pass")
+    merge_context.fetch("base")["sha"] = base_sha
+    merge_context["diff_base_sha"] = base_sha
+    merge_context["diff_identity"] = DiffIdentity.derive(
+      base_ref: "main", base_sha:, head_sha: HEAD_SHA
+    )
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    autonomous["policy_provenance"] = "git:#{base_sha}"
+    autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+    ci_path = File.join(@fake_gh_dir, "ci-result-omitted-policy.json")
+    autonomous_path = File.join(@fake_gh_dir, "autonomous-result-omitted-policy.json")
+    context_path = File.join(@fake_gh_dir, "context-omitted-policy.json")
+    ci_result = ready_ci
+    checked_at = Time.now.utc.iso8601
+    ci_result["checked_at"] = checked_at
+    ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = checked_at }
+    File.write(ci_path, JSON.generate(ci_result))
+    File.write(autonomous_path, JSON.generate(autonomous))
+    File.write(context_path, JSON.generate(merge_context))
+
+    stdout, stderr, status = Open3.capture3(
+      { "PATH" => @original_path }, RbConfig.ruby, SCRIPT,
+      "--ci-result", ci_path, "--autonomous-result", autonomous_path, "--context", context_path,
+      "--trusted-repo-root", repo_root
+    )
+    result = JSON.parse(stdout)
+    refute status.success?
+    assert_empty stderr
+    assert_equal "BLOCKED", result.fetch("verdict")
+    assert_includes result.fetch("failures"),
+                    "ci policy evidence does not match authenticated trusted-base policy"
+  end
+
+  def test_base_or_head_movement_invalidates_a_previously_derived_diff_identity
+    stale_contexts = [
+      context("auto_merge_when_gates_pass").tap { |item| item["diff_base_sha"] = "d" * 40 },
+      context("auto_merge_when_gates_pass").tap { |item| item["head_sha"] = "e" * 40 }
+    ]
+
+    stale_contexts.each do |stale|
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: stale,
+        now: NOW
+      )
+
+      refute result.fetch("eligible")
+      assert_includes result.fetch("failures"),
+                      "context diff_identity does not match canonical reviewed diff-base/head derivation"
+    end
+  end
+
+  def test_merge_context_rejects_mixed_case_sha_bindings_before_policy_or_receipt_use
+    cases = {
+      "base" => lambda do |merge_context|
+        merge_context.fetch("base")["sha"] = BASE_SHA.upcase
+      end,
+      "diff base" => lambda do |merge_context|
+        merge_context["diff_base_sha"] = BASE_SHA.upcase
+      end,
+      "head" => lambda do |merge_context|
+        merge_context["head_sha"] = HEAD_SHA.upcase
+      end
+    }
+
+    cases.each do |label, mutation|
+      merge_context = context("auto_merge_when_gates_pass")
+      mutation.call(merge_context)
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: merge_context,
+        now: NOW
+      )
+
+      refute result.fetch("eligible"), label
+      assert result.fetch("failures").any? { |failure| failure.include?("context") }, label
+    end
   end
 
   def test_cli_executes_selected_hosted_ci_receipt_seam_from_trusted_base
@@ -4229,6 +4762,47 @@ class MergeAssuranceTest < Minitest::Test
     }
   end
 
+  def optional_held_policy
+    {
+      "version" => 1,
+      "provenance" => "git:#{BASE_SHA}:.agents/agent-workflow.yml@#{'d' * 40}",
+      "base" => { "ref" => "main", "sha" => BASE_SHA },
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+  end
+
+  def optional_held_ci(policy)
+    result = ready_ci
+    held = {
+      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil,
+      "started_at" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    result.fetch("scopes").fetch("other").merge!(
+      "state" => "READY",
+      "rows" => [held],
+      "policy_dispositions" => [
+        {
+          "disposition" => "optional_approval_held",
+          "rule_id" => "circleci-storybook",
+          "kind" => "check_run",
+          "id" => 31,
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    )
+    result["ci_policy"] = policy
+    result
+  end
+
   def autonomous_result(verdict, head_sha: HEAD_SHA)
     triggered_gates, human_decision_evidence =
       case verdict
@@ -4296,9 +4870,10 @@ class MergeAssuranceTest < Minitest::Test
       "repo" => repo,
       "pr" => pull_request,
       "base" => { "ref" => "main", "sha" => BASE_SHA },
+      "diff_base_sha" => BASE_SHA,
       "head_sha" => head_sha,
       "authority" => authority,
-      "diff_identity" => DIFF_IDENTITY,
+      "diff_identity" => DiffIdentity.derive(base_ref: "main", base_sha: BASE_SHA, head_sha:),
       "human_merge_decision" => human_merge_decision,
       "walkthrough" => walkthrough,
       "semantic_github_actions_change" => semantic_github_actions_change,

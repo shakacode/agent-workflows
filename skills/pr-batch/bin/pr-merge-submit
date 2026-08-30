@@ -334,6 +334,8 @@ module PrMergeSubmit
         ci_result: evidence["ci_result"],
         autonomous_result: evidence["autonomous_result"],
         context: evidence["context"],
+        trusted_ci_policy:,
+        requested_hosted_runs: options[:requested_hosted_runs],
         selected_hosted_ci_receipts: evidence["selected_hosted_ci_receipts"],
         now:
       )
@@ -386,7 +388,8 @@ module PrMergeSubmit
         autonomous_result: evidence["autonomous_result"],
         context: evidence["context"],
         trusted_ci_policy:,
-        requested_hosted_runs: options[:requested_hosted_runs]
+        requested_hosted_runs: options[:requested_hosted_runs],
+        selected_hosted_ci_receipts: evidence["selected_hosted_ci_receipts"]
       )
       unless reassessed["eligible"] == true
         raise Error, "current CI evidence does not currently qualify: " \

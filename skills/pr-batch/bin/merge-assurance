@@ -19,12 +19,14 @@ require "tempfile"
 require "time"
 require "uri"
 require "yaml"
+load File.expand_path("diff-identity", __dir__) unless defined?(DiffIdentity)
+load File.expand_path("pr-ci-readiness", __dir__) unless defined?(PrCiReadiness)
 
 module MergeAssurance
   class Error < StandardError; end
 
   CONTEXT_KEYS = %w[
-    contract version host repo pr base head_sha authority diff_identity
+    contract version host repo pr base diff_base_sha head_sha authority diff_identity
     human_merge_decision walkthrough semantic_github_actions_change
     selected_hosted_runs operations
   ].freeze
@@ -155,14 +157,20 @@ module MergeAssurance
   module_function
 
   def assess(
-    ci_result:, autonomous_result:, context:, selected_hosted_ci_receipts: nil,
-    now: Time.now.utc
+    ci_result:, autonomous_result:, context:, trusted_ci_policy: nil,
+    requested_hosted_runs: [], selected_hosted_ci_receipts: nil, now: Time.now.utc
   )
     failures = []
     selected_hosted_ci_receipts ||= empty_selected_hosted_ci_receipts
+    authorized_requested_run_ids = begin
+      canonical_requested_hosted_run_ids(requested_hosted_runs)
+    rescue Error => e
+      failures << e.message
+      []
+    end
     safe_context, follow_up_accounting, semantic_tracker = validate_evidence(
       ci_result:, autonomous_result:, context:, selected_hosted_ci_receipts:,
-      now:, failures:
+      trusted_ci_policy:, authorized_requested_run_ids:, now:, failures:
     )
     authenticated_tracker_reads = []
     if failures.empty? && semantic_tracker
@@ -208,10 +216,20 @@ module MergeAssurance
     receipt
   end
 
-  def local_evidence_failures(ci_result:, autonomous_result:, context:, now: Time.now.utc)
+  def local_evidence_failures(
+    ci_result:, autonomous_result:, context:, trusted_ci_policy: nil,
+    requested_hosted_runs: [], now: Time.now.utc
+  )
     failures = []
+    authorized_requested_run_ids = begin
+      canonical_requested_hosted_run_ids(requested_hosted_runs)
+    rescue Error => e
+      failures << e.message
+      []
+    end
     validate_evidence(
       ci_result:, autonomous_result:, context:, now:, failures:,
+      trusted_ci_policy:, authorized_requested_run_ids:,
       preflight_selected_hosted_runs: true
     )
     failures.uniq
@@ -219,11 +237,14 @@ module MergeAssurance
 
   def validate_evidence(
     ci_result:, autonomous_result:, context:, now:, failures:,
+    trusted_ci_policy: nil, authorized_requested_run_ids: [],
     selected_hosted_ci_receipts: nil, preflight_selected_hosted_runs: false
   )
     safe_context = context.is_a?(Hash) ? context : {}
     validate_context(context, failures)
-    validate_ci(ci_result, safe_context, now, failures)
+    validate_ci(
+      ci_result, safe_context, trusted_ci_policy, authorized_requested_run_ids, now, failures
+    )
     if selected_hosted_ci_receipts
       validate_selected_hosted_ci(
         selected_hosted_ci_receipts, safe_context, now, failures
@@ -368,6 +389,52 @@ module MergeAssurance
     validate_timestamp(ci_result["checked_at"], now, "ci_result", failures)
   end
 
+  def validate_requested_hosted(requested, authorized_run_ids, failures)
+    unless exact_keys?(requested, REQUESTED_HOSTED_KEYS)
+      failures << "ci_result requested hosted-run bindings are invalid"
+      return
+    end
+
+    run_ids = requested["run_ids"]
+    valid_run_ids = run_ids.is_a?(Array) &&
+                    run_ids.all? { |run_id| run_id.is_a?(String) && run_id.match?(/\A[1-9]\d*\z/) } &&
+                    run_ids.uniq == run_ids
+    bucket_keys = REQUESTED_HOSTED_KEYS - ["run_ids"]
+    valid_buckets = bucket_keys.all? do |key|
+      requested[key].is_a?(Array) && requested[key].empty?
+    end
+    valid_authorization = valid_run_ids && run_ids == authorized_run_ids
+    return if valid_authorization && valid_buckets
+
+    failures << "ci_result requested hosted-run bindings do not match trusted invocation authorization"
+  end
+
+  def canonical_requested_hosted_run_ids(values)
+    unless values.is_a?(Array) &&
+           values.all? { |value| value.is_a?(String) && value.match?(/\A[1-9]\d*\z/) } &&
+           values.uniq == values
+      raise Error, "requested hosted-run authorization must be canonical unique positive run IDs"
+    end
+
+    values.dup.freeze
+  end
+
+  def validate_unique_check_run_scope_identities(scopes, failures)
+    check_runs = scopes.values.flat_map do |scope|
+      next [] unless scope.is_a?(Hash) && scope["rows"].is_a?(Array)
+
+      scope["rows"].select { |row| row.is_a?(Hash) && row["kind"] == "check_run" }
+    end
+    duplicate_id = check_runs.group_by { |row| row["id"] }.any? { |_identity, rows| rows.length > 1 }
+    check_runs_by_name = check_runs.group_by do |row|
+      row.values_at("app_slug", "name")
+    end
+    duplicate_name = check_runs_by_name.any? { |_identity, rows| rows.length > 1 }
+    return unless duplicate_id || duplicate_name
+
+    failures << "ci_result repeats a check-run identity across scopes or rows"
+  end
+
   def empty_selected_hosted_ci_receipts
     {
       "contract" => "selected-hosted-ci-receipts",
@@ -474,7 +541,7 @@ module MergeAssurance
     failures << "selected hosted run #{identity} selection time is invalid"
   end
 
-  def recompute_ci_scope_state(scope)
+  def recompute_ci_scope_state(scope, policy_dispositions: [])
     rows = scope["rows"]
     normalized_rows = rows.is_a?(Array) ? rows : []
     blocking_rows = normalized_rows.reject do |row|
@@ -1375,21 +1442,34 @@ module MergeAssurance
       ci_result = read_json(options[:ci_result], "--ci-result")
       autonomous_result = read_json(options[:autonomous_result], "--autonomous-result")
       context = read_json(options[:context], "--context")
+      trusted_ci_policy = if options[:trusted_repo_root] &&
+                             context.is_a?(Hash) && context["base"].is_a?(Hash)
+                            PrCiReadiness.trusted_ci_policy_at(
+                              repo_root: options[:trusted_repo_root],
+                              base_ref: context["base"]["ref"],
+                              base_sha: context["base"]["sha"]
+                            )
+                          end
       preflight_now = Time.now.utc
       local_failures = MergeAssurance.local_evidence_failures(
-        ci_result:, autonomous_result:, context:, now: preflight_now
+        ci_result:, autonomous_result:, context:, trusted_ci_policy:,
+        requested_hosted_runs: options[:requested_hosted_runs], now: preflight_now
       )
       unless local_failures.empty?
         puts JSON.pretty_generate(MergeAssurance.blocked_result(local_failures))
         return 1
       end
 
-      selected_hosted_ci_receipts = load_selected_hosted_ci_receipts!(context)
+      selected_hosted_ci_receipts = load_selected_hosted_ci_receipts!(
+        context, repo_root: options[:trusted_repo_root]
+      )
       assessment_now = Time.now.utc
       result = MergeAssurance.assess(
         ci_result:,
         autonomous_result:,
         context:,
+        trusted_ci_policy:,
+        requested_hosted_runs: options[:requested_hosted_runs],
         selected_hosted_ci_receipts:,
         now: assessment_now
       )
@@ -1402,7 +1482,7 @@ module MergeAssurance
 
     private
 
-    def load_selected_hosted_ci_receipts!(context)
+    def load_selected_hosted_ci_receipts!(context, repo_root: nil)
       context_failures = []
       MergeAssurance.validate_context(context, context_failures)
       context_failures << "context contains UNKNOWN" if MergeAssurance.contains_unknown?(context)
@@ -1416,7 +1496,7 @@ module MergeAssurance
       raise Error, "context base SHA is invalid for selected hosted CI" unless
         MergeAssurance.full_sha?(base_sha)
 
-      repo_root = trusted_repo_root!
+      repo_root ||= trusted_repo_root!
       config = load_trusted_policy!(repo_root, base_sha)
       executable, credential_env = selected_hosted_ci_policy!(config)
       trusted_bytes = trusted_executable!(repo_root, base_sha, executable)
