@@ -498,6 +498,25 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_git_valid_unicode_base_refs_are_accepted_across_diff_identity_and_merge_assurance
+    ["a\u00A0b", "a\u0085b"].each do |base_ref|
+      merge_context = context("auto_merge_when_gates_pass")
+      merge_context.fetch("base")["ref"] = base_ref
+      merge_context["diff_identity"] = DiffIdentity.derive(
+        base_ref:, base_sha: BASE_SHA, head_sha: HEAD_SHA
+      )
+
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: merge_context,
+        now: NOW
+      )
+
+      assert result.fetch("eligible"), "#{base_ref.inspect}: #{result.inspect}"
+    end
+  end
+
   def test_cli_trusted_policy_errors_return_structured_blocked_results
     ci_result = optional_held_ci(optional_held_policy)
     malformed_context = context("auto_merge_when_gates_pass")

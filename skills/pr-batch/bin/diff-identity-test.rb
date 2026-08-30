@@ -100,6 +100,29 @@ class DiffIdentityTest < Minitest::Test
     assert_match(/\A[0-9a-f]{64}\z/, identity)
   end
 
+  def test_rejects_ascii_control_space_and_delete_bytes
+    ((0x00..0x20).to_a + [0x7f]).each do |byte|
+      base_ref = "a#{byte.chr}b".force_encoding(Encoding::UTF_8)
+
+      assert_raises(DiffIdentity::Error, "byte 0x#{byte.to_s(16)}") do
+        DiffIdentity.derive(base_ref:, base_sha: BASE_SHA, head_sha: HEAD_SHA)
+      end
+    end
+  end
+
+  def test_cli_accepts_git_valid_unicode_ref_bytes_independent_of_locale
+    ["a\u00A0b", "a\u0085b"].each do |base_ref|
+      out, err, status = Open3.capture3(
+        { "LC_ALL" => "C" }, RbConfig.ruby, SCRIPT,
+        "--base-ref", base_ref, "--base-sha", BASE_SHA, "--head-sha", HEAD_SHA
+      )
+
+      assert status.success?, "#{base_ref.inspect}: #{err}"
+      assert_empty err
+      assert_equal DiffIdentity.derive(base_ref:, base_sha: BASE_SHA, head_sha: HEAD_SHA), out.strip
+    end
+  end
+
   def test_cli_interprets_canonical_ref_bytes_as_utf8_independent_of_locale
     ["main", "feature/café"].each do |base_ref|
       out, err, status = Open3.capture3(
