@@ -19,6 +19,7 @@ module BatchTokenBudget
     model-turn spawn retry review-wave scheduled-continuation monitor cross-task-delegation resume replacement escalation
   ].freeze
   CONTROL_ACTIONS = %w[initialize reserve approve override reconcile release checkpoint closeout].freeze
+  NON_DURABLE_RESERVATION_REASONS = %w[invalid-reservation telemetry-stale telemetry-unknown].freeze
   RECEIPT_TYPES = %w[
     batch-token-budget-initialization-receipt batch-token-budget-threshold-receipt
     batch-token-budget-reservation-decision-receipt batch-token-budget-reservation-receipt
@@ -310,6 +311,9 @@ module BatchTokenBudget
 
         bounded_json = file.read(TRUSTED_PLAN_MAX_BYTES + 1) || ""
         raise InvalidInput, "trusted-plan-oversized" if bounded_json.bytesize > TRUSTED_PLAN_MAX_BYTES
+
+        bounded_json.force_encoding(Encoding::UTF_8)
+        raise InvalidInput, "trusted-plan-invalid-encoding" unless bounded_json.valid_encoding?
 
         bounded_json
       end
@@ -1702,6 +1706,27 @@ module BatchTokenBudget
       )
     end
 
+    thresholds = original_state.dig("budget", "thresholds")
+    current_scope_state = threshold_state(
+      scope_totals(original_state, reservation.fetch("scope_id")), 0, thresholds
+    )
+    current_aggregate_state = threshold_state(original_state.dig("scopes", "aggregate"), 0, thresholds)
+    if strongest_threshold(current_scope_state, current_aggregate_state) == "hard"
+      blocking_scope_ids = [
+        (reservation.fetch("scope_id") if current_scope_state == "hard"),
+        ("aggregate" if current_aggregate_state == "hard")
+      ].compact
+      return persist_admission_decision(
+        original_state,
+        reservation,
+        command,
+        "budget-exhausted",
+        "actual-hard-threshold",
+        %w[read-only-discovery checkpoint override closeout],
+        blocking_scope_ids
+      )
+    end
+
     if reservation["target_state"] == "active" || active_scope_reservation
       same_target = active_scope_reservation&.dig("request", "target") == reservation["target"]
       resolved_state = resolve_admission_decisions(
@@ -1732,7 +1757,6 @@ module BatchTokenBudget
 
     scope_record = scope_totals(original_state, reservation.fetch("scope_id"))
     aggregate_record = original_state.dig("scopes", "aggregate")
-    thresholds = original_state.dig("budget", "thresholds")
     selected_threshold_state = threshold_state(scope_record, reservation.fetch("tokens"), thresholds)
     aggregate_threshold_state = threshold_state(aggregate_record, reservation.fetch("tokens"), thresholds)
     state_name = strongest_threshold(selected_threshold_state, aggregate_threshold_state)
@@ -3050,6 +3074,7 @@ module BatchTokenBudget
 
   def valid_charge_back?(charge_back)
     charge_back.is_a?(Hash) && charge_back["type"] == "batch-token-charge-back" &&
+      charge_back.keys.sort == %w[id source target type version] &&
       charge_back["version"] == 1 && nonempty_string?(charge_back["id"]) &&
       valid_task_identity?(charge_back["source"]) && valid_task_identity?(charge_back["target"])
   end
@@ -3059,6 +3084,7 @@ module BatchTokenBudget
   end
 
   def apply_command(state, command, trusted_budget, trusted_plan_binding)
+    pre_command_state = state
     raise InvalidInput, "unsupported-command-contract" unless valid_command_shape?(command)
     raise InvalidInput, "invalid-batch-id" unless nonempty_string?(command["batch_id"])
     raise InvalidInput, "invalid-evaluated-at" unless timestamp?(command["evaluated_at"])
@@ -3104,6 +3130,11 @@ module BatchTokenBudget
       else
         raise InvalidInput, "unsupported-action"
       end
+    if command["action"] == "reserve" && command_result["status"] == "blocked" &&
+       NON_DURABLE_RESERVATION_REASONS.include?(command_result["reason"])
+      return [pre_command_state, command_result]
+    end
+
     if next_state["last_evaluated_at"] != command["evaluated_at"]
       next_state = deep_copy(next_state)
       next_state["last_evaluated_at"] = command.fetch("evaluated_at")

@@ -248,7 +248,8 @@ module BatchUsageReceipt
           unless payload.is_a?(Hash)
             @current_turn_segment = nil
             @current_turn_started_at = nil
-            unknown_turn("invalid_turn_context", line: line_number)
+            turn_context_at = parsed_timestamp(record["timestamp"])
+            unknown_turn("invalid_turn_context", line: line_number) unless turn_context_at && turn_context_at < @from_time
             next
           end
 

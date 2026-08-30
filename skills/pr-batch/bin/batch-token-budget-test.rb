@@ -1181,6 +1181,50 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_trusted_plan_rejects_invalid_utf8_before_state_access_and_accepts_valid_multibyte
+    with_state do |state_path|
+      directory = File.dirname(state_path)
+      candidate = budget(state_path: state_path)
+      plan_path = trusted_plan_path(state_path)
+      invalid_byte = "\xFF".dup.force_encoding(Encoding::UTF_8)
+      invalid_json = JSON.generate(canonicalize(candidate)).sub("batch-399", invalid_byte)
+      File.binwrite(plan_path, invalid_json)
+      anchor = {
+        "path" => plan_path,
+        "id" => "batch-399",
+        "digest" => "sha256:#{'0' * 64}"
+      }
+
+      output, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("initialize", "budget" => candidate)),
+        anchor: anchor
+      )
+
+      refute status.success?
+      assert_nil output
+      assert_equal "trusted-plan-invalid-encoding", JSON.parse(stderr).fetch("reason")
+      refute File.exist?(state_path)
+      refute File.exist?("#{state_path}.lock")
+      assert_empty Dir.glob(File.join(directory, ".#{File.basename(state_path)}.tmp-*"))
+    end
+
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      candidate["batch_id"] = "batch-é"
+      anchor = install_trusted_plan(state_path, candidate)
+
+      initialized, stderr, status = run_helper_raw(
+        state_path,
+        JSON.generate(command("initialize", "batch_id" => "batch-é", "budget" => candidate)),
+        anchor: anchor
+      )
+
+      assert status.success?, stderr
+      assert_equal "initialized", initialized.fetch("status")
+    end
+  end
+
   def test_near_one_mibibyte_trusted_plan_initializes_with_independent_state_headroom
     with_state do |state_path|
       candidate = budget(state_path: state_path)
@@ -2796,6 +2840,44 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_invalid_stale_and_unknown_reservations_are_non_durable
+    variants = {
+      "malformed" => ["invalid-reservation", lambda do |request|
+        request["sensitive_prompt"] = "never persist rejected prompt content"
+      end],
+      "stale" => ["telemetry-stale", lambda do |request|
+        request.fetch("telemetry")["observed_at"] = "2026-08-12T10:00:00Z"
+      end],
+      "unknown" => ["telemetry-unknown", lambda do |request|
+        request.fetch("telemetry")["status"] = "UNKNOWN"
+      end]
+    }
+
+    variants.each do |name, (reason, mutate)|
+      with_state do |state_path|
+        initialize_budget(state_path)
+        request = reservation(id: "non-durable-#{name}")
+        mutate.call(request)
+        state_before = File.binread(state_path)
+
+        blocked, stderr, status = run_helper(
+          state_path,
+          command(
+            "reserve",
+            "evaluated_at" => "2026-08-12T12:00:00Z",
+            "reservation" => request
+          )
+        )
+
+        assert status.success?, stderr
+        assert_equal "blocked", blocked.fetch("status"), name
+        assert_equal reason, blocked.fetch("reason"), name
+        assert_equal state_before, File.binread(state_path), name
+        refute_includes File.binread(state_path), "never persist rejected prompt content", name
+      end
+    end
+  end
+
   def test_atomic_concurrent_reservations_never_overallocate_aggregate_or_lane_headroom
     with_state do |state_path|
       concurrent_budget = budget(state_path: state_path)
@@ -3574,6 +3656,18 @@ class BatchTokenBudgetTest < Minitest::Test
         "completed_reservation_ids" => ["window-delegation"],
         "charge_backs" => [{ "reservation_id" => "window-delegation", "charge_back" => charge_back }]
       )
+      state_before_extra = File.binread(state_path)
+      extra_field_reconcile = JSON.parse(JSON.generate(reconcile))
+      extra_field_reconcile.dig("charge_backs", 0, "charge_back")["sensitive_prompt"] =
+        "never persist extra charge-back content"
+      extra_output, extra_stderr, extra_status = run_helper(state_path, extra_field_reconcile)
+
+      refute extra_status.success?
+      assert_nil extra_output
+      assert_equal "invalid-charge-backs", JSON.parse(extra_stderr).fetch("reason")
+      assert_equal state_before_extra, File.binread(state_path)
+      refute_includes File.binread(state_path), "never persist extra charge-back content"
+
       reconciled, stderr, status = run_helper(state_path, reconcile)
 
       assert status.success?, stderr
@@ -6019,6 +6113,73 @@ class BatchTokenBudgetTest < Minitest::Test
         receipt["type"] == "batch-token-budget-override-expiration-receipt"
       end
       assert_equal 2, expiration_receipts
+    end
+  end
+
+  def test_expired_override_hard_stop_precedes_active_scope_coalescing_and_replays
+    with_state do |state_path|
+      initialize_budget(state_path)
+      lane_override = budget_override(
+        state_path,
+        id: "active-scope-expiry",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 800,
+        expires_at: "2026-08-12T12:05:00Z"
+      )
+      run_helper(state_path, command("override", "override" => lane_override))
+      run_helper(
+        state_path,
+        command("approve", "approval" => approval(state_path, id: "active-scope-expiry-approval"))
+      )
+      admitted, admitted_stderr, admitted_status = reserve(
+        state_path,
+        id: "active-before-expiry",
+        tokens: 700,
+        overrides: { "approval_id" => "active-scope-expiry-approval" }
+      )
+      assert admitted_status.success?, admitted_stderr
+      assert_equal "admitted-with-warning", admitted.fetch("status")
+
+      after_expiry = command(
+        "reserve",
+        "evaluated_at" => "2026-08-12T13:00:00Z",
+        "reservation" => reservation(
+          id: "active-after-expiry",
+          tokens: 1,
+          overrides: {
+            "telemetry" => reservation(id: "ignored", tokens: 1).fetch("telemetry").merge(
+              "observed_at" => "2026-08-12T12:59:00Z"
+            )
+          }
+        )
+      )
+      stopped, stderr, status = run_helper(state_path, after_expiry)
+
+      assert status.success?, stderr
+      assert_equal "budget-exhausted", stopped.fetch("status")
+      assert_equal 600, stopped.dig("totals", "lanes", "lane-a", "limit_tokens")
+      stopped_state = File.binread(state_path)
+      persisted_decision = JSON.parse(stopped_state).fetch("admission_decisions").values.find do |decision|
+        decision["reservation_id"] == "active-after-expiry"
+      end
+      assert_includes persisted_decision.fetch("blocking_scope_ids"), "lane-a"
+
+      replayed, replay_stderr, replay_status = run_helper(state_path, after_expiry)
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal "budget-exhausted", replayed.fetch("decision_status")
+      assert_equal stopped_state, File.binread(state_path)
+    end
+
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "under-limit-active", tokens: 100)
+
+      coalesced, stderr, status = reserve(state_path, id: "under-limit-coalesced", tokens: 1)
+
+      assert status.success?, stderr
+      assert_equal "coalesced", coalesced.fetch("status")
     end
   end
 

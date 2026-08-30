@@ -150,6 +150,22 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal 1, receipt.dig("accounting", "duplicate_samples_omitted")
   end
 
+  def test_superseded_pre_window_malformed_turn_context_does_not_poison_in_window_usage
+    fixture = fixture_copy("descendants")
+    fixture["window"]["from"] = "2026-08-04T00:00:00.750Z"
+    fixture.dig("rollouts", "root.jsonl").insert(
+      1,
+      { "timestamp" => "2026-08-04T00:00:00.250Z", "type" => "turn_context", "payload" => [] }
+    )
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 1, receipt.dig("coordinator", "turns", "self_only")
+    refute receipt.dig("evidence", "unknown").any? do |reason|
+      reason["code"] == "invalid_turn_context" && reason["thread_id"] == "root"
+    end
+  end
+
   def test_positive_usage_without_a_turn_context_has_unknown_turn_evidence
     fixture = fixture_copy("descendants")
     fixture.dig("rollouts", "root.jsonl").reject! { |record| record["type"] == "turn_context" }
