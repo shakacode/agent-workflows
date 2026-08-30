@@ -47,8 +47,15 @@ module WorkflowTelemetryReport
   RFC3339_TIMESTAMP = /\A(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?<offset>Z|[+-](?<offset_hour>\d{2}):(?<offset_minute>\d{2}))\z/
 
   InputError = Class.new(StandardError)
+  InputReadError = Class.new(StandardError)
 
   module_function
+
+  def read_input(path)
+    path == "-" ? $stdin.read : File.read(path, encoding: "UTF-8")
+  rescue SystemCallError, EncodingError
+    raise InputReadError
+  end
 
   def build(input)
     object = require_object(input)
@@ -318,12 +325,12 @@ begin
   parser.parse!
   raise WorkflowTelemetryReport::InputError, "unexpected arguments" unless ARGV.empty?
 
-  raw = options.fetch(:input) == "-" ? $stdin.read : File.read(options.fetch(:input), encoding: "UTF-8")
+  raw = WorkflowTelemetryReport.read_input(options.fetch(:input))
   input = JSON.parse(raw)
   report = WorkflowTelemetryReport.build(input)
   output = options.fetch(:format) == "json" ? JSON.generate(report) : WorkflowTelemetryReport.render_text(report)
   puts output
-rescue Errno::ENOENT, Errno::EACCES, Errno::EISDIR
+rescue WorkflowTelemetryReport::InputReadError
   warn "workflow-telemetry-report: unable to read input"
   exit 1
 rescue JSON::ParserError

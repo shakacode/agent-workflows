@@ -145,20 +145,20 @@ class WorkflowTelemetryReportTest < Minitest::Test
         "lane_id" => "issue-562-telemetry",
         "phase" => "planning",
         "started_at" => "2026-08-29T20:00:00.0Z",
-        "ended_at" => "2026-08-29T20:00:00.8Z"
+        "ended_at" => "2026-08-29T20:00:00.4Z"
       },
       {
         "lane_id" => "issue-562-telemetry",
         "phase" => "planning",
         "started_at" => "2026-08-29T20:00:01.0Z",
-        "ended_at" => "2026-08-29T20:00:01.8Z"
+        "ended_at" => "2026-08-29T20:00:01.4Z"
       }
     ]
 
     report = run_json(input)
 
     assert_equal 1, report.dig("measurements", "prompt_to_worker_start_seconds")
-    assert_equal 2, report.dig("measurements", "phase_seconds", "planning")
+    assert_equal 1, report.dig("measurements", "phase_seconds", "planning")
   end
 
   def test_rejects_non_allowlisted_payload_fields_without_echoing_their_content
@@ -239,6 +239,18 @@ class WorkflowTelemetryReportTest < Minitest::Test
 
     refute status.success?
     assert_equal "workflow-telemetry-report: unable to read input\n", stderr
+  end
+
+  def test_overlong_input_path_fails_without_echoing_the_path
+    private_marker = "private-transcript-do-not-echo"
+    overlong_path = "#{private_marker}-#{'x' * 5_000}"
+
+    stdout, stderr, status = Open3.capture3(HELPER, "--input", overlong_path)
+
+    refute status.success?
+    assert_empty stdout
+    assert_equal "workflow-telemetry-report: unable to read input\n", stderr
+    refute_includes stderr, private_marker
   end
 
   private
