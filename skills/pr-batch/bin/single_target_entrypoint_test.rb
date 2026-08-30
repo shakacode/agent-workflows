@@ -63,6 +63,7 @@ batch = read_repo_file("skills/pr-batch/SKILL.md")
 guide = read_repo_file("docs/pr-batch-skills.md")
 plan_batch = read_repo_file("skills/plan-pr-batch/SKILL.md")
 workflow = read_repo_file("workflows/pr-processing.md")
+prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
 batch_metadata = read_repo_file("skills/pr-batch/agents/openai.yaml")
 address_review = read_repo_file("skills/address-review/SKILL.md")
 address_review_workflow = read_repo_file("workflows/address-review.md")
@@ -87,25 +88,28 @@ insufficient_override_rule = "Generic instructions, `$pr-batch` invocation, fix-
 override_evidence_rule = "Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff."
 canonical_claim_binding_rule = "Before branch creation, editing, or dispatch, every bounded status and claim invocation binds `--repo` to lowercase `target.repository` and `--target` to the backend-safe canonical token derived from target v1: decimal `target.number` for either GitHub target type, or exact `target.target` for trusted ad-hoc; this raw pair is the canonical repository-qualified claim identity. Run status before claim; a second claim for the same canonical target, including a repository-casing alias or issue/PR type alias at the same number, must stop on `CLAIM_REFUSED` / exit 3 and cannot reach branch creation or dispatch."
 
-[batch, workflow].each do |text|
-  assert(text.include?(canonical_launch_rule), "canonical launch must require an exact issue or existing PR")
-  assert(text.include?(canonical_identity_rule), "canonical issue/PR identity must survive every launch and evidence surface")
-  assert(text.include?(unbound_prompt_rule), "an unbound direct prompt must fail closed before implementation launch")
-  assert(text.include?(durable_override_rule), "only a named trusted task-specific durable override may launch ad-hoc work")
-  assert(text.include?(insufficient_override_rule), "generic implementation or publication intent must not synthesize override authority")
-  assert(text.include?(override_evidence_rule), "durable override provenance and stable identity must survive every evidence surface")
-  assert(text.include?(canonical_claim_binding_rule), "canonical status and claim operations must bind one normalized target and stop duplicate launch")
+[canonical_launch_rule, canonical_identity_rule, unbound_prompt_rule,
+ durable_override_rule, insufficient_override_rule, override_evidence_rule,
+ canonical_claim_binding_rule].each do |rule|
+  assert(prompt_intake.include?(rule), "prompt intake must own canonical launch rule: #{rule}")
+  [batch, plan_batch, workflow].each do |entrypoint|
+    assert(!entrypoint.include?(rule), "entrypoints must route to prompt intake instead of mirroring canonical launch prose")
+  end
 end
-assert(plan_batch.include?(canonical_launch_rule), "planning must enforce the canonical launch target")
-assert(plan_batch.include?(unbound_prompt_rule), "planning must fail closed for an unbound direct prompt")
-assert(plan_batch.include?(durable_override_rule), "planning must recognize only the durable ad-hoc exception")
-assert(plan_batch.include?(override_evidence_rule), "planning must preserve durable override evidence")
+
+{
+  "skills/pr-batch/SKILL.md" => batch,
+  "skills/plan-pr-batch/SKILL.md" => plan_batch,
+  "workflows/pr-processing.md" => workflow
+}.each do |path, text|
+  assert(text.include?("workflows/pr-batch-intake.md") || text.include?("pr-batch-intake.md"),
+         "#{path} must route to the canonical prompt-intake component")
+end
+assert(prompt_intake.include?("duplicate discovery is not a global stall"), "duplicate intake must not globally stall unrelated targets")
+assert(prompt_intake.include?("shared security floor"), "prompt intake must call the shared security floor")
 assert(plan_batch.include?("Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch"), "batch plans must include every durable ad-hoc item field")
-assert(batch.include?("equivalent wording cannot create another synthetic coordination lane"), "equivalent prompts must reconcile before claiming a new lane")
-assert(plan_batch.include?("equivalent prompt wording cannot create independently claimable synthetic lanes"), "planning must prevent semantic duplicate synthetic lanes")
-assert(workflow.include?("Equivalent direct prompts cannot become independently claimable synthetic lanes"), "canonical processing must prevent semantic duplicate synthetic lanes")
-assert(workflow.include?("claim refusal prevents duplicate work"), "canonical issue/PR claims must remain the duplicate-work gate")
-assert(batch.include?("direct user instruction, a maintainer-approved exact list"), "the required interview must classify direct-prompt trust")
+assert(prompt_intake.include?("Equivalent prompt wording cannot create an independently claimable synthetic lane"), "equivalent prompts must reconcile before claiming a new lane")
+assert(prompt_intake.include?("direct user instruction, a maintainer-approved exact list"), "the canonical interview must classify direct-prompt trust")
 assert(batch.include?("when present, otherwise from the `AGENTS.md`"), "canonical base-branch resolution must support inline AGENTS configuration")
 
 legacy_skill = %w[pr lane].join("-")
@@ -129,11 +133,11 @@ assert(workflow.include?("heartbeat --help"), "canonical coordination must prese
 assert(workflow.include?("--thread-handle"), "canonical coordination must preserve extended lane metadata")
 assert(workflow.include?("`coordination_backend: n/a`"), "canonical coordination must define no-backend single-target behavior")
 assert(workflow.include?("single-operator assumption in the Lane Card and final handoff"), "no-backend mode must preserve its assumption in evidence")
-assert(workflow.include?("A durably\n  overridden ad-hoc request also carries its complete typed override record"), "canonical intake must accept only durably overridden ad-hoc targets")
-assert(workflow.include?("Do not pass a durably overridden `adhoc:` target to `pr-security-preflight`"), "only accepted durable ad-hoc targets may skip the GitHub preflight helper")
+assert(prompt_intake.include?("A durably\n  overridden ad-hoc request carries its complete typed override record"), "canonical intake must accept only durably overridden ad-hoc targets")
+assert(prompt_intake.include?("Do not pass a durably overridden `adhoc:` target to `pr-security-preflight`"), "only accepted durable ad-hoc targets may skip the GitHub preflight helper")
 assert(workflow.include?("- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>"), "canonical goal handoff must represent stable issue, PR, and overridden ad-hoc identities")
-assert(workflow.include?("type `github-issue` or `github-pull-request`"), "canonical goal handoff must name executable GitHub target types")
-assert(workflow.include?("The sole ad-hoc object type is\n`trusted-ad-hoc-override`"), "canonical goal handoff must reserve ad-hoc launch for the typed durable override")
+assert(prompt_intake.include?("type `github-issue` or `github-pull-request`"), "canonical intake must name executable GitHub target types")
+assert(prompt_intake.include?("The sole ad-hoc object type is\n`trusted-ad-hoc-override`"), "canonical intake must reserve ad-hoc launch for the typed durable override")
 assert(workflow.include?("Target ids: repository-qualified PR/Issue #N or durably overridden ad-hoc `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`"), "canonical file-touch map must preserve canonical launch identity")
 assert(workflow.include?("`Target:` for a GitHub target is its `<verified GitHub issue/PR link>`; for an ad-hoc target use exactly `n/a — durably overridden ad-hoc; durable_ref=<exact accepted durable_authorization_ref>`"), "lane cards must not invent a GitHub link for a durable ad-hoc target")
 assert(workflow.include?("For a durably overridden ad-hoc target, record the\n  evidence, rationale, complete override provenance"), "canonical final handoff must preserve overridden ad-hoc provenance")
