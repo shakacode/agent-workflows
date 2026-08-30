@@ -675,9 +675,11 @@ boundary; caller-editable CI JSON and its integrity digest cannot create,
 delete, reorder, or narrow the authorized run set.
 For a third-party check run, the currently supported provider-phase evidence is
 an `in_progress` `circleci-checks` row whose output title and workflow link bind
-the configured check name and one CircleCI workflow, whose reported job lines
-all end in `Blocked`, whose completion and actions are explicitly null, and
-whose `started_at` is null or a valid timestamp. Running or mixed job output,
+the configured check name and one CircleCI workflow, whose completion and
+actions are explicitly null, and whose `started_at` is null or a valid
+timestamp. Its summary must contain at least one downstream `Blocked` phase;
+`Success` prerequisites and `Running` jobs explicitly named as approval or hold
+jobs are also allowed. Failed or unknown states, ordinary running compute,
 missing or malformed provider evidence, another app, queued rows, and otherwise
 ambiguous phase evidence remain blocking.
 The final check-run inventory paginates exact-head check suites and each suite's

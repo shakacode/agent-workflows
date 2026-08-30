@@ -3887,10 +3887,12 @@ repository, records base ref/SHA and blob provenance, keeps every raw row in
 non-required row is approval-held. The currently supported provider-phase
 evidence is an `in_progress` `circleci-checks` row whose output title and
 workflow link bind the configured check name and one CircleCI workflow, whose
-reported job lines all end in `Blocked`, whose completion and actions are
-explicitly null, and whose `started_at` is null or a valid timestamp. Running or
-mixed job output, missing or malformed provider evidence, another app, queued
-rows, and otherwise ambiguous phase evidence remain blocking. A name match to any required evidence
+completion and actions are explicitly null, and whose `started_at` is null or a
+valid timestamp. Its summary must contain at least one downstream `Blocked`
+phase; `Success` prerequisites and `Running` jobs explicitly named as approval
+or hold jobs are also allowed. Failed or unknown states, ordinary running
+compute, missing or malformed provider evidence, another app, queued rows, and
+otherwise ambiguous phase evidence remain blocking. A name match to any required evidence
 blocks optional disposition; workflow/producer metadata is not authenticated
 identity and cannot narrow that match. Any requested GitHub Actions run, failures, completed unknown
 conclusions, malformed or incomplete inventory, and every unmatched pending or
