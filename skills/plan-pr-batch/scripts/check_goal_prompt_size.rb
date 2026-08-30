@@ -14,7 +14,7 @@ EXPECTED_PROMPT = <<~TEXT
   Repository: OWNER/REPO
   Work item: <exact issue or trusted maintainer-comment URL>
   Task name: <repository, issue, and purpose>
-  Instruction: Use PR-batch to fix this issue against current main.
+  Instruction: Use PR-batch to fix this issue against the repository's configured base branch.
   Merge authority: <auto|ask>
   Human available after: <optional time; omit this line when not supplied>
 TEXT
@@ -154,6 +154,8 @@ end
   require_phrases(text, GUIDANCE_PHRASES, path)
 end
 
+# Keep the opaque legacy "split-brain" coordination jargon out of all
+# human-facing prompt guidance, including prose outside the fenced templates.
 reject_phrases(
   [plan_skill, pr_batch_skill, triage_skill, workflow].join("\n"),
   ["split-brain"],

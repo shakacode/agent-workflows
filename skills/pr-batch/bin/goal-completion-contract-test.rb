@@ -183,7 +183,7 @@ MINIMAL_HUMAN_PROMPT = <<~TEXT
   Repository: OWNER/REPO
   Work item: <exact issue or trusted maintainer-comment URL>
   Task name: <repository, issue, and purpose>
-  Instruction: Use PR-batch to fix this issue against current main.
+  Instruction: Use PR-batch to fix this issue against the repository's configured base branch.
   Merge authority: <auto|ask>
   Human available after: <optional time; omit this line when not supplied>
 TEXT
@@ -601,7 +601,9 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_nil compact_contract_line(text), "#{label} must not restate the compact completion contract"
-      assert_text_includes text, "Instruction: Use PR-batch to fix this issue against current main.", label
+      assert_text_includes text,
+                           "Instruction: Use PR-batch to fix this issue against the repository's configured base branch.",
+                           label
       assert_text_includes text, "Work item:", label
     end
 
