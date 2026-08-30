@@ -226,7 +226,7 @@ module PrCiReadiness
     result
   end
 
-  def evidence_contract(repo:, pr_number:, head_sha:, checked_at:, scopes:)
+  def evidence_contract(repo:, pr_number:, base:, diff_base_sha:, head_sha:, checked_at:, scopes:)
     states = scopes.values.map { |scope| scope["state"] }
     verdict =
       if states.any? { |state| !EVIDENCE_STATES.include?(state) } || states.include?("UNKNOWN")
@@ -241,6 +241,11 @@ module PrCiReadiness
       "version" => 2,
       "repo" => repo,
       "pr" => pr_number.to_i,
+      "base" => base,
+      "diff_base_sha" => diff_base_sha,
+      "diff_identity" => DiffIdentity.derive(
+        base_ref: base.fetch("ref"), base_sha: diff_base_sha, head_sha:
+      ),
       "head_sha" => head_sha,
       "checked_at" => checked_at,
       "verdict" => verdict,
@@ -609,6 +614,8 @@ module PrCiReadiness
                                               the full advisory-list fallback gate.
           --trusted-repo-root DIR             Load ci_readiness policy from the live base SHA's
                                               .agents/agent-workflow.yml Git blob in this repository.
+          --diff-base-sha SHA                 Bind evidence to the reviewed effective merge base.
+                                              Defaults to the PR's current base SHA.
           --json                              Print JSON (default).
           --text                              Print a human-readable verdict instead of JSON.
           --self-check                        Run parser checks plus a read-only gh smoke check.
@@ -618,6 +625,10 @@ module PrCiReadiness
       {
         "pr": 1234,
         "context": { "host": "github.com" },
+        "base": { "ref": "main", "sha": "<LIVE_BASE_SHA>" },
+        "diff_base_sha": "<REVIEWED_DIFF_BASE_SHA>",
+        "diff_identity": "<CANONICAL_DIFF_IDENTITY>",
+        "head_sha": "<EXACT_HEAD_SHA>",
         "verdict": "READY" | "NOT_READY" | "UNKNOWN",
         "required_used": true | false,
         "failing": [ "check name", ... ],
@@ -677,7 +688,8 @@ module PrCiReadiness
         repo,
         pr_number,
         requested_hosted_runs: opts[:requested_hosted_runs],
-        trusted_repo_root: opts[:trusted_repo_root]
+        trusted_repo_root: opts[:trusted_repo_root],
+        diff_base_sha: opts[:diff_base_sha]
       )
       result["context"] = { "host" => host }
       print_result(result, opts[:format])
@@ -687,12 +699,14 @@ module PrCiReadiness
       1
     end
 
-    def assess_authenticated(repo:, pr_number:, host:, requested_hosted_runs:, trusted_repo_root: nil)
+    def assess_authenticated(
+      repo:, pr_number:, host:, requested_hosted_runs:, trusted_repo_root: nil, diff_base_sha: nil
+    )
       resolved_host = resolve_host!(host)
       @gh_env = { "GH_HOST" => resolved_host }
       result = assess(
         resolve_repo!(repo), validate_pr!(pr_number),
-        requested_hosted_runs:, trusted_repo_root:
+        requested_hosted_runs:, trusted_repo_root:, diff_base_sha:
       )
       result["context"] = { "host" => resolved_host }
       result
@@ -718,6 +732,7 @@ module PrCiReadiness
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
         when "--requested-hosted-run" then opts[:requested_hosted_runs] << take_value!(args, "--requested-hosted-run")
         when "--trusted-repo-root" then opts[:trusted_repo_root] = take_value!(args, "--trusted-repo-root")
+        when "--diff-base-sha" then opts[:diff_base_sha] = take_value!(args, "--diff-base-sha")
         when "--json" then opts[:format] = "json"
         when "--text" then opts[:format] = "text"
         when "--self-check" then opts[:self_check] = true
@@ -800,15 +815,20 @@ module PrCiReadiness
 
     # Fetch the required-check list first; fall back to the full list when the
     # required form yields no current rows. required_used flips false on fallback.
-    def assess(repo, pr_number, requested_hosted_runs:, trusted_repo_root: nil)
+    def assess(repo, pr_number, requested_hosted_runs:, trusted_repo_root: nil, diff_base_sha: nil)
       checked_at = Time.now.utc.iso8601
       target_pr =
         begin
-          fetch_target_pr_identity(repo, pr_number, require_base: !trusted_repo_root.nil?)
+          fetch_target_pr_identity(repo, pr_number, require_base: true)
         rescue StandardError => e
           return unavailable_target_pr_result(repo, pr_number, checked_at, e)
         end
       exact_head_sha = target_pr.fetch(:head_sha)
+      reviewed_diff_base_sha = diff_base_sha || target_pr.fetch(:base_sha)
+      unless reviewed_diff_base_sha.is_a?(String) && reviewed_diff_base_sha.match?(/\A[0-9a-f]{40}\z/)
+        raise Error, "--diff-base-sha must be a lowercase full hexadecimal commit SHA"
+      end
+
       trusted_ci_policy = if trusted_repo_root
                             PrCiReadiness.trusted_ci_policy_at(
                               repo_root: trusted_repo_root,
@@ -898,7 +918,7 @@ module PrCiReadiness
       revalidate_status_inventory!(inventory, repo, exact_head_sha)
       target_identity_error =
         begin
-          final_target_pr = fetch_target_pr_identity(repo, pr_number, require_base: !trusted_repo_root.nil?)
+          final_target_pr = fetch_target_pr_identity(repo, pr_number, require_base: true)
           unless same_target_pr_identity?(target_pr, final_target_pr)
             "target PR identity moved during exact-head inventory: " \
               "#{target_pr_identity_description(target_pr)} -> " \
@@ -934,7 +954,9 @@ module PrCiReadiness
         }
       )
       contract = PrCiReadiness.evidence_contract(
-        repo:, pr_number:, head_sha: exact_head_sha, checked_at:, scopes:
+        repo:, pr_number:,
+        base: { "ref" => target_pr.fetch(:base_ref), "sha" => target_pr.fetch(:base_sha) },
+        diff_base_sha: reviewed_diff_base_sha, head_sha: exact_head_sha, checked_at:, scopes:
       )
       # The fallback verdict is disposition-blind; override it only when an exact-head disposition made the contract READY.
       disposition_owns_fallback = !required_used && ordinary_checks_verdict == "NOT_READY" &&
@@ -1052,9 +1074,12 @@ module PrCiReadiness
       ordinary = PrCiReadiness.assess(
         pr_number:, required_used: false, rows: [], required_cancellations: []
       )
-      contract = PrCiReadiness.evidence_contract(
-        repo:, pr_number:, head_sha:, checked_at:, scopes:
-      )
+      contract = {
+        "contract" => "pr-ci-readiness", "version" => 2, "repo" => repo,
+        "pr" => pr_number.to_i, "base" => { "ref" => "UNKNOWN", "sha" => "UNKNOWN" },
+        "diff_base_sha" => "UNKNOWN", "diff_identity" => "UNKNOWN", "head_sha" => head_sha,
+        "checked_at" => checked_at, "verdict" => "UNKNOWN", "scopes" => scopes
+      }
       contract.merge(ordinary).merge(
         "verdict" => "UNKNOWN",
         "ordinary_verdict" => "UNKNOWN",
@@ -1613,7 +1638,7 @@ module PrCiReadiness
         next unless id_matches
 
         head_matches =
-          association.dig("head", "sha") == target_pr.fetch(:head_sha) &&
+          association.dig("head", "sha").to_s.casecmp?(target_pr.fetch(:head_sha)) &&
           association.dig("head", "ref") == target_pr.fetch(:head_ref) &&
           association.dig("head", "repo", "id") == target_pr.fetch(:head_repo_id)
         unless head_matches
@@ -1631,7 +1656,7 @@ module PrCiReadiness
 
     def ensure_exact_head!(row, head_sha, context, sha_key: "head_sha")
       actual = row[sha_key].to_s
-      return if actual == head_sha
+      return if actual.casecmp?(head_sha)
 
       raise Error, "#{context} was not bound to exact head #{head_sha} (found #{actual.empty? ? 'missing' : actual})"
     end
@@ -1784,7 +1809,7 @@ module PrCiReadiness
 
         pending_reviews = nodes.select do |review|
           review["state"] == "PENDING" && review["submittedAt"].nil? &&
-            review.dig("commit", "oid") == expected_head_sha
+            review.dig("commit", "oid").to_s.casecmp?(expected_head_sha)
         end
         viewer_pending_review_drafts.concat(pending_reviews.map do |review|
           { "id" => review.fetch("id"), "commit_oid" => expected_head_sha }
@@ -1864,7 +1889,7 @@ module PrCiReadiness
 
     def classify_requested_run(summary, repo, run_id, run, expected_head_sha)
       actual_head_sha = run.fetch("head_sha", "").to_s
-      if actual_head_sha.empty? || actual_head_sha != expected_head_sha
+      if actual_head_sha.empty? || !actual_head_sha.casecmp?(expected_head_sha)
         summary["stale"] << run_record(run_id, run).merge(
           "head_sha" => actual_head_sha,
           "expected_head_sha" => expected_head_sha
@@ -1927,6 +1952,8 @@ module PrCiReadiness
         raise Error, "target PR head SHA was not a full hexadecimal commit SHA"
       end
 
+      head_sha = head_sha.downcase
+
       head_ref = head["ref"]
       unless head_ref.is_a?(String) && !head_ref.strip.empty?
         raise Error, "target PR head ref was not a nonblank string"
@@ -1977,7 +2004,8 @@ module PrCiReadiness
       repo_name = "unknown" if repo_name.empty?
       "id=#{identity.fetch(:id)} number=##{identity.fetch(:number)} " \
         "head=#{identity.fetch(:head_sha)} ref=#{identity.fetch(:head_ref)} " \
-        "head_repo_id=#{identity.fetch(:head_repo_id)} head_repo=#{repo_name}"
+        "head_repo_id=#{identity.fetch(:head_repo_id)} head_repo=#{repo_name} " \
+        "base=#{identity.fetch(:base_ref)}@#{identity.fetch(:base_sha)}"
     end
 
     def fetch_actions_run(repo, run_id)

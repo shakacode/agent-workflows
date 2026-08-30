@@ -283,12 +283,17 @@ class PrCiReadinessTest < Minitest::Test
     }
 
     contract = PrCiReadiness.evidence_contract(
-      repo: "owner/repo", pr_number: 7, head_sha: head,
+      repo: "owner/repo", pr_number: 7,
+      base: { "ref" => "main", "sha" => "b" * 40 }, diff_base_sha: "c" * 40, head_sha: head,
       checked_at: "2026-07-30T12:00:00Z", scopes:
     )
 
     assert_equal "pr-ci-readiness", contract.fetch("contract")
     assert_equal 2, contract.fetch("version")
+    assert_equal({ "ref" => "main", "sha" => "b" * 40 }, contract.fetch("base"))
+    assert_equal "c" * 40, contract.fetch("diff_base_sha")
+    assert_equal DiffIdentity.derive(base_ref: "main", base_sha: "c" * 40, head_sha: head),
+                 contract.fetch("diff_identity")
     assert_equal head, contract.fetch("head_sha")
     assert_equal "UNKNOWN", contract.fetch("verdict")
     assert_equal scopes, contract.fetch("scopes")
@@ -1057,7 +1062,9 @@ class PrCiReadinessTest < Minitest::Test
         statuses_complete: true
       )
       contract = PrCiReadiness.evidence_contract(
-        repo: "owner/repo", pr_number: 7, head_sha: head, checked_at:, scopes:
+        repo: "owner/repo", pr_number: 7,
+        base: { "ref" => "main", "sha" => "b" * 40 }, diff_base_sha: "b" * 40,
+        head_sha: head, checked_at:, scopes:
       )
       other_ids = (item.fetch(:check_runs) + item.fetch(:statuses)).map { |row| row.fetch("id") }
 
@@ -1132,6 +1139,7 @@ class PrCiReadinessCliTest < Minitest::Test
                    exact_actions_total_count: nil, expected_host: nil,
                    exact_status_sha: :echo, exact_status_total_count: nil,
                    exact_status_pages: nil, exact_status_snapshots: nil)
+    pr_identity = add_default_base_identity(pr_identity)
     if pr_identity.nil? && (!pr_head.is_a?(String) || !pr_head.match?(/\A[0-9a-f]{40}\z/i))
       fixture_head = "a" * 40
       runs = replace_fixture_value(runs, pr_head, fixture_head)
@@ -1157,6 +1165,20 @@ class PrCiReadinessCliTest < Minitest::Test
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
       yield env
     end
+  end
+
+  def add_default_base_identity(identity)
+    return identity.map { |item| add_default_base_identity(item) } if identity.is_a?(Array)
+    return identity unless identity.is_a?(Hash) && !identity.key?("base")
+
+    repo = identity.dig("head", "repo", "full_name") || "owner/repo"
+    identity.merge(
+      "base" => {
+        "sha" => "b" * 40,
+        "ref" => "main",
+        "repo" => { "id" => 9_003, "full_name" => repo }
+      }
+    )
   end
 
   def replace_fixture_value(value, old_value, new_value)
@@ -1357,6 +1379,11 @@ class PrCiReadinessCliTest < Minitest::Test
             "sha" => identity_head,
             "ref" => "feature",
             "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+          },
+          "base" => {
+            "sha" => "b" * 40,
+            "ref" => "main",
+            "repo" => { "id" => 9_003, "full_name" => "owner/repo" }
           }
         }
         template = JSON.generate(default_identity).sub('"number":0', '"number":%s')

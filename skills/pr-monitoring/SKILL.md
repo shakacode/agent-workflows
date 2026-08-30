@@ -100,7 +100,9 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
    - Prefer `pr-ci-readiness` by resolving `PR_BATCH_SKILL_DIR` from an explicit
      environment variable, the loaded `pr-batch` skill directory, or repo-local
      `.agents/skills/pr-batch`, then running
-     `"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" --repo "${REPO}" <PR> --trusted-repo-root "$(git rev-parse --show-toplevel)"`.
+     `"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" --repo "${REPO}" <PR> --trusted-repo-root "$(git rev-parse --show-toplevel)" --diff-base-sha "${DIFF_BASE_SHA}"`,
+     where `DIFF_BASE_SHA` is the trusted full SHA used for the reviewed
+     base/effective-merge-base diff.
    - If the helper is unavailable, fall back to bounded `gh pr checks` and
      pass `--repo "${REPO}"`; report that readiness is based on the fallback.
    - Distinguish required checks from advisory checks.

@@ -70,7 +70,8 @@ gh pr diff <PR>
 PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
 "${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
   --repo <OWNER/REPO> \
-  --trusted-repo-root "$(git rev-parse --show-toplevel)"
+  --trusted-repo-root "$(git rev-parse --show-toplevel)" \
+  --diff-base-sha <REVIEWED_DIFF_BASE_SHA>
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
 

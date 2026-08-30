@@ -640,8 +640,12 @@ the resolved `pr-ci-readiness` v2 result, the autonomous eligibility result, and
 a trusted coordinator-owned merge context. `pr-ci-readiness` v2 owns the scoped,
 exact-head required-status, GitHub Actions, Dependabot, and other CI evidence,
 including authenticated live GitHub suite/run refresh and complete
-materialization. `merge-assurance` structurally revalidates that `ci_result`; it
-does not independently query GitHub. Legacy v1 CI output is not sufficient.
+materialization. Pass the reviewed `context.diff_base_sha` as
+`--diff-base-sha`; the result binds the live base ref/SHA and canonical
+`diff_identity`, so retargeting, live-base movement, or a different reviewed
+base/effective merge base invalidates CI even when the head is unchanged.
+`merge-assurance` structurally revalidates that `ci_result`; it does not
+independently query GitHub. Legacy v1 CI output is not sufficient.
 
 Derive `diff_identity` with the trusted pack's `bin/diff-identity`, passing the
 exact base ref, the resolved full lowercase base/effective-merge-base SHA used

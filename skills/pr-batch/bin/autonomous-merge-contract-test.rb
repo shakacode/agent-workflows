@@ -174,6 +174,7 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_equal 4, callers.length
     callers.each do |path, paragraph|
       assert_includes paragraph, '--trusted-repo-root "$(git rev-parse --show-toplevel)"', path
+      assert_includes paragraph, "--diff-base-sha", path
     end
   end
 

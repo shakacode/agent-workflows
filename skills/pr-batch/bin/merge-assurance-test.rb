@@ -100,6 +100,45 @@ class MergeAssuranceTest < Minitest::Test
     assert MergeAssurance.valid_evidence_digest?(result)
   end
 
+  def test_ci_evidence_retargeted_to_a_different_base_is_rejected_with_same_head
+    ci_result = ready_ci
+    retargeted_base_sha = "c" * 40
+    ci_result["base"] = { "ref" => "release", "sha" => retargeted_base_sha }
+    ci_result["diff_base_sha"] = retargeted_base_sha
+    ci_result["diff_identity"] = DiffIdentity.derive(
+      base_ref: "release", base_sha: retargeted_base_sha, head_sha: HEAD_SHA
+    )
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci_result base binding mismatch"
+  end
+
+  def test_ci_evidence_for_a_different_effective_merge_base_is_rejected_with_same_head
+    ci_result = ready_ci
+    different_diff_base_sha = "c" * 40
+    ci_result["diff_base_sha"] = different_diff_base_sha
+    ci_result["diff_identity"] = DiffIdentity.derive(
+      base_ref: "main", base_sha: different_diff_base_sha, head_sha: HEAD_SHA
+    )
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci_result diff-base binding mismatch"
+  end
+
   def test_optional_approval_held_ci_requires_and_accepts_matching_trusted_base_policy
     trusted_policy = optional_held_policy
     ci_result = optional_held_ci(trusted_policy)
@@ -441,7 +480,7 @@ class MergeAssuranceTest < Minitest::Test
     )
 
     result = MergeAssurance.assess(
-      ci_result: ready_ci,
+      ci_result: ready_ci(diff_base_sha: reviewed_diff_base_sha),
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: merge_context,
       now: NOW
@@ -471,7 +510,7 @@ class MergeAssuranceTest < Minitest::Test
     walkthrough_receipt["diff_identity"] = merge_context.fetch("diff_identity")
 
     result = MergeAssurance.assess(
-      ci_result: ready_ci,
+      ci_result: ready_ci(diff_base_sha: reviewed_diff_base_sha),
       autonomous_result: autonomous_result("human-approval-required"),
       context: merge_context,
       now: NOW
@@ -509,7 +548,7 @@ class MergeAssuranceTest < Minitest::Test
       )
 
       result = MergeAssurance.assess(
-        ci_result: ready_ci,
+        ci_result: ready_ci(base_ref:),
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
         context: merge_context,
         now: NOW
@@ -633,7 +672,7 @@ class MergeAssuranceTest < Minitest::Test
     base_sha = base_sha.strip
     malformed_context = context("auto_merge_when_gates_pass")
     malformed_context.fetch("base")["sha"] = base_sha
-    ci_result = ready_ci.merge("ci_policy" => {})
+    ci_result = ready_ci(base_sha:).merge("ci_policy" => {})
     ci_path = File.join(@fake_gh_dir, "ci-result-heterogeneous-policy.json")
     autonomous_path = File.join(@fake_gh_dir, "autonomous-result-heterogeneous-policy.json")
     context_path = File.join(@fake_gh_dir, "context-heterogeneous-policy.json")
@@ -688,7 +727,7 @@ class MergeAssuranceTest < Minitest::Test
     ci_path = File.join(@fake_gh_dir, "ci-result-omitted-policy.json")
     autonomous_path = File.join(@fake_gh_dir, "autonomous-result-omitted-policy.json")
     context_path = File.join(@fake_gh_dir, "context-omitted-policy.json")
-    ci_result = ready_ci
+    ci_result = ready_ci(base_sha:, diff_base_sha: base_sha)
     checked_at = Time.now.utc.iso8601
     ci_result["checked_at"] = checked_at
     ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = checked_at }
@@ -808,7 +847,7 @@ class MergeAssuranceTest < Minitest::Test
       )
       merge_context["host"] = "github.example"
       merge_context["base"]["sha"] = base_sha
-      ci_result = ready_ci
+      ci_result = ready_ci(base_sha:)
       ci_result["context"]["host"] = merge_context.fetch("host")
       ci_result["checked_at"] = (now - 1).iso8601
       ci_result.fetch("scopes").each_value do |scope|
@@ -1873,7 +1912,7 @@ class MergeAssuranceTest < Minitest::Test
       )
       merge_context["base"]["sha"] = base_sha
       now = Time.now.utc
-      ci_result = ready_ci
+      ci_result = ready_ci(base_sha:)
       ci_result["checked_at"] = (now - 1).iso8601
       ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
       autonomous = autonomous_result("autonomous-merge-eligible")
@@ -1960,7 +1999,7 @@ class MergeAssuranceTest < Minitest::Test
         selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
       )
       merge_context["base"]["sha"] = base_sha
-      ci_result = ready_ci
+      ci_result = ready_ci(base_sha:)
       ci_result["checked_at"] = (now - 1).iso8601
       ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
       autonomous = autonomous_result("autonomous-merge-eligible")
@@ -2043,7 +2082,7 @@ class MergeAssuranceTest < Minitest::Test
         selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
       )
       merge_context["base"]["sha"] = base_sha
-      ci_result = ready_ci
+      ci_result = ready_ci(base_sha:)
       ci_result["checked_at"] = (now - 1).iso8601
       ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
       autonomous = autonomous_result("autonomous-merge-eligible")
@@ -3021,7 +3060,7 @@ class MergeAssuranceTest < Minitest::Test
     )
 
     result = MergeAssurance.assess(
-      ci_result: ready_ci,
+      ci_result: ready_ci(base_sha:, diff_base_sha: base_sha),
       autonomous_result: autonomous,
       context: merge_context,
       now: NOW
@@ -4420,7 +4459,7 @@ class MergeAssuranceTest < Minitest::Test
       )
       merge_context["host"] = host
       merge_context["base"]["sha"] = base_sha
-      ci_result = ready_ci
+      ci_result = ready_ci(base_sha:)
       ci_result["context"]["host"] = host
       now = Time.now.utc
       ci_result["checked_at"] = (now - 1).iso8601
@@ -4461,6 +4500,7 @@ class MergeAssuranceTest < Minitest::Test
     run_git!(fixture.fetch(:repo_root), "commit", "-qm", "replace trusted selected hosted CI seam")
     base_sha = run_git!(fixture.fetch(:repo_root), "rev-parse", "HEAD").strip
     fixture.fetch(:context).fetch("base")["sha"] = base_sha
+    fixture.fetch(:ci_result)["base"] = fixture.fetch(:context).fetch("base").dup
     fixture.fetch(:autonomous_result)["policy_provenance"] = "git:#{base_sha}"
     fixture.fetch(:autonomous_result)["helper_provenance"] = "trusted-base:#{base_sha}"
   end
@@ -4809,7 +4849,10 @@ class MergeAssuranceTest < Minitest::Test
     }
   end
 
-  def ready_ci(repo: "owner/repo", pull_request: 42, head_sha: HEAD_SHA)
+  def ready_ci(
+    repo: "owner/repo", pull_request: 42, base_ref: "main", base_sha: BASE_SHA,
+    diff_base_sha: BASE_SHA, head_sha: HEAD_SHA
+  )
     rows = {
       "required_status_check_rollup" => [
         { "name" => "required", "bucket" => "pass" }
@@ -4839,6 +4882,9 @@ class MergeAssuranceTest < Minitest::Test
       "context" => { "host" => "github.com" },
       "repo" => repo,
       "pr" => pull_request,
+      "base" => { "ref" => base_ref, "sha" => base_sha },
+      "diff_base_sha" => diff_base_sha,
+      "diff_identity" => DiffIdentity.derive(base_ref:, base_sha: diff_base_sha, head_sha:),
       "head_sha" => head_sha,
       "checked_at" => "2026-07-30T11:59:00Z",
       "verdict" => "READY",

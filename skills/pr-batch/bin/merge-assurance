@@ -347,6 +347,11 @@ module MergeAssurance
     failures << "ci_result host binding mismatch" unless ci_result.dig("context", "host") == context["host"]
     failures << "ci_result repo binding mismatch" unless ci_result["repo"] == context["repo"]
     failures << "ci_result PR binding mismatch" unless ci_result["pr"] == context["pr"]
+    failures << "ci_result base binding mismatch" unless ci_result["base"] == context["base"]
+    failures << "ci_result diff-base binding mismatch" unless
+      ci_result["diff_base_sha"] == context["diff_base_sha"]
+    failures << "ci_result diff-identity binding mismatch" unless
+      ci_result["diff_identity"] == context["diff_identity"]
     failures << "ci_result head binding mismatch" unless ci_result["head_sha"] == context["head_sha"]
     validate_requested_hosted(
       ci_result["requested_hosted"], authorized_requested_run_ids, failures

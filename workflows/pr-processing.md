@@ -3566,7 +3566,8 @@ current tool's timeout or a shell timeout when available:
 PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
 "${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
   --repo <OWNER/REPO> \
-  --trusted-repo-root "$(git rev-parse --show-toplevel)"
+  --trusted-repo-root "$(git rev-parse --show-toplevel)" \
+  --diff-base-sha <REVIEWED_DIFF_BASE_SHA>
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
 
@@ -3854,13 +3855,17 @@ gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels
 "${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
   --repo <OWNER/REPO> \
   --trusted-repo-root "$(git rev-parse --show-toplevel)" \
+  --diff-base-sha "${DIFF_BASE_SHA}" \
   > "${CI_RESULT_PATH}"
 ```
 
 The resulting `pr-ci-readiness` v2 contract owns complete, scoped exact-head
 evidence for required status checks, GitHub Actions, Dependabot, and other
-checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
-must migrate to the scoped v2 result.
+checks, bound to the live base ref/SHA and the canonical reviewed
+base/effective-merge-base `diff_identity`. A retarget, live-base movement, or
+reviewed diff-base change invalidates that evidence even when the head is
+unchanged. Raw `gh pr checks` output is diagnostic only and legacy v1 CI
+consumers must migrate to the scoped v2 result.
 `pr-ci-readiness` also owns the authenticated live GitHub refresh and complete
 suite/run materialization; `merge-assurance` structurally revalidates the
 resulting `ci_result` rather than independently querying GitHub.

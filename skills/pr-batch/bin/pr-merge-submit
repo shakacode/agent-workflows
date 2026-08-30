@@ -418,7 +418,8 @@ module PrMergeSubmit
       )
       refreshed = readiness.assess_authenticated(
         repo: options[:repo], pr_number: options[:pr], host: options[:host],
-        requested_hosted_runs: requested_run_ids, trusted_repo_root: @repo_root
+        requested_hosted_runs: requested_run_ids, trusted_repo_root: @repo_root,
+        diff_base_sha: ci_result["diff_base_sha"]
       )
       unless refreshed.dig("requested_hosted", "run_ids") == requested_run_ids
         raise Error, "current CI requested hosted-run bindings changed during reassessment"
@@ -429,6 +430,9 @@ module PrMergeSubmit
         "context" => { "host" => options[:host] },
         "repo" => options[:repo],
         "pr" => options[:pr].to_i,
+        "base" => ci_result["base"],
+        "diff_base_sha" => ci_result["diff_base_sha"],
+        "diff_identity" => ci_result["diff_identity"],
         "head_sha" => options[:expected_head],
         "ci_policy" => trusted_ci_policy
       }

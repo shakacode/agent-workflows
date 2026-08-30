@@ -165,6 +165,19 @@ module AgentWorkflowSeamDoctorTestHelpers
     }
   end
 
+  def ci_readiness_policy
+    {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+  end
+
   def coordination_backend_contract(*allowed_identifiers)
     {
       "version" => 1,
@@ -646,6 +659,96 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       assert_includes out,
                       "invalid selected_hosted_ci_receipts policy: keys must be exactly " \
                       "credential_env, executable"
+    end
+  end
+
+  def test_ci_readiness_accepts_the_complete_closed_v1_mapping
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("ci_readiness" => ci_readiness_policy))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_ci_readiness_rejects_unsupported_version_non_list_and_unknown_or_nested_shapes
+    cases = {
+      "version" => ci_readiness_policy.merge("version" => 2),
+      "non-list" => ci_readiness_policy.merge("optional_approval_held_checks" => {}),
+      "unknown-key" => ci_readiness_policy.merge("mode" => "permissive"),
+      "nested-name" => ci_readiness_policy.merge(
+        "optional_approval_held_checks" => [
+          ci_readiness_policy.fetch("optional_approval_held_checks").first.merge(
+            "name" => { "nested" => "storybook-review-app" }
+          )
+        ]
+      ),
+      "unknown-value" => ci_readiness_policy.merge(
+        "optional_approval_held_checks" => [
+          ci_readiness_policy.fetch("optional_approval_held_checks").first.merge("name" => "UNKNOWN")
+        ]
+      )
+    }
+
+    cases.each do |label, value|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("ci_readiness" => value))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out, "invalid ci_readiness policy", label
+      end
+    end
+  end
+
+  def test_ci_readiness_rejects_duplicate_rule_ids_and_provider_names
+    base_rule = ci_readiness_policy.fetch("optional_approval_held_checks").first
+    cases = {
+      "duplicate-id" => [base_rule, base_rule.merge("name" => "visual-review")],
+      "duplicate-provider-name" => [base_rule, base_rule.merge("id" => "circleci-storybook-copy")]
+    }
+
+    cases.each do |label, rules|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(
+          root,
+          POLICY.merge(
+            "ci_readiness" => ci_readiness_policy.merge("optional_approval_held_checks" => rules)
+          )
+        )
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out, "invalid ci_readiness policy", label
+      end
+    end
+  end
+
+  def test_ci_readiness_rejects_duplicate_yaml_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.merge("ci_readiness" => ci_readiness_policy).to_yaml.sub(
+        "  version: 1\n",
+        "  version: 1\n  version: 2\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid ci_readiness policy"
+      assert_includes out, "duplicate key \"version\""
     end
   end
 

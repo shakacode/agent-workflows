@@ -622,7 +622,11 @@ not define consumer check identities.
 Land and review that policy change separately before relying on it. The merge
 path reads `.agents/agent-workflow.yml` from the live base commit's Git object,
 not candidate worktree bytes, and callers pass the consumer root through
-`--trusted-repo-root` to both `pr-ci-readiness` and `merge-assurance`. Existing
+`--trusted-repo-root` to both `pr-ci-readiness` and `merge-assurance`, plus the
+reviewed base/effective-merge-base SHA through the `pr-ci-readiness` command's
+`--diff-base-sha` option. The v2 result binds that canonical diff identity and the live
+base ref/SHA, so base movement invalidates prior CI evidence even when the head
+is unchanged. Existing
 repositories that omit `ci_readiness` or set it to exact `n/a` retain the prior
 fail-closed behavior; no pending row becomes optional. After adoption, raw rows
 remain in the v2 result, while only exact configured check-run identities that
