@@ -56,7 +56,8 @@ This is a frozen historical baseline, not current repository state. Use
 for the current portfolio inventory. The snapshot identity, selected GitHub
 fields, source PR sets, formulas, and derived rows are preserved in the
 [baseline evidence comment](https://github.com/shakacode/agent-workflows/pull/558#issuecomment-5466674188).
-The SHA-256 of that comment's UTF-8 body as observed for this plan is
+The SHA-256 of that comment's exact JSON-decoded UTF-8 body, without a
+CLI-added trailing newline (for example, `jq -j '.body'`), is
 `5ad81d27f338ca80677b745cfac921143753b13fb3a6b6df1d878b443388772c`;
 a later mismatch is provenance drift rather than the frozen source.
 
@@ -799,10 +800,12 @@ task as accelerate, continue, hold, replace, close, or integration-ready and
 recommend an integration order. For each requested lane, also return the
 existing task, if any, and the resulting execution action: `create`, `resume`,
 `hold`, `replace after terminal`, or `no worker`. Map `continue` to resuming
-the existing task rather than creating a duplicate; `hold`, `close`, and
-`integration-ready` create no worker; and `replace` creates a worker only after
-the prior ownership record is terminal. File overlap alone is not a dependency.
-Do not edit, close, merge, or message PRs, issues, or tasks.
+the existing task rather than creating a duplicate. Map `accelerate` to
+prioritizing and resuming its suitable existing task, or to creating exactly one
+task when none exists. `Hold`, `close`, and `integration-ready` create no worker;
+`replace` creates a worker only after the prior ownership record is terminal.
+File overlap alone is not a dependency. Do not edit, close, merge, or message
+PRs, issues, or tasks.
 ```
 
 ### T11 — Simplify conflict and dependency handling
@@ -846,13 +849,19 @@ parallel, but no other task is created or activated until that result is
 available. Apply the operator's authorization only to that filtered execution
 set: resume the named existing tasks, create only lanes marked `create`, and do
 not create duplicates for `continue`, `hold`, `close`, or `integration-ready`.
-A `replace` action waits until the prior ownership record is terminal. Then
-prompt the resulting T1, T2, T3, T4, T5, T7, T8, T9, T11, and T12 tasks at the
-same time so every active or queued task is visible and traceable. Begin active
-execution only up to the operator's target and the host's actual capacity. A
-host that queues tasks may create the whole filtered set immediately without
-claiming every task is consuming an active worker slot. A host without a
-separate queue treats its creation limit as the capacity limit.
+An `accelerate` action resumes the suitable existing task or creates exactly one
+when none exists; it never adds a second worker to the same lane. For `replace`,
+the parent rechecks the prior run. Under explicit operator or repository-policy
+replacement authority, it may append the terminal transition—with reason,
+evidence, authorizer/reference, and replacement run ID—only after the run has
+ended and no writer survives. A healthy prior run or missing replacement
+authority changes the action to `hold` and queues one decision instead of
+launching a duplicate. Then prompt the resulting T1, T2, T3, T4, T5, T7, T8,
+T9, T11, and T12 tasks at the same time so every active or queued task is visible
+and traceable. Begin active execution only up to the operator's target and the
+host's actual capacity. A host that queues tasks may create the whole filtered
+set immediately without claiming every task is consuming an active worker slot.
+A host without a separate queue treats its creation limit as the capacity limit.
 
 Each prompt states what can proceed immediately and what waits for a
 documented GitHub dependency. A dependency-waiting task completes independent
