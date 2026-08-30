@@ -158,6 +158,7 @@ ruby skills/pr-batch/bin/writing-style-contract-test.rb
 ruby skills/pr-batch/bin/user-facing-coordination-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/file-expansion-contract-test.rb
+ruby skills/pr-batch/bin/worker-execution-contract-test.rb
 ruby skills/pr-batch/bin/dependency-conflict-policy-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-closeout-test.rb
