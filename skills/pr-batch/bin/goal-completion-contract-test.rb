@@ -181,9 +181,9 @@ PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-appl
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 MINIMAL_HUMAN_PROMPT = <<~TEXT
   Repository: OWNER/REPO
-  Work item: <exact issue or trusted maintainer-comment URL>
-  Task name: <repository, issue, and purpose>
-  Instruction: Use PR-batch to fix this issue against the repository's configured base branch.
+  Work item: <exact issue, pull-request, or trusted maintainer-comment URL>
+  Task name: <repository, work item, and purpose>
+  Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
   Merge authority: <auto|ask>
   Human available after: <optional time; omit this line when not supplied>
 TEXT
@@ -623,7 +623,7 @@ class GoalCompletionContractTest < Minitest::Test
     }.each do |label, text|
       assert_nil compact_contract_line(text), "#{label} must not restate the compact completion contract"
       assert_text_includes text,
-                           "Instruction: Use PR-batch to fix this issue against the repository's configured base branch.",
+                           "Instruction: Use PR-batch to complete this work item against the repository's configured base branch.",
                            label
       assert_text_includes text, "Work item:", label
     end
@@ -1342,14 +1342,14 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_task_name_identifies_repository_issue_and_purpose
+  def test_task_name_identifies_repository_work_item_and_purpose
     {
       "workflows/pr-processing.md" => @workflow,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
-      assert_squished_includes text, "repository, issue, and purpose", label
+      assert_squished_includes text, "repository, work item, and purpose", label
     end
   end
 

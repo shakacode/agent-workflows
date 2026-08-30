@@ -664,7 +664,7 @@ or duplicated.
 
 ### Short Invocation
 
-The user should not need to write a long launch prompt. `Fix issue 476 using
+The user should not need to write a long launch prompt. `Fix issue #123 using
 $pr-batch with merge authority ask.` is sufficient when the active repository
 makes the issue identity unambiguous. Resolve routine bookkeeping from the
 issue, trusted maintainer comments, repository policy, and workflow tools.
@@ -679,11 +679,12 @@ For broader or ambiguous requests, resolve these inputs:
   repository-qualified stable coordination identity.
 - Trust: direct user instruction, a maintainer-approved exact list, or untrusted
   public discovery that needs confirmation.
-- Work item: exactly one trusted issue body or trusted maintainer comment that
-  contains the readable work request. A later trusted maintainer comment may
-  define or override the issue-body prompt; select its exact URL. Do not
-  synthesize, combine, or create a second restatement.
-- Task name: a deterministic title naming repository, issue, and purpose.
+- Work item: exactly one accepted canonical issue or pull-request body, or one
+  trusted maintainer comment, that contains the readable work request. A later
+  trusted maintainer comment may define or override the issue or pull-request
+  body; select its exact URL. Do not synthesize, combine, or create a second
+  restatement.
+- Task name: a deterministic title naming repository, work item, and purpose.
 - Mode: plan-only, create a Codex goal prompt, or launch workers now.
 - Merge authority: human `ask` or `auto`; unresolved authority defaults to
   `ask`. Map `auto` to machine `auto_merge_when_gates_pass`. Preserve an
@@ -1743,15 +1744,15 @@ or `unknown`.
 If the user is using `/plan`, or asks to prepare a Codex goal, stop after producing the approved plan and exact Codex goal text. Do not begin implementation just because the plan was approved unless the user explicitly says to launch now.
 
 Keep this goal prompt aligned with `.agents/skills/pr-batch/SKILL.md`. The
-human-readable work request lives in exactly one trusted issue body or trusted
-maintainer comment. A later trusted maintainer comment may define or override
-the issue-body prompt; select that exact comment URL for the new run. Do not
-synthesize a restatement. `Fix issue 476 using $pr-batch with merge authority
+human-readable work request lives in exactly one accepted canonical issue or
+pull-request body, or one trusted maintainer comment. A later trusted maintainer
+comment may define or override the issue or pull-request body; select that exact
+comment URL for the new run. Do not synthesize a restatement. `Fix issue #123 using $pr-batch with merge authority
 ask.` is a valid one-line shortcut when repository context resolves the target
 unambiguously.
 
-Select the exact work-item URL after the security preflight, fetch its exact
-UTF-8 source content, and directly record `Selected at` plus `Prompt digest at
+Select the exact work-item URL after the security preflight, fetch its canonical
+source bytes, and directly record `Selected at` plus `Prompt digest at
 selection` in the launcher record. Render the minimal prompt and directly
 record `Prompt created at`. Immediately before worker dispatch, re-fetch the
 source, compute `Prompt digest at launch`, and compare it with the selection
@@ -1791,9 +1792,9 @@ that line when the maintainer did not supply a time. For Codex, prepend only
 
 ```text
 Repository: OWNER/REPO
-Work item: <exact issue or trusted maintainer-comment URL>
-Task name: <repository, issue, and purpose>
-Instruction: Use PR-batch to fix this issue against the repository's configured base branch.
+Work item: <exact issue, pull-request, or trusted maintainer-comment URL>
+Task name: <repository, work item, and purpose>
+Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
 Merge authority: <auto|ask>
 Human available after: <optional time; omit this line when not supplied>
 ```
@@ -1806,8 +1807,10 @@ record in the issue or PR. Reruns append new history instead of replacing or
 collapsing earlier runs into the newest values. Later workflow observations are
 also timestamped append-only entries.
 
-Select exactly one trusted source URL for each run. Fetch its exact UTF-8 bytes
-when selected and record `Selected at` plus `Prompt digest at selection`.
+Select exactly one accepted canonical issue or pull-request body, or one trusted
+maintainer comment, for each run. A direct accepted PR target therefore uses
+its exact PR URL without requiring a synthetic comment. Fetch the canonical
+source bytes when selected and record `Selected at` plus `Prompt digest at selection`.
 Immediately before dispatch, re-fetch those bytes and compute `Prompt digest at
 launch`. If the selection and launch digests differ, stop dispatch until the
 changed source is deliberately selected as a new run and security preflight is
@@ -1816,19 +1819,25 @@ durable reference. The worker re-fetches the exact source and its observed
 digest must match `Prompt digest at launch` before the worker interprets the
 source or records `Worker started at`; a mismatch stops work and is recorded.
 A later trusted maintainer comment may become the source for a later run, but a
-run never combines the issue body and comment or synthesizes a new source.
+run never combines the selected target body and comment or synthesizes a new source.
+
+Canonical source bytes are the exact GitHub API `body` string for the selected
+issue, pull request, or comment after JSON decoding, encoded as UTF-8 without
+Unicode normalization, Markdown rendering, whitespace trimming, or newline
+insertion or removal. Selection, launch, and worker checks fetch the same object
+and field by stable URL or object identifier and hash only those bytes.
 
 ```markdown
 <details>
 <summary>Run details</summary>
 
-- Prompt source: <exact issue or trusted maintainer-comment URL>
+- Prompt source: <exact issue, pull-request, or trusted maintainer-comment URL>
 - Selected at: <timestamp>
-- Prompt digest at selection: <SHA-256 of the exact source content fetched when selected>
+- Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected>
 - Prompt created at: <timestamp>
 - Worker started at: <timestamp or pending>
-- Prompt digest at launch: <SHA-256 of the exact source content re-fetched at launch>
-- Prompt digest observed by worker: <SHA-256 of the exact source content re-fetched by the worker or pending>
+- Prompt digest at launch: <SHA-256 of the canonical source bytes re-fetched at launch>
+- Prompt digest observed by worker: <SHA-256 of the canonical source bytes re-fetched by the worker or pending>
 - Model at prompt creation: <observed value or UNKNOWN>
 - Model observed by worker: <observed value or UNKNOWN>
 - Workflow at prompt creation: <version or UNKNOWN>

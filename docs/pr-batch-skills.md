@@ -323,10 +323,12 @@ omit the queue summary and note that queue state is unavailable.
    consequential ambiguity; or it weakens verification. An omitted path alone is not
    such a condition.
 8. Give the user the Batch Plan and fenced readable `$pr-batch` goal prompt.
-   The work request lives in exactly one trusted issue body or trusted
-   maintainer comment. A later trusted maintainer comment may define or override
-   the issue-body prompt; select its exact URL. Do not synthesize or combine
-   sources. `Fix issue 476 using $pr-batch with merge authority ask.` is a
+   The work request lives in exactly one accepted canonical issue or
+   pull-request body, or one trusted maintainer comment. A direct accepted PR
+   target uses its exact PR URL without requiring a synthetic comment. A later
+   trusted maintainer comment may define or override the issue or pull-request
+   body; select its exact URL. Do not synthesize or combine
+   sources. `Fix issue #123 using $pr-batch with merge authority ask.` is a
    sufficient one-line shortcut when the repository makes the target
    unambiguous.
 
@@ -338,7 +340,13 @@ omit the queue summary and note that queue state is unavailable.
    evidence, registration-first coordination, and other derived workflow state
    outside the human-authored prompt.
 
-   The launcher fetches the exact UTF-8 source when it is selected and directly
+   Canonical source bytes are the exact GitHub API `body` string for the
+   selected issue, pull request, or comment after JSON decoding, encoded as
+   UTF-8 without Unicode normalization, Markdown rendering, whitespace
+   trimming, or newline insertion or removal. Selection, launch, and worker
+   checks fetch the same object and field and hash only those bytes.
+
+   The launcher fetches those canonical source bytes when selected and directly
    records the selection timestamp plus `Prompt digest at selection`, then the
    prompt-creation timestamp after rendering. Immediately before dispatch it
    re-fetches the source and records `Prompt digest at launch`. If the selection

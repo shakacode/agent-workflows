@@ -8,9 +8,9 @@ REPO_ROOT = File.expand_path("../../..", __dir__)
 TEXT_FENCE = "```text\n"
 EXPECTED_PROMPT = <<~TEXT
   Repository: OWNER/REPO
-  Work item: <exact issue or trusted maintainer-comment URL>
-  Task name: <repository, issue, and purpose>
-  Instruction: Use PR-batch to fix this issue against the repository's configured base branch.
+  Work item: <exact issue, pull-request, or trusted maintainer-comment URL>
+  Task name: <repository, work item, and purpose>
+  Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
   Merge authority: <auto|ask>
   Human available after: <optional time; omit this line when not supplied>
 TEXT
@@ -40,6 +40,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
     @workflow = read_repo_file("workflows/pr-processing.md")
     @triage_skill = read_repo_file("skills/triage/SKILL.md")
     @source_docs = read_repo_file("docs/pr-batch-skills.md")
+    @batch_plan_preflight = read_repo_file("skills/plan-pr-batch/bin/batch-plan-preflight")
 
     workflow_handoff = @workflow.split("### Plan To Goal Handoff", 2).fetch(1)
     @prompts = {
@@ -71,6 +72,27 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes error.message, "expected 10/8, found 11/8"
   end
 
+  def test_security_pin_drift_rejects_an_in_memory_mutation
+    surfaces = {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/plan-pr-batch/SKILL.md" => @plan_skill,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }
+    GoalPromptDriftContract.check_security_pins!(surfaces:, batch_plan_preflight: @batch_plan_preflight)
+
+    mutated = surfaces.transform_values(&:dup)
+    mutated.fetch("skills/pr-batch/SKILL.md").sub!(
+      "When search finds no canonical issue or existing PR",
+      "When no canonical issue or existing PR is found"
+    )
+
+    error = assert_raises(RuntimeError) do
+      GoalPromptDriftContract.check_security_pins!(surfaces: mutated, batch_plan_preflight: @batch_plan_preflight)
+    end
+    assert_includes error.message, "canonical issue creation count is 0, expected 1"
+  end
+
   def test_all_canonical_surfaces_share_one_readable_prompt
     assert_equal 1, @prompts.values.uniq.length
     assert_equal EXPECTED_PROMPT, @prompts.values.first
@@ -90,8 +112,8 @@ class ReadableGoalPromptContractTest < Minitest::Test
   def test_generation_rules_make_one_trusted_source_authoritative
     [@plan_skill, @pr_batch_skill, @workflow, @triage_skill].each do |text|
       normalized = text.gsub(/\s+/, " ")
-      assert_includes normalized, "Fix issue 476 using $pr-batch with merge authority ask."
-      assert_includes normalized, "exactly one trusted issue body or trusted maintainer comment"
+      assert_includes normalized, "Fix issue #123 using $pr-batch with merge authority ask."
+      assert_includes normalized, "accepted canonical issue or pull-request body"
       assert_includes normalized, "later trusted maintainer comment"
       assert_includes normalized, "Do not synthesize"
       assert_includes normalized, "Prompt digest at launch"
@@ -105,6 +127,8 @@ class ReadableGoalPromptContractTest < Minitest::Test
     normalized = @source_docs.gsub(/\s+/, " ")
     [
       "Prompt digest at selection",
+      "exact GitHub API `body` string",
+      "without Unicode normalization, Markdown rendering, whitespace trimming, or newline insertion or removal",
       "If the selection and launch digests differ, dispatch stops",
       "deliberately reselected as a new run and the security preflight is rerun",
       "must match `Prompt digest at launch` before it interprets the source",
@@ -117,13 +141,13 @@ class ReadableGoalPromptContractTest < Minitest::Test
     launcher_record = @workflow.split("### Launcher Run Record", 2).fetch(1).split("### ", 2).first
 
     [
-      "Prompt source: <exact issue or trusted maintainer-comment URL>",
+      "Prompt source: <exact issue, pull-request, or trusted maintainer-comment URL>",
       "Selected at: <timestamp>",
-      "Prompt digest at selection: <SHA-256 of the exact source content fetched when selected>",
+      "Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected>",
       "Prompt created at: <timestamp>",
       "Worker started at: <timestamp or pending>",
-      "Prompt digest at launch: <SHA-256 of the exact source content re-fetched at launch>",
-      "Prompt digest observed by worker: <SHA-256 of the exact source content re-fetched by the worker or pending>",
+      "Prompt digest at launch: <SHA-256 of the canonical source bytes re-fetched at launch>",
+      "Prompt digest observed by worker: <SHA-256 of the canonical source bytes re-fetched by the worker or pending>",
       "Model at prompt creation: <observed value or UNKNOWN>",
       "Model observed by worker: <observed value or UNKNOWN>",
       "Workflow at prompt creation: <version or UNKNOWN>",
@@ -136,6 +160,8 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes normalized, "does not block launch"
     assert_includes normalized, "collapsed `<details>`"
     assert_includes normalized, "Reruns append"
+    assert_includes normalized, "exact GitHub API `body` string"
+    assert_includes normalized, "without Unicode normalization, Markdown rendering, whitespace trimming, or newline insertion or removal"
     assert_includes normalized, "must match `Prompt digest at launch` before the worker interprets the source"
     assert_includes normalized, "`auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`"
     assert_includes normalized, "machine-only `merge_authority: none`"

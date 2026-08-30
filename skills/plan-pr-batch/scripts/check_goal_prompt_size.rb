@@ -12,9 +12,9 @@ SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 
 EXPECTED_PROMPT = <<~TEXT
   Repository: OWNER/REPO
-  Work item: <exact issue or trusted maintainer-comment URL>
-  Task name: <repository, issue, and purpose>
-  Instruction: Use PR-batch to fix this issue against the repository's configured base branch.
+  Work item: <exact issue, pull-request, or trusted maintainer-comment URL>
+  Task name: <repository, work item, and purpose>
+  Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
   Merge authority: <auto|ask>
   Human available after: <optional time; omit this line when not supplied>
 TEXT
@@ -53,8 +53,8 @@ FORBIDDEN_PROMPT_FRAGMENTS = [
 ].freeze
 
 GUIDANCE_PHRASES = [
-  "Fix issue 476 using $pr-batch with merge authority ask.",
-  "exactly one trusted issue body or trusted maintainer comment",
+  "Fix issue #123 using $pr-batch with merge authority ask.",
+  "accepted canonical issue or pull-request body",
   "later trusted maintainer comment",
   "Do not synthesize",
   "Prompt digest at launch",
@@ -66,13 +66,13 @@ GUIDANCE_PHRASES = [
 ].freeze
 
 LAUNCHER_RECORD_FIELDS = [
-  "Prompt source: <exact issue or trusted maintainer-comment URL>",
+  "Prompt source: <exact issue, pull-request, or trusted maintainer-comment URL>",
   "Selected at: <timestamp>",
-  "Prompt digest at selection: <SHA-256 of the exact source content fetched when selected>",
+  "Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected>",
   "Prompt created at: <timestamp>",
   "Worker started at: <timestamp or pending>",
-  "Prompt digest at launch: <SHA-256 of the exact source content re-fetched at launch>",
-  "Prompt digest observed by worker: <SHA-256 of the exact source content re-fetched by the worker or pending>",
+  "Prompt digest at launch: <SHA-256 of the canonical source bytes re-fetched at launch>",
+  "Prompt digest observed by worker: <SHA-256 of the canonical source bytes re-fetched by the worker or pending>",
   "Model at prompt creation: <observed value or UNKNOWN>",
   "Model observed by worker: <observed value or UNKNOWN>",
   "Workflow at prompt creation: <version or UNKNOWN>",

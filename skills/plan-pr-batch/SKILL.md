@@ -580,11 +580,14 @@ the whole launch before dispatch.
      the host-aware item cap. An explicit paste destination wins over host
      detection. Installed homes are not runtime evidence; use `generic` when
      the active host is ambiguous.
-   - Choose exactly one trusted issue body or trusted maintainer comment as the
-     source for each run. A later trusted maintainer comment may define or
-     override the issue-body prompt. Select its exact comment URL. Do not
+   - Choose exactly one accepted canonical issue or pull-request body, or one
+     trusted maintainer comment, as the source for each run. A direct accepted
+     PR target uses its exact PR URL without requiring a synthetic comment. A
+     later trusted maintainer comment may define or override the issue or
+     pull-request body. Select its exact comment URL. Do not
      synthesize a restatement or combine multiple sources.
-   - Fetch the exact UTF-8 source when selecting the URL and directly record
+   - Use the canonical source bytes defined by the Launcher Run Record when
+     selecting the URL and directly record
      `Selected at` plus `Prompt digest at selection`; record `Prompt created at`
      after rendering the prompt. Immediately before dispatch, re-fetch the
      source and append `Prompt digest at launch`. A mismatch stops dispatch
@@ -646,7 +649,7 @@ backend must say so in the declaration.
 
 - Objective:
 - Repository:
-- Task name(s): deterministic repository, issue, and purpose titles used by the human prompt and host UI.
+- Task name(s): deterministic repository, work-item, and purpose titles used by the human prompt and host UI.
 - Included items:
   - `PR #N` or `Issue #N`: title, URL, state, role in batch
   - Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch
@@ -768,13 +771,16 @@ which is what applies the resolved `Task name:` to an already-created task.
 
 ## Goal Prompt for pr-batch
 
-The human-readable work request lives in exactly one trusted issue body or
-trusted maintainer comment. A later trusted maintainer comment may define or
-override the issue-body prompt. Do not synthesize or restate it. `Fix issue 476
+The human-readable work request lives in exactly one accepted canonical issue
+or pull-request body, or one trusted maintainer comment. A direct accepted PR
+target uses its exact PR URL without requiring a synthetic comment. A later
+trusted maintainer comment may define or override the issue or pull-request
+body. Do not synthesize or restate it. `Fix issue #123
 using $pr-batch with merge authority ask.` is a valid one-line shortcut when
 repository context resolves the target.
 
-Select the exact source URL, fetch its exact UTF-8 content, and record `Selected
+Select the exact source URL, fetch the canonical source bytes defined by the
+Launcher Run Record, and record `Selected
 at` plus `Prompt digest at selection`. Record `Prompt created at` after
 rendering the prompt. Immediately before dispatch, re-fetch the source and
 calculate `Prompt digest at launch`; if it differs from the selection digest,
@@ -809,9 +815,9 @@ Ordinary readiness is necessary but not sufficient for autonomous merge; evaluat
 
 ```text
 Repository: OWNER/REPO
-Work item: <exact issue or trusted maintainer-comment URL>
-Task name: <repository, issue, and purpose>
-Instruction: Use PR-batch to fix this issue against the repository's configured base branch.
+Work item: <exact issue, pull-request, or trusted maintainer-comment URL>
+Task name: <repository, work item, and purpose>
+Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
 Merge authority: <auto|ask>
 Human available after: <optional time; omit this line when not supplied>
 ```

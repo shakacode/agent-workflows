@@ -282,9 +282,9 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    untrusted public discovery that needs confirmation.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
 4. **Task name**: derive a deterministic, readable title that identifies the
-   repository, issue, and purpose, such as `AW #476 — Simplify cross-host
-   prompts`. Do not add timestamps, runner state, or coordination diagnostics to
-   this human-authored field.
+   repository, work item, and purpose, such as `AW #123 — Fix stale run
+   prompts`. Do not add timestamps, runner state, or coordination diagnostics
+   to this human-authored field.
 <!-- host-branch: codex-only start -->
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 <!-- host-branch: codex-only end -->
@@ -673,13 +673,16 @@ separate from batch-plan preflight.
 
 Keep this template aligned with the matching plan-to-goal prompt in the
 resolved `pr-processing.md`. The human-readable work request lives in exactly
-one trusted issue body or trusted maintainer comment. A later trusted maintainer
-comment may define or override the issue-body prompt; select its exact URL for
-that run. Do not synthesize, compress, combine, or restate the source. `Fix
-issue 476 using $pr-batch with merge authority ask.` is a valid one-line
+one accepted canonical issue or pull-request body, or one trusted maintainer
+comment. A direct accepted PR target uses its exact PR URL without requiring a
+synthetic comment. A later trusted maintainer comment may define or override
+the issue or pull-request body; select its exact URL for that run. Do not
+synthesize, compress, combine, or restate the source. `Fix
+issue #123 using $pr-batch with merge authority ask.` is a valid one-line
 shortcut when repository context resolves the target.
 
-Fetch the exact UTF-8 source when selecting the URL and directly record
+Use the canonical source bytes defined by the Launcher Run Record when selecting
+the URL and directly record
 `Selected at` plus `Prompt digest at selection`; record `Prompt created at`
 after rendering the minimal prompt. Immediately before dispatch, re-fetch the
 source and compute `Prompt digest at launch`. A mismatch stops dispatch until
@@ -724,9 +727,9 @@ Use this template when creating goal text:
 
 ```text
 Repository: OWNER/REPO
-Work item: <exact issue or trusted maintainer-comment URL>
-Task name: <repository, issue, and purpose>
-Instruction: Use PR-batch to fix this issue against the repository's configured base branch.
+Work item: <exact issue, pull-request, or trusted maintainer-comment URL>
+Task name: <repository, work item, and purpose>
+Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
 Merge authority: <auto|ask>
 Human available after: <optional time; omit this line when not supplied>
 ```

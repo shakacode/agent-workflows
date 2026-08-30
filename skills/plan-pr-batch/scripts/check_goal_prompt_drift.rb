@@ -70,6 +70,21 @@ module GoalPromptDriftContract
     ]
   }.freeze
 
+  CANONICAL_ISSUE_CREATION_PIN =
+    "When search finds no canonical issue or existing PR, create the canonical issue with explicit " \
+    "planning-time issue-creation authority, or ask for that authority; do not create a branch, edit, " \
+    "or dispatch until the persisted issue identity is rebound into the plan and preflight passes."
+  CANONICAL_REPOSITORY_GRAMMAR_PIN =
+    "Every typed target repository has exactly two ASCII components separated by `/`: the owner " \
+    "matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from " \
+    "`[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; " \
+    "parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`."
+  IMPLEMENTATION_PR_FILE_TOUCH_REPLAY_PIN =
+    "After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical " \
+    "target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; " \
+    "its repository must match the target, while a PR-origin target also requires the exact target PR number."
+  REPOSITORY_NAME_PATTERN_PIN = 'REPOSITORY_NAME_PATTERN = /\A[A-Za-z0-9._-]{1,100}\z/'
+
   RESUME_SNIPPET = <<~TEXT.chomp
     Resume batch processing now.
 
@@ -235,6 +250,41 @@ module GoalPromptDriftContract
     end
   end
 
+  def check_security_pins!(surfaces:, batch_plan_preflight:)
+    intake_surfaces = if surfaces.key?("workflows/pr-batch-intake.md")
+                        surfaces.slice("workflows/pr-batch-intake.md", "skills/triage/SKILL.md")
+                      else
+                        surfaces.slice(
+                          "workflows/pr-processing.md",
+                          "skills/plan-pr-batch/SKILL.md",
+                          "skills/pr-batch/SKILL.md",
+                          "skills/triage/SKILL.md"
+                        )
+                      end
+    replay_surfaces = surfaces.slice(
+      "workflows/pr-processing.md",
+      "skills/plan-pr-batch/SKILL.md",
+      "skills/pr-batch/SKILL.md",
+      "skills/triage/SKILL.md"
+    )
+
+    {
+      "canonical issue creation" => [CANONICAL_ISSUE_CREATION_PIN, intake_surfaces],
+      "canonical repository grammar" => [CANONICAL_REPOSITORY_GRAMMAR_PIN, intake_surfaces],
+      "implementation PR file-touch replay" => [IMPLEMENTATION_PR_FILE_TOUCH_REPLAY_PIN, replay_surfaces]
+    }.each do |label, (phrase, selected_surfaces)|
+      selected_surfaces.each do |path, text|
+        count = text.gsub(/\s+/, " ").scan(phrase).length
+        fail!("#{path} #{label} count is #{count}, expected 1") unless count == 1
+      end
+    end
+
+    pattern_count = batch_plan_preflight.scan(REPOSITORY_NAME_PATTERN_PIN).length
+    return if pattern_count == 1
+
+    fail!("batch-plan-preflight repository-name pattern count is #{pattern_count}, expected 1")
+  end
+
   def check!(repo_root:, source_checkout:)
     workflow = read(repo_root, "workflows/pr-processing.md")
     skills = {
@@ -242,6 +292,13 @@ module GoalPromptDriftContract
       "skills/pr-batch/SKILL.md" => read(repo_root, "skills/pr-batch/SKILL.md"),
       "skills/triage/SKILL.md" => read(repo_root, "skills/triage/SKILL.md")
     }
+    security_surfaces = { "workflows/pr-processing.md" => workflow, **skills }
+    prompt_intake = read(repo_root, "workflows/pr-batch-intake.md", optional: true)
+    security_surfaces["workflows/pr-batch-intake.md"] = prompt_intake if prompt_intake
+    check_security_pins!(
+      surfaces: security_surfaces,
+      batch_plan_preflight: read(repo_root, "skills/plan-pr-batch/bin/batch-plan-preflight")
+    )
     routing_surfaces = {
       "skills/plan-pr-batch/SKILL.md" => skills.fetch("skills/plan-pr-batch/SKILL.md"),
       "docs/agent-workflows-model-routing.md" => read(repo_root, "docs/agent-workflows-model-routing.md"),

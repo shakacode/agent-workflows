@@ -282,14 +282,17 @@ precise blocker.
    Re-evaluate the affected group after capacity placement; never convert a
    cross-group edge into an untyped ready signal.
 5. Produce one target-specific `$pr-batch` prompt per group. The readable work
-   request is exactly one trusted issue body or trusted maintainer comment, not
-   a generated restatement. A later trusted maintainer comment may define or
-   override the issue-body prompt; select its exact URL for that run. Do not
-   synthesize or combine sources. `Fix issue 476 using $pr-batch with merge
+   request is exactly one accepted canonical issue or pull-request body, or one
+   trusted maintainer comment, not a generated restatement. A direct accepted
+   PR target uses its exact PR URL without requiring a synthetic comment. A
+   later trusted maintainer comment may define or override the issue or
+   pull-request body; select its exact URL for that run. Do not
+   synthesize or combine sources. `Fix issue #123 using $pr-batch with merge
    authority ask.` is a valid one-line shortcut when repository context is
    unambiguous.
 
-   Fetch the exact UTF-8 source when choosing the URL and directly record the
+   Use the canonical source bytes defined by the Launcher Run Record when
+   choosing the URL and directly record the
    selection timestamp plus `Prompt digest at selection`; record the prompt-
    creation timestamp after rendering the minimal prompt. Immediately before
    dispatch, re-fetch the source and compute `Prompt digest at launch`. A
@@ -387,7 +390,7 @@ precise blocker.
    `UNKNOWN` is not `human-approval-required` and cannot be cleared by risk approval.
 
    Put one deterministic `Task name:` in each prompt. It identifies the
-   repository, issue, and purpose without timestamps, runner state, or
+   repository, work item, and purpose without timestamps, runner state, or
    coordination diagnostics. Keep group and lane identifiers in durable machine
    state outside the human prompt.
 6. Assign queued-but-not-started work to the matching inbox queue when the
