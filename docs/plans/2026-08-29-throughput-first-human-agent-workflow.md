@@ -167,7 +167,7 @@ PR-batch to fix this issue` may be enough.
 The system SHALL measure selection-to-worker-start time and prompt-generation
 time. File-touch maps, compressed restatements of workflow rules, and repeated
 metadata are not required prompt inputs. Launchers may emit the small timestamps
-needed for this immediately; the telemetry work in R10 aggregates them and is
+needed for this immediately; the telemetry work in R14 aggregates them and is
 not a prerequisite for simplifying prompts.
 
 ### R7 — Modular PR-batch architecture (P1)
@@ -359,17 +359,6 @@ when the issue is already clear.
 The Agent Workflows revision observed at a particular moment. A recorded prompt
 version does not freeze an independently installed runtime.
 
-The file-touch map is removed from human input and initial scheduling. Tools may
-inspect files during implementation or integration, but overlap alone creates
-no dependency.
-
-If coordination sources disagree, tools should say which sources conflict and
-offer a plain-language override or repair. Do not add coordination diagnostics
-to human-authored fields; the phrase `split-brain` came from an ad hoc prompt,
-not a canonical project field.
-The workflow must also remain usable in single-operator repositories with no
-coordination backend.
-
 ## Initial Operating Design
 
 ### Human-attention queue
@@ -424,6 +413,7 @@ Agent run: Codex on M5 — active — <task link>
 - Workflow at prompt creation: <version or UNKNOWN>
 - Workflow observed by worker: <version or UNKNOWN>
 - Branch and PR: <values or pending>
+- Resolved merge authority: <auto or ask>
 - State: <launch-pending, active, waiting, blocked, PR-ready, or completed>
 - Outcome: <pending, merged, closed, failed, or reverted>
 - Promotion/release authority: <not granted or separately authorized reference>
@@ -699,9 +689,17 @@ pilot.
 
 ## Launch Order
 
-Start T1, T2, T3, every T4 audit, T5, T7, T8, T9, T10, T11, and T12 at the
-same time. Their prompts state what can proceed immediately and what must poll a
-documented GitHub dependency. T6 is deliberately parked.
+Create and prompt T1, T2, T3, every T4 audit, T5, T7, T8, T9, T10, T11, and
+T12 at the same time so every authorized task is visible and traceable. Begin
+active execution only up to the operator's target and the host's actual
+capacity. A host that queues tasks may create the whole set immediately without
+claiming every task is consuming an active worker slot. A host without a
+separate queue treats its creation limit as the capacity limit.
+
+Each prompt states what can proceed immediately and what must wait for a
+documented GitHub dependency. A dependency-waiting task completes independent
+preparation first, then yields or releases its active slot when the host supports
+that behavior. T6 is deliberately parked.
 
 No task should use file overlap as a launch blocker. No task should ask the
 maintainer for routine scope expansion while the six-hour unattended interval
