@@ -3946,21 +3946,18 @@ Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
 
 Derive the identity with the trusted pack helper; do not invent or hand-edit a
-digest. Resolve the helper in this same shell: reuse an already authenticated
-trusted-base materialization when present, otherwise bind it to the loaded
-current `pr-batch` skill directory supplied as `PR_BATCH_SKILL_DIR`. Do not
-learn that fallback from the candidate checkout or its repo-local `.agents`
-copy. A missing or non-executable helper, or a failed derivation, is `UNKNOWN`
-and stops the gate:
+digest. In this same shell, first bind `TRUSTED_PR_BATCH_SKILL_DIR` through one
+of the authenticated runtime routes defined above: an exact trusted-base
+materialization outside the candidate checkout, or an independently verified
+current/installed Agent Workflows pack. The ordinary `PR_BATCH_SKILL_DIR`
+resolution chain is not a trust claim and must not supply this helper because
+it permits a repo-local candidate `.agents` copy. A missing or non-executable
+trusted helper, or a failed derivation, is `UNKNOWN` and stops the gate:
 
 ```bash
 if [ -z "${TRUSTED_PR_BATCH_SKILL_DIR:-}" ]; then
-  if [ -n "${PR_BATCH_SKILL_DIR:-}" ]; then
-    TRUSTED_PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR}"
-  else
-    printf '%s\n' "UNKNOWN: trusted diff-identity helper is unavailable" >&2
-    exit 1
-  fi
+  printf '%s\n' "UNKNOWN: trusted diff-identity helper is unavailable" >&2
+  exit 1
 fi
 DIFF_IDENTITY_HELPER="${TRUSTED_PR_BATCH_SKILL_DIR}/bin/diff-identity"
 if [ ! -x "${DIFF_IDENTITY_HELPER}" ]; then
