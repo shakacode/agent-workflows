@@ -3955,7 +3955,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end)
   end
 
-  def test_check_suite_inventory_fails_closed_when_suite_set_changes_during_materialization
+  def test_check_suite_inventory_fails_closed_when_queued_placeholder_appears_during_materialization
     head = "a" * 40
     initial_suite = {
       "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
@@ -3964,7 +3964,8 @@ class PrCiReadinessCliTest < Minitest::Test
     }
     late_suite = initial_suite.merge(
       "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
-      "status" => "in_progress", "conclusion" => nil, "latest_check_runs_count" => 0
+      "app" => { "id" => 19, "slug" => "dormant-app" },
+      "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
     )
     suite_fetches = 0
     runner = PrCiReadiness::Runner.new
@@ -4310,7 +4311,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_empty_queued_check_suite_without_published_checks_fails_closed
+  def test_stable_queued_check_suite_without_published_checks_is_an_authenticated_placeholder
     head = "a" * 40
     runner = PrCiReadiness::Runner.new
     runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
@@ -4328,9 +4329,37 @@ class PrCiReadinessCliTest < Minitest::Test
 
     rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
 
+    assert complete, error
+    assert_empty rows
+    assert_nil error
+  end
+
+  def test_queued_placeholder_materializing_a_run_fails_suite_snapshot_continuity
+    head = "a" * 40
+    placeholder = {
+      "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
+      "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
+    }
+    materialized = placeholder.merge("status" => "in_progress", "latest_check_runs_count" => 1)
+    suite_fetches = 0
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        suite_fetches += 1
+        [suite_fetches == 1 ? placeholder : materialized]
+      else
+        []
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
     refute complete
     assert_empty rows
-    assert_includes error, "latest-run inventory was empty"
+    assert_includes error, "changed during run materialization"
+    assert_equal 2, suite_fetches
   end
 
   def test_empty_nonqueued_or_malformed_check_suite_is_not_complete

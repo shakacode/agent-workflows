@@ -696,8 +696,11 @@ only app/name, that multiplicity cannot receive an optional disposition.
 A missing or null retry timestamp, malformed timestamp, or tie is `UNKNOWN`.
 Every suite also requires a recognized status/conclusion pair and an exact
 `latest_check_runs_count` materialized by the paginated latest-run response.
-Any zero-run, mismatched, or phase-contradictory suite is `UNKNOWN`; a queued
-suite with no published checks cannot prove readiness.
+A stable queued zero-run suite is retained in the authenticated first/final
+suite snapshots as a dormant-app placeholder and emits no check row. A new or
+changed placeholder, any other zero-run suite, a count mismatch, or a
+phase-contradictory suite is `UNKNOWN`; required and explicitly requested
+pending evidence still blocks through its authoritative scope.
 
 When a hosted workflow outside the ordinary GitHub check scopes is explicitly
 selected, add its exact `{provider, run_id}` to merge-context

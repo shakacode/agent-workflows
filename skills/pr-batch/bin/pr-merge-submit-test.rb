@@ -1752,6 +1752,19 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  def test_placeholder_appearance_or_materialization_after_assessment_stops_before_mutation
+    %i[late_queued_placeholder placeholder_gains_run].each do |transition|
+      result, log = run_cli(
+        mode: "direct", receipt_mode: :optional_held,
+        merge_submission: { "mode" => "direct" }, ci_transition: transition
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, transition
+      assert_includes result.fetch(:stderr), "check suites or runs changed", transition
+      refute_includes log, "mergePullRequest", transition
+    end
+  end
+
   def test_commit_status_change_during_final_inventory_stops_every_submission_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
@@ -1844,7 +1857,7 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def test_every_unmaterialized_suite_blocks_every_submission_route
+  def test_stable_queued_placeholder_is_ignored_but_other_unmaterialized_suites_block_every_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
       queue: [merge_queue_policy, "enqueuePullRequest"],
@@ -1852,7 +1865,6 @@ class PrMergeSubmitTest < Minitest::Test
       guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
     }
     transitions = %i[
-      empty_suite_queued
       empty_suite_requested empty_suite_in_progress
       empty_suite_waiting empty_suite_pending empty_suite_unknown
       empty_suite_malformed_conclusion empty_suite_malformed_count
@@ -1861,9 +1873,9 @@ class PrMergeSubmitTest < Minitest::Test
     routes.each do |mode, (merge_submission, mutation)|
       ready, ready_log = run_cli(
         mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
-        ci_transition: :success
+        ci_transition: :empty_suite_queued
       )
-      assert ready.fetch(:status).success?, "#{mode}/completed-ready: #{ready.fetch(:stderr)}"
+      assert ready.fetch(:status).success?, "#{mode}/queued-placeholder: #{ready.fetch(:stderr)}"
       assert_ci_refresh_immediately_precedes_mutation(ready_log, mutation)
 
       transitions.each do |transition|
@@ -1878,6 +1890,26 @@ class PrMergeSubmitTest < Minitest::Test
         assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
       end
     end
+  end
+
+  def test_queued_placeholder_does_not_override_required_or_requested_pending_evidence
+    required, required_log = run_cli(
+      mode: "direct", receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" },
+      ci_transition: :empty_suite_queued_required_pending
+    )
+    assert_equal 1, required.fetch(:status).exitstatus
+    assert_includes required.fetch(:stderr), "required_status_check_rollup"
+    refute_includes required_log, "mergePullRequest"
+
+    requested, requested_log = run_cli(
+      mode: "direct", receipt_mode: :optional_held_requested,
+      merge_submission: { "mode" => "direct" }, requested_hosted_runs: %w[42 43],
+      ci_transition: :empty_suite_queued_requested_pending
+    )
+    assert_equal 1, requested.fetch(:status).exitstatus
+    assert_includes requested.fetch(:stderr), "current CI evidence does not currently qualify"
+    refute_includes requested_log, "mergePullRequest"
   end
 
   def test_sole_successful_replacement_is_accepted_with_final_ordering_on_every_route
@@ -3183,7 +3215,8 @@ class PrMergeSubmitTest < Minitest::Test
       if ARGV[0, 3] == ["pr", "checks", "42"]
         state, bucket = case transition
                         when :required_failure then ["FAILURE", "fail"]
-                        when :required_pending then ["PENDING", "pending"]
+                        when :required_pending, :empty_suite_queued_required_pending
+                          ["PENDING", "pending"]
                         else ["SUCCESS", "pass"]
                         end
         puts JSON.generate([
@@ -3209,9 +3242,11 @@ class PrMergeSubmitTest < Minitest::Test
       end
       if requested_run_endpoint
         run_id = requested_run_endpoint[%r{/runs/(\\d+)\\z}, 1].to_i
+        requested_pending = transition == :empty_suite_queued_requested_pending && run_id == 42
         puts JSON.generate(
           "id" => run_id, "name" => "requested-\#{run_id}", "head_sha" => #{head.inspect},
-          "status" => "completed", "conclusion" => "success",
+          "status" => requested_pending ? "in_progress" : "completed",
+          "conclusion" => requested_pending ? nil : "success",
           "html_url" => "https://#{HOST}/#{repo}/actions/runs/\#{run_id}"
         )
         exit 0
@@ -3490,8 +3525,14 @@ class PrMergeSubmitTest < Minitest::Test
                                          end
           )
         end
+        suite_inventory_reads = File.read(ENV.fetch("GH_LOG")).scan("/check-suites?").length
+        late_placeholder = suite_inventory_reads > 3
         empty_suite_status = {
           empty_suite_queued: "queued",
+          empty_suite_queued_required_pending: "queued",
+          empty_suite_queued_requested_pending: "queued",
+          late_queued_placeholder: late_placeholder ? "queued" : nil,
+          placeholder_gains_run: late_placeholder ? "in_progress" : "queued",
           empty_suite_requested: "requested",
           empty_suite_in_progress: "in_progress",
           empty_suite_waiting: "waiting",
@@ -3517,6 +3558,8 @@ class PrMergeSubmitTest < Minitest::Test
                                             "1"
                                           elsif transition == :empty_suite_count_mismatch
                                             1
+                                          elsif transition == :placeholder_gains_run && late_placeholder
+                                            1
                                           else
                                             0
                                           end
@@ -3533,6 +3576,15 @@ class PrMergeSubmitTest < Minitest::Test
             next unless suite.fetch("id") == suite_id
 
             row.merge("check_suite" => { "id" => suite_id }, "app" => suite.fetch("app"))
+          end
+          if transition == :placeholder_gains_run && late_placeholder && suite_id == 899
+            suite_runs = [{
+              "id" => 990, "name" => "dormant-build", "head_sha" => #{current_check_head.inspect},
+              "status" => "in_progress", "conclusion" => nil,
+              "started_at" => "2026-08-25T12:31:00Z", "html_url" => "",
+              "check_suite" => { "id" => 899 },
+              "app" => { "id" => 999, "slug" => "empty-suite-app" }
+            }]
           end
           suite_total = if %i[pagination_success incomplete_inventory].include?(transition)
                           total_count

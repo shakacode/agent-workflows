@@ -722,7 +722,7 @@ module PrCiReadiness
       result
     end
 
-    def authenticated_actions_snapshot(repo:, pr_number:, host:)
+    def authenticated_ci_snapshot(repo:, pr_number:, host:)
       resolved_host = resolve_host!(host)
       @gh_env = { "GH_HOST" => resolved_host }
       resolved_repo = resolve_repo!(repo)
@@ -731,12 +731,19 @@ module PrCiReadiness
       rows, complete, error, = fetch_exact_head_actions(resolved_repo, target_pr)
       raise Error, error unless complete
 
+      _check_runs, checks_complete, checks_error, check_inventory =
+        fetch_exact_head_check_runs(resolved_repo, target_pr.fetch(:head_sha))
+      raise Error, checks_error unless checks_complete
+
       final_target_pr = fetch_target_pr_identity(resolved_repo, validated_pr, require_base: true)
       unless same_target_pr_identity?(target_pr, final_target_pr)
-        raise Error, "target PR identity moved during final Actions inventory"
+        raise Error, "target PR identity moved during final CI inventory"
       end
 
-      { "head_sha" => target_pr.fetch(:head_sha), "rows" => rows }
+      {
+        "head_sha" => target_pr.fetch(:head_sha), "actions_rows" => rows,
+        "check_inventory" => check_inventory
+      }
     end
 
     private
@@ -1008,6 +1015,8 @@ module PrCiReadiness
         "ordinary_verdict" => ordinary_verdict,
         "scopes" => scopes
       )
+      merged["authenticated_check_inventory"] = inventory.fetch(:check_inventory_snapshot) if
+        inventory.fetch(:check_inventory_snapshot).is_a?(Hash)
       merged["ci_policy"] = trusted_ci_policy if trusted_ci_policy
       merged
     end
@@ -1122,7 +1131,8 @@ module PrCiReadiness
       errors["github_actions"] = actions_error if actions_error
       errors["dependabot"] = actions_error if actions_error
 
-      check_runs, check_runs_complete, check_runs_error = fetch_exact_head_check_runs(repo, head_sha)
+      check_runs, check_runs_complete, check_runs_error, check_inventory_snapshot =
+        fetch_exact_head_check_runs(repo, head_sha)
       if check_runs_error
         errors["github_actions"] = [errors["github_actions"], check_runs_error].compact.join("; ")
         errors["dependabot"] = [errors["dependabot"], check_runs_error].compact.join("; ")
@@ -1140,6 +1150,7 @@ module PrCiReadiness
 
       {
         actions_rows:, actions_complete:, check_runs:, check_runs_complete:,
+        check_inventory_snapshot:,
         statuses:, statuses_complete:, errors:,
         required_complete: true
       }
@@ -1239,6 +1250,11 @@ module PrCiReadiness
         raise Error, "check-run inventory changed during final verification"
       end
 
+      check_inventory_snapshot = {
+        "check_suites" => initial_suite_snapshot,
+        "check_runs" => canonical_materialized_check_run_snapshot(rows)
+      }
+
       duplicate_ids = rows.group_by { |row, _created_at| row["id"] }
                           .any? { |_id, matches| matches.length > 1 }
       raise Error, "latest check-run inventory repeated an id" if duplicate_ids
@@ -1274,9 +1290,9 @@ module PrCiReadiness
       end
       rows = selected_rows.map(&:first)
 
-      [rows, true, nil]
+      [rows, true, nil, check_inventory_snapshot]
     rescue StandardError => e
-      [[], false, "exact-head check-run inventory failed: #{e.message}"]
+      [[], false, "exact-head check-run inventory failed: #{e.message}", nil]
     end
 
     def validate_check_suites(suites, head_sha)
@@ -1286,7 +1302,7 @@ module PrCiReadiness
     def materialize_check_suite_runs(repo, head_sha, validated_suites)
       suite_ids = {}
       validated_suites.flat_map do |validated_suite|
-        _suite, suite_id, suite_app, suite_created_at, _suite_status, _suite_conclusion, latest_count =
+        _suite, suite_id, suite_app, suite_created_at, suite_status, _suite_conclusion, latest_count =
           validated_suite
         raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
 
@@ -1297,7 +1313,7 @@ module PrCiReadiness
         ).map do |row|
           normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
         end
-        validate_check_suite_materialization!(suite_rows, latest_count:)
+        validate_check_suite_materialization!(suite_rows, status: suite_status, latest_count:)
         suite_rows.map { |row| [row, suite_created_at, suite_id] }
       end
     end
@@ -1347,8 +1363,10 @@ module PrCiReadiness
       [suite_id, app, created_at, status, conclusion, latest_count]
     end
 
-    def validate_check_suite_materialization!(rows, latest_count:)
+    def validate_check_suite_materialization!(rows, status:, latest_count:)
       if latest_count.zero?
+        return if rows.empty? && status == "queued"
+
         raise Error, "check suite latest-run inventory was empty and cannot prove readiness"
       end
       return if rows.length == latest_count
@@ -1357,6 +1375,8 @@ module PrCiReadiness
     end
 
     def validate_check_suite_phase!(rows, status:, conclusion:)
+      return if rows.empty? && status == "queued"
+
       if status == "completed"
         raise Error, "completed check suite contained a nonterminal latest run" unless
           rows.all? { |row| row["status"] == "completed" }
