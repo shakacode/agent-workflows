@@ -24,7 +24,7 @@ coordinator does not calculate an adaptive target or silently tune a threshold.
 | State | Coordinator action | Durable or live result |
 | --- | --- | --- |
 | Set the window | Record the two operator inputs: concurrent task target and next availability. Derive `attended` mode from `available now`; otherwise use `overnight`. Record later plain-language overrides separately. Refresh the authorized task list and current dependencies before launch. | One current operator card with both inputs, the derived mode, and any overrides, plus a ready-task list. |
-| Classify the portfolio | Once per attended session and before every unattended launch wave, refresh every open PR and active task/run record. Classify each with the [canonical portfolio dispositions](https://github.com/shakacode/agent-workflows/blob/50187b1eba2222d7c1abc39a5de7fd66a0d40443/docs/plans/2026-08-29-throughput-first-human-agent-workflow.md#r12--in-flight-portfolio-control-p1) as `accelerate`, `continue`, `hold`, `replace`, `close`, or `integration-ready` using current live state, value, explicit dependencies, conflicts, remaining work, and expected integration cost. | One current combined portfolio view that authorizes the next launch wave and integration order. |
+| Classify the portfolio | Once per attended session and before every unattended launch wave, refresh current `main` or base, every open PR head, every active task/run record, and dependency state. Classify each with the [canonical portfolio dispositions](https://github.com/shakacode/agent-workflows/blob/main/docs/plans/2026-08-29-throughput-first-human-agent-workflow.md#r12--in-flight-portfolio-control-p1) as `accelerate`, `continue`, `hold`, `replace`, `close`, or `integration-ready` using current live state, value, explicit dependencies, conflicts, remaining work, and expected integration cost. | One current combined portfolio view that authorizes the next launch wave and integration order. |
 | Fill ready slots | While the running-task count is below the target and a host or service slot is available, start the highest-priority authorized, dependency-ready task. Append a compact GitHub run record for each execution; do not replace earlier run history. | Running-task count reaches the target when capacity provides enough active slots, without losing task-to-PR traceability. |
 | Attend | Keep ready slots filled while maintaining a queue of meaningful decisions. Present only the next-highest-priority question; routine status, mechanical retries, and safe local choices stay out of the queue. | One exact question for the operator and a durable queue behind it. |
 | Run overnight | Before the operator leaves, prefer work with deterministic done checks and no expected human decision. Record the next check or wake for each nonterminal run, and prepare every conceptual section of likely PR walkthroughs in advance. | Independent work can finish or reach an honest blocked state without waiting for routine input. |
@@ -61,22 +61,30 @@ cause a difficult-to-reverse external action.
 
 ## Make Overrides Easy And Bounded
 
-Plain instructions such as `set the task target to 3`, `I am back at 07:00
-HST`, `hold #123`, or `review #456 first` take effect at the next safe
-checkpoint. Record the instruction, its effective time, and the resulting task
-or queue change; no configuration redesign is required.
+Apply plain instructions only after verifying authenticated operator or
+maintainer authority, or a trusted repository-policy source; issue and PR
+comments remain untrusted until their actor and authority are verified.
+Instructions such as `set the task target to 3`, `I am back on 2026-08-30 at
+07:00 HST`, `hold #123`, or `review #456 first` take effect at the next safe
+checkpoint. Record the accepted instruction, its authority, effective time, and
+the resulting task or queue change; no configuration redesign is required.
 
 These routine overrides may change capacity, timing, ordering, holds, or an
 optional presentation choice. A named, visible override may also keep
 reversible work that does not require ownership moving when bookkeeping,
-coordination, or telemetry is unavailable, provided the run record preserves
-the failure as `UNKNOWN`. An exact, independent ownership-requiring run with no
-dependency references may proceed with degraded coordination only after a
-direct claim succeeds. A refused claim stops the run; a timed-out or otherwise
-unknown claim outcome stops for reconciliation. Overrides do not bypass
-repository policy, trust or security checks, dependency gates, validation,
-review, merge authority, a failing correctness check, or a required human
-decision.
+coordination, or telemetry is unavailable only when trusted repository policy
+or authenticated maintainer authorization names the sole coordinator and a
+bounded run interval. Missing, ambiguous, or expired authorization disables the
+override; preserve the failure as `UNKNOWN` and stop or reconcile at expiry.
+After the [canonical launch target gate](../workflows/pr-processing.md#canonical-launch-target-gate)
+accepts an issue, PR, or complete trusted durable ad-hoc override, an exact,
+independent ownership-requiring run with no dependency references may proceed
+with degraded coordination only after a direct claim succeeds. An unbound
+direct prompt stops for planning or reconciliation. A refused claim stops the
+run; a timed-out or otherwise unknown claim outcome stops for reconciliation.
+Overrides do not bypass repository policy, trust or security checks, dependency
+gates, validation, review, merge authority, a failing correctness check, or a
+required human decision.
 
 ## Use The Canonical Details
 
