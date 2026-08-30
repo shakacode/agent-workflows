@@ -509,11 +509,11 @@ class PrCiReadinessTest < Minitest::Test
   def test_optional_policy_does_not_disposition_duplicate_provider_identity_with_distinct_ids
     head = "a" * 40
     held = {
-      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "kind" => "check_run", "id" => 31, "suite_id" => 10, "name" => "storybook-review-app",
       "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
       "app_slug" => "circleci-checks", "dependabot" => false
     }
-    replacement = held.merge("id" => 32)
+    replacement = held.merge("id" => 32, "suite_id" => 20)
     policy = {
       "version" => 1,
       "optional_approval_held_checks" => [
@@ -3829,7 +3829,7 @@ class PrCiReadinessCliTest < Minitest::Test
     assert_equal 2, run_fetches
   end
 
-  def test_check_suite_inventory_rejects_same_name_rows_from_distinct_suites
+  def test_check_suite_inventory_preserves_same_name_rows_from_distinct_suites
     head = "a" * 40
     %w[success failure].each do |latest_conclusion|
       runner = PrCiReadiness::Runner.new
@@ -3872,9 +3872,10 @@ class PrCiReadinessCliTest < Minitest::Test
 
       rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
 
-      refute complete, latest_conclusion
-      assert_empty rows, latest_conclusion
-      assert_includes error, "distinct check suites", latest_conclusion
+      assert complete, "#{latest_conclusion}: #{error}"
+      assert_nil error, latest_conclusion
+      assert_equal [100, 200], rows.map { |row| row.fetch("id") }.sort, latest_conclusion
+      assert_equal [10, 20], rows.map { |row| row.fetch("suite_id") }.sort, latest_conclusion
     end
   end
 
@@ -3932,7 +3933,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_check_suite_inventory_does_not_treat_cross_suite_rerequest_as_retry_lineage
+  def test_check_suite_inventory_preserves_cross_suite_rerequest_as_distinct_evidence
     head = "a" * 40
     {
       running: ["in_progress", nil],
@@ -3973,19 +3974,20 @@ class PrCiReadinessCliTest < Minitest::Test
 
       rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
 
-      refute complete, label
-      assert_empty rows, label
-      assert_includes error, "distinct check suites", label
+      assert complete, "#{label}: #{error}"
+      assert_nil error, label
+      assert_equal [100, 200], rows.map { |row| row.fetch("id") }.sort, label
+      assert_equal [10, 20], rows.map { |row| row.fetch("suite_id") }.sort, label
     end
   end
 
-  def test_check_suite_inventory_rejects_invalid_or_cross_suite_chronology
+  def test_check_suite_inventory_validates_suite_chronology_without_cross_suite_retry_inference
     head = "a" * 40
     {
-      missing_suite_created_at: [nil, "2026-08-25T12:00:00Z", /created_at/],
-      missing_run_started_at: ["2026-08-25T12:00:00Z", nil, /distinct check suites/],
-      tied_run_started_at: ["2026-08-25T12:00:00Z", "2026-08-25T11:00:00Z", /distinct check suites/]
-    }.each do |label, (second_created_at, second_started_at, error_pattern)|
+      missing_suite_created_at: [nil, "2026-08-25T12:00:00Z", false],
+      missing_run_started_at: ["2026-08-25T12:00:00Z", nil, true],
+      tied_run_started_at: ["2026-08-25T12:00:00Z", "2026-08-25T11:00:00Z", true]
+    }.each do |label, (second_created_at, second_started_at, expected_complete)|
       runner = PrCiReadiness::Runner.new
       runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
         _validate_page = validate_page
@@ -4015,15 +4017,45 @@ class PrCiReadinessCliTest < Minitest::Test
 
       rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
 
-      refute complete, label
-      assert_empty rows, label
-      assert_match error_pattern, error, label
+      if expected_complete
+        assert complete, "#{label}: #{error}"
+        assert_nil error, label
+        assert_equal [100, 200], rows.map { |row| row.fetch("id") }.sort, label
+        assert_equal [10, 20], rows.map { |row| row.fetch("suite_id") }.sort, label
+      else
+        refute complete, label
+        assert_empty rows, label
+        assert_match(/created_at/, error, label)
+      end
     end
   end
 
-  def test_empty_nonterminal_or_malformed_check_suite_is_not_complete
+  def test_empty_queued_check_suite_without_published_checks_is_ignored
     head = "a" * 40
-    %w[queued requested in_progress waiting pending UNKNOWN].each do |suite_status|
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        [{
+          "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+          "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
+          "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
+        }]
+      else
+        []
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    assert complete, error
+    assert_empty rows
+    assert_nil error
+  end
+
+  def test_empty_nonqueued_or_malformed_check_suite_is_not_complete
+    head = "a" * 40
+    %w[requested in_progress waiting pending UNKNOWN].each do |suite_status|
       runner = PrCiReadiness::Runner.new
       runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
         _validate_page = validate_page

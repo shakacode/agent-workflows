@@ -286,6 +286,29 @@ class MergeAssuranceTest < Minitest::Test
     assert_includes result.fetch("failures"), "ci_result scope other declared READY but recomputed NOT_READY"
   end
 
+  def test_optional_policy_cannot_disposition_same_provider_identity_across_distinct_suites
+    trusted_policy = optional_held_policy
+    ci_result = optional_held_ci(trusted_policy)
+    held = ci_result.dig("scopes", "other", "rows", 0)
+    held["suite_id"] = 10
+    ci_result.dig("scopes", "other", "rows") << held.merge("id" => 32, "suite_id" => 20)
+    disposition = ci_result.dig("scopes", "other", "policy_dispositions", 0)
+    ci_result.dig("scopes", "other", "policy_dispositions") << disposition.merge("id" => 32)
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      trusted_ci_policy: trusted_policy,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result scope other policy disposition matches ambiguous check-run provider identity"
+    assert_includes result.fetch("failures"), "ci_result scope other declared READY but recomputed NOT_READY"
+  end
+
   def test_check_run_identity_cannot_appear_in_multiple_scopes
     trusted_policy = optional_held_policy
     ci_result = optional_held_ci(trusted_policy)
@@ -303,6 +326,54 @@ class MergeAssuranceTest < Minitest::Test
     refute result.fetch("eligible")
     assert_includes result.fetch("failures"),
                     "ci_result repeats a check-run identity across scopes or rows"
+  end
+
+  def test_same_provider_check_name_from_distinct_suites_is_valid_general_evidence
+    ci_result = ready_ci
+    rows = [
+      {
+        "kind" => "check_run", "id" => 31, "suite_id" => 10, "name" => "build",
+        "status" => "completed", "conclusion" => "success",
+        "app_slug" => "ci-app", "dependabot" => false
+      },
+      {
+        "kind" => "check_run", "id" => 32, "suite_id" => 20, "name" => "build",
+        "status" => "completed", "conclusion" => "success",
+        "app_slug" => "ci-app", "dependabot" => false
+      }
+    ]
+    ci_result.fetch("scopes").fetch("other").merge!("state" => "READY", "rows" => rows)
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert result.fetch("eligible"), result.inspect
+  end
+
+  def test_check_run_requires_an_authenticated_suite_identity
+    ci_result = ready_ci
+    ci_result.fetch("scopes").fetch("other").merge!(
+      "state" => "READY",
+      "rows" => [{
+        "kind" => "check_run", "id" => 31, "name" => "build",
+        "status" => "completed", "conclusion" => "success",
+        "app_slug" => "ci-app", "dependabot" => false
+      }]
+    )
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci_result check-run suite identity is invalid"
   end
 
   def test_optional_policy_cannot_hide_an_actively_running_check
@@ -4780,7 +4851,7 @@ class MergeAssuranceTest < Minitest::Test
   def optional_held_ci(policy)
     result = ready_ci
     held = {
-      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "kind" => "check_run", "id" => 31, "suite_id" => 10, "name" => "storybook-review-app",
       "status" => "in_progress", "conclusion" => nil,
       "started_at" => nil,
       "app_slug" => "circleci-checks", "dependabot" => false

@@ -1156,14 +1156,10 @@ module PrCiReadiness
                           .any? { |_id, matches| matches.length > 1 }
       raise Error, "latest check-run inventory repeated an id" if duplicate_ids
 
-      rows_by_name = rows.group_by do |row, _created_at, _suite_id|
-        row.values_at("app_slug", "name")
+      rows_by_suite_and_name = rows.group_by do |row, _created_at, suite_id|
+        [suite_id, *row.values_at("app_slug", "name")]
       end
-      selected_rows = rows_by_name.map do |identity, attempts|
-        suite_ids = attempts.map { |_row, _created_at, suite_id| suite_id }.uniq
-        if suite_ids.length != 1
-          raise Error, "latest check-run inventory repeated #{identity.join('/')} across distinct check suites"
-        end
+      selected_rows = rows_by_suite_and_name.map do |identity, attempts|
         next attempts.first if attempts.length == 1
 
         attempts_with_times = attempts.map do |attempt|
@@ -1203,7 +1199,7 @@ module PrCiReadiness
     def materialize_check_suite_runs(repo, head_sha, validated_suites)
       suite_ids = {}
       validated_suites.flat_map do |validated_suite|
-        _suite, suite_id, suite_app, suite_created_at, _suite_status, _suite_conclusion, latest_count =
+        _suite, suite_id, suite_app, suite_created_at, suite_status, _suite_conclusion, latest_count =
           validated_suite
         raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
 
@@ -1214,7 +1210,7 @@ module PrCiReadiness
         ).map do |row|
           normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
         end
-        validate_check_suite_materialization!(suite_rows, latest_count:)
+        validate_check_suite_materialization!(suite_rows, latest_count:, status: suite_status)
         suite_rows.map { |row| [row, suite_created_at, suite_id] }
       end
     end
@@ -1264,8 +1260,10 @@ module PrCiReadiness
       [suite_id, app, created_at, status, conclusion, latest_count]
     end
 
-    def validate_check_suite_materialization!(rows, latest_count:)
+    def validate_check_suite_materialization!(rows, latest_count:, status:)
       if latest_count.zero?
+        return if rows.empty? && status == "queued"
+
         raise Error, "check suite latest-run inventory was empty and cannot prove readiness"
       end
       return if rows.length == latest_count
@@ -1274,6 +1272,8 @@ module PrCiReadiness
     end
 
     def validate_check_suite_phase!(rows, status:, conclusion:)
+      return if rows.empty? && status == "queued"
+
       if status == "completed"
         raise Error, "completed check suite contained a nonterminal latest run" unless
           rows.all? { |row| row["status"] == "completed" }
@@ -1334,7 +1334,8 @@ module PrCiReadiness
         "kind" => "check_run", "id" => run_id, "name" => name,
         "status" => status, "conclusion" => conclusion,
         "url" => row["html_url"].to_s, "head_sha" => head_sha,
-        "app_slug" => app["slug"], "dependabot" => dependabot_attributed?(row),
+        "app_slug" => app["slug"], "suite_id" => suite_id,
+        "dependabot" => dependabot_attributed?(row),
         "started_at" => started_at
       }
     end

@@ -1821,7 +1821,7 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def test_empty_or_unmaterialized_check_suite_blocks_every_submission_route
+  def test_queued_empty_suite_is_ignored_but_other_unmaterialized_suites_block_every_submission_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
       queue: [merge_queue_policy, "enqueuePullRequest"],
@@ -1829,7 +1829,7 @@ class PrMergeSubmitTest < Minitest::Test
       guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
     }
     transitions = %i[
-      empty_suite_queued empty_suite_requested empty_suite_in_progress
+      empty_suite_requested empty_suite_in_progress
       empty_suite_waiting empty_suite_pending empty_suite_unknown
       empty_suite_malformed_conclusion empty_suite_malformed_count
       empty_suite_count_mismatch empty_suite_completed
@@ -1841,6 +1841,13 @@ class PrMergeSubmitTest < Minitest::Test
       )
       assert ready.fetch(:status).success?, "#{mode}/completed-ready: #{ready.fetch(:stderr)}"
       assert_ci_refresh_immediately_precedes_mutation(ready_log, mutation)
+
+      queued, queued_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        ci_transition: :empty_suite_queued
+      )
+      assert queued.fetch(:status).success?, "#{mode}/empty-suite-queued: #{queued.fetch(:stderr)}"
+      assert_ci_refresh_immediately_precedes_mutation(queued_log, mutation)
 
       transitions.each do |transition|
         result, log, guard_log = run_cli(
@@ -2648,7 +2655,7 @@ class PrMergeSubmitTest < Minitest::Test
       raise "optional-held receipt fixture needs a policy" unless trusted_ci_policy
 
       held = {
-        "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+        "kind" => "check_run", "id" => 31, "suite_id" => 801, "name" => "storybook-review-app",
         "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
         "app_slug" => "circleci-checks", "dependabot" => false
       }

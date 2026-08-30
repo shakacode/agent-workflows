@@ -425,9 +425,13 @@ module MergeAssurance
 
       scope["rows"].select { |row| row.is_a?(Hash) && row["kind"] == "check_run" }
     end
+    invalid_suite_identity = check_runs.any? do |row|
+      !row["suite_id"].is_a?(Integer) || !row["suite_id"].positive?
+    end
+    failures << "ci_result check-run suite identity is invalid" if invalid_suite_identity
     duplicate_id = check_runs.group_by { |row| row["id"] }.any? { |_identity, rows| rows.length > 1 }
     check_runs_by_name = check_runs.group_by do |row|
-      row.values_at("app_slug", "name")
+      row.values_at("suite_id", "app_slug", "name")
     end
     duplicate_name = check_runs_by_name.any? { |_identity, rows| rows.length > 1 }
     return unless duplicate_id || duplicate_name
@@ -615,6 +619,9 @@ module MergeAssurance
 
     expected_keys = %w[app_slug disposition id kind name rule_id]
     rules = authenticated_policy&.fetch("optional_approval_held_checks", []) || []
+    provider_identity_counts = scope.fetch("rows", []).filter_map do |row|
+      PrCiReadiness.check_run_identity(row)
+    end.tally
     valid = []
     seen_rows = {}
     dispositions.each do |disposition|
@@ -635,6 +642,11 @@ module MergeAssurance
       end
       if matching_rows.length > 1
         failures << "ci_result scope other policy disposition matches duplicate check-run identity"
+        next
+      end
+      provider_identity = disposition.values_at("kind", "app_slug", "name")
+      if provider_identity_counts[provider_identity].to_i > 1
+        failures << "ci_result scope other policy disposition matches ambiguous check-run provider identity"
         next
       end
       row = matching_rows.first

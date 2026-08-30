@@ -680,11 +680,14 @@ evidence remains blocking.
 The final check-run inventory paginates exact-head check suites and each suite's
 latest runs. Competing attempts with the same `(app_slug, name)` may use
 strictly validated run `started_at` chronology only within one authenticated
-suite; the identity appearing in distinct suites is `UNKNOWN`. A missing or
-null value, malformed timestamp, or tie is also `UNKNOWN`.
-Every suite also requires a recognized status/conclusion pair and a positive
-`latest_check_runs_count` exactly materialized by the paginated latest-run
-response. Zero-run, mismatched, or phase-contradictory suites are `UNKNOWN`.
+suite. Preserve the same app/name from distinct authenticated suites as
+distinct general readiness evidence; because optional-policy rules identify
+only app/name, that multiplicity cannot receive an optional disposition.
+A missing or null retry timestamp, malformed timestamp, or tie is `UNKNOWN`.
+Every suite also requires a recognized status/conclusion pair and an exact
+`latest_check_runs_count` materialized by the paginated latest-run response.
+Ignore a queued suite with zero published checks as incidental. Other zero-run,
+mismatched, or phase-contradictory suites are `UNKNOWN`.
 
 When a hosted workflow outside the ordinary GitHub check scopes is explicitly
 selected, add its exact `{provider, run_id}` to merge-context

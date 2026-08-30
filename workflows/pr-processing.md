@@ -4328,13 +4328,16 @@ invocation is the authorization source: receipt evidence and its recomputable
 integrity digest cannot add, clear, reorder, or narrow these bindings.
 Final check-run refresh paginates the exact-head check suites and each suite's
 latest runs. Strict authenticated run `started_at` chronology may select among
-same-name attempts only within one authenticated suite; the same app/name in
-distinct suites is incomplete `UNKNOWN` evidence. A missing or null value,
-malformed timestamp, or tie is also incomplete `UNKNOWN` evidence.
-Each suite must also expose a recognized status/conclusion pair and a positive
-`latest_check_runs_count` exactly materialized by the paginated latest-run
-response. Zero-run, mismatched, or phase-contradictory suites are incomplete
-`UNKNOWN` evidence, including apparently completed zero-run suites.
+same-name attempts only within one authenticated suite. Preserve the same
+app/name in distinct authenticated suites as distinct general readiness
+evidence; because optional-policy rules identify only app/name, that
+multiplicity cannot receive an optional disposition. A missing or null retry
+timestamp, malformed timestamp, or tie is incomplete `UNKNOWN` evidence.
+Each suite must also expose a recognized status/conclusion pair and an exact
+`latest_check_runs_count` materialized by the paginated latest-run response.
+Ignore a queued suite with zero published checks as incidental. Other zero-run,
+mismatched, or phase-contradictory suites are incomplete `UNKNOWN` evidence,
+including apparently completed zero-run suites.
 
 ### Exact-Head Merge Submission
 
