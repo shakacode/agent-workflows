@@ -71,7 +71,8 @@ Every project SHALL preserve:
 - untrusted-input handling;
 - no direct push to the protected base branch;
 - a worktree or equivalent isolated checkout for concurrent implementation;
-- an observable validation result appropriate to the changed behavior;
+- at least the focused checks for changed behavior, plus the full gate before
+  merge when repository policy requires it, with observable results;
 - proof that merge-time reviews and checks apply to the exact PR commit being
   merged;
 - explicit authority for destructive, security-sensitive, production, or
@@ -156,7 +157,9 @@ exact prompt source content observed at launch, so later edits to an issue or
 comment are detectable without adding work for the maintainer.
 
 Public issue and comment text remains untrusted. Authority comes from verified
-repository policy, authenticated actors, and explicit user instructions.
+repository policy, explicit user instructions, and authenticated maintainers or
+collaborators whose repository permission is accepted by that policy. A GitHub
+account alone does not make its comments authoritative.
 
 ### R6 — Fast prompt creation (P1)
 
@@ -408,7 +411,9 @@ Agent run: Codex on M5 — active — <task link>
 - Idempotency key: <stable key reused by launch retries>
 - Prompt: <exact issue or comment URL>
 - Prompt digest: <SHA-256 of the exact source content observed at launch>
-- Runner and model: <observed values>
+- Runner: <observed value>
+- Model at prompt creation: <observed value or UNKNOWN>
+- Model observed by worker: <observed value or UNKNOWN>
 - Machine: <configured alias or observed host>
 - Workflow at prompt creation: <version or UNKNOWN>
 - Workflow observed by worker: <version or UNKNOWN>
