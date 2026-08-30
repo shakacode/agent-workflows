@@ -2006,7 +2006,8 @@ module AgentWorkflowSeamDoctor
     return [] unless config.key?(CI_READINESS_POLICY_KEY)
 
     duplicate_errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
-      error.start_with?("$.ci_readiness contains duplicate key") ||
+      error == '$ contains duplicate key "ci_readiness"' ||
+        error.start_with?("$.ci_readiness contains duplicate key") ||
         error.start_with?("$.ci_readiness.optional_approval_held_checks[")
     end
     issues = duplicate_errors.map { |error| "invalid ci_readiness policy: #{error}" }
@@ -2028,7 +2029,7 @@ module AgentWorkflowSeamDoctor
         rule["id"].is_a?(String) && rule["id"].match?(CI_READINESS_RULE_ID) &&
         rule["app_slug"].is_a?(String) && rule["app_slug"].match?(CI_READINESS_RULE_ID) &&
         rule["name"].is_a?(String) && !rule["name"].empty? && !rule["name"].match?(/[[:cntrl:]]/) &&
-        rule.values.none? { |value| value.include?("UNKNOWN") }
+        rule["name"] != "UNKNOWN"
     end
     issues << "invalid ci_readiness policy: each rule must contain exact valid app_slug, id, and name strings" unless
       valid_rules

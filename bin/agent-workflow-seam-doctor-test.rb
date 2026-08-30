@@ -716,8 +716,11 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       "uppercase app slug" => [base_rule.merge("app_slug" => "CircleCI"), false],
       "line-feed name" => [base_rule.merge("name" => "storybook\nreview-app"), false],
       "control-byte name" => [base_rule.merge("name" => "storybook\u0007review-app"), false],
+      "exact unknown name" => [base_rule.merge("name" => "UNKNOWN"), false],
       "kebab app slug" => [base_rule, true],
-      "resolved spaced name" => [base_rule.merge("name" => "Storybook review app"), true]
+      "resolved spaced name" => [base_rule.merge("name" => "Storybook review app"), true],
+      "resolved unknown phrase" => [base_rule.merge("name" => "Approval UNKNOWN state"), true],
+      "resolved hyphenated unknown" => [base_rule.merge("name" => "NOT-UNKNOWN"), true]
     }
 
     cases.each do |label, (rule, expected)|
@@ -783,6 +786,34 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       assert_includes out, "invalid ci_readiness policy"
       assert_includes out, "duplicate key \"version\""
     end
+  end
+
+  def test_ci_readiness_rejects_duplicate_top_level_policy_blocks_via_cli
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      nested_policy = ci_readiness_policy.to_yaml.lines.drop(1).map { |line| "  #{line}" }.join
+      yaml = POLICY.merge("ci_readiness" => ci_readiness_policy).to_yaml +
+             "ci_readiness:\n#{nested_policy}"
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid ci_readiness policy"
+      assert_includes out, '$ contains duplicate key "ci_readiness"'
+    end
+  end
+
+  def test_ci_readiness_duplicate_filter_does_not_claim_unrelated_duplicate_keys
+    yaml = POLICY.merge("ci_readiness" => ci_readiness_policy).to_yaml + <<~YAML
+      unrelated_policy:
+        version: 1
+        version: 2
+    YAML
+    config = YAML.safe_load(yaml, aliases: false)
+
+    assert_empty AgentWorkflowSeamDoctor.ci_readiness_policy_issues(config, yaml)
   end
 
   def test_selected_hosted_ci_receipts_rejects_lowercase_credential_names
