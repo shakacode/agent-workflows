@@ -269,8 +269,7 @@ another operator making the same assumption. The override is for a genuinely
 single-operator context; a repository that cannot accept that residual risk
 SHOULD disable it and wait for coordination recovery.
 It SHALL be disabled by default when more than one independent coordinator or
-human operator may act during the outage, including shared/team repositories,
-unless a separate cross-host-visible lease remains available.
+human operator may act during the outage, including shared/team repositories.
 When coordination recovers, the override SHALL reconcile its preserved run ID
 against durable claims for the same issue or PR. It SHALL flag any duplicate for
 an operator decision and prevent both runs from silently continuing as the sole
@@ -300,6 +299,25 @@ Classification uses current live state, value, explicit semantic dependencies,
 conflicts, remaining work, and expected integration cost. Age and sunk tokens
 are context, not priority. Every run refreshes current base/head and dependency
 state rather than relying on yesterday's artifact.
+
+The disposition-to-action map has one meaning everywhere:
+
+- `accelerate`: prioritize and resume one suitable existing task, or create
+  exactly one when none is resumable;
+- `continue`: resume one suitable existing task at normal priority, or create
+  exactly one when none is resumable;
+- `hold`: the parent asks an existing task to checkpoint at a safe boundary and
+  pause or yield when supported; if it cannot, record `waiting` with
+  `hold requested` and the slot still occupied, and require explicit stop
+  authority before forcing termination;
+- `replace`: use R11's terminal-record rule; until the prior run is terminal,
+  treat it as `hold` and do not launch a replacement;
+- `close`: with explicit close/stop authority, the parent asks the task to
+  checkpoint and stop at a safe boundary, verifies that no writer survives, and
+  records the terminal transition; without that authority or enforcement, keep
+  the actual active/occupied state and queue one decision;
+- `integration-ready`: create no implementation worker and place the PR in the
+  integration queue, still subject to exact-head gates and merge authority.
 
 ### R13 — Explicit dependencies; consequence-aware conflicts (P1)
 
@@ -798,15 +816,9 @@ conflicts, explicit issue dependencies, review and CI state, task
 ownership/status, value, and remaining integration cost. Classify each PR and
 task as accelerate, continue, hold, replace, close, or integration-ready and
 recommend an integration order. For each requested lane, also return the
-existing task, if any, and the resulting execution action: `create`, `resume`,
-`hold`, `replace after terminal`, or `no worker`. Map `continue` to resuming
-the existing task rather than creating a duplicate. Map `accelerate` to
-prioritizing and resuming its suitable existing task, or to creating exactly one
-task when none exists. Map `hold` to the existing task's hold action, or to
-`no worker` when none exists. `Close` and `integration-ready` create no worker;
-`replace` creates a worker only after the prior ownership record is terminal.
-File overlap alone is not a dependency. Do not edit, close, merge, or message
-PRs, issues, or tasks.
+existing task, if any, and the resulting action from R12's single
+disposition-to-action map. File overlap alone is not a dependency. Do not edit,
+close, merge, or message PRs, issues, or tasks.
 ```
 
 ### T11 — Simplify conflict and dependency handling
@@ -847,29 +859,19 @@ Do not design adaptive thresholds or require a comparison pilot.
 Create and run T10 first. Its initial live PR/task inventory returns the
 execution action for each requested lane; prompt preparation MAY proceed in
 parallel, but no other task is created or activated until that result is
-available. Apply the operator's authorization only to that filtered execution
-set: resume the named existing tasks, create only lanes marked `create`, and do
-not create duplicates for `continue`, `hold`, `close`, or `integration-ready`.
-An `accelerate` action resumes the suitable existing task or creates exactly one
-when none exists; it never adds a second worker to the same lane. For an existing
-task marked `hold`, the parent asks it to checkpoint at a safe boundary, pause or
-yield when the host supports that behavior, and record its actual task and slot
-state. It never reports a released slot while the worker remains occupied. A
-host that cannot pause or release records `waiting` with `hold requested` and
-the slot still occupied; a force-stop queues one decision unless explicit stop
-authority exists.
-For `replace`, the parent rechecks the prior run. Under explicit operator or
-repository-policy replacement authority, it may append the terminal
-transition—with reason, evidence, authorizer/reference, and replacement run
-ID—only after the run has ended and no writer survives. A healthy prior run or
-missing replacement authority changes the action to `hold` and queues one
-decision instead of launching a duplicate. Then prompt the resulting T1, T2,
-T3, T4, T5, T7, T8, T9, T11, and T12 tasks at the same time so every active or
-queued task is visible and traceable. Begin active execution only up to the
-operator's target and the host's actual capacity. A host that queues tasks may
-create the whole filtered set immediately without claiming every task is
-consuming an active worker slot. A host without a separate queue treats its
-creation limit as the capacity limit.
+available. The parent applies R12's single action map to the operator-authorized
+set; T10 remains read-only. The parent performs the authority-checked `hold`,
+`replace`, and `close` actions, records actual task and slot state, and never
+claims a release or terminal outcome that did not occur. It resumes or creates
+only the one task allowed for each `accelerate` or `continue` lane and creates no
+implementation worker for `integration-ready`.
+
+Then prompt the resulting T1, T2, T3, T4, T5, T7, T8, T9, T11, and T12 tasks at
+the same time so every active or queued task is visible and traceable. Begin
+active execution only up to the operator's target and the host's actual
+capacity. A host that queues tasks may create the whole filtered set immediately
+without claiming every task is consuming an active worker slot. A host without
+a separate queue treats its creation limit as the capacity limit.
 
 Each prompt states what can proceed immediately and what waits for a
 documented GitHub dependency. A dependency-waiting task completes independent
