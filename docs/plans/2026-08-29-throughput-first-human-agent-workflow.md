@@ -58,6 +58,8 @@ that every safety control is unnecessary.
 
 ## Requirements
 
+Requirements are grouped by priority tier below, not by requirement number.
+
 ### R1 — Throughput objective (P0)
 
 The workflow SHALL optimize valuable verified outcomes per unit of human
@@ -265,8 +267,11 @@ Conflict care follows consequence:
 
 This repository's `AGENTS.md` seam makes `CHANGELOG.md` nonblocking for ordinary
 work: ordinary PRs keep the current-base changelog and discard branch-local
-edits. The portable workflow SHALL expose a repository policy seam for defer,
-waive, or dedicated ownership rather than imposing that choice on every
+edits. A dedicated changelog or release lane preserves and reconciles its own
+edits instead. If an ordinary branch contains an intentional release note,
+capture it in that dedicated lane or tracker before discarding the policy-invalid
+branch edit. The portable workflow SHALL expose a repository policy seam for
+defer, waive, or dedicated ownership rather than imposing that choice on every
 consumer. Repository policy likewise decides whether generated artifacts are
 regenerated or require careful review. Ordinary documentation conflicts are
 normally resolved during integration unless repository policy marks them as
@@ -558,12 +563,14 @@ cheap launch timestamps directly; do not wait for #562's aggregation work.
 
 ```text
 Define and begin the smallest behavior-preserving modularization of PR-batch.
-Use the component boundaries in PR #558, inventory current coupling, create one
-implementation issue per approved component, and extract only one component in
-this task. Keep workflows/pr-processing.md as an index and compatibility shim,
-avoid cross-component cleanup, and use focused validation before the full gate.
-If PR #558 is not final, poll its current review state with backed-off checks
-for up to six hours while completing the read-only coupling inventory.
+Use the component boundaries in
+docs/plans/2026-08-29-throughput-first-human-agent-workflow.md, inventory current
+coupling, create one implementation issue per approved component, and extract
+only one component in this task. Keep workflows/pr-processing.md as an index
+and compatibility shim, avoid cross-component cleanup, and use focused
+validation before the full gate. If that plan is not final, poll its current
+review state with backed-off checks for up to six hours while completing the
+read-only coupling inventory.
 ```
 
 ### T4 — Audit every shipped skill under #189
@@ -608,8 +615,9 @@ evidence.
   #476 prompt decisions.
 
 ```text
-Design the minimal GitHub prompt and append-only run-record format from PR #558.
-Use issue bodies or maintainer comments, the one-line PR-batch shortcut,
+Design the minimal GitHub prompt and append-only run-record format from
+docs/plans/2026-08-29-throughput-first-human-agent-workflow.md. Use issue bodies
+or maintainer comments, the one-line PR-batch shortcut,
 deterministic task names, and collapsed details for provenance. Keep visible
 state compact and make coordination optional. Include a globally unique run ID,
 source-content digest, observed workflow versions, separate state and outcome,
@@ -669,9 +677,11 @@ not a dependency. Do not edit, close, merge, or message PRs.
 - **Start:** now; no dependency.
 
 ```text
-Implement the PR #558 conflict policy: issue-authored semantic dependencies,
-file overlap advisory only, this repository's changelog deferral rule, and
-ordinary documentation conflicts deferred to integration. Expose a repository
+Implement the conflict policy in
+docs/plans/2026-08-29-throughput-first-human-agent-workflow.md: issue-authored
+semantic dependencies, file overlap advisory only, this repository's changelog
+deferral rule, and ordinary documentation conflicts deferred to integration.
+Expose a repository
 policy seam for changelog and generated-artifact handling instead of imposing a
 universal relaxation. Add a simple override for broken bookkeeping or
 coordination without weakening merge, security, production, release, or
@@ -684,8 +694,9 @@ correctness gates. Keep the change small and add focused deterministic tests.
 - **Start:** now; document the simple process, not a scheduler.
 
 ```text
-Document the daily attended and overnight unattended loop from PR #558. Cover
-the operator-set concurrency target, next human availability time, meaningful
+Document the daily attended and overnight unattended loop from
+docs/plans/2026-08-29-throughput-first-human-agent-workflow.md. Cover the
+operator-set concurrency target, next human availability time, meaningful
 decision queue, dependency-aware task waiting, GitHub task records, live PR
 portfolio review, and easy non-safety overrides. Use one compact state table and
 plain language. Do not design adaptive thresholds or require a comparison
