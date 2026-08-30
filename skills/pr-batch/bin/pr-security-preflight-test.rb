@@ -4002,6 +4002,138 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_graphql_timeline_total_may_include_non_node_items_when_rest_timeline_binds_every_node
+    with_fake_gh("timeline-total-includes-non-node-items") do |env, trust_config_path, log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, "GitHub API coverage findings: none"
+      assert_equal 2, graphql_call_count(log_path)
+      assert_equal 1, timeline_api_call_count(log_path)
+    end
+  end
+
+  def test_graphql_timeline_total_surplus_stays_fail_closed_when_rest_identity_does_not_match
+    with_fake_gh("timeline-total-rest-identity-mismatch") do |env, trust_config_path, log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "timelineItems nodes unavailable; reported total_count=2"
+      assert_equal 2, graphql_call_count(log_path)
+      assert_equal 1, timeline_api_call_count(log_path)
+    end
+  end
+
+  def test_timeline_rest_reconciliation_requires_an_ordinary_event_node_id
+    graph_nodes = [{ "id" => "comment-event-1", "__typename" => "IssueComment" }]
+    rest_items = [{ "event" => "commented", "node_id" => nil }]
+
+    refute graph_timeline_matches_rest?(graph_nodes, rest_items, reported_total_count: 2)
+  end
+
+  def test_timeline_rest_reconciliation_rejects_empty_nodes_when_graphql_reported_items
+    refute graph_timeline_matches_rest?([], [], reported_total_count: 1)
+  end
+
+  def test_cross_reference_without_rest_node_id_requires_complete_matching_alternate_identity
+    graph_node = {
+      "id" => "cross-event-1",
+      "__typename" => "CrossReferencedEvent",
+      "createdAt" => "2026-08-30T03:21:05Z",
+      "actor" => { "id" => "actor-1", "login" => "justin808", "__typename" => "User" },
+      "source" => {
+        "id" => "issue-563",
+        "number" => 563,
+        "url" => "https://github.com/owner/repo/issues/563",
+        "__typename" => "Issue"
+      }
+    }
+    rest_item = {
+      "event" => "cross-referenced",
+      "node_id" => nil,
+      "created_at" => "2026-08-30T03:21:05Z",
+      "actor" => { "node_id" => "actor-1", "login" => "justin808", "type" => "User" },
+      "source" => {
+        "type" => "issue",
+        "issue" => {
+          "node_id" => "issue-563",
+          "number" => 563,
+          "html_url" => "https://github.com/owner/repo/issues/563"
+        }
+      }
+    }
+
+    assert graph_timeline_matches_rest?([graph_node], [rest_item], reported_total_count: 2)
+
+    mutations = {
+      "missing GraphQL event id" => ->(graph, _rest) { graph.delete("id") },
+      "missing GraphQL createdAt" => ->(graph, _rest) { graph.delete("createdAt") },
+      "missing REST actor id" => ->(_graph, rest) { rest.fetch("actor").delete("node_id") },
+      "actor login mismatch" => ->(_graph, rest) { rest.fetch("actor")["login"] = "other" },
+      "source type mismatch" => ->(_graph, rest) { rest.fetch("source")["type"] = "pull_request" },
+      "missing REST source id" => ->(_graph, rest) { rest.dig("source", "issue").delete("node_id") },
+      "source number mismatch" => ->(_graph, rest) { rest.dig("source", "issue")["number"] = 564 },
+      "source URL mismatch" => ->(_graph, rest) { rest.dig("source", "issue")["html_url"] = "https://example.invalid" }
+    }
+    mutations.each do |label, mutate|
+      mutated_graph = JSON.parse(JSON.generate(graph_node))
+      mutated_rest = JSON.parse(JSON.generate(rest_item))
+      mutate.call(mutated_graph, mutated_rest)
+
+      refute graph_timeline_matches_rest?(
+        [mutated_graph],
+        [mutated_rest],
+        reported_total_count: 2
+      ), label
+    end
+  end
+
+  def test_cross_reference_derives_pull_request_source_from_rest_pull_request_link
+    graph_node = {
+      "id" => "cross-event-pr-1",
+      "__typename" => "CrossReferencedEvent",
+      "createdAt" => "2026-08-30T04:00:00Z",
+      "actor" => { "id" => "actor-1", "login" => "justin808", "__typename" => "User" },
+      "source" => {
+        "id" => "pr-564",
+        "number" => 564,
+        "url" => "https://github.com/owner/repo/pull/564",
+        "__typename" => "PullRequest"
+      }
+    }
+    rest_item = {
+      "event" => "cross-referenced",
+      "node_id" => nil,
+      "created_at" => "2026-08-30T04:00:00Z",
+      "actor" => { "node_id" => "actor-1", "login" => "justin808", "type" => "User" },
+      "source" => {
+        "type" => "issue",
+        "issue" => {
+          "node_id" => "pr-564",
+          "number" => 564,
+          "html_url" => "https://github.com/owner/repo/pull/564",
+          "pull_request" => { "html_url" => "https://github.com/owner/repo/pull/564" }
+        }
+      }
+    }
+
+    assert graph_timeline_matches_rest?([graph_node], [rest_item], reported_total_count: 2)
+
+    [nil, {}, "not-an-object", { "html_url" => "javascript:alert(1)" }].each do |malformed|
+      malformed_rest = JSON.parse(JSON.generate(rest_item))
+      malformed_rest.dig("source", "issue")["pull_request"] = malformed
+
+      refute graph_timeline_matches_rest?(
+        [graph_node],
+        [malformed_rest],
+        reported_total_count: 2
+      ), malformed.inspect
+    end
+  end
+
   def test_paginated_timeline_items_are_merged_before_visibility_and_coverage_checks
     with_fake_gh("paginated-timeline") do |env, trust_config_path, log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
@@ -4931,6 +5063,10 @@ class PrSecurityPreflightTest < Minitest::Test
     File.readlines(log_path).count { |line| line.start_with?("api graphql") }
   end
 
+  def timeline_api_call_count(log_path)
+    File.readlines(log_path).count { |line| line.include?("repos/owner/repo/issues/123/timeline?per_page=100") }
+  end
+
   def canonical_bot_query_call_count(log_path)
     File.readlines(log_path).count { |line| line.include?("query CanonicalBot") }
   end
@@ -5178,7 +5314,7 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ] || [ "$mode" = "trusted-base-high-risk" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ] || [ "$mode" = "trusted-base-high-risk" ]; then
           pr_body="${PREFLIGHT_TEST_PR_BODY:-}"
           cat <<JSON
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"${pr_body}","user":{"login":"justin808"},"pull_request":{}}
@@ -5298,6 +5434,10 @@ class PrSecurityPreflightTest < Minitest::Test
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
       JSON
           fi
+        elif [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ]; then
+          cat <<'JSON'
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":2,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}]}}}}}
+      JSON
         elif [ "$mode" = "trusted-base-high-risk" ]; then
           if [[ "$*" == *"after=participant-page-1"* ]]; then
             participant_page_nodes="${PREFLIGHT_TEST_PARTICIPANT_PAGE_NODES}"
@@ -5517,6 +5657,17 @@ class PrSecurityPreflightTest < Minitest::Test
 
       # These fake responses model `gh api --paginate --slurp`, which wraps
       # raw GitHub REST pages in an outer array. An empty first page is `[[]]`.
+      if [ "$1" = "api" ] && [ "$2" = "-H" ] && [ "$3" = "Accept: application/vnd.github+json" ] && [ "$4" = "repos/owner/repo/issues/123/timeline?per_page=100" ]; then
+        if [ "$mode" = "timeline-total-includes-non-node-items" ]; then
+          printf '[[{"event":"committed","node_id":"commit-object-1","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]]'
+        elif [ "$mode" = "timeline-total-rest-identity-mismatch" ]; then
+          printf '[[{"event":"committed","node_id":"different-commit-object","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]]'
+        else
+          printf '[[]]'
+        fi
+        exit 0
+      fi
+
       if [ "$mode" = "repo-local-maintainer-targets" ] && [ "$1" = "api" ] && [[ "$2" == repos/acme/widgets/issues/*/comments?per_page=100 ]]; then
         comments_path="${2%/comments?per_page=100}"
         number="${comments_path##*/}"

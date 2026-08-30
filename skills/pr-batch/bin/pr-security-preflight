@@ -1591,7 +1591,7 @@ TIMELINE_AUTHOR_IDENTITY_TYPENAMES = Set.new(%w[IssueComment PullRequestReview])
 TIMELINE_ACTOR_IDENTITY_TYPENAMES = Set.new(
   %w[
     ClosedEvent CrossReferencedEvent MentionedEvent ReadyForReviewEvent
-    ReopenedEvent ReviewRequestedEvent SubscribedEvent UnsubscribedEvent
+    HeadRefForcePushedEvent ReopenedEvent ReviewRequestedEvent SubscribedEvent UnsubscribedEvent
   ]
 ).freeze
 
@@ -1929,9 +1929,19 @@ PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
   ... on Node { id }
   ... on IssueComment { id author { ... on Node { id } login __typename } }
   ... on PullRequestReview { id author { ... on Node { id } login __typename } }
-  ... on CrossReferencedEvent { id actor { ... on Node { id } login __typename } }
+  ... on CrossReferencedEvent {
+    id
+    createdAt
+    actor { ... on Node { id } login __typename }
+    source {
+      __typename
+      ... on Issue { id number url }
+      ... on PullRequest { id number url }
+    }
+  }
   ... on ReadyForReviewEvent { id actor { ... on Node { id } login __typename } }
   ... on ReviewRequestedEvent { id actor { ... on Node { id } login __typename } }
+  ... on HeadRefForcePushedEvent { id actor { ... on Node { id } login __typename } }
   ... on MentionedEvent { id actor { ... on Node { id } login __typename } }
   ... on SubscribedEvent { id actor { ... on Node { id } login __typename } }
   ... on UnsubscribedEvent { id actor { ... on Node { id } login __typename } }
@@ -1940,6 +1950,7 @@ PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
   ... on PullRequestCommit {
     id
     commit {
+      oid
       authors(first:10) {
         totalCount
         pageInfo { hasNextPage endCursor }
@@ -2040,7 +2051,8 @@ def connection_page_query(graph_field, connection_name)
   end
 end
 
-def valid_graph_connection_page?(connection, expected_total_count:, accumulated_count:)
+def valid_graph_connection_page?(connection, expected_total_count:, accumulated_count:,
+                                 allow_terminal_count_mismatch: false)
   return false unless connection.is_a?(Hash)
 
   total_count = connection["totalCount"]
@@ -2056,9 +2068,176 @@ def valid_graph_connection_page?(connection, expected_total_count:, accumulated_
 
   if page_info["hasNextPage"]
     fetched_count < total_count && !page_info["endCursor"].to_s.empty?
+  elsif allow_terminal_count_mismatch
+    fetched_count <= total_count
   else
     fetched_count == total_count
   end
+end
+
+REST_PR_TIMELINE_EVENT_TYPENAMES = {
+  "closed" => "ClosedEvent",
+  "commented" => "IssueComment",
+  "committed" => "PullRequestCommit",
+  "cross-referenced" => "CrossReferencedEvent",
+  "head_ref_force_pushed" => "HeadRefForcePushedEvent",
+  "mentioned" => "MentionedEvent",
+  "ready_for_review" => "ReadyForReviewEvent",
+  "reopened" => "ReopenedEvent",
+  "review_requested" => "ReviewRequestedEvent",
+  "reviewed" => "PullRequestReview",
+  "subscribed" => "SubscribedEvent",
+  "unsubscribed" => "UnsubscribedEvent"
+}.freeze
+
+def rest_pull_request_timeline(repo, number)
+  run_gh_paginated_json_array(
+    "api",
+    "-H",
+    "Accept: application/vnd.github+json",
+    "repos/#{repo}/issues/#{number}/timeline?per_page=100"
+  )
+rescue StandardError => e
+  warn "WARN: could not fetch REST timeline coverage for #{repo}##{number}: #{e.message.lines.first&.strip}"
+  nil
+end
+
+def graph_cross_reference_identity(node)
+  actor = node["actor"]
+  source = node["source"]
+  values = [
+    node["id"],
+    node["createdAt"],
+    actor&.[]("id"),
+    actor&.[]("login"),
+    actor&.[]("__typename"),
+    source&.[]("__typename"),
+    source&.[]("id"),
+    source&.[]("number"),
+    source&.[]("url")
+  ]
+  return unless values.none? { |value| value.nil? || value.to_s.empty? }
+  return unless TIMELINE_NESTED_ACTOR_TYPENAMES.include?(actor["__typename"])
+  return unless %w[Issue PullRequest].include?(source["__typename"])
+  return unless source["number"].is_a?(Integer) && source["number"].positive?
+
+  values.drop(1)
+end
+
+def valid_rest_pull_request_link?(value, source_html_url:)
+  return false unless value.is_a?(Hash) && !value.empty?
+
+  html_url = value["html_url"]
+  return false unless html_url == source_html_url
+
+  uri = URI.parse(html_url)
+  uri.is_a?(URI::HTTPS) && !uri.host.to_s.empty? && uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil?
+rescue URI::Error
+  false
+end
+
+def rest_cross_reference_identity(item)
+  actor = item["actor"]
+  source = item["source"]
+  return unless source&.[]("type") == "issue"
+
+  source_issue = source&.[]("issue")
+  return unless source_issue.is_a?(Hash)
+
+  graph_source_type = if source_issue.key?("pull_request")
+                        return unless valid_rest_pull_request_link?(
+                          source_issue["pull_request"],
+                          source_html_url: source_issue["html_url"]
+                        )
+
+                        "PullRequest"
+                      else
+                        "Issue"
+                      end
+  values = [
+    item["created_at"],
+    actor&.[]("node_id"),
+    actor&.[]("login"),
+    actor&.[]("type"),
+    graph_source_type,
+    source_issue&.[]("node_id"),
+    source_issue&.[]("number"),
+    source_issue&.[]("html_url")
+  ]
+  return unless values.none? { |value| value.nil? || value.to_s.empty? }
+  return unless TIMELINE_NESTED_ACTOR_TYPENAMES.include?(actor["type"])
+  return unless source_issue["number"].is_a?(Integer) && source_issue["number"].positive?
+
+  values
+end
+
+def graph_timeline_matches_rest?(nodes, rest_items, reported_total_count:)
+  return false unless nodes.is_a?(Array) && rest_items.is_a?(Array)
+  return false unless reported_total_count.is_a?(Integer) && reported_total_count >= 0
+  return false if reported_total_count.positive? && nodes.empty? && rest_items.empty?
+
+  graph_nodes_by_identity = {}
+  graph_cross_references_by_id = {}
+  graph_cross_reference_ids_by_facts = {}
+  nodes.each do |node|
+    return false unless node.is_a?(Hash)
+
+    node_id = node["id"]
+    typename = node["__typename"]
+    return false if node_id.to_s.empty? || typename.to_s.empty?
+
+    if typename == "CrossReferencedEvent"
+      facts = graph_cross_reference_identity(node)
+      return false unless facts
+      return false if graph_cross_references_by_id.key?(node_id) || graph_cross_reference_ids_by_facts.key?(facts)
+
+      graph_cross_references_by_id[node_id] = facts
+      graph_cross_reference_ids_by_facts[facts] = node_id
+      next
+    end
+
+    identity = if typename == "PullRequestCommit"
+                 ["commit_sha", node.dig("commit", "oid")]
+               else
+                 ["node_id", node_id]
+               end
+    return false if identity.last.to_s.empty? || graph_nodes_by_identity.key?(identity)
+
+    graph_nodes_by_identity[identity] = typename
+  end
+
+  rest_items.each do |item|
+    return false unless item.is_a?(Hash)
+
+    typename = REST_PR_TIMELINE_EVENT_TYPENAMES[item["event"]]
+    return false unless typename
+
+    if typename == "CrossReferencedEvent"
+      facts = rest_cross_reference_identity(item)
+      return false unless facts
+
+      node_id = item["node_id"]
+      if node_id.to_s.empty?
+        graph_node_id = graph_cross_reference_ids_by_facts.delete(facts)
+        return false unless graph_node_id && graph_cross_references_by_id.delete(graph_node_id) == facts
+      else
+        graph_facts = graph_cross_references_by_id.delete(node_id)
+        return false unless graph_facts == facts && graph_cross_reference_ids_by_facts.delete(facts) == node_id
+      end
+      next
+    end
+
+    identity = if typename == "PullRequestCommit"
+                 ["commit_sha", item["sha"]]
+               else
+                 ["node_id", item["node_id"]]
+               end
+    return false if identity.last.to_s.empty?
+    return false unless graph_nodes_by_identity.delete(identity) == typename
+  end
+
+  graph_nodes_by_identity.empty? && graph_cross_references_by_id.empty? &&
+    graph_cross_reference_ids_by_facts.empty?
 end
 
 def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:, connection_name:)
@@ -2068,7 +2247,14 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
   nodes = connection["nodes"]
   return unless nodes.is_a?(Array)
 
-  unless valid_graph_connection_page?(connection, expected_total_count: nil, accumulated_count: 0)
+  timeline_total_may_include_non_nodes = graph_field == "pullRequest" && connection_name == "timelineItems"
+
+  unless valid_graph_connection_page?(
+    connection,
+    expected_total_count: nil,
+    accumulated_count: 0,
+    allow_terminal_count_mismatch: timeline_total_may_include_non_nodes
+  )
     connection["nodes"] = nil
     return
   end
@@ -2106,7 +2292,8 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
     unless valid_graph_connection_page?(
       page_connection,
       expected_total_count:,
-      accumulated_count: nodes.size
+      accumulated_count: nodes.size,
+      allow_terminal_count_mismatch: timeline_total_may_include_non_nodes
     )
       connection["nodes"] = nil
       return
@@ -2115,6 +2302,15 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
     page_nodes = page_connection.fetch("nodes")
     nodes.concat(page_nodes)
     connection["pageInfo"] = page_connection.fetch("pageInfo")
+  end
+
+  return unless timeline_total_may_include_non_nodes && nodes.size != expected_total_count
+
+  rest_items = rest_pull_request_timeline("#{owner}/#{name}", number)
+  if graph_timeline_matches_rest?(nodes, rest_items, reported_total_count: expected_total_count)
+    connection["verifiedNodeCount"] = nodes.size
+  else
+    connection["nodes"] = nil
   end
 end
 
@@ -2150,7 +2346,8 @@ def connection_coverage_finding(target, connection_name)
     return { connection: connection_name, fetched_count: nodes.size, reason: "truncated", total_count: }
   end
 
-  return if total_count == nodes.size
+  verified_node_count = connection.fetch("verifiedNodeCount", total_count)
+  return if verified_node_count == nodes.size
 
   { connection: connection_name, fetched_count: nodes.size, reason: "count mismatch", total_count: }
 end
