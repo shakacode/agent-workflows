@@ -1774,6 +1774,7 @@ lane.
 Use this normal human prompt shape. `Human available after` is optional; omit
 that line when the maintainer did not supply a time. For Codex, prepend only
 `/goal`; other hosts use the same readable prompt vocabulary unchanged. <!-- host-allow: codex-only -->
+
 ```text
 Repository: OWNER/REPO
 Work item: <exact issue or trusted maintainer-comment URL>
