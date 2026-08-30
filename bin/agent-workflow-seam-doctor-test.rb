@@ -805,15 +805,53 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
-  def test_ci_readiness_duplicate_filter_does_not_claim_unrelated_duplicate_keys
-    yaml = POLICY.merge("ci_readiness" => ci_readiness_policy).to_yaml + <<~YAML
-      unrelated_policy:
-        version: 1
-        version: 2
-    YAML
-    config = YAML.safe_load(yaml, aliases: false)
+  def test_ci_readiness_rejects_duplicate_keys_inside_optional_rules_via_cli
+    duplicates = {
+      "id" => ["  - id: circleci-storybook\n", "    id: circleci-storybook-copy\n"],
+      "app_slug" => ["    app_slug: circleci-checks\n", "    app_slug: other-checks\n"],
+      "name" => ["    name: storybook-review-app\n", "    name: visual-review\n"]
+    }
 
-    assert_empty AgentWorkflowSeamDoctor.ci_readiness_policy_issues(config, yaml)
+    duplicates.each do |key, (line, duplicate)|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        yaml = POLICY.merge("ci_readiness" => ci_readiness_policy).to_yaml.sub(
+          line, line + duplicate
+        )
+        File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, key
+        assert_includes out, "invalid ci_readiness policy", key
+        assert_includes out,
+                        "$.ci_readiness.optional_approval_held_checks contains duplicate key \"#{key}\"",
+                        key
+      end
+    end
+  end
+
+  def test_ci_readiness_duplicate_filter_does_not_claim_unrelated_duplicate_keys
+    unrelated_yaml = [
+      <<~YAML,
+        unrelated_policy:
+          version: 1
+          version: 2
+      YAML
+      <<~YAML
+        ci_readiness_notes:
+        - id: first
+          id: second
+      YAML
+    ]
+
+    unrelated_yaml.each do |suffix|
+      yaml = POLICY.merge("ci_readiness" => ci_readiness_policy).to_yaml + suffix
+      config = YAML.safe_load(yaml, aliases: false)
+
+      assert_empty AgentWorkflowSeamDoctor.ci_readiness_policy_issues(config, yaml)
+    end
   end
 
   def test_selected_hosted_ci_receipts_rejects_lowercase_credential_names
