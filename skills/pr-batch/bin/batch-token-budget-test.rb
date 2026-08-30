@@ -5117,6 +5117,7 @@ class BatchTokenBudgetTest < Minitest::Test
         state_path,
         command(
           "reconcile",
+          "evaluated_at" => "2026-08-12T12:01:00Z",
           "usage_receipt" => first_receipt,
           "usage_receipt_ref" => first_ref,
           "usage_receipt_digest" => first_digest,
@@ -5125,6 +5126,8 @@ class BatchTokenBudgetTest < Minitest::Test
       )
       assert first_status.success?, first_stderr
       assert_equal 112, first.dig("totals", "aggregate", "consumed_tokens")
+      state_before_drift = File.binread(state_path)
+      parsed_before_drift = JSON.parse(state_before_drift)
 
       drifted_receipt = usage_window(
         first_receipt,
@@ -5156,6 +5159,11 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "usage-identity-drift", blocked.fetch("reason")
       assert_equal 112, blocked.dig("totals", "aggregate", "consumed_tokens")
       assert_equal 110, blocked.dig("totals", "aggregate", "reserved_tokens")
+      assert_equal state_before_drift, File.binread(state_path)
+      state_after_drift = JSON.parse(File.binread(state_path))
+      assert_equal parsed_before_drift.fetch("usage_cursor"), state_after_drift.fetch("usage_cursor")
+      assert_equal parsed_before_drift.fetch("usage_receipts"), state_after_drift.fetch("usage_receipts")
+      assert_equal parsed_before_drift.fetch("control_events"), state_after_drift.fetch("control_events")
     end
   end
 
@@ -6373,7 +6381,10 @@ class BatchTokenBudgetTest < Minitest::Test
 
       assert status.success?, stderr
       assert_equal "reconciled", reconciled.fetch("status")
-      assert_equal 1, JSON.parse(File.read(state_path)).fetch("usage_receipts").length
+      state = JSON.parse(File.read(state_path))
+      assert_equal 1, state.fetch("usage_receipts").length
+      assert_equal "root", state.dig("usage_binding", "coordinator", "root_thread_id")
+      assert_equal({ "lane-a" => "lane-a", "lane-b" => "lane-b" }, state.dig("usage_binding", "lanes"))
     end
   end
 
@@ -6532,12 +6543,61 @@ class BatchTokenBudgetTest < Minitest::Test
         evidence["first_session_ids"] = []
         evidence.delete("first_session_id")
       end
+      receipt.fetch("coordinator")["root_thread_id"] = "forged-coordinator-root"
+      receipt.fetch("lanes").each do |lane|
+        lane["root_thread_id"] = "forged-#{lane.fetch('id')}-root"
+      end
 
       reconciled, stderr, status = reconcile_receipt(state_path, receipt, "zero-usage-unknown-identities")
 
       assert status.success?, stderr
       assert_equal "reconciled", reconciled.fetch("status")
-      assert_equal 1, JSON.parse(File.binread(state_path)).fetch("usage_receipts").length
+      zero_state = JSON.parse(File.binread(state_path))
+      assert_equal 1, zero_state.fetch("usage_receipts").length
+      assert_nil zero_state["usage_binding"]
+      assert_equal "2026-08-12T12:00:00Z", zero_state.fetch("usage_cursor")
+
+      state_after_zero = File.binread(state_path)
+      replayed, replay_stderr, replay_status = reconcile_receipt(
+        state_path,
+        receipt,
+        "zero-usage-unknown-identities"
+      )
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal state_after_zero, File.binread(state_path)
+      assert_nil JSON.parse(File.binread(state_path))["usage_binding"]
+
+      proven_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T12:00:00Z",
+        to: "2026-08-12T12:01:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 10, "lane-b" => 0 }
+      )
+      proven_receipt, proven_ref, proven_digest = receipt_artifact(
+        state_path,
+        proven_receipt,
+        "proven-identities-after-zero-unknown"
+      )
+      proven, proven_stderr, proven_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:01:00Z",
+          "usage_receipt" => proven_receipt,
+          "usage_receipt_ref" => proven_ref,
+          "usage_receipt_digest" => proven_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+      assert proven_status.success?, proven_stderr
+      assert_equal "reconciled", proven.fetch("status")
+      proven_state = JSON.parse(File.binread(state_path))
+      assert_equal "root", proven_state.dig("usage_binding", "coordinator", "root_thread_id")
+      assert_equal({ "lane-a" => "lane-a", "lane-b" => "lane-b" }, proven_state.dig("usage_binding", "lanes"))
+      assert_equal "2026-08-12T12:01:00Z", proven_state.fetch("usage_cursor")
+      assert_equal 2, proven_state.fetch("usage_receipts").length
     end
   end
 

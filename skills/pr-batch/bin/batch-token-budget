@@ -416,8 +416,8 @@ module BatchTokenBudget
   end
 
   def valid_accounting_ledgers?(state)
-    return valid_window_accounting_ledgers?(state) if state["usage_binding"]
-    return false unless state.fetch("usage_receipts").empty? && state["usage_cursor"].nil?
+    return valid_window_accounting_ledgers?(state) unless state.fetch("usage_receipts").empty?
+    return false unless state["usage_cursor"].nil?
 
     expected = Hash.new do |records, scope_id|
       records[scope_id] = {
@@ -490,7 +490,12 @@ module BatchTokenBudget
   end
 
   def valid_window_usage_ledgers?(state)
-    return false unless valid_usage_binding?(state)
+    binding = state["usage_binding"]
+    return false if binding && !valid_usage_binding?(state)
+    return false unless binding || state.fetch("usage_receipts").values.all? do |entry|
+      entry["scope_tokens"].is_a?(Hash) && entry["scope_tokens"].values.all?(&:zero?)
+    end
+
     return false unless timestamp?(state["usage_cursor"])
 
     entries = state.fetch("usage_receipts").values.sort_by { |entry| entry["sequence"] || 0 }
@@ -2741,6 +2746,7 @@ module BatchTokenBudget
         },
         "lanes" => lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("root_thread_id")] }
       },
+      "binding_proven" => v2_usage_receipt_topology_consistent?(usage_receipt),
       "from_inclusive" => window.fetch("from_inclusive"),
       "to_exclusive" => window.fetch("to_exclusive"),
       "scope_tokens" => scope_tokens,
@@ -2902,7 +2908,7 @@ module BatchTokenBudget
     return blocked_usage_result(original_state, "overshoot-evidence-unsupported") if unsupported_overshoot
 
     state = deep_copy(original_state)
-    state["usage_binding"] ||= projection.fetch("binding")
+    state["usage_binding"] ||= projection.fetch("binding") if projection.fetch("binding_proven")
     state["usage_cursor"] = projection.fetch("to_exclusive")
     reservation_tokens = {}
     unattributed_scope_tokens = {}
