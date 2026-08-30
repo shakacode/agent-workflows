@@ -673,10 +673,13 @@ as `--requested-hosted-run` to both `merge-assurance` and `pr-merge-submit`,
 preserving order. Those trusted invocation arguments are the authorization
 boundary; caller-editable CI JSON and its integrity digest cannot create,
 delete, reorder, or narrow the authorized run set.
-For a third-party check run, the disposition also requires an `in_progress`
-row whose GitHub `started_at` field is explicitly present and null. A timestamp
-means execution began; missing, malformed, queued, or otherwise ambiguous phase
-evidence remains blocking.
+For a third-party check run, the currently supported provider-phase evidence is
+an `in_progress` `circleci-checks` row whose output title and workflow link bind
+the configured check name and one CircleCI workflow, whose reported job lines
+all end in `Blocked`, whose completion and actions are explicitly null, and
+whose `started_at` is null or a valid timestamp. Running or mixed job output,
+missing or malformed provider evidence, another app, queued rows, and otherwise
+ambiguous phase evidence remain blocking.
 The final check-run inventory paginates exact-head check suites and each suite's
 latest runs. Competing attempts with the same `(app_slug, name)` may use
 strictly validated run `started_at` chronology only within one authenticated

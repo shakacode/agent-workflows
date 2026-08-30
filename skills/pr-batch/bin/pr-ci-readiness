@@ -151,6 +151,8 @@ module PrCiReadiness
   OPTIONAL_CHECK_KEYS = %w[app_slug id name].freeze
   POLICY_RULE_ID = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
   APPROVAL_HELD_STATUSES = %w[in_progress].freeze
+  CIRCLECI_APP_SLUG = "circleci-checks"
+  CIRCLECI_WORKFLOW_URL = %r{\Ahttps://app\.circleci\.com/workflow/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?[^#\s]*)?\z}
   SYSTEM_GIT = %w[/opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git /bin/git].find do |path|
     File.file?(path) && File.executable?(path)
   end
@@ -394,9 +396,37 @@ module PrCiReadiness
       row["app_slug"].is_a?(String) && !row["app_slug"].empty? &&
       row["name"].is_a?(String) && !row["name"].empty? &&
       APPROVAL_HELD_STATUSES.include?(row["status"].to_s.downcase) &&
-      row.key?("started_at") &&
-      row["started_at"].nil? &&
-      (row["conclusion"].nil? || row["conclusion"] == "")
+      row["conclusion"].nil? && circleci_approval_held_evidence?(row)
+  end
+
+  def circleci_approval_held_evidence?(row)
+    return false unless row["app_slug"] == CIRCLECI_APP_SLUG
+    return false unless optional_phase_timestamp?(row, "started_at")
+    return false unless row.key?("completed_at") && row["completed_at"].nil?
+    return false unless row.key?("actions") && row["actions"].nil?
+
+    details_match = row["details_url"].to_s.match(CIRCLECI_WORKFLOW_URL)
+    output = row["output"]
+    return false unless details_match && output.is_a?(Hash) && output.keys.sort == %w[summary title]
+    return false unless output["title"] == "Workflow: #{row['name']}"
+
+    summary_lines = output["summary"].to_s.lines.map(&:strip).reject(&:empty?)
+    summary_link = summary_lines.shift.to_s.match(%r{\A\[View CircleCI Workflow\]\((https://[^)]+)\)\z})
+    summary_url_match = summary_link && summary_link[1].match(CIRCLECI_WORKFLOW_URL)
+    return false unless summary_url_match && summary_url_match[1] == details_match[1]
+
+    summary_lines.any? && summary_lines.all? { |line| line.match?(/\A\* \S.* - Blocked\z/) }
+  end
+
+  def optional_phase_timestamp?(row, key)
+    return false unless row.key?(key)
+    return true if row[key].nil?
+    return false unless row[key].is_a?(String)
+
+    Time.iso8601(row[key])
+    true
+  rescue ArgumentError
+    false
   end
 
   def required_matches_optional_row?(required, row)
@@ -1330,7 +1360,7 @@ module PrCiReadiness
         raise Error, "check run contradicted its enumerated suite or app identity"
       end
 
-      {
+      normalized = {
         "kind" => "check_run", "id" => run_id, "name" => name,
         "status" => status, "conclusion" => conclusion,
         "url" => row["html_url"].to_s, "head_sha" => head_sha,
@@ -1338,6 +1368,20 @@ module PrCiReadiness
         "dependabot" => dependabot_attributed?(row),
         "started_at" => started_at
       }
+      if app["slug"] == CIRCLECI_APP_SLUG
+        output = row["output"]
+        normalized.merge!(
+          "completed_at" => row.fetch("completed_at", "UNKNOWN"),
+          "details_url" => row.fetch("details_url", "UNKNOWN"),
+          "actions" => row.fetch("actions", "UNKNOWN"),
+          "output" => if output.is_a?(Hash) && output.key?("title") && output.key?("summary")
+                        { "title" => output["title"], "summary" => output["summary"] }
+                      else
+                        "UNKNOWN"
+                      end
+        )
+      end
+      normalized
     end
 
     def valid_check_app?(app)

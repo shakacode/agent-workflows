@@ -2654,10 +2654,17 @@ class PrMergeSubmitTest < Minitest::Test
       end
       raise "optional-held receipt fixture needs a policy" unless trusted_ci_policy
 
+      workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
       held = {
         "kind" => "check_run", "id" => 31, "suite_id" => 801, "name" => "storybook-review-app",
-        "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
-        "app_slug" => "circleci-checks", "dependabot" => false
+        "status" => "in_progress", "conclusion" => nil,
+        "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
+        "app_slug" => "circleci-checks", "dependabot" => false, "actions" => nil,
+        "details_url" => workflow_url,
+        "output" => {
+          "title" => "Workflow: storybook-review-app",
+          "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - Blocked\n"
+        }
       }
       ci_result.fetch("scopes").fetch("other").merge!(
         "state" => "READY",
@@ -3233,20 +3240,36 @@ class PrMergeSubmitTest < Minitest::Test
       if check_inventory_endpoint
         page = check_inventory_endpoint[/[?&]page=(\\d+)/, 1].to_i
         build_check_run = lambda do |id:, status:, conclusion:, started_at:, name: "storybook-review-app",
-                                    app_slug: "circleci-checks", head_sha: #{current_check_head.inspect}|
-          {
+                                    app_slug: "circleci-checks", head_sha: #{current_check_head.inspect},
+                                    provider_status: nil|
+          row = {
             "id" => id, "name" => name, "head_sha" => head_sha,
             "status" => status, "conclusion" => conclusion, "started_at" => started_at,
             "html_url" => "https://#{HOST}/#{repo}/checks/\#{id}",
             "app" => { "slug" => app_slug }
           }
+          if app_slug == "circleci-checks"
+            workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
+            row.merge!(
+              "completed_at" => status == "completed" ? "2026-08-25T12:01:00Z" : nil,
+              "details_url" => workflow_url,
+              "actions" => nil,
+              "output" => {
+                "title" => "Workflow: \#{name}",
+                "summary" => "[View CircleCI Workflow](\#{workflow_url})\\n\\n" \
+                             "* start - \#{provider_status || 'Running'}\\n"
+              }
+            )
+          end
+          row
         end
         held = build_check_run.call(
-          id: 31, status: "in_progress", conclusion: nil, started_at: nil
+          id: 31, status: "in_progress", conclusion: nil,
+          started_at: "2026-08-24T08:07:48Z", provider_status: "Blocked"
         )
         running_replacement = build_check_run.call(
           id: 32, status: "in_progress", conclusion: nil,
-          started_at: "2026-08-25T12:00:00Z"
+          started_at: "2026-08-25T12:00:00Z", provider_status: "Running"
         )
         failed_replacement = build_check_run.call(
           id: 32, status: "completed", conclusion: "failure",
@@ -3351,7 +3374,13 @@ class PrMergeSubmitTest < Minitest::Test
                                   when :unknown_inventory
                                     [[held.merge("status" => "UNKNOWN")], 1]
                                   when :running
-                                    [[held.merge("started_at" => "2026-08-25T12:00:00Z")], 1]
+                                    [[held.merge(
+                                      "started_at" => "2026-08-25T12:00:00Z",
+                                      "output" => held.fetch("output").merge(
+                                        "summary" => "[View CircleCI Workflow](\#{held.fetch('details_url')})" \
+                                                     "\\n\\n* start - Running\\n"
+                                      )
+                                    )], 1]
                                   when :failed
                                     [[held.merge(
                                       "status" => "completed", "conclusion" => "failure",
@@ -3463,19 +3492,29 @@ class PrMergeSubmitTest < Minitest::Test
         phase = case #{ci_transition.inspect}
                 when :running
                   { "status" => "in_progress", "conclusion" => nil,
-                    "started_at" => "2026-08-25T12:00:00Z" }
+                    "started_at" => "2026-08-25T12:00:00Z", "provider_status" => "Running" }
                 when :failed
                   { "status" => "completed", "conclusion" => "failure",
-                    "started_at" => "2026-08-25T12:00:00Z" }
+                    "started_at" => "2026-08-25T12:00:00Z", "provider_status" => "Failed" }
                 when :success
                   { "status" => "completed", "conclusion" => "success",
-                    "started_at" => "2026-08-25T12:00:00Z" }
+                    "started_at" => "2026-08-25T12:00:00Z", "provider_status" => "Success" }
                 else
-                  { "status" => "in_progress", "conclusion" => nil, "started_at" => nil }
+                  { "status" => "in_progress", "conclusion" => nil,
+                    "started_at" => "2026-08-24T08:07:48Z", "provider_status" => "Blocked" }
                 end
+        provider_status = phase.delete("provider_status")
+        workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
         puts JSON.generate(
           { "id" => 31, "name" => "storybook-review-app", "head_sha" => #{current_check_head.inspect},
-            "app" => { "slug" => "circleci-checks" } }.merge(phase)
+            "app" => { "slug" => "circleci-checks" },
+            "completed_at" => phase["status"] == "completed" ? "2026-08-25T12:01:00Z" : nil,
+            "details_url" => workflow_url, "actions" => nil,
+            "output" => {
+              "title" => "Workflow: storybook-review-app",
+              "summary" => "[View CircleCI Workflow](\#{workflow_url})\\n\\n" \
+                           "* start - \#{provider_status}\\n"
+            } }.merge(phase)
         )
         exit 0
       end

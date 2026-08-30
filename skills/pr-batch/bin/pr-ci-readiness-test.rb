@@ -16,6 +16,22 @@ load SCRIPT
 class PrCiReadinessTest < Minitest::Test
   # --- Pure verdict logic (module_function), tested directly ---------------
 
+  def circleci_approval_held_row(id: 31, name: "storybook-review-app", summary_status: "Blocked")
+    workflow_id = format("00000000-0000-4000-8000-%012d", id)
+    workflow_url = "https://app.circleci.com/workflow/#{workflow_id}"
+    {
+      "kind" => "check_run", "id" => id, "name" => name,
+      "status" => "in_progress", "conclusion" => nil,
+      "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false, "actions" => nil,
+      "details_url" => workflow_url,
+      "output" => {
+        "title" => "Workflow: #{name}",
+        "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - #{summary_status}\n"
+      }
+    }
+  end
+
   def test_all_passing_is_ready
     out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
                                  { "name" => "rspec", "bucket" => "pass" },
@@ -364,12 +380,7 @@ class PrCiReadinessTest < Minitest::Test
         }
       ]
     }
-    held = {
-      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
-      "status" => "in_progress", "conclusion" => nil,
-      "started_at" => nil,
-      "app_slug" => "circleci-checks", "dependabot" => false
-    }
+    held = circleci_approval_held_row
 
     scopes = PrCiReadiness.inventory_scopes(
       head_sha: head,
@@ -400,12 +411,7 @@ class PrCiReadinessTest < Minitest::Test
 
   def test_optional_policy_keeps_an_actively_running_check_blocking
     head = "a" * 40
-    running = {
-      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
-      "status" => "in_progress", "conclusion" => nil,
-      "started_at" => "2026-07-30T11:58:00Z",
-      "app_slug" => "circleci-checks", "dependabot" => false
-    }
+    running = circleci_approval_held_row(summary_status: "Running")
     policy = {
       "version" => 1,
       "optional_approval_held_checks" => [
@@ -431,13 +437,9 @@ class PrCiReadinessTest < Minitest::Test
     assert_empty scopes.dig("other", "policy_dispositions")
   end
 
-  def test_optional_policy_requires_explicit_check_start_evidence
+  def test_optional_policy_requires_complete_noncontradictory_circleci_phase_evidence
     head = "a" * 40
-    base_row = {
-      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
-      "status" => "in_progress", "conclusion" => nil,
-      "app_slug" => "circleci-checks", "dependabot" => false
-    }
+    base_row = circleci_approval_held_row
     policy = {
       "version" => 1,
       "optional_approval_held_checks" => [
@@ -450,9 +452,20 @@ class PrCiReadinessTest < Minitest::Test
     }
 
     ambiguous_rows = {
-      "missing started_at" => base_row,
-      "empty started_at" => base_row.merge("started_at" => ""),
+      "missing started_at" => base_row.reject { |key| key == "started_at" },
       "malformed started_at" => base_row.merge("started_at" => "not-a-timestamp"),
+      "non-string started_at" => base_row.merge("started_at" => 123),
+      "completed timestamp" => base_row.merge("completed_at" => "2026-08-24T08:08:48Z"),
+      "check actions" => base_row.merge("actions" => []),
+      "missing output" => base_row.reject { |key| key == "output" },
+      "mismatched title" => base_row.merge("output" => base_row.fetch("output").merge("title" => "Other")),
+      "mixed running summary" => circleci_approval_held_row.merge(
+        "output" => circleci_approval_held_row.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
+                       "* start - Blocked\n* build - Running\n"
+        )
+      ),
+      "non-CircleCI details URL" => base_row.merge("details_url" => "https://example.test/workflow/31"),
       "ordinary queued phase" => base_row.merge("status" => "queued", "started_at" => nil)
     }
 
@@ -470,6 +483,28 @@ class PrCiReadinessTest < Minitest::Test
       assert_equal "NOT_READY", scopes.dig("other", "state"), label
       assert_empty scopes.dig("other", "policy_dispositions"), label
     end
+  end
+
+  def test_optional_policy_does_not_apply_circleci_phase_evidence_to_another_provider
+    row = circleci_approval_held_row.merge("app_slug" => "other-ci")
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        { "id" => "other-storybook", "app_slug" => "other-ci", "name" => "storybook-review-app" }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: "a" * 40, checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [row], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
   end
 
   def test_optional_policy_does_not_disposition_duplicate_conflicting_check_run_identity
@@ -542,11 +577,7 @@ class PrCiReadinessTest < Minitest::Test
 
   def test_optional_policy_indexes_check_run_identity_once_per_row
     rows = Array.new(100) do |index|
-      {
-        "kind" => "check_run", "id" => index + 1, "name" => "check-#{index}",
-        "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
-        "app_slug" => "app-#{index}", "dependabot" => false
-      }
+      circleci_approval_held_row(id: index + 1, name: "check-#{index}")
     end
     policy = {
       "version" => 1,
@@ -2794,10 +2825,25 @@ class PrCiReadinessCliTest < Minitest::Test
           "repo" => { "id" => 9_003, "full_name" => "owner/repo" }
         }
       }
+      workflow_id = "ac163d39-bfa6-4c1d-9daa-5dff74e2200a"
+      details_url = "https://app.circleci.com/workflow/#{workflow_id}?utm_campaign=vcs-integration-link&" \
+                    "utm_medium=referral&utm_content=bottom&utm_source=github-checks-link"
+      summary_url = "https://app.circleci.com/workflow/#{workflow_id}?utm_campaign=vcs-integration-link&" \
+                    "utm_medium=referral&utm_content=summary&utm_source=github-checks-link"
+      job_url = "https://app.circleci.com/workflow/#{workflow_id}?utm_campaign=vcs-integration-link&" \
+                "utm_medium=referral&utm_source=github-checks-link"
       held = {
         "id" => 31, "name" => "storybook-review-app", "status" => "in_progress",
-        "conclusion" => nil, "started_at" => nil, "head_sha" => head,
-        "app" => { "slug" => "circleci-checks" }, "html_url" => "https://example/check/31"
+        "conclusion" => nil, "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
+        "head_sha" => head, "app" => { "slug" => "circleci-checks" }, "actions" => nil,
+        "details_url" => details_url,
+        "output" => {
+          "title" => "Workflow: storybook-review-app",
+          "summary" => "[View CircleCI Workflow](#{summary_url})\n\n" \
+                       "* [start](#{job_url}) - Blocked\n" \
+                       "* build-storybook-review-app - Blocked\n"
+        },
+        "html_url" => "https://example/check/31"
       }
       with_fake_gh(
         required_json: "",

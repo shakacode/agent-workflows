@@ -379,7 +379,9 @@ class MergeAssuranceTest < Minitest::Test
   def test_optional_policy_cannot_hide_an_actively_running_check
     trusted_policy = optional_held_policy
     ci_result = optional_held_ci(trusted_policy)
-    ci_result.dig("scopes", "other", "rows", 0)["started_at"] = "2026-07-30T11:58:00Z"
+    row = ci_result.dig("scopes", "other", "rows", 0)
+    row.fetch("output")["summary"] = "[View CircleCI Workflow](#{row.fetch('details_url')})\n\n" \
+                                               "* start - Running\n"
 
     result = MergeAssurance.assess(
       ci_result:,
@@ -4869,11 +4871,17 @@ class MergeAssuranceTest < Minitest::Test
 
   def optional_held_ci(policy)
     result = ready_ci
+    workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
     held = {
       "kind" => "check_run", "id" => 31, "suite_id" => 10, "name" => "storybook-review-app",
       "status" => "in_progress", "conclusion" => nil,
-      "started_at" => nil,
-      "app_slug" => "circleci-checks", "dependabot" => false
+      "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false, "actions" => nil,
+      "details_url" => workflow_url,
+      "output" => {
+        "title" => "Workflow: storybook-review-app",
+        "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - Blocked\n"
+      }
     }
     result.fetch("scopes").fetch("other").merge!(
       "state" => "READY",

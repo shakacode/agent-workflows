@@ -627,9 +627,13 @@ repositories that omit `ci_readiness` or set it to exact `n/a` retain the prior
 fail-closed behavior; no pending row becomes optional. After adoption, raw rows
 remain in the v2 result, while only exact configured check-run identities that
 are still approval-held and not required receive authenticated dispositions.
-The held phase requires an `in_progress` check run with GitHub's `started_at`
-field explicitly present and null. A start timestamp, missing or malformed
-phase evidence, or another pending/queued state remains blocking.
+The currently supported held-phase evidence is CircleCI-specific: the exact
+`circleci-checks` row must be `in_progress`, its output title and workflow link
+must bind the configured check name and one CircleCI workflow, every reported
+job line must end in `Blocked`, completion and actions must be explicitly null,
+and `started_at` must be null or a valid timestamp. A running or mixed job
+summary, missing or malformed provider evidence, another app, or another
+pending/queued state remains blocking.
 
 `--trusted-repo-root` requires the exact live base commit object locally even
 when `ci_readiness` is omitted or `n/a`. A shallow or PR-branch-only checkout
