@@ -659,11 +659,8 @@ then extract only the smallest first component without a separate approval
 round unless a material design ambiguity remains. Keep
 workflows/pr-processing.md as an index and compatibility shim, avoid
 cross-component cleanup, and use focused validation before the full gate. If
-the planning PR is not final, poll
-its current review state with backed-off checks until the operator-declared
-attention interval ends while completing the read-only coupling inventory; this
-launch uses six hours. If it is still not final, record `blocked`; queue one
-concise decision only when a material question remains.
+the linked issue later records a material design ambiguity, record `blocked` and
+queue that one concise decision; an unmerged planning PR alone is not a blocker.
 ```
 
 ### T4 — Audit every shipped skill under #189
