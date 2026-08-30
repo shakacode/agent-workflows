@@ -237,11 +237,12 @@ host task ID and advances the same run. If the durable write path is unavailable
 a visible single-operator or no-backend override may proceed without turning a
 bookkeeping failure into a global stall; it SHALL preserve the run ID locally
 and report that GitHub reconciliation remains due. The missing write path is not
-itself evidence of contradictory ownership. Before mutating an exclusive issue,
-PR, branch, or integration responsibility, the override SHALL check any reliable
-coordination evidence that remains available and refuse an observed conflict. If
-none can be observed, it MAY proceed under explicit single-operator authority
-while recording that coordination evidence is degraded.
+itself evidence of contradictory ownership. Before mutating an issue, PR, or
+branch that requires exclusive ownership, or assuming exclusive integration
+responsibility, the override SHALL check any reliable coordination evidence that
+remains available and refuse an observed conflict. If none can be observed, it
+MAY proceed under explicit single-operator authority while recording that
+coordination evidence is degraded.
 
 Run state and outcome are separate. State uses a small useful vocabulary such
 as `launch-pending`, `active`, `waiting`, `blocked`, `PR-ready`, and `completed`.
@@ -588,8 +589,8 @@ only after repeated evidence shows the simple process is insufficient.
 T10 is the sole pre-wave task and runs first. After its live classification
 authorizes the unattended wave, all remaining prompts use current live GitHub
 state and current main, and the authorized tasks may start simultaneously up to
-the operator target and host capacity. In the entries below, `now` means after
-that T10 gate. When a documented semantic dependency is not ready, the task
+the operator target and host capacity. In the remaining entries, `now` means
+after that T10 gate. When a documented semantic dependency is not ready, the task
 records `waiting`, uses a task heartbeat or backed-off checks for up to six
 hours, and proceeds when the dependency changes without asking the maintainer.
 
@@ -733,7 +734,7 @@ adaptive scheduler or controlled-experiment framework.
 ### T10 — Classify current in-flight PRs and tasks
 
 - **Issue:** [#563](https://github.com/shakacode/agent-workflows/issues/563).
-- **Start:** now; read-only.
+- **Start:** first; immediate and read-only.
 
 ```text
 Perform a read-only live portfolio audit of every open pull request and every
