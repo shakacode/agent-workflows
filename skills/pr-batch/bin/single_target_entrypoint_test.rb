@@ -87,10 +87,13 @@ durable_override_rule = "The only exception is a named, trusted, task-specific d
 insufficient_override_rule = "Generic instructions, `$pr-batch` invocation, fix-it intent, or PR-publication authority do not create this override."
 override_evidence_rule = "Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff."
 canonical_claim_binding_rule = "Before branch creation, editing, or dispatch, every bounded status and claim invocation binds `--repo` to lowercase `target.repository` and `--target` to the backend-safe canonical token derived from target v1: decimal `target.number` for either GitHub target type, or exact `target.target` for trusted ad-hoc; this raw pair is the canonical repository-qualified claim identity. Run status before claim; a second claim for the same canonical target, including a repository-casing alias or issue/PR type alias at the same number, must stop on `CLAIM_REFUSED` / exit 3 and cannot reach branch creation or dispatch."
+github_target_schema_rule = "GitHub targets carry\nthe exact keys `type`, `version`, `repository`, `number`, and\n`stable_coordination_identity`."
+durable_ad_hoc_schema_rule = "Durable ad-hoc targets\ncarry the exact keys `type`, `version`, `repository`, `target`,\n`stable_coordination_identity`, `override_name`, `trusted_authorizer`,\n`durable_authorization_ref`, and `original_task_identity`."
 
 [canonical_launch_rule, canonical_identity_rule, unbound_prompt_rule,
  durable_override_rule, insufficient_override_rule, override_evidence_rule,
- canonical_claim_binding_rule].each do |rule|
+ canonical_claim_binding_rule, github_target_schema_rule,
+ durable_ad_hoc_schema_rule].each do |rule|
   assert(prompt_intake.include?(rule), "prompt intake must own canonical launch rule: #{rule}")
   [batch, plan_batch, workflow].each do |entrypoint|
     assert(!entrypoint.include?(rule), "entrypoints must route to prompt intake instead of mirroring canonical launch prose")
@@ -137,7 +140,7 @@ assert(prompt_intake.include?("A durably\n  overridden ad-hoc request carries it
 assert(prompt_intake.include?("Do not pass a durably overridden `adhoc:` target to `pr-security-preflight`"), "only accepted durable ad-hoc targets may skip the GitHub preflight helper")
 assert(workflow.include?("- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>"), "canonical goal handoff must represent stable issue, PR, and overridden ad-hoc identities")
 assert(prompt_intake.include?("type `github-issue` or `github-pull-request`"), "canonical intake must name executable GitHub target types")
-assert(prompt_intake.include?("The sole ad-hoc object type is\n`trusted-ad-hoc-override`"), "canonical intake must reserve ad-hoc launch for the typed durable override")
+assert(prompt_intake.include?("The sole ad-hoc object type is `trusted-ad-hoc-override`"), "canonical intake must reserve ad-hoc launch for the typed durable override")
 assert(workflow.include?("Target ids: repository-qualified PR/Issue #N or durably overridden ad-hoc `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`"), "canonical file-touch map must preserve canonical launch identity")
 assert(workflow.include?("`Target:` for a GitHub target is its `<verified GitHub issue/PR link>`; for an ad-hoc target use exactly `n/a — durably overridden ad-hoc; durable_ref=<exact accepted durable_authorization_ref>`"), "lane cards must not invent a GitHub link for a durable ad-hoc target")
 assert(workflow.include?("For a durably overridden ad-hoc target, record the\n  evidence, rationale, complete override provenance"), "canonical final handoff must preserve overridden ad-hoc provenance")

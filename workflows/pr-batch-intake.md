@@ -36,16 +36,21 @@ Parseable `issue://` and GitHub HTTPS authorization references must match `targe
 Parseable authorization refs reject userinfo and query; GitHub HTTPS requires port 443, `issue://` requires the exact canonical authority/path shape, and fragments remain permitted.
 Every typed target repository has exactly two ASCII components separated by `/`: the owner matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from `[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
 
-Put one exact `target` v1 object on every preflight lane. GitHub targets use
-type `github-issue` or `github-pull-request`, version `1`, `repository`, a
-positive `number`, and the matching `OWNER/REPO:issue:N` or
-`OWNER/REPO:pull-request:N` stable identity. The sole ad-hoc object type is
-`trusted-ad-hoc-override`; it includes `repository`,
+Put one exact `target` v1 object on every preflight lane. GitHub targets carry
+the exact keys `type`, `version`, `repository`, `number`, and
+`stable_coordination_identity`. Use type `github-issue` or `github-pull-request`,
+version `1`, a positive number, and the matching
+`OWNER/REPO:issue:N` or `OWNER/REPO:pull-request:N` stable identity.
+
+The sole ad-hoc object type is `trusted-ad-hoc-override`. Durable ad-hoc targets
+carry the exact keys `type`, `version`, `repository`, `target`,
+`stable_coordination_identity`, `override_name`, `trusted_authorizer`,
+`durable_authorization_ref`, and `original_task_identity`. Use version `1`,
 `target: adhoc:<yyyymmdd>-<short-slug>`, the matching stable identity, a
-lowercase slug `override_name`, labeled `kind:value` authorizer and original
-task identities, and the durable authorization reference. A missing,
-malformed, unknown, or duplicate identity fails the plan preflight before
-dispatcher selection.
+lowercase slug override name, labeled `kind:value` authorizer and task
+identities, and the durable authorization reference. A missing, malformed,
+unknown, or duplicate identity fails the plan preflight before dispatcher
+selection.
 
 Derive the coordination claim pair from the accepted target rather than prompt
 wording. Before branch creation, editing, or dispatch, every bounded status and claim invocation binds `--repo` to lowercase `target.repository` and `--target` to the backend-safe canonical token derived from target v1: decimal `target.number` for either GitHub target type, or exact `target.target` for trusted ad-hoc; this raw pair is the canonical repository-qualified claim identity. Run status before claim; a second claim for the same canonical target, including a repository-casing alias or issue/PR type alias at the same number, must stop on `CLAIM_REFUSED` / exit 3 and cannot reach branch creation or dispatch.
