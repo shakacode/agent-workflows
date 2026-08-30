@@ -46,7 +46,7 @@ module WorkflowTelemetryReport
     /(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}(?![A-Za-z0-9])/,
     /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9])/
   ].freeze
-  RFC3339_TIMESTAMP = /\A(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?<offset>Z|[+-](?<offset_hour>\d{2}):(?<offset_minute>\d{2}))\z/
+  RFC3339_TIMESTAMP = /\A(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d{1,9})?(?<offset>Z|[+-](?<offset_hour>\d{2}):(?<offset_minute>\d{2}))\z/
 
   InputError = Class.new(StandardError)
   InputReadError = Class.new(StandardError)

@@ -294,7 +294,8 @@ raw prose. Do not add a prose field; retain durable evidence by reference and
 query only the exact upstream fields needed for normalization.
 The reducer reads at most one MiB of input and accepts at most 4,096 entries in
 each interval or question array. Timestamps require a known explicit RFC 3339
-offset; `-00:00` is rejected because it denotes an unknown local offset.
+offset and accept at most nine fractional-second digits; `-00:00` is rejected
+because it denotes an unknown local offset.
 
 Replay JSON or a compact twelve-line text view without copying the source
 events into the result:

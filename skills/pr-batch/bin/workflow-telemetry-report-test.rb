@@ -279,6 +279,18 @@ class WorkflowTelemetryReportTest < Minitest::Test
     assert_includes stderr, "invalid timestamp"
   end
 
+  def test_rejects_excessive_timestamp_fractional_precision
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["worker_start"]["at"] = "2026-08-29T20:00:45.#{'1' * 1_000}Z"
+
+    stdout, stderr, status = run_invalid(input)
+
+    refute status.success?
+    assert_empty stdout
+    assert_equal "workflow-telemetry-report: invalid timestamp\n", stderr
+    refute_includes stderr, "FloatDomainError"
+  end
+
   def test_rejects_comment_fragment_without_an_issue_or_pull_request_path
     input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
     input["source_ref"] = "https://github.com/shakacode/agent-workflows#issuecomment-123"
