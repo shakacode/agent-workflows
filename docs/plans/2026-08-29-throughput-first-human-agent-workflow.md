@@ -236,7 +236,12 @@ than creating a duplicate task. After task creation, the launcher attaches the
 host task ID and advances the same run. If the durable write path is unavailable,
 a visible single-operator or no-backend override may proceed without turning a
 bookkeeping failure into a global stall; it SHALL preserve the run ID locally
-and report that GitHub reconciliation remains due.
+and report that GitHub reconciliation remains due. The missing write path is not
+itself evidence of contradictory ownership. Before mutating an exclusive issue,
+PR, branch, or integration responsibility, the override SHALL check any reliable
+coordination evidence that remains available and refuse an observed conflict. If
+none can be observed, it MAY proceed under explicit single-operator authority
+while recording that coordination evidence is degraded.
 
 Run state and outcome are separate. State uses a small useful vocabulary such
 as `launch-pending`, `active`, `waiting`, `blocked`, `PR-ready`, and `completed`.
@@ -557,7 +562,8 @@ The attended session:
 
 1. review material state changes and ask for the next highest-priority queued
    decision;
-2. classify in-flight PRs and choose likely integration order;
+2. classify in-flight PRs and active or recently completed task/run records, then
+   choose likely integration order;
 3. choose a simple target number of concurrent tasks and the next human
    availability time;
 4. authorize a named run set;
@@ -579,8 +585,11 @@ only after repeated evidence shows the simple process is insufficient.
 
 ## Issue And Prompt Map
 
-All prompts use current live GitHub state and current main. Tasks may start
-simultaneously. When a documented semantic dependency is not ready, the task
+T10 is the sole pre-wave task and runs first. After its live classification
+authorizes the unattended wave, all remaining prompts use current live GitHub
+state and current main, and the authorized tasks may start simultaneously up to
+the operator target and host capacity. In the entries below, `now` means after
+that T10 gate. When a documented semantic dependency is not ready, the task
 records `waiting`, uses a task heartbeat or backed-off checks for up to six
 hours, and proceeds when the dependency changes without asking the maintainer.
 
@@ -631,7 +640,8 @@ approved component, and extract only one component in this task. Keep
 workflows/pr-processing.md as an index and compatibility shim, avoid
 cross-component cleanup, and use focused validation before the full gate. If
 the planning PR is not final, poll its current review state with backed-off
-checks for up to six hours while completing the read-only coupling inventory.
+checks for up to six hours while completing the read-only coupling inventory;
+if it is still not final, record `blocked` and queue one concise decision.
 ```
 
 ### T4 — Audit every shipped skill under #189
@@ -683,8 +693,9 @@ deterministic task names, and collapsed details for provenance. Keep visible
 state compact and make coordination optional. Include a globally unique run ID,
 source-content digest, observed workflow versions, separate state and outcome,
 and append-only rerun history. If #476 prompt decisions are not final, poll
-GitHub with backed-off checks for up to six hours, then implement only the
-agreed format with focused tests.
+GitHub with backed-off checks for up to six hours. If they become final,
+implement only the agreed format with focused tests; otherwise record `blocked`
+and queue one concise decision.
 ```
 
 ### T8 — Create, title, and supervise Codex tasks
@@ -701,7 +712,8 @@ and PR state to GitHub. Before task creation, persist a `launch-pending` record
 with a globally unique run ID and idempotency key; retries SHALL reuse it. Provide
 a visible no-backend override and a copy-paste fallback for unsupported hosts.
 If the T7 run-record format is not ready, poll its issue with backed-off checks
-for up to six hours while completing the read-only capability inventory.
+for up to six hours while completing the read-only capability inventory; if it
+is still not ready, record `blocked` and queue one concise decision.
 ```
 
 ### T9 — Collect directional workflow telemetry
