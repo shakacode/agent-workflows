@@ -322,22 +322,33 @@ omit the queue summary and note that queue state is unavailable.
    it collides with another active lane and cannot be safely coordinated; it exposes
    consequential ambiguity; or it weakens verification. An omitted path alone is not
    such a condition.
-8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
-   the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
-   `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
-   line using the optional validated `repo_prefix` from
-   `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
-   repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
-   multiple prompts are produced, `MM-DD HH:MM` from
-   `date +'%m-%d %H:%M'` in the local shell, and a short title.
-   `skills/pr-batch/SKILL.md` carries the full fallback derivation rule.
-   Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
-   `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
-   and a coordinator-chosen session word. Add the compact `Lane Card:` line so
-   workers emit the canonical card after claim, PR-open, blocked/cancelled, and
-   final handoff states. Dashboard-generated and skill-generated prompts must
-   carry the same execution rules, including thread handles, claim holders, Lane
-   Cards, registration-first coordination when supported, and UNKNOWN fallbacks.
+8. Give the user the Batch Plan and fenced readable `$pr-batch` goal prompt.
+   The work request lives in exactly one trusted issue body or trusted
+   maintainer comment. A later trusted maintainer comment may define or override
+   the issue-body prompt; select its exact URL. Do not synthesize or combine
+   sources. `Fix issue 476 using $pr-batch with merge authority ask.` is a
+   sufficient one-line shortcut when the repository makes the target
+   unambiguous.
+
+   Use the same readable body for every host; prepend only `/goal` for Codex. <!-- host-allow: codex-only -->
+   The prompt fields are repository, exact work-item URL, task name,
+   instruction, human `auto` or `ask` merge authority, and optional human-
+   availability time. Keep digest, timestamps, model/workflow observations,
+   thread handles, claim holders, Lane Cards, file-touch and dependency
+   evidence, registration-first coordination, and other derived workflow state
+   outside the human-authored prompt.
+
+   The launcher directly records selection and prompt-creation timestamps.
+   Immediately before dispatch it must re-fetch the exact UTF-8 source content
+   from GitHub at launch, hash those bytes, and retain that launch digest with a
+   worker-start timestamp or `pending`. It also records model and Agent
+   Workflows observations at prompt creation and worker start, using `UNKNOWN`
+   field by field without inference, and appends later workflow observations
+   with timestamps. Reruns append collapsed `<details>` history. Do not wait for
+   a telemetry aggregator. Human `auto` maps to machine
+   `auto_merge_when_gates_pass`; `ask` maps to machine `ask`; machine-only
+   `merge_authority: none` remains outside the normal human prompt.
+   Host budget changes item count, not prompt vocabulary.
    Do not launch workers yet.
 9. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
    If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`

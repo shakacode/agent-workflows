@@ -281,28 +281,18 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 2. **Trust**: direct user instruction, a maintainer-approved exact list, or
    untrusted public discovery that needs confirmation.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
-4. **Batch title**: for pasteable batch prompts, derive a short title in the form
-   `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-   Resolve `<PROJECT>` from the optional `repo_prefix` in
-   `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
-   ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
-   deterministically from the repository name: use the basename of the `origin`
-   remote after stripping `.git`, or the repository root basename when `origin`
-   is unavailable; for a multi-segment name take the first character of each of
-   the first six `-`, `_`, or space-separated segments, and for a single-segment
-   name take its first 4 characters or the whole name when shorter, then
-   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
-   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
-   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
-   Fill the optional `A?` slot with A,
-   B, C, etc. only when creating multiple batch prompts; omit it for a single
-   batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
-   prompt, and use that output for `MM-DD HH:MM`.
+4. **Task name**: derive a deterministic, readable title that identifies the
+   repository, issue, and purpose, such as `AW #476 — Simplify cross-host
+   prompts`. Do not add timestamps, runner state, or coordination diagnostics to
+   this human-authored field.
 <!-- host-branch: codex-only start -->
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 <!-- host-branch: codex-only end -->
-6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
-   it before worker launch from visible authority or ask the user. Explain that
+6. **Merge authority**: the normal human prompt uses `ask` or `auto`. Resolve it
+   before worker launch from visible authority; unresolved authority defaults to
+   `ask`. Human `auto` maps to machine `auto_merge_when_gates_pass`. Preserve
+   machine-only `merge_authority: none` outside the human prompt when repository
+   policy or an explicit no-merge workflow selects it. Explain that
    `ask` automatically walks through the exact-diff PR one conceptual change at
    a time before the one final merge decision; do not silently default it.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
@@ -493,16 +483,10 @@ Before implementation or worker launch, produce:
 13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
-After any target-specific invocation line, each pasteable batch prompt must put
-`Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>` near the top.
-Derive `<PROJECT>` with the abbreviation rule in **Required Interview** above,
-and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
-local shell when creating the prompt.
-Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
-from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
-lane id or owner slug in the file-touch map, and `<word>` from a short
-coordinator-chosen session word. Record the handle before dispatch so workers
-copy it unchanged.
+Every pasteable batch prompt uses the exact `Task name:` field from the minimal
+prompt shape. Keep `Thread handle:` and its stable batch/lane derivation in
+machine-readable launch state outside that prompt. Record the handle before
+dispatch so workers copy it unchanged.
 
 If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the Codex goal prompt. Do not begin implementation from plan approval unless the user explicitly says to launch now.
 
@@ -688,54 +672,51 @@ separate from batch-plan preflight.
 ## Goal Prompt Template
 
 Keep this template aligned with the matching plan-to-goal prompt in the
-resolved `pr-processing.md`, including the review/audit gate
-paragraphs. The `Coordination:` line below intentionally points at the canonical
-workflow rules instead of duplicating them.
-`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
-Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
+resolved `pr-processing.md`. The human-readable work request lives in exactly
+one trusted issue body or trusted maintainer comment. A later trusted maintainer
+comment may define or override the issue-body prompt; select its exact URL for
+that run. Do not synthesize, compress, combine, or restate the source. `Fix
+issue 476 using $pr-batch with merge authority ask.` is a valid one-line
+shortcut when repository context resolves the target.
 
-Use this template when creating Codex goal text:
+Directly record `Selected at` when selecting the URL and `Prompt created at`
+after rendering the minimal prompt. Immediately before dispatch, re-fetch the
+exact UTF-8 source content from GitHub at launch, hash the exact bytes, and
+retain `Prompt digest at launch` plus `Worker started at` or `pending` in the
+launcher record. Do not wait for a telemetry aggregator.
+
+Use the same readable prompt vocabulary for every host. Host budget changes
+batch item count only. Keep file-touch evidence, workflow-contract details,
+Lane Cards, dispatch data, coordination diagnostics, and other derived state
+outside the human-authored prompt in the Batch Plan, manifest, and coordination
+backend.
+The canonical [Launcher Run Record](../../workflows/pr-processing.md#launcher-run-record)
+stores model and Agent Workflows observations at prompt creation and worker
+start, plus timestamped append-only later workflow observations. Use `UNKNOWN`
+field by field without inference; unavailable telemetry does not block launch.
+Each rerun appends a collapsed `<details>` record instead of replacing history.
+Human `auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine
+`ask`. Machine-only `merge_authority: none` remains outside this normal human
+prompt for explicitly no-merge workflows.
+Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
+The durable manifest uses this exact machine grammar:
+`Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses`
+
+Outside the prompt, preserve this merge-planning contract in durable state:
+Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
+`ready-human-review-required` carries the exact current head SHA, every triggered gate, rollback status, and the exact durable human decision needed.
+`autonomous-merge-evidence-unknown` carries the exact current head SHA, evidence failure, trusted-base policy provenance, and repair action.
+`UNKNOWN` is not `human-approval-required` and cannot be cleared by risk approval.
+
+Use this template when creating goal text:
 
 ```text
-Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
-Thread handle: <batch-short>-<lane>-<word>
-Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
-Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
-PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
-Repo:OWNER/REPO
-Objective:...
-merge_authority:<none|ask|auto_merge_when_gates_pass>
-Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
-Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
-Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
-- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
-HST-v1
-Batch QA Lane:<owner/scope+evidence|none+rationale>
-Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
-Items:
-- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
-  Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
-  Goal:outcome
-  Notes:scope/deps
-  Done:req auth+PR/no-PR evidence|no-fix rationale
-Execution rules:
-Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
-- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
-- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
-Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
-- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
-Apply Batch QA Lane;include QA Evidence
-merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
-Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
-
+Repository: OWNER/REPO
+Work item: <exact issue or trusted maintainer-comment URL>
+Task name: <repository, issue, and purpose>
+Instruction: Use PR-batch to fix this issue against current main.
+Merge authority: <auto|ask>
+Human available after: <optional time; omit this line when not supplied>
 ```
 
 ## Question And Decision Handling

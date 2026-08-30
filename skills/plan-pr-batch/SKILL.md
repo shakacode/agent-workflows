@@ -191,10 +191,12 @@ the whole launch before dispatch.
      Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
      Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
-   - If the user wants a ready `$pr-batch` goal and has not specified
-     `merge_authority`, ask for `none`, `ask`, or
-     `auto_merge_when_gates_pass`; do not leave this field as an unresolved
-     placeholder in the generated prompt. Explain that `ask` automatically
+   - If the user wants a ready `$pr-batch` goal and has not specified merge
+     authority, default the normal human prompt to `ask`; accept explicit
+     `auto`. Map those values to machine `ask` and
+     `auto_merge_when_gates_pass`. Preserve an explicitly selected machine-only
+     `merge_authority: none` in durable state outside the normal human prompt.
+     Do not leave the human field unresolved. Explain that `ask` automatically
      walks through the exact-diff PR one conceptual change at a time before its
      one final merge decision.
    - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list. Treat an unbound direct prompt as planning/reconciliation input only; do not turn it into an implementation lane unless the complete durable ad-hoc override record is already present in trusted input.
@@ -274,11 +276,11 @@ the whole launch before dispatch.
      known `source_patch_inspection`, `collision_domain_mapping`,
      `semantic_adaptation_notes`, `validation_review_plan`, and
      `evidence_templates`; missing or `UNKNOWN` preparation fails closed.
-     Put both complete artifacts in the Batch Plan outside the compact goal
+     Put both complete artifacts in the Batch Plan outside the human-authored
      prompt. Name `STAGE_DEPENDENCY_PLAN_PATH`, `STAGE_DEPENDENCY_PLAN_ID`, and
-     the inline live replay or its durable reference in the goal's `Scope` data;
-     persist them with stable planning state. Backend storage is optional, and
-     backend `n/a` uses a coordinator-owned local plan file. Resolve
+     the inline live replay or its durable reference in durable machine-readable
+     launch state; persist them with stable planning state. Backend storage is
+     optional, and backend `n/a` uses a coordinator-owned local plan file. Resolve
      `PR_BATCH_SKILL_DIR` in this order: explicit environment variable; the
      loaded skill's base directory when the host exposes it; repo-local
      `.agents/skills/pr-batch`; then stop with a precise blocker if the helper is
@@ -574,103 +576,36 @@ the whole launch before dispatch.
 4. Output
    <!-- prompt-size-check: scripts/check_goal_prompt_size.rb pins selected wording in this section. -->
    - Return a concise "Batch Plan" and a fenced "Goal Prompt for pr-batch".
-   - Determine the prompt target before writing the fenced prompt. The target is
-     the agent host/chat where the generated prompt will be pasted, not the
-     worker model or subagent implementation. An explicit user-requested paste
-     destination wins over host detection; use `codex` when the user asks for a
-     Codex prompt or Codex goal, or with no explicit paste target, the current
-     host is Codex. Use `claude` when the user asks for a Claude prompt/chat, or
-     with no explicit paste target, the current host is Claude or Claude Code.
-     Otherwise use `generic`; report when the host was not detectable or when no
-     target-specific wrapper is available for the detected host. Host detection
-     is heuristic: prefer host-exposed runtime signals over installed-home
-     auto-detection, and choose `generic` when both Codex and Claude are
-     plausible.
-   - After the target-specific invocation line, put a short `Batch title:` near
-     the top of every pasteable batch prompt:
-     `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-     Resolve `<PROJECT>` from the optional `repo_prefix` in
-     `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
-     ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
-     deterministically from the repository name: use the basename of the
-     `origin` remote after stripping `.git`, or the repository root basename
-     when `origin` is unavailable; for a multi-segment name take the first
-     character of each of the first six `-`, `_`, or space-separated segments,
-     and for a single-segment name take its first 4 characters or the whole name
-     when shorter, then uppercase the result (`agent-workflows` -> `AW`,
-     `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` ->
-     `WEB3`, `3d-tiles` -> `3T`). An invalid configured `repo_prefix` is a
-     blocker; do not silently fall back.
-     Include A, B, C, etc. only when creating multiple batch
-     prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
-     when creating the prompt, and use that output for `MM-DD HH:MM`.
-   - Add `Thread handle:` as the first worker-specific line. Derive
-     `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
-     suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
-     `<word>` from a short coordinator-chosen session word. Record the handle
-     before dispatch so workers copy it unchanged.
-   - Add a compact `Lane Card:` line. Workers emit the canonical Lane Card
-     after a successful claim, on blocked/cancelled state, and as the final
-     handoff header. The actor that opens or updates the PR emits the PR-open
-     Lane Card when the PR is opened. It records preferred model/effort,
-     observed host/model/effort, the execution-envelope receipt, the unchanged
-     repository-qualified canonical launch identity, and `Ad-hoc override:
-     none` or the complete accepted durable override record; unavailable route
-     observations are `UNKNOWN`, while canonical launch or override evidence
-     may not be. The claim holder and `dashboard_url`
-     degrade to `UNKNOWN` when the backend does not provide them, while `pr_url`
-     may use the verified GitHub PR URL from PR-open/current PR state.
-   - For the `codex` target, keep the fenced goal prompt under 4000 characters
-     total with at least 300 characters of headroom, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
-     For the `claude` or `generic` target, do not prepend the Codex-only
-     `/goal` wrapper; keep the shared `$pr-batch` invocation and do not apply Codex's strict 4000-character limit. <!-- host-allow: codex-only -->
-     Still keep the prompt compact, measured, under 8000 characters, and free of
-     bulky evidence.
-   - Measure the actual target-specific prompt, do not eyeball it: use the guard
-     script below, or pipe only the extracted fence body to a
-     character-counting command such as `ruby -e 'print STDIN.read.length'`.
-     Do not use byte-oriented counts such as `wc -c`.
-   - Use compact one-line item goals, short worker notes, and canonical workflow references instead of copied
-     audit evidence, repeated issue text, or long rule explanations.
-   - Include the coordinator model/effort preference and every worker
-     model/effort preference, collated by initial/escalation pair with a terse
-     rationale in the Batch Plan and lane ids in the goal prompt. Use exact
-     pairs when the roster is known and dispatch-resolved classes when it is
-     not. Treat unavailable preferences as `UNKNOWN`; the dispatcher may use a
-     different available route without blocking launch or readiness.
-     Require `MODEL_ESCALATION_REQUEST` before a worker moves
-     to a stronger route as a deliberate escalation, while ordinary host route
-     substitution remains advisory metadata.
-     When route entries themselves cause the overflow or breach the 300-character
-     headroom floor, split along route groups so each generated goal carries only
-     the included lanes' complete routes;
-     preserve omitted lanes and routes in the Batch Plan for later prompts.
-   - Before responding, measure only the text inside the goal-prompt fence,
-     including the `/goal` line for Codex and excluding the fence lines, and <!-- host-allow: codex-only -->
-     print `Goal prompt character count: N characters (target: codex|claude|generic)`
-     after the fence.
-   - For Codex, if the measured prompt is 4000 characters or more, shrink by moving detail to the Batch Plan. Also split
-     before overflow when less than 300 characters of headroom remain. Output only
-     the first ready goal; list omitted ready items in the Batch Plan for later goal prompts.
-   - For Claude or generic targets, do not split solely because the prompt is
-     4000 characters or more. Split only when the prompt is too large for the
-     target host, too bulky to review safely, or would hide ownership and
-     collision boundaries.
-   - Measure the actual filled template overhead when the prompt is near the
-     character budget; do not rely on a fixed estimate. Prefer splitting into
-     multiple goals over trimming the safety, ownership, or review content.
-   - Keep full path evidence in the Batch Plan when it would bloat the prompt,
-     but do not leave the worker handoff with an external-only pointer. In the
-     goal prompt, use the narrowest unambiguous directory/pattern summary that
-     still proves ownership, and include any exceptions, renames, deletes, or
-     collision-relevant exact paths inline. If compression would hide a collision
-     or make ownership unclear, mark the item `UNKNOWN` and run it serially.
-   - Keep each filled entry terse (target ~150 chars for `Worker notes` and `Done when`). The worker reads the issue/PR URL for full detail; push evidence and audit notes to the Batch Plan instead.
-   - If the Codex prompt will not fit, split it into smaller goals and output only the first ready goal.
+   - Determine the prompt target only to select the Codex `/goal` wrapper and <!-- host-allow: codex-only -->
+     the host-aware item cap. An explicit paste destination wins over host
+     detection. Installed homes are not runtime evidence; use `generic` when
+     the active host is ambiguous.
+   - Choose exactly one trusted issue body or trusted maintainer comment as the
+     source for each run. A later trusted maintainer comment may define or
+     override the issue-body prompt. Select its exact comment URL. Do not
+     synthesize a restatement or combine multiple sources.
+   - Directly record `Selected at` when selecting the URL and `Prompt created
+     at` after rendering the prompt. Immediately before dispatch, re-fetch the
+     exact UTF-8 source content from GitHub at launch, hash those exact bytes,
+     and append the launch digest plus `Worker started at` timestamp or
+     `pending` to the launcher record. Do not wait for a telemetry aggregator.
+   - The launcher record, outside the human-authored prompt, also records model
+     and Agent Workflows values at prompt creation and as observed by the worker
+     at start. Use `UNKNOWN` field by field without inference; unavailable
+     telemetry does not block launch. Append timestamped later workflow
+     observations and append a collapsed `<details>` record for every rerun.
+   - Keep preferred model/effort, file-touch evidence, routes, dependencies,
+     lifecycle, coordination, QA, review, and completion contracts in the Batch
+     Plan or machine-readable launch state outside the human-authored prompt.
+     The durable manifest uses this exact machine grammar:
+     `Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses`
+   - Use the same readable prompt vocabulary for every host. If a launch would
+     exceed a host budget, reduce its item count and produce another launch;
+     never compress the human request or derived contracts into telegraphic
+     fields.
    - Do not start `$pr-batch` unless the user asks; then hand them the fenced
-     goal prompt and any Batch Plan path appendix that the prompt explicitly
-     depends on, in the same request.
-   - Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+     goal prompt and its Batch Plan in the same request.
+   - Response order: Batch Plan; generated goal prompt; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
    - Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt.` and `Next: Paste the prompt into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
 
 Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only planning chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
@@ -706,12 +641,12 @@ backend must say so in the declaration.
 
 - Objective:
 - Repository:
-- Batch title(s):
+- Task name(s): deterministic repository, issue, and purpose titles used by the human prompt and host UI.
 - Included items:
   - `PR #N` or `Issue #N`: title, URL, state, role in batch
   - Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch
 - Excluded or deferred:
-- File-touch map and path evidence:
+- Internal collision evidence: derived by tools and retained outside the human prompt; never ask the maintainer to author a file-touch map.
 - Dependencies and sequencing:
 - Subagent split:
 - Planning-pass model/effort assessment: classification, recommended route,
@@ -752,8 +687,7 @@ backend must say so in the declaration.
 - Batch-plan preflight v1 envelope/result reference:
 - Verification expectations:
 - Expected readiness states or unresolved `UNKNOWN` facts:
-- Prompt sizing: `Goal prompt character count: N characters (target: codex|claude|generic)`; note any split fallback
-  and keep omitted item details here, not in the goal prompt.
+- Launcher run record: exact work-item URL; selected, prompt-created, and worker-started timestamps; launch-time source digest; prompt-creation and worker-observed model/workflow values; append-only later observations and rerun history.
 - Open questions:
 
 ## Batch Coordinator Launch Mode
@@ -782,7 +716,7 @@ A created task receives the exact generated goal prompt, the saved repository
 project, the host's normal isolated-worktree default for Git repositories unless
 the user explicitly requests the saved checkout, and the user's configured
 default model/effort unless the user explicitly requests an override. Apply the
-normalized `Batch title:` as its visible title at creation, or through the host's
+resolved `Task name:` as its visible title at creation, or through the host's
 rename capability when the task already exists under a less clear name; do not
 leave the visible title to prompt auto-titling while a title capability exists.
 
@@ -812,66 +746,51 @@ On a Codex host, task creation may return either an immediately available
 one as provisional and rerecord the durable identifier once the worktree
 materializes. A provisional identifier that never resolves is `UNKNOWN` and a
 follow-up, not a silent success. The same host may expose a rename capability,
-which is what applies the normalized `Batch title:` to an already-created task.
+which is what applies the resolved `Task name:` to an already-created task.
 
 ## Goal Prompt for pr-batch
 
-Use this template and fill it with the verified items. The fenced template below
-is the shared prompt body. For the `codex` target, prepend only the `/goal` line <!-- host-allow: codex-only -->
-before this body. For the `claude` or `generic` target, use the body as-is so the
-prompt starts with `Use $pr-batch to complete this batch with subagents.`
-Keep bulky evidence and long validation notes outside the prompt.
-`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+The human-readable work request lives in exactly one trusted issue body or
+trusted maintainer comment. A later trusted maintainer comment may define or
+override the issue-body prompt. Do not synthesize or restate it. `Fix issue 476
+using $pr-batch with merge authority ask.` is a valid one-line shortcut when
+repository context resolves the target.
+
+Select the exact source URL and record `Selected at`. Record `Prompt created
+at` after rendering the prompt. Immediately before dispatch, re-fetch the exact
+UTF-8 source content from GitHub at launch, calculate its SHA-256 digest, and
+retain it in the append-only launcher record with the worker-start timestamp or
+`pending`. Do not wait for a telemetry aggregator.
+
+Use the same readable prompt vocabulary for every host. Host budget changes
+batch item count only. Keep file-touch evidence, workflow-contract details,
+Lane Cards, dispatch data, coordination diagnostics, and other derived state
+outside the human-authored prompt in the Batch Plan, manifest, and coordination
+backend. For the `codex` target, prepend only `/goal`; other hosts use the shared <!-- host-allow: codex-only -->
+body as-is.
+The canonical [Launcher Run Record](../../workflows/pr-processing.md#launcher-run-record)
+stores model and Agent Workflows observations at prompt creation and worker
+start, plus timestamped later workflow observations. Use `UNKNOWN` field by
+field without inference; unavailable telemetry does not block launch. Reruns
+append collapsed `<details>` history.
+Human `auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine
+`ask`. Machine-only `merge_authority: none` remains outside this normal human
+prompt for explicitly no-merge workflows.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
-Before generating the prompt, preserve this merge-planning contract:
-Ordinary readiness is necessary but not sufficient for autonomous merge;
-evaluate exact-head autonomous-merge eligibility after every ordinary gate
-passes. `ready-human-review-required` carries the exact current head SHA, every
-triggered gate, rollback status, and the exact durable human decision needed.
-`autonomous-merge-evidence-unknown` carries the exact current head SHA,
-evidence failure, trusted-base policy provenance, and repair action. `UNKNOWN`
-is not `human-approval-required` and cannot be cleared by risk approval.
+Outside the prompt, preserve this merge-planning contract in durable state:
+Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
+`ready-human-review-required` carries the exact current head SHA, every triggered gate, rollback status, and the exact durable human decision needed.
+`autonomous-merge-evidence-unknown` carries the exact current head SHA, evidence failure, trusted-base policy provenance, and repair action.
+`UNKNOWN` is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
-Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
-Thread handle: <batch-short>-<lane>-<word>
-Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
-Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
-PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
-Repo:OWNER/REPO
-Objective:...
-merge_authority:<none|ask|auto_merge_when_gates_pass>
-Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
-Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
-Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
-- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
-HST-v1
-Batch QA Lane:<owner/scope+evidence|none+rationale>
-Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
-Items:
-- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
-  Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
-  Goal:outcome
-  Notes:scope/deps
-  Done:req auth+PR/no-PR evidence|no-fix rationale
-Execution rules:
-Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
-- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
-- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
-Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
-- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
-Apply Batch QA Lane;include QA Evidence
-merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
-Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
+Repository: OWNER/REPO
+Work item: <exact issue or trusted maintainer-comment URL>
+Task name: <repository, issue, and purpose>
+Instruction: Use PR-batch to fix this issue against current main.
+Merge authority: <auto|ask>
+Human available after: <optional time; omit this line when not supplied>
 ```
 
 ## Common Mistakes
@@ -898,7 +817,7 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
 - Do not treat model grouping as lane grouping; collate the plan by exact pair
   without combining ownership or weakening dependencies and active-reservation
   coordination.
-- Do not eyeball the goal-prompt length; apply the Output-section size gate and split Codex prompts into smaller goals if they are over budget.
+- Do not compress prompt language for a host budget; reduce the item count and keep the shared readable prompt shape.
 
 ## Self-Check
 

@@ -46,7 +46,7 @@ PATH_EXPANSION_STOPS =
   "release policy; it collides with another active lane and cannot be safely coordinated; it exposes consequential " \
   "ambiguity; or it weakens verification. An omitted path alone is not such a condition."
 
-COMPACT_WORKER_CONTRACT =
+COMPRESSED_WORKER_RESTATEMENT =
   "Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/" \
   "verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN"
 
@@ -91,7 +91,7 @@ FULL_CONTRACT_SURFACES = {
   "docs/pr-batch-skills.md" => File.join(ROOT, "docs/pr-batch-skills.md")
 }.freeze
 
-COMPACT_SURFACES = FULL_CONTRACT_SURFACES.slice(
+PROMPT_AUTHORING_SURFACES = FULL_CONTRACT_SURFACES.slice(
   "skills/plan-pr-batch/SKILL.md",
   "skills/pr-batch/SKILL.md",
   "workflows/pr-processing.md"
@@ -100,7 +100,7 @@ COMPACT_SURFACES = FULL_CONTRACT_SURFACES.slice(
 class FileExpansionContractTest < Minitest::Test
   def setup
     @full_contract_surfaces = FULL_CONTRACT_SURFACES.transform_values { |path| File.read(path, encoding: "UTF-8") }
-    @compact_surfaces = COMPACT_SURFACES.transform_values { |path| File.read(path, encoding: "UTF-8") }
+    @prompt_authoring_surfaces = PROMPT_AUTHORING_SURFACES.transform_values { |path| File.read(path, encoding: "UTF-8") }
   end
 
   def test_public_surfaces_allow_evidence_backed_in_repository_path_expansion
@@ -114,18 +114,10 @@ class FileExpansionContractTest < Minitest::Test
     end
   end
 
-  def test_compact_worker_contracts_are_mirrored_and_do_not_block_on_a_missing_path
-    contracts = @compact_surfaces.transform_values do |text|
-      text.lines.grep(/^Workers:/).map(&:strip).uniq
+  def test_human_prompt_surfaces_drop_the_compressed_worker_restatement
+    @prompt_authoring_surfaces.each do |label, text|
+      refute_includes text, COMPRESSED_WORKER_RESTATEMENT, label
     end
-
-    contracts.each do |label, lines|
-      assert_equal [COMPACT_WORKER_CONTRACT], lines, label
-    end
-    assert_includes COMPACT_WORKER_CONTRACT, "path+resv;multi=>coord"
-    assert_includes COMPACT_WORKER_CONTRACT, "stop:contradiction/ambig/scope-risk/verify-down"
-    assert_includes COMPACT_WORKER_CONTRACT, "Verify live GitHub before edits"
-    assert_includes COMPACT_WORKER_CONTRACT, "unverifiable=>UNKNOWN"
   end
 
   def test_worker_subagent_restatement_preserves_every_material_stop

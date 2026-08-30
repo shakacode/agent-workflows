@@ -156,9 +156,14 @@ class UserFacingCoordinationContractTest < Minitest::Test
   end
 
   def test_coordination_changes_preserve_exact_gmcc_v4_merge_authority_clauses
-    [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
+    workflow = File.read(File.join(ROOT, WORKFLOW), encoding: "UTF-8")
+    assert_includes workflow, GMCC_V4, WORKFLOW
+
+    [PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
-      assert_includes text, GMCC_V4, path
+      refute_includes text, "GMCC-v4:", path
+      assert_includes text, "ready-human-review-required", path
+      assert_includes text, "autonomous-merge-evidence-unknown", path
       refute_includes text, "GMCC-v3:", path
     end
   end

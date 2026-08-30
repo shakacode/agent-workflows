@@ -1089,7 +1089,7 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
-  def test_goal_prompts_describe_preferences_observations_and_ordinary_activation
+  def test_goal_prompts_keep_directional_observations_in_the_launcher_record
     prompts = {
       "workflow" => extract_prompt(read_repo_file("workflows/pr-processing.md"), "### Plan To Goal Handoff"),
       "pr-batch" => extract_prompt(read_repo_file("skills/pr-batch/SKILL.md"), "## Goal Prompt Template"),
@@ -1097,13 +1097,24 @@ class ModelRoutingContractTest < Minitest::Test
     }
 
     prompts.each do |label, prompt|
-      assert_includes prompt, "Coordinator model/effort preference:", label
-      assert_includes prompt, "Worker model/effort preferences:", label
-      assert_includes prompt, "Observed host/model/effort:", label
-      assert_includes prompt, "ordinary pending/active lifecycle", label
+      assert_includes prompt, "Task name:", label
+      refute_match(/observed|model|workflow|UNKNOWN/i, prompt, label)
+      refute_includes prompt, "Coordinator model/effort preference:", label
+      refute_includes prompt, "Worker model/effort preferences:", label
+      refute_includes prompt, "ordinary pending/active lifecycle", label
       refute_includes prompt, "Launch assurance:", label
       refute_includes prompt, "exact-policy", label
     end
+
+    workflow = read_repo_file("workflows/pr-processing.md")
+    launcher_record = workflow.split("### Launcher Run Record", 2).fetch(1).split("### ", 2).first
+    assert_includes launcher_record, "Model at prompt creation: <observed value or UNKNOWN>"
+    assert_includes launcher_record, "Model observed by worker: <observed value or UNKNOWN>"
+    assert_includes launcher_record, "Workflow at prompt creation: <version or UNKNOWN>"
+    assert_includes launcher_record, "Workflow observed at worker start: <version or UNKNOWN>"
+    assert_includes launcher_record, "Later workflow observations: <timestamped append-only entries or none>"
+    assert_includes launcher_record, "field by field"
+    assert_includes launcher_record, "does not block launch"
   end
 
   def test_dispatcher_helper_is_portable_unsigned_and_preserves_dispatcher_fencing
