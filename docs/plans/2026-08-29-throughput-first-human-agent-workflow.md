@@ -46,6 +46,10 @@ At the 2026-08-29 snapshot:
   agent recovered from a spilled file. Compact, field-selected queries should
   be the default.
 
+This is a frozen historical baseline, not current repository state. Use
+[#563](https://github.com/shakacode/agent-workflows/issues/563) and its successors
+for the current portfolio inventory.
+
 These observations establish a credible throughput problem. They do not prove
 that every safety control is unnecessary.
 
@@ -55,6 +59,9 @@ that every safety control is unnecessary.
 - **P1 — Stabilize now:** R3 through R8 and R10 through R13.
 - **P2 — Learn from use:** R9 and R14.
 - **Deferred optimization:** automated scheduling in R2.
+
+In this document, SHALL is required, SHOULD is the expected default unless a
+documented reason applies, and MAY is optional.
 
 ## Requirements
 
@@ -236,12 +243,15 @@ or `reverted`. A completed worker that is waiting for integration therefore
 does not disappear into an ambiguous terminal state. The normal progression is
 `launch-pending` to `active`, optionally through `waiting` or `blocked`, then to
 `PR-ready` or `completed`; resumed work returns to `active` and never rewrites
-the earlier history.
+the earlier history. Execution-slot status is recorded separately as `queued`,
+`occupied`, `released`, or `not-applicable`, so task state never implies capacity
+that the host did not actually allocate.
 
 ### R12 — In-flight portfolio control (P1)
 
-The project SHALL periodically inventory open PRs and active tasks, classifying
-each as accelerate, continue, hold, replace, close, or integration-ready.
+The project SHALL inventory open PRs and active tasks once per attended session
+and before each unattended launch wave, classifying each as accelerate,
+continue, hold, replace, close, or integration-ready.
 
 Classification uses current live state, value, explicit semantic dependencies,
 conflicts, remaining work, and expected integration cost. Age and sunk tokens
@@ -346,6 +356,31 @@ contains the details, so the prompt often points to it.
 The durable GitHub record mapping an issue to runner, machine, task, branch,
 PR, state, and meaningful blocker.
 
+**Merge authority**
+
+The per-task choice to merge automatically after required gates (`auto`) or ask
+the human first (`ask`). It does not grant production or release authority.
+
+**Delivery policy**
+
+The repository's check strictness. `fast`, `balanced`, and `strict` are
+provisional aliases; they do not grant merge authority.
+
+**Attention interval**
+
+How long the human expects to be unavailable while agents continue with
+reversible best judgment.
+
+**Run ID and idempotency key**
+
+The unique execution identity and the stable retry key that prevents the same
+launch intent from creating duplicate tasks.
+
+**Launch-pending**
+
+The durable state written before task creation. It preserves launch intent
+until the host task ID can be attached.
+
 **Worktree**
 
 A separate Git checkout used so concurrent tasks do not edit the same working
@@ -414,8 +449,12 @@ Agent run: Codex on M5 — active — <task link>
 
 - Run ID: <ULID or host-generated globally unique ID>
 - Idempotency key: <stable key reused by launch retries>
+- Resolved task name: <repository, issue, and purpose>
 - Prompt: <exact issue or comment URL>
 - Prompt digest: <SHA-256 of the exact source content observed at launch>
+- Selected at: <timestamp>
+- Prompt created at: <timestamp>
+- Worker started at: <timestamp or pending>
 - Runner: <observed value>
 - Model at prompt creation: <observed value or UNKNOWN>
 - Model observed by worker: <observed value or UNKNOWN>
@@ -425,6 +464,7 @@ Agent run: Codex on M5 — active — <task link>
 - Branch and PR: <values or pending>
 - Resolved merge authority: <auto or ask>
 - State: <launch-pending, active, waiting, blocked, PR-ready, or completed>
+- Execution slot: <queued, occupied, released, or not-applicable>
 - Outcome: <pending, merged, closed, failed, or reverted>
 - Promotion/release authority: <not granted or separately authorized reference>
 - Last material update: <timestamp>
