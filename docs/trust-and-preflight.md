@@ -187,8 +187,19 @@ malformed, `UNKNOWN`, or mismatched values leave the ordinary high-risk blocker
 in place.
 
 The helper treats worktree policy only as bootstrap. It verifies the configured
-remote's stored URL, then fetches that URL and exact ref into a new temporary
-bare repository. The fetch runs with system/global and repository/worktree Git
+remote's stored URL, then independently authenticates the ref against that
+remote's advertised default `HEAD`. A nondefault protected base requires the
+operator-owned `PR_SECURITY_PREFLIGHT_TRUSTED_BASE_REF` environment seam, whose
+value must be one full `refs/heads/...` ref and must never come from repository
+configuration or PR content. The worktree policy ref must exactly match that
+independent anchor before the helper fetches the ref into a new temporary bare
+repository. When remote `HEAD` supplies the anchor, its advertised object ID
+must also match the fetched commit so concurrent movement fails closed. Before
+acceptance, the invoking checkout's `HEAD` must equal that freshly fetched base
+commit; an attached checkout must also be on the anchored full ref, while a
+detached checkout is accepted only at that exact commit. These checks prevent a
+PR branch from selecting and self-authenticating its own trust anchor. The fetch
+runs with system/global and repository/worktree Git
 configuration absent, a minimal inherited environment, URL rewrites absent,
 SSH user configuration disabled, SSH batch mode enabled, and transport
 restricted to HTTPS/SSH. It resolves one absolute trusted Git executable before
@@ -206,7 +217,11 @@ variables are redirected; canonical ambient temp roots are additive.
 HTTPS trusted-base verification is deliberately credential-free and therefore
 supports public repositories only. Private repositories must configure the
 validated trusted remote with GitHub SSH; the isolated fetch may use the
-existing `SSH_AUTH_SOCK`. It does not forward ambient credential helpers,
+existing `SSH_AUTH_SOCK`. Fixed OpenSSH installation paths are tried by default;
+an operator with a nonstandard installation may set
+`PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE` to an absolute executable, which
+is canonicalized and rejected when it is inside the repository or a temporary
+directory. It does not forward ambient credential helpers,
 tokens, or askpass programs.
 Plain HTTP and non-GitHub hosts are always rejected; there is no environment,
 configuration, or test-selection exception. Known local or worktree transport
@@ -226,7 +241,9 @@ block the receipt.
 Success emits a separate one-line JSON receipt beginning with
 `TRUSTED_BASE_HIGH_RISK_ACCEPTED`. It binds the repository, PR number, head SHA,
 merge SHA, fetched base SHA, fetched policy source, configured remote/ref, and
-every detected high-risk path. It is not an `Acknowledged security preflight
+every detected high-risk path, plus the independent ref-anchor source and the
+advertised object ID when remote `HEAD` supplied the anchor. It is not an
+`Acknowledged security preflight
 findings` record. A supplied `--acknowledge-risk ...:high-risk-files` remains the
 manual path and does not emit the trusted-base receipt.
 

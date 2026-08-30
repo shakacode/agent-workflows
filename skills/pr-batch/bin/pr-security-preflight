@@ -4,6 +4,7 @@
 require "json"
 require "open3"
 require "optparse"
+require "shellwords"
 # Ruby versions before 3.2 do not load Set by default.
 # rubocop:disable Lint/RedundantRequireStatement
 require "set"
@@ -16,9 +17,12 @@ require "yaml"
 require_relative "../lib/git_probe_env"
 
 TRUSTED_GIT_EXECUTABLE_ENV = "PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE"
+TRUSTED_SSH_EXECUTABLE_ENV = "PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE"
+TRUSTED_BASE_REF_ENV = "PR_SECURITY_PREFLIGHT_TRUSTED_BASE_REF"
 TRUSTED_GIT_FIXED_TEMP_ROOTS = %w[
   /tmp /private/tmp /var/tmp /private/var/tmp /var/folders /private/var/folders
 ].freeze
+GIT_OBJECT_ID_PATTERN = /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/
 
 def trusted_git_repository_root
   current = File.realpath(Dir.pwd)
@@ -48,12 +52,16 @@ def trusted_git_temporary_roots
   end.uniq
 end
 
-def resolve_trusted_git_executable
-  prohibited_roots = [trusted_git_repository_root, *trusted_git_temporary_roots].filter_map do |path|
+def trusted_executable_prohibited_roots
+  [trusted_git_repository_root, *trusted_git_temporary_roots].filter_map do |path|
     File.realpath(path)
   rescue SystemCallError
     nil
   end
+end
+
+def resolve_trusted_git_executable
+  prohibited_roots = trusted_executable_prohibited_roots
   configured = ENV.fetch(TRUSTED_GIT_EXECUTABLE_ENV, nil)
   candidates = configured.nil? ? %w[/usr/bin/git /bin/git /usr/local/bin/git /opt/homebrew/bin/git] : [configured]
   candidates.each do |candidate|
@@ -75,9 +83,32 @@ def resolve_trusted_git_executable
   raise "no pinned system Git executable is available"
 end
 
+def resolve_trusted_ssh_executable
+  prohibited_roots = trusted_executable_prohibited_roots
+  configured = ENV.fetch(TRUSTED_SSH_EXECUTABLE_ENV, nil)
+  candidates = configured.nil? ? %w[/usr/bin/ssh /bin/ssh /usr/local/bin/ssh /opt/homebrew/bin/ssh] : [configured]
+  candidates.each do |candidate|
+    next unless File.absolute_path(candidate) == candidate
+    next unless File.file?(candidate) && File.executable?(candidate)
+
+    canonical = File.realpath(candidate)
+    next if prohibited_roots.any? { |root| canonical == root || canonical.start_with?("#{root}/") }
+
+    return canonical
+  rescue SystemCallError
+    next
+  end
+
+  if configured
+    raise "#{TRUSTED_SSH_EXECUTABLE_ENV} must name an absolute executable outside the repository and temporary directories"
+  end
+
+  "/nonexistent/ssh"
+end
+
 module TrustedGitState
   class << self
-    attr_accessor :executable, :local_env_vars
+    attr_accessor :executable, :local_env_vars, :ssh_executable
   end
 end
 
@@ -90,6 +121,10 @@ def trusted_git_local_env_vars
     trusted_git_executable,
     unsetenv_others: true
   )
+end
+
+def trusted_ssh_executable
+  TrustedGitState.ssh_executable ||= resolve_trusted_ssh_executable.freeze
 end
 
 GH_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GH_TIMEOUT_SECONDS", "60"))
@@ -332,7 +367,7 @@ def trusted_git_probe_env
   safe_directory_config = PrBatchGitProbeEnv.probe_env(ENV, trusted_git_local_env_vars).select do |name, value|
     value && name.match?(/\AGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)\z/)
   end
-  ssh_executable = %w[/usr/bin/ssh /bin/ssh].find { |path| File.executable?(path) } || "/nonexistent/ssh"
+  ssh_executable = trusted_ssh_executable
 
   inherited.merge(safe_directory_config).merge(
     "GIT_ALLOW_PROTOCOL" => "https:ssh",
@@ -342,7 +377,8 @@ def trusted_git_probe_env
     "GIT_NO_REPLACE_OBJECTS" => "1",
     "GIT_OPTIONAL_LOCKS" => "0",
     "GIT_SSH_COMMAND" =>
-      "#{ssh_executable} -F #{File::NULL} -o BatchMode=yes -o ProxyCommand=none -o ProxyJump=none",
+      "#{Shellwords.escape(ssh_executable)} -F #{Shellwords.escape(File::NULL)} " \
+      "-o BatchMode=yes -o ProxyCommand=none -o ProxyJump=none",
     "GIT_TERMINAL_PROMPT" => "0"
   )
 end
@@ -1197,6 +1233,20 @@ end
 WORKFLOW_CONFIG_PATH = ".agents/agent-workflow.yml"
 TRUSTED_BASE_POLICY_KEYS = Set.new(%w[enabled repository remote ref]).freeze
 
+def valid_trusted_base_ref?(ref)
+  ref.is_a?(String) && ref.match?(%r{\Arefs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*\z}) &&
+    !ref.include?("..") && !ref.include?("@{") && !ref.end_with?(".") && !ref.end_with?("/") &&
+    ref.split("/").none? { |component| component.empty? || component.start_with?(".") || component.end_with?(".lock") }
+end
+
+def operator_trusted_base_ref
+  configured = ENV.fetch(TRUSTED_BASE_REF_ENV, nil)
+  return [nil, nil] unless configured
+  return [configured, nil] if valid_trusted_base_ref?(configured)
+
+  [nil, "#{TRUSTED_BASE_REF_ENV} must name one full refs/heads/... ref"]
+end
+
 def duplicate_yaml_mapping_key(node)
   return unless node
 
@@ -1249,9 +1299,7 @@ def trusted_base_policy_from_yaml(yaml, repo:)
   end
 
   ref = policy["ref"]
-  unless ref.is_a?(String) && ref.match?(%r{\Arefs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*\z}) &&
-         !ref.include?("..") && !ref.include?("@{") && !ref.end_with?(".") && !ref.end_with?("/") &&
-         ref.split("/").none? { |component| component.empty? || component.start_with?(".") || component.end_with?(".lock") }
+  unless valid_trusted_base_ref?(ref)
     return [nil, "trusted_base_high_risk_acceptance.ref is malformed"]
   end
 
@@ -1400,6 +1448,31 @@ def trusted_github_https_remote?(remote_url)
   trusted_github_remote?(remote) && remote.fetch(:scheme, nil) == "https"
 end
 
+def trusted_remote_default_ref(remote_url)
+  stdout, stderr, status = capture_trusted_git_probe(
+    "ls-remote", "--symref", "--exit-code", remote_url, "HEAD",
+    timeout_seconds: TRUSTED_BASE_FETCH_TIMEOUT_SECONDS
+  )
+  unless status&.success?
+    return [nil, "could not resolve authenticated remote default ref: #{stderr.to_s.lines.first&.strip}"]
+  end
+
+  output = stdout.to_s.dup.force_encoding(Encoding::UTF_8)
+  records = output.valid_encoding? && !output.include?("\0") ? output.split("\n", -1) : []
+  terminated = records.length == 3 && records.pop.empty?
+  symref_match = records[0]&.match(%r{\Aref: (refs/heads/.+)\tHEAD\z})
+  object_match = records[1]&.match(/\A([0-9a-f]+)\tHEAD\z/)
+  ref = symref_match&.[](1)
+  sha = object_match&.[](1)
+  unless terminated && valid_trusted_base_ref?(ref) && sha&.match?(GIT_OBJECT_ID_PATTERN)
+    return [nil, "authenticated remote default ref probe returned malformed output"]
+  end
+
+  [{ ref:, sha:, source: "authenticated-remote-default-head" }, nil]
+rescue StandardError => e
+  [nil, "could not resolve authenticated remote default ref: #{e.message.lines.first&.strip}"]
+end
+
 def fetch_trusted_base(root, remote_url, ref)
   _stdout, stderr, status = capture_trusted_git_probe(
     "-C", root, "fetch", "--no-tags", "--force", remote_url, ref,
@@ -1418,7 +1491,7 @@ def fetch_trusted_base(root, remote_url, ref)
     "-C", root, "rev-parse", "--verify", "FETCH_HEAD^{commit}"
   )
   base_sha = stdout.to_s.strip
-  unless verify_status&.success? && base_sha.match?(/\A[0-9a-f]{40,64}\z/)
+  unless verify_status&.success? && base_sha.match?(GIT_OBJECT_ID_PATTERN)
     return [nil, "fetched trusted base could not be resolved: #{verify_stderr.to_s.lines.first&.strip}"]
   end
 
@@ -1466,7 +1539,7 @@ def exact_pr_provenance(result, repo:, policy_ref:)
     target["number"] == number && target["state"] == "MERGED" && !target["mergedAt"].to_s.empty? &&
     target["isCrossRepository"] == false && target.dig("headRepository", "nameWithOwner").to_s.casecmp?(repo) &&
     !graph_author.to_s.empty? && !graph_author.to_s.casecmp?("UNKNOWN") &&
-    head_sha.to_s.match?(/\A[0-9a-f]{40,64}\z/) && merge_sha.to_s.match?(/\A[0-9a-f]{40,64}\z/)
+    head_sha.to_s.match?(GIT_OBJECT_ID_PATTERN) && merge_sha.to_s.match?(GIT_OBJECT_ID_PATTERN)
   return [nil, "GraphQL PR repository/state/head/merge facts are missing or inconsistent"] unless required_graph_facts
   unless !graph_base_ref.to_s.empty? && graph_base_ref == expected_base_ref
     return [nil, "GraphQL PR base ref is missing or does not match trusted-base policy"]
@@ -1480,7 +1553,7 @@ def exact_pr_provenance(result, repo:, policy_ref:)
     rest["number"] == number && rest["state"] == "closed" && rest["merged"] == true &&
     !rest["merged_at"].to_s.empty? && rest.dig("head", "repo", "full_name").to_s.casecmp?(repo) &&
     rest.dig("base", "repo", "full_name").to_s.casecmp?(repo) &&
-    rest_head_sha.to_s.match?(/\A[0-9a-f]{40,64}\z/) && rest_merge_sha.to_s.match?(/\A[0-9a-f]{40,64}\z/)
+    rest_head_sha.to_s.match?(GIT_OBJECT_ID_PATTERN) && rest_merge_sha.to_s.match?(GIT_OBJECT_ID_PATTERN)
   return [nil, "REST PR repository/state/head/merge facts are missing or inconsistent"] unless required_rest_facts
   unless !rest_base_ref.to_s.empty? && rest_base_ref == expected_base_ref
     return [nil, "REST PR base ref is missing or does not match trusted-base policy"]
@@ -1695,6 +1768,14 @@ class TrustedBaseHighRiskOperations
     trusted_remote_url(root, policy, repo:, github_host:)
   end
 
+  def trusted_ref_anchor(remote_url, operator_ref:)
+    if operator_ref
+      return [{ ref: operator_ref, sha: nil, source: "operator-environment:#{TRUSTED_BASE_REF_ENV}" }, nil]
+    end
+
+    trusted_remote_default_ref(remote_url)
+  end
+
   def with_isolated_base(remote_url, ref, &)
     with_isolated_trusted_base(remote_url, ref, &)
   end
@@ -1715,10 +1796,39 @@ class TrustedBaseHighRiskOperations
 
     [false, "PR merge result is not an ancestor of fetched trusted base: #{stderr.to_s.lines.first&.strip}"]
   end
+
+  def checkout_matches_fetched_base?(root, base_sha, policy_ref)
+    stdout, stderr, status = capture_trusted_git_probe(
+      "-C", root, "rev-parse", "--verify", "HEAD^{commit}"
+    )
+    head_sha = stdout.to_s.strip
+    unless status&.success? && head_sha.match?(GIT_OBJECT_ID_PATTERN)
+      return [false, "trusted checkout HEAD could not be resolved: #{stderr.to_s.lines.first&.strip}"]
+    end
+    unless head_sha == base_sha
+      return [false, "trusted checkout HEAD does not match freshly fetched trusted base"]
+    end
+
+    ref_stdout, ref_stderr, ref_status = capture_trusted_git_probe(
+      "-C", root, "symbolic-ref", "--quiet", "HEAD"
+    )
+    if ref_status&.success?
+      return [false, "trusted checkout branch does not match trusted-base policy ref"] unless ref_stdout.to_s.strip == policy_ref
+    elsif !ref_status.respond_to?(:exitstatus) || ref_status.exitstatus != 1
+      return [false, "trusted checkout branch could not be resolved: #{ref_stderr.to_s.lines.first&.strip}"]
+    end
+
+    [true, nil]
+  rescue StandardError => e
+    [false, "could not verify trusted checkout against fetched base: #{e.message.lines.first&.strip}"]
+  end
 end
 
 def trusted_base_high_risk_receipt(result, repo:, github_host:, operations: TrustedBaseHighRiskOperations.new)
   return [nil, "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"] unless clean_for_trusted_base_high_risk_acceptance?(result)
+
+  operator_ref, operator_ref_error = operator_trusted_base_ref
+  return [nil, operator_ref_error] if operator_ref_error
 
   # This PATH-portable read is only an untrusted capability gate: it can decide
   # not to attempt trusted-base provenance, but never contributes to acceptance.
@@ -1746,12 +1856,29 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, operations: Trus
   remote_url, error = operations.remote_url(root, bootstrap_policy, repo:, github_host:)
   return [nil, error] unless remote_url
 
+  ref_anchor, error = operations.trusted_ref_anchor(remote_url, operator_ref:)
+  return [nil, error] unless ref_anchor
+  unless bootstrap_policy.fetch("ref") == ref_anchor.fetch(:ref)
+    return [nil, "trusted-base policy ref does not match independently authenticated ref"]
+  end
+
   operations.with_isolated_base(remote_url, bootstrap_policy.fetch("ref")) do |fetch_root, base_sha|
+    if ref_anchor[:sha] && base_sha != ref_anchor.fetch(:sha)
+      next [nil, "authenticated remote default ref moved during trusted-base verification"]
+    end
+
     fetched_policy, fetched_error = operations.fetched_policy(fetch_root, base_sha, repo:)
     next [nil, fetched_error] unless fetched_policy
     unless fetched_policy == bootstrap_policy
       next [nil, "bootstrap and fetched-base trusted-base policies do not match"]
     end
+
+    checkout_matches, checkout_error = operations.checkout_matches_fetched_base?(
+      root,
+      base_sha,
+      bootstrap_policy.fetch("ref")
+    )
+    next [nil, checkout_error] unless checkout_matches
 
     pr_provenance, provenance_error = operations.pr_provenance(
       result,
@@ -1773,8 +1900,10 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, operations: Trus
       policy_source: "#{base_sha}:#{WORKFLOW_CONFIG_PATH}",
       policy_remote: bootstrap_policy.fetch("remote"),
       policy_ref: bootstrap_policy.fetch("ref"),
+      policy_ref_anchor: ref_anchor.fetch(:source),
       high_risk_paths: result.fetch(:risky_files).sort.uniq
     }
+    receipt[:policy_ref_anchor_sha] = ref_anchor.fetch(:sha) if ref_anchor[:sha]
     [receipt, nil]
   end
 end

@@ -370,8 +370,14 @@ provenance may define the exact closed mapping
 `repository: OWNER/REPO`, one named `remote`, and a full
 `ref: refs/heads/<branch>`. The helper treats worktree policy only as bootstrap,
 verifies the named remote's single stored exact `github.com` HTTPS or GitHub SSH
-URL, fetches the exact ref, and requires the same complete mapping from the
-fetched base commit. `GH_HOST`, plaintext HTTP, non-GitHub hosts, and test
+URL, independently anchors the policy ref to the authenticated remote default
+`HEAD` (or the documented operator-owned full-ref environment seam for a
+nondefault base), fetches the exact ref, and requires the same complete mapping
+from the fetched base commit. A remote-default advertisement/fetch mismatch
+fails closed. The invoking checkout must be attached to that anchored ref at the
+exact fetched commit, or detached at that exact commit; a stale base or
+self-selected PR-branch checkout remains blocked. `GH_HOST`, plaintext HTTP,
+non-GitHub hosts, and test
 selection cannot create an acceptance exception. It emits
 `TRUSTED_BASE_HIGH_RISK_ACCEPTED` only for an exact closed merged
 same-repository PR whose matching REST/GraphQL merge result is an ancestor of
@@ -382,8 +388,11 @@ events, and commit authors. Duplicate, unavailable, or conflicting identities
 are ordinary operator-visible GitHub API coverage findings. Remote
 inspection, fetch, object inspection, and ancestry checks use one system Git
 executable pinned before task-scoped inputs, never a later inherited-`PATH`
-selection. The JSON receipt binds repository, PR, head, merge, base,
-policy source, remote/ref, and every high-risk path. This is not manual
+selection. Nonstandard Git and SSH installations use the explicit
+operator-owned absolute executable seams documented in
+`docs/trust-and-preflight.md`. The JSON receipt binds repository, PR, head, merge, base,
+policy source, remote/ref, its independent ref-anchor source and any advertised
+remote-default object ID, and every high-risk path. This is not manual
 acknowledgement and cannot be inferred from PR text or green checks; every other
 blocker remains in force.
 

@@ -446,6 +446,12 @@ Before implementation or worker launch, produce:
    commit authors; identity defects belong in the ordinary GitHub API coverage
    findings. Require provenance Git operations to use the helper's
    bootstrap-pinned system executable rather than inherited `PATH`.
+   Require the invoking trusted checkout to match the freshly fetched base
+   commit and independently authenticated ref (or be detached at that exact
+   commit). Anchor the policy ref to authenticated remote default `HEAD`, or to
+   the documented operator-owned full-ref environment seam for a nondefault
+   base; use only the documented operator-owned absolute Git/SSH executable
+   seams for nonstandard installations.
    Rerun preflight after any base movement before launch so provenance is
    refreshed. Missing or malformed policy, incomplete or untrusted facts, a
    fork/open PR, mismatch, suspicious content, or non-ancestor result remains

@@ -40,15 +40,39 @@ TestSignaledCommandStatus = Struct.new(:termsig) do
   end
 end
 
+def resolve_process_state_executable(path: ENV.fetch("PATH", ""))
+  candidates = path.split(File::PATH_SEPARATOR).filter_map do |directory|
+    next if directory.empty?
+    next unless File.absolute_path(directory) == directory
+
+    File.join(directory, "ps")
+  end
+  candidates.concat(%w[/usr/bin/ps /bin/ps])
+  candidates.each do |candidate|
+    next unless File.absolute_path(candidate) == candidate
+    next unless File.file?(candidate) && File.executable?(candidate)
+
+    return File.realpath(candidate)
+  rescue ArgumentError, SystemCallError
+    next
+  end
+
+  raise "ps is unavailable"
+end
+
 class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
   attr_reader :fetch_environments, :fetch_roots
 
-  def initialize(base_sha:, fetched_policy:, expected_merge_sha:, fetch_fail: false)
+  def initialize(base_sha:, fetched_policy:, expected_merge_sha:, fetch_fail: false, checkout_matches: true,
+                 trusted_ref: "refs/heads/main", trusted_ref_sha: nil)
     super()
     @base_sha = base_sha
     @fetched_policy = fetched_policy
     @expected_merge_sha = expected_merge_sha
     @fetch_fail = fetch_fail
+    @checkout_matches = checkout_matches
+    @trusted_ref = trusted_ref
+    @trusted_ref_sha = trusted_ref_sha || base_sha
     @fetch_environments = []
     @fetch_roots = []
   end
@@ -68,10 +92,22 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
     trusted_base_policy_from_yaml(yaml, repo:)
   end
 
+  def trusted_ref_anchor(_remote_url, operator_ref:)
+    ref = operator_ref || @trusted_ref
+    source = operator_ref ? "operator-environment:#{TRUSTED_BASE_REF_ENV}" : "authenticated-remote-default-head"
+    [{ ref:, sha: operator_ref ? nil : @trusted_ref_sha, source: }, nil]
+  end
+
   def ancestor?(_root, merge_sha, _base_sha)
     return [true, nil] if merge_sha == @expected_merge_sha
 
     [false, "PR merge result is not an ancestor of fetched trusted base: simulated non-ancestor"]
+  end
+
+  def checkout_matches_fetched_base?(_root, _base_sha, _policy_ref)
+    return [true, nil] if @checkout_matches
+
+    [false, "trusted checkout HEAD does not match freshly fetched trusted base"]
   end
 end
 
@@ -1770,10 +1806,59 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, %("merge_sha":"#{provenance.fetch(:merge_sha)}")
       assert_includes out, %("base_sha":"#{provenance.fetch(:base_sha)}")
       assert_includes out, %("policy_source":"#{provenance.fetch(:base_sha)}:.agents/agent-workflow.yml")
+      assert_includes out, '"policy_ref_anchor":"authenticated-remote-default-head"'
+      assert_includes out, %("policy_ref_anchor_sha":"#{provenance.fetch(:base_sha)}")
       assert_includes out, '"high_risk_paths":[".github/workflows/test.yml","AGENTS.md"]'
       refute_includes out, "Acknowledged security preflight findings:"
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_trusted_base_rejects_feature_branch_that_selects_itself_as_trust_anchor
+    policy = trusted_base_policy("ref" => "refs/heads/feature/self-anchor")
+    with_trusted_base_preflight(
+      policy:,
+      fetched_policy: policy,
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_GRAPH_BASE_REF" => "feature/self-anchor",
+        "PREFLIGHT_TEST_REST_BASE_REF" => "feature/self-anchor"
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "trusted-base policy ref does not match independently authenticated ref"
+    end
+  end
+
+  def test_trusted_base_accepts_nondefault_ref_only_with_operator_owned_anchor
+    policy = trusted_base_policy("ref" => "refs/heads/release/trusted")
+    with_trusted_base_preflight(
+      policy:,
+      fetched_policy: policy,
+      fixture_env_overrides: {
+        TRUSTED_BASE_REF_ENV => "refs/heads/release/trusted",
+        "PREFLIGHT_TEST_GRAPH_BASE_REF" => "release/trusted",
+        "PREFLIGHT_TEST_REST_BASE_REF" => "release/trusted"
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, %("policy_ref_anchor":"operator-environment:#{TRUSTED_BASE_REF_ENV}")
+    end
+  end
+
+  def test_trusted_base_rejects_malformed_operator_owned_ref_anchor
+    with_trusted_base_preflight(
+      fixture_env_overrides: { TRUSTED_BASE_REF_ENV => "main" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "#{TRUSTED_BASE_REF_ENV} must name one full refs/heads/... ref"
     end
   end
 
@@ -2568,6 +2653,28 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rejects_bootstrap_checkout_not_bound_to_fetched_base
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_CHECKOUT_MISMATCH" => "1" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "trusted checkout HEAD does not match freshly fetched trusted base"
+    end
+  end
+
+  def test_trusted_base_rejects_remote_default_movement_during_fetch
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_TRUSTED_REF_SHA" => "d" * 40 }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "authenticated remote default ref moved during trusted-base verification"
+    end
+  end
+
   def test_trusted_base_fetch_uses_distinct_network_timeout_without_fetching
     calls = []
     original = Object.instance_method(:capture_trusted_git_probe)
@@ -2644,6 +2751,120 @@ class PrSecurityPreflightTest < Minitest::Test
     rescue Errno::ECHILD
       nil
     end
+  end
+
+  def test_process_state_executable_resolves_a_non_fhs_path_candidate
+    Dir.mktmpdir("portable-ps", Dir.home) do |dir|
+      executable = File.join(dir, "ps")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+
+      assert_equal File.realpath(executable), resolve_process_state_executable(path: dir)
+    end
+  end
+
+  def test_trusted_base_operations_use_real_git_for_ancestry_and_checkout_binding
+    Dir.mktmpdir("trusted-base-real-git") do |repo_root|
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      File.write(File.join(repo_root, "first.txt"), "first\n")
+      git! "-C", repo_root, "add", "first.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "first"
+      first_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+      File.write(File.join(repo_root, "second.txt"), "second\n")
+      git! "-C", repo_root, "add", "second.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "second"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+      git! "-C", repo_root, "checkout", "--quiet", "-b", "side", first_sha
+      File.write(File.join(repo_root, "side.txt"), "side\n")
+      git! "-C", repo_root, "add", "side.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "side"
+      side_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+      git! "-C", repo_root, "checkout", "--quiet", "main"
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      operations = TrustedBaseHighRiskOperations.new
+
+      ancestor, ancestor_error = operations.ancestor?(repo_root, first_sha, base_sha)
+      assert ancestor, ancestor_error
+      refute operations.ancestor?(repo_root, side_sha, base_sha).first
+      checkout_matches, checkout_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      assert checkout_matches, checkout_error
+      git! "-C", repo_root, "checkout", "--quiet", "-b", "same-commit-other-branch"
+      refute operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      ).first
+      git! "-C", repo_root, "checkout", "--quiet", "--detach", base_sha
+      detached_matches, detached_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      assert detached_matches, detached_error
+      refute operations.checkout_matches_fetched_base?(
+        repo_root,
+        first_sha,
+        "refs/heads/main"
+      ).first
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
+
+  def test_git_object_ids_are_exactly_sha1_or_sha256_length
+    assert_match GIT_OBJECT_ID_PATTERN, "a" * 40
+    assert_match GIT_OBJECT_ID_PATTERN, "b" * 64
+    refute_match GIT_OBJECT_ID_PATTERN, "c" * 41
+    refute_match GIT_OBJECT_ID_PATTERN, "d" * 63
+  end
+
+  def test_authenticated_remote_default_ref_probe_requires_exact_symref_receipt
+    response = [
+      "ref: refs/heads/main\tHEAD\n#{'e' * 40}\tHEAD\n",
+      "",
+      TestCommandStatus.new(0)
+    ]
+    original_capture = Object.instance_method(:capture_trusted_git_probe)
+    Object.send(:define_method, :capture_trusted_git_probe) do |*|
+      response
+    end
+    Object.send(:private, :capture_trusted_git_probe)
+
+    anchor, error = trusted_remote_default_ref("https://github.com/owner/repo.git")
+    assert_nil error
+    assert_equal "refs/heads/main", anchor.fetch(:ref)
+    assert_equal "e" * 40, anchor.fetch(:sha)
+
+    malformed_outputs = [
+      "#{'e' * 40}\tHEAD\n",
+      "ref: refs/heads/main\tHEAD\n#{'e' * 41}\tHEAD\n",
+      "ref: refs/heads/feature\tHEAD\n#{'e' * 40}\tHEAD",
+      "ref: refs/tags/release\tHEAD\n#{'e' * 40}\tHEAD\n"
+    ]
+    malformed_outputs.each do |output|
+      response = [output, "", TestCommandStatus.new(0)]
+      malformed_anchor, malformed_error = trusted_remote_default_ref("https://github.com/owner/repo.git")
+      assert_nil malformed_anchor
+      assert_includes malformed_error, "malformed output"
+    end
+  ensure
+    Object.send(:define_method, :capture_trusted_git_probe, original_capture) if original_capture
+    Object.send(:private, :capture_trusted_git_probe)
   end
 
   def test_public_github_https_trusted_base_fetch_remains_credential_free
@@ -3218,6 +3439,36 @@ class PrSecurityPreflightTest < Minitest::Test
       end
 
       assert_equal File.realpath(executable), resolved
+    end
+  end
+
+  def test_trusted_ssh_operator_executable_override_is_canonicalized
+    Dir.mktmpdir("trusted-ssh-installation", Dir.home) do |dir|
+      executable = File.join(dir, "ssh-real")
+      configured = File.join(dir, "ssh")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+      File.symlink(executable, configured)
+
+      resolved = with_env("PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE" => configured) do
+        resolve_trusted_ssh_executable
+      end
+
+      assert_equal File.realpath(executable), resolved
+    end
+  end
+
+  def test_trusted_ssh_operator_executable_override_rejects_untrusted_candidates
+    Dir.mktmpdir("trusted-ssh-temp") do |temporary_dir|
+      executable = File.join(temporary_dir, "ssh")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+
+      error = with_env("PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE" => executable) do
+        assert_raises(RuntimeError) { resolve_trusted_ssh_executable }
+      end
+
+      assert_includes error.message, "PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE"
     end
   end
 
@@ -4242,8 +4493,7 @@ class PrSecurityPreflightTest < Minitest::Test
 
   def process_executing?(pid)
     Process.kill(0, pid)
-    ps = %w[/usr/bin/ps /bin/ps].find { |path| File.executable?(path) }
-    raise "ps is unavailable" unless ps
+    ps = resolve_process_state_executable
 
     stdout, _stderr, status = Open3.capture3(ps, "-p", pid.to_s, "-o", "state=")
     state = stdout.strip
@@ -4304,7 +4554,9 @@ class PrSecurityPreflightTest < Minitest::Test
         base_sha:,
         fetched_policy:,
         expected_merge_sha: merge_sha,
-        fetch_fail: fixture_env_overrides["PREFLIGHT_TEST_FETCH_FAIL"] == "1"
+        fetch_fail: fixture_env_overrides["PREFLIGHT_TEST_FETCH_FAIL"] == "1",
+        checkout_matches: fixture_env_overrides["PREFLIGHT_TEST_CHECKOUT_MISMATCH"] != "1",
+        trusted_ref_sha: fixture_env_overrides["PREFLIGHT_TEST_TRUSTED_REF_SHA"]
       )
       @trusted_base_operations ||= {}
       @trusted_base_operations[repo_root] = operations
@@ -4315,7 +4567,13 @@ class PrSecurityPreflightTest < Minitest::Test
         "PREFLIGHT_TEST_REPO_URL" => remote_url,
         "PREFLIGHT_TEST_HEAD_SHA" => head_sha,
         "PREFLIGHT_TEST_MERGE_SHA" => merge_sha
-      ).merge(fixture_env_overrides.reject { |key, _value| key == "PREFLIGHT_TEST_FETCH_FAIL" })
+      ).merge(
+        fixture_env_overrides.reject do |key, _value|
+          %w[
+            PREFLIGHT_TEST_FETCH_FAIL PREFLIGHT_TEST_CHECKOUT_MISMATCH PREFLIGHT_TEST_TRUSTED_REF_SHA
+          ].include?(key)
+        end
+      )
       yield fixture_env, trust_config_path, repo_root, provenance
     ensure
       @trusted_base_operations&.delete(repo_root)
@@ -4454,6 +4712,13 @@ class PrSecurityPreflightTest < Minitest::Test
     return if system(clean_git_env, REAL_GIT, *args)
 
     raise "git command failed: #{args.shelljoin}"
+  end
+
+  def git_output!(*args)
+    stdout, status = Open3.capture2(clean_git_env, REAL_GIT, *args)
+    raise "git command failed: #{args.shelljoin}" unless status.success?
+
+    stdout.strip
   end
 
   def clean_git_env
