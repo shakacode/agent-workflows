@@ -13,6 +13,7 @@ SCRIPT = File.expand_path("agent-workflow-seam-doctor", __dir__)
 SOURCE_REPO_ROOT = File.expand_path("..", __dir__)
 PRIVATE_COORDINATION_BACKEND = "agent-coord private backend"
 load SCRIPT
+load File.join(SOURCE_REPO_ROOT, "skills/pr-batch/bin/pr-ci-readiness")
 
 module AgentWorkflowSeamDoctorTestHelpers
   POLICY = {
@@ -704,6 +705,38 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
         refute status.success?, label
         assert_includes out, "invalid ci_readiness policy", label
+      end
+    end
+  end
+
+  def test_ci_readiness_rule_validation_matches_runtime_for_provider_and_name_shapes
+    base_rule = ci_readiness_policy.fetch("optional_approval_held_checks").first
+    cases = {
+      "underscore app slug" => [base_rule.merge("app_slug" => "circleci_checks"), false],
+      "uppercase app slug" => [base_rule.merge("app_slug" => "CircleCI"), false],
+      "line-feed name" => [base_rule.merge("name" => "storybook\nreview-app"), false],
+      "control-byte name" => [base_rule.merge("name" => "storybook\u0007review-app"), false],
+      "kebab app slug" => [base_rule, true],
+      "resolved spaced name" => [base_rule.merge("name" => "Storybook review app"), true]
+    }
+
+    cases.each do |label, (rule, expected)|
+      policy = ci_readiness_policy.merge("optional_approval_held_checks" => [rule])
+      runtime_accepted = begin
+        PrCiReadiness.validate_optional_approval_held_policy!(policy)
+        true
+      rescue PrCiReadiness::Error
+        false
+      end
+
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("ci_readiness" => policy))
+        write_skill(root, "No commands here.\n")
+        out, status = run_doctor(root)
+
+        assert_equal expected, runtime_accepted, "runtime: #{label}"
+        assert_equal expected, status.success?, "seam doctor: #{label}\n#{out}"
       end
     end
   end

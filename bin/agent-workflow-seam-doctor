@@ -2026,8 +2026,8 @@ module AgentWorkflowSeamDoctor
     valid_rules = rules.all? do |rule|
       rule.is_a?(Hash) && rule.keys.all?(String) && rule.keys.sort == CI_READINESS_RULE_KEYS.sort &&
         rule["id"].is_a?(String) && rule["id"].match?(CI_READINESS_RULE_ID) &&
-        rule["app_slug"].is_a?(String) && !rule["app_slug"].empty? &&
-        rule["name"].is_a?(String) && !rule["name"].empty? &&
+        rule["app_slug"].is_a?(String) && rule["app_slug"].match?(CI_READINESS_RULE_ID) &&
+        rule["name"].is_a?(String) && !rule["name"].empty? && !rule["name"].match?(/[[:cntrl:]]/) &&
         rule.values.none? { |value| value.include?("UNKNOWN") }
     end
     issues << "invalid ci_readiness policy: each rule must contain exact valid app_slug, id, and name strings" unless
