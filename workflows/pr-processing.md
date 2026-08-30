@@ -2453,7 +2453,7 @@ with a positive hard deadline; the helper must preserve the exact child
 executable and separate argument vector, launch it in its own process group,
 and terminate the whole process group when the deadline expires. A timeout or
 forced termination is a command failure: record best-effort `UNKNOWN`
-telemetry-audit evidence and continue closeout through steps 13-14 with that
+telemetry-audit evidence and continue closeout through steps 12-13 with that
 blocker; the audit subprocess must never wedge merge closeout. When that compatible
 capability is advertised, incomplete lifecycle coverage, command failure, or
 `UNKNOWN` readback blocks telemetry closeout until the coordinator

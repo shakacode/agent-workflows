@@ -90,6 +90,11 @@ class ProductionReleaseContractTest < Minitest::Test
     refute_includes debounce, "accelerated-RC"
     refute_includes debounce, "waiver-soak"
 
+    refute_includes @workflow, "steps 13-14"
+    refute_includes @skill, "steps 13-14"
+    assert_equal 2, @workflow.scan("steps 12-13").length
+    assert_equal 1, @skill.scan("steps 12-13").length
+
     fallback = squish(@workflow.split("### Ordinary Review Fallback", 2).last
                                 .split("### Adversarial Review Gate", 2).first)
     assert_includes fallback, "fetch the PR's real base"
