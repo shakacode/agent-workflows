@@ -735,6 +735,10 @@ module PrCiReadiness
         fetch_exact_head_check_runs(resolved_repo, target_pr.fetch(:head_sha))
       raise Error, checks_error unless checks_complete
 
+      statuses, statuses_complete, statuses_error =
+        fetch_exact_head_statuses(resolved_repo, target_pr.fetch(:head_sha))
+      raise Error, statuses_error unless statuses_complete
+
       final_target_pr = fetch_target_pr_identity(resolved_repo, validated_pr, require_base: true)
       unless same_target_pr_identity?(target_pr, final_target_pr)
         raise Error, "target PR identity moved during final CI inventory"
@@ -742,7 +746,7 @@ module PrCiReadiness
 
       {
         "head_sha" => target_pr.fetch(:head_sha), "actions_rows" => rows,
-        "check_inventory" => check_inventory
+        "check_inventory" => check_inventory, "statuses" => statuses
       }
     end
 

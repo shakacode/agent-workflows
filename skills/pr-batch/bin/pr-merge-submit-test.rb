@@ -1765,7 +1765,7 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def test_commit_status_change_during_final_inventory_stops_every_submission_route
+  def test_commit_status_change_during_assessment_stops_every_submission_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
       queue: [merge_queue_policy, "enqueuePullRequest"],
@@ -1782,9 +1782,34 @@ class PrMergeSubmitTest < Minitest::Test
         assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
         assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
         assert_includes result.fetch(:stderr), "other", "#{mode}/#{transition}"
-        expected_status_reads = mode == :guard_success ? 4 : 2
+        expected_status_reads = mode == :guard_success ? 6 : 2
         assert_equal expected_status_reads, log.scan("/status?per_page=").length,
                      "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_commit_status_change_during_final_snapshot_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[status_snapshot_failure status_snapshot_pending].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held,
+          merge_submission:, ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr),
+                        "commit statuses changed during final reassessment",
+                        "#{mode}/#{transition}"
+        assert_equal 3, log.scan("/status?per_page=").length, "#{mode}/#{transition}"
         refute_includes log, mutation, "#{mode}/#{transition}"
         assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
       end
@@ -3304,6 +3329,20 @@ class PrMergeSubmitTest < Minitest::Test
                         end
                       when :status_race_pending
                         if status_reads >= race_threshold
+                          [{ "id" => 701, "context" => "current-status", "state" => "pending",
+                             "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                        else
+                          []
+                        end
+                      when :status_snapshot_failure
+                        if status_reads >= 3
+                          [{ "id" => 701, "context" => "current-status", "state" => "failure",
+                             "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                        else
+                          []
+                        end
+                      when :status_snapshot_pending
+                        if status_reads >= 3
                           [{ "id" => 701, "context" => "current-status", "state" => "pending",
                              "target_url" => "https://#{HOST}/#{repo}/status/701" }]
                         else
