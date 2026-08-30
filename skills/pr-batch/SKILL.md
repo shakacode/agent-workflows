@@ -215,7 +215,7 @@ order: explicit environment variable; the loaded skill's base directory when the
 host exposes it; repo-local `.agents/skills/pr-batch`; then stop with a precise
 blocker if the helper is still missing.
 For release-mode coordination, auto-merge confidence, shared release trackers,
-production promotion, or publishing, load
+production deployment or promotion, or publishing, load
 [PR Production And Release](../../workflows/pr-production-release.md) and follow
 the consumer repo's `AGENTS.md` release policy. Do not restate its tracker,
 phase, promotion, or release rules here. Ordinary base-branch feature work does
@@ -1048,9 +1048,7 @@ Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#pla
 For the complete numbered sequence, follow the canonical closeout lane in
 `.agents/workflows/pr-processing.md` instead of stopping at PR creation. The
 coordinator owns the live re-fetch, current-head checks and review-thread triage,
-per-PR merge-ledger run, stale release-mode classification updates and the finalized PR-body
-`Agent Merge Confidence` block refresh required for accelerated-RC readiness (kept
-distinct), hosted-CI request and waitback when uncertainty remains, and any
+per-PR merge-ledger run, hosted-CI request and waitback when uncertainty remains, and any
 authorized ready/merge action, required QA Evidence verification, and the late
 post-merge bot-finding sweep before final batch handoff. Once every batch target
 has a final state, run a read-only check after terminal releases only when the

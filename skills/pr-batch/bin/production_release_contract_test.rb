@@ -20,6 +20,7 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes normalized, "Production and release are downstream"
     assert_includes normalized, "does not own ordinary prompt intake, worker execution, or PR integration"
     assert_includes normalized, "explicit production or release authority"
+    assert_includes normalized, "production deployment"
   end
 
   def test_release_sections_have_one_canonical_owner
@@ -43,6 +44,7 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes workflow, "## Production And Release Compatibility Route"
     assert_includes workflow, "[PR Production And Release](pr-production-release.md)"
     assert_includes workflow, "Ordinary base-branch feature work does not load the downstream component"
+    assert_includes workflow, "production deployment"
     assert_includes workflow, "### Ordinary Review Fallback"
     assert_includes workflow, "does not load the production/release component"
     review_gate = @workflow.split("## Review Completion Gate", 2).last
@@ -51,6 +53,7 @@ class ProductionReleaseContractTest < Minitest::Test
 
     assert_includes skill, "[PR Production And Release](../../workflows/pr-production-release.md)"
     assert_includes skill, "Do not restate its tracker, phase, promotion, or release rules here."
+    assert_includes skill, "production deployment or promotion"
 
     assert_includes @handbook, "../workflows/pr-production-release.md#release-mode-preflight"
     assert_includes @handbook, "../workflows/pr-production-release.md#release-phase-gate"
@@ -70,6 +73,28 @@ class ProductionReleaseContractTest < Minitest::Test
     ].each { |phrase| assert_includes normalized, phrase }
 
     assert_includes squish(@workflow), "Do not bypass the queue with administrator privileges"
+    assert_includes normalized, "## Release Closeout Extension"
+    assert_includes normalized, "accelerated-RC waiver-soak"
+
+    closeout = @workflow.split("The closeout lane is:", 2).last
+                        .split("## Self-Review Gate", 2).first
+    refute_includes closeout, "Agent Merge Confidence"
+    refute_includes closeout, "Under the current release mode"
+
+    debounce = @workflow.split("## Merge Endgame Debounce", 2).last
+                        .split("### Review-Loop Convergence", 2).first
+    refute_includes debounce, "accelerated-RC"
+    refute_includes debounce, "waiver-soak"
+
+    fallback = squish(@workflow.split("### Ordinary Review Fallback", 2).last
+                                .split("### Adversarial Review Gate", 2).first)
+    assert_includes fallback, "fetch the PR's real base"
+    assert_includes fallback, "verify a merge base exists"
+    assert_includes fallback, "`pipefail`"
+    assert_includes fallback, "do not silently retry with a higher budget"
+    assert_includes fallback, "not an operating-system sandbox"
+    assert_includes fallback, "`write`, `maintain`, or `admin` permission"
+    assert_includes fallback, "independently reproduce the invocation"
   end
 
   private

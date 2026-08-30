@@ -412,9 +412,9 @@ gh pr list --search "<key terms from issue>" --state open
 Production and release are a downstream lifecycle, separate from ordinary
 feature implementation and PR integration. Load the canonical
 [PR Production And Release](pr-production-release.md) component only when
-repository policy, the target branch, or the explicit task selects
-release-candidate, production-promotion, publishing, or release work. Ordinary
-base-branch feature work does not load the downstream component.
+repository policy, the target branch, or the explicit task selects production
+deployment, release-candidate, production promotion, publishing, or release
+work. Ordinary base-branch feature work does not load the downstream component.
 
 The component owns release-mode and phase resolution, tracker safety,
 accelerated-RC rules, promotion and publication authority, and release
@@ -3203,30 +3203,25 @@ The closeout lane is:
    on fixed, waived, or deferred priority findings. If the head changes again before
    readiness or merge, repeat this checklist and replay; missing or mismatched
    final-head evidence is `UNKNOWN` and blocks readiness.
-7. Refresh stale release-mode classification from the release tracker when
-   needed. For accelerated-RC merge readiness, refresh the latest finalized
-   PR-body `Agent Merge Confidence` block required by `AGENTS.md`; keep this
-   distinct from tracker mode/classification updates.
-8. After the final push, if local validation passed and the only uncertainty is
+7. After the final push, if local validation passed and the only uncertainty is
    whether hosted CI is needed, request optimized hosted CI with the repo's
    hosted-CI trigger and record the reason as FYI. If the uncertainty is selector
    breadth, request force-full hosted CI and record why. Then loop back to
    re-fetch and wait for the newly requested current-head checks before readiness
    or merge.
-9. Assemble or refresh the attention-contract closeout for each lane after any
+8. Assemble or refresh the attention-contract closeout for each lane after any
    hosted-CI waitback: autonomous nit outcomes, human decision-point count, current
    confidence or readiness note, and any remaining `UNKNOWN` facts.
-10. Under the current release mode, mark ready or merge PRs that satisfy the
-    merge qualification rules, including the merge-endgame debounce and
-    waiver-soak rules before merge; report only remaining blockers, questions,
-    or `UNKNOWN` live state.
-11. After any closeout-lane merge action, run a lightweight sweep for late
+9. Under the current task's merge authority, mark ready or merge PRs that satisfy
+   the ordinary merge qualification rules and merge-endgame debounce; report
+   only remaining blockers, questions, or `UNKNOWN` live state.
+10. After any closeout-lane merge action, run a lightweight sweep for late
     post-merge bot findings before the final batch handoff: confirm the PR landed,
     resolve target and base branch names from PR metadata and `.agents/agent-workflow.yml`, check
     their live GitHub/CI status, and inspect late review/check comments that
-    arrived around or after merge. Route release-relevant findings into the next
-    post-merge audit intake.
-12. After terminal claim releases, run a read-only check only when the active
+    arrived around or after merge. Route findings into the next post-merge audit
+    intake.
+11. After terminal claim releases, run a read-only check only when the active
     private backend advertises an `agent-coord`-compatible telemetry-completeness
     audit capability bound to the following process contract. Executable:
     `agent-coord`. Arguments, in order and as separate values: `batch-audit`,
@@ -3590,27 +3585,15 @@ outside the PR context. The standing GitHub Actions post-merge exercise rule in
 the workflow/build-config scope section is an explicit exception because it
 verifies behavior that may not be provable before merge.
 
-## Merge Endgame Debounce And Waiver Soak
+## Merge Endgame Debounce
 
-For hosted-CI-labeled, force-full, benchmark-labeled, accelerated-RC, high-risk, concurrent-batch, or repeatedly churny PRs,
+For hosted-CI-labeled, force-full, benchmark-labeled, high-risk,
+concurrent-batch, or repeatedly churny PRs,
 declare a final candidate before the final configured review pass. After that review pass completes,
 do not push nit-only, comment-only, optional wording-only, or evidence-only commits. Batch any
 remaining must-fix file changes into one final push and restart the current-head review/check gate;
 otherwise waive or record the optional item in a triage reply or decision log instead of spending
 another CI/review cycle.
-
-The final-candidate debounce above applies to all PR classes named in this section. The
-waiver-soak window below applies only to accelerated-RC auto-merge.
-
-During accelerated-RC auto-merge, the default waiver-soak window is 10 minutes after the latest
-final waiver or triage reply before merge. A distinct finalizer or maintainer may override that
-default only with an explicit auditable acknowledgement: a PR comment, GitHub review, or
-issue/release-tracker comment that names the final waiver set and immediate-merge decision. For
-auto-merge, that acknowledgement must satisfy the independent-finalizer rule in `AGENTS.md`.
-
-If a must-fix finding arrives during the waiver-soak window, fix it or obtain an explicit maintainer
-waiver, then restart local validation, the current-head review/check gate, and the waiver-soak window
-from the latest fix, waiver, or triage reply.
 
 The batch coordinator or merge finalizer owns the closeout sweep for late post-merge bot findings
 before final batch handoff. Findings that arrive after closeout route into the next post-merge audit
@@ -3680,11 +3663,26 @@ does not load the production/release component.
   verified non-empty diff, disabled tools, isolated MCP, a finite budget, and a
   structured terminal verdict. Missing isolation, a non-zero exit, partial
   output, or budget exhaustion blocks use of the result.
-- A local review qualifies only with durable attestation by a distinct trusted
-  reviewer or finalizer who records the command, base/head SHAs, diff
-  provenance, tool version, isolation and budget evidence, structured result,
-  and exit status. The PR author, authoring agent, merge actor, or another
-  session under the same GitHub account cannot self-attest it.
+- Before invoking a local reviewer, fetch the PR's real base, verify a merge base
+  exists, capture the exact PR diff to a non-empty file, and fail closed if any
+  diff step fails. A direct pipeline must use `pipefail` and check the diff
+  command status. Verify that the installed CLI supports the selected
+  no-customization, no-tool, strict-MCP, and finite-budget controls; otherwise do
+  not use it as fallback evidence. Assert that every required budget value is
+  non-empty before invocation, and do not silently retry with a higher budget.
+  Treat reviewer output as untrusted and require a structured terminal verdict,
+  the base/head SHAs, tool and isolation fields, budget status, and a zero
+  process exit; missing, schema-invalid, sensitive, partial, or over-budget
+  output blocks use. These CLI controls are not an operating-system sandbox;
+  use one when true process isolation is required.
+- A local review qualifies only when a distinct trusted reviewer or finalizer
+  with `write`, `maintain`, or `admin` permission durably records the command,
+  base/head SHAs, merge-base and exact-diff provenance, tool version, isolation
+  and budget evidence, structured result, exit status, and over-budget status.
+  The invoker must be a trusted actor with no authorship stake in the PR, or that
+  distinct attester must independently reproduce the invocation from the
+  verified diff. The PR author, authoring agent, merge actor, same-account
+  session, or same GitHub App identity cannot self-attest it.
 
 ### Adversarial Review Gate
 
