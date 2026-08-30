@@ -57,8 +57,10 @@ GUIDANCE_PHRASES = [
   "exactly one trusted issue body or trusted maintainer comment",
   "later trusted maintainer comment",
   "Do not synthesize",
-  "re-fetch the exact UTF-8 source content from GitHub at launch",
+  "Prompt digest at launch",
   "Do not wait for a telemetry aggregator",
+  "Prompt digest at selection",
+  "must match `Prompt digest at launch` before the worker interprets the source",
   "same readable prompt vocabulary for every host",
   "outside the human-authored prompt"
 ].freeze
@@ -66,9 +68,11 @@ GUIDANCE_PHRASES = [
 LAUNCHER_RECORD_FIELDS = [
   "Prompt source: <exact issue or trusted maintainer-comment URL>",
   "Selected at: <timestamp>",
+  "Prompt digest at selection: <SHA-256 of the exact source content fetched when selected>",
   "Prompt created at: <timestamp>",
   "Worker started at: <timestamp or pending>",
   "Prompt digest at launch: <SHA-256 of the exact source content re-fetched at launch>",
+  "Prompt digest observed by worker: <SHA-256 of the exact source content re-fetched by the worker or pending>",
   "Model at prompt creation: <observed value or UNKNOWN>",
   "Model observed by worker: <observed value or UNKNOWN>",
   "Workflow at prompt creation: <version or UNKNOWN>",
@@ -141,8 +145,8 @@ unless prompts.values.uniq.length == 1
 end
 
 prompts.each do |label, prompt|
-  abort_with_failure("#{label} prompt does not match the minimal human prompt") unless prompt == EXPECTED_PROMPT
   reject_phrases(prompt, FORBIDDEN_PROMPT_FRAGMENTS, "#{label} prompt")
+  abort_with_failure("#{label} prompt does not match the minimal human prompt") unless prompt == EXPECTED_PROMPT
 end
 
 {

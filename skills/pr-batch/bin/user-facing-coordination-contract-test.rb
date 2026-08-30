@@ -275,9 +275,11 @@ class UserFacingCoordinationContractTest < Minitest::Test
 
     [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = normalized(path)
-      assert_includes text, "Action needed: Start a new task with the fenced goal prompt.", path
       assert_includes text,
-                      "Next: Paste the prompt into that task, then archive this planning task.",
+                      "Action needed: Start a new task with the fenced goal prompt and its Batch Plan or exact durable plan-state reference.",
+                      path
+      assert_includes text,
+                      "Next: Paste both into that task, then archive this planning task.",
                       path
     end
 

@@ -679,17 +679,29 @@ that run. Do not synthesize, compress, combine, or restate the source. `Fix
 issue 476 using $pr-batch with merge authority ask.` is a valid one-line
 shortcut when repository context resolves the target.
 
-Directly record `Selected at` when selecting the URL and `Prompt created at`
+Fetch the exact UTF-8 source when selecting the URL and directly record
+`Selected at` plus `Prompt digest at selection`; record `Prompt created at`
 after rendering the minimal prompt. Immediately before dispatch, re-fetch the
-exact UTF-8 source content from GitHub at launch, hash the exact bytes, and
-retain `Prompt digest at launch` plus `Worker started at` or `pending` in the
-launcher record. Do not wait for a telemetry aggregator.
+source and compute `Prompt digest at launch`. A mismatch stops dispatch until
+the changed source is deliberately selected as a new run and the security
+preflight is rerun. Give the launch digest to the worker through the Batch Plan
+or its exact durable reference. The worker's re-fetched digest must match
+`Prompt digest at launch` before the worker interprets the source or records
+`Worker started at`; a mismatch stops work and is recorded. Do not wait for a
+telemetry aggregator.
 
 Use the same readable prompt vocabulary for every host. Host budget changes
 batch item count only. Keep file-touch evidence, workflow-contract details,
 Lane Cards, dispatch data, coordination diagnostics, and other derived state
 outside the human-authored prompt in the Batch Plan, manifest, and coordination
 backend.
+The readable prompt is not standalone coordinator scope. A copy-paste or
+host-native coordinator launch must also receive the complete Batch Plan for
+its group or an exact durable plan-state reference that it can resolve before
+preflight or dispatch. Multi-target groups remain one coordinator launch with
+one target per internal worker lane; the plan or reference preserves every
+target, lane, dependency, and ownership assignment without expanding the
+human-readable prompt.
 The canonical [Launcher Run Record](../../workflows/pr-processing.md#launcher-run-record)
 stores model and Agent Workflows observations at prompt creation and worker
 start, plus timestamped append-only later workflow observations. Use `UNKNOWN`

@@ -584,11 +584,16 @@ the whole launch before dispatch.
      source for each run. A later trusted maintainer comment may define or
      override the issue-body prompt. Select its exact comment URL. Do not
      synthesize a restatement or combine multiple sources.
-   - Directly record `Selected at` when selecting the URL and `Prompt created
-     at` after rendering the prompt. Immediately before dispatch, re-fetch the
-     exact UTF-8 source content from GitHub at launch, hash those exact bytes,
-     and append the launch digest plus `Worker started at` timestamp or
-     `pending` to the launcher record. Do not wait for a telemetry aggregator.
+   - Fetch the exact UTF-8 source when selecting the URL and directly record
+     `Selected at` plus `Prompt digest at selection`; record `Prompt created at`
+     after rendering the prompt. Immediately before dispatch, re-fetch the
+     source and append `Prompt digest at launch`. A mismatch stops dispatch
+     until the changed source is deliberately selected as a new run and the
+     security preflight is rerun. Give the launch digest to the worker through
+     the Batch Plan or its exact durable reference. The worker's re-fetched
+     digest must match `Prompt digest at launch` before the worker interprets
+     the source or records `Worker started at`; a mismatch stops work and is
+     recorded. Do not wait for a telemetry aggregator.
    - The launcher record, outside the human-authored prompt, also records model
      and Agent Workflows values at prompt creation and as observed by the worker
      at start. Use `UNKNOWN` field by field without inference; unavailable
@@ -606,7 +611,7 @@ the whole launch before dispatch.
    - Do not start `$pr-batch` unless the user asks; then hand them the fenced
      goal prompt and its Batch Plan in the same request.
    - Response order: Batch Plan; generated goal prompt; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
-   - Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt.` and `Next: Paste the prompt into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
+   - Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt and its Batch Plan or exact durable plan-state reference.` and `Next: Paste both into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
 
 Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only planning chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
 
@@ -687,7 +692,7 @@ backend must say so in the declaration.
 - Batch-plan preflight v1 envelope/result reference:
 - Verification expectations:
 - Expected readiness states or unresolved `UNKNOWN` facts:
-- Launcher run record: exact work-item URL; selected, prompt-created, and worker-started timestamps; launch-time source digest; prompt-creation and worker-observed model/workflow values; append-only later observations and rerun history.
+- Launcher run record: exact work-item URL; selected, prompt-created, and worker-started timestamps; selection, launch, and worker-observed source digests; prompt-creation and worker-observed model/workflow values; append-only later observations and rerun history.
 - Open questions:
 
 ## Batch Coordinator Launch Mode
@@ -696,26 +701,39 @@ Record exactly one launch mode in the Batch Plan, outside the generated goal
 prompt. The canonical lifecycle rules live in
 [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle).
 
-- `copy-paste` — deliver the generated goal prompt for the user to start in a
-  new conversation. This is the portable default and the fallback whenever a
-  richer mode is unavailable.
+- `copy-paste` — deliver the exact generated goal prompt together with the
+  complete Batch Plan for that coordinator group, or an exact durable
+  plan-state reference that the new coordinator can resolve before preflight
+  or dispatch. This is the portable default and the fallback whenever a richer
+  mode is unavailable.
 - `same-thread` — continue in the current chat as the batch coordinator. This is
   the same-chat self-launch described above, and it takes the lifecycle
   transition rules that go with it.
 - `host-native-user-task` — ask the host to create a separate user-owned task,
-  seeded with the exact generated goal prompt, that appears in the user's normal
-  task UI.
+  seeded with the exact generated goal prompt and the same complete Batch Plan
+  or exact durable plan-state reference, that appears in the user's normal task
+  UI.
 
 Select `host-native-user-task` only when the host exposes a qualifying
 task-creation capability **and** the user explicitly asked for a task to be
 created. The capability existing is never sufficient authority to create one;
 never create a user-visible task merely because the host can. With no explicit
-request, record `copy-paste` and deliver the prompt.
+request, record `copy-paste` and deliver the prompt plus its plan or reference.
 
-A created task receives the exact generated goal prompt, the saved repository
-project, the host's normal isolated-worktree default for Git repositories unless
-the user explicitly requests the saved checkout, and the user's configured
-default model/effort unless the user explicitly requests an override. Apply the
+The readable prompt is the trusted work-item pointer, not the complete
+coordinator scope. A launch is not successful until the coordinator receives
+the complete Batch Plan for its group or an exact durable plan-state reference
+and can resolve that state before any worker launch. This is required for every
+group; for a multi-target group, the plan or reference is what preserves every
+target, lane, dependency, and ownership assignment.
+
+A created task receives the exact generated goal prompt and complete Batch Plan
+or exact durable plan-state reference in the same initial handoff, the saved
+repository project, the host's normal isolated-worktree default for Git
+repositories unless the user explicitly requests the saved checkout, and the
+user's configured default model/effort unless the user explicitly requests an
+override. If the task-creation API accepts one message, keep the readable prompt
+in its fenced block and put the plan or reference outside that block. Apply the
 resolved `Task name:` as its visible title at creation, or through the host's
 rename capability when the task already exists under a less clear name; do not
 leave the visible title to prompt auto-titling while a title capability exists.
@@ -756,11 +774,16 @@ override the issue-body prompt. Do not synthesize or restate it. `Fix issue 476
 using $pr-batch with merge authority ask.` is a valid one-line shortcut when
 repository context resolves the target.
 
-Select the exact source URL and record `Selected at`. Record `Prompt created
-at` after rendering the prompt. Immediately before dispatch, re-fetch the exact
-UTF-8 source content from GitHub at launch, calculate its SHA-256 digest, and
-retain it in the append-only launcher record with the worker-start timestamp or
-`pending`. Do not wait for a telemetry aggregator.
+Select the exact source URL, fetch its exact UTF-8 content, and record `Selected
+at` plus `Prompt digest at selection`. Record `Prompt created at` after
+rendering the prompt. Immediately before dispatch, re-fetch the source and
+calculate `Prompt digest at launch`; if it differs from the selection digest,
+stop until the changed source is deliberately selected as a new run and the
+security preflight is rerun. Give the launch digest to the worker through the
+Batch Plan or its exact durable reference. The worker's re-fetched digest must
+match `Prompt digest at launch` before the worker interprets the source or
+records `Worker started at`; a mismatch stops work and is recorded. Do not wait
+for a telemetry aggregator.
 
 Use the same readable prompt vocabulary for every host. Host budget changes
 batch item count only. Keep file-touch evidence, workflow-contract details,

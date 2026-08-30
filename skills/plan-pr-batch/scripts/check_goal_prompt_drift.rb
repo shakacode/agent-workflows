@@ -31,6 +31,45 @@ module GoalPromptDriftContract
     "Unavailable, inherited, substituted, or unverifiable route-specific execution gets a non-blocking advisory instead; never require a restart."
   ].freeze
 
+  HOST_CAPS = {
+    "codex" => [10, 8],
+    "claude" => [5, 3],
+    "generic" => [5, 3]
+  }.freeze
+  HOST_CAP_CLAUSES = {
+    "workflows/pr-processing.md" => [
+      ["canonical codex", %w[codex], /`codex`:\s+up to (?<normal>\d+) independent items, or (?<risky>\d+) when/],
+      ["canonical claude", %w[claude], /`claude`:\s+up to (?<normal>\d+) independent items, or (?<risky>\d+) under/],
+      ["canonical generic", %w[generic], %r{`generic`:\s+use the Claude-sized (?<normal>\d+)/(?<risky>\d+) limit}]
+    ],
+    "skills/plan-pr-batch/SKILL.md" => [
+      ["planner codex", %w[codex], /`codex`:\s+up to (?<normal>\d+) independent items, or (?<risky>\d+) when/],
+      ["planner claude", %w[claude], /`claude`:\s+up to (?<normal>\d+) independent items, or (?<risky>\d+) under/],
+      ["planner generic", %w[generic], %r{`generic`:\s+use the Claude-sized (?<normal>\d+)/(?<risky>\d+) limit}]
+    ],
+    "skills/pr-batch/SKILL.md" => [
+      ["intake codex", %w[codex], /Use `codex` for up to (?<normal>\d+)\s+independent items, or (?<risky>\d+) when/],
+      ["intake claude", %w[claude], /Use `claude` for up to (?<normal>\d+) independent items, or (?<risky>\d+) under/],
+      ["intake generic", %w[generic], %r{Use the Claude-sized (?<normal>\d+)/(?<risky>\d+) limit for `generic`}],
+      ["checklist codex", %w[codex], %r{`codex` up to (?<normal>\d+)/(?<risky>\d+)}],
+      ["checklist claude", %w[claude], %r{`claude` up to (?<normal>\d+)/(?<risky>\d+)}],
+      ["checklist generic", %w[generic], %r{`generic` up to (?<normal>\d+)/(?<risky>\d+)}],
+      ["execution codex", %w[codex], /Codex-targeted waves may use up to (?<normal>\d+) independent\s+lanes, or (?<risky>\d+) when/],
+      ["execution claude and generic", %w[claude generic], /Claude and generic waves use up to (?<normal>\d+) lanes, or up to (?<risky>\d+) under/]
+    ],
+    "skills/triage/SKILL.md" => [
+      ["grouping codex", %w[codex], /`codex`:\s+up to (?<normal>\d+) independent items, or (?<risky>\d+) when/],
+      ["grouping claude and generic", %w[claude generic], /`claude` or `generic`:\s+up to (?<normal>\d+) independent items, or (?<risky>\d+) under/],
+      ["summary codex", %w[codex], %r{Codex (?<normal>\d+)/(?<risky>\d+) and Claude/generic}],
+      ["summary claude and generic", %w[claude generic], %r{Codex \d+/\d+ and Claude/generic (?<normal>\d+)/(?<risky>\d+)}],
+      ["negative-rule codex", %w[codex], %r{Do not apply the Codex (?<normal>\d+)/(?<risky>\d+) cap}]
+    ],
+    "docs/pr-batch-skills.md" => [
+      ["documentation codex", %w[codex], /Codex-targeted waves may use up to (?<normal>\d+)\s+fully independent items, or (?<risky>\d+) when/],
+      ["documentation claude and generic", %w[claude generic], /Claude and generic waves use up to (?<normal>\d+)\s+independent items, or (?<risky>\d+) under/]
+    ]
+  }.freeze
+
   RESUME_SNIPPET = <<~TEXT.chomp
     Resume batch processing now.
 
@@ -175,6 +214,27 @@ module GoalPromptDriftContract
     end
   end
 
+  def check_host_caps!(surfaces)
+    HOST_CAP_CLAUSES.each do |path, clauses|
+      text = surfaces[path]
+      fail!("missing host-cap surface #{path}") unless text
+
+      clauses.each do |label, providers, pattern|
+        matches = text.scan(pattern)
+        fail!("#{path} #{label} clause count is #{matches.length}, expected 1") unless matches.length == 1
+
+        actual = matches.first.map(&:to_i)
+        providers.each do |provider|
+          expected = HOST_CAPS.fetch(provider)
+          next if actual == expected
+
+          fail!("#{path} #{label} host cap drifted for #{provider}: " \
+                "expected #{expected.join('/')}, found #{actual.join('/')}")
+        end
+      end
+    end
+  end
+
   def check!(repo_root:, source_checkout:)
     workflow = read(repo_root, "workflows/pr-processing.md")
     skills = {
@@ -187,10 +247,19 @@ module GoalPromptDriftContract
       "docs/agent-workflows-model-routing.md" => read(repo_root, "docs/agent-workflows-model-routing.md"),
       "workflows/pr-processing.md" => workflow
     }
-    if source_checkout
-      routing_surfaces["docs/pr-batch-skills.md"] = read(repo_root, "docs/pr-batch-skills.md")
-    end
+    source_docs = read(repo_root, "docs/pr-batch-skills.md") if source_checkout
+    routing_surfaces["docs/pr-batch-skills.md"] = source_docs if source_checkout
     routing_surfaces.each { |path, text| check_routes!(text, path) }
+
+    if source_checkout
+      check_host_caps!(
+        {
+          "workflows/pr-processing.md" => workflow,
+          **skills,
+          "docs/pr-batch-skills.md" => source_docs
+        }
+      )
+    end
 
     require_phrases(workflow, HST_WORKFLOW_PHRASES, "workflow HST-v1")
     skills.each do |path, text|

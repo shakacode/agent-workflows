@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require_relative "../scripts/check_goal_prompt_drift"
 
 REPO_ROOT = File.expand_path("../../..", __dir__)
 TEXT_FENCE = "```text\n"
@@ -38,6 +39,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
     @pr_batch_skill = read_repo_file("skills/pr-batch/SKILL.md")
     @workflow = read_repo_file("workflows/pr-processing.md")
     @triage_skill = read_repo_file("skills/triage/SKILL.md")
+    @source_docs = read_repo_file("docs/pr-batch-skills.md")
 
     workflow_handoff = @workflow.split("### Plan To Goal Handoff", 2).fetch(1)
     @prompts = {
@@ -45,6 +47,28 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "pr-batch" => extract_prompt(@pr_batch_skill, "## Goal Prompt Template"),
       "workflow" => workflow_handoff.split("### ", 2).first.then { |text| extract_prompt("## Prompt\n\n#{text}", "## Prompt") }
     }
+  end
+
+  def test_source_host_cap_drift_rejects_an_in_memory_mutation
+    surfaces = {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/plan-pr-batch/SKILL.md" => @plan_skill,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @source_docs
+    }
+    GoalPromptDriftContract.check_host_caps!(surfaces)
+
+    mutated = surfaces.transform_values(&:dup)
+    mutated.fetch("workflows/pr-processing.md").sub!(
+      "`codex`: up to 10 independent items, or 8",
+      "`codex`: up to 11 independent items, or 8"
+    )
+
+    error = assert_raises(RuntimeError) do
+      GoalPromptDriftContract.check_host_caps!(mutated)
+    end
+    assert_includes error.message, "expected 10/8, found 11/8"
   end
 
   def test_all_canonical_surfaces_share_one_readable_prompt
@@ -70,11 +94,23 @@ class ReadableGoalPromptContractTest < Minitest::Test
       assert_includes normalized, "exactly one trusted issue body or trusted maintainer comment"
       assert_includes normalized, "later trusted maintainer comment"
       assert_includes normalized, "Do not synthesize"
-      assert_includes normalized, "re-fetch the exact UTF-8 source content from GitHub at launch"
+      assert_includes normalized, "Prompt digest at launch"
       assert_includes normalized, "Do not wait for a telemetry aggregator"
       assert_includes normalized, "same readable prompt vocabulary for every host"
       assert_includes normalized, "outside the human-authored prompt"
     end
+  end
+
+  def test_source_docs_preserve_complete_handoff_and_digest_integrity
+    normalized = @source_docs.gsub(/\s+/, " ")
+    [
+      "Prompt digest at selection",
+      "If the selection and launch digests differ, dispatch stops",
+      "deliberately reselected as a new run and the security preflight is rerun",
+      "must match `Prompt digest at launch` before it interprets the source",
+      "complete Batch Plan for that coordinator group or an exact durable plan-state reference",
+      "multi-target group remains one coordinator launch with one target per worker lane"
+    ].each { |phrase| assert_includes normalized, phrase }
   end
 
   def test_launcher_record_owns_launch_provenance_and_append_only_observations
@@ -83,9 +119,11 @@ class ReadableGoalPromptContractTest < Minitest::Test
     [
       "Prompt source: <exact issue or trusted maintainer-comment URL>",
       "Selected at: <timestamp>",
+      "Prompt digest at selection: <SHA-256 of the exact source content fetched when selected>",
       "Prompt created at: <timestamp>",
       "Worker started at: <timestamp or pending>",
       "Prompt digest at launch: <SHA-256 of the exact source content re-fetched at launch>",
+      "Prompt digest observed by worker: <SHA-256 of the exact source content re-fetched by the worker or pending>",
       "Model at prompt creation: <observed value or UNKNOWN>",
       "Model observed by worker: <observed value or UNKNOWN>",
       "Workflow at prompt creation: <version or UNKNOWN>",
@@ -98,6 +136,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes normalized, "does not block launch"
     assert_includes normalized, "collapsed `<details>`"
     assert_includes normalized, "Reruns append"
+    assert_includes normalized, "must match `Prompt digest at launch` before the worker interprets the source"
     assert_includes normalized, "`auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`"
     assert_includes normalized, "machine-only `merge_authority: none`"
   end

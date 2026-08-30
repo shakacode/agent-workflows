@@ -144,6 +144,7 @@ ruby skills/address-review/bin/address-review-summary-template-test.rb
 ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
 ruby skills/plan-pr-batch/bin/batch-plan-preflight-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
+ruby skills/plan-pr-batch/bin/readable-goal-prompt-contract-test.rb
 ruby skills/pause/bin/pause-prompt-test.rb
 ruby skills/close-batch/bin/close-batch-contract-test.rb
 ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb

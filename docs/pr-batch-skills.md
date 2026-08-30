@@ -338,19 +338,29 @@ omit the queue summary and note that queue state is unavailable.
    evidence, registration-first coordination, and other derived workflow state
    outside the human-authored prompt.
 
-   The launcher directly records selection and prompt-creation timestamps.
-   Immediately before dispatch it must re-fetch the exact UTF-8 source content
-   from GitHub at launch, hash those bytes, and retain that launch digest with a
-   worker-start timestamp or `pending`. It also records model and Agent
-   Workflows observations at prompt creation and worker start, using `UNKNOWN`
-   field by field without inference, and appends later workflow observations
-   with timestamps. Reruns append collapsed `<details>` history. Do not wait for
-   a telemetry aggregator. Human `auto` maps to machine
+   The launcher fetches the exact UTF-8 source when it is selected and directly
+   records the selection timestamp plus `Prompt digest at selection`, then the
+   prompt-creation timestamp after rendering. Immediately before dispatch it
+   re-fetches the source and records `Prompt digest at launch`. If the selection
+   and launch digests differ, dispatch stops until the changed source is
+   deliberately reselected as a new run and the security preflight is rerun.
+   The Batch Plan or its exact durable reference gives the launch digest to the
+   worker. The worker re-fetches the source, and its observed digest must match
+   `Prompt digest at launch` before it interprets the source or records its
+   start; a mismatch stops work and is recorded. The launcher also records
+   model and Agent Workflows observations at prompt creation and worker start,
+   using `UNKNOWN` field by field without inference, and appends later workflow
+   observations with timestamps. Reruns append collapsed `<details>` history.
+   Do not wait for a telemetry aggregator. Human `auto` maps to machine
    `auto_merge_when_gates_pass`; `ask` maps to machine `ask`; machine-only
    `merge_authority: none` remains outside the normal human prompt.
    Host budget changes item count, not prompt vocabulary.
    Do not launch workers yet.
-9. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
+9. When the user says to run it, use `$pr-batch` with the fenced goal prompt
+   and the complete Batch Plan for that coordinator group or an exact durable
+   plan-state reference it can resolve before preflight or dispatch. A
+   multi-target group remains one coordinator launch with one target per worker
+   lane; the plan or reference preserves its complete scope.
    If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`
    resolves the spec tasks into exact GitHub targets before running.
 
