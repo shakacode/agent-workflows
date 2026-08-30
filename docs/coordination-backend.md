@@ -264,18 +264,25 @@ Every unavailable timestamp, identifier, or count in the normalized input is
 literal `UNKNOWN`. Derived duration totals also become literal `UNKNOWN` when
 any contributing boundary is unavailable; a known partial total is never
 presented as the complete measure. Absent phase or slot rows likewise report
-`UNKNOWN`. Use literal `UNKNOWN` for an unavailable human-question collection;
-an explicitly empty question list instead reports a known count and queue time
-of zero. The JSON report lists every propagated unknown in `unknown_fields`.
+`UNKNOWN`, while a present zero-length phase or slot interval reports known
+zero. Use literal `UNKNOWN` for an unavailable human-question collection; an
+explicitly empty question list instead reports a known count and queue time of
+zero. Fixed-shape amplification, integration, and outcome objects remain
+present; mark unavailable leaves `UNKNOWN` so known siblings remain reportable.
+The JSON report lists every propagated unknown in `unknown_fields`, including
+unavailable top-level identifiers such as `batch_id` or `source_ref`.
 
 The input is closed and metadata-only. Unknown fields are rejected, identifier
 and source-reference values use constrained grammars, and opaque batch IDs use
 a closed no-whitespace grammar that retains coordination delimiters such as `;`
-and `=` without accepting arbitrary prose. Common token-shaped content is
-rejected even inside an allowlisted identifier. There is no field for a raw
+and `=` while rejecting whitespace and unapproved punctuation. Common
+token-shaped content is rejected even inside an allowlisted identifier. There
+is no field for a raw
 prompt, response, transcript, tool result, secret, environment value, auth
-content, or arbitrary prose. Do not add one; retain durable evidence by
-reference and query only the exact upstream fields needed for normalization.
+content, or arbitrary prose. The structural grammars are defense in depth, not
+semantic declassification: callers must never derive identifier values from
+raw prose. Do not add a prose field; retain durable evidence by reference and
+query only the exact upstream fields needed for normalization.
 
 Replay JSON or a compact twelve-line text view without copying the source
 events into the result:

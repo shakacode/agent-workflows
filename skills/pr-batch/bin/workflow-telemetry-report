@@ -39,6 +39,7 @@ module WorkflowTelemetryReport
     /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
     /\bglpat-[A-Za-z0-9_-]{20,}\b/,
     /\bsk-(?:proj-|svcacct-|ant-api\d+-)?[A-Za-z0-9_-]{12,}\b/,
+    /\bAIza[0-9A-Za-z_-]{35}\b/,
     /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/,
     /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,
     /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/
@@ -120,6 +121,8 @@ module WorkflowTelemetryReport
   end
 
   def safe_batch_id(value)
+    return UNKNOWN if value == UNKNOWN
+
     valid = value.is_a?(String) && value.match?(SAFE_BATCH_ID) && !sensitive?(value)
     raise InputError, "invalid batch identifier" unless valid
 
@@ -127,6 +130,8 @@ module WorkflowTelemetryReport
   end
 
   def safe_source_ref(value)
+    return UNKNOWN if value == UNKNOWN
+
     valid = value.is_a?(String) && !sensitive?(value) &&
             (value.match?(SAFE_SOURCE_REF) || value.match?(SAFE_GITHUB_URL))
     raise InputError, "invalid durable source reference" unless valid
@@ -163,7 +168,7 @@ module WorkflowTelemetryReport
     grouped = intervals.group_by do |raw|
       object = require_object(raw)
       require_exact_keys(object, PHASE_INTERVAL_KEYS)
-      safe_identifier(object["lane_id"])
+      safe_identifier(object["lane_id"], allow_unknown: true)
       phase = object["phase"]
       raise InputError, "invalid phase" unless PHASES.include?(phase)
 
@@ -189,7 +194,7 @@ module WorkflowTelemetryReport
     questions = require_array(value).map do |raw|
       object = require_object(raw)
       require_exact_keys(object, QUESTION_KEYS)
-      safe_identifier(object["lane_id"])
+      safe_identifier(object["lane_id"], allow_unknown: true)
       [timestamp(object["asked_at"]), timestamp(object["answered_at"])]
     end
     durations = questions.map { |asked_at, answered_at| interval_seconds(asked_at, answered_at) }
@@ -205,7 +210,7 @@ module WorkflowTelemetryReport
     grouped = intervals.group_by do |raw|
       object = require_object(raw)
       require_exact_keys(object, SLOT_INTERVAL_KEYS)
-      safe_identifier(object["lane_id"])
+      safe_identifier(object["lane_id"], allow_unknown: true)
       status = object["status"]
       raise InputError, "invalid slot status" unless SLOT_STATES.include?(status)
 

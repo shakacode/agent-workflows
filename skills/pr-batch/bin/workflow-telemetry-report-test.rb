@@ -37,6 +37,7 @@ class WorkflowTelemetryReportTest < Minitest::Test
       %w[sk proj do-not-echo-1234567890].join("-"),
       %w[sk live 1234567890abcdefghijklmn].join("_"),
       %w[glpat 0123456789abcdefghijkl].join("-"),
+      ["AIza", "A" * 35].join,
       %w[eyJhbGciOiJIUzI1NiJ9 eyJzdWIiOiIxMjM0NTY3ODkwIn0 signature].join(".")
     ]
 
@@ -65,6 +66,22 @@ class WorkflowTelemetryReportTest < Minitest::Test
     assert_equal "prod;batch=42", report.fetch("batch_id")
   end
 
+  def test_propagates_exact_unknown_for_unavailable_identifiers
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["batch_id"] = "UNKNOWN"
+    input["source_ref"] = "UNKNOWN"
+    input["phase_intervals"].each { |interval| interval["lane_id"] = "UNKNOWN" }
+    input["human_questions"].each { |question| question["lane_id"] = "UNKNOWN" }
+    input["slot_intervals"].each { |interval| interval["lane_id"] = "UNKNOWN" }
+
+    report = run_json(input)
+
+    assert_equal "UNKNOWN", report.fetch("batch_id")
+    assert_equal "UNKNOWN", report.fetch("source_ref")
+    assert_includes report.fetch("unknown_fields"), "/batch_id"
+    assert_includes report.fetch("unknown_fields"), "/source_ref"
+  end
+
   def test_rejects_prose_in_batch_id_without_echoing_it
     input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
     private_content = "please inspect the private customer transcript and summarize it"
@@ -90,6 +107,33 @@ class WorkflowTelemetryReportTest < Minitest::Test
     assert_equal "UNKNOWN", report.dig("measurements", "human_questions", "count")
     assert_equal "UNKNOWN", report.dig("measurements", "human_questions", "answered_count")
     assert_equal "UNKNOWN", report.dig("measurements", "human_questions", "queue_seconds")
+  end
+
+  def test_present_zero_length_phase_and_slot_intervals_report_known_zero
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["phase_intervals"] = [
+      {
+        "lane_id" => "issue-562-telemetry",
+        "phase" => "planning",
+        "started_at" => "2026-08-29T20:00:00Z",
+        "ended_at" => "2026-08-29T20:00:00Z"
+      }
+    ]
+    input["slot_intervals"] = [
+      {
+        "lane_id" => "issue-562-telemetry",
+        "status" => "occupied",
+        "started_at" => "2026-08-29T20:00:00Z",
+        "ended_at" => "2026-08-29T20:00:00Z"
+      }
+    ]
+
+    report = run_json(input)
+
+    assert_equal 0, report.dig("measurements", "phase_seconds", "planning")
+    assert_equal "UNKNOWN", report.dig("measurements", "phase_seconds", "discovery")
+    assert_equal 0, report.dig("measurements", "slot_seconds", "occupied")
+    assert_equal "UNKNOWN", report.dig("measurements", "slot_seconds", "stopped")
   end
 
   def test_rejects_non_allowlisted_payload_fields_without_echoing_their_content
