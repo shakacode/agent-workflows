@@ -260,6 +260,15 @@ input example. It covers:
 - integration time; and
 - consequential defects, reverts, and rollbacks.
 
+Phase, human-question queue, and slot totals are cumulative across the supplied
+lane intervals, not elapsed critical-path time. Concurrent work can therefore
+make these totals exceed wall-clock duration. In particular,
+`phase_seconds.integration` is cumulative time that lanes spent in the broad
+integration phase. The separate `integration_seconds` measure is the elapsed
+time across the single batch-level `integration.started_at` to
+`integration.ended_at` window selected by the normalizer; callers must not
+treat the two measures as interchangeable.
+
 Every unavailable timestamp, identifier, or count in the normalized input is
 literal `UNKNOWN`. Derived duration totals also become literal `UNKNOWN` when
 any contributing boundary is unavailable; a known partial total is never
@@ -283,6 +292,9 @@ content, or arbitrary prose. The structural grammars are defense in depth, not
 semantic declassification: callers must never derive identifier values from
 raw prose. Do not add a prose field; retain durable evidence by reference and
 query only the exact upstream fields needed for normalization.
+The reducer reads at most one MiB of input and accepts at most 4,096 entries in
+each interval or question array. Timestamps require a known explicit RFC 3339
+offset; `-00:00` is rejected because it denotes an unknown local offset.
 
 Replay JSON or a compact twelve-line text view without copying the source
 events into the result:

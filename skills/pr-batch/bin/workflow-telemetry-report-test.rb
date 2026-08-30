@@ -34,6 +34,8 @@ class WorkflowTelemetryReportTest < Minitest::Test
 
   def test_rejects_token_shaped_content_even_in_an_allowlisted_metadata_field_without_echoing_it
     secrets = [
+      ["AKIA", "A" * 16].join,
+      ["ghp_", "a" * 20].join,
       %w[sk proj do-not-echo-1234567890].join("-"),
       %w[sk live 1234567890abcdefghijklmn].join("_"),
       %w[glpat 0123456789abcdefghijkl].join("-"),
@@ -41,9 +43,14 @@ class WorkflowTelemetryReportTest < Minitest::Test
       %w[eyJhbGciOiJIUzI1NiJ9 eyJzdWIiOiIxMjM0NTY3ODkwIn0 signature].join(".")
     ]
 
-    secrets.each do |secret|
+    secrets.product([nil, :prefix, :suffix]).each do |secret, position|
+      candidate = case position
+                  when :prefix then "prefix_#{secret}"
+                  when :suffix then "#{secret}_suffix"
+                  else secret
+                  end
       input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
-      input["prompt_creation"]["model"] = secret
+      input["prompt_creation"]["model"] = candidate
 
       Tempfile.create(["workflow-telemetry", ".json"]) do |file|
         file.write(JSON.generate(input))
@@ -51,8 +58,8 @@ class WorkflowTelemetryReportTest < Minitest::Test
         stdout, stderr, status = Open3.capture3(HELPER, "--input", file.path, "--format", "json")
 
         refute status.success?
-        refute_includes stdout, secret
-        refute_includes stderr, secret
+        refute_includes stdout, candidate
+        refute_includes stderr, candidate
       end
     end
   end
@@ -107,6 +114,50 @@ class WorkflowTelemetryReportTest < Minitest::Test
     assert_equal "UNKNOWN", report.dig("measurements", "human_questions", "count")
     assert_equal "UNKNOWN", report.dig("measurements", "human_questions", "answered_count")
     assert_equal "UNKNOWN", report.dig("measurements", "human_questions", "queue_seconds")
+  end
+
+  def test_empty_human_question_collection_reports_known_zero
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["human_questions"] = []
+
+    report = run_json(input)
+
+    assert_equal 0, report.dig("measurements", "human_questions", "count")
+    assert_equal 0, report.dig("measurements", "human_questions", "answered_count")
+    assert_equal 0, report.dig("measurements", "human_questions", "queue_seconds")
+  end
+
+  def test_sums_phase_question_and_slot_durations_across_lanes
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["phase_intervals"] = %w[lane-a lane-b].map do |lane_id|
+      {
+        "lane_id" => lane_id,
+        "phase" => "review",
+        "started_at" => "2026-08-29T20:00:00Z",
+        "ended_at" => "2026-08-29T20:00:10Z"
+      }
+    end
+    input["human_questions"] = %w[lane-a lane-b].map do |lane_id|
+      {
+        "lane_id" => lane_id,
+        "asked_at" => "2026-08-29T20:00:00Z",
+        "answered_at" => "2026-08-29T20:00:10Z"
+      }
+    end
+    input["slot_intervals"] = %w[lane-a lane-b].map do |lane_id|
+      {
+        "lane_id" => lane_id,
+        "status" => "occupied",
+        "started_at" => "2026-08-29T20:00:00Z",
+        "ended_at" => "2026-08-29T20:00:10Z"
+      }
+    end
+
+    report = run_json(input)
+
+    assert_equal 20, report.dig("measurements", "phase_seconds", "review")
+    assert_equal 20, report.dig("measurements", "human_questions", "queue_seconds")
+    assert_equal 20, report.dig("measurements", "slot_seconds", "occupied")
   end
 
   def test_present_zero_length_phase_and_slot_intervals_report_known_zero
@@ -218,6 +269,55 @@ class WorkflowTelemetryReportTest < Minitest::Test
     end
   end
 
+  def test_rejects_rfc3339_unknown_offsets
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["worker_start"]["at"] = "2026-08-29T20:00:45-00:00"
+
+    _stdout, stderr, status = run_invalid(input)
+
+    refute status.success?
+    assert_includes stderr, "invalid timestamp"
+  end
+
+  def test_rejects_comment_fragment_without_an_issue_or_pull_request_path
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    input["source_ref"] = "https://github.com/shakacode/agent-workflows#issuecomment-123"
+
+    _stdout, stderr, status = run_invalid(input)
+
+    refute status.success?
+    assert_includes stderr, "invalid durable source reference"
+  end
+
+  def test_accepts_comment_fragment_on_a_pull_request_path
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    source_ref = "https://github.com/shakacode/agent-workflows/pull/577#issuecomment-5471371262"
+    input["source_ref"] = source_ref
+
+    report = run_json(input)
+
+    assert_equal source_ref, report.fetch("source_ref")
+  end
+
+  def test_rejects_oversized_arrays
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    row = input.fetch("phase_intervals").first
+    input["phase_intervals"] = Array.new(4_097, row)
+
+    _stdout, stderr, status = run_invalid(input)
+
+    refute status.success?
+    assert_includes stderr, "JSON array exceeds item limit"
+  end
+
+  def test_rejects_oversized_payload_before_parsing
+    stdout, stderr, status = Open3.capture3(HELPER, stdin_data: " " * 1_048_577)
+
+    refute status.success?
+    assert_empty stdout
+    assert_equal "workflow-telemetry-report: input payload exceeds size limit\n", stderr
+  end
+
   def test_rejects_invalid_calendar_timestamps_instead_of_normalizing_them
     ["2026-02-30T20:00:00Z", "2026-01-01T24:00:00Z", "2026-01-01T23:59:60Z"].each do |value|
       input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
@@ -254,6 +354,14 @@ class WorkflowTelemetryReportTest < Minitest::Test
   end
 
   private
+
+  def run_invalid(input)
+    Tempfile.create(["workflow-telemetry", ".json"]) do |file|
+      file.write(JSON.generate(input))
+      file.flush
+      return Open3.capture3(HELPER, "--input", file.path, "--format", "json")
+    end
+  end
 
   def run_json(input)
     Tempfile.create(["workflow-telemetry", ".json"]) do |file|

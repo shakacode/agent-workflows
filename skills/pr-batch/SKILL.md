@@ -926,7 +926,9 @@ coordination and field-selected GitHub-shaped metadata into
 `workflow-telemetry-input` v1, then run the sibling
 `bin/workflow-telemetry-report`. Use its replay fixture and contract documented
 in `docs/coordination-backend.md`; preserve literal `UNKNOWN` for unavailable
-measures. Never add raw prompts, responses, transcripts, tool results, secrets,
+measures. Its phase, human-question queue, and slot totals are cumulative across
+lanes rather than elapsed critical-path time; its separate batch-level
+`integration_seconds` window is not `phase_seconds.integration`. Never add raw prompts, responses, transcripts, tool results, secrets,
 environment/auth content, exact accounting, adaptive scheduling, experiments,
 or a parallel collection system.
 

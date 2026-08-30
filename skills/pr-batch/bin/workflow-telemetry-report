@@ -16,6 +16,8 @@ module WorkflowTelemetryReport
   REPORT_CONTRACT = "workflow-telemetry-report"
   VERSION = 1
   UNKNOWN = "UNKNOWN"
+  MAX_INPUT_BYTES = 1_048_576
+  MAX_ARRAY_ITEMS = 4_096
   PHASES = %w[planning discovery implementation validation review integration].freeze
   SLOT_STATES = %w[occupied stopped].freeze
   TOP_LEVEL_KEYS = %w[
@@ -32,17 +34,17 @@ module WorkflowTelemetryReport
   SAFE_IDENTIFIER = %r{\A[A-Za-z0-9][A-Za-z0-9._+:/-]{0,127}\z}
   SAFE_BATCH_ID = %r{\A[A-Za-z0-9][A-Za-z0-9._+:/;=@,#-]{0,255}\z}
   SAFE_SOURCE_REF = %r{\A(?:coordination|batch|issue|plan-state|github)://[A-Za-z0-9][A-Za-z0-9._+/:#-]{0,239}\z}
-  SAFE_GITHUB_URL = %r{\Ahttps://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/(?:issues|pull)/[1-9][0-9]*)?(?:#issuecomment-[1-9][0-9]*)?\z}
+  SAFE_GITHUB_URL = %r{\Ahttps://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:(?:/(?:issues|pull)/[1-9][0-9]*)(?:#issuecomment-[1-9][0-9]*)?)?\z}
   SENSITIVE_PATTERNS = [
-    /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
-    /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
-    /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
-    /\bglpat-[A-Za-z0-9_-]{20,}\b/,
-    /\bsk-(?:proj-|svcacct-|ant-api\d+-)?[A-Za-z0-9_-]{12,}\b/,
-    /\bAIza[0-9A-Za-z_-]{35}\b/,
-    /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/,
-    /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,
-    /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/
+    /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])/,
+    /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9_]{20,}(?![A-Za-z0-9])/,
+    /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}(?![A-Za-z0-9])/,
+    /(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9])/,
+    /(?<![A-Za-z0-9])sk-(?:proj-|svcacct-|ant-api\d+-)?[A-Za-z0-9_-]{12,}(?![A-Za-z0-9])/,
+    /(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9])/,
+    /(?<![A-Za-z0-9])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}(?![A-Za-z0-9])/,
+    /(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}(?![A-Za-z0-9])/,
+    /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9])/
   ].freeze
   RFC3339_TIMESTAMP = /\A(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?<offset>Z|[+-](?<offset_hour>\d{2}):(?<offset_minute>\d{2}))\z/
 
@@ -52,7 +54,14 @@ module WorkflowTelemetryReport
   module_function
 
   def read_input(path)
-    path == "-" ? $stdin.read : File.read(path, encoding: "UTF-8")
+    input = if path == "-"
+              $stdin.read(MAX_INPUT_BYTES + 1)
+            else
+              File.open(path, "r:UTF-8") { |file| file.read(MAX_INPUT_BYTES + 1) }
+            end
+    raise InputError, "input payload exceeds size limit" if input.bytesize > MAX_INPUT_BYTES
+
+    input
   rescue SystemCallError, EncodingError
     raise InputReadError
   end
@@ -110,6 +119,7 @@ module WorkflowTelemetryReport
 
   def require_array(value)
     raise InputError, "expected JSON array" unless value.is_a?(Array)
+    raise InputError, "JSON array exceeds item limit" if value.length > MAX_ARRAY_ITEMS
 
     value
   end
@@ -150,7 +160,8 @@ module WorkflowTelemetryReport
     return UNKNOWN if allow_unknown && value == UNKNOWN
 
     match = value.match(RFC3339_TIMESTAMP) if value.is_a?(String)
-    valid = match && Date.valid_date?(match[:year].to_i, match[:month].to_i, match[:day].to_i) &&
+    valid = match && match[:offset] != "-00:00" &&
+            Date.valid_date?(match[:year].to_i, match[:month].to_i, match[:day].to_i) &&
             match[:hour].to_i <= 23 && match[:minute].to_i <= 59 && match[:second].to_i <= 59 &&
             (match[:offset] == "Z" || (match[:offset_hour].to_i <= 23 && match[:offset_minute].to_i <= 59))
     raise InputError, "invalid timestamp" unless valid
