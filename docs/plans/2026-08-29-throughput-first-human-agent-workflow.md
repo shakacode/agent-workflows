@@ -56,6 +56,9 @@ This is a frozen historical baseline, not current repository state. Use
 for the current portfolio inventory. The snapshot identity, selected GitHub
 fields, source PR sets, formulas, and derived rows are preserved in the
 [baseline evidence comment](https://github.com/shakacode/agent-workflows/pull/558#issuecomment-5466674188).
+The SHA-256 of that comment's UTF-8 body as observed for this plan is
+`5ad81d27f338ca80677b745cfac921143753b13fb3a6b6df1d878b443388772c`;
+a later mismatch is provenance drift rather than the frozen source.
 
 These observations establish a credible throughput problem. They do not prove
 that every safety control is unnecessary.
@@ -239,18 +242,26 @@ belong in the collapsed details.
 
 Before creating a task, the launcher appends a `launch-pending` record with a
 globally unique run ID and idempotency key. A retry reuses that record rather
-than creating a duplicate task. After task creation, the launcher attaches the
-host task ID and advances the same run. If the durable write path is unavailable,
-a visible single-operator or no-backend override may proceed without turning a
-bookkeeping failure into a global stall; it SHALL preserve the run ID locally
-in durable host storage that survives a process restart and report that GitHub
-reconciliation remains due. The missing write path is not itself evidence of
-contradictory ownership. Before mutating an issue, PR, or branch that requires
-exclusive ownership, or assuming exclusive integration responsibility, the
-override SHALL check any reliable coordination evidence that remains available
-and refuse an observed conflict. If none can be observed, it MAY proceed under
-explicit single-operator authority while recording that coordination evidence
-is degraded.
+than creating a duplicate task. Host creation SHALL enforce the idempotency key
+when supported; otherwise recovery SHALL reconcile visible host tasks by that
+key and resolved launch intent before issuing another create request. After task
+creation, the launcher attaches the host task ID and advances the same run.
+If the durable write path is unavailable, a visible single-operator or
+no-backend override may proceed without turning a bookkeeping failure into a
+global stall. It SHALL preserve the complete launch fence in durable host
+storage that survives a process restart: run ID, idempotency key, resolved
+launch intent, current transition, and attached host task ID as soon as known.
+It advances that local record until GitHub reconciliation succeeds.
+
+The missing write path is not itself evidence of contradictory ownership.
+Before mutating an issue, PR, or branch that requires exclusive ownership, or
+assuming exclusive integration responsibility, the override SHALL check any
+reliable coordination evidence that remains available and refuse an observed
+conflict. A coordination check reports `conflict`, `clear`, or `unavailable`;
+an error or timeout is `unavailable`, never `clear`. The override may follow an
+`unavailable` result only after bounded retry/backoff and durable recording of
+the failed checks. It MAY then proceed under explicit single-operator authority
+while recording that coordination evidence is degraded.
 
 This availability choice accepts the residual risk that a backend outage hides
 another operator making the same assumption. The override is for a genuinely
@@ -274,6 +285,9 @@ does not disappear into an ambiguous terminal state. The normal progression is
 the earlier history. Execution-slot status is recorded separately as `queued`,
 `occupied`, `released`, or `not-applicable`, so task state never implies capacity
 that the host did not actually allocate.
+A replacement run may launch only after the prior ownership record is terminal.
+Its append-only terminal transition records the trusted authorizer and durable
+authority reference plus the replacement run ID.
 
 ### R12 — In-flight portfolio control (P1)
 
@@ -513,12 +527,14 @@ Agent run: Codex on M5 — active — <task link>
 - Later workflow observations: <timestamped append-only entries or none>
 - Branch and PR: <values or pending>
 - Resolved merge authority: <auto or ask>
+- Merge-authority evidence: <trusted authorizer, durable source URL and digest, exact action/scope, or not granted>
 - State: <launch-pending, active, waiting, blocked, PR-ready, or completed>
 - State transitions: <timestamped append-only from/to entries, including the initial state>
 - Execution slot: <queued, occupied, released, or not-applicable>
 - Execution-slot transitions: <timestamped append-only from/to entries, including the initial status>
 - Outcome: <pending, merged, closed, failed, or reverted>
 - Promotion/release authority: <not granted or separately authorized reference>
+- Promotion/release-authority evidence: <trusted authorizer, durable source URL and digest, exact action/scope, or not granted>
 - Last material update: <timestamp>
 - Needs human: <none or one meaningful decision>
 
@@ -782,12 +798,11 @@ ownership/status, value, and remaining integration cost. Classify each PR and
 task as accelerate, continue, hold, replace, close, or integration-ready and
 recommend an integration order. For each requested lane, also return the
 existing task, if any, and the resulting execution action: `create`, `resume`,
-`hold`, `replace after superseding`, or `no worker`. Map `continue` to resuming
+`hold`, `replace after terminal`, or `no worker`. Map `continue` to resuming
 the existing task rather than creating a duplicate; `hold`, `close`, and
 `integration-ready` create no worker; and `replace` creates a worker only after
-the prior ownership record is terminal or explicitly superseded. File overlap
-alone is not a dependency. Do not edit, close, merge, or message PRs, issues, or
-tasks.
+the prior ownership record is terminal. File overlap alone is not a dependency.
+Do not edit, close, merge, or message PRs, issues, or tasks.
 ```
 
 ### T11 — Simplify conflict and dependency handling
@@ -802,8 +817,9 @@ rule, and ordinary documentation conflicts deferred to integration.
 Expose a repository
 policy seam for changelog and generated-artifact handling instead of imposing a
 universal relaxation. Add a simple override for broken bookkeeping or
-coordination without weakening merge, security, production, release, or
-correctness gates. Keep the change small and add focused deterministic tests.
+coordination or telemetry only. It cannot grant authority or bypass correctness,
+security, destructive-action, merge, production, or release gates. Keep the
+change small and add focused deterministic tests.
 ```
 
 ### T12 — Document the daily and overnight loop
@@ -815,9 +831,11 @@ correctness gates. Keep the change small and add focused deterministic tests.
 Document the outcome and coverage list in #565. Cover the operator-set
 concurrency target, next human availability time, meaningful
 decision queue, dependency-aware task waiting, GitHub task records, live PR and
-active-task/run-record portfolio classification, and easy non-safety overrides.
-Use one compact state table and plain language. Do not design adaptive
-thresholds or require a comparison pilot.
+active-task/run-record portfolio classification, and overrides limited to
+bookkeeping, coordination, or telemetry failures. State that an override cannot
+grant authority or bypass correctness, security, destructive-action, merge,
+production, or release gates. Use one compact state table and plain language.
+Do not design adaptive thresholds or require a comparison pilot.
 ```
 
 ## Launch Order
@@ -828,13 +846,13 @@ parallel, but no other task is created or activated until that result is
 available. Apply the operator's authorization only to that filtered execution
 set: resume the named existing tasks, create only lanes marked `create`, and do
 not create duplicates for `continue`, `hold`, `close`, or `integration-ready`.
-A `replace` action waits until the prior ownership record is terminal or
-explicitly superseded. Then prompt the resulting T1, T2, T3, T4, T5, T7, T8,
-T9, T11, and T12 tasks at the same time so every active or queued task is visible
-and traceable. Begin active execution only up to the operator's target and the
-host's actual capacity. A host that queues tasks may create the whole filtered
-set immediately without claiming every task is consuming an active worker slot.
-A host without a separate queue treats its creation limit as the capacity limit.
+A `replace` action waits until the prior ownership record is terminal. Then
+prompt the resulting T1, T2, T3, T4, T5, T7, T8, T9, T11, and T12 tasks at the
+same time so every active or queued task is visible and traceable. Begin active
+execution only up to the operator's target and the host's actual capacity. A
+host that queues tasks may create the whole filtered set immediately without
+claiming every task is consuming an active worker slot. A host without a
+separate queue treats its creation limit as the capacity limit.
 
 Each prompt states what can proceed immediately and what waits for a
 documented GitHub dependency. A dependency-waiting task completes independent
