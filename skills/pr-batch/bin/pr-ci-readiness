@@ -421,15 +421,14 @@ module PrCiReadiness
 
     phases.all? do |phase|
       %w[Success Blocked].include?(phase[:status]) ||
-        (phase[:status] == "Running" && circleci_approval_job?(phase[:job]))
+        (phase[:status] == "Running" && circleci_same_workflow_job_link?(phase[:job], details_match[1]))
     end
   end
 
-  def circleci_approval_job?(raw_job)
-    linked_label = raw_job.match(/\A\[([^\]]+)\]\([^)]+\)\z/)&.[](1)
-    tokens = (linked_label || raw_job).downcase.split(/[^a-z0-9]+/)
-    approval_tokens = %w[approval approve hold]
-    approval_tokens.include?(tokens.first) || approval_tokens.include?(tokens.last)
+  def circleci_same_workflow_job_link?(raw_job, workflow_id)
+    job_link = raw_job.match(%r{\A\[[^\]]+\]\((https://[^)]+)\)\z})
+    job_url_match = job_link && job_link[1].match(CIRCLECI_WORKFLOW_URL)
+    job_url_match && job_url_match[1] == workflow_id
   end
 
   def optional_phase_timestamp?(row, key)

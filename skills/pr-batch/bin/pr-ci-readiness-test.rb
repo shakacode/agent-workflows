@@ -409,7 +409,7 @@ class PrCiReadinessTest < Minitest::Test
     )
   end
 
-  def test_optional_policy_accepts_successful_prerequisites_and_explicit_approval_holds
+  def test_optional_policy_accepts_historical_same_workflow_running_approval_links
     head = "a" * 40
     held = circleci_approval_held_row
     workflow_url = held.fetch("details_url")
@@ -417,9 +417,12 @@ class PrCiReadinessTest < Minitest::Test
       "output" => held.fetch("output").merge(
         "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n" \
                      "* setup - Success\n" \
-                     "* [hold](#{workflow_url}) - Running\n" \
-                     "* approve-storybook-review-app - Running\n" \
-                     "* build-storybook-review-app - Blocked\n"
+                     "* [start-cypress](#{workflow_url}) - Running\n" \
+                     "* [start-plugin](#{workflow_url}) - Running\n" \
+                     "* [start-mobile](#{workflow_url}) - Running\n" \
+                     "* [start-playwright](#{workflow_url}) - Running\n" \
+                     "* build-storybook-review-app - Blocked\n" \
+                     "* deploy-storybook-review-app - Blocked\n"
       )
     )
     policy = {
@@ -501,6 +504,27 @@ class PrCiReadinessTest < Minitest::Test
         "output" => circleci_approval_held_row.fetch("output").merge(
           "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
                        "* start - Blocked\n* build-hold-artifacts - Running\n"
+        )
+      ),
+      "plain approval-like running job" => circleci_approval_held_row.merge(
+        "output" => circleci_approval_held_row.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
+                       "* approval-tests - Running\n* build - Blocked\n"
+        )
+      ),
+      "job URL with approval-like label" => circleci_approval_held_row.merge(
+        "output" => circleci_approval_held_row.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
+                       "* [approval-tests](https://app.circleci.com/job/123) - Running\n" \
+                       "* build - Blocked\n"
+        )
+      ),
+      "different workflow UUID with approval-like label" => circleci_approval_held_row.merge(
+        "output" => circleci_approval_held_row.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
+                       "* [approval-tests](https://app.circleci.com/workflow/" \
+                       "00000000-0000-4000-8000-000000000099) - Running\n" \
+                       "* build - Blocked\n"
         )
       ),
       "failed prerequisite with approval hold" => circleci_approval_held_row.merge(
