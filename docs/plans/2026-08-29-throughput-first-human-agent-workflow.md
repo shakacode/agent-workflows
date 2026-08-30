@@ -44,7 +44,7 @@ At the 2026-08-29 snapshot:
   durable dedup state can therefore be successful execution.
 - One GitHub tool request returned a 672 KB pull-request payload before the
   agent recovered from a spilled file. Compact, field-selected queries should
-  be the default.
+  be the default; R14 carries that requirement forward.
 
 This is a frozen historical baseline, not current repository state. Use
 [#563](https://github.com/shakacode/agent-workflows/issues/563) and its successors
@@ -335,7 +335,7 @@ when a small CLI or API response is sufficient.
 The data is for broad directional decisions. We will refine from live work
 without requiring controlled experiments or one-variable-at-a-time changes.
 
-### R2 — Simple concurrency now; adaptive scheduling later
+### R2 — Simple concurrency now; adaptive scheduling later (P1/deferred split)
 
 The operator chooses a target number of concurrent tasks. The system starts
 ready work up to that target and the host's actual capacity. Trial and error
@@ -757,20 +757,24 @@ correctness gates. Keep the change small and add focused deterministic tests.
 ```text
 Document the outcome and coverage list in #565. Cover the operator-set
 concurrency target, next human availability time, meaningful
-decision queue, dependency-aware task waiting, GitHub task records, live PR
-portfolio review, and easy non-safety overrides. Use one compact state table and
-plain language. Do not design adaptive thresholds or require a comparison
-pilot.
+decision queue, dependency-aware task waiting, GitHub task records, live PR and
+active-task/run-record portfolio classification, and easy non-safety overrides.
+Use one compact state table and plain language. Do not design adaptive
+thresholds or require a comparison pilot.
 ```
 
 ## Launch Order
 
-Create and prompt T1, T2, T3, every T4 audit, T5, T7, T8, T9, T10, T11, and
-T12 at the same time so every authorized task is visible and traceable. Begin
-active execution only up to the operator's target and the host's actual
-capacity. A host that queues tasks may create the whole set immediately without
-claiming every task is consuming an active worker slot. A host without a
-separate queue treats its creation limit as the capacity limit.
+Create and run T10 first. Its initial live PR/task inventory classifies existing
+work and authorizes the unattended wave; prompt preparation MAY proceed in
+parallel, but the remaining tasks are not created or activated until that
+classification is available. Then create and prompt T1, T2, T3, every T4 audit,
+T5, T7, T8, T9, T11, and T12 at the same time so every authorized task is
+visible and traceable. Begin active execution only up to the operator's target
+and the host's actual capacity. A host that queues tasks may create the whole
+approved set immediately without claiming every task is consuming an active
+worker slot. A host without a separate queue treats its creation limit as the
+capacity limit.
 
 Each prompt states what can proceed immediately and what waits for a
 documented GitHub dependency. A dependency-waiting task completes independent
