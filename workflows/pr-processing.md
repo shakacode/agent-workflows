@@ -3946,13 +3946,34 @@ Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
 
 Derive the identity with the trusted pack helper; do not invent or hand-edit a
-digest:
+digest. Resolve the helper in this same shell: reuse an already authenticated
+trusted-base materialization when present, otherwise bind it to the loaded
+current `pr-batch` skill directory supplied as `PR_BATCH_SKILL_DIR`. Do not
+learn that fallback from the candidate checkout or its repo-local `.agents`
+copy. A missing or non-executable helper, or a failed derivation, is `UNKNOWN`
+and stops the gate:
 
 ```bash
-DIFF_IDENTITY="$("${TRUSTED_PR_BATCH_SKILL_DIR}/bin/diff-identity" \
+if [ -z "${TRUSTED_PR_BATCH_SKILL_DIR:-}" ]; then
+  if [ -n "${PR_BATCH_SKILL_DIR:-}" ]; then
+    TRUSTED_PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR}"
+  else
+    printf '%s\n' "UNKNOWN: trusted diff-identity helper is unavailable" >&2
+    exit 1
+  fi
+fi
+DIFF_IDENTITY_HELPER="${TRUSTED_PR_BATCH_SKILL_DIR}/bin/diff-identity"
+if [ ! -x "${DIFF_IDENTITY_HELPER}" ]; then
+  printf '%s\n' "UNKNOWN: trusted diff-identity helper is unavailable" >&2
+  exit 1
+fi
+if ! DIFF_IDENTITY="$("${DIFF_IDENTITY_HELPER}" \
   --base-ref "${BASE_REF}" \
   --base-sha "${DIFF_BASE_SHA}" \
-  --head-sha "${HEAD_SHA}")"
+  --head-sha "${HEAD_SHA}")"; then
+  printf '%s\n' "UNKNOWN: trusted diff-identity derivation failed" >&2
+  exit 1
+fi
 ```
 
 `DIFF_BASE_SHA` is the resolved full lowercase base commit used for the diff,

@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "open3"
+require "rbconfig"
 require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
 require_relative "../lib/autonomous_merge_runtime_trust"
 
@@ -98,6 +100,45 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes workflow, "mechanically recomputes a length-framed manifest"
     assert_includes workflow, "remain coordinator procedures"
     assert_match(/`merge_authority`\s+remains separate from\s+eligibility/, workflow)
+  end
+
+  def test_ask_merge_authority_gate_resolves_diff_identity_from_the_loaded_skill_in_a_fresh_shell
+    script = bash_blocks_with("workflows/pr-processing.md", "DIFF_IDENTITY=").fetch(0)
+    base_sha = "1" * 40
+    head_sha = "2" * 40
+
+    stdout, stderr, status = Open3.capture3(
+      {
+        "PR_BATCH_SKILL_DIR" => File.join(ROOT, "skills/pr-batch"),
+        "BASE_REF" => "main",
+        "DIFF_BASE_SHA" => base_sha,
+        "HEAD_SHA" => head_sha,
+        "PATH" => [File.dirname(RbConfig.ruby), "/usr/bin", "/bin"].join(":")
+      },
+      "/bin/bash", "--noprofile", "--norc", "-c", "#{script}\nprintf '%s\\n' \"${DIFF_IDENTITY}\"",
+      unsetenv_others: true
+    )
+
+    assert status.success?, stderr
+    assert_match(/\A[0-9a-f]{64}\n\z/, stdout)
+    assert_empty stderr
+  end
+
+  def test_ask_merge_authority_gate_fails_closed_without_a_trusted_or_loaded_skill
+    script = bash_blocks_with("workflows/pr-processing.md", "DIFF_IDENTITY=").fetch(0)
+
+    _stdout, stderr, status = Open3.capture3(
+      {
+        "BASE_REF" => "main",
+        "DIFF_BASE_SHA" => "1" * 40,
+        "HEAD_SHA" => "2" * 40
+      },
+      "/bin/bash", "--noprofile", "--norc", "-c", script,
+      unsetenv_others: true
+    )
+
+    refute status.success?
+    assert_includes stderr, "UNKNOWN: trusted diff-identity helper is unavailable"
   end
 
   def test_every_shipped_readiness_caller_authenticates_the_trusted_repository_root
