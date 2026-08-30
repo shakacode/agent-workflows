@@ -34,10 +34,10 @@ class WorkflowTelemetryReportTest < Minitest::Test
 
   def test_rejects_token_shaped_content_even_in_an_allowlisted_metadata_field_without_echoing_it
     secrets = [
-      ["sk", "proj", "do-not-echo-1234567890"].join("-"),
-      ["sk", "live", "1234567890abcdefghijklmn"].join("_"),
-      ["glpat", "0123456789abcdefghijkl"].join("-"),
-      ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "signature"].join(".")
+      %w[sk proj do-not-echo-1234567890].join("-"),
+      %w[sk live 1234567890abcdefghijklmn].join("_"),
+      %w[glpat 0123456789abcdefghijkl].join("-"),
+      %w[eyJhbGciOiJIUzI1NiJ9 eyJzdWIiOiIxMjM0NTY3ODkwIn0 signature].join(".")
     ]
 
     secrets.each do |secret|
@@ -63,6 +63,22 @@ class WorkflowTelemetryReportTest < Minitest::Test
     report = run_json(input)
 
     assert_equal "prod;batch=42", report.fetch("batch_id")
+  end
+
+  def test_rejects_prose_in_batch_id_without_echoing_it
+    input = JSON.parse(File.read(FIXTURE, encoding: "UTF-8"))
+    private_content = "please inspect the private customer transcript and summarize it"
+    input["batch_id"] = private_content
+
+    Tempfile.create(["workflow-telemetry", ".json"]) do |file|
+      file.write(JSON.generate(input))
+      file.flush
+      stdout, stderr, status = Open3.capture3(HELPER, "--input", file.path, "--format", "json")
+
+      refute status.success?
+      refute_includes stdout, private_content
+      refute_includes stderr, private_content
+    end
   end
 
   def test_propagates_unknown_when_human_question_collection_is_unavailable
