@@ -55,7 +55,9 @@ matching local git remote host when one is available, then to `github.com`.
 Local git probes are bounded by timeout environment variables:
 `PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS` for the preflight helper and
 `PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS` for the shared git-probe environment
-helper; both default to 10 seconds.
+helper; both default to 10 seconds. Trusted-base remote discovery and fetch use
+`PR_SECURITY_PREFLIGHT_TRUSTED_BASE_FETCH_TIMEOUT_SECONDS`, which defaults to
+300 seconds.
 
 Suspicious-text scans include trusted metadata-bot comments, reviews, and issue
 bodies as warning-producing metadata. Resolved trusted-bot and metadata-bot
@@ -199,8 +201,11 @@ acceptance, the invoking checkout's `HEAD` must equal that freshly fetched base
 commit; an attached checkout must also be on the anchored full ref, while a
 detached checkout is accepted only at that exact commit. These checks prevent a
 PR branch from selecting and self-authenticating its own trust anchor. The fetch
-runs with system/global and repository/worktree Git
-configuration absent, a minimal inherited environment, URL rewrites absent,
+runs for every high-risk-file scan that attempts trusted-base acceptance, so it
+requires live network egress to the configured GitHub remote; unavailable or
+blocked egress fails closed after at most the trusted-base fetch timeout (300
+seconds by default). The fetch runs with system/global and repository/worktree
+Git configuration absent, a minimal inherited environment, URL rewrites absent,
 SSH user configuration disabled, SSH batch mode enabled, and transport
 restricted to HTTPS/SSH. It resolves one absolute trusted Git executable before
 reading task-scoped inputs and uses that same executable for remote inspection,

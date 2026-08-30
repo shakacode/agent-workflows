@@ -134,7 +134,7 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
     trusted_base_policy_from_yaml(yaml, repo:)
   end
 
-  def trusted_ref_anchor(_remote_url, operator_ref:)
+  def trusted_ref_anchor(_root, _remote_url, operator_ref:)
     ref = operator_ref || @trusted_ref
     source = operator_ref ? "operator-environment:#{TRUSTED_BASE_REF_ENV}" : "authenticated-remote-default-head"
     [{ ref:, sha: operator_ref ? nil : @trusted_ref_sha, source: }, nil]
@@ -2961,21 +2961,26 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def test_authenticated_remote_default_ref_probe_requires_exact_symref_receipt
+    calls = []
     response = [
       "ref: refs/heads/main\tHEAD\n#{'e' * 40}\tHEAD\n",
       "",
       TestCommandStatus.new(0)
     ]
     original_capture = Object.instance_method(:capture_trusted_git_probe)
-    Object.send(:define_method, :capture_trusted_git_probe) do |*|
+    Object.send(:define_method, :capture_trusted_git_probe) do |*args, **options|
+      calls << [args, options]
       response
     end
     Object.send(:private, :capture_trusted_git_probe)
 
-    anchor, error = trusted_remote_default_ref("https://github.com/owner/repo.git")
+    anchor, error = trusted_remote_default_ref("/verified/repo", "https://github.com/owner/repo.git")
     assert_nil error
     assert_equal "refs/heads/main", anchor.fetch(:ref)
     assert_equal "e" * 40, anchor.fetch(:sha)
+    assert_equal ["-C", "/verified/repo", "ls-remote", "--symref", "--exit-code",
+                  "https://github.com/owner/repo.git", "HEAD"], calls.first.first
+    assert_equal({ timeout_seconds: TRUSTED_BASE_FETCH_TIMEOUT_SECONDS }, calls.first.last)
 
     malformed_outputs = [
       "#{'e' * 40}\tHEAD\n",
@@ -2985,7 +2990,9 @@ class PrSecurityPreflightTest < Minitest::Test
     ]
     malformed_outputs.each do |output|
       response = [output, "", TestCommandStatus.new(0)]
-      malformed_anchor, malformed_error = trusted_remote_default_ref("https://github.com/owner/repo.git")
+      malformed_anchor, malformed_error = trusted_remote_default_ref(
+        "/verified/repo", "https://github.com/owner/repo.git"
+      )
       assert_nil malformed_anchor
       assert_includes malformed_error, "malformed output"
     end
@@ -3468,6 +3475,9 @@ class PrSecurityPreflightTest < Minitest::Test
   def test_trusted_base_rejects_additional_fetch_affecting_git_config
     cases = {
       "alternate SSH executable" => ["--local", "core.sshCommand", "/tmp/attacker-ssh"],
+      "alternate credential helper" => ["--local", "credential.helper", "!attacker"],
+      "alternate upload-pack executable" => ["--local", "remote.origin.uploadpack", "/tmp/attacker-upload-pack"],
+      "alternate Git proxy" => ["--local", "core.gitproxy", "/tmp/attacker-proxy"],
       "disabled TLS verification" => ["--worktree", "http.sslVerify", "false"],
       "alternate CA" => ["--local", "http.sslCAInfo", "/tmp/attacker-ca.pem"],
       "extra authorization header" => ["--worktree", "http.extraHeader", "Authorization: attacker"]
@@ -4025,6 +4035,23 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_equal 2, graphql_call_count(log_path)
       assert_equal 1, timeline_api_call_count(log_path)
     end
+  end
+
+  def test_rest_timeline_reconciliation_accepts_standard_events_by_exact_identity
+    nodes = %w[merged labeled assigned].map do |event|
+      {
+        "id" => "#{event}-event-1",
+        "__typename" => "#{event.capitalize}Event"
+      }
+    end
+    rest_items = %w[merged labeled assigned].map do |event|
+      { "event" => event, "node_id" => "#{event}-event-1" }
+    end
+
+    assert graph_timeline_matches_rest?(nodes, rest_items, reported_total_count: 4)
+
+    rest_items.last["node_id"] = "different-assigned-event"
+    refute graph_timeline_matches_rest?(nodes, rest_items, reported_total_count: 4)
   end
 
   def test_timeline_rest_reconciliation_requires_an_ordinary_event_node_id

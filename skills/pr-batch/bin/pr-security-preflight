@@ -1448,9 +1448,9 @@ def trusted_github_https_remote?(remote_url)
   trusted_github_remote?(remote) && remote.fetch(:scheme, nil) == "https"
 end
 
-def trusted_remote_default_ref(remote_url)
+def trusted_remote_default_ref(root, remote_url)
   stdout, stderr, status = capture_trusted_git_probe(
-    "ls-remote", "--symref", "--exit-code", remote_url, "HEAD",
+    "-C", root, "ls-remote", "--symref", "--exit-code", remote_url, "HEAD",
     timeout_seconds: TRUSTED_BASE_FETCH_TIMEOUT_SECONDS
   )
   unless status&.success?
@@ -1768,12 +1768,12 @@ class TrustedBaseHighRiskOperations
     trusted_remote_url(root, policy, repo:, github_host:)
   end
 
-  def trusted_ref_anchor(remote_url, operator_ref:)
+  def trusted_ref_anchor(root, remote_url, operator_ref:)
     if operator_ref
       return [{ ref: operator_ref, sha: nil, source: "operator-environment:#{TRUSTED_BASE_REF_ENV}" }, nil]
     end
 
-    trusted_remote_default_ref(remote_url)
+    trusted_remote_default_ref(root, remote_url)
   end
 
   def with_isolated_base(remote_url, ref, &)
@@ -1856,7 +1856,7 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, operations: Trus
   remote_url, error = operations.remote_url(root, bootstrap_policy, repo:, github_host:)
   return [nil, error] unless remote_url
 
-  ref_anchor, error = operations.trusted_ref_anchor(remote_url, operator_ref:)
+  ref_anchor, error = operations.trusted_ref_anchor(root, remote_url, operator_ref:)
   return [nil, error] unless ref_anchor
   unless bootstrap_policy.fetch("ref") == ref_anchor.fetch(:ref)
     return [nil, "trusted-base policy ref does not match independently authenticated ref"]
@@ -2075,20 +2075,20 @@ def valid_graph_connection_page?(connection, expected_total_count:, accumulated_
   end
 end
 
-REST_PR_TIMELINE_EVENT_TYPENAMES = {
-  "closed" => "ClosedEvent",
+REST_PR_TIMELINE_TYPENAME_EXCEPTIONS = {
   "commented" => "IssueComment",
   "committed" => "PullRequestCommit",
-  "cross-referenced" => "CrossReferencedEvent",
-  "head_ref_force_pushed" => "HeadRefForcePushedEvent",
-  "mentioned" => "MentionedEvent",
-  "ready_for_review" => "ReadyForReviewEvent",
-  "reopened" => "ReopenedEvent",
-  "review_requested" => "ReviewRequestedEvent",
-  "reviewed" => "PullRequestReview",
-  "subscribed" => "SubscribedEvent",
-  "unsubscribed" => "UnsubscribedEvent"
+  "renamed" => "RenamedTitleEvent",
+  "reviewed" => "PullRequestReview"
 }.freeze
+
+def rest_pr_timeline_typename(event)
+  return unless event.is_a?(String) && event.match?(/\A[a-z]+(?:[-_][a-z0-9]+)*\z/)
+
+  REST_PR_TIMELINE_TYPENAME_EXCEPTIONS.fetch(event) do
+    "#{event.split(/[-_]/).map(&:capitalize).join}Event"
+  end
+end
 
 def rest_pull_request_timeline(repo, number)
   run_gh_paginated_json_array(
@@ -2209,7 +2209,7 @@ def graph_timeline_matches_rest?(nodes, rest_items, reported_total_count:)
   rest_items.each do |item|
     return false unless item.is_a?(Hash)
 
-    typename = REST_PR_TIMELINE_EVENT_TYPENAMES[item["event"]]
+    typename = rest_pr_timeline_typename(item["event"])
     return false unless typename
 
     if typename == "CrossReferencedEvent"
