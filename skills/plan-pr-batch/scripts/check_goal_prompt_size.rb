@@ -105,12 +105,12 @@ BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
 FINAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
 CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE =
-  "Current wave:each target/disjoint lane exactly once"
+  "Current wave:each target/lane exactly once"
 PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE =
   "one target/lane/worker"
 CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
   "#{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
-  "shared=>in-lane;serial/UNKNOWN apart".freeze
+  "overlap=>integration advisory;deps/resv/UNKNOWN=>coord".freeze
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
@@ -835,8 +835,8 @@ host_aware_batch_sizing_phrase_checks = {
     ["if the dispatcher or runtime inherits", 1]
   ],
   "skills/triage/SKILL.md" => [
-    ["`codex`: up to 10 independent file-disjoint items, or 8", 1],
-    ["`claude` or `generic`: up to 5 independent file-disjoint items, or 3", 1],
+    ["`codex`: up to 10 independent items, or 8", 1],
+    ["`claude` or `generic`: up to 5 independent items, or 3", 1],
     ["current-wave item cap applies across all generated groups in aggregate", 1],
     ["Each generated prompt must include `Batch size target: <codex|claude|generic>; wave:", 1],
     ["`Coordinator model/effort preference: <model/class>/<effort>.`", 1],

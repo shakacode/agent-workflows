@@ -77,7 +77,9 @@ becomes durably terminal. The automation never owns the task or next action.
 1. Resolve the work item:
    - Issue: fetch the issue body, comments, linked PRs, and acceptance criteria.
    - PR: fetch the PR body, changed files, review decision, checks, labels, unresolved review threads, and recent comments. Treat an assigned PR like an assigned issue whose implementation has already started; the same value, scope, testing, and readiness rules still apply.
-   - Multi-PR landing plan: build a dependency map first; exclude WIP/draft PRs unless the user explicitly includes them.
+   - Multi-PR landing plan: build the issue-authored semantic dependency map first;
+     treat ordinary file overlap as an integration advisory, and exclude WIP/draft
+     PRs unless the user explicitly includes them.
 2. Validate that the work is worth doing:
    - Confirm the issue or PR describes a real project benefit, not just speculative polish or churn.
    - Push back on poorly defined, low-value, or harmful requests before creating a PR.
@@ -692,16 +694,26 @@ Stop before spawning workers when approval prompts will block inactive agents or
 
 Use no-human-blocking approvals only for a trusted maintainer-approved batch. Full access or no-approval operation is appropriate only in an isolated trusted repo or worktree. Do not use it for arbitrary public PR branches or unconfirmed issue filters.
 
+### Dependency And Conflict Throughput Policy
+
+Issue-authored semantic dependencies are authoritative ordering constraints: record them as typed `edit`, `validation_open`, or `merge_order` edges and let the stage-dependency gate control the affected action. Never create, remove, or retype a semantic dependency merely because file-touch maps overlap; overlap is advisory until integration.
+
+Record every same-wave overlap as an integration advisory, then keep workers moving. Ordinary documentation is advisory. Resolve changelog and generated-artifact ownership from the consumer repository's `AGENTS.md` artifact-ownership seam: its explicit `defer`, `waive`, `dedicated-owner`, or required disposition controls that repository. This source repository's `deferred_to_update_changelog` rule is one such seam instance, not a portable default. Repeated overlap is a modularization signal, not a launch blocker.
+
+At integration, apply consequence-aware care to intersections involving executable code, schemas, security boundaries, merge policy, or canonical contracts: inspect the combined change, resolve the interaction deliberately, and rerun the applicable correctness and readiness gates.
+
+Record `Non-safety coordination override: <none|named stale/broken bookkeeping or coordination stop; durable reason/evidence>` in the Batch Plan and every affected Lane Card. A named override may set aside only that specifically evidenced non-safety stop; it cannot alter an issue-authored semantic dependency or bypass a correctness check, merge authority, security, production, release, or destructive-action gate. Missing or `UNKNOWN` reason/evidence is not an override.
+
 ### Host-Aware Batch Sizing
 
-After file-touch collision filtering and before worker launch, choose a
+After semantic dependency planning and before worker launch, choose a
 batch-size target. An explicit user-requested host, runner, or paste destination
 wins over host detection. If there is no explicit target, use the current host
 only when the runtime exposes a reliable signal; installed Codex/Claude homes
 prove install state, not the active runner. If the active host is ambiguous, use
 `generic`.
 
-Default maximum file-disjoint lanes per prompt or wave. Items with `UNKNOWN`
+Default maximum independent lanes per prompt or wave. Items with `UNKNOWN`
 path evidence stay serial discovery lanes until their real paths are known.
 
 - `codex`: up to 10 independent items, or 8 when any lane touches shared/risky files,
@@ -714,7 +726,7 @@ path evidence stay serial discovery lanes until their real paths are known.
   host with larger verified capacity.
 
 Prefer a smaller first wave when coordination, CI, approval, or quota health is
-uncertain. Put additional file-disjoint work into later wave prompts instead of
+uncertain. Put additional independent work into later wave prompts instead of
 overfilling the active worker set.
 
 ### Batch Plan Preflight
@@ -729,7 +741,7 @@ PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch
   < path/to/batch-plan-preflight-v1.json
 ```
 
-This machine gate owns schema and launch scheduling, including collision,
+This machine gate owns schema and launch scheduling, including advisory overlap reporting,
 backend-cap, QA, external-premise, required `plan.active_wave`, and max-one
 serialization enforcement. Do not reproduce those matrices in dispatcher or
 merge checks. Preserve real PR verified `pr-file-touch-map` results unchanged;
@@ -1031,8 +1043,8 @@ unknown configuration remains `UNKNOWN` before a branch is created.
 Collate lanes with matching complete worker model/effort routes for
 planning/dispatch review. A complete match includes the initial assignment,
 escalation assignment, evidence gate, and maximum escalation count. Never merge
-their ownership, claims, dependencies, serial discovery, file-collision
-ordering, or wave caps. See
+their ownership, claims, dependencies, serial discovery, active-reservation
+coordination, or wave caps. See
 [Cost-Aware Agent Model Routing](../docs/agent-workflows-model-routing.md) for the portable role
 matrix, operating modes, verification matrix, and measurement guidance.
 
@@ -1786,7 +1798,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
+Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
@@ -2555,7 +2567,7 @@ that compatible capability or its advertisement is `UNKNOWN`, record
 
 When worker subagents are explicitly authorized:
 
-- Assign one target or one disjoint lane per worker.
+- Assign one target or one semantic lane per worker.
 - Acquire the lane's `agent-coord claim` before creating the worker worktree or
   branch when the backend is available. If bounded doctor/status is degraded
   and the lane is exact and independent, the coordinator may provide a
@@ -2570,7 +2582,10 @@ When worker subagents are explicitly authorized:
   directory at the same time; sharing one checkout corrupts the git index,
   branch, and working tree as workers overwrite each other.
 - Tell workers they are not alone in the codebase and must not revert others' edits.
-- Keep write scopes disjoint unless the main agent serializes integration.
+- Keep owned scopes explicit for coordination. Ordinary file overlap does not
+  require file-disjoint workers or launch serialization; record it as an
+  integration advisory. Only issue-authored semantic dependencies and active
+  expansion reservations control launch ordering or max-one serialization.
 - Before editing, when lane risk or bounded delegation requires an execution
   envelope, restate the coordinator-role-approved goal/non-goals, owned paths,
   supported diagnosis, invariants, acceptance criteria, verification, and stop
@@ -4426,7 +4441,9 @@ so unrelated range PRs remain excluded context.
 For a manual multi-PR landing plan:
 
 1. Exclude WIP/draft PRs unless the user opts them in.
-2. Build a dependency order from PR bodies, stacked branches, changed files, and review comments.
+2. Record typed, issue-authored semantic dependencies; use PR bodies, explicit
+   stack relationships, and review comments to verify them. Changed-file overlap
+   is an integration advisory, never an inferred ordering edge.
 3. Split work into independent lanes only when each lane has a separate worktree.
 4. For each candidate PR, verify it is the right thing to work on now: approved or worth fixing, non-duplicative, scoped, and clear enough to complete.
 5. For blocked PRs, fix only the blocking cause, rerun targeted local checks, and batch one push.
