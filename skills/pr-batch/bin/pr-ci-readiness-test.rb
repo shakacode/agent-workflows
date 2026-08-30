@@ -2023,6 +2023,47 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_exact_head_actions_do_not_hide_a_same_job_rerun_that_became_in_progress
+    head = "a" * 40
+    current_run = {
+      "id" => 101, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101"
+    }
+    completed_job = {
+      "id" => 1010, "name" => "unit", "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010"
+    }
+    rerunning_check = {
+      "id" => 2001, "name" => "unit", "status" => "in_progress", "conclusion" => nil,
+      "head_sha" => head, "app" => { "slug" => "github-actions" },
+      "started_at" => "2026-08-25T12:01:00Z", "html_url" => completed_job.fetch("html_url")
+    }
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [current_run],
+      exact_check_runs: [rerunning_check],
+      runs: { "101" => { run: current_run, jobs: [completed_job] } }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal "NOT_READY", data.dig("scopes", "github_actions", "state")
+      assert_equal(
+        [101, 1010, 2001],
+        data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      )
+    end
+  end
+
   def test_exact_head_actions_retain_unobserved_and_unassociated_check_runs
     head = "a" * 40
     current_run = {

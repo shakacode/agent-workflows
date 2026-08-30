@@ -1062,8 +1062,11 @@ module PrCiReadiness
       return check_runs unless actions_complete
 
       selected_run_ids = actions_rows.filter_map { |row| row["id"] if row["kind"] == "run" }
-      selected_job_identities = actions_rows.filter_map do |row|
-        actions_job_identity(row["url"]) if row["kind"] == "job"
+      selected_jobs_by_identity = actions_rows.each_with_object({}) do |row, jobs|
+        next unless row["kind"] == "job"
+
+        identity = actions_job_identity(row["url"])
+        jobs[identity] = row if identity
       end
       check_runs.select do |row|
         next true unless row["app_slug"] == "github-actions"
@@ -1073,7 +1076,11 @@ module PrCiReadiness
         next true unless observed_actions_run_ids.include?(identity.first)
         next false unless selected_run_ids.include?(identity.first)
 
-        !selected_job_identities.include?(identity)
+        selected_job = selected_jobs_by_identity[identity]
+        next true unless selected_job
+
+        selected_job.values_at("name", "status", "conclusion") !=
+          row.values_at("name", "status", "conclusion")
       end
     end
 
