@@ -421,9 +421,8 @@ module PrMergeSubmit
         requested_hosted_runs: requested_run_ids, trusted_repo_root: @repo_root,
         diff_base_sha: ci_result["diff_base_sha"]
       )
-      if %w[github_actions dependabot other].all? do |scope|
-           refreshed.dig("scopes", scope, "complete") == true
-         end
+      complete_scopes = %w[github_actions dependabot other]
+      if complete_scopes.all? { |scope| refreshed.dig("scopes", scope, "complete") == true }
         ci_snapshot = readiness.authenticated_ci_snapshot(
           repo: options[:repo], pr_number: options[:pr], host: options[:host]
         )
