@@ -880,13 +880,18 @@ module MergeAssurance
   # A semantic GitHub Actions change is not always in the repository's own
   # `.github/`. Generated templates (for example `sim/template/.github/`) ship
   # workflows to downstream repositories, and those are higher blast radius than
-  # a repo-local workflow, not lower. Accept the directory anywhere in the path
-  # while still requiring it to be a real workflow/action directory.
+  # a repo-local workflow, not lower. Accept the directory anywhere in a
+  # canonical repository-relative path while still requiring a file below it.
   def semantic_tracker_workflow_path?(path)
     return false unless path.is_a?(String)
 
-    %w[.github/workflows/ .github/actions/].any? do |directory|
-      path.start_with?(directory) || path.include?("/#{directory}")
+    components = path.split("/", -1)
+    return false if components.empty? || path.start_with?("/") || path.include?("\\")
+    return false if path.match?(%r{\A[A-Za-z]:/})
+    return false if components.any? { |component| component.empty? || %w[. ..].include?(component) }
+
+    components.each_cons(3).any? do |first, second, _file|
+      first == ".github" && %w[workflows actions].include?(second)
     end
   end
 
