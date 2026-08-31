@@ -773,25 +773,25 @@ without opening one task at a time. Agent coordination remains a collapsed
 backend/service seam, never a second human UI. The detector neither creates a
 task nor mutates GitHub, persists a run, or grants launch authority.
 
-Capability selection remains held until issue #560 is integrated. Before any
-task creation can be enabled, it needs these exact #560 semantic inputs:
+Capability selection is not a host-create action. Use
+`bin/host-task-launch` as the stateful launcher-side fence after this detector:
+it reuses the canonical nested GitHub evidence and neutralizers, persists the
+outer local fence before any create action, and renders only the single outer
+control tower. The published contract is
+[GitHub Task Prompts And Run Records](../../docs/github-task-prompts-and-run-records.md);
+do not create a parallel schema, state vocabulary, renderer, persistence
+helper, or nested helper publication here.
 
-- the canonical published run-record contract, version, and reference;
-- the canonical pre-create append, retry, and reconciliation operations;
-- #560-produced globally unique run ID and idempotency-key values;
-- the canonical binding and update rules for immediate/provisional task identity
-  and host, branch, PR, state, and human-input projection;
-- the durable no-backend local fence and GitHub-reconciliation-due
-  representation; and
-- the single human-facing control-tower binding/projection, with every
-  maintainer-required visible mapping value: repository/issue, deterministic
-  task title, runner identity, observed configured machine alias, task
-  ID/link, branch/PR, compact state, and whether human input is actually needed.
-
-Do not invent a parallel run-record schema, state vocabulary, renderer,
-persistence helper, or record contract here. Until every listed input is
-integrated, `host-native-user-task` is only a capability result and must not
-launch a task.
+Select `host-native-user-task` only after both the capability result and the
+launch fence pass. The fence requires the persisted outer identity and a durable
+record-destination publication before returning a create action, except for a
+visible, explicit, bounded single-operator/no-backend override that preserves
+the same identity and makes GitHub reconciliation due visible. It fences every
+attempt, retries with the same key only when the host supports idempotency, and
+otherwise returns reconciliation by outer run ID and replay identity. It never
+calls host task APIs or GitHub itself. A waiting dependency returns a waiting
+action; unavailable capability or fence evidence remains the portable
+`copy-paste` fallback.
 
 ### Appendix: host-specific launch example (non-normative)
 

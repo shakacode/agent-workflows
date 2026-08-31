@@ -1,0 +1,307 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "json"
+require "securerandom"
+require "time"
+
+load File.expand_path("../../pr-batch/bin/agent-run-record", __dir__)
+
+module HostTaskLaunch
+  TYPE = "host-task-launch"
+  VERSION = 1
+  UUID_V4 = AgentRunRecord::UUID_V4
+  SHA256 = AgentRunRecord::SHA256
+  CAPABILITY_KEYS = %w[
+    task_creation title_at_creation task_rename saved_project_selection
+    isolated_worktree immediate_task_identifier provisional_task_identifier
+    provisional_identifier_resolution task_status_read host_creation_idempotency
+    reconciliation_by_run_id
+  ].freeze
+
+  class ContractError < StandardError; end
+
+  module_function
+
+  def evaluate(input)
+    validate_input!(input)
+    return copy_paste_result(input) unless native_capable?(input)
+
+    intent = input.fetch("intent")
+    fence_path = input.fetch("local_fence_path")
+    immutable = immutable_intent(intent)
+    record = load_or_create_fence(fence_path, immutable)
+    return invalid_input if record == :mismatch
+
+    operation = input.fetch("operation")
+    update_task_identity!(record, input.fetch("task_identity")) if operation == "bind-task"
+    publication = publication_gate(input)
+    return invalid_input if publication == :invalid
+
+    record["state"] = "waiting" if input["dependency_state"] == "waiting"
+    record["reconciliation_due"] = publication.fetch("reconciliation_due")
+    record["coordination"] = publication.fetch("coordination")
+    record["no_backend_override"] = publication["override"] if publication.key?("override")
+    record["latest"] = operation == "bind-task" ? "task identity bound" : "launch prepared"
+    persist_fence(fence_path, record)
+
+    {
+      "type" => "host-task-launch-result",
+      "version" => VERSION,
+      "status" => "ready",
+      "launch_mode" => "host-native-user-task",
+      "record" => record,
+      "action" => action_for(operation, input.fetch("capabilities"), publication, record.fetch("state")),
+      "control_tower" => render_control_tower(record)
+    }
+  rescue ContractError, AgentRunRecord::ContractError, KeyError
+    invalid_input
+  end
+
+  def validate_input!(input)
+    raise ContractError unless input.is_a?(Hash) && input["type"] == TYPE && input["version"] == VERSION
+    raise ContractError unless %w[prepare retry bind-task].include?(input["operation"])
+    raise ContractError if input.key?("dependency_state") && !%w[ready waiting].include?(input["dependency_state"])
+    raise ContractError unless input["task_creation_authorization"].is_a?(String)
+    raise ContractError unless input["local_fence_path"].is_a?(String) && !input["local_fence_path"].strip.empty?
+
+    validate_capabilities!(input.fetch("capabilities"))
+    validate_intent!(input.fetch("intent"))
+  end
+
+  def validate_capabilities!(capabilities)
+    raise ContractError unless capabilities.is_a?(Hash)
+    raise ContractError unless CAPABILITY_KEYS.all? { |key| [true, false, "UNKNOWN"].include?(capabilities[key]) }
+  end
+
+  def validate_intent!(intent)
+    raise ContractError unless intent.is_a?(Hash)
+
+    scalar!(intent.fetch("repository"))
+    work_item = intent.fetch("work_item")
+    raise ContractError unless work_item.is_a?(Hash) && %w[issue pull-request].include?(work_item["kind"])
+    raise ContractError unless work_item["number"].is_a?(Integer) && work_item["number"].positive?
+
+    %w[purpose task_title runner configured_machine_alias record_destination].each { |key| scalar!(intent.fetch(key)) }
+    lanes = intent.fetch("lanes")
+    raise ContractError unless lanes.is_a?(Array) && !lanes.empty?
+
+    lane_ids = lanes.map do |lane|
+      raise ContractError unless lane.is_a?(Hash)
+
+      %w[lane_id dispatcher instance_id launch_token].each { |key| scalar!(lane.fetch(key)) }
+      AgentRunRecord.validate!(lane.fetch("helper_evidence"))
+      lane.fetch("lane_id")
+    end
+    raise ContractError unless lane_ids.uniq.length == lane_ids.length
+  end
+
+  def native_capable?(input)
+    capabilities = input.fetch("capabilities")
+    input["task_creation_authorization"] == "explicit-user-authorization" &&
+      capabilities["task_creation"] == true &&
+      (capabilities["title_at_creation"] == true || capabilities["task_rename"] == true) &&
+      capabilities["saved_project_selection"] == true && capabilities["isolated_worktree"] == true &&
+      capabilities["task_status_read"] == true &&
+      (capabilities["immediate_task_identifier"] == true ||
+        (capabilities["provisional_task_identifier"] == true &&
+         capabilities["provisional_identifier_resolution"] == true))
+  end
+
+  def immutable_intent(intent)
+    lanes = intent.fetch("lanes").map do |lane|
+      lane.slice("lane_id", "dispatcher", "instance_id", "launch_token", "helper_evidence")
+    end
+    {
+      "repository" => intent.fetch("repository"),
+      "work_item" => intent.fetch("work_item"),
+      "purpose" => intent.fetch("purpose"),
+      "task_title" => intent.fetch("task_title"),
+      "runner" => intent.fetch("runner"),
+      "configured_machine_alias" => intent.fetch("configured_machine_alias"),
+      "record_destination" => intent.fetch("record_destination"),
+      "lanes" => lanes
+    }
+  end
+
+  def load_or_create_fence(path, immutable)
+    digest = Digest::SHA256.hexdigest(JSON.generate(canonicalize(immutable)))
+    if File.exist?(path)
+      record = JSON.parse(File.binread(path))
+      return :mismatch unless record["intent_digest"] == digest
+
+      return record
+    end
+
+    {
+      "run_id" => SecureRandom.uuid,
+      "launch_idempotency_key" => SecureRandom.uuid,
+      "intent_digest" => digest,
+      "record_destination" => immutable.fetch("record_destination"),
+      "repository" => immutable.fetch("repository"),
+      "work_item" => immutable.fetch("work_item"),
+      "task_title" => immutable.fetch("task_title"),
+      "runner" => immutable.fetch("runner"),
+      "configured_machine_alias" => immutable.fetch("configured_machine_alias"),
+      "purpose" => immutable.fetch("purpose"),
+      "lanes" => immutable.fetch("lanes"),
+      "state" => "launch-pending",
+      "outcome" => "pending",
+      "task" => { "id" => "UNKNOWN", "url" => "UNKNOWN", "provisional_id" => "UNKNOWN" },
+      "branch" => "UNKNOWN",
+      "pr" => "UNKNOWN",
+      "latest" => "launch prepared",
+      "blocker" => nil,
+      "human_input_needed" => "no",
+      "reconciliation_due" => "no"
+    }
+  rescue JSON::ParserError
+    :mismatch
+  end
+
+  def publication_gate(input)
+    publication = input.fetch("publication")
+    return :invalid unless publication.is_a?(Hash)
+    return published_gate(input) if publication["status"] == "durably-published"
+    return :invalid unless publication["status"] == "not-published"
+
+    no_backend_gate(input.fetch("no_backend_override", nil))
+  end
+
+  def published_gate(input)
+    coordination = input.fetch("coordination")
+    return :invalid unless valid_coordination?(coordination)
+
+    { "reconciliation_due" => "no", "coordination" => coordination.fetch("status") }
+  end
+
+  def no_backend_gate(override)
+    return :invalid unless override.is_a?(Hash)
+    return :invalid unless scalar_value?(override["authorization_ref"])
+    return :invalid unless SHA256.match?(override["authorization_digest"].to_s)
+    return :invalid unless override["sole_coordinator_interval_seconds"].is_a?(Integer) &&
+                           override["sole_coordinator_interval_seconds"].positive? &&
+                           override["sole_coordinator_interval_seconds"] <= 3600
+    return :invalid unless override["operator_context"] == "single-operator"
+
+    coordination = override["coordination"]
+    return :invalid unless valid_coordination?(coordination) && %w[clear unavailable].include?(coordination["status"])
+
+    {
+      "reconciliation_due" => "yes",
+      "coordination" => coordination.fetch("status"),
+      "override" => override.slice(
+        "authorization_ref", "authorization_digest", "sole_coordinator_interval_seconds", "operator_context"
+      )
+    }
+  end
+
+  def valid_coordination?(coordination)
+    coordination.is_a?(Hash) && %w[clear unavailable].include?(coordination["status"]) &&
+      scalar_value?(coordination["retry_evidence"])
+  end
+
+  def action_for(operation, capabilities, publication, state)
+    return { "kind" => "publish-control-tower" } if publication == :pending
+    return { "kind" => "copy-paste" } unless publication
+    return { "kind" => "wait-for-dependencies" } if state == "waiting"
+
+    if operation == "retry"
+      return { "kind" => "retry-create-task", "same_launch_idempotency_key" => true } if capabilities["host_creation_idempotency"] == true
+
+      return { "kind" => "reconcile-by-run-id", "run_id_lookup" => true } if capabilities["reconciliation_by_run_id"] == true
+
+      return { "kind" => "reconciliation-unavailable" }
+    end
+
+    { "kind" => "create-task", "create_attempt_fenced" => true }
+  end
+
+  def update_task_identity!(record, task_identity)
+    raise ContractError unless task_identity.is_a?(Hash)
+
+    %w[provisional_id task_id task_url].each do |key|
+      next unless task_identity.key?(key)
+
+      scalar!(task_identity.fetch(key))
+    end
+    record.fetch("task")["provisional_id"] = task_identity.fetch("provisional_id") if task_identity.key?("provisional_id")
+    record.fetch("task")["id"] = task_identity.fetch("task_id") if task_identity.key?("task_id")
+    record.fetch("task")["url"] = task_identity.fetch("task_url") if task_identity.key?("task_url")
+  end
+
+  def persist_fence(path, record)
+    directory = File.dirname(path)
+    raise ContractError unless Dir.exist?(directory)
+
+    File.open(path, File::WRONLY | File::CREAT | File::TRUNC, 0o600) do |file|
+      file.write(JSON.generate(record))
+      file.flush
+      file.fsync
+    end
+    File.chmod(0o600, path)
+  end
+
+  def render_control_tower(record)
+    lines = ["<!-- agent-launcher-run-record:v1 -->", "Task launch: #{plain(record.fetch('state'))} / #{plain(record.fetch('outcome'))}", ""]
+    record.fetch("lanes").each do |lane|
+      lines.concat([
+                     "Lane: #{code(lane.fetch('lane_id'))}",
+                     "- Repository/issue: #{code(record.fetch('repository'))} / #{plain(record.dig('work_item', 'kind'))} ##{record.dig('work_item', 'number')}",
+                     "- Task title: #{code(record.fetch('task_title'))}",
+                     "- Runner: #{plain(record.fetch('runner'))}",
+                     "- Machine alias: #{code(record.fetch('configured_machine_alias'))}",
+                     "- Task ID/link: #{code(record.dig('task', 'id'))} / #{code(record.dig('task', 'url'))}",
+                     "- Branch/PR: #{code(record.fetch('branch'))} / #{code(record.fetch('pr'))}",
+                     "- State/outcome: #{code(record.fetch('state'))} / #{code(record.fetch('outcome'))}",
+                     "- Human input needed: #{plain(record.fetch('human_input_needed'))}",
+                     "- GitHub reconciliation due: #{plain(record.fetch('reconciliation_due'))}"
+                   ])
+    end
+    lines.join("\n")
+  end
+
+  def copy_paste_result(_input)
+    {
+      "type" => "host-task-launch-result", "version" => VERSION, "status" => "ready",
+      "launch_mode" => "copy-paste", "action" => { "kind" => "copy-paste" },
+      "reason" => "native-capability-or-authorization-unavailable"
+    }
+  end
+
+  def invalid_input
+    { "type" => "host-task-launch-result", "version" => VERSION, "status" => "invalid-input" }
+  end
+
+  def scalar!(value)
+    raise ContractError unless scalar_value?(value)
+  end
+
+  def scalar_value?(value)
+    value.is_a?(String) && !value.strip.empty? && value.strip != "UNKNOWN"
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash then value.keys.sort.to_h { |key| [key, canonicalize(value.fetch(key))] }
+    when Array then value.map { |entry| canonicalize(entry) }
+    else value
+    end
+  end
+
+  def plain(value)
+    AgentRunRecord.plain(value)
+  end
+
+  def code(value)
+    AgentRunRecord.code(value)
+  end
+end
+
+begin
+  input = JSON.parse($stdin.read)
+  puts JSON.generate(HostTaskLaunch.evaluate(input))
+rescue JSON::ParserError
+  puts JSON.generate(HostTaskLaunch.invalid_input)
+end
