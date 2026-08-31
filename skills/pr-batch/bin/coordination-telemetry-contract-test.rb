@@ -603,6 +603,16 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_includes read_repo_file(COORDINATION_COMPONENT_PATH), "coordination-backend.md"
   end
 
+  def test_registration_consumers_route_to_one_canonical_runtime_contract
+    [File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
+      text = read_repo_file(path)
+
+      assert_includes text, "docs/coordination-backend.md#batch-provenance-manifest"
+      refute_includes text, "Every advertised registration invocation"
+      refute_includes text, "whole-group `TERM` then `KILL`"
+    end
+  end
+
   def test_authoritative_registration_sections_bind_runtime_contract_locally
     authoritative_registration_sections.each do |path, section|
       assert_registration_section_runtime_contract(section, path)

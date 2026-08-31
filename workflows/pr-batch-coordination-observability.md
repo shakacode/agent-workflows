@@ -54,17 +54,28 @@ evidence:
   `${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded`; a target status read is
   preflight, while the claim operation is the compare-and-swap ownership gate.
   Use only advertised flags and capabilities.
+  When lane-metadata support has not already been verified, inspect bounded
+  `claim --help`. Pass extended claim metadata only when advertised:
+  `--thread-handle`, `--chat-handle`, `--host`, `--operator`, `--phase`,
+  `--instance-id`, and `--status`. Otherwise issue the core claim with agent,
+  repository, target, and branch, then inspect bounded `heartbeat --help`.
+  Record extended metadata there only when advertised; otherwise send a core
+  heartbeat and preserve each unsupported value or literal `UNKNOWN` in durable
+  lane evidence. Never infer support from another backend implementation.
 - `public-fallback`: an issue or PR lane cannot start the configured private
   claim because of a definitive non-timeout setup or authentication failure,
   and repository policy permits the advisory claim-comment fallback. The
   comment never overrides a private refusal and is not machine-readable
-  cancellation, terminal, or authority evidence. Ad-hoc lanes have no public
-  fallback surface.
+  cancellation, terminal, or authority evidence. For an ad-hoc lane, public
+  claim fallback is unavailable because there is no issue or PR comment surface.
+  Stop before branch or worktree creation and require a coordination target or
+  explicit no-backend single-operator approval.
 - `none`: trusted configuration says `coordination_backend: n/a`. The adapter
   does not call a backend, post public claim comments, or mirror a claim label.
   Record the deliberate single-operator assumption and the required
-  `coordination: unavailable — <known reason>` declaration instead of claiming
-  coordination is healthy or `UNKNOWN`.
+  `coordination: unavailable — <known reason>` declaration. Preserve that
+  single-operator assumption in the Lane Card and final handoff instead of
+  claiming coordination is healthy or `UNKNOWN`.
 
 A timeout, ambiguous mutation result, or unavailable required field remains
 literal `UNKNOWN`. Except for a degraded preflight read superseded by the

@@ -386,27 +386,13 @@ Before implementation or worker launch, produce:
     coordinator role under the canonical workflow, regardless of route. If a
     route preference is unavailable, preserve it as `UNKNOWN` and continue with
     the same ownership, verification, and review gates.
-12. Batch-registration provenance: verified loaded-pack `pack_sha` (or verified
-    installed-release identifier), coordinator and worker route preferences,
-    and each lane's optional observed host/model/effort. A dirty or unverifiable pack and every
-    unverifiable scalar stay literal `UNKNOWN`. Persist the manifest after
-    dispatcher selection and before worker launch when registration is
-    supported; backend `n/a` keeps it in durable coordinator state. Follow the
-    canonical example and resolution rules in `docs/coordination-backend.md`.
-    When host-observed metadata becomes available, reconcile each observed
-    host/model/effort field changed by fallback, escalation, or replacement,
-    preserve known fields, and use `UNKNOWN` only per unavailable field.
-    Missing observation never blocks ordinary active lifecycle. Before
-    reconciliation, detect advertised registration
-    update/upsert/reconciliation capability. An unadvertised or unsupported
-    create-only backend records each affected field `UNKNOWN`. An advertised update
-    uses the bounded safe executable-plus-opaque-argv contract; failure records
-    affected fields `UNKNOWN` without wedging. Every advertised registration invocation resolves a
-    backend-advertised safe executable plus ordered opaque argv without shell
-    evaluation and runs with a finite hard deadline in its own process group;
-    timeout or whole-group `TERM` then `KILL` records best-effort
-    field-granular `UNKNOWN`, names reconciliation, and does not block worker
-    launch.
+12. Build and reconcile batch-registration provenance through the loaded pack's
+    [canonical Batch Provenance Manifest](../../docs/coordination-backend.md#batch-provenance-manifest).
+    That contract owns pack identity, requested-versus-observed routes,
+    field-granular `UNKNOWN`, capability discovery, bounded safe invocation,
+    and non-wedging failure behavior. Persist the manifest after dispatcher
+    selection and before worker launch when registration is supported; backend
+    `n/a` keeps it in durable coordinator state.
 <!-- host-branch: codex-only start -->
 13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
