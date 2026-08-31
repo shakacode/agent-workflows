@@ -133,7 +133,10 @@ module HostTaskLaunch
 
   def immutable_intent(intent)
     lanes = intent.fetch("lanes").map do |lane|
-      lane.slice("lane_id", "dispatcher", "instance_id", "launch_token", "helper_evidence")
+      lane.slice("lane_id", "dispatcher", "instance_id", "launch_token").merge(
+        "helper_identity" => helper_identity(lane.fetch("helper_evidence")),
+        "helper_evidence" => lane.fetch("helper_evidence")
+      )
     end
     {
       "repository" => intent.fetch("repository"),
@@ -147,8 +150,24 @@ module HostTaskLaunch
     }
   end
 
+  def helper_identity(evidence)
+    AgentRunRecord.validate!(evidence)
+    {
+      "contract" => evidence.fetch("contract"), "version" => evidence.fetch("version"),
+      "run_id" => evidence.fetch("run_id"), "launch_idempotency_key" => evidence.fetch("launch_idempotency_key"),
+      "repository" => evidence.fetch("repository"), "work_item" => evidence.fetch("work_item"),
+      "prompt_source" => evidence.fetch("prompt_source").slice("kind", "url", "digest_at_selection", "digest_at_launch", "author", "author_association"),
+      "current_main" => evidence.fetch("current_main"), "runner" => evidence.fetch("runner").slice("name", "machine", "model_at_prompt_creation"),
+      "prompt_creation" => evidence.dig("workflow_versions", "prompt_creation"),
+      "prompt_transport" => evidence.fetch("prompt_transport"),
+      "selected_at" => evidence.dig("timestamps", "selected_at"), "prompt_created_at" => evidence.dig("timestamps", "prompt_created_at")
+    }
+  end
+
   def load_or_create_fence(path, immutable)
-    digest = Digest::SHA256.hexdigest(JSON.generate(canonicalize(immutable)))
+    binding = Marshal.load(Marshal.dump(immutable))
+    binding.fetch("lanes").each { |lane| lane.delete("helper_evidence") }
+    digest = Digest::SHA256.hexdigest(JSON.generate(canonicalize(binding)))
     if (metadata = fence_metadata(path))
       raise ContractError unless metadata.file? && !metadata.symlink?
 
@@ -322,15 +341,27 @@ module HostTaskLaunch
       %w[work_item], %w[prompt_source kind], %w[prompt_source url], %w[prompt_source digest_at_selection],
       %w[prompt_source digest_at_launch], %w[current_main], %w[runner name], %w[runner machine],
       %w[runner model_at_prompt_creation], %w[workflow_versions prompt_creation],
-      %w[workflow_versions worker_start], %w[timestamps selected_at], %w[timestamps prompt_created_at],
-      %w[timestamps worker_started_at], %w[prompt_transport]
+      %w[timestamps selected_at], %w[timestamps prompt_created_at], %w[prompt_transport]
     ]
     immutable_paths.each { |path| raise ContractError unless dig_path(existing, path) == dig_path(evidence, path) }
+    validate_worker_start_refresh!(existing, evidence)
     old_later = existing.dig("workflow_versions", "later_observations")
     new_later = evidence.dig("workflow_versions", "later_observations")
     raise ContractError unless new_later.first(old_later.length) == old_later
 
     lane["helper_evidence"] = evidence
+  end
+
+  def validate_worker_start_refresh!(existing, evidence)
+    old_started = existing.dig("timestamps", "worker_started_at")
+    return if old_started == "pending"
+
+    %w[worker_started_at worker_digest_observed_at].each do |key|
+      raise ContractError unless existing.dig("timestamps", key) == evidence.dig("timestamps", key)
+    end
+    raise ContractError unless existing.dig("workflow_versions", "worker_start") == evidence.dig("workflow_versions", "worker_start")
+    raise ContractError unless existing.dig("runner", "model_at_worker_start") == evidence.dig("runner", "model_at_worker_start")
+    raise ContractError unless existing.dig("prompt_source", "digest_observed_by_worker") == evidence.dig("prompt_source", "digest_observed_by_worker")
   end
 
   def dig_path(value, path)
