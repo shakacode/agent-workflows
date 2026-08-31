@@ -89,8 +89,14 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes workflow, "autonomous-merge-evidence-unknown"
     assert_includes workflow, GMCC_HUMAN_DECISION_BINDING
 
+    compact_fallback = workflow.lines.find { |line| line.start_with?("GMCC-v4:") }
+    pr_batch = File.read(File.join(ROOT, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
+    refute_nil compact_fallback
+    assert_includes pr_batch, compact_fallback
+    assert_includes pr_batch, "ready-human-review-required"
+    assert_includes pr_batch, "autonomous-merge-evidence-unknown"
+
     %w[
-      skills/pr-batch/SKILL.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|

@@ -141,6 +141,32 @@ The visible portion contains the runner, machine, state/outcome, task, branch,
 PR, latest material update, and no more than one meaningful blocker. Generated
 metadata and detailed provenance live in one disclosure:
 
+The launcher populates this canonical outer template. The placeholders name the
+required ownership and observation boundary; the concrete example that follows
+shows one rendered execution.
+
+```markdown
+- Run ID: <immutable unique per-execution run_id>
+- Record destination: <exact selected issue or pull-request work-item URL, or existing durable plan/backend destination for a wholly non-GitHub trusted-ad-hoc run>
+- Prompt created at: <timestamp>
+- Model at prompt creation: <observed value or UNKNOWN>
+- Workflow at prompt creation: <version or UNKNOWN>
+- Later workflow observations: <timestamped append-only entries or none>
+Target lanes:
+  - Lane: <lane id; repeat this entry once per planned target>
+    - Target: <exact issue, pull-request, or durable override identity>
+    - Replay identity: <existing lane_id, dispatcher, instance_id, and launch token>
+    - Prompt source: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
+    - Selected at: <timestamp>
+    - Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected; or not applicable — trusted-ad-hoc-override>
+    - Launched at: <timestamp or pending>
+    - Prompt digest at launch: <SHA-256 of the canonical source bytes re-fetched at launch or pending; or not applicable — trusted-ad-hoc-override>
+    - Worker started at: <timestamp or pending>
+    - Prompt digest observed by worker: <SHA-256 of the canonical source bytes re-fetched by the worker or pending; or not applicable — trusted-ad-hoc-override>
+    - Model observed by worker: <observed value or UNKNOWN>
+    - Workflow observed at worker start: <version or UNKNOWN>
+```
+
 ```markdown
 <!-- agent-launcher-run-record:v1 -->
 Agent run: Codex on M5 — active / pending

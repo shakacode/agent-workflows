@@ -289,8 +289,8 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 <!-- host-branch: codex-only end -->
 6. **Merge authority**: the normal human prompt uses `ask` or `auto`. Resolve it
-   before worker launch from visible authority; unresolved authority defaults to
-   `ask`. Human `auto` maps to machine `auto_merge_when_gates_pass`. Preserve
+   before worker launch from visible authority or ask the user. Human `auto`
+   maps to machine `auto_merge_when_gates_pass`. Preserve
    machine-only `merge_authority: none` outside the human prompt when repository
    policy or an explicit no-merge workflow selects it. Explain that
    `ask` automatically walks through the exact-diff PR one conceptual change at
@@ -703,7 +703,14 @@ target, lane, dependency, and ownership assignment without expanding the
 human-readable prompt.
 The resolved canonical workflow owns launcher provenance, telemetry, recurring
 wake translation, manifest grammar, and merge-planning policy. Keep those
-machine contracts out of the generated prompt and do not restate them here.
+machine contracts out of the generated prompt. When the canonical workflow is
+missing or cannot autoload in a portable skill installation, put this exact
+self-contained completion fallback in the accompanying Batch Plan or delivered
+launch state, never in the human-authored prompt; its inline semantics remain
+normative:
+
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
 Use this template when creating goal text:
