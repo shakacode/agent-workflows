@@ -82,10 +82,13 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_floor, "evaluated lifecycle stage or consequential action"
     assert_includes normalized_floor, "evaluated stage or action, base, head, ownership, writer, branch, worktree"
     assert_includes normalized_floor, "exact invocation, resolved trust-config provenance, every reported finding"
-    assert_includes normalized_floor, "trust-config source, path, and content digest"
+    assert_includes normalized_floor, "`sha256:` content digest emitted from the bytes the helper parsed"
     assert_includes normalized_floor, "advisory participant and high-risk-file findings"
     assert_includes normalized_floor, "untrusted and metadata-only comment/review queues with each actor and URL"
     assert_includes normalized_floor, "writer, branch, and worktree identity with verified checkout-isolation evidence"
+    assert_includes normalized_floor, "before creation, record the planned identities and isolation mechanism with checkout-isolation evidence `n/a`"
+    assert_includes normalized_floor, "A pre-creation `PASS` permits only branch/worktree creation"
+    assert_includes normalized_floor, "Rerun the floor immediately after creation and before patch/edit"
     assert_includes normalized_floor, "it still receives a `security-floor v1` result with preflight `n/a`"
 
     assert_includes normalized_intake,

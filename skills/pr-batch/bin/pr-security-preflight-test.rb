@@ -4,6 +4,7 @@
 # Unit tests for pr-security-preflight.
 # Run with: ruby .agents/skills/pr-batch/bin/pr-security-preflight-test.rb
 
+require "digest"
 require "fileutils"
 require "json"
 require "minitest/autorun"
@@ -2493,12 +2494,28 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_interaction_queues_report_every_entry_beyond_ten
+    with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_equal 12, out.scan("unknown-user issue comment").length
+      assert_equal 12, out.scan("github-actions[bot] issue comment").length
+      assert_includes out, "https://github.com/owner/repo/issues/123#issuecomment-7012"
+      assert_includes out, "https://github.com/owner/repo/issues/123#issuecomment-8012"
+      refute_includes out, "... 2 more"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
   private
 
   def assert_trust_config_evidence(out, path:, source:)
     lines = out.lines.map(&:chomp)
     assert_includes lines, "Trust config: #{File.expand_path(path)}"
     assert_includes lines, "Trust config source: #{source}"
+    digest = "sha256:#{Digest::SHA256.hexdigest(File.binread(File.expand_path(path)))}"
+    assert_includes lines, "Trust config content digest: #{digest}"
   end
 
   def run_script(env, *args, chdir: nil, clear_git_env: true)
@@ -2604,6 +2621,27 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def fake_gh_script(log_path)
+    overflow_interaction_comments = JSON.generate(
+      [
+        Array.new(12) do |index|
+          number = 7001 + index
+          {
+            id: number,
+            html_url: "https://github.com/owner/repo/issues/123#issuecomment-#{number}",
+            user: { login: "unknown-user" },
+            body: "Untrusted comment #{index + 1}."
+          }
+        end + Array.new(12) do |index|
+          number = 8001 + index
+          {
+            id: number,
+            html_url: "https://github.com/owner/repo/issues/123#issuecomment-#{number}",
+            user: { login: "github-actions[bot]" },
+            body: "Metadata comment #{index + 1}."
+          }
+        end
+      ]
+    )
     paginated_timeline_first = JSON.generate(
       data: {
         repository: {
@@ -3051,6 +3089,9 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<'JSON'
       [[{"id":702,"html_url":"https://github.com/owner/repo/issues/123#issuecomment-702","user":{"login":"unknown-user"},"body":"Looks good to me."}]]
       JSON
+          exit 0
+        elif [ "$mode" = "overflow-interaction-queues" ]; then
+          printf '%s\n' #{Shellwords.shellescape(overflow_interaction_comments)}
           exit 0
         fi
         printf '[[]]'

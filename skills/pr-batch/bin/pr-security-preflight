@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "json"
 require "open3"
 require "optparse"
@@ -470,7 +471,8 @@ end
 
 def load_trust_config(path:, global:)
   path = File.expand_path(path)
-  data = File.exist?(path) ? YAML.safe_load_file(path, aliases: false) || {} : {}
+  contents = File.exist?(path) ? File.binread(path) : ""
+  data = contents.empty? ? {} : YAML.safe_load(contents, aliases: false) || {}
   abort "Invalid trust config #{path}: expected a YAML mapping at the top level" unless data.is_a?(Hash)
 
   trusted_bots = Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) }
@@ -483,6 +485,7 @@ def load_trust_config(path:, global:)
   end
 
   {
+    content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}",
     path:,
     trusted_bots:,
     trusted_metadata_bots:,
@@ -1513,10 +1516,9 @@ def print_untrusted_interactions(findings)
   end
 
   puts "  Untrusted comment/review queue:"
-  findings.first(10).each do |finding|
+  findings.each do |finding|
     puts "    - #{finding.fetch(:author)} #{finding.fetch(:kind)} (#{finding.fetch(:url)})"
   end
-  puts "    - ... #{findings.size - 10} more" if findings.size > 10
 end
 
 def print_metadata_only_interactions(findings)
@@ -1526,10 +1528,9 @@ def print_metadata_only_interactions(findings)
   end
 
   puts "  Metadata-only comment/review queue:"
-  findings.first(10).each do |finding|
+  findings.each do |finding|
     puts "    - #{finding.fetch(:author)} #{finding.fetch(:kind)} (#{finding.fetch(:url)})"
   end
-  puts "    - ... #{findings.size - 10} more" if findings.size > 10
 end
 
 def print_findings_list(findings, label)
@@ -1725,12 +1726,13 @@ permission_cache = {}
 team_cache = {}
 canonical_bot_cache = {}
 trust_config_resolution = resolved_trust_config(options.fetch(:trust_config), repo:, github_host:)
-puts "Trust config: #{trust_config_resolution.fetch(:path)}"
-puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
 trust_config = load_trust_config(
   path: trust_config_resolution.fetch(:path),
   global: trust_config_resolution.fetch(:global)
 )
+puts "Trust config: #{trust_config_resolution.fetch(:path)}"
+puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
+puts "Trust config content digest: #{trust_config.fetch(:content_digest)}"
 
 ARGV.each do |arg|
   number = Integer(arg, exception: false)
