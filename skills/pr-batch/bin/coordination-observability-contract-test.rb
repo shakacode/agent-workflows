@@ -91,6 +91,8 @@ class CoordinationObservabilityContractTest < Minitest::Test
   def test_configured_public_fallback_does_not_require_private_failure
     result = squish(section(@component, "## Adapter Result", /^##\s+/))
 
+    assert_includes result, "`private`: trusted configuration selects a private backend"
+    assert_includes result, "`private_state: healthy | claim-only`"
     assert_includes result, "trusted configuration directly selects `public claim-comment fallback`"
     assert_includes result,
                     '"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json'

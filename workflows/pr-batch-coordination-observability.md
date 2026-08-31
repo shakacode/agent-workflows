@@ -46,8 +46,11 @@ record has these known or literal `UNKNOWN` fields:
 Resolve the mode only from trusted repository configuration and bounded live
 evidence:
 
-- `private`: the configured private backend is usable. Run doctor, target, and
-  batch reads with a finite timeout. Resolve `PR_BATCH_SKILL_DIR` in this order:
+- `private`: trusted configuration selects a private backend. Set
+  `private_state: healthy | claim-only`: `healthy` for usable preflight
+  reads, or `claim-only` when the compare-and-swap claim succeeds after degraded
+  reads. Run doctor, target, and batch reads with a finite timeout. Resolve
+  `PR_BATCH_SKILL_DIR` in this order:
   an explicit environment value, the loaded skill's base directory, then the
   repo-local `.agents/skills/pr-batch` copy; stop with a precise blocker when
   the helper is still unavailable. Invoke
