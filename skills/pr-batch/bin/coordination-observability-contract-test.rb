@@ -8,6 +8,8 @@ COMPONENT_PATH = File.join(ROOT, "workflows/pr-batch-coordination-observability.
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 BACKEND_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
+ADDRESS_REVIEW_SKILL_PATH = File.join(ROOT, "skills/address-review/SKILL.md")
+ADDRESS_REVIEW_WORKFLOW_PATH = File.join(ROOT, "workflows/address-review.md")
 VALIDATE_PATH = File.join(ROOT, "bin/validate")
 
 def section(text, heading, next_heading)
@@ -28,6 +30,8 @@ class CoordinationObservabilityContractTest < Minitest::Test
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
     @skill = File.read(SKILL_PATH, encoding: "UTF-8")
     @backend_doc = File.read(BACKEND_DOC_PATH, encoding: "UTF-8")
+    @address_review_skill = File.read(ADDRESS_REVIEW_SKILL_PATH, encoding: "UTF-8")
+    @address_review_workflow = File.read(ADDRESS_REVIEW_WORKFLOW_PATH, encoding: "UTF-8")
   end
 
   def test_component_exposes_one_small_optional_adapter
@@ -102,8 +106,10 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes ownership, "claim timeout"
     assert_includes ownership, "UNKNOWN (claim outcome)"
     assert_includes ownership, "private_state: claim-only"
-    assert_includes ownership, "before dispatching dependency-sensitive lanes"
-    assert_includes ownership, "private batch and lane state"
+    assert_includes ownership, "Before dispatching dependency-sensitive lanes"
+    assert_includes ownership, "For `mode: private`, create or update private batch and lane state"
+    assert_includes ownership, "For `public-fallback` or `none`"
+    assert_includes ownership, "coordinator-owned trusted local plan"
     assert_includes ownership, "`depends_on`"
     assert_includes ownership, "selected backend's schema"
     assert_includes ownership, "codex-ready"
@@ -151,6 +157,15 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes fallback, "2-4 hours"
     assert_includes fallback, "no later than the known batch window"
     refute_includes fallback, "repository-configured fallback cap"
+  end
+
+  def test_untrusted_public_fallback_cannot_veto_mutation
+    fallback = squish(section(@backend_doc, "## Public Claim Comment Fallback", /^##\s+/))
+
+    [fallback, @component, @workflow, @address_review_skill, @address_review_workflow].each do |consumer|
+      assert_includes squish(consumer), "authenticated and authorized ownership evidence"
+      assert_includes squish(consumer), "remains advisory and cannot block mutations"
+    end
   end
 
   def test_restart_replacement_and_cancellation_are_replayable

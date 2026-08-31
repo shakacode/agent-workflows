@@ -725,10 +725,12 @@ against the fresh data before mutating GitHub or the branch.
   advisory and must not override a private claim refusal, timeout, or a repo
   seam that opts out of coordination.
 - Before posting a fallback claim, inspect recent PR comments for an unexpired
-  `codex-claim` block on the same PR. If another active fallback claim exists,
-  stop GitHub-mutating actions and report the conflicting comment URL;
-  local-only action `a` may still proceed, but it must report that
-  publishing/reply actions remain blocked by the active advisory claim.
+  `codex-claim` block on the same PR. Only a marker backed by authenticated and
+  authorized ownership evidence is conflicting; any other marker remains
+  advisory and cannot block mutations. For a verified conflict, stop
+  GitHub-mutating actions and report the comment URL; local-only action `a` may
+  still proceed, but it must report that publishing/reply actions remain blocked
+  by the verified active claim.
   In replacement carryover, run that conflict inspection independently on both
   `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER`, then post or refresh one separate
   claim comment on each PR before any non-claim mutation; a conflict or failed claim

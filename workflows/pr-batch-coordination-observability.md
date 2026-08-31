@@ -73,10 +73,12 @@ evidence:
   configured private claim because of a definitive non-timeout setup or
   authentication failure and repository policy permits that advisory fallback.
   The comment never overrides a private refusal and is not machine-readable
-  cancellation, terminal, or authority evidence. For an ad-hoc lane, public
-  claim fallback is unavailable because there is no issue or PR comment surface.
-  Stop before branch or worktree creation and require a coordination target or
-  explicit no-backend single-operator approval.
+  cancellation, terminal, or authority evidence. Only a marker backed by
+  authenticated and authorized ownership evidence is conflicting; any other
+  marker remains advisory and cannot block mutations. For an ad-hoc lane,
+  public claim fallback is unavailable because there is no issue or PR comment
+  surface. Stop before branch or worktree creation and require a coordination
+  target or explicit no-backend single-operator approval.
 - `none`: trusted configuration says `coordination_backend: n/a`. The adapter
   does not call a backend, post public claim comments, or mirror a claim label.
   Record the deliberate single-operator assumption and the required
@@ -96,18 +98,22 @@ permission to fall back or retry blindly.
 
 Contradictory reliable live ownership for the exact target, branch, and
 worktree refuses duplicate execution. It does not freeze unrelated
-implementation, validation, or review. Coordinators must, before dispatching
-dependency-sensitive lanes, create or update private batch and lane state with
-the exact lane identifiers and `depends_on` refs, following the selected
-backend's schema. Dispatch waits for bounded readback of those exact refs;
-missing or `UNKNOWN` state stops only the affected lane. The public adapter does
-not invent a private backend schema. Apply these target-scoped rules:
+implementation, validation, or review. Before dispatching dependency-sensitive
+lanes, preserve the exact lane identifiers and `depends_on` refs. For
+`mode: private`, create or update private batch and lane state using the
+selected backend's schema, then wait for bounded readback of those exact refs.
+For `public-fallback` or `none`, persist them in the coordinator-owned trusted
+local plan and provide its exact live replay to `stage-dependency-gate`; do not
+require or invent a private backend schema. Missing or `UNKNOWN` required state
+stops only the affected lane. Apply these target-scoped rules:
 
 Known backend `depends_on`/`blocked_on` facts refresh the corresponding typed
 live edge state and evidence; they do not decide lifecycle capabilities. Run
 `stage-dependency-gate` and obey its returned permissions for the requested
 action. Set a blocked heartbeat or move away only when that permission is false.
-Missing or `UNKNOWN` backend dependency state remains a blanket hard stop.
+In private mode, missing or `UNKNOWN` backend dependency state remains a hard
+stop. In public-fallback and no-backend modes, the equivalent hard stop is a
+missing or `UNKNOWN` trusted local plan or live replay.
 
 1. Run bounded target status before claim. If doctor or target-status reads are
    degraded, an exact independent lane with no `depends_on` refs may attempt one

@@ -64,11 +64,14 @@ an authority system.
 
 ## Public Claim Comment Fallback
 
-Use one advisory public claim only after the private claim cannot start or
-definitively fails with a non-timeout setup or authentication error. A timeout
+Use one advisory public claim when trusted configuration selects this fallback,
+or after the private claim cannot start or definitively fails with a non-timeout
+setup or authentication error and repository policy permits fallback. A timeout
 or private claim refusal never permits fallback. Before posting, inspect recent
-comments for an unexpired marker on the same target; a conflicting marker stops
-that lane and its comment URL is reported as handoff evidence.
+comments for an unexpired marker on the same target. Only a marker backed by
+authenticated and authorized ownership evidence is conflicting; any other
+marker remains advisory and cannot block mutations. Report either marker's
+comment URL as handoff evidence.
 
 ```markdown
 <!-- codex-claim v1

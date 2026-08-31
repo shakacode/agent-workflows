@@ -36,7 +36,9 @@ BACKEND_TYPED_GATE_CONTRACT = "Known backend `depends_on`/`blocked_on` facts ref
                               "live edge state and evidence; they do not decide lifecycle capabilities. " \
                               "Run `stage-dependency-gate` and obey its returned permissions for the requested " \
                               "action. Set a blocked heartbeat or move away only when that permission is false. " \
-                              "Missing or `UNKNOWN` backend dependency state remains a blanket hard stop."
+                              "In private mode, missing or `UNKNOWN` backend dependency state remains a hard " \
+                              "stop. In public-fallback and no-backend modes, the equivalent hard stop is a " \
+                              "missing or `UNKNOWN` trusted local plan or live replay."
 COMPACT_BACKEND_TYPED_GATE_CONTRACT = "- For coordination, respect coordination claims and dependencies: " \
                                       "stable ids+heartbeats; register before launch when supported; claim " \
                                       "refusal=>stop; push holder/generation check; known deps=>gate permissions; " \

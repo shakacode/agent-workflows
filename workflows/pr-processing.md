@@ -1359,6 +1359,9 @@ telemetry never becomes a fleet-wide fence. Dependency state still flows
 through `stage-dependency-gate`, and the shared security floor still owns
 duplicate-writer and consequential-action safety.
 
+Only a public marker backed by authenticated and authorized ownership evidence
+is conflicting; any other marker remains advisory and cannot block mutations.
+
 An ad-hoc lane's public claim fallback is unavailable because there is no issue
 or PR comment surface.
 
@@ -1571,12 +1574,12 @@ pending item. If bounded status shows a private backend claim is stale or dead b
 still held by this same stable agent/thread id with no cancellation or
 reassignment, refresh the heartbeat at the resumed state before editing, pushing,
 or starting the next target. For a public fallback lane, refresh this lane's
-existing claim comment before editing only when no conflicting unexpired
-`codex-claim` comment exists on the same target. A replacement worker with a new
+existing claim comment before editing only when no verified conflicting
+unexpired `codex-claim` comment exists on the same target. A replacement worker with a new
 stable agent/thread id must stop after status recovery until the coordinator
 reconciles or reassigns the private claim or public fallback claim; it must not
-edit or push while the backend or active public fallback still names the old
-holder. If the holder changed, cancellation or reassignment is present, or
+edit or push while the backend or verified active public fallback still names
+the old holder. If the holder changed, cancellation or reassignment is present, or
 ownership is `UNKNOWN`, stop and report the conflict; do not refresh the
 heartbeat or public fallback claim, and do not continue work until the
 coordinator resolves it.
