@@ -168,6 +168,21 @@ def repository_qualified_target?(target)
   repository.split("/", 2).all? { |component| component.match?(/[A-Za-z0-9]/) }
 end
 
+def decoded_json_strings_valid?(value)
+  case value
+  when String
+    value.valid_encoding?
+  when Array
+    value.all? { |item| decoded_json_strings_valid?(item) }
+  when Hash
+    value.all? do |key, item|
+      decoded_json_strings_valid?(key) && decoded_json_strings_valid?(item)
+    end
+  else
+    true
+  end
+end
+
 raw_input = $stdin.read.force_encoding(Encoding::UTF_8)
 unless raw_input.valid_encoding?
   emit_unknown(
@@ -182,6 +197,13 @@ rescue JSON::ParserError
   emit_unknown(
     "input is not valid JSON",
     next_action: "provide one target-membership-request v1 object and replay the guard"
+  )
+end
+
+unless decoded_json_strings_valid?(input)
+  emit_unknown(
+    "input contains invalid Unicode scalar data",
+    next_action: "replace invalid Unicode scalar data and replay the guard"
   )
 end
 

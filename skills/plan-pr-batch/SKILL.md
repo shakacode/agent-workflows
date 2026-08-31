@@ -546,32 +546,15 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      best-effort field-granular `UNKNOWN`, names reconciliation, and does not
      block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
-     Its raw lane `targets` are not guard input. Before invoking the guard,
-     derive `canonical_target_manifest` only from trusted provenance/coordinator
-     lane data: combine its exact `OWNER/REPO` repository with an exact
-     `issue:N` or `pr:N` positive-number target, render `OWNER/REPO#N`, and
-     deduplicate after repository-case normalization only by rejecting any
-     repeated derived identity. Missing, ambiguous,
-     synthetic, literal `UNKNOWN`, invalid, or duplicate derived identities
-     block before the guard. Never derive the manifest from a cross-task packet.
-     Preserve the manifest as source evidence, but do not pass raw provenance
-     lane target strings to the guard. Use the derived manifest as
-     the receiver's exact repository-qualified target boundary. Before any
-     cross-task packet can cause a control operation—
-     `claim`, `supersede`, `replacement`, `worker_spawn`, `dispatch`,
-     `ownership`, `heartbeat_mutation`, `lease_mutation`,
-     `resource_lock_handoff`, `repository_mutation`, `github_mutation`, or
-     `control_transfer`—require the pr-batch `target-membership-guard` result.
-     An exact repository-qualified foreign target may use only a new exact
-     `evidence_delivery` request; that request is
-     `foreign-target / evidence-only` and grants no control. Missing,
-     ambiguous, synthetic, malformed, or literal `UNKNOWN` target identity
-     returns structured `UNKNOWN` and blocks both control and evidence delivery
-     until resolved. Control moves only through an
-     explicit human-authorized control transfer
-     to a task whose durable manifest already contains the exact target. Messages
-     and transfer claims never extend a
-     receiver manifest.
+     Its raw lane `targets` are not guard input. Use the canonical
+     [Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)
+     to derive the exact receiver manifest from trusted provenance/coordinator
+     state and require the trusted-base `target-membership-guard` before any
+     cross-task control or mutation. Keep its manifest-derivation details in that
+     canonical workflow; do not mirror them here. Foreign targets remain
+     evidence-only, unresolved identities fail closed as `UNKNOWN`, and control
+     transfer requires trusted out-of-band human authority plus exact receiver
+     membership.
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 

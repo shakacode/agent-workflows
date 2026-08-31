@@ -1457,6 +1457,11 @@ allowed `evidence_delivery` still reports `control_allowed: false`.
 `evidence_delivery`; a control request cannot be repurposed as evidence delivery.
 Duplicate JSON object keys anywhere in the request, including unrelated nested metadata,
 return structured `UNKNOWN` and block both control and evidence incorporation.
+This source pack does not intercept arbitrary host or tool calls, so the helper
+is a mandatory workflow precondition, not a host-level sandbox or proof that an
+operation passed through the guard. A host adapter that exposes cross-task
+control must invoke it at that adapter's mutation boundary and fail closed on
+bypass or `UNKNOWN`; otherwise report enforcement as instruction-based.
 Proceed with a control or mutation only when the current decision reports both
 `target_membership: true` and `control_allowed: true`. Bind the decision to the
 exact manifest, target, operation, and human-authority input and replay after

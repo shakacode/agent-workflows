@@ -149,6 +149,55 @@ class TargetMembershipGuardTest < Minitest::Test
     end
   end
 
+  def test_invalid_unicode_scalar_decoded_from_json_fails_closed
+    input = <<~JSON.delete("\n")
+      {
+        "contract":"target-membership-request",
+        "version":1,
+        "canonical_target_manifest":["shakacode/agent-workflows#403"],
+        "target":"\\udcff",
+        "operation":"dispatch",
+        "human_authorized_control_transfer":false
+      }
+    JSON
+
+    stdout, stderr, status = invoke_raw(input, parse: false)
+
+    assert_equal 2, status.exitstatus, stderr
+    assert_empty stderr
+    result = JSON.parse(stdout)
+    assert_equal "UNKNOWN", result.fetch("status")
+    assert_equal false, result.fetch("control_allowed")
+    assert_equal false, result.fetch("evidence_delivery_allowed")
+    assert_equal "input contains invalid Unicode scalar data", result.fetch("reason")
+    assert_equal "replace invalid Unicode scalar data and replay the guard",
+                 result.fetch("next_action")
+  end
+
+  def test_invalid_unicode_scalar_in_decoded_object_key_fails_closed
+    input = <<~JSON.delete("\n")
+      {
+        "contract":"target-membership-request",
+        "version":1,
+        "canonical_target_manifest":["shakacode/agent-workflows#403"],
+        "target":"shakacode/agent-workflows#403",
+        "operation":"dispatch",
+        "human_authorized_control_transfer":false,
+        "metadata":{"\\udcff":"value"}
+      }
+    JSON
+
+    stdout, stderr, status = invoke_raw(input, parse: false)
+
+    assert_equal 2, status.exitstatus, stderr
+    assert_empty stderr
+    result = JSON.parse(stdout)
+    assert_equal "UNKNOWN", result.fetch("status")
+    assert_equal false, result.fetch("control_allowed")
+    assert_equal false, result.fetch("evidence_delivery_allowed")
+    assert_equal "input contains invalid Unicode scalar data", result.fetch("reason")
+  end
+
   def test_blocks_control_for_a_foreign_target_as_evidence_only
     result, stderr, status = invoke("target" => "shakacode/hichee#9992")
 
@@ -474,9 +523,26 @@ class TargetMembershipGuardTest < Minitest::Test
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, "target-membership-guard", relative_path
+    end
+
+    canonical_surfaces = %w[
+      skills/pr-batch/SKILL.md
+      workflows/pr-processing.md
+    ]
+
+    canonical_surfaces.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+
       assert_includes text, "foreign-target / evidence-only", relative_path
       assert_includes text, "explicit human-authorized control transfer", relative_path
     end
+
+    planner = File.read(File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+    assert_includes planner,
+                    "[Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)"
+    assert_includes planner, "Foreign targets remain evidence-only"
+    assert_includes planner, "unresolved identities fail closed as `UNKNOWN`"
+    assert_includes planner, "trusted out-of-band human authority"
   end
 
   def test_bin_validate_executes_the_target_membership_guard_suite_in_the_pr_batch_section
@@ -510,61 +576,47 @@ class TargetMembershipGuardTest < Minitest::Test
     workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8").gsub(/\s+/, " ")
     assert_includes workflow,
                     "`evidence_delivery_allowed: true` appears only on a request whose operation is `evidence_delivery`"
+    assert_includes workflow,
+                    "not a host-level sandbox or proof that an operation passed through the guard"
+    assert_includes workflow,
+                    "invoke it at that adapter's mutation boundary and fail closed on bypass or `UNKNOWN`"
   end
 
-  def test_portable_skill_summaries_distinguish_foreign_evidence_from_unknown_identity
-    surfaces = {
-      "skills/pr-batch/SKILL.md" => [/## Cross-Task Target Membership Gate/, /## Continuing From Saved Handoffs/],
-      "skills/plan-pr-batch/SKILL.md" => [
-        /Preserve the manifest/,
-        /- For PRs with review feedback/
-      ]
-    }
+  def test_canonical_skill_summary_distinguishes_foreign_evidence_from_unknown_identity
+    relative_path = "skills/pr-batch/SKILL.md"
+    text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+    section = text.match(/## Cross-Task Target Membership Gate(.*?)## Continuing From Saved Handoffs/m)&.[](1)
 
-    surfaces.each do |relative_path, (start_pattern, end_pattern)|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
-      section = text.match(/#{start_pattern.source}(.*?)#{end_pattern.source}/m)&.[](1)
-
-      refute_nil section, "#{relative_path} is missing its target-membership summary"
-      normalized_section = section.gsub(/\s+/, " ")
-      assert_includes normalized_section,
-                      "exact repository-qualified foreign target may use only a new exact `evidence_delivery` request",
-                      relative_path
-      assert_includes normalized_section,
-                      "Missing, ambiguous, synthetic, malformed, or literal `UNKNOWN` target identity returns structured `UNKNOWN` and blocks both control and evidence delivery until resolved",
-                      relative_path
-      CONTROL_OPERATIONS.each do |operation|
-        assert_includes section, operation, "#{relative_path} is missing control operation #{operation}"
-      end
+    refute_nil section, "#{relative_path} is missing its target-membership summary"
+    normalized_section = section.gsub(/\s+/, " ")
+    assert_includes normalized_section,
+                    "exact repository-qualified foreign target may use only a new exact `evidence_delivery` request",
+                    relative_path
+    assert_includes normalized_section,
+                    "Missing, ambiguous, synthetic, malformed, or literal `UNKNOWN` target identity returns structured `UNKNOWN` and blocks both control and evidence delivery until resolved",
+                    relative_path
+    CONTROL_OPERATIONS.each do |operation|
+      assert_includes section, operation, "#{relative_path} is missing control operation #{operation}"
     end
   end
 
-  def test_plan_pr_batch_converts_trusted_provenance_lane_targets_before_guard_input
-    %w[
-      skills/plan-pr-batch/SKILL.md
-      workflows/pr-processing.md
-    ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
-      normalized_text = text.gsub(/\s+/, " ")
+  def test_canonical_workflow_owns_provenance_target_conversion_details
+    workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+    assert_includes workflow,
+                    "derive `canonical_target_manifest` only from trusted provenance/coordinator lane data"
+    assert_includes workflow,
+                    "combine its exact `OWNER/REPO` repository with an exact `issue:N` or `pr:N` positive-number target"
+    assert_includes workflow, "deduplicate after repository-case normalization"
+    assert_includes workflow,
+                    "Missing, ambiguous, synthetic, literal `UNKNOWN`, invalid, or duplicate derived identities block before the guard"
+    assert_includes workflow, "Never derive the manifest from a cross-task packet"
+    assert_includes workflow, "do not pass raw provenance lane target strings to the guard"
 
-      assert_includes normalized_text,
-                      "derive `canonical_target_manifest` only from trusted provenance/coordinator lane data",
-                      relative_path
-      assert_includes normalized_text,
-                      "combine its exact `OWNER/REPO` repository with an exact `issue:N` or `pr:N` positive-number target",
-                      relative_path
-      assert_includes normalized_text,
-                      "deduplicate after repository-case normalization",
-                      relative_path
-      assert_includes normalized_text,
-                      "Missing, ambiguous, synthetic, literal `UNKNOWN`, invalid, or duplicate derived identities block before the guard",
-                      relative_path
-      assert_includes normalized_text,
-                      "Never derive the manifest from a cross-task packet",
-                      relative_path
-      assert_includes normalized_text,
-                      "do not pass raw provenance lane target strings to the guard",
-                      relative_path
-    end
+    planner = File.read(File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+    assert_includes planner,
+                    "[Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)"
+    assert_includes planner, "Keep its manifest-derivation details in that canonical workflow"
+    refute_includes planner,
+                    "combine its exact `OWNER/REPO` repository with an exact `issue:N` or `pr:N` positive-number target"
   end
 end
