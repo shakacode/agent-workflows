@@ -73,6 +73,16 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes validation, "ruby skills/pr-batch/bin/pr-security-preflight-test.rb"
   end
 
+  def test_planning_output_preserves_the_floor_result_without_reowning_the_adapter
+    normalized_skill = @skill.gsub(/\s+/, " ")
+
+    assert_includes normalized_skill, "The preserved, stage-specific `security-floor v1` result for every lane"
+    assert_includes normalized_skill, "Do not reconstruct the helper invocation or select preflight flags here"
+    refute_includes @skill,
+                    '"${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo <OWNER/REPO> <ISSUE_OR_PR...>'
+    refute_includes @skill, "Add `--fail-on-high-risk-files`"
+  end
+
   def test_result_is_stage_bound_and_preserves_every_target_security_fact
     normalized_floor = @floor.gsub(/\s+/, " ")
     normalized_intake = @intake.gsub(/\s+/, " ")
