@@ -239,7 +239,12 @@ module PrCiReadiness
     dependabot_rows = actions_rows.select { |row| row["dependabot"] == true }
     github_actions_rows = actions_rows.reject { |row| row["dependabot"] == true }
     other_rows = (check_runs + statuses).reject do |row|
-      required_identities.include?([row["kind"].to_s, row["app_slug"].to_s.strip, row["name"].to_s]) ||
+      completed_cancelled_advisory =
+        row["kind"].to_s == "check_run" &&
+        row["status"].to_s == "completed" &&
+        row["conclusion"].to_s == "cancelled"
+      completed_cancelled_advisory ||
+        required_identities.include?([row["kind"].to_s, row["app_slug"].to_s.strip, row["name"].to_s]) ||
         row["app_slug"].to_s == "github-actions" ||
         row["dependabot"] == true
     end
