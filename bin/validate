@@ -156,6 +156,7 @@ ruby skills/batch-status/bin/batch-status-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
 ruby skills/pr-batch/bin/writing-style-contract-test.rb
 ruby skills/pr-batch/bin/user-facing-coordination-contract-test.rb
+ruby skills/pr-batch/bin/production-release-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/file-expansion-contract-test.rb
 ruby skills/pr-batch/bin/worker-execution-contract-test.rb
@@ -166,6 +167,7 @@ ruby skills/pr-batch/bin/autonomous-merge-eligibility-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-evidence-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-calibrate-test.rb
 ruby skills/pr-batch/bin/coordination-telemetry-contract-test.rb
+ruby skills/pr-batch/bin/workflow-telemetry-report-test.rb
 ruby skills/pr-batch/bin/review-wave-contract-test.rb
 ruby skills/pr-batch/bin/assignee-exclusion-contract-test.rb
 ruby skills/pr-batch/bin/agent-claimed-mirror-contract-test.rb

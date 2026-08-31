@@ -3,6 +3,11 @@
 Guide for installing, adopting, and running the shared ShakaCode agent workflow
 pack.
 
+For the public, plain-language explanation of what the system optimizes, read
+[The throughput-first objective](https://agents.shakacode.com/docs/throughput/).
+This repository remains the normative source for versioned skills, workflow
+rules, and technical documentation.
+
 Choose the journey that matches what you need to do. The first five sections
 cover the normal user path; architecture records, schemas, maintainer material,
 and implementation plans are collected in the final reference section.
