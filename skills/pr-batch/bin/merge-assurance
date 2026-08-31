@@ -991,7 +991,10 @@ module MergeAssurance
     return false unless path.is_a?(String)
 
     components = path.split("/", -1)
-    return false if components.empty? || path.start_with?("/") || path.include?("\\")
+    return false if components.empty? || path.start_with?("/") || path.include?("\\") || path.include?("\0")
+
+    # Fail closed for any scheme- or drive-like prefix. This intentionally also
+    # rejects repository-relative first components containing a colon.
     return false if path.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
     return false if components.any? { |component| component.empty? || %w[. ..].include?(component) }
 

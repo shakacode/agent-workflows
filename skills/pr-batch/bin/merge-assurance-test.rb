@@ -3555,6 +3555,7 @@ class MergeAssuranceTest < Minitest::Test
       ".github/workflows//ci.yml",
       ".github/workflows/./ci.yml",
       ".github/workflows/../ci.yml",
+      ".github/workflows/ci.yml\0junk",
       nil,
       42
     ]
