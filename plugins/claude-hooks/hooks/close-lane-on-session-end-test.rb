@@ -13,6 +13,14 @@ SESSION_END_HOOK = File.expand_path("close-lane-on-session-end", __dir__)
 load SESSION_END_HOOK
 
 class CloseLaneOnSessionEndTest < Minitest::Test
+  # Happy-path scenarios verify routing, argv, cwd, and stream behavior, not
+  # the one-second production default. Give those subprocesses all of the
+  # headroom the real SessionEnd contract permits so concurrent validators do
+  # not turn scheduler delay into an unrelated assertion failure (#490).
+  # Deliberate timeout scenarios override this value explicitly below.
+  NON_DEADLINE_HOOK_TIMEOUT_SECONDS = CloseLaneOnSessionEnd::MAX_TIMEOUT_SECONDS.to_s
+  NON_DEADLINE_HELPER_TIMEOUT_SECONDS = 10
+
   def test_skips_silently_when_the_repository_has_no_coordination_backend
     with_repo(backend: "n/a") do |repo, _emitter, calls|
       status, stderr = run_hook(repo, advertisement: emitter_argv)
@@ -265,7 +273,11 @@ class CloseLaneOnSessionEndTest < Minitest::Test
       File.write(harness, <<~RUBY)
         #!/usr/bin/env ruby
         require #{support.inspect}
-        result = HookSupport.run_bounded([#{emitter.inspect}], timeout_seconds: 1, chdir: #{repo.inspect})
+        result = HookSupport.run_bounded(
+          [#{emitter.inspect}],
+          timeout_seconds: #{NON_DEADLINE_HELPER_TIMEOUT_SECONDS},
+          chdir: #{repo.inspect}
+        )
         exit(result[:ok] ? 0 : 1)
       RUBY
       FileUtils.chmod(0o755, harness)
@@ -378,7 +390,7 @@ class CloseLaneOnSessionEndTest < Minitest::Test
         exit! 0
       RUBY
 
-      result = HookSupport.run_bounded([emitter], timeout_seconds: 1, chdir: repo)
+      result = HookSupport.run_bounded([emitter], timeout_seconds: NON_DEADLINE_HELPER_TIMEOUT_SECONDS, chdir: repo)
 
       assert result[:ok]
       assert result[:status].success?
@@ -604,7 +616,7 @@ class CloseLaneOnSessionEndTest < Minitest::Test
 
   def run_hook(repo, advertisement: nil, plain_advertisement: nil, raw_advertisement: nil, reason: "clear", env: {},
                payload_cwd: repo, project_dir: repo)
-    hook_env = env.dup
+    hook_env = { CloseLaneOnSessionEnd::TIMEOUT_ENV => NON_DEADLINE_HOOK_TIMEOUT_SECONDS }.merge(env)
     value = raw_advertisement || advertisement&.to_json
     hook_env["AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV"] = value if value
     if plain_advertisement
