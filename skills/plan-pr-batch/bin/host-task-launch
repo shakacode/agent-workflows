@@ -38,19 +38,20 @@ module HostTaskLaunch
     end
 
     operation = input.fetch("operation")
-    update_task_identity!(record, input.fetch("task_identity")) if %w[bind-provisional bind-task].include?(operation)
+    lane = mutable_operation?(operation) || input.key?("dependency_state") ? lane_for!(record, input.fetch("lane_id")) : nil
+    update_task_identity!(lane, input.fetch("task_identity")) if %w[bind-provisional bind-task].include?(operation)
+    update_lane!(lane, input.fetch("update")) if operation == "update"
     publication = publication_gate(input, record)
     return invalid_input if publication == :invalid
 
-    record.fetch("lanes").first["state"] = "waiting" if input["dependency_state"] == "waiting"
+    lane["state"] = "waiting" if input["dependency_state"] == "waiting"
     record["reconciliation_due"] = publication.fetch("reconciliation_due")
     record["coordination"] = publication.fetch("coordination")
     record["no_backend_override"] = publication["override"] if publication.key?("override")
     record["publication"] = publication.fetch("evidence") if publication.key?("evidence")
-    create_attempt_already_fenced = record.dig("lanes", 0, "transition") == "create-attempted"
-    if operation == "begin-create" && publication.fetch("ready")
-      lane = record.fetch("lanes").first
-      lane["transition"] = "create-attempted" unless lane["transition"] == "create-attempted"
+    create_attempt_already_fenced = lane && lane["transition"] == "create-attempted"
+    if operation == "begin-create" && publication.fetch("ready") && lane["transition"] != "create-attempted"
+      lane["transition"] = "create-attempted"
     end
     record["latest"] = operation == "bind-task" ? "task identity bound" : "launch prepared"
     persist_fence(fence_path, record)
@@ -61,7 +62,7 @@ module HostTaskLaunch
       "status" => "ready",
       "launch_mode" => "host-native-user-task",
       "record" => record,
-      "action" => action_for(operation, launch_safety(input), publication, record, create_attempt_already_fenced),
+      "action" => action_for(operation, launch_safety(input), publication, record, lane, create_attempt_already_fenced),
       "control_tower" => render_control_tower(record)
     }
   rescue ContractError, AgentRunRecord::ContractError, KeyError
@@ -71,6 +72,7 @@ module HostTaskLaunch
   def validate_input!(input)
     raise ContractError unless input.is_a?(Hash) && input["type"] == TYPE && input["version"] == VERSION
     raise ContractError unless %w[prepare publish begin-create retry bind-provisional bind-task update].include?(input["operation"])
+    raise ContractError if mutable_operation?(input["operation"]) && !scalar_value?(input["lane_id"])
     raise ContractError if input.key?("dependency_state") && !%w[ready waiting].include?(input["dependency_state"])
     raise ContractError unless input["task_creation_authorization"].is_a?(String)
     raise ContractError unless input["local_fence_path"].is_a?(String) && !input["local_fence_path"].strip.empty?
@@ -247,10 +249,10 @@ module HostTaskLaunch
       scalar_value?(coordination["retry_evidence"])
   end
 
-  def action_for(operation, capabilities, publication, record, create_attempt_already_fenced)
+  def action_for(operation, capabilities, publication, _record, lane, create_attempt_already_fenced)
     return { "kind" => "publish-control-tower" } if operation == "prepare" && !publication.fetch("ready")
     return { "kind" => "publish-control-tower" } unless publication.fetch("ready")
-    return { "kind" => "wait-for-dependencies" } if record.dig("lanes", 0, "state") == "waiting"
+    return { "kind" => "wait-for-dependencies" } if lane && lane["state"] == "waiting"
     return { "kind" => "begin-create" } if operation == "publish"
     return { "kind" => "monitor-task" } if %w[bind-provisional bind-task update].include?(operation)
 
@@ -265,7 +267,7 @@ module HostTaskLaunch
     { "kind" => "create-task", "create_attempt_fenced" => true }
   end
 
-  def update_task_identity!(record, task_identity)
+  def update_task_identity!(lane, task_identity)
     raise ContractError unless task_identity.is_a?(Hash)
 
     %w[provisional_id task_id task_url].each do |key|
@@ -273,7 +275,6 @@ module HostTaskLaunch
 
       scalar!(task_identity.fetch(key))
     end
-    lane = record.fetch("lanes").first
     lane.fetch("task")["provisional_id"] = task_identity.fetch("provisional_id") if task_identity.key?("provisional_id")
     return unless task_identity.key?("task_id")
 
@@ -281,6 +282,35 @@ module HostTaskLaunch
     lane.fetch("task")["url"] = task_identity.fetch("task_url") if task_identity.key?("task_url")
     lane["state"] = "active"
     lane["transition"] = "task-bound"
+  end
+
+  def update_lane!(lane, update)
+    raise ContractError unless update.is_a?(Hash)
+
+    %w[state outcome branch pr latest blocker human_input_needed].each do |key|
+      next unless update.key?(key)
+
+      lane[key] = update.fetch(key)
+    end
+    validate_lane_lifecycle!(lane)
+  end
+
+  def validate_lane_lifecycle!(lane)
+    raise ContractError unless AgentRunRecord::STATES.include?(lane.fetch("state")) && AgentRunRecord::OUTCOMES.include?(lane.fetch("outcome"))
+
+    AgentRunRecord.validate_lifecycle!(lane.fetch("state"), lane.fetch("outcome"))
+    raise ContractError if lane["state"] == "blocked" && lane["outcome"] == "pending" && !scalar_value?(lane["blocker"])
+  end
+
+  def mutable_operation?(operation)
+    %w[begin-create retry bind-provisional bind-task update].include?(operation)
+  end
+
+  def lane_for!(record, lane_id)
+    matches = record.fetch("lanes").select { |lane| lane["lane_id"] == lane_id }
+    raise ContractError unless matches.length == 1
+
+    matches.first
   end
 
   def persist_fence(path, record)

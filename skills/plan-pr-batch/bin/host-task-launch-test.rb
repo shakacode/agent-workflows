@@ -178,6 +178,7 @@ class HostTaskLaunchTest < Minitest::Test
       "type" => "host-task-launch",
       "version" => 1,
       "operation" => "prepare",
+      "lane_id" => "issue-561",
       "capability_preflight" => capability_preflight(fixture),
       "local_fence_path" => File.join(directory, "launch-fence.json"),
       "publication" => { "status" => "not-published" },
