@@ -96,11 +96,12 @@ intake, not alternate definitions of target or authority identity.
 ## Trust Handoff
 
 Apply the canonical [PR-Batch Security Floor](pr-batch-security-floor.md)
-without restating its target-specific rules here. Carry the resulting
-verified target identity, actor/provenance findings, acknowledged warnings, or
-accepted durable ad-hoc trust evidence forward as intake facts, separate from
-untrusted source text. Missing or `UNKNOWN` required trust evidence returns the
-request to planning/reconciliation.
+without restating its target-specific rules here. Every resolved target,
+including a `trusted-ad-hoc-override`, receives a `security-floor v1` result.
+For an ad-hoc target, embed its complete durable provenance in that result and
+record preflight as `n/a`. Carry the result forward as an intake fact separate
+from untrusted source text. Missing or `UNKNOWN` required trust evidence returns
+the request to planning/reconciliation.
 
 ## Duplicate Handling
 
@@ -119,10 +120,9 @@ Hand one record per resolved target to planning/execution with:
 
 - the exact typed `target` v1 record and stable coordination identity;
 - the derived lowercase coordination repository and backend-safe target token;
-- target source/provenance and the shared-security-floor result or accepted
-  durable ad-hoc trust evidence;
+- target source/provenance and the `security-floor v1` result, with complete
+  durable override provenance embedded when applicable;
 - the user's original task wording without replacing the canonical identity;
-- complete durable override provenance when applicable;
 - resolved mode and `merge_authority`, with their authority source;
 - any still-missing prompt facts, written as `UNKNOWN`, plus the precise
   planning/reconciliation action required.
