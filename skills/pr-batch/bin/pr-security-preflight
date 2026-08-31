@@ -663,6 +663,7 @@ def prompt_source_snapshots(rest_context)
   snapshots = sources.filter_map do |source|
     body = source["body"]
     url = source["html_url"]
+    body = "" if body.nil?
     next unless body.is_a?(String) && url.is_a?(String) && !url.empty?
 
     {
