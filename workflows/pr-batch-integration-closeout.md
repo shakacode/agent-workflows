@@ -1686,6 +1686,23 @@ timeline evidence fails closed as `UNKNOWN`. Choosing the trusted base or
 installed-pack digest, inspecting the diff, producing the semantic assessment,
 and proving a human decision plus merge authority remain coordinator procedures
 backed by durable evidence.
+
+An unchanged head reuses exact-head CI/review only through
+`current-integration-evidence`. It independently reads the live base
+before/after evaluation, binding the recorded base, immutable head,
+patch identity, and clean integration candidate. It prefers GitHub's
+`potentialMergeCommit`; when absent or old-base, it resolves Git from fixed
+system directories under a closed environment and computes an isolated
+`git merge-tree`. Malformed identity or live-ref movement fails closed.
+
+Reuse requires disjoint PR/base paths, no built-in or configured
+high-risk path, and one whole side limited to trusted-safe documentation,
+changelog, or generated paths. Code-to-code changes, overlap, conflicts,
+incomplete evidence, or policy/workflow/security/release risk require branch
+update and fresh evidence. No gate is waived. Results distinguish
+`base-unchanged`, `reuse-exact-head`, and fail-closed reasons; replay counts are
+exact, while elapsed time saved is measured or `null`.
+
 The semantic assessment must be an external coordinator-owned file derived
 from the trusted task and inspected diff; a path lexically or physically
 inside the evaluated repository is rejected. Do not read it from stdin, the PR
@@ -1710,7 +1727,8 @@ The output contract reports `verdict`, `head_sha`, trusted-base
 reason-tagged `path_matches`,
 `safe_class`, lexicographically sorted duplicate-free `triggered_gates`,
 `shadow_triggered_gates`, `shadow_evidence_unknown`, `rollback_assessment`,
-`human_decision_evidence`, and exact `evidence_failures`. Canonical v1 gate IDs
+`human_decision_evidence`, `current_integration`, and exact
+`evidence_failures`. Canonical v1 gate IDs
 are closed:
 
 - `architectural-product-judgment`
@@ -1931,6 +1949,10 @@ evidence digest. It is separate from batch-plan preflight. Legacy merge callers
 must now generate and pass this receipt, and `merge_authority: none` remains a
 no-merge result.
 
+An eligible v2 receipt binds `current-integration-evidence` and the integration
+tree plus ordered base/head parents. `pr-merge-submit` replays that identity
+before mutation; a synthetic candidate OID is provenance only.
+
 ### Exact-Head Merge Submission
 
 After the readiness gate passes, merge authority is explicit, and
@@ -1955,6 +1977,15 @@ bindings, freshness, and selected hosted-CI records before any queue or
 guarded-direct mutation. A missing, cancelled, failed, nonterminal, stale-head,
 or mismatched-PR selected record blocks before the first GitHub call or
 repository guard.
+
+The v2 assurance receipt embeds the exact `current-integration-evidence` used
+by eligibility. Before mutation, `pr-merge-submit` re-reads the live head,
+independently resolves the live `refs/heads/<base>`, and replays the same GitHub
+candidate or trusted local merge tree. Replay identity is the integration tree
+plus its ordered current-base/head parents; GitHub may regenerate a synthetic
+candidate OID for the same identity. Missing or changed candidates, base or
+head movement, and receipt mismatch block submission. The recorded base remains
+integrity-bound, but mutable PR `baseRefOid` metadata is not a live-base oracle.
 
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
 always preserves read-only, idempotent observation when the exact reviewed PR
