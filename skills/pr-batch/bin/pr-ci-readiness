@@ -368,7 +368,7 @@ module PrCiReadiness
       raise Error, "optional approval-held check app_slug is invalid" unless
         app_slug.is_a?(String) && app_slug.match?(POLICY_RULE_ID)
       raise Error, "optional approval-held check name must be resolved single-line text" unless
-        name.is_a?(String) && !name.empty? && !name.match?(/[[:cntrl:]]/) && !name.include?("UNKNOWN")
+        name.is_a?(String) && !name.empty? && !name.match?(/[[:cntrl:]]/) && name != "UNKNOWN"
       raise Error, "duplicate optional approval-held check id #{rule_id}" if seen_ids[rule_id]
 
       identity = [app_slug, name]

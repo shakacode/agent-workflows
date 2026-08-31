@@ -1016,14 +1016,6 @@ class PrCiReadinessTest < Minitest::Test
         "version" => 1,
         "optional_approval_held_checks" => [valid_rule.merge("name" => "UNKNOWN")]
       },
-      "unknown name phrase" => {
-        "version" => 1,
-        "optional_approval_held_checks" => [valid_rule.merge("name" => "Approval UNKNOWN state")]
-      },
-      "hyphenated unknown name" => {
-        "version" => 1,
-        "optional_approval_held_checks" => [valid_rule.merge("name" => "NOT-UNKNOWN")]
-      },
       "multiline name" => {
         "version" => 1,
         "optional_approval_held_checks" => [valid_rule.merge("name" => "storybook\nreview")]
@@ -1045,6 +1037,22 @@ class PrCiReadinessTest < Minitest::Test
       assert_raises(PrCiReadiness::Error, label) do
         PrCiReadiness.validate_optional_approval_held_policy!(policy)
       end
+    end
+  end
+
+  def test_optional_policy_accepts_resolved_names_containing_unknown
+    valid_rule = {
+      "id" => "circleci-storybook",
+      "app_slug" => "circleci-checks",
+      "name" => "storybook-review-app"
+    }
+    ["Approval UNKNOWN state", "NOT-UNKNOWN"].each do |name|
+      policy = {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("name" => name)]
+      }
+
+      assert_equal policy, PrCiReadiness.validate_optional_approval_held_policy!(policy), name
     end
   end
 
