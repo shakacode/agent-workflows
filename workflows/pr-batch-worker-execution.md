@@ -51,8 +51,11 @@ does not redefine scope or substitute a new diagnosis.
   multi-machine workers use `git worktree add`; in-process Claude Code
   `Agent`/`Workflow` workers use `isolation: 'worktree'`. Never let concurrent
   file-editing workers share a working directory, index, or branch.
-- Verify repository root, exact base, branch, worktree cleanliness, and live
-  GitHub target before editing. Never revert another worker's changes.
+- Verify repository root, exact base, branch, and worktree cleanliness before
+  editing. For a GitHub issue/PR, re-fetch the live target. For a
+  `trusted-ad-hoc-override` lane, instead re-verify its complete accepted
+  durable override provenance is exact and non-`UNKNOWN`. Never revert another
+  worker's changes.
 - When optional coordination is active, refresh its heartbeat at phase changes.
   Before rebase or push, recheck bounded status and the known
   holder/generation/instance; a mismatch stops without mutation. A dependent

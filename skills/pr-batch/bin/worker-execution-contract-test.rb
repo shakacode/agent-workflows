@@ -93,6 +93,10 @@ class WorkerExecutionContractTest < Minitest::Test
     assert_includes setup, "missing or `UNKNOWN` stops the lane"
     assert_includes setup, "holder/generation/instance"
     assert_includes setup, "claim-only execution"
+    assert_includes setup, "For a GitHub issue/PR, re-fetch the live target"
+    assert_includes setup,
+                    "For a `trusted-ad-hoc-override` lane, instead re-verify its complete accepted durable override provenance"
+    refute_includes setup, "worktree cleanliness, and live GitHub target before editing"
   end
 
   def test_expansion_preserves_reservation_and_resume_gates
