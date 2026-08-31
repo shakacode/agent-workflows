@@ -479,17 +479,19 @@ YAML
 }
 
 test_third_party_notices_are_installed_for_every_delivery_mode() {
-  local tmp target collision_target delivery_mode mode output status
+  local tmp target collision_target personal_target delivery_mode mode output status
 
   for mode in copy symlink; do
     for delivery_mode in flat plugin-companion; do
       tmp="$(mktemp -d)"
       target="$tmp/$mode-$delivery_mode"
       collision_target="$tmp/$mode-$delivery_mode-collision"
+      personal_target="$tmp/$mode-$delivery_mode-personal"
 
       if [[ "$delivery_mode" = plugin-companion ]]; then
         write_native_scw_state codex "$target"
         write_native_scw_state codex "$collision_target"
+        write_native_scw_state codex "$personal_target"
       fi
 
       "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
@@ -519,6 +521,24 @@ test_third_party_notices_are_installed_for_every_delivery_mode() {
         fail "$mode $delivery_mode notice collision partially installed pack assets"
       [[ ! -e "$collision_target/.agent-workflows-install.json" ]] || \
         fail "$mode $delivery_mode notice collision committed metadata"
+
+      mkdir -p "$personal_target"
+      printf 'consumer-owned notice\n' > "$personal_target/THIRD_PARTY-NOTICES.md"
+      set +e
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$personal_target" \
+        --mode "$mode" --delivery-mode "$delivery_mode" 2>&1)"
+      status=$?
+      set -e
+
+      [[ "$status" -ne 0 ]] || \
+        fail "$mode $delivery_mode install replaced a consumer-owned THIRD_PARTY-NOTICES.md"
+      assert_contains "$output" "$personal_target/THIRD_PARTY-NOTICES.md"
+      grep -qxF 'consumer-owned notice' "$personal_target/THIRD_PARTY-NOTICES.md" || \
+        fail "$mode $delivery_mode install changed a consumer-owned THIRD_PARTY-NOTICES.md"
+      [[ ! -e "$personal_target/LICENSE" && ! -e "$personal_target/workflows" ]] || \
+        fail "$mode $delivery_mode notice ownership failure partially installed pack assets"
+      [[ ! -e "$personal_target/.agent-workflows-install.json" ]] || \
+        fail "$mode $delivery_mode notice ownership failure committed metadata"
     done
   done
 }

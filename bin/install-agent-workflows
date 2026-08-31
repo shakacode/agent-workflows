@@ -3473,6 +3473,72 @@ verify_pack_doc_destinations() {
   done
 }
 
+recorded_revision_root_file_matches() {
+  local file_name="$1"
+  local destination="$2"
+  local previous_revision previous_source source_root
+  [[ -f "$destination" && ! -L "$destination" ]] || return 1
+  read_installed_metadata_value source_revision
+  case "$installed_metadata_state" in
+    valid) previous_revision="$installed_metadata_value" ;;
+    *) previous_revision="" ;;
+  esac
+  [[ "$previous_revision" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+  read_installed_metadata_value source
+  case "$installed_metadata_state" in
+    valid) previous_source="$installed_metadata_value" ;;
+    *) previous_source="" ;;
+  esac
+
+  for source_root in "$repo_root" "$previous_source"; do
+    [[ -n "$source_root" && -d "$source_root" ]] || continue
+    if git -C "$source_root" cat-file -e "$previous_revision:$file_name" 2>/dev/null &&
+       cmp -s "$destination" <(git -C "$source_root" show "$previous_revision:$file_name"); then
+      return 0
+    fi
+  done
+  return 1
+}
+
+root_file_symlink_matches_recorded_source() {
+  local file_name="$1"
+  local destination="$2"
+  local previous_source resolved source_root expected
+  [[ -L "$destination" ]] || return 1
+  resolved="$(ruby -e 'puts File.expand_path(File.readlink(ARGV.fetch(0)), File.dirname(ARGV.fetch(0)))' "$destination")"
+  read_installed_metadata_value source
+  case "$installed_metadata_state" in
+    valid) previous_source="$installed_metadata_value" ;;
+    *) previous_source="" ;;
+  esac
+
+  for source_root in "$repo_root" "$previous_source"; do
+    [[ -n "$source_root" ]] || continue
+    expected="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$source_root/$file_name")"
+    [[ "$resolved" = "$expected" ]] && return 0
+  done
+  return 1
+}
+
+verify_third_party_notices_destination() {
+  local file_name="THIRD_PARTY-NOTICES.md"
+  local destination="$target/$file_name"
+  local source_path="$repo_root/$file_name"
+  [[ -e "$destination" || -L "$destination" ]] || return 0
+
+  if [[ "$mode" = "copy" ]]; then
+    recorded_revision_root_file_matches "$file_name" "$destination" ||
+      { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
+      root_file_symlink_matches_recorded_source "$file_name" "$destination" || {
+        echo "Refusing to replace unowned pack root file: $destination" >&2
+        exit 1
+      }
+  elif ! root_file_symlink_matches_recorded_source "$file_name" "$destination"; then
+    echo "Refusing to replace unowned pack root symlink: $destination" >&2
+    exit 1
+  fi
+}
+
 verify_install_destinations() {
   local destination helper skill source_path
 
@@ -3988,6 +4054,7 @@ if [[ "$delivery_status" -ne 0 ]]; then
 fi
 verify_pack_doc_destinations
 verify_install_destinations
+verify_third_party_notices_destination
 prepare_metadata
 if ! verify_install_metadata_binding; then
   report_install_metadata_binding_changed
