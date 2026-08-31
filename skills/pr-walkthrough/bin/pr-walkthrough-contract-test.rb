@@ -7,6 +7,7 @@ class PrWalkthroughContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
   SKILL = File.join(ROOT, "skills/pr-walkthrough/SKILL.md")
   WORKFLOW = File.join(ROOT, "workflows/pr-processing.md")
+  INTEGRATION_CLOSEOUT = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
   PR_BATCH = File.join(ROOT, "skills/pr-batch/SKILL.md")
   PR_MONITORING = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 
@@ -47,7 +48,7 @@ class PrWalkthroughContractTest < Minitest::Test
   end
 
   def test_ask_authority_automatically_walks_through_before_merge_decision
-    [WORKFLOW, PR_BATCH, PR_MONITORING].each do |path|
+    [WORKFLOW, INTEGRATION_CLOSEOUT, PR_MONITORING].each do |path|
       text = File.read(path).gsub(/\s+/, " ")
 
       phrases = [
@@ -66,6 +67,14 @@ class PrWalkthroughContractTest < Minitest::Test
       end
       positions.each_cons(2) { |before, after| assert_operator before, :<, after, path }
     end
+  end
+
+  def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component
+    pr_batch = File.read(PR_BATCH)
+
+    assert_includes pr_batch,
+                    "[automatic interactive exact-diff walkthrough]" \
+                    "(../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)"
   end
 
   def test_walkthrough_is_an_internal_current_task_phase_not_a_new_owner

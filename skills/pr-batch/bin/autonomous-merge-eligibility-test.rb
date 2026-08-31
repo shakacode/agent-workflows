@@ -1175,12 +1175,16 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_closeout_workflow_uses_the_authenticated_runtime_directory
-    workflow = File.read(File.expand_path("../../../workflows/pr-processing.md", __dir__), encoding: "UTF-8")
+    workflow = File.read(
+      File.expand_path("../../../workflows/pr-batch-integration-closeout.md", __dir__),
+      encoding: "UTF-8"
+    )
+    index = File.read(File.expand_path("../../../workflows/pr-processing.md", __dir__), encoding: "UTF-8")
     skill = File.read(File.expand_path("../SKILL.md", __dir__), encoding: "UTF-8")
 
-    [workflow, skill].each do |document|
-      assert_includes document, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout"'
-    end
+    assert_includes workflow, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout"'
+    assert_includes skill, "pr-batch-integration-closeout.md#autonomous-merge-eligibility-gate"
+    assert_includes index, "pr-batch-integration-closeout.md#autonomous-merge-eligibility"
     assert_includes workflow,
                     'git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-closeout"'
     assert_includes workflow,
@@ -1635,7 +1639,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
           "data" => {
             "repository" => {
               "pullRequest" => {
-                "headRefOid" => objective.fetch("head_sha"),
+                "headRefOid" => objective.fetch("head_sha").downcase,
                 "baseRefName" => objective.fetch("base_ref"),
                 "potentialMergeCommit" => {
                   "oid" => objective.fetch("test_candidate_oid"),
@@ -1644,7 +1648,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
                     "totalCount" => 2,
                     "nodes" => [
                       { "oid" => objective.fetch("test_current_base_sha") },
-                      { "oid" => objective.fetch("head_sha") }
+                      { "oid" => objective.fetch("head_sha").downcase }
                     ]
                   }
                 }
@@ -1820,6 +1824,9 @@ class AutonomousMergeEligibilityTest < Minitest::Test
         "head_sha" => HEAD_SHA,
         "base_sha" => base_sha,
         "base_ref" => "main",
+        "test_current_base_sha" => base_sha,
+        "test_candidate_oid" => "d" * 40,
+        "test_candidate_tree" => "e" * 40,
         "files_complete" => true,
         "files" => files,
         "commits_complete" => true,
