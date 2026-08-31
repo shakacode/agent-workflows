@@ -638,6 +638,7 @@ only for the affected target. Missing optional telemetry remains
 field-granular `UNKNOWN` and never freezes unrelated work. Preserve exact
 loaded-pack provenance, requested routes separately from host-observed values,
 the canonical coordination declaration, and every action-specific blocker.
+
 ## Worker Rules
 
 Codex-targeted waves may use up to 10 independent lanes, or 8 when shared/risky

@@ -90,6 +90,9 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes ownership, "does not freeze unrelated"
     assert_includes ownership, "claim timeout"
     assert_includes ownership, "UNKNOWN (claim outcome)"
+    assert_includes ownership, "codex-ready"
+    assert_includes ownership, "codex-wip"
+    assert_includes ownership, "gh label create"
     assert_includes ownership, "durable takeover receipt"
     assert_includes ownership, "Preserve existing commits"
   end
@@ -146,6 +149,14 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_operator skill_route.bytesize, :<, 1_600
     refute_includes workflow_route, "Public claim comment"
     refute_includes skill_route, "Public claim comment"
+
+    isolation_route = @workflow[/^3\. Isolate the work:.*?(?=^4\. Make a local batch:)/m]
+    refute_nil isolation_route
+    assert_includes isolation_route, route
+    assert_operator isolation_route.bytesize, :<, 1_800
+    refute_includes isolation_route, "agent-coord-bounded"
+    refute_includes isolation_route, "private_state: claim-only"
+    refute_includes isolation_route, "Public Claim Comment Fallback"
   end
 
   def test_repository_validation_runs_the_component_contract

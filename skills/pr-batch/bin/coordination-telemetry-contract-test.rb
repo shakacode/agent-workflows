@@ -203,16 +203,6 @@ def extract_section(text, heading)
   text[body_start...body_end]
 end
 
-def extract_between(text, start_marker, end_marker)
-  start_offset = text.index(start_marker)
-  raise "missing start marker #{start_marker.inspect}" unless start_offset
-
-  end_offset = text.index(end_marker, start_offset)
-  raise "missing end marker #{end_marker.inspect}" unless end_offset
-
-  text[start_offset...end_offset]
-end
-
 def parse_operational_signal_rows(section)
   section.each_line.filter_map do |line|
     next unless line.start_with?("|")

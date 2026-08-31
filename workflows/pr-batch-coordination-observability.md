@@ -83,6 +83,11 @@ implementation, validation, or review. Apply these target-scoped rules:
    `agent-claimed`) only for an issue or PR and only when expiry reconciliation
    is available. The label is a visible hint, not the lock. Remove it on release
    only after verifying the same holder/generation still owns the claim.
+   Repository-adopted maintainer eligibility labels such as `codex-ready` and
+   temporary work-in-progress hints such as `codex-wip` are dashboard inputs
+   only; neither proves ownership or liveness. Adopt each configured label once
+   per repository with `gh label create` before applying it, including the claim
+   label before mirroring.
 3. Heartbeat at phase transitions and preserve batch, target, branch, thread,
    holder/generation/instance, status, and cancellation state. Liveness is
    derived from timestamps and the backend's configured thresholds; labels do
