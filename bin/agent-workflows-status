@@ -256,6 +256,7 @@ module AgentWorkflowsStatus
     delivery_mode = requested_delivery_mode || metadata.fetch("delivery_mode", "flat")
     delivery, delivery_error = delivery_state(host:, target:, source:, delivery_mode:)
     if delivery_error
+      delivery = (delivery || {}).merge(superpowers_delivery_state(host, target) || {})
       return status_payload(
         "CHECK_FAILED",
         target:,
