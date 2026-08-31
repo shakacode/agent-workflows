@@ -156,7 +156,7 @@ ruby skills/batch-status/bin/batch-status-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
 ruby skills/pr-batch/bin/writing-style-contract-test.rb
 ruby skills/pr-batch/bin/user-facing-coordination-contract-test.rb
-ruby skills/pr-batch/bin/production_release_contract_test.rb
+ruby skills/pr-batch/bin/production-release-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/file-expansion-contract-test.rb
 ruby skills/pr-batch/bin/dependency-conflict-policy-contract-test.rb

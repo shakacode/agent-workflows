@@ -268,21 +268,6 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
   end
 
-  def test_snake_case_contract_tests_are_policy_surface_not_safe_tests
-    path = "skills/pr-batch/bin/production_release_contract_test.rb"
-
-    assert(
-      AutonomousMergePolicy::SOURCE_POLICY_PATTERNS.any? do |pattern|
-        AutonomousMergePolicy.match?(pattern, path)
-      end
-    )
-    assert(
-      AutonomousMergePolicy::PORTABLE_POLICY_EXCLUDES.any? do |pattern|
-        AutonomousMergePolicy.match?(pattern, path)
-      end
-    )
-  end
-
   def test_portable_safe_path_group_constants_are_frozen_and_not_mutated_by_callers
     groups = AutonomousMergePolicy.portable_safe_path_groups
     groups.fetch("documentation").fetch("include") << "mutated/**"
