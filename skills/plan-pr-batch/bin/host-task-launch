@@ -211,18 +211,56 @@ module HostTaskLaunch
 
   def with_fence_lock(path)
     lock_path = "#{path}.lock"
-    if (metadata = fence_metadata(lock_path)) && !(metadata.file? && !metadata.symlink?)
-      raise ContractError
-    end
+    lock = open_fence_lock(lock_path)
+    lock.flock(File::LOCK_EX)
+    verify_open_lock!(lock, lock_path)
+    yield
+  rescue SystemCallError
+    raise ContractError
+  ensure
+    lock.flock(File::LOCK_UN) if lock && !lock.closed?
+    lock.close if lock && !lock.closed?
+  end
 
-    File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
-      lock.flock(File::LOCK_EX)
-      begin
-        yield
-      ensure
-        lock.flock(File::LOCK_UN)
-      end
-    end
+  def open_fence_lock(path)
+    lock = File.open(path, File::RDWR | File::CREAT | File::EXCL, 0o600)
+    lock.chmod(0o600)
+    verify_open_lock!(lock, path)
+    lock
+  rescue Errno::EEXIST
+    open_existing_fence_lock(path)
+  rescue SystemCallError
+    close_lock(lock)
+    raise ContractError
+  rescue ContractError
+    close_lock(lock)
+    raise
+  end
+
+  def open_existing_fence_lock(path)
+    flags = File::RDWR
+    flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+    lock = File.open(path, flags)
+    verify_open_lock!(lock, path)
+    lock.chmod(0o600)
+    lock
+  rescue SystemCallError
+    close_lock(lock)
+    raise ContractError
+  rescue ContractError
+    close_lock(lock)
+    raise
+  end
+
+  def verify_open_lock!(lock, path)
+    metadata = fence_metadata(path)
+    stat = lock.stat
+    raise ContractError unless metadata&.file? && !metadata.symlink? && stat.file? &&
+                               metadata.dev == stat.dev && metadata.ino == stat.ino
+  end
+
+  def close_lock(lock)
+    lock.close if lock && !lock.closed?
   end
 
   def create_initial_fence(path, candidate)

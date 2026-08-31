@@ -51,6 +51,10 @@
         },
         "agent_coordination": "collapsed-backend-service-seam"
       },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
       "launch_authority": "not-granted"
     }
   },
@@ -105,6 +109,10 @@
           "portfolio": "available"
         },
         "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
       },
       "launch_authority": "not-granted"
     }
@@ -161,6 +169,10 @@
         },
         "agent_coordination": "collapsed-backend-service-seam"
       },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
       "launch_authority": "not-granted"
     }
   },
@@ -216,6 +228,10 @@
           "portfolio": "available"
         },
         "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
       },
       "launch_authority": "not-granted"
     }
@@ -278,6 +294,10 @@
         },
         "agent_coordination": "collapsed-backend-service-seam"
       },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
       "launch_authority": "not-granted"
     }
   },
@@ -304,6 +324,10 @@
       "status": "invalid-input",
       "launch_mode": "copy-paste",
       "reasons": ["invalid-input"],
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
       "launch_authority": "not-granted"
     }
   },
@@ -358,6 +382,10 @@
           "portfolio": "available"
         },
         "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
       },
       "launch_authority": "not-granted"
     }
@@ -414,6 +442,10 @@
         },
         "agent_coordination": "collapsed-backend-service-seam"
       },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
       "launch_authority": "not-granted"
     }
   },
@@ -449,6 +481,10 @@
       "status": "invalid-input",
       "launch_mode": "copy-paste",
       "reasons": ["invalid-input"],
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
       "launch_authority": "not-granted"
     }
   },
@@ -485,6 +521,10 @@
       "status": "invalid-input",
       "launch_mode": "copy-paste",
       "reasons": ["invalid-input"],
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
       "launch_authority": "not-granted"
     }
   },
@@ -521,6 +561,10 @@
       "status": "invalid-input",
       "launch_mode": "copy-paste",
       "reasons": ["invalid-input"],
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
       "launch_authority": "not-granted"
     }
   },
@@ -557,6 +601,10 @@
       "status": "invalid-input",
       "launch_mode": "copy-paste",
       "reasons": ["invalid-input"],
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
       "launch_authority": "not-granted"
     }
   },
@@ -612,6 +660,10 @@
         },
         "agent_coordination": "collapsed-backend-service-seam"
       },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
       "launch_authority": "not-granted"
     }
   },
@@ -666,6 +718,10 @@
           "portfolio": "available"
         },
         "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
       },
       "launch_authority": "not-granted"
     }

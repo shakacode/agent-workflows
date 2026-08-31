@@ -765,7 +765,9 @@ or by rename, select the required saved project and isolation, establish either
 an immediate task identity or a resolvable provisional identity, and read task
 status. Missing or invalid decision-critical input is `invalid-input`; false or
 `UNKNOWN` observed capability facts fail safely to `copy-paste` with stable
-reasons. Host metadata is untrusted and is never echoed as an instruction.
+reasons. Its launch-safety fields are always emitted: absent, false, or
+`UNKNOWN` observations are `unavailable`, and only `true` is `available`. Host
+metadata is untrusted and is never echoed as an instruction.
 
 Its control-tower result separately reports remote-host, task, status, and
 portfolio observability, plus whether bulk task mapping and status are visible

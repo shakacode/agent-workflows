@@ -8,6 +8,7 @@ require "rbconfig"
 require "tmpdir"
 
 HELPER = File.expand_path("host-task-launch", __dir__)
+PREFLIGHT_HELPER = File.expand_path("host-task-capability-preflight", __dir__)
 FIXTURES = JSON.parse(File.read(File.expand_path("../fixtures/host-task-launch-cases.json", __dir__)))
 
 class HostTaskLaunchTest < Minitest::Test
@@ -19,6 +20,7 @@ class HostTaskLaunchTest < Minitest::Test
       assert_equal "host-native-user-task", first.fetch("launch_mode")
       assert_equal "publish-control-tower", first.dig("action", "kind")
       assert_equal 0o600, File.stat(input.fetch("local_fence_path")).mode & 0o777
+      assert_equal 0o600, File.stat("#{input.fetch('local_fence_path')}.lock").mode & 0o777
       assert_match uuid_v4, first.dig("record", "run_id")
       assert_match uuid_v4, first.dig("record", "launch_idempotency_key")
 
@@ -101,6 +103,61 @@ class HostTaskLaunchTest < Minitest::Test
       assert_equal 1, actions.count("reconcile-by-run-id")
       assert_equal 1, records.map { |record| record.fetch("run_id") }.uniq.length
       assert_equal 1, records.map { |record| record.fetch("launch_idempotency_key") }.uniq.length
+    end
+  end
+
+  def test_real_preflight_output_with_missing_safety_observations_chains_to_launcher
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      preflight = invoke_preflight(
+        "type" => "host-task-capability-preflight",
+        "version" => 1,
+        "task_creation_authorization" => "explicit-user-authorization",
+        "task" => {
+          "title" => "Owner repo #561 — launcher fence",
+          "saved_project_selection" => "required",
+          "isolated_worktree" => "required",
+          "configured_machine_alias" => "machine-a"
+        },
+        "host_capabilities" => {
+          "task_creation" => true, "task_read" => true, "title_at_creation" => true, "task_rename" => false,
+          "saved_project_selection" => true, "isolated_worktree" => true, "immediate_task_identifier" => true,
+          "provisional_task_identifier" => false, "provisional_identifier_resolution" => false,
+          "task_status_read" => true, "remote_host_read" => true, "portfolio_read" => true
+        }
+      )
+      input["capability_preflight"] = preflight
+
+      result = invoke(input)
+
+      assert_equal({ "task_creation_idempotency" => "unavailable", "reconciliation_by_outer_run_id" => "unavailable" },
+                   preflight.fetch("launch_safety"))
+      assert_equal "host-native-user-task", result.fetch("launch_mode")
+      assert_equal "publish-control-tower", result.dig("action", "kind")
+
+      input["operation"] = "publish"
+      input["publication"] = publication_evidence(result.fetch("record"))
+      invoke(input)
+      input["operation"] = "begin-create"
+      assert_equal "create-task", invoke(input).dig("action", "kind")
+      assert_equal "reconciliation-unavailable", invoke(input).dig("action", "kind")
+    end
+  end
+
+  def test_rejects_symlinked_and_non_regular_sibling_locks
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      lock_path = "#{input.fetch('local_fence_path')}.lock"
+      target = File.join(directory, "lock-target")
+      File.binwrite(target, "not a lock")
+      File.symlink(target, lock_path)
+
+      assert_equal "invalid-input", invoke(input).fetch("status")
+      refute File.exist?(input.fetch("local_fence_path"))
+
+      File.delete(lock_path)
+      Dir.mkdir(lock_path)
+      assert_equal "invalid-input", invoke(input).fetch("status")
     end
   end
 
@@ -431,6 +488,12 @@ class HostTaskLaunchTest < Minitest::Test
 
   def invoke_payload(payload)
     Open3.capture3(RbConfig.ruby, HELPER, stdin_data: payload)
+  end
+
+  def invoke_preflight(input)
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, PREFLIGHT_HELPER, stdin_data: JSON.generate(input))
+    assert status.success?, stderr
+    JSON.parse(stdout)
   end
 
   def uuid_v4

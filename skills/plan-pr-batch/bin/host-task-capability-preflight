@@ -108,7 +108,7 @@ module HostTaskCapabilityPreflight
 
   def result(input, capabilities, reasons)
     native = reasons.empty?
-    output = {
+    {
       "type" => RESULT_TYPE,
       "version" => VERSION,
       "status" => native ? "capability-selected" : "copy-paste-required",
@@ -118,16 +118,15 @@ module HostTaskCapabilityPreflight
         "title" => input.fetch("task").fetch("title"),
         "configured_machine_alias" => input.fetch("task").fetch("configured_machine_alias")
       },
+      "launch_safety" => launch_safety(capabilities),
       "identity" => identity(capabilities),
       "control_tower" => control_tower(capabilities),
       "launch_authority" => "not-granted"
     }
-    if LAUNCH_SAFETY_KEYS.all? { |key| capabilities.key?(key) }
-      output["launch_safety"] = LAUNCH_SAFETY_KEYS.to_h do |key|
-        [key, availability(capabilities.fetch(key))]
-      end
-    end
-    output
+  end
+
+  def launch_safety(capabilities)
+    LAUNCH_SAFETY_KEYS.to_h { |key| [key, capabilities[key] == true ? "available" : "unavailable"] }
   end
 
   def identity(capabilities)
@@ -175,6 +174,7 @@ module HostTaskCapabilityPreflight
       "status" => "invalid-input",
       "launch_mode" => "copy-paste",
       "reasons" => ["invalid-input"],
+      "launch_safety" => launch_safety({}),
       "launch_authority" => "not-granted"
     }
   end
