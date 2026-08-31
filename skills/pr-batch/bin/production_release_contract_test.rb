@@ -47,6 +47,11 @@ class ProductionReleaseContractTest < Minitest::Test
                     "unless repository policy or the live release tracker selects release handling for that PR"
     assert_includes workflow, release_route
     assert_includes squish(@component), release_route
+    tracker_discovery = "perform a bounded tracker-discovery check using only the consumer repo's `AGENTS.md`"
+    assert_includes workflow, tracker_discovery
+    assert_includes skill, tracker_discovery
+    assert_includes workflow, "If the repo defines no tracker discovery policy, do not invent one"
+    assert_includes skill, "if the repo defines no tracker discovery policy, do not invent one"
     assert_includes workflow, "production deployment"
     assert_includes workflow, "### Ordinary Review Fallback"
     assert_includes workflow, "does not load the production/release component"
@@ -97,6 +102,9 @@ class ProductionReleaseContractTest < Minitest::Test
 
     closeout = @workflow.split("The closeout lane is:", 2).last
                         .split("## Self-Review Gate", 2).first
+    assert_includes closeout,
+                    "[Release Closeout Extension](pr-production-release.md#release-closeout-extension)"
+    assert_includes closeout, "its post-merge rule before ordinary closeout step 10"
     refute_includes closeout, "Agent Merge Confidence"
     refute_includes closeout, "Under the current release mode"
 

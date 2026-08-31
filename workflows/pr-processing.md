@@ -418,6 +418,14 @@ work. Ordinary base-branch feature work does not load the downstream component
 unless repository policy or the live release tracker selects release handling
 for that PR.
 
+Before skipping the component for ordinary base-branch work, perform a bounded
+tracker-discovery check using only the consumer repo's `AGENTS.md` tracker
+labels, title prefix, or other search policy. If an existing applicable tracker
+unambiguously selects release handling for the PR, load the component and let
+its Release Mode Preflight own classification. If the repo defines no tracker
+discovery policy, do not invent one; continue with ordinary development
+handling unless another routing signal above applies.
+
 The component owns release-mode and phase resolution, tracker safety,
 accelerated-RC rules, promotion and publication authority, and release
 rollback. This compatibility workflow does not restate those rules.
@@ -3216,7 +3224,11 @@ The closeout lane is:
    confidence or readiness note, and any remaining `UNKNOWN` facts.
 9. Under the current task's merge authority, mark ready or merge PRs that satisfy
    the ordinary merge qualification rules and merge-endgame debounce; report
-   only remaining blockers, questions, or `UNKNOWN` live state.
+   only remaining blockers, questions, or `UNKNOWN` live state. When the
+   production/release component is loaded, also apply its
+   [Release Closeout Extension](pr-production-release.md#release-closeout-extension):
+   apply the extension's pre-action rules before the ready or merge action and
+   its post-merge rule before ordinary closeout step 10.
 10. After any closeout-lane merge action, run a lightweight sweep for late
     post-merge bot findings before the final batch handoff: confirm the PR landed,
     resolve target and base branch names from PR metadata and `.agents/agent-workflow.yml`, check

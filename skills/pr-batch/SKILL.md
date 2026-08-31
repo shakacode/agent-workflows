@@ -223,7 +223,11 @@ Agent Workflows pack. Follow the consumer repo's `AGENTS.md` release policy. Do
 not restate the component's tracker, phase, promotion, or release rules here.
 Ordinary base-branch feature work does not load that downstream component unless
 repository policy or the live release tracker selects release handling for that
-PR. If any target's value, priority, or proposed fix scope is unclear, use the
+PR. Before skipping it, perform a bounded tracker-discovery check using only the
+consumer repo's `AGENTS.md` tracker labels, title prefix, or other search policy.
+Load the component when an existing applicable tracker unambiguously selects the
+PR; if the repo defines no tracker discovery policy, do not invent one. If any
+target's value, priority, or proposed fix scope is unclear, use the
 installed or repo-local `evaluate-issue` skill before assigning implementation
 workers.
 Skip issues labeled `needs-customer-feedback` unless the user explicitly provides customer evidence or maintainer approval for that issue; report each skipped target with `needs-customer-feedback` as the reason.
